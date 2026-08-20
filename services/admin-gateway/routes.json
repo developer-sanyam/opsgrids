@@ -1,0 +1,24 @@
+{
+  "$comment": [
+    "The operator surface. Deliberately narrow: everything here is either Atmora staff",
+    "acting across customers, or an internal service-to-service call.",
+    "",
+    "`staff_only` routes are refused with the same 404 an unknown path gets — the",
+    "existence of the operator console is not something to confirm to whoever is probing."
+  ],
+  "routes": [
+    { "prefix": "/api/v1/auth", "upstream": "http://localhost:8110" },
+
+    { "prefix": "/api/v1/admin/organizations", "upstream": "http://localhost:8170", "staff_only": true },
+    { "prefix": "/api/v1/admin/subscriptions", "upstream": "http://localhost:8170", "staff_only": true },
+    { "prefix": "/api/v1/admin/overrides", "upstream": "http://localhost:8170", "staff_only": true },
+    { "prefix": "/api/v1/admin/usage", "upstream": "http://localhost:8170", "staff_only": true },
+    { "prefix": "/api/v1/admin/audit", "upstream": "http://localhost:8170", "staff_only": true },
+
+    { "prefix": "/api/v1/internal/accounts", "upstream": "http://localhost:8111" },
+    { "prefix": "/api/v1/internal/products", "upstream": "http://localhost:8112" },
+    { "prefix": "/api/v1/internal/billing", "upstream": "http://localhost:8160" },
+
+    { "prefix": "/api/v1/webhooks", "upstream": "http://localhost:8163" }
+  ]
+}

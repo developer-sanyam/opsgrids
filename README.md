@@ -64,6 +64,23 @@ infrastructure/   Helm + kustomize
 tools/            dev-bootstrap, generators, seeds
 ```
 
+## Local ports
+
+Gateways occupy `810x`; services `811x` and up, grouped by area. The authoritative list is
+each gateway's `routes.json` — that file is what actually resolves a prefix to an upstream,
+so a service that moves is one edit there rather than a hunt through code.
+
+| Range | |
+|---|---|
+| 8100 / 8101 | `app-gateway` / `admin-gateway` |
+| 8110–8119 | identity & org — auth `8110`, account `8111`, product `8112`, config `8113` |
+| 8120–8139 | product services (HRMS, CRM, PulseBoard) |
+| 8160–8169 | money — billing `8160`, payment `8161`, eventbridge `8163` |
+| 8170+ | operator — admin `8170` |
+
+Backing services are offset from the HRMS stack so both can run at once: Postgres `5434`,
+Redis `6380`, RabbitMQ `5673`, MinIO `9100`, MailHog `1026`.
+
 ## Things that will bite you
 
 - **`import app` is ambiguous.** Every service exposes a top-level `app`; one process holds one.

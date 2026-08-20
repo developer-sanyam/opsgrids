@@ -1,0 +1,54 @@
+{
+  "$comment": [
+    "The route table, as data. A hardcoded list means every product launch edits the core",
+    "gateway — exactly the coupling the platform exists to avoid.",
+    "",
+    "`product` names the entitlement a request needs. Routes with no product are platform",
+    "surfaces every customer has: signing in, their own organization, their own profile.",
+    "Longest prefix wins, so a nested route can belong to a different service than its",
+    "parent without the shorter prefix swallowing it."
+  ],
+  "routes": [
+    { "prefix": "/api/v1/auth", "upstream": "http://localhost:8110" },
+
+    { "prefix": "/api/v1/organization", "upstream": "http://localhost:8111" },
+    { "prefix": "/api/v1/org-units", "upstream": "http://localhost:8111" },
+    { "prefix": "/api/v1/locations", "upstream": "http://localhost:8111" },
+    { "prefix": "/api/v1/members", "upstream": "http://localhost:8111" },
+    { "prefix": "/api/v1/roles", "upstream": "http://localhost:8111" },
+    { "prefix": "/api/v1/permissions", "upstream": "http://localhost:8111" },
+    { "prefix": "/api/v1/invitations", "upstream": "http://localhost:8111" },
+    { "prefix": "/api/v1/account", "upstream": "http://localhost:8111" },
+
+    { "prefix": "/api/v1/products", "upstream": "http://localhost:8112" },
+    { "prefix": "/api/v1/marketplace", "upstream": "http://localhost:8112" },
+
+    { "prefix": "/api/v1/employees", "upstream": "http://localhost:8120", "product": "hrms" },
+    { "prefix": "/api/v1/attendance", "upstream": "http://localhost:8121", "product": "hrms" },
+    { "prefix": "/api/v1/shifts", "upstream": "http://localhost:8121", "product": "hrms" },
+    { "prefix": "/api/v1/leave", "upstream": "http://localhost:8122", "product": "hrms" },
+    { "prefix": "/api/v1/payroll", "upstream": "http://localhost:8123", "product": "hrms" },
+    { "prefix": "/api/v1/recruit", "upstream": "http://localhost:8124", "product": "hrms" },
+
+    { "prefix": "/api/v1/customers", "upstream": "http://localhost:8130", "product": "crm" },
+    { "prefix": "/api/v1/contacts", "upstream": "http://localhost:8130", "product": "crm" },
+    { "prefix": "/api/v1/leads", "upstream": "http://localhost:8131", "product": "crm" },
+    { "prefix": "/api/v1/deals", "upstream": "http://localhost:8131", "product": "crm" },
+    { "prefix": "/api/v1/campaigns", "upstream": "http://localhost:8132", "product": "marketing" },
+    { "prefix": "/api/v1/tickets", "upstream": "http://localhost:8133", "product": "support" },
+
+    { "prefix": "/api/v1/projects", "upstream": "http://localhost:8140", "product": "pulseboard" },
+    { "prefix": "/api/v1/work-items", "upstream": "http://localhost:8140", "product": "pulseboard" },
+    { "prefix": "/api/v1/time-entries", "upstream": "http://localhost:8141", "product": "pulseboard" },
+    { "prefix": "/api/v1/updates", "upstream": "http://localhost:8142", "product": "pulseboard" },
+    { "prefix": "/api/v1/quotations", "upstream": "http://localhost:8143", "product": "finance" },
+
+    { "prefix": "/api/v1/files", "upstream": "http://localhost:8150" },
+    { "prefix": "/api/v1/notifications", "upstream": "http://localhost:8151" },
+    { "prefix": "/api/v1/search", "upstream": "http://localhost:8152" },
+
+    { "prefix": "/api/v1/billing", "upstream": "http://localhost:8160" },
+    { "prefix": "/api/v1/subscriptions", "upstream": "http://localhost:8161" },
+    { "prefix": "/api/v1/usage", "upstream": "http://localhost:8162" }
+  ]
+}
