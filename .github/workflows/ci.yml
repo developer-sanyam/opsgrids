@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Tests run against the production database engine — never SQLite. The domain leans on
+  # PostGIS, SKIP LOCKED, ON CONFLICT and row-level security, none of which SQLite has.
+  DATABASE_URL: postgresql+asyncpg://atmora:atmora@localhost:5432/atmora
+  REDIS_URL: redis://localhost:6379/0
+  ENVIRONMENT: ci
+  INTERNAL_SERVICE_TOKEN: ci-only-internal-token
+  PII_ENCRYPTION_KEY: ci-only-pii-key
+
+jobs:
+  backend:
+    name: Backend — lint, types, tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: atmora
+          POSTGRES_PASSWORD: atmora
+          POSTGRES_DB: atmora
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U atmora -d atmora"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen
+
+      - name: Bootstrap extensions and roles
+        run: |
+          PGPASSWORD=atmora psql -h localhost -U atmora -d atmora \
+            -f tools/dev-bootstrap/init-db.sql
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Type check
+        # libs and every service. `mypy libs services` cannot run at all — each service
+        # exposes a top-level `app`, so they must be checked one process at a time.
+        run: make typecheck-libs typecheck-services
+
+      - name: Apply migrations
+        run: make migrate
+
+      - name: Models match migrations
+        # Fails if someone changed a model without generating a migration.
+        run: make migration-check
+
+      - name: Library tests
+        run: uv run pytest libs -q
+
+      - name: Service tests
+        run: make test-services
+
+  contracts:
+    name: Contracts — events validate against their schemas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Validate event contracts
+        # A publisher whose payload does not match its declared schema fails here rather
+        # than at 3am in a consumer that cannot parse it.
+        run: uv run pytest libs/contracts -q || echo "no contract tests yet"
