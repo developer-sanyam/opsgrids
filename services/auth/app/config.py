@@ -1,0 +1,36 @@
+"""Configuration for the auth service."""
+
+from __future__ import annotations
+
+from platform_core.config import ServiceSettings, settings_for
+
+
+class Settings(ServiceSettings):
+    service_name: str = "auth"
+    db_schema: str = "auth"
+
+    #: Where account-service lives. This service holds credentials; the directory — who
+    #: exists and which organizations they belong to — is asked for over the internal API
+    #: rather than read across a schema boundary.
+    account_service_url: str = "http://localhost:8111"
+
+    # --- lockout ------------------------------------------------------------------
+    #: Enough attempts that a mistyped password is not punished, few enough that online
+    #: guessing is hopeless. The delay is the defence; the count is just the trigger.
+    max_failed_attempts: int = 5
+    lockout_minutes: int = 15
+    password_min_length: int = 10
+
+    # --- resets -------------------------------------------------------------------
+    password_reset_ttl_minutes: int = 30
+
+    # --- sessions -----------------------------------------------------------------
+    session_ttl_days: int = 30
+    #: Carries the refresh token: httpOnly, path-scoped to the auth routes, and Secure
+    #: outside development. Never readable by JavaScript, which is the whole point.
+    refresh_cookie_name: str = "atmora_refresh"
+    refresh_cookie_domain: str | None = None
+
+
+def settings() -> Settings:
+    return settings_for(Settings)  # type: ignore[return-value]

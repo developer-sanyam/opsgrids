@@ -11,13 +11,13 @@ dependencies = [
     # A dependency is added here when the service that needs it is built, not before.
     # Carrying an unused SDK costs install time, image size and CVE surface for a service
     # that does not exist yet. The ones waiting their turn:
-    #   argon2-cffi   → auth-service (password hashing)
     #   authlib       → auth-service (OIDC client + provider)
     #   geoalchemy2   → attendance-service (geo-fence)
     #   aiosmtplib    → notification-service
     #   boto3         → document-service
     #   stripe, razorpay → payment-service
-    "cryptography>=43.0",      # PII envelope encryption; needed by EdDSA signing too
+    "argon2-cffi>=23.1",       # auth-service password hashing
+    "cryptography>=43.0",      # EdDSA signing keys; PII envelope encryption
     # EmailStr needs this. Note for seeds and fixtures: it rejects .local, .test,
     # .example and .invalid as special-use reserved domains — a .local seed once produced
     # an administrator account that could not log in. Use example.com (RFC 2606).
@@ -74,6 +74,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["S105", "S106"]   # hardcoded test credentials are fine
 "tools/**" = ["T201"]              # a CLI talks to the terminal; that is its job
+# Event-name constants are not credentials. S105 matches on the variable name containing
+# "password", which is exactly what an event about a password change is called.
+"services/auth/app/services.py" = ["S105"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["platform_core", "app"]
@@ -86,7 +89,7 @@ warn_unreachable = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["geoalchemy2.*", "razorpay.*", "authlib.*"]
+module = ["geoalchemy2.*", "razorpay.*", "authlib.*", "argon2.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------- pytest

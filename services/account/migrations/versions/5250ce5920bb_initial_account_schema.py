@@ -1,8 +1,8 @@
 """initial account schema
 
-Revision ID: f42329ba404c
+Revision ID: 5250ce5920bb
 Revises: 
-Create Date: 2026-08-21 00:20:17.615218
+Create Date: 2026-08-21 00:52:47.689056
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql  # noqa: F401 - autogenerate emits JSONB/UUID
 
-revision: str = 'f42329ba404c'
+revision: str = '5250ce5920bb'
 down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -189,17 +189,11 @@ def upgrade() -> None:
     sa.Column('email', postgresql.CITEXT(), nullable=False),
     sa.Column('email_verified_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('full_name', sa.String(length=200), nullable=False),
-    sa.Column('password_hash', sa.String(length=255), nullable=True),
     sa.Column('avatar_file_id', sa.UUID(), nullable=True),
     sa.Column('timezone', sa.String(length=64), nullable=True),
     sa.Column('locale', sa.String(length=16), nullable=True),
     sa.Column('is_active', sa.Boolean(), nullable=False),
     sa.Column('is_staff', sa.Boolean(), nullable=False),
-    sa.Column('must_change_password', sa.Boolean(), nullable=False),
-    sa.Column('mfa_enforced', sa.Boolean(), nullable=False),
-    sa.Column('failed_attempts', sa.Integer(), nullable=False),
-    sa.Column('locked_until', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('password_changed_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('last_login_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),

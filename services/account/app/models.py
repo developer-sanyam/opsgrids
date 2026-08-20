@@ -207,8 +207,11 @@ class User(Base):
     Email is unique across the entire platform; everything organization-specific lives on
     `Membership`.
 
-    `password_hash` is nullable: an account that only ever signs in through an identity
-    provider has no password, and forcing one on it is how a shadow credential appears.
+    Deliberately holds **no credentials**. Passwords, lockout state, MFA factors and
+    sessions belong to auth-service: this service is the directory — who exists and where
+    they belong — and authentication is a different job with a different blast radius.
+    A password hash living in the directory is one careless serialiser away from an API
+    response.
     """
 
     __tablename__ = "users"
@@ -219,7 +222,6 @@ class User(Base):
     email: Mapped[str] = mapped_column(CITEXT, nullable=False)
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     full_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    password_hash: Mapped[str | None] = mapped_column(String(255))
     avatar_file_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     timezone: Mapped[str | None] = mapped_column(String(64))
     locale: Mapped[str | None] = mapped_column(String(16))
@@ -228,12 +230,6 @@ class User(Base):
     #: Atmora staff. Never grants access to a customer's data on its own — the operator
     #: console checks this *and* audits every action taken through it.
     is_staff: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    mfa_enforced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-
-    failed_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     created_at: Mapped[datetime] = mapped_column(
