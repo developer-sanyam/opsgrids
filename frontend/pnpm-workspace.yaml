@@ -1,0 +1,19 @@
+packages:
+  # Shared packages every app consumes. Real packages with their own tests, not folders
+  # of shared files — an app may not fork a component into itself (ADR-0001).
+  - "atmora-config"
+  - "atmora-ui"
+  - "atmora-client"
+
+  # One application per surface.
+  - "atmora-website"
+  - "atmora-dashboard"
+  - "atmora-admin"
+  - "atmora-internal"
+
+  # One application per product. A customer who bought only CRM downloads only CRM.
+  - "product-*"
+
+# esbuild ships a platform binary its postinstall fetches; vitest needs it.
+allowBuilds:
+  esbuild: true

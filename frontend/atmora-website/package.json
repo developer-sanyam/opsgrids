@@ -1,0 +1,29 @@
+{
+  "name": "@atmora/website",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Marketing site — every product, pricing, and the case for the ecosystem.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev": "next dev --port 4300",
+    "build": "next build",
+    "start": "next start --port 4300",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "next": "^16.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@atmora/config": "workspace:*",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
