@@ -1,0 +1,93 @@
+[project]
+name = "atmora"
+version = "0.1.0"
+description = "Atmora Platform — one ecosystem, many products"
+requires-python = ">=3.12"
+dependencies = [
+    "platform-core",
+    # The union of what the *existing* services need. Services are not installed as
+    # packages — each exposes a top-level `app`, so only one may live in an environment.
+    #
+    # A dependency is added here when the service that needs it is built, not before.
+    # Carrying an unused SDK costs install time, image size and CVE surface for a service
+    # that does not exist yet. The ones waiting their turn:
+    #   argon2-cffi   → auth-service (password hashing)
+    #   authlib       → auth-service (OIDC client + provider)
+    #   geoalchemy2   → attendance-service (geo-fence)
+    #   aiosmtplib    → notification-service
+    #   boto3         → document-service
+    #   stripe, razorpay → payment-service
+    "cryptography>=43.0",      # PII envelope encryption; needed by EdDSA signing too
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "pytest-xdist>=3.6",
+    "hypothesis>=6.112",       # property tests for money allocation and rounding
+    "httpx>=0.28",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pre-commit>=4.0",
+]
+
+[tool.uv.workspace]
+# Only shared libraries are installable packages. Each service keeps its own
+# pyproject.toml for its image, but they all expose a top-level `app` package —
+# installing two side by side would make `import app` ambiguous.
+members = ["libs/platform-core"]
+
+[tool.uv.sources]
+platform-core = { workspace = true }
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["**/migrations/versions/*.py"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "C4",       # comprehensions
+    "SIM",      # simplify
+    "ASYNC",    # async correctness
+    "S",        # bandit
+    "T20",      # no print
+    "RUF",
+]
+ignore = [
+    "S101",     # assert is how tests are written
+    "B008",     # FastAPI Depends() in defaults is the framework's idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S105", "S106"]   # hardcoded test credentials are fine
+
+[tool.ruff.lint.isort]
+known-first-party = ["platform_core", "app"]
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["geoalchemy2.*", "razorpay.*", "authlib.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: touches a real database or broker",
+]
