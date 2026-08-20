@@ -1,0 +1,988 @@
+<title>Atmora Platform Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chivo:wght@500;600;700;900&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+:root{
+  --bg:#F4F6F8; --panel:#FFFFFF; --panel-2:#EBEFF3; --sunken:#E3E9EE;
+  --line:#D5DDE4; --line-2:#E6EBF0;
+  --ink:#101720; --ink-2:#31404E; --mut:#5C6C7B; --faint:#8496A5;
+  --accent:#0B6E8F; --accent-2:#0A5771; --accent-wash:#DEEEF4;
+
+  --d-identity:#4C57C4; --d-money:#9A6412; --d-people:#0E7C6B;
+  --d-revenue:#B03A66; --d-work:#7145B8; --d-content:#0C6C93;
+  --d-ops:#5A6675;  --d-integration:#2F7A3F; --d-client:#3D4B59; --d-data:#8A6A3A;
+
+  --ok:#1B6E45; --ok-w:#DFEFE6;
+  --warn:#8A5A00; --warn-w:#F7EDD8;
+  --plan:#66727E; --plan-w:#E7ECF0;
+
+  --r:7px;
+  --sh:0 1px 2px rgba(16,23,32,.05), 0 10px 28px -16px rgba(16,23,32,.25);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0B1017; --panel:#131B24; --panel-2:#1A242E; --sunken:#0E151D;
+    --line:#28343F; --line-2:#1E2933;
+    --ink:#E7ECF1; --ink-2:#C2CDD7; --mut:#93A2AF; --faint:#6C7C8A;
+    --accent:#3FB2D6; --accent-2:#79CDE7; --accent-wash:#0F2E3B;
+
+    --d-identity:#8B93F0; --d-money:#DDAE63; --d-people:#4CC4AE;
+    --d-revenue:#EC85A9; --d-work:#AE8AE8; --d-content:#5AB6DA;
+    --d-ops:#9AA8B6; --d-integration:#6FC181; --d-client:#A9B7C4; --d-data:#D2AC72;
+
+    --ok:#5CC08D; --ok-w:#122A1E;
+    --warn:#D9A652; --warn-w:#2C2413;
+    --plan:#8B97A3; --plan-w:#1C242C;
+
+    --sh:0 1px 2px rgba(0,0,0,.5), 0 10px 28px -16px rgba(0,0,0,.8);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0B1017; --panel:#131B24; --panel-2:#1A242E; --sunken:#0E151D;
+  --line:#28343F; --line-2:#1E2933;
+  --ink:#E7ECF1; --ink-2:#C2CDD7; --mut:#93A2AF; --faint:#6C7C8A;
+  --accent:#3FB2D6; --accent-2:#79CDE7; --accent-wash:#0F2E3B;
+
+  --d-identity:#8B93F0; --d-money:#DDAE63; --d-people:#4CC4AE;
+  --d-revenue:#EC85A9; --d-work:#AE8AE8; --d-content:#5AB6DA;
+  --d-ops:#9AA8B6; --d-integration:#6FC181; --d-client:#A9B7C4; --d-data:#D2AC72;
+
+  --ok:#5CC08D; --ok-w:#122A1E;
+  --warn:#D9A652; --warn-w:#2C2413;
+  --plan:#8B97A3; --plan-w:#1C242C;
+
+  --sh:0 1px 2px rgba(0,0,0,.5), 0 10px 28px -16px rgba(0,0,0,.8);
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--bg);color:var(--ink);
+  font-family:"IBM Plex Sans",ui-sans-serif,system-ui,sans-serif;
+  font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1280px;margin:0 auto;padding:0 22px 90px}
+
+/* ---------- masthead ---------- */
+header.top{padding:40px 0 22px}
+.brandrow{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;justify-content:space-between}
+.mark{
+  font-family:"Chivo",sans-serif;font-weight:900;font-size:13px;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--panel);background:var(--ink);
+  padding:6px 11px;border-radius:4px;display:inline-block
+}
+h1{
+  font-family:"Chivo",sans-serif;font-weight:700;font-size:clamp(1.9rem,4.4vw,2.7rem);
+  line-height:1.05;letter-spacing:-.025em;margin:16px 0 10px;text-wrap:balance
+}
+.sub{color:var(--mut);max-width:66ch;margin:0 0 18px;font-size:1.02rem}
+.stamp{
+  font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--faint);
+  display:flex;gap:6px 18px;flex-wrap:wrap
+}
+.stamp b{color:var(--ink-2);font-weight:500}
+
+/* ---------- status banner ---------- */
+.banner{
+  border:1px solid var(--line);border-left:3px solid var(--warn);
+  background:var(--panel);border-radius:0 var(--r) var(--r) 0;
+  padding:14px 18px;margin:18px 0 26px
+}
+.banner .h{
+  font-family:"JetBrains Mono",monospace;font-size:10.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--warn);font-weight:700;margin-bottom:6px
+}
+.banner p{margin:0;font-size:14px;color:var(--ink-2);max-width:78ch}
+
+/* ---------- tabs ---------- */
+nav.tabs{
+  display:flex;gap:2px;border-bottom:1px solid var(--line);
+  margin-bottom:26px;overflow-x:auto;scrollbar-width:thin
+}
+nav.tabs button{
+  appearance:none;background:none;border:none;cursor:pointer;
+  font-family:"Chivo",sans-serif;font-weight:600;font-size:13.5px;
+  color:var(--mut);padding:11px 15px;white-space:nowrap;
+  border-bottom:2px solid transparent;margin-bottom:-1px;letter-spacing:-.005em
+}
+nav.tabs button:hover{color:var(--ink)}
+nav.tabs button[aria-selected="true"]{color:var(--accent);border-bottom-color:var(--accent)}
+nav.tabs button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:3px}
+nav.tabs .n{font-family:"JetBrains Mono",monospace;font-size:10px;color:var(--faint);margin-right:7px}
+
+.panel[hidden]{display:none}
+section.blk{margin-bottom:42px}
+h2{
+  font-family:"Chivo",sans-serif;font-weight:600;font-size:1.35rem;letter-spacing:-.015em;
+  margin:0 0 6px;text-wrap:balance
+}
+h3{
+  font-family:"Chivo",sans-serif;font-weight:600;font-size:1.02rem;
+  margin:28px 0 9px;letter-spacing:-.008em
+}
+.lede{color:var(--mut);margin:0 0 20px;max-width:74ch;font-size:14.5px}
+p{margin:0 0 13px;max-width:74ch}
+code,.mono{font-family:"JetBrains Mono",monospace;font-size:.86em}
+p code,li code,td code{
+  background:var(--panel-2);border:1px solid var(--line-2);border-radius:3px;
+  padding:.06em .32em;color:var(--ink-2);white-space:nowrap
+}
+strong{font-weight:600;color:var(--ink)}
+ul{max-width:74ch;padding-left:19px;margin:0 0 15px}
+li{margin-bottom:6px}
+
+/* ---------- chips ---------- */
+.chip{
+  font-family:"JetBrains Mono",monospace;font-size:9.5px;letter-spacing:.07em;
+  text-transform:uppercase;font-weight:700;padding:2px 7px;border-radius:3px;
+  white-space:nowrap;display:inline-block;vertical-align:1px
+}
+.chip.built{color:var(--ok);background:var(--ok-w)}
+.chip.scaffold{color:var(--warn);background:var(--warn-w)}
+.chip.planned{color:var(--plan);background:var(--plan-w)}
+
+/* ---------- stat strip ---------- */
+.stats{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:1px;
+  background:var(--line);border:1px solid var(--line);border-radius:var(--r);
+  overflow:hidden;margin-bottom:26px
+}
+.stat{background:var(--panel);padding:13px 15px}
+.stat .n{
+  font-family:"Chivo",sans-serif;font-size:1.55rem;font-weight:700;line-height:1;
+  letter-spacing:-.02em;font-variant-numeric:tabular-nums;display:block;margin-bottom:4px
+}
+.stat .k{
+  font-family:"JetBrains Mono",monospace;font-size:9.5px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--faint)
+}
+
+/* ---------- topology ---------- */
+.tier{margin-bottom:14px}
+.tier-h{
+  font-family:"JetBrains Mono",monospace;font-size:10px;letter-spacing:.13em;
+  text-transform:uppercase;color:var(--faint);margin:0 0 8px;
+  display:flex;align-items:center;gap:10px
+}
+.tier-h::after{content:"";flex:1;height:1px;background:var(--line)}
+.groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(232px,1fr));gap:12px}
+.group{
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+  padding:12px 13px;border-top:3px solid var(--gc,var(--line))
+}
+.group h4{
+  font-family:"Chivo",sans-serif;font-size:12.5px;font-weight:700;margin:0 0 3px;
+  letter-spacing:.01em;color:var(--gc,var(--ink))
+}
+.group .gd{
+  font-family:"JetBrains Mono",monospace;font-size:9.5px;color:var(--faint);
+  margin-bottom:9px;line-height:1.5
+}
+.nodes{display:flex;flex-wrap:wrap;gap:5px}
+button.node{
+  appearance:none;cursor:pointer;text-align:left;
+  font-family:"JetBrains Mono",monospace;font-size:11px;font-weight:500;
+  background:var(--panel-2);border:1px solid var(--line-2);color:var(--ink-2);
+  border-radius:4px;padding:4px 8px;display:inline-flex;align-items:center;gap:6px;
+  transition:border-color .12s,color .12s,background .12s
+}
+button.node:hover{border-color:var(--gc,var(--accent));color:var(--ink)}
+button.node:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button.node .dot{width:5px;height:5px;border-radius:50%;background:var(--gc,var(--mut));flex:none}
+button.node.is-lit{
+  background:var(--accent-wash);border-color:var(--accent);color:var(--ink);
+  box-shadow:0 0 0 2px var(--accent-wash)
+}
+button.node.dim{opacity:.32}
+
+/* ---------- detail drawer ---------- */
+.drawer{
+  position:sticky;bottom:0;z-index:20;margin-top:16px;
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+  box-shadow:var(--sh);padding:15px 18px
+}
+.drawer[hidden]{display:none}
+.drawer .dh{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.drawer .dn{font-family:"JetBrains Mono",monospace;font-size:14px;font-weight:700;color:var(--ink)}
+.drawer .dg{
+  font-family:"JetBrains Mono",monospace;font-size:10px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--gc,var(--mut))
+}
+.drawer p{font-size:14px;margin:0 0 10px;color:var(--ink-2);max-width:74ch}
+.dmeta{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px 20px;
+  font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--faint);
+  border-top:1px solid var(--line-2);padding-top:10px
+}
+.dmeta b{color:var(--ink-2);font-weight:500;display:block;font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;margin-bottom:2px}
+.dclose{
+  position:absolute;top:10px;right:12px;appearance:none;background:none;border:none;
+  color:var(--faint);cursor:pointer;font-size:17px;line-height:1;padding:4px
+}
+.dclose:hover{color:var(--ink)}
+
+/* ---------- tables ---------- */
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r);background:var(--panel);margin:0 0 18px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{text-align:left;padding:8px 13px;border-bottom:1px solid var(--line-2);vertical-align:top}
+th{
+  font-family:"JetBrains Mono",monospace;font-size:9.5px;font-weight:700;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--mut);background:var(--panel-2);white-space:nowrap;
+  border-bottom:1px solid var(--line);position:sticky;top:0
+}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--panel-2)}
+td.mono{font-family:"JetBrains Mono",monospace;font-size:11.5px;white-space:nowrap}
+td.num{font-variant-numeric:tabular-nums;text-align:right}
+
+/* ---------- search / filter ---------- */
+.tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+.tools input[type="search"]{
+  flex:1;min-width:200px;font-family:"IBM Plex Sans",sans-serif;font-size:13.5px;
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+  padding:8px 11px;color:var(--ink)
+}
+.tools input[type="search"]:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
+.pill{
+  appearance:none;cursor:pointer;font-family:"JetBrains Mono",monospace;font-size:10.5px;
+  letter-spacing:.05em;text-transform:uppercase;font-weight:500;
+  background:var(--panel);border:1px solid var(--line);color:var(--mut);
+  border-radius:20px;padding:5px 11px
+}
+.pill:hover{color:var(--ink);border-color:var(--mut)}
+.pill[aria-pressed="true"]{background:var(--ink);color:var(--panel);border-color:var(--ink)}
+.pill:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.count{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--faint);margin-left:auto}
+
+/* ---------- flows ---------- */
+.flowpick{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:18px}
+.steps{list-style:none;padding:0;margin:0;counter-reset:s;max-width:none}
+.steps li{
+  counter-increment:s;position:relative;padding:0 0 15px 44px;margin:0;
+  border-left:1px solid var(--line);margin-left:14px
+}
+.steps li:last-child{border-left-color:transparent;padding-bottom:0}
+.steps li::before{
+  content:counter(s);position:absolute;left:-14px;top:-2px;width:27px;height:27px;
+  border-radius:50%;background:var(--panel);border:1px solid var(--line);
+  font-family:"JetBrains Mono",monospace;font-size:11px;font-weight:700;color:var(--accent);
+  display:grid;place-items:center
+}
+.steps .sn{
+  font-family:"JetBrains Mono",monospace;font-size:12.5px;font-weight:700;color:var(--ink);
+  display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap
+}
+.steps .st{display:block;font-size:13.5px;color:var(--mut);margin-top:2px;max-width:74ch}
+.kind{
+  font-family:"JetBrains Mono",monospace;font-size:9px;letter-spacing:.07em;text-transform:uppercase;
+  font-weight:700;padding:1px 6px;border-radius:3px
+}
+.kind.sync{color:var(--accent);background:var(--accent-wash)}
+.kind.async{color:var(--d-integration);background:var(--ok-w)}
+.kind.in{color:var(--d-money);background:var(--warn-w)}
+
+/* ---------- legend ---------- */
+.legend{
+  display:flex;flex-wrap:wrap;gap:6px 18px;font-family:"JetBrains Mono",monospace;
+  font-size:10.5px;color:var(--faint);margin-bottom:18px;align-items:center
+}
+.legend .sw{display:inline-flex;align-items:center;gap:6px}
+.legend .sw i{width:9px;height:9px;border-radius:2px;display:inline-block}
+
+.note{
+  border-left:3px solid var(--accent);background:var(--accent-wash);
+  border-radius:0 var(--r) var(--r) 0;padding:12px 16px;margin:0 0 18px
+}
+.note p{margin:0;font-size:13.8px;color:var(--ink-2);max-width:72ch}
+.note p+p{margin-top:8px}
+.note .t{
+  font-family:"JetBrains Mono",monospace;font-size:9.5px;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--accent-2);font-weight:700;display:block;margin-bottom:4px
+}
+
+pre.tree{
+  font-family:"JetBrains Mono",monospace;font-size:11.5px;line-height:1.65;
+  background:var(--sunken);border:1px solid var(--line);border-radius:var(--r);
+  padding:14px 16px;overflow-x:auto;color:var(--ink-2);margin:0 0 18px
+}
+
+footer{
+  border-top:1px solid var(--line);padding-top:18px;margin-top:30px;
+  font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--faint)
+}
+footer p{max-width:80ch;margin:0 0 5px}
+
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<div class="wrap">
+
+<header class="top">
+  <div class="brandrow">
+    <span class="mark">Atmora</span>
+    <div class="stamp">
+      <span><b>Snapshot</b> 20 Aug 2026</span>
+      <span><b>Source</b> plan + committed code</span>
+    </div>
+  </div>
+  <h1>Atmora Platform Map</h1>
+  <p class="sub">
+    One organization, one account, one user directory — and every product activated on top of
+    it. Thirty-four Python microservices behind two gateways, one PostgreSQL cluster with a
+    schema per service, and a domain-event backbone. Click any service for detail, or trace a
+    journey end to end.
+  </p>
+
+  <div class="banner">
+    <div class="h">Read this first — this is a target architecture</div>
+    <p>
+      Almost none of this is built yet. <strong>One shared library is written and tested</strong>;
+      <strong>one service exists as a generated skeleton</strong>; the remaining thirty-three are
+      designed and scheduled, not implemented. Every node below carries its real status, and the
+      phase it is scheduled for. Treat green as fact and grey as intent — when in doubt, the
+      repository wins.
+    </p>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><span class="n" style="color:var(--ok)">1</span><span class="k">Built</span></div>
+    <div class="stat"><span class="n" style="color:var(--warn)">1</span><span class="k">Scaffolded</span></div>
+    <div class="stat"><span class="n" style="color:var(--plan)">33</span><span class="k">Planned</span></div>
+    <div class="stat"><span class="n">2</span><span class="k">Gateways</span></div>
+    <div class="stat"><span class="n">9</span><span class="k">Products</span></div>
+    <div class="stat"><span class="n">9</span><span class="k">Phases</span></div>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist" aria-label="Sections">
+  <button role="tab" aria-selected="true"  data-tab="overview"><span class="n">01</span>System map</button>
+  <button role="tab" aria-selected="false" data-tab="catalog"><span class="n">02</span>Service catalog</button>
+  <button role="tab" aria-selected="false" data-tab="flows"><span class="n">03</span>Request flows</button>
+  <button role="tab" aria-selected="false" data-tab="data"><span class="n">04</span>Data &amp; events</button>
+  <button role="tab" aria-selected="false" data-tab="products"><span class="n">05</span>Products</button>
+  <button role="tab" aria-selected="false" data-tab="platform"><span class="n">06</span>Cross-cutting</button>
+</nav>
+
+<!-- ═══════════════════════════ 01 SYSTEM MAP ═══════════════════════════ -->
+<div class="panel" id="p-overview">
+  <section class="blk">
+    <h2>The whole system, one screen</h2>
+    <p class="lede">
+      Clients reach one of two gateways. The gateway verifies the token once, resolves the
+      organization, injects tenant context, and refuses anything the organization has not
+      activated. Everything below it owns its own schema and talks over REST and events.
+    </p>
+    <div class="legend" id="legend"></div>
+    <div id="topology"></div>
+    <div class="drawer" id="drawer" hidden>
+      <button class="dclose" id="dclose" aria-label="Close detail">✕</button>
+      <div class="dh"><span class="dn" id="d-name"></span><span class="dg" id="d-group"></span><span id="d-status"></span></div>
+      <p id="d-role"></p>
+      <div class="dmeta" id="d-meta"></div>
+    </div>
+  </section>
+
+  <section class="blk">
+    <h3>Why two gateways</h3>
+    <p>
+      <code>app-gateway</code> is a backend-for-frontend: it shapes payloads per screen and is
+      allowed to be chatty downstream. <code>admin-gateway</code> fronts internal, operator and
+      partner APIs. Splitting them keeps consumer latency work and operator breadth from trading
+      off against each other — and keeps the super-admin surface from ever being one routing
+      mistake away from public.
+    </p>
+    <div class="note">
+      <span class="t">The tenancy rule</span>
+      <p>
+        Organization-scoped rows in a shared schema: <code>organization_id</code> on every table,
+        every query filtered — <em>and</em> PostgreSQL row-level security underneath. The filter
+        is the design; RLS is the net, because "isolation is a query concern" otherwise depends on
+        every developer remembering, forever.
+      </p>
+      <p>
+        The trap that follows: outbox relays and fan-out consumers legitimately span every
+        organization. They run as a <code>BYPASSRLS</code> role. Run one as the app role without
+        setting the tenant GUC per message and event processing stops <em>silently</em> — nothing
+        errors, the outbox just fills.
+      </p>
+    </div>
+  </section>
+</div>
+
+<!-- ═══════════════════════════ 02 CATALOG ═══════════════════════════ -->
+<div class="panel" id="p-catalog" hidden>
+  <section class="blk">
+    <h2>Service catalog</h2>
+    <p class="lede">
+      Every client, gateway, service and integration. Filter by layer or status, or search by
+      name, role or domain.
+    </p>
+    <div class="tools">
+      <input type="search" id="q" placeholder="Search name, role, domain, stack…" aria-label="Search the catalog">
+      <button class="pill" data-filter="layer" data-value="all" aria-pressed="true">All layers</button>
+      <button class="pill" data-filter="layer" data-value="client" aria-pressed="false">Clients</button>
+      <button class="pill" data-filter="layer" data-value="edge" aria-pressed="false">Edge</button>
+      <button class="pill" data-filter="layer" data-value="service" aria-pressed="false">Services</button>
+      <button class="pill" data-filter="layer" data-value="integration" aria-pressed="false">Integrations</button>
+      <button class="pill" data-filter="status" data-value="built" aria-pressed="false">Built only</button>
+      <span class="count" id="count"></span>
+    </div>
+    <div class="tw"><table>
+      <thead><tr>
+        <th>Component</th><th>Domain</th><th>Responsibility</th><th>Owns / stack</th><th>Status</th><th>Path</th>
+      </tr></thead>
+      <tbody id="catalog"></tbody>
+    </table></div>
+  </section>
+</div>
+
+<!-- ═══════════════════════════ 03 FLOWS ═══════════════════════════ -->
+<div class="panel" id="p-flows" hidden>
+  <section class="blk">
+    <h2>Request flows</h2>
+    <p class="lede">
+      Four journeys that touch most of the platform. Each step names the component and whether
+      the hop is synchronous, an emitted event, or inbound from outside. Steps light up on the
+      system map too.
+    </p>
+    <div class="flowpick" id="flowpick"></div>
+    <div id="flowsteps"></div>
+  </section>
+</div>
+
+<!-- ═══════════════════════════ 04 DATA ═══════════════════════════ -->
+<div class="panel" id="p-data" hidden>
+  <section class="blk">
+    <h2>Data stores</h2>
+    <p class="lede">
+      One PostgreSQL cluster with a schema per service, plus specialist stores where a relational
+      table is the wrong tool.
+    </p>
+    <div class="tw"><table>
+      <thead><tr><th>Store</th><th>Role</th><th>Detail</th><th>Used by</th></tr></thead>
+      <tbody id="stores"></tbody>
+    </table></div>
+
+    <h3>Event topics</h3>
+    <p class="lede">
+      Routing key is <code>&lt;product&gt;.&lt;aggregate&gt;.&lt;verb&gt;</code> on one durable
+      topic exchange, <code>atmora.events</code>. Publishing goes through a transactional outbox,
+      so an event and the state change it describes commit together or not at all.
+    </p>
+    <div class="tw"><table>
+      <thead><tr><th>Topic</th><th>Producer</th><th>Consumers</th><th>Purpose</th></tr></thead>
+      <tbody id="topics"></tbody>
+    </table></div>
+
+    <div class="note">
+      <span class="t">Delivery guarantees</span>
+      <p>
+        At-least-once. Every consumer checks a <code>processed_events</code> ledger before acting
+        and marks the id in the same transaction as its side effects — a redelivered event that
+        increments a counter twice produces a number nobody can explain later.
+      </p>
+      <p>
+        Every projection also has a scheduled reconciler. The outbox guarantees at-least-once,
+        not eventually-correct-after-a-dead-letter, and a DLQ nobody watches is data loss with
+        extra steps.
+      </p>
+    </div>
+  </section>
+</div>
+
+<!-- ═══════════════════════════ 05 PRODUCTS ═══════════════════════════ -->
+<div class="panel" id="p-products" hidden>
+  <section class="blk">
+    <h2>Products</h2>
+    <p class="lede">
+      Each is independently activatable. Activating one never means a new account, a second user
+      directory, or re-uploading people — it flips an entitlement on an organization that already
+      exists.
+    </p>
+    <div class="tw"><table>
+      <thead><tr><th>Product</th><th>Services</th><th>What a customer gets</th><th>Status</th></tr></thead>
+      <tbody id="products"></tbody>
+    </table></div>
+
+    <h3>Adding product N</h3>
+    <p class="lede">
+      The checklist this architecture exists to make true. If any step needs a change to the core,
+      the core is wrong.
+    </p>
+    <ol style="max-width:74ch;padding-left:19px">
+      <li>Reserve a product key; insert a row in <code>product-service</code>.</li>
+      <li>Claim URL prefixes in the gateway route registry — config-driven, never a code edit.</li>
+      <li>Publish a permission manifest; <code>account-service</code> registers it.</li>
+      <li>Ship role templates the platform instantiates per organization.</li>
+      <li>Declare plan features and usage metrics to <code>catalog-service</code>.</li>
+      <li>Declare the event catalogue as JSON Schema in <code>libs/contracts</code>.</li>
+      <li>Declare projections and register their reconcilers.</li>
+      <li>Register notification templates and file scopes.</li>
+      <li>Emit audit through the shared mixin — never a bespoke log table.</li>
+      <li>Publish OpenAPI into the docs hub.</li>
+      <li>Implement lifecycle consumers: access granted and revoked, membership revoked, org suspended.</li>
+      <li>State the data contract on revocation and deletion.</li>
+      <li>Meet the test bar: negative-authz per endpoint, idempotency per consumer, drift per projection, contract per event.</li>
+      <li>Add it to the marketplace.</li>
+    </ol>
+  </section>
+</div>
+
+<!-- ═══════════════════════════ 06 CROSS-CUTTING ═══════════════════════════ -->
+<div class="panel" id="p-platform" hidden>
+  <section class="blk">
+    <h2>Cross-cutting</h2>
+    <p class="lede">The concerns every service shares, and how the whole thing ships.</p>
+
+    <h3>Identity and tokens</h3>
+    <p>
+      <code>auth-service</code> holds the <strong>only</strong> private signing key; everything
+      else verifies through JWKS. EdDSA with a <code>kid</code>, two keys live at all times,
+      rotation is publish-then-switch. A product can verify a token and cannot forge one.
+    </p>
+    <p>
+      Tokens are <strong>per audience</strong> and carry no permission list. Five products at
+      roughly forty permissions each is 5–6 KB of header once encoded — past common proxy limits,
+      where it is truncated and surfaces as a silent 500. The gateway resolves permissions per
+      request against a cache keyed by the <code>pv</code> claim, so a revoked grant takes effect
+      on the next request rather than when the token expires.
+    </p>
+    <p>
+      Headers injected downstream: <code>X-Org-Id</code>, <code>X-User-Id</code>,
+      <code>X-Membership-Id</code>, <code>X-Perms</code>, <code>X-Entitlements</code>,
+      <code>X-Correlation-ID</code>, <code>X-Internal-Token</code>. A service trusts them only
+      when the internal token matches.
+    </p>
+
+    <h3>Permissions</h3>
+    <p>
+      Four levels: <code>product.module.resource.action:SCOPE</code>. Stored normalised with
+      <strong>actions as data rows</strong>, so a new verb needs no schema change. Scopes are
+      <code>OWN &lt; TEAM &lt; LOCATION &lt; ORG</code>, and how each rung becomes a query filter
+      is registered per product — CRM's natural narrowing is territory, HR's is the reporting
+      line, and forcing one reading on both is the decision most likely to be regretted.
+    </p>
+
+    <h3>Observability</h3>
+    <p>
+      Structured logs with a correlation id minted at the edge and threaded through every log line
+      and every event envelope, so one request crossing five services is one searchable thing.
+      Audit is a shared mixin written inside the transaction it describes — including
+      <em>reads</em> of sensitive data, because unmasking PII is an auditable event in its own
+      right.
+    </p>
+
+    <h3>Deployment</h3>
+    <p>
+      Kubernetes with Helm and kustomize, per-customer overlays for enterprise, horizontal
+      autoscaling. Each service ships three entrypoints — <code>bin/api</code>,
+      <code>bin/worker</code>, <code>bin/cron</code> — so a slow consumer can never block an API
+      request. CI lints, typechecks and tests <em>one service per process</em>, because each
+      exposes a top-level <code>app</code> and two cannot share an interpreter.
+    </p>
+
+    <h3>Repository</h3>
+    <pre class="tree">atmora/
+├── services/        34 services, each owning one Postgres schema
+│   └── &lt;name&gt;/       app/{api,models,schemas,selectors,services,consumers,relay}
+│                     migrations/  tests/  bin/{api,worker,cron}  Dockerfile
+├── libs/
+│   ├── platform-core   app factory · auth · db+RLS · outbox · audit · money
+│   ├── contracts       JSON Schema for every event and API (Pydantic + Zod)
+│   ├── api-clients     typed inter-service clients
+│   ├── api-docs        central OpenAPI hub
+│   └── api-tests       cross-service contract tests
+├── frontend/        product shell · admin console · operator console
+├── mobile/          Android · iOS
+├── integrations/    per-partner and per-customer integration services
+├── infrastructure/  Helm charts, kustomize overlays
+└── tools/           dev-bootstrap · new_service.py · seeds</pre>
+
+    <h3>Build order</h3>
+    <div class="tw"><table>
+      <thead><tr><th class="num">Phase</th><th>Delivers</th><th>Demonstrable when</th></tr></thead>
+      <tbody id="phases"></tbody>
+    </table></div>
+  </section>
+</div>
+
+<footer>
+  <p>Assembled from the approved architecture plan and the committed code at
+    <span class="mono">Documents/salasarauction/atmora</span>. Status per node reflects the
+    repository, not intent.</p>
+  <p>Counts are of designed components, not shipped ones. One library is built and tested; one
+    service is a generated skeleton. Everything else is a plan — which is exactly what this map
+    is for.</p>
+</footer>
+
+</div>
+
+<script>
+"use strict";
+
+/* ── domain palette ───────────────────────────────────────────────────────── */
+const GROUPS = {
+  "Clients":        {v:"--d-client",      d:"What people actually open"},
+  "Edge":           {v:"--accent",        d:"Verify once, resolve org, inject tenant"},
+  "Identity & Org": {v:"--d-identity",    d:"Who, which company, which product"},
+  "Money":          {v:"--d-money",       d:"Plans, usage, invoices, payment"},
+  "People":         {v:"--d-people",      d:"HRMS — the employment record"},
+  "Revenue":        {v:"--d-revenue",     d:"CRM — customers and pipeline"},
+  "Work":           {v:"--d-work",        d:"PulseBoard — delivery and time"},
+  "Content & Comms":{v:"--d-content",     d:"Files, search, messages, realtime"},
+  "Platform & Ops": {v:"--d-ops",         d:"What every product shares"},
+  "Integrations":   {v:"--d-integration", d:"The outside world"},
+};
+const cvar = g => `var(${(GROUPS[g]||{}).v || "--mut"})`;
+
+/* ── every node ───────────────────────────────────────────────────────────── */
+const N = (id,layer,group,role,stack,owns,status,phase,path,comms) =>
+  ({id,layer,group,role,stack,owns,status,phase,path,comms});
+
+const NODES = [
+  /* clients */
+  N("product-shell","client","Clients","Ecosystem dashboard and every product UI in one shell","React 19 · Vite · TS","—","planned",9,"frontend/product-shell","REST → app-gateway"),
+  N("admin-console","client","Clients","Customer's own administration — users, teams, roles, subscriptions, usage","React 19 · Vite","—","planned",9,"frontend/admin-console","REST → app-gateway"),
+  N("operator-console","client","Clients","Atmora staff: every organization, plan overrides, impersonation, revenue","React 19 · Vite","—","planned",9,"frontend/operator-console","REST → admin-gateway"),
+  N("pulseboard-web","client","Clients","Existing PulseBoard UI, repointed at the platform","Next.js 15 · React 19","—","planned",6,"frontend/pulseboard-web","OIDC + REST → app-gateway"),
+  N("mobile-app","client","Clients","Punch, approvals, standups on the phone","React Native","—","planned",9,"mobile/","REST → app-gateway"),
+  N("atmora-tech","client","Clients","Public marketing site and storefront — already live","Next.js 16 · static","—","built",0,"(separate repo)","—"),
+
+  /* edge */
+  N("app-gateway","edge","Edge","Backend-for-frontend. Verifies the JWT once, resolves the org, shapes per-screen payloads, refuses un-entitled products with 402","FastAPI · Redis","no tables","planned",2,"services/app-gateway","REST → every service"),
+  N("admin-gateway","edge","Edge","Internal, operator and partner APIs. Same verification, different audience and much wider surface","FastAPI · Redis","no tables","planned",2,"services/admin-gateway","REST → every service"),
+
+  /* identity & org */
+  N("auth-service","service","Identity & Org","Token issuance and the only private signing key. Sessions, password, OTP, MFA, SSO over OIDC and SAML, per-audience token exchange","FastAPI","sessions · credentials · MFA factors · IdP config","planned",2,"services/auth","JWKS · REST"),
+  N("account-service","service","Identity & Org","Organizations, org units, locations, users, memberships, roles, permissions, invitations, domains","FastAPI","organizations · memberships · roles · permissions","scaffold",2,"services/account","REST · events"),
+  N("product-service","service","Identity & Org","Product registry, per-org activation, entitlements, the marketplace and feature flags","FastAPI","products · activations · entitlements","planned",3,"services/product","REST · events"),
+  N("config-service","service","Identity & Org","Central runtime configuration and credential hub — per-org settings, integration secrets, toggles","FastAPI","org settings · secrets","planned",3,"services/config","REST"),
+
+  /* money */
+  N("catalog-service","service","Money","Plans, immutable plan versions, prices, add-ons, coupons, bundle rules","FastAPI","plans · plan_versions · prices","planned",8,"services/catalog","REST · events"),
+  N("subscription-service","service","Money","One subscription per organization per product; items, trials, schedules, overrides","FastAPI","subscriptions · items · overrides","planned",8,"services/subscription","REST · events"),
+  N("metering-service","service","Money","Append-only usage events, counters, daily rollups, quotas and period watermarks","FastAPI","usage_events · counters","planned",8,"services/metering","events"),
+  N("billing-service","service","Money","Rating engine, invoices, credit notes, the credit ledger, Indian GST and export under LUT, dunning","FastAPI","invoices · credit_ledger · tax_rates","planned",8,"services/billing","REST · events"),
+  N("payment-service","service","Money","Stripe and Razorpay behind one interface: mandates, webhooks, refunds, reconciliation","FastAPI","payments · mandates · webhooks","planned",8,"services/payment","REST · webhooks"),
+
+  /* people */
+  N("employee-service","service","People","Employee master, documents, onboarding and offboarding — the employment record","FastAPI","employees · documents · onboarding","planned",5,"services/employee","REST · events"),
+  N("attendance-service","service","People","Punches, PostGIS geo-fence, shifts and roster, attendance derivation, biometric ingest","FastAPI · PostGIS","punches · attendance_days · shifts","planned",5,"services/attendance","REST · events"),
+  N("leave-service","service","People","Types, policies, an append-only balance ledger, multi-level approval, holidays","FastAPI","leave_transactions · requests","planned",5,"services/leave","REST · events"),
+  N("payroll-service","service","People","Salary structures, statutory rules versioned by effective date, runs and payslips","FastAPI","structures · payslips · statutory_rules","planned",5,"services/payroll","REST · events"),
+  N("recruit-service","service","People","Requisitions, candidates, interviews, offers, and the handoff into onboarding","FastAPI","requisitions · candidates","planned",5,"services/recruit","REST · events"),
+
+  /* revenue */
+  N("customer-service","service","Revenue","System of record for customers, contacts and addresses — for every product","FastAPI","customers · contacts","planned",7,"services/customer","REST · events"),
+  N("sales-service","service","Revenue","Leads, opportunities, pipelines, stages, activities","FastAPI","leads · opportunities · pipelines","planned",7,"services/sales","REST · events"),
+  N("marketing-service","service","Revenue","Campaigns, channels, goals, attribution","FastAPI","campaigns · goals · metrics","planned",7,"services/marketing","REST · events"),
+  N("support-service","service","Revenue","Tickets, SLAs, the customer helpdesk","FastAPI","tickets · sla","planned",7,"services/support","REST · events"),
+
+  /* work */
+  N("project-service","service","Work","Projects, work items, boards, workflows","FastAPI","projects · work_items · workflows","planned",6,"services/project","REST · events"),
+  N("timesheet-service","service","Work","Time entries, cost and margin, utilisation","FastAPI","time_entries","planned",6,"services/timesheet","REST · events"),
+  N("standup-service","service","Work","Daily updates, digests, discussions","FastAPI","updates · digests","planned",6,"services/standup","REST · events"),
+  N("quotation-service","service","Work","Quotations and the customer's own GST invoices — distinct from platform billing","FastAPI","quotations · client_invoices","planned",6,"services/quotation","REST · events"),
+
+  /* content & comms */
+  N("document-service","service","Content & Comms","Presigned upload and download against object storage; bytes never transit the API","FastAPI · S3","stored_objects","planned",4,"services/document","REST"),
+  N("search-service","service","Content & Comms","Cross-product search over projections","FastAPI · OpenSearch","indices","planned",9,"services/search","REST · events"),
+  N("notification-service","service","Content & Comms","Email, SMS, push, WhatsApp and in-app, templated, with a retrying outbox","FastAPI","notifications · email_outbox","planned",4,"services/notification","events · SMTP"),
+  N("realtime-service","service","Content & Comms","WebSocket and SSE for live updates","FastAPI","—","planned",9,"services/realtime","WebSocket"),
+
+  /* platform & ops */
+  N("workflow-service","service","Platform & Ops","Cross-product automation: when an employee joins, when a department changes, when someone leaves","FastAPI","rules · runs","planned",9,"services/workflow","events"),
+  N("scheduler-service","service","Platform & Ops","Cron and background jobs for every product","FastAPI","schedules · runs","planned",4,"services/scheduler","events"),
+  N("bulk-service","service","Platform & Ops","Imports and exports at volume","FastAPI","jobs","planned",9,"services/bulk","REST · events"),
+  N("analytics-service","service","Platform & Ops","Metrics, dashboards and reporting aggregation, fed by events","FastAPI","metric_snapshots","planned",9,"services/analytics","events"),
+  N("audit-service","service","Platform & Ops","The centralised trail — who did what, across every product","FastAPI","audit_logs","planned",4,"services/audit","events"),
+  N("integration-service","service","Platform & Ops","Third-party connectors and outbound webhooks","FastAPI","connectors · deliveries","planned",9,"services/integration","REST · webhooks"),
+  N("eventbridge","service","Platform & Ops","Signed webhook delivery to clients that cannot hold an AMQP connection — a serverless frontend, a partner","FastAPI","deliveries · dlq","planned",6,"services/eventbridge","events → webhooks"),
+  N("admin-service","service","Platform & Ops","Operator actions: plan overrides, credits, trials, suspension, impersonation — every one audited","FastAPI","overrides · approvals","planned",9,"services/admin","REST · events"),
+
+  /* integrations */
+  N("sso-connectors","integration","Integrations","Customer identity providers over OIDC and SAML","authlib · pysaml2","—","planned",2,"integrations/sso","OIDC · SAML"),
+  N("payment-gateways","integration","Integrations","Stripe for international, Razorpay for domestic — routed by organization country","SDKs","—","planned",8,"integrations/payments","REST · webhooks"),
+  N("messaging-providers","integration","Integrations","SMTP, SMS and WhatsApp delivery","SDKs","—","planned",4,"integrations/messaging","REST"),
+  N("biometric-bridge","integration","Integrations","On-premise attendance devices pushing punches in batches","agent","—","planned",5,"integrations/biometric","REST + service token"),
+  N("partner-webhooks","integration","Integrations","Outbound events to customer systems, signed and replay-safe","FastAPI","—","planned",9,"integrations/partner","webhooks"),
+];
+
+const LIB = [
+  {id:"platform-core", role:"App factory, auth and scope, tenant sessions with RLS, transactional outbox, audit, pagination, money", status:"built"},
+  {id:"contracts",     role:"JSON Schema for every event and API, generating Pydantic and Zod", status:"planned"},
+  {id:"api-clients",   role:"Typed inter-service clients so no service hand-rolls HTTP", status:"planned"},
+  {id:"api-docs",      role:"Central OpenAPI hub", status:"planned"},
+  {id:"api-tests",     role:"Cross-service contract tests", status:"planned"},
+];
+
+const STORES = [
+  ["PostgreSQL 16 + PostGIS","Relational · schema per service","Primary store. Every table carries organization_id; row-level security enforces it. PostGIS backs the attendance geo-fence.","every service"],
+  ["Redis","Cache · sessions · locks · rate limit","Token and session validation, entitlement snapshots written before a mutation returns, fixed-window rate limiting, distributed locks. Cache degrades to the database; locks fail hard.","gateways · auth · product"],
+  ["RabbitMQ","Async messaging","Durable topic exchange atmora.events. Relays publish from each service's outbox; consumers run as separate worker processes.","every service"],
+  ["MinIO / S3","Object storage","Documents, payslips, resumes and exports. Clients PUT directly against a presigned URL — bytes never transit the API.","document-service"],
+  ["OpenSearch","Full-text search","Cross-product search over projections rather than over other services' tables.","search-service"],
+  ["ClickHouse","Columnar analytics","Usage rollups and dashboards once metering volume justifies it. Deliberately deferred.","metering · analytics"],
+];
+
+const TOPICS = [
+  ["core.org.created / updated / suspended","account-service","every service","Organization lifecycle; drives each service's org projection"],
+  ["core.user.created / updated / deactivated","account-service","every product","The shared user directory"],
+  ["core.membership.created / revoked","account-service","every product","Someone joined or left an organization"],
+  ["core.product_access.granted / revoked","product-service","the product named","Provisioning and deprovisioning per product"],
+  ["core.grants.changed","account-service","gateways","Bumps the permission version so a revocation lands on the next request"],
+  ["hr.employee.activated / exited","employee-service","leave · attendance · account · analytics","The provisioning and offboarding cascade"],
+  ["hr.employee.department_changed","employee-service","account · project","Carries both old and new so consumers diff without a lookup"],
+  ["attendance.day_finalised","attendance-service","payroll · analytics · leave","A derived day changed status"],
+  ["leave.approved / cancelled","leave-service","attendance · notification","Approved leave re-derives attendance"],
+  ["crm.customer.created / updated","customer-service","project · quotation · marketing","The shared customer record"],
+  ["billing.subscription.changed","subscription-service","every service · gateways","Entitlements moved; snapshots refresh"],
+  ["billing.invoice.finalized / paid","billing-service","notification · analytics","An invoice was issued or settled"],
+  ["usage.recorded","every product","metering-service","The metering feed — emitted from phase 3, billed from phase 8"],
+  ["payment.succeeded / failed","payment-service","billing · notification","Money moved, or did not"],
+];
+
+const PRODUCTS = [
+  ["HRMS","employee · attendance · leave · payroll · recruit","Employee records, geo-fenced and biometric attendance, leave with an auditable ledger, payroll, recruitment","planned",5],
+  ["CRM","customer · sales","Customers and contacts as the system of record, plus leads, pipeline and activities","planned",7],
+  ["PulseBoard","project · timesheet · standup · quotation","Delivery work, time and cost, daily updates, quotations and client invoicing","planned",6],
+  ["Marketing","marketing","Campaigns, channels, goals and attribution","planned",7],
+  ["Support / IT","support","Tickets, SLAs and the internal helpdesk","planned",7],
+  ["Sales CRM","sales","The lighter sales-only pipeline, same services, narrower entitlement","planned",7],
+  ["Project Management","project · timesheet","Projects, boards and workflows without the marketing surface","planned",6],
+  ["Finance","billing · quotation","Customer-facing invoicing and financial reporting","planned",8],
+  ["Operations","workflow · bulk · analytics","Cross-product automation, bulk data and reporting","planned",9],
+];
+
+const PHASES = [
+  [1,"Platform foundation — shared library, contracts, dev stack, CI, service generator","A new service is scaffolded and green in minutes","built"],
+  [2,"Identity and org — auth, account, both gateways","Create an org, invite users, log in once, switch orgs","planned"],
+  [3,"Product registry — activation and the entitlement gate","A product turns off and the API returns 402","planned"],
+  [4,"Platform services — document, notification, audit, scheduler, eventbridge","Every product has files, email, audit and cron for free","planned"],
+  [5,"HRMS rebuild","Parity with the old HRMS, timezone defect fixed during the rebuild","planned"],
+  [6,"PulseBoard rebuild and data migration","PulseBoard runs entirely on the platform; UUIDs preserved","planned"],
+  [7,"CRM greenfield","One customer record shared across CRM and PulseBoard","planned"],
+  [8,"Billing — catalog, subscription, metering, billing, payment","One invoice for every activated product, GST-compliant","planned"],
+  [9,"Ecosystem surface — consoles, marketplace, automation, analytics","Activate a product from the marketplace; automation runs across products","planned"],
+];
+
+const FLOWS = [
+  {id:"join", name:"An employee joins", tag:"the provisioning cascade", steps:[
+    ["employee-service","sync","HR activates the employee. The row and the event are written in one transaction — everything after this is asynchronous and none of it can block HR."],
+    ["account-service","async","Creates or links the ecosystem user, creates the membership, applies role templates from the employment type."],
+    ["product-service","async","Evaluates access policies and grants each product the person's department qualifies for."],
+    ["leave-service","async","Opens pro-rata leave balances against the joining date."],
+    ["attendance-service","async","Projects the person into its employee cache and assigns the default shift."],
+    ["project-service","async","Creates the delivery-side person and applies team rules for their department."],
+    ["subscription-service","async","Recomputes seats; only billing prorates."],
+    ["notification-service","async","One welcome message, after the grants land — not one per product."],
+  ]},
+  {id:"leave", name:"An employee leaves", tag:"revocation is not deletion", steps:[
+    ["employee-service","sync","Exit initiated. Accrual freezes and automations stop assigning new work; nothing is disabled yet."],
+    ["employee-service","async","On the last working day, the exit event fires."],
+    ["account-service","async","Membership revoked, every refresh-token family revoked, permission version bumped."],
+    ["product-service","async","Product access removed; each product disables its local row."],
+    ["project-service","async","Open work items are emitted to a human triage queue — never silently reassigned."],
+    ["audit-service","async","The whole cascade is recorded. Historical data stays; erasure is a separate, deliberately delayed action."],
+  ]},
+  {id:"activate", name:"A customer activates a second product", steps:[
+    ["admin-console","sync","Customer admin picks a product from the marketplace."],
+    ["admin-gateway","sync","Verifies the token, resolves the organization."],
+    ["product-service","sync","Activates the product for the organization and instantiates its role templates."],
+    ["subscription-service","sync","Creates the subscription against a pinned plan version."],
+    ["billing-service","sync","Prorates the remainder of the current period."],
+    ["product-service","sync","Writes the entitlement snapshot to Redis before the response returns — so the customer who just paid can use the feature immediately."],
+    ["notification-service","async","Confirms, and tells the admins who can now be given access."],
+  ]},
+  {id:"bill", name:"The monthly bill", tag:"one organization, one total", steps:[
+    ["scheduler-service","sync","Closes the billing period."],
+    ["metering-service","sync","Seals usage counters at the watermark; later arrivals become adjustments on the next invoice."],
+    ["billing-service","sync","Rates each product, sums to one organization total, applies bundles then coupons, then credits after tax."],
+    ["billing-service","sync","Computes GST — CGST and SGST within a state, IGST across, or zero-rated export under LUT with validity checked before finalising."],
+    ["billing-service","sync","Assigns a gapless invoice number and freezes the invoice. A correction is a credit note, never an edit."],
+    ["payment-service","sync","Charges through the organization's pinned provider — Razorpay domestic, Stripe international."],
+    ["payment-service","async","On failure, the dunning ladder starts; suspension is read-only access, never data deletion."],
+  ]},
+];
+
+/* ── render: legend ───────────────────────────────────────────────────────── */
+const legend = document.getElementById("legend");
+legend.innerHTML =
+  Object.keys(GROUPS).map(g =>
+    `<span class="sw"><i style="background:${cvar(g)}"></i>${g}</span>`).join("") +
+  `<span class="sw" style="margin-left:auto"><span class="chip built">Built</span>
+   <span class="chip scaffold">Scaffold</span><span class="chip planned">Planned</span></span>`;
+
+/* ── render: topology ─────────────────────────────────────────────────────── */
+const TIERS = [
+  ["Clients",        ["Clients"]],
+  ["Edge",           ["Edge"]],
+  ["Domain services",["Identity & Org","Money","People","Revenue","Work"]],
+  ["Shared services",["Content & Comms","Platform & Ops"]],
+  ["Outside",        ["Integrations"]],
+];
+const topo = document.getElementById("topology");
+topo.innerHTML = TIERS.map(([label, groups]) => `
+  <div class="tier">
+    <p class="tier-h">${label}</p>
+    <div class="groups">
+      ${groups.map(g => `
+        <div class="group" style="--gc:${cvar(g)}">
+          <h4>${g}</h4>
+          <p class="gd">${GROUPS[g].d}</p>
+          <div class="nodes">
+            ${NODES.filter(n => n.group === g).map(n => `
+              <button class="node" data-id="${n.id}" style="--gc:${cvar(g)}">
+                <span class="dot"></span>${n.id}
+              </button>`).join("")}
+          </div>
+        </div>`).join("")}
+    </div>
+  </div>`).join("");
+
+/* ── detail drawer ────────────────────────────────────────────────────────── */
+const drawer = document.getElementById("drawer");
+const statusChip = s =>
+  `<span class="chip ${s}">${s === "built" ? "Built" : s === "scaffold" ? "Scaffold" : "Planned"}</span>`;
+
+function showNode(id){
+  const n = NODES.find(x => x.id === id);
+  if(!n) return;
+  drawer.style.setProperty("--gc", cvar(n.group));
+  document.getElementById("d-name").textContent  = n.id;
+  document.getElementById("d-group").textContent = n.group;
+  document.getElementById("d-status").innerHTML  =
+    statusChip(n.status) + (n.phase ? ` <span class="chip planned">Phase ${n.phase}</span>` : "");
+  document.getElementById("d-role").textContent  = n.role;
+  document.getElementById("d-meta").innerHTML = [
+    ["Stack", n.stack], ["Owns", n.owns], ["Talks", n.comms], ["Path", n.path],
+  ].map(([k,v]) => `<span><b>${k}</b>${v || "—"}</span>`).join("");
+  drawer.hidden = false;
+  drawer.scrollIntoView({block:"nearest", behavior:"smooth"});
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest("button.node");
+  if(b) showNode(b.dataset.id);
+});
+document.getElementById("dclose").addEventListener("click", () => { drawer.hidden = true; });
+
+/* ── render: catalog ──────────────────────────────────────────────────────── */
+const tbody = document.getElementById("catalog");
+const countEl = document.getElementById("count");
+let fLayer = "all", fBuilt = false, fQ = "";
+
+function renderCatalog(){
+  const rows = NODES.filter(n => {
+    if(fLayer !== "all" && n.layer !== fLayer) return false;
+    if(fBuilt && n.status === "planned") return false;
+    if(fQ){
+      const hay = `${n.id} ${n.group} ${n.role} ${n.stack} ${n.owns} ${n.path}`.toLowerCase();
+      if(!hay.includes(fQ)) return false;
+    }
+    return true;
+  });
+  tbody.innerHTML = rows.map(n => `
+    <tr>
+      <td class="mono" style="color:${cvar(n.group)};font-weight:700">${n.id}</td>
+      <td class="mono" style="font-size:10.5px;color:var(--faint)">${n.group}</td>
+      <td>${n.role}</td>
+      <td class="mono" style="font-size:10.5px;color:var(--mut)">${n.owns === "—" ? n.stack : n.owns}</td>
+      <td>${statusChip(n.status)}${n.phase ? ` <span class="mono" style="font-size:10px;color:var(--faint)">P${n.phase}</span>` : ""}</td>
+      <td class="mono" style="font-size:10.5px;color:var(--faint)">${n.path}</td>
+    </tr>`).join("") ||
+    `<tr><td colspan="6" style="color:var(--faint);padding:22px;text-align:center">Nothing matches that.</td></tr>`;
+  countEl.textContent = `${rows.length} of ${NODES.length}`;
+}
+document.getElementById("q").addEventListener("input", e => { fQ = e.target.value.toLowerCase().trim(); renderCatalog(); });
+document.querySelectorAll(".pill").forEach(p => p.addEventListener("click", () => {
+  if(p.dataset.filter === "layer"){
+    fLayer = p.dataset.value;
+    document.querySelectorAll('[data-filter="layer"]').forEach(o => o.setAttribute("aria-pressed", String(o === p)));
+  } else {
+    fBuilt = p.getAttribute("aria-pressed") !== "true";
+    p.setAttribute("aria-pressed", String(fBuilt));
+  }
+  renderCatalog();
+}));
+renderCatalog();
+
+/* ── render: tables ───────────────────────────────────────────────────────── */
+const fill = (id, rows, cells) => {
+  document.getElementById(id).innerHTML = rows.map(r => `<tr>${cells(r)}</tr>`).join("");
+};
+fill("stores", STORES, r => `
+  <td class="mono" style="font-weight:700;color:var(--d-data)">${r[0]}</td>
+  <td class="mono" style="font-size:10.5px;color:var(--mut)">${r[1]}</td>
+  <td>${r[2]}</td>
+  <td class="mono" style="font-size:10.5px;color:var(--faint)">${r[3]}</td>`);
+
+fill("topics", TOPICS, r => `
+  <td class="mono" style="font-weight:700;font-size:11px">${r[0]}</td>
+  <td class="mono" style="font-size:10.5px;color:var(--mut)">${r[1]}</td>
+  <td class="mono" style="font-size:10.5px;color:var(--faint)">${r[2]}</td>
+  <td>${r[3]}</td>`);
+
+fill("products", PRODUCTS, r => `
+  <td style="font-family:Chivo,sans-serif;font-weight:700">${r[0]}</td>
+  <td class="mono" style="font-size:10.5px;color:var(--mut)">${r[1]}</td>
+  <td>${r[2]}</td>
+  <td>${statusChip(r[3])} <span class="mono" style="font-size:10px;color:var(--faint)">P${r[4]}</span></td>`);
+
+fill("phases", PHASES, r => `
+  <td class="num mono" style="font-weight:700;color:var(--accent)">${r[0]}</td>
+  <td><strong>${r[1]}</strong><br><span style="color:var(--mut);font-size:12.5px">${r[2]}</span></td>
+  <td>${statusChip(r[3])}</td>`);
+
+/* ── render: flows ────────────────────────────────────────────────────────── */
+const pick = document.getElementById("flowpick");
+const stepsEl = document.getElementById("flowsteps");
+pick.innerHTML = FLOWS.map((f,i) =>
+  `<button class="pill" data-flow="${f.id}" aria-pressed="${i===0}">${f.name}</button>`).join("");
+
+function renderFlow(id){
+  const f = FLOWS.find(x => x.id === id);
+  stepsEl.innerHTML = `
+    ${f.tag ? `<p class="lede" style="margin-bottom:14px"><em>${f.tag}</em></p>` : ""}
+    <ol class="steps">
+      ${f.steps.map(([node,kind,note]) => {
+        const n = NODES.find(x => x.id === node);
+        const colour = n ? cvar(n.group) : "var(--mut)";
+        return `<li>
+          <span class="sn" style="color:${colour}">${node}
+            <span class="kind ${kind}">${kind === "sync" ? "sync" : kind === "async" ? "event" : "inbound"}</span>
+          </span>
+          <span class="st">${note}</span>
+        </li>`;
+      }).join("")}
+    </ol>`;
+  // light the participating nodes on the system map
+  const ids = new Set(f.steps.map(s => s[0]));
+  document.querySelectorAll("button.node").forEach(b => {
+    b.classList.toggle("is-lit", ids.has(b.dataset.id));
+    b.classList.toggle("dim", !ids.has(b.dataset.id));
+  });
+}
+pick.addEventListener("click", e => {
+  const b = e.target.closest("[data-flow]");
+  if(!b) return;
+  pick.querySelectorAll(".pill").forEach(o => o.setAttribute("aria-pressed", String(o === b)));
+  renderFlow(b.dataset.flow);
+});
+renderFlow(FLOWS[0].id);
+
+/* ── tabs ─────────────────────────────────────────────────────────────────── */
+const panels = {
+  overview:"p-overview", catalog:"p-catalog", flows:"p-flows",
+  data:"p-data", products:"p-products", platform:"p-platform",
+};
+document.querySelector("nav.tabs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-tab]");
+  if(!b) return;
+  document.querySelectorAll("nav.tabs button").forEach(o => o.setAttribute("aria-selected", String(o === b)));
+  Object.entries(panels).forEach(([k,id]) => {
+    document.getElementById(id).hidden = (k !== b.dataset.tab);
+  });
+  window.scrollTo({top:0, behavior:"smooth"});
+});
+</script>
