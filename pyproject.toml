@@ -18,6 +18,10 @@ dependencies = [
     #   boto3         → document-service
     #   stripe, razorpay → payment-service
     "cryptography>=43.0",      # PII envelope encryption; needed by EdDSA signing too
+    # EmailStr needs this. Note for seeds and fixtures: it rejects .local, .test,
+    # .example and .invalid as special-use reserved domains — a .local seed once produced
+    # an administrator account that could not log in. Use example.com (RFC 2606).
+    "email-validator>=2.2",
 ]
 
 [dependency-groups]
