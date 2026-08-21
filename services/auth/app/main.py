@@ -13,6 +13,7 @@ from app.api.routes import router, wellknown
 from app.config import settings
 from app.directory import HttpDirectory
 from app.keys import active_key
+from app.models import OutboxEvent
 from platform_core.app import create_app
 
 cfg = settings()
@@ -43,6 +44,8 @@ app = create_app(
     routers=[router],
     on_startup=_startup,
     on_shutdown=_shutdown,
+    # A stalled relay is silent. `/health/outbox` is what makes it visible.
+    outbox_model=OutboxEvent,
 )
 
 # Mounted at the root: `/.well-known/jwks.json` is where clients look, not under /api/v1.

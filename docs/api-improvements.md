@@ -89,7 +89,7 @@ The prefix exists. There is no deprecation policy, no `Sunset` header, and no wa
 to discover that a field is going away. This is cheap to define now and expensive to retrofit
 once external customers integrate.
 
-## 8. Health endpoints do not reflect real readiness
+## 8. Health endpoints did not reflect real readiness — **fixed**
 
 `/health/ready` executes `SELECT 1`. It does not check Redis — which is a **hard dependency** of
 any write that changes permissions, and of the gateway's rate limiter and staleness check — and
@@ -97,10 +97,16 @@ it does not check outbox lag.
 
 A service whose Redis is gone reports ready and then fails every permission-changing write.
 
-**Fix:** check Redis in readiness. Add an outbox-lag probe, ideally before row-level security
-lands so there is a baseline. See [operations.md](operations.md).
+**Done:** a service now declares its dependencies to `create_app`, the lifespan opens exactly
+those, and readiness checks exactly those. `GET /health/outbox` reports depth and age for
+services that own an outbox — alert on `oldest_seconds`, and take a baseline before the
+row-level security work starts. See [operations.md](operations.md).
 
-## 9. The gateways open a database connection they do not need
+This also uncovered a live defect: account-service used Redis and **never initialised it**, so
+every role change would have raised `RuntimeError` in production. Its tests passed because they
+injected a fake client and never ran the lifespan.
+
+## 9. The gateways opened a database connection they did not need — **fixed**
 
 `app-gateway`'s config states plainly that it "never opens a database connection". The shared
 app factory calls `init_engine` unconditionally, and `/health/ready` runs `SELECT 1` against it,
@@ -109,7 +115,8 @@ which readiness probes hit continuously.
 Harmless today, but under a database role split it means two more processes needing credentials
 and grants for no reason.
 
-**Fix:** make `init_engine` conditional on the service actually owning tables.
+**Done:** both gateways declare `database=False`; the engine is never created and readiness no
+longer reports on it.
 
 ## 10. A dead route in the operator route table — **fixed, by deletion**
 

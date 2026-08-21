@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 
 from platform_core.cache import close_redis, get_redis, init_redis
 from platform_core.config import ServiceSettings
@@ -23,7 +23,11 @@ from platform_core.logging import RequestContextMiddleware, configure_logging, g
 
 
 def build_health_router(
-    settings: ServiceSettings, *, database: bool = True, redis: bool = False
+    settings: ServiceSettings,
+    *,
+    database: bool = True,
+    redis: bool = False,
+    outbox_model: type[Any] | None = None,
 ) -> APIRouter:
     router = APIRouter(tags=["health"])
 
@@ -70,6 +74,40 @@ def build_health_router(
 
         return {"status": "ok" if healthy else "degraded", "checks": checks}
 
+    if outbox_model is not None:
+
+        @router.get("/health/outbox", summary="Outbox depth and age — scrape this")
+        async def outbox() -> dict[str, Any]:
+            """How far behind the relay is. **Alert on `oldest_seconds`.**
+
+            A stalled relay is the platform's quietest failure. It selects, finds nothing,
+            logs nothing, sleeps, and loops — `attempts` never increments and `last_error`
+            stays null, so the process looks healthy indefinitely while the outbox grows
+            without bound and every consumer downstream starves.
+
+            Deliberately **not** part of readiness. A backlog is not a reason to take the
+            service out of rotation: refusing traffic would stop new events being written
+            without helping drain the ones already queued, which makes the incident worse.
+            This is a metric to alert on, not a health state.
+            """
+            table = outbox_model.__table__
+            stmt = select(
+                func.count().filter(table.c.published_at.is_(None)),
+                func.extract(
+                    "epoch",
+                    func.now()
+                    - func.min(table.c.created_at).filter(table.c.published_at.is_(None)),
+                ),
+            ).select_from(table)
+
+            async with get_engine().connect() as conn:
+                pending, oldest = (await conn.execute(stmt)).one()
+
+            return {
+                "pending": int(pending or 0),
+                "oldest_seconds": float(oldest) if oldest is not None else 0.0,
+            }
+
     return router
 
 
@@ -83,6 +121,7 @@ def create_app(
     on_shutdown: Callable[[FastAPI], Any] | None = None,
     database: bool = True,
     redis: bool = False,
+    outbox_model: type[Any] | None = None,
 ) -> FastAPI:
     """Assemble a service.
 
@@ -147,7 +186,9 @@ def create_app(
     )
 
     register_error_handlers(app)
-    app.include_router(build_health_router(settings, database=database, redis=redis))
+    app.include_router(
+        build_health_router(settings, database=database, redis=redis, outbox_model=outbox_model)
+    )
     for router in routers or []:
         app.include_router(router, prefix="/api/v1")
 

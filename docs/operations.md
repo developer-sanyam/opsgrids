@@ -30,14 +30,17 @@ Ports are offset from the defaults so this stack coexists with others: Postgres 
 
 ## Health
 
-Every service exposes `/health` and `/health/ready`. **Readiness currently only checks the
-database** (`SELECT 1`). It does *not* check Redis, which is a hard dependency of every
-permission-changing write and of the gateway's rate limiter and staleness check.
+Every service exposes `/health` and `/health/ready`. Readiness checks **exactly the dependencies a service declares** — no more, no less. A service
+declares them once, in `create_app`, and the lifespan opens the same set:
 
-Consequence: a service whose Redis is gone reports **ready**, then fails every role change and —
-at the gateway — refuses all traffic, because the rate limiter and permission-version check both
-fail closed. Fixing readiness to include Redis is listed in
-[api-improvements.md](api-improvements.md).
+| Service | Declares |
+|---|---|
+| account, auth | database, redis |
+| app-gateway, admin-gateway | redis only — they own no tables |
+
+Redis is checked because it is a hard dependency of every permission-changing write and of the
+gateway's rate limiter and staleness check. Before this, a service whose Redis was gone reported
+**ready** and then raised on every role change.
 
 ## Things that fail loudly
 
@@ -60,14 +63,18 @@ today only possible through misconfiguration, but guaranteed if it is ever run w
 loops. `attempts` never increments. `last_error` stays null. The process looks healthy
 indefinitely while the outbox grows without bound and every downstream consumer starves.
 
-**There is no probe for this.** The one worth adding:
+**There is now a probe: `GET /health/outbox`**, on every service that owns an outbox.
 
-```sql
-SELECT max(now() - created_at) FROM <schema>.outbox WHERE published_at IS NULL;
+```json
+{ "pending": 10, "oldest_seconds": 133.09 }
 ```
 
-Alert above a threshold, per service. Add it **before** RLS work starts, so there is a baseline
-to compare against.
+**Alert on `oldest_seconds`.** Pick the threshold from a normal day's baseline — take one now,
+before row-level security work starts, because that is the change most likely to stall a relay.
+
+It is deliberately **not** part of readiness. A backlog is not a reason to take the service out
+of rotation: refusing traffic would stop new events being written without helping drain the ones
+already queued, which makes the incident worse. It is a metric, not a health state.
 
 **Empty results that look like normal domain state.** A tenancy misconfiguration produces zero
 rows, and the API turns that into "Organization not found" or an empty page with `200`. There is
