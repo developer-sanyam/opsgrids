@@ -107,6 +107,15 @@ CREATE OR REPLACE FUNCTION account.current_org() RETURNS uuid
 AS $$ SELECT nullif(current_setting('app.organization_id', true), '')::uuid $$;
 ```
 
+`nullif(…, '')` is **not** a defensive nicety, and it decides the failure mode. Verified against
+the dev database: once a transaction that set the GUC locally has ended, the next transaction on
+the same session reads it back as **`''`, not NULL**. The empty string is the *normal*
+post-transaction state, not a hypothetical. Without `nullif`, `''::uuid` raises `invalid input
+syntax for type uuid` — **loud**. With `nullif` it becomes NULL, the predicate is false, and the
+query silently returns nothing. Keep `nullif` (§4 explains why fail-quiet is right here), but
+make the choice knowingly rather than inheriting it from a snippet.
+
+
 ```sql
 ALTER TABLE account.memberships ENABLE ROW LEVEL SECURITY;
 ALTER TABLE account.memberships FORCE  ROW LEVEL SECURITY;
@@ -124,7 +133,16 @@ reassign one of its own rows into another tenant. Postgres does default `WITH CH
 `USING` expression for `FOR ALL`, which would save us here; relying on that breaks the moment
 someone writes an explicit per-command policy. Write it out.
 
-**`FORCE` is required**, given finding 3 — table owners bypass their own policies otherwise.
+**`FORCE` is defence-in-depth, not a requirement** — an earlier draft of this ADR said it was
+required, and that was wrong. Verified empirically against the dev database: a NOBYPASSRLS role
+that does **not** own the table sees only its own rows with plain `ENABLE`, no `FORCE` needed
+(1 of 2 probe rows); the owner sees all of them (2 of 2). In the target split `atmora_admin`
+owns and `atmora_app` connects, so `atmora_app` is never the owner and RLS applies to it
+regardless. `FORCE` is still worth setting, for the two futures where it bites: a table created
+accidentally by the app role, which would then own it and silently bypass its own policy, and a
+later decision to drop `BYPASSRLS` from `atmora_admin`. One extra statement, no cost — but it is
+not what makes this work, and believing it is would misdirect debugging when a policy appears
+inert.
 
 **Policies are written per table, explicitly.** A loop over "every table with an
 `organization_id` column" gets at least four tables wrong in this codebase: it would miss
@@ -147,6 +165,14 @@ RLS misconfiguration would be indistinguishable from ordinary empty state in the
 So the policy stays quiet and **the application gets loud**: outside production, assert that
 `current_setting(TENANT_GUC)` equals the principal's organization id, once per request. One
 round trip converts the worst silent failure into an immediate one.
+
+The same probe sharpened the chokepoint: **the GUC does not survive into a later transaction on
+the same session.** That is the transaction-local design working as intended, but it means the
+GUC must be set inside *every* transaction, not once per request. Any service function or
+fixture that opens two sequential `session.begin()` blocks needs it twice. This is the concrete
+reason the chokepoint must be the transaction opener (§1) rather than anything that runs once at
+request entry — and the reason the existing fixtures, which open three separate transactions,
+cannot be repaired with a single call.
 
 ### 5. Table classification
 
