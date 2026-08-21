@@ -49,6 +49,7 @@ from app.schemas import (
 )
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
+from platform_core.cache import bump_permission_version
 from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
 from platform_core.events import publish_event
 
@@ -71,6 +72,23 @@ def _actor(ctx: ScopeContext) -> dict[str, Any]:
         "id": str(ctx.principal.sub),
         "membership_id": str(ctx.principal.membership_id),
     }
+
+
+async def _invalidate_grants(organization_id: uuid.UUID) -> None:
+    """Make a grant change take effect on the next request, not at token expiry.
+
+    Every access token carries a `pv` claim; the gateway compares it against this counter
+    and refuses anything older. Without the bump that check can never fire, so a revoked
+    role stays usable for the remaining life of the token — precisely the behaviour
+    ADR-0000 committed to preventing.
+
+    Called inside the transaction rather than after it commits. If the transaction then
+    rolls back, the counter has still moved: that costs the organization one round of
+    token refreshes and grants nobody anything, which is the direction it is safe to be
+    wrong in. Deferring it to a consumer of `core.grants.changed` would be tidier and
+    would leave a window in which the old token still works, which is not.
+    """
+    await bump_permission_version(str(organization_id))
 
 
 # --------------------------------------------------------------------- organizations
@@ -497,6 +515,15 @@ async def update_member(
         },
         actor=_actor(ctx),
     )
+    # Locations, department and reporting line all feed scope resolution, and `loc` is
+    # carried in the token — so a move between sites has to invalidate it too. A change
+    # to job title or display name does not.
+    if (
+        before["location_codes"] != membership.location_codes
+        or before["org_unit_id"] != str(membership.org_unit_id or "")
+        or before["manager_membership_id"] != str(membership.manager_membership_id or "")
+    ):
+        await _invalidate_grants(ctx.organization_id)
     return membership
 
 
@@ -548,6 +575,9 @@ async def revoke_member(
         },
         actor=_actor(ctx),
     )
+    # The most important of the four bumps: without it, somebody removed from the
+    # organization keeps working until their access token expires.
+    await _invalidate_grants(ctx.organization_id)
     return membership
 
 
@@ -612,6 +642,7 @@ async def set_member_roles(
         },
         actor=_actor(ctx),
     )
+    await _invalidate_grants(ctx.organization_id)
     return membership
 
 
@@ -693,6 +724,9 @@ async def replace_role_grants(
         payload={"organization_id": str(ctx.organization_id), "role_id": str(role.id)},
         actor=_actor(ctx),
     )
+    # Editing a role changes what everybody holding it may do, so this bump invalidates
+    # far more tokens than a single membership change — which is exactly right.
+    await _invalidate_grants(ctx.organization_id)
     return role
 
 

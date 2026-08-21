@@ -31,7 +31,9 @@ from app.config import settings
 from app.main import app
 from app.models import SCHEMA, Base, Membership, Organization
 from app.schemas import OrganizationIn
+from platform_core import cache
 from platform_core.db import get_session
+from tests.helpers import FakeRedis
 
 
 @pytest_asyncio.fixture
@@ -114,6 +116,14 @@ async def people(session: AsyncSession, org: Organization) -> dict[str, Membersh
         "report": report,
         "outsider": outsider,
     }
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def redis() -> AsyncIterator[FakeRedis]:
+    fake = FakeRedis()
+    cache._redis = fake  # type: ignore[assignment]
+    yield fake
+    cache._redis = None
 
 
 @pytest_asyncio.fixture

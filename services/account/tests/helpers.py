@@ -13,6 +13,40 @@ from app.models import Membership
 from platform_core.auth import Principal, Scope, ScopeContext
 
 
+class FakeRedis:
+    """Enough Redis for the permission-version counter.
+
+    A grant change bumps `pv:<org>` and **raises if it cannot** — losing the bump would
+    leave a revoked role working until its token expired. That makes Redis a hard
+    dependency of every write that changes what somebody may do, so the tests need a
+    stand-in rather than an absent client.
+    """
+
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+
+    async def get(self, key: str) -> str | None:
+        return self.store.get(key)
+
+    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+        self.store[key] = value
+
+    async def incr(self, key: str) -> int:
+        value = int(self.store.get(key, "0")) + 1
+        self.store[key] = str(value)
+        return value
+
+    async def expire(self, key: str, seconds: int) -> None:
+        return None
+
+    async def delete(self, *keys: str) -> None:
+        for key in keys:
+            self.store.pop(key, None)
+
+    async def aclose(self) -> None:
+        return None
+
+
 def principal_for(
     org_id: uuid.UUID,
     membership: Membership,
