@@ -1,10 +1,22 @@
 {
   "$comment": [
-    "The operator surface. Deliberately narrow: everything here is either Atmora staff",
-    "acting across customers, or an internal service-to-service call.",
+    "The operator surface. Deliberately narrow: Atmora staff acting across customers,",
+    "and the partner webhook endpoint. Nothing else.",
     "",
     "`staff_only` routes are refused with the same 404 an unknown path gets — the",
-    "existence of the operator console is not something to confirm to whoever is probing."
+    "existence of the operator console is not something to confirm to whoever is probing.",
+    "",
+    "Service-to-service traffic is deliberately absent. It does not traverse a gateway:",
+    "auth-service and both gateways call account-service directly on its own port. An",
+    "earlier revision routed /api/v1/internal/... here, which was dead — account-service",
+    "mounts its internal router at /internal/v1, so the prefixes never matched — and it",
+    "would have been a hole had it worked. Those endpoints read across every tenant and",
+    "carry no per-user authorization, being guarded only by the shared service token, so",
+    "publishing them behind an operator token would let any operator-audience caller,",
+    "staff or not, read every user and organization on the platform.",
+    "",
+    "If an admin console needs account data it gets a staff_only route into a service",
+    "that authorizes the caller, never a path into the internal router."
   ],
   "routes": [
     { "prefix": "/api/v1/auth", "upstream": "http://localhost:8110" },
@@ -14,10 +26,6 @@
     { "prefix": "/api/v1/admin/overrides", "upstream": "http://localhost:8170", "staff_only": true },
     { "prefix": "/api/v1/admin/usage", "upstream": "http://localhost:8170", "staff_only": true },
     { "prefix": "/api/v1/admin/audit", "upstream": "http://localhost:8170", "staff_only": true },
-
-    { "prefix": "/api/v1/internal/accounts", "upstream": "http://localhost:8111" },
-    { "prefix": "/api/v1/internal/products", "upstream": "http://localhost:8112" },
-    { "prefix": "/api/v1/internal/billing", "upstream": "http://localhost:8160" },
 
     { "prefix": "/api/v1/webhooks", "upstream": "http://localhost:8163" }
   ]

@@ -24,7 +24,8 @@ from tests.conftest import ORG, USER, EchoUpstream, FakeRedis
 pytestmark = pytest.mark.integration
 
 STAFF_ROUTE = "/api/v1/admin/organizations"
-INTERNAL_ROUTE = "/api/v1/internal/accounts"
+# Not `staff_only` in routes.json, and not a public path — an authenticated, unflagged route.
+NON_STAFF_ROUTE = "/api/v1/auth/me"
 
 
 def auth(token: str) -> dict[str, str]:
@@ -78,11 +79,16 @@ class TestStaffOnly:
         # otherwise learn exactly which paths exist.
         assert real.json()["title"] == fake.json()["title"]
 
-    async def test_internal_routes_are_not_staff_only(
+    async def test_a_route_without_the_flag_does_not_require_staff(
         self, client: AsyncClient, mint, upstream: EchoUpstream
     ) -> None:
-        """Service-to-service calls carry no staff flag; requiring one would break them."""
-        response = await client.get(INTERNAL_ROUTE, headers=auth(mint(staff=False)))
+        """`staff_only` is per route, not gateway-wide.
+
+        This is the half that a gateway-wide flag would have broken: an operator-audience
+        caller who is not staff must still reach the routes that are not marked, or signing
+        in through this gateway would require already being signed in.
+        """
+        response = await client.get(NON_STAFF_ROUTE, headers=auth(mint(staff=False)))
         assert response.status_code == 200
 
 
@@ -193,6 +199,37 @@ class TestPermissionResolution:
         response = await client.get(STAFF_ROUTE, headers=auth(mint(staff=True)))
         assert response.status_code == 503
         assert not upstream.calls
+
+
+class TestNoServiceToServiceRoutes:
+    """The internal API must not be publishable through a gateway.
+
+    It reads across every tenant and carries **no per-user authorization** — the shared
+    service token is the only guard. Routing it here would let any operator-audience
+    caller, staff or not, read every user and organization on the platform.
+
+    An earlier route table did exactly that. It was inert only because the prefixes did not
+    match what account-service mounts, which is luck rather than design, so this asserts the
+    property instead of trusting the typo.
+    """
+
+    def test_no_route_reaches_the_internal_api(self) -> None:
+        from app.main import routes
+
+        offenders = [r.prefix for r in routes if "internal" in r.prefix.lower()]
+        assert offenders == [], (
+            f"the operator gateway must not route to the internal API: {offenders}. "
+            "Service-to-service calls go direct to the service port."
+        )
+
+    async def test_an_internal_path_is_not_routable(self, client: AsyncClient, mint) -> None:
+        """Belt and braces: the path a client would guess resolves to nothing."""
+        for path in (
+            "/api/v1/internal/accounts/users",
+            "/api/v1/internal/v1/users/by-email",
+        ):
+            response = await client.get(path, headers=auth(mint(staff=True)))
+            assert response.status_code == 404, path
 
 
 class TestNoDatabase:

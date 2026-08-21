@@ -46,14 +46,15 @@ most likely to end up in an access log, a proxy log or an error report.
 **Fix:** accept it as a `POST` body, or accept a hash. Low urgency because the endpoint is
 internal-only, but the logging exposure is real and the fix is cheap.
 
-## 5. The internal router's docstring is wrong
+## 5. The internal router's docstring is wrong — **fixed**
 
-It states these are *"the only three endpoints in the platform that read across tenants."*
+It stated these were *"the only three endpoints in the platform that read across tenants."*
 There is a fourth: `POST /api/v1/invitations/accept` is **public** and it **writes** — creating
 a user, a membership and role grants with no organization in context.
 
-**Fix:** correct the comment. It is the kind of claim someone will rely on when reasoning about
-tenancy, and it is load-bearing for the RLS work.
+Corrected rather than deleted, and it now names all four paths plus the two unfiltered
+selectors, because ADR-0002 depends on the full list and someone will reason about tenancy from
+this file.
 
 ## 6. List endpoints use offset pagination
 
@@ -92,11 +93,19 @@ and grants for no reason.
 
 **Fix:** make `init_engine` conditional on the service actually owning tables.
 
-## 10. A dead route in the operator route table
+## 10. A dead route in the operator route table — **fixed, by deletion**
 
-`admin-gateway`'s `routes.json` maps `/api/v1/internal/accounts` to account-service, but that
-service mounts its internal router at `/internal/v1`. The prefixes do not match, so the route
-resolves at the gateway and then 404s at the upstream.
+`admin-gateway`'s `routes.json` mapped `/api/v1/internal/accounts` to account-service, which
+mounts its internal router at `/internal/v1`. The prefixes never matched, so the route resolved
+at the gateway and 404'd at the upstream.
 
-**Fix:** delete it or correct it. Unclear which was intended — it should be decided rather than
-left as a route that looks supported.
+**Correcting the prefix would have been the wrong fix.** Those three `/api/v1/internal/*` routes
+carried no `staff_only` flag, and the internal endpoints have no per-user authorization at all —
+the shared service token is the only guard. Making them work would have let any
+operator-audience caller, staff or not, read every user and organization on the platform. It was
+inert only because of a typo, which is luck rather than design.
+
+Deleted instead, together with the `products` and `billing` equivalents. Nothing used them:
+auth-service and both gateways call account-service **directly on its own port**. Two tests now
+assert no operator route reaches the internal API, so the property is guarded rather than left
+to a prefix mismatch.

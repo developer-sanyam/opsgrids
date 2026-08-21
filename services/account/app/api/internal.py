@@ -8,9 +8,17 @@ request admission; both need to ask this service questions that no user token ca
 - the gateways, on every authenticated request, need the caller's grants, because tokens
   deliberately carry no permission list.
 
-These are the only three endpoints in the platform that read across tenants, which is why
-they live in their own module behind `require_service_token` rather than sitting beside the
-user-facing routes where the tenant guard is the default.
+These three read across tenants, which is why they live in their own module behind
+`require_service_token` rather than beside the user-facing routes where the tenant guard is
+the default.
+
+They are **not** the only cross-tenant paths in the platform, and an earlier version of this
+docstring wrongly said they were. `POST /api/v1/invitations/accept` is a fourth: it is public
+by design — the invitee holds a token, not yet an account — and unlike these three it
+**writes**, creating a user, a membership and role grants with no organization in context.
+`selectors.get_user_by_email` and `get_invitation_by_hash` are likewise unfiltered on purpose.
+Anyone reasoning about tenancy from this file needs all four, so the claim is corrected rather
+than deleted. See docs/adr/0002-row-level-security.md, which depends on the full list.
 
 Mounted at the root, not under `/api/v1`: these paths are not public API and must not
 appear in the customer-facing OpenAPI document.
