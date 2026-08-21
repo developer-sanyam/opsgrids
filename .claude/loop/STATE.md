@@ -41,7 +41,8 @@ are recorded retrospectively from git history rather than having been run throug
 | 0 | account-service — orgs, units, locations, users, memberships, roles, permissions, invitations | DONE | — | 4210187, cf858eb | 46 tests; the tenancy and identity foundation |
 | 1 | auth-service — credentials, sessions, refresh rotation, MFA, SSO config, signing keys | DONE | — | a6e3548 | 41 tests; sole holder of a private key |
 | 2 | Gateways — app-gateway (product) and admin-gateway (operator) | DONE | 1 | ca58de3 | 46 tests; found duplicated correlation headers and unenforced per-route `staff_only` |
-| 3a | Internal API + permission-version bump | DONE (uncommitted) | 1 | working tree | 17 new tests. Closed two gaps found while scoping slice 3 — see Findings |
+| 3a | Internal API + permission-version bump | DONE | 1 | 15d6ec0 | 17 new tests. Closed two gaps found while scoping slice 3 — see Findings |
+| 3c | Row-level security — **ADR written, awaiting review** | BLOCKED | 0 | | docs/adr/0002-row-level-security.md. Implementation deliberately not started. Three independent bypasses found; steps 0–2 are prerequisites with no user-visible payoff |
 | 3b | End-to-end journey suite | TODO | 0 | | closes gate row 8 — cross-service, real DB, real tokens. 3a was its prerequisite: the journey could not have passed |
 | 4 | product-service — registry, per-org activation, entitlements, marketplace catalogue | TODO | 0 | | makes the gateway's entitlement gate a real registry rather than a token claim |
 | 5 | config-service — per-org settings, integration secrets, toggles | TODO | 0 | | |
@@ -71,7 +72,14 @@ on both sides, because each side stubbed the other — the argument for slice 3b
   staleness check was unreachable and a revoked role stayed usable until the token
   expired. Now bumped on all four grant-changing paths: role change, member revocation,
   role-grant edit, and a location/department/manager move.
-- **[OPEN] Row-level security is designed but not implemented.** ADR-0000 and the README
+- **[OPEN — ADR-0002 proposed] Row-level security is designed but not implemented.**
+  Investigation found it is inert for **three independent reasons**, not one: no policies
+  exist, the app connects as a **superuser** (which bypasses RLS unconditionally — `FORCE`
+  cannot override it), and `set_tenant` has **no callers**, so the tenant GUC is never set.
+  Enabling policies alone would be a silent no-op; wiring the GUC alone would return zero
+  rows for every query. Also found: a **fourth** cross-tenant path,
+  `POST /api/v1/invitations/accept`, which is public and writes — correcting the claim in
+  `internal.py` that there are only three. See docs/adr/0002-row-level-security.md. ADR-0000 and the README
   both commit to shared schema + `organization_id` + RLS, and no migration issues
   `ENABLE ROW LEVEL SECURITY` or `CREATE POLICY`. Isolation currently rests entirely on
   every query carrying the right filter — the thing RLS exists to stop depending on. The
