@@ -1,0 +1,102 @@
+# API improvements
+
+Concrete, specific changes worth making to the API surface. Each is something found while
+reading or testing the code, not a general aspiration. Ordered by how much it matters.
+
+---
+
+## 1. The internal service token is a shared static secret
+
+**Severity: high.** `require_service_token` compares an `X-Internal-Token` header against a
+configured string that defaults to `dev-only-internal-token`. One leaked value reads **every
+user, every membership and every organization name on the platform**, because that is exactly
+what the internal API is for.
+
+The router is excluded from the OpenAPI document, which is obscurity, not a control.
+
+**Fix:** a short-TTL signed service token with an audience claim, or mTLS. Plus a network policy
+making `/internal/v1` unreachable from ingress. Until then, treat the token as a production
+secret and never let the default ship.
+
+## 2. Cross-tenant reads leave no audit trail
+
+**Severity: high.** `platform_core.audit.record_sensitive_read` exists precisely for this and is
+**called by nothing**. The three internal endpoints are the highest-value reads in the system —
+one of them returns, for a single email, the id, slug and name of every organization that person
+belongs to — and none of them is recorded.
+
+**Fix:** call it from all three. This is a small change with a large payoff the first time
+somebody asks "who looked this up".
+
+## 3. Grants and directory lookups have no cache invalidation signal for the caller
+
+The gateway caches resolved grants for 60s under a key containing the permission version, so a
+version bump invalidates by construction. That is right. But **a client** has no way to know its
+token went stale until it gets a `401 token-stale` on the next call.
+
+**Fix:** nothing structural — document it (done, in [api-reference.md](api-reference.md)) and
+make sure clients treat `token-stale` as *refresh*, not *log out*. Getting this wrong turns a
+role change into a surprise logout for the whole organization.
+
+## 4. `/internal/v1/users/by-email` takes the email in a query string
+
+**Severity: low, but real.** Emails are personal data and query strings are the part of a URL
+most likely to end up in an access log, a proxy log or an error report.
+
+**Fix:** accept it as a `POST` body, or accept a hash. Low urgency because the endpoint is
+internal-only, but the logging exposure is real and the fix is cheap.
+
+## 5. The internal router's docstring is wrong
+
+It states these are *"the only three endpoints in the platform that read across tenants."*
+There is a fourth: `POST /api/v1/invitations/accept` is **public** and it **writes** — creating
+a user, a membership and role grants with no organization in context.
+
+**Fix:** correct the comment. It is the kind of claim someone will rely on when reasoning about
+tenancy, and it is load-bearing for the RLS work.
+
+## 6. List endpoints use offset pagination
+
+`{ items, total, page, size }` is fine at current scale and will not be fine for an audit log or
+a member list in a large tenant — offset pagination degrades as the offset grows and can skip or
+repeat rows when the underlying set changes between pages.
+
+**Fix:** keyset pagination for anything append-heavy, starting with audit. Not urgent; worth
+deciding before a product service copies the current shape everywhere.
+
+## 7. No API versioning story beyond the `/v1` prefix
+
+The prefix exists. There is no deprecation policy, no `Sunset` header, and no way for a client
+to discover that a field is going away. This is cheap to define now and expensive to retrofit
+once external customers integrate.
+
+## 8. Health endpoints do not reflect real readiness
+
+`/health/ready` executes `SELECT 1`. It does not check Redis — which is a **hard dependency** of
+any write that changes permissions, and of the gateway's rate limiter and staleness check — and
+it does not check outbox lag.
+
+A service whose Redis is gone reports ready and then fails every permission-changing write.
+
+**Fix:** check Redis in readiness. Add an outbox-lag probe, ideally before row-level security
+lands so there is a baseline. See [operations.md](operations.md).
+
+## 9. The gateways open a database connection they do not need
+
+`app-gateway`'s config states plainly that it "never opens a database connection". The shared
+app factory calls `init_engine` unconditionally, and `/health/ready` runs `SELECT 1` against it,
+which readiness probes hit continuously.
+
+Harmless today, but under a database role split it means two more processes needing credentials
+and grants for no reason.
+
+**Fix:** make `init_engine` conditional on the service actually owning tables.
+
+## 10. A dead route in the operator route table
+
+`admin-gateway`'s `routes.json` maps `/api/v1/internal/accounts` to account-service, but that
+service mounts its internal router at `/internal/v1`. The prefixes do not match, so the route
+resolves at the gateway and then 404s at the upstream.
+
+**Fix:** delete it or correct it. Unclear which was intended — it should be decided rather than
+left as a route that looks supported.
