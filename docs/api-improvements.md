@@ -18,15 +18,33 @@ The router is excluded from the OpenAPI document, which is obscurity, not a cont
 making `/internal/v1` unreachable from ingress. Until then, treat the token as a production
 secret and never let the default ship.
 
-## 2. Cross-tenant reads leave no audit trail
+## 2. Cross-tenant reads left no trace — **partly fixed**
 
-**Severity: high.** `platform_core.audit.record_sensitive_read` exists precisely for this and is
-**called by nothing**. The three internal endpoints are the highest-value reads in the system —
-one of them returns, for a single email, the id, slug and name of every organization that person
-belongs to — and none of them is recorded.
+**Severity: high.** The internal endpoints are the highest-value reads in the system — one
+returns, for a single email, the id, slug and name of every organization that person belongs to
+— and none left any record.
 
-**Fix:** call it from all three. This is a small change with a large payoff the first time
-somebody asks "who looked this up".
+**The original recommendation here was to call `record_sensitive_read` from all three. That was
+wrong**, for three reasons that only surface on contact with the code:
+
+- It writes an `audit_logs` row, and `organization_id` is NOT NULL. These lookups resolve
+  somebody **before an organization is known** — that is their whole purpose — so there is no
+  value to put in the column.
+- The caller is a **service**, so there is no actor to attribute the row to either.
+- They are `GET`s on a session that never commits, so a staged row is simply discarded.
+
+And the grants endpoint is called by both gateways on **every authenticated request**. A row per
+call would put a write on the hottest path in the platform and bury the signal in volume.
+
+**Done instead:** a structured log line on the two user lookups, which happen at sign-in
+frequency — recording the resolved user id, how many organizations came back, and the calling
+service. The email is deliberately not logged; putting the identifier being looked up into every
+log aggregator duplicates the disclosure rather than recording it. The grants endpoint is left
+untraced by design.
+
+**Still open:** `record_sensitive_read` remains uncalled, and is still the right tool for its
+actual case — a *user* unmasking PII inside a tenant, where an organization, an actor and a
+committing transaction all exist. Nothing unmasks PII yet, so there is nothing to call it from.
 
 ## 3. Grants and directory lookups have no cache invalidation signal for the caller
 

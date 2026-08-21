@@ -29,7 +29,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -39,6 +39,9 @@ from platform_core.auth import require_service_token
 from platform_core.cache import current_permission_version
 from platform_core.db import get_session
 from platform_core.errors import NotFoundProblem
+from platform_core.logging import get_logger
+
+log = get_logger("account.internal")
 
 router = APIRouter(
     prefix="/internal/v1",
@@ -106,7 +109,9 @@ async def _serialise(session: AsyncSession, user: User) -> dict[str, Any]:
 
 
 @router.get("/users/by-email", summary="Look a person up by email, across all tenants")
-async def user_by_email(session: SessionDep, email: Annotated[str, Query()]) -> dict[str, Any]:
+async def user_by_email(
+    session: SessionDep, request: Request, email: Annotated[str, Query()]
+) -> dict[str, Any]:
     """Sign-in starts here, before any organization is known.
 
     Email is unique platform-wide among live users, which is what makes one person able to
@@ -119,16 +124,18 @@ async def user_by_email(session: SessionDep, email: Annotated[str, Query()]) -> 
         # 404 rather than an empty body: `HttpDirectory` maps it to `None`, and the caller
         # turns that into the same "wrong email or password" a bad password gets.
         raise NotFoundProblem("No such user")
+    _trace_directory_read(request, user, "by-email")
     return await _serialise(session, user)
 
 
 @router.get("/users/{user_id}", summary="One person, with every membership")
-async def user_by_id(session: SessionDep, user_id: uuid.UUID) -> dict[str, Any]:
+async def user_by_id(session: SessionDep, request: Request, user_id: uuid.UUID) -> dict[str, Any]:
     user = (
         await session.execute(select(User).where(User.id == user_id, User.deleted_at.is_(None)))
     ).scalar_one_or_none()
     if user is None:
         raise NotFoundProblem("No such user")
+    _trace_directory_read(request, user, "by-id")
     return await _serialise(session, user)
 
 
@@ -180,3 +187,36 @@ async def membership_grants(session: SessionDep, membership_id: uuid.UUID) -> di
 
 def _rank(scope: str) -> int:
     return {"OWN": 0, "TEAM": 1, "LOCATION": 2, "ORG": 3}.get(scope, 0)
+
+
+def _trace_directory_read(request: Request, user: User, how: str) -> None:
+    """Leave a trace of a cross-tenant directory read.
+
+    These endpoints answer with every organization a person belongs to, across customers.
+    That is the most sensitive read in the platform and until now it left no record at all.
+
+    A structured log line rather than an `audit_logs` row, deliberately, for three reasons.
+    There is **no organization to attribute the row to** — resolving somebody before an
+    organization is known is the entire purpose of the lookup, and `audit_logs.organization_id`
+    is NOT NULL. The caller is a **service**, so there is no actor to record either. And these
+    are GET requests on a session that never commits, so a staged row would simply be
+    discarded.
+
+    `record_sensitive_read` remains the right tool for a *user* unmasking PII inside a tenant,
+    where all three of those hold. It is the wrong tool here.
+
+    The grants endpoint is deliberately **not** traced: both gateways call it on every
+    authenticated request, so a line per call would bury the signal and cost the hottest path
+    in the platform. Sign-in frequency is a different order of magnitude.
+
+    The email is not logged — only the resolved user id. Logging the address would put the
+    identifier being looked up into every log aggregator, which is the disclosure this is
+    meant to make visible rather than duplicate.
+    """
+    log.info(
+        "directory.cross_tenant_read",
+        lookup=how,
+        user_id=str(user.id),
+        organizations=len(user.memberships),
+        calling_service=request.headers.get("X-Calling-Service", "unknown"),
+    )
