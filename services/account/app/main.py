@@ -12,6 +12,11 @@ app = create_app(
     title="Account service",
     description="Account service — part of the Atmora platform.",
     routers=[router],
+    # Redis is not optional here. Every write that changes what somebody may do bumps the
+    # organization's permission version, and that bump *raises* rather than degrading —
+    # telling an administrator the revocation failed beats reporting success while the
+    # person keeps their access. Without this the first role change raises RuntimeError.
+    redis=True,
 )
 
 # Mounted at the root rather than under `/api/v1`: service-to-service only, excluded from

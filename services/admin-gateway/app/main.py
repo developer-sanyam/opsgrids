@@ -16,7 +16,6 @@ from fastapi import FastAPI
 
 from app.config import settings
 from platform_core.app import create_app
-from platform_core.cache import close_redis, init_redis
 from platform_core.gateway import (
     GatewayPolicy,
     PermissionResolver,
@@ -58,14 +57,12 @@ resolver = PermissionResolver(
 
 
 async def _startup(app: FastAPI) -> None:
-    init_redis(cfg.redis_url)
     app.state.http = http_client(policy)
 
 
 async def _shutdown(app: FastAPI) -> None:
     await app.state.http.aclose()
     await resolver.aclose()
-    await close_redis()
 
 
 app = create_app(
@@ -77,6 +74,12 @@ app = create_app(
     ),
     on_startup=_startup,
     on_shutdown=_shutdown,
+    # The gateway owns no tables, so it opens no engine — an earlier version did,
+    # contradicting this service's own configuration comment and giving readiness a
+    # dependency it never uses. Redis it genuinely needs: the rate limiter and the
+    # permission-version check both read it, and both fail closed.
+    database=False,
+    redis=True,
 )
 
 build_gateway(app, settings=cfg, routes=routes, policy=policy, resolver=resolver)

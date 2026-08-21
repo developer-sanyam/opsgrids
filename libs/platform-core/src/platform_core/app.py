@@ -15,13 +15,16 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
+from platform_core.cache import close_redis, get_redis, init_redis
 from platform_core.config import ServiceSettings
 from platform_core.db import dispose_engine, get_engine, init_engine
 from platform_core.errors import register_error_handlers
 from platform_core.logging import RequestContextMiddleware, configure_logging, get_logger
 
 
-def build_health_router(settings: ServiceSettings) -> APIRouter:
+def build_health_router(
+    settings: ServiceSettings, *, database: bool = True, redis: bool = False
+) -> APIRouter:
     router = APIRouter(tags=["health"])
 
     @router.get("/health", summary="Liveness — is the process up?")
@@ -34,16 +37,37 @@ def build_health_router(settings: ServiceSettings) -> APIRouter:
 
         Conflating the two restarts a healthy process that is merely waiting on a
         dependency.
+
+        Only the dependencies a service actually declares are checked. A gateway owns no
+        tables, so asking it for a database is asking a question whose answer means nothing
+        — and a readiness probe that reports on something the service does not use is worse
+        than no probe, because it will eventually fail for a reason nobody can act on.
         """
         checks: dict[str, str] = {}
         healthy = True
-        try:
-            async with get_engine().connect() as conn:
-                await conn.execute(text("SELECT 1"))
-            checks["database"] = "ok"
-        except Exception as exc:
-            checks["database"] = f"error: {exc}"
-            healthy = False
+
+        if database:
+            try:
+                async with get_engine().connect() as conn:
+                    await conn.execute(text("SELECT 1"))
+                checks["database"] = "ok"
+            except Exception as exc:
+                checks["database"] = f"error: {exc}"
+                healthy = False
+
+        if redis:
+            # Not cosmetic. Redis is a hard dependency of any write that changes what
+            # somebody may do — the permission-version bump raises rather than degrading —
+            # and of the gateway's rate limiter and staleness check, both of which fail
+            # closed. Without this, a service whose Redis is gone reports itself ready and
+            # then refuses or crashes every one of those requests.
+            try:
+                await get_redis().ping()
+                checks["redis"] = "ok"
+            except Exception as exc:
+                checks["redis"] = f"error: {exc}"
+                healthy = False
+
         return {"status": "ok" if healthy else "degraded", "checks": checks}
 
     return router
@@ -57,7 +81,20 @@ def create_app(
     routers: list[APIRouter] | None = None,
     on_startup: Callable[[FastAPI], Any] | None = None,
     on_shutdown: Callable[[FastAPI], Any] | None = None,
+    database: bool = True,
+    redis: bool = False,
 ) -> FastAPI:
+    """Assemble a service.
+
+    `database` and `redis` declare what this service depends on. The lifespan opens and
+    closes exactly those, and readiness checks exactly those.
+
+    Declaring them here rather than in each service's own startup hook is deliberate. A
+    service that used Redis without initialising it raised `RuntimeError` on the first
+    request that touched it — and its tests passed, because they injected a fake client
+    directly. Making the dependency a parameter means forgetting it is a visible omission
+    at the call site instead of a crash in production.
+    """
     configure_logging(
         settings.service_name, level=settings.log_level, json_output=settings.log_json
     )
@@ -65,14 +102,25 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        init_engine(settings)
-        log.info("service.starting", environment=settings.environment)
+        if database:
+            init_engine(settings)
+        if redis:
+            init_redis(settings.redis_url)
+        log.info(
+            "service.starting",
+            environment=settings.environment,
+            database=database,
+            redis=redis,
+        )
         if on_startup:
             await _maybe_await(on_startup(app))
         yield
         if on_shutdown:
             await _maybe_await(on_shutdown(app))
-        await dispose_engine()
+        if redis:
+            await close_redis()
+        if database:
+            await dispose_engine()
         log.info("service.stopped")
 
     app = FastAPI(
@@ -99,7 +147,7 @@ def create_app(
     )
 
     register_error_handlers(app)
-    app.include_router(build_health_router(settings))
+    app.include_router(build_health_router(settings, database=database, redis=redis))
     for router in routers or []:
         app.include_router(router, prefix="/api/v1")
 
