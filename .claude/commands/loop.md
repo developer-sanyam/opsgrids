@@ -97,11 +97,32 @@ Spawn in parallel:
 Reconcile the two outputs yourself. If they conflict on tenancy or ownership boundaries,
 resolve it explicitly and record the decision as an ADR before any code exists.
 
+Then `system-design-reviewer` on the combined proposal, before any code exists. Architecture
+is cheapest to fix while it is still a document.
+
 Then `devops-engineer` → repo scaffold, package manager, lint/format/typecheck config,
 test runners, Docker, CI workflow that runs the full gate, `.env.example`, pre-commit hooks.
 
+Then `tooling-engineer` → the professional toolchain wired into the gate: generated API schema
+and typed client, component workshop, visual regression, accessibility automation, static
+analysis, secret scanning, dependency audit, query-plan tooling, performance budgets,
+dependency-boundary linting, telemetry. It returns the extra gate rows; add them.
+
 **Gate 2:** a clean checkout can install, typecheck, lint, run an empty test suite, boot,
-and pass CI. Do not proceed until that is true.
+and pass CI, and every tool in `docs/TOOLCHAIN.md` runs from a documented command. Do not
+proceed until that is true.
+
+## Phase 2.5 — Design foundation
+
+Before any UI exists, in parallel:
+- `product-designer` → information architecture, the core flows, the state inventory pattern,
+  and the product's copy voice
+- `design-system-architect` → tokens, type scale, spacing, colour with contrast verified,
+  elevation, motion, density, and the primitive component library in the workshop
+
+**Gate 2.5:** the primitives render in the workshop with every state as a story, visual
+regression has a baseline, automated accessibility checks pass over the stories, and the token
+lint rule rejects a deliberately planted raw hex value. No feature UI starts before this.
 
 ## Phase 3 — Foundation slice
 
@@ -118,8 +139,11 @@ Restate the slice's acceptance criteria. Identify the files likely to change. Wr
 slice entry into the ledger as `IN PROGRESS`. Use `TodoWrite` to track the sub-steps.
 
 ### 4.2 Build (parallel where independent)
-- `data-architect` first if the slice needs schema changes — migrations must land before
-  code that depends on them.
+- `product-designer` first for any user-facing slice — screen specs, every state, and final
+  copy. Engineers do not start UI from acceptance criteria alone.
+- `data-architect` first if the slice needs schema changes — access patterns, then schema,
+  then indexes with verified query plans. Migrations must land before code that depends on
+  them.
 - Then in parallel: `backend-engineer` and `frontend-engineer`.
 - `billing-engineer` instead of/alongside backend when the slice touches plans, entitlements,
   metering, or processor webhooks.
@@ -139,6 +163,9 @@ Once the build round returns, spawn **in parallel**:
   secrets, dependency advisories
 - `performance-auditor` → N+1s, missing indexes, payload size, bundle delta, caching
 - `accessibility-auditor` → WCAG 2.2 AA on new UI
+- `design-qa-auditor` → rendered UI against the spec and the design system, with screenshots
+- `algorithm-reviewer` → complexity and data-structure fit, for any slice with real
+  computation, search, scheduling, matching, aggregation, or bulk processing
 
 Each auditor is read-only and returns findings by severity: `BLOCKER`, `MAJOR`, `MINOR`.
 
@@ -159,16 +186,19 @@ On red after 3 rounds: revert the slice to the last green commit, mark it `BLOCK
 reason, and report to the user.
 
 ### 4.7 Every 3rd slice
-Spawn `code-quality-auditor` and `security-auditor` across the **whole** codebase, not just
-the diff, to catch drift and accumulated duplication. Treat the output as its own remediation
+Spawn `code-quality-auditor`, `security-auditor`, and `system-design-reviewer` across the
+**whole** codebase, not just the diff, to catch drift, accumulated duplication, and
+architectural erosion. Treat the output as its own remediation
 slice if it produces any `BLOCKER`.
 
 ## Phase 5 — Ship
 
 - `devops-engineer` → deploy config for the chosen target, production migration path,
   health checks, logging, error tracking, backups, rollback procedure
+- `system-design-reviewer` → final architectural pass, C4 diagrams current, failure modes and
+  capacity model verified against what was actually built
 - `docs-writer` → README with real setup steps, API reference, ADR index, ops runbook,
-  CHANGELOG
+  CHANGELOG, and the design system documentation
 - `release-manager` → independently re-verifies the full gate from a clean checkout,
   checks env parity and the deploy dry-run, then cuts the release
 
@@ -192,6 +222,14 @@ All must pass, on a clean install:
 | 8 | E2E suite passes against the built app | red |
 | 9 | No `BLOCKER` or `MAJOR` audit findings open | red |
 | 10 | No secrets, no `.only`, no `.skip`, no debug logging in the diff | red |
+| 11 | API schema regenerated and matching the implementation | red |
+| 12 | Visual regression: no unintended pixel change; new states have baselines | red |
+| 13 | Automated accessibility checks pass over stories and key routes | red |
+| 14 | Performance budget met: bundle size and page metrics within budget | red |
+| 15 | Query plans for new access patterns show no scan on a large table | red |
+| 16 | Static analysis, secret scan, dependency audit, and license check clean | red |
+| 17 | Dependency-boundary lint passes; no import cycles | red |
+| 18 | Token lint: no raw colour, spacing, or type values in feature code | red |
 
 Report the gate as a table with the real command and its exit status per row. Never report a
 row green without having run it in this session.

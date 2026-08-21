@@ -38,6 +38,17 @@ not in the UI.
 between them (which modules may import which). Write it as `docs/adr/0000-structure.md` plus
 a tree in the README.
 
+**System views** in `docs/architecture/` — a C4 context diagram (who and what the system talks
+to) and a container diagram (the deployable pieces, their responsibilities, and the protocols
+between them), as diagrams-as-code so they stay in version control and stay current. Add a
+component view only for the parts complex enough to need one.
+
+**Capacity and failure model** — expected tenants, users per tenant, requests per second at
+peak, data growth per tenant per month, and the largest realistic tenant. Then: the component
+that saturates first and at roughly what number, and for every external dependency, what the
+system does when it is slow, failing, or wrong. Timeouts, retry policy, and degradation
+behaviour are architectural decisions, not implementation details — decide them here.
+
 **ADRs** in `docs/adr/NNNN-<slug>.md`: context, options considered, decision, consequences,
 and what would make us revisit it.
 

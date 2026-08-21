@@ -24,10 +24,15 @@ has no remote configured.**
 
 ## Gate commands
 install: `make install` | typecheck: `make typecheck` | lint: `make lint` |
-test: `make test` (needs `make infra`) | e2e: `make e2e` | migrate: `make migrate` and
-`make migration-check` | build: none yet | everything CI runs: `make check`
+test: `make test` (needs `make infra`) | migrate: `make migrate` and
+`make migration-check` | e2e: none yet | build: none yet | everything CI runs: `make check`
 
-Row 6 (production build) has nothing to run here. Report it N/A with the reason, never green.
+The gate is 18 rows as of the v2 harness. Rows 1–5, 7, 9 and 10 map onto the make targets
+above. Rows **6, 8, 11–18** — production build, E2E, schema drift, visual regression,
+automated accessibility, performance budget, query plans, SAST and license, dependency
+boundaries, token lint — have **no tooling wired in this repo**. Report each N/A with the
+reason, never green; the orchestrator's own rule is that a row is never green without having
+been run in that session. Wiring them is `tooling-engineer`'s job and has not happened.
 
 ## Slices
 
