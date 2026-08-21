@@ -75,6 +75,34 @@ Everything an application needs and a marketing site does not:
 
 ---
 
+## The standards exist even though the components do not
+
+Everything in the Absent table now has a written rule in
+[theme-guide.md](theme-guide.md), adopted from the digital-accounts web guide, which had already
+solved the data-dense problem this platform is about to hit:
+
+| Gap | The rule that now governs it |
+|---|---|
+| Data display | Sticky headers, zebra via `--panel-2`, right-aligned **tabular numerals**, colour on the value rather than the row, own scroll container |
+| Money | Render from integer minor units; format with `Intl.NumberFormat('en-IN')` — lakh/crore, not thousands |
+| Density | A comfortable/compact toggle on dense screens, switched at token level |
+| Motion | One orchestrated page-load reveal per screen; respect `prefers-reduced-motion` |
+| Empty and loading states | Required for anything that displays data, designed rather than defaulted |
+| Responsive | Container queries so a component adapts to its pane; tables collapse to cards on mobile |
+| Token discipline | No raw values **and no inline styles**, with one narrow exception |
+
+Two of these are worth knowing before the first product screen is written, because retrofitting
+them is expensive:
+
+- **Tabular numerals.** Proportional digits do not align in a column, so every payslip, invoice
+  and usage total is harder to scan. It is one CSS property and it has to be there from the
+  first table.
+- **Indian number grouping.** ₹12,34,567.89, not ₹1,234,567.89. Immediately obvious to every
+  Indian customer and invisible to everyone else — which is exactly why it ships broken.
+
+The design tokens for money direction — `--credit`, `--debit`, `--pending` — are **specified and
+not yet defined**, since nothing renders money yet.
+
 ## What this means in practice
 
 The theme is **good for what it covers and covers very little of an application**. The marketing
