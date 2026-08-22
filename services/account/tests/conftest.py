@@ -32,8 +32,33 @@ from app.main import app
 from app.models import SCHEMA, Base, Membership, Organization
 from app.schemas import OrganizationIn
 from platform_core import cache
-from platform_core.db import TENANT_GUC, get_directory_session, get_session
+from platform_core.db import (
+    TENANT_GUC,
+    dispose_engine,
+    get_directory_session,
+    get_session,
+    init_engine,
+)
 from tests.helpers import FakeRedis
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _engine() -> AsyncIterator[None]:
+    """The process-wide engine the app lifespan would normally open.
+
+    Needed because routes that cannot bind a tenant up front — accepting an invitation is the
+    one — open their own tenant-scoped transaction from the shared sessionmaker after reading
+    which organization they belong to. Overriding `get_session` is not enough for those: they
+    ask the sessionmaker directly, exactly as they do in production.
+
+    Per test rather than per session: an asyncpg pool belongs to the event loop that created
+    it, and pytest-asyncio gives each test its own. A session-scoped engine works until a test
+    actually uses it from a different loop, and then fails as a pending-task error that says
+    nothing about the cause.
+    """
+    init_engine(settings())
+    yield
+    await dispose_engine()
 
 
 def _connect_args() -> dict:
