@@ -14,8 +14,18 @@ rather than a horizontal layer. Nothing is "done" until its tests pass.
 
 ### Row-level security
 **[ADR-0002](adr/0002-row-level-security.md) is accepted and its four open questions are
-answered.** Unblocked — this is now the next thing to build, in two slices: prerequisites
-(roles, DSN split, tenant chokepoint, no policies) then policies.
+answered.** In progress, in two slices.
+
+**Slice one — prerequisites, no policies. Roles and DSN split are done** (`c708f60`): services
+connect as per-service NOBYPASSRLS roles, migrations as an owner role, grants applied by the
+migration run, TRUNCATE and audit-rewrite withheld, and the test suite moved onto the app role
+so the split is visible to it. **Remaining: the tenant chokepoint** — a dependency that opens
+the transaction and sets the GUC as its first statement, replacing the `session.begin()` each
+write route currently opens for itself. Its exit gate is an assertion that the GUC is set on
+every transaction, with no policy existing anywhere.
+
+**Slice two — policies.** `roles.organization_id` to NOT NULL first, then per-schema policies,
+`users` left un-policied.
 
 This is first because every product service adds tables, and each one added before RLS is a
 table to retrofit afterwards. The ADR's key finding is that RLS is inert for **three
