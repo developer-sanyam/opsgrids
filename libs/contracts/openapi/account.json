@@ -1454,7 +1454,7 @@
     },
     "/api/v1/invitations/accept": {
       "post": {
-        "description": "Public by design: the invitee has a token, not yet an account.\n\nThe token is the credential, so every failure \u2014 unknown, expired, already used \u2014\nreturns the same message. A distinct \"expired\" reply confirms to whoever is guessing\nthat they found a real one.",
+        "description": "Public by design: the invitee has a token, not yet an account.\n\nBypass-then-narrow (ADR-0002, path 4). The caller carries no principal, so there is no\ntenant to bind until the invitation itself names one. The invitation is therefore read on\nthe bypass session \u2014 BYPASSRLS, SELECT-only, one row of one table \u2014 purely to learn its\norganization; then a tenant-scoped transaction is opened on the application role\n(NOBYPASSRLS) and every write happens under policy. The bypass touches a single lookup;\nthe writes stay enforced.\n\nThe token is the credential, so every failure \u2014 unknown, expired, already used \u2014 returns\nthe same message. A distinct \"expired\" reply confirms to whoever is guessing that they\nfound a real one. All of that validation stays inside `accept_invitation` under the tenant\nsession, so the resolver above cannot leak that a token was real either.",
         "operationId": "accept_invitation_api_v1_invitations_accept_post",
         "requestBody": {
           "content": {
@@ -2279,7 +2279,7 @@
     },
     "/health/outbox": {
       "get": {
-        "description": "How far behind the relay is. **Alert on `oldest_seconds`.**\n\nA stalled relay is the platform's quietest failure. It selects, finds nothing,\nlogs nothing, sleeps, and loops \u2014 `attempts` never increments and `last_error`\nstays null, so the process looks healthy indefinitely while the outbox grows\nwithout bound and every consumer downstream starves.\n\nDeliberately **not** part of readiness. A backlog is not a reason to take the\nservice out of rotation: refusing traffic would stop new events being written\nwithout helping drain the ones already queued, which makes the incident worse.\nThis is a metric to alert on, not a health state.",
+        "description": "How far behind the relay is. **Alert on `oldest_seconds`.**\n\nA stalled relay is the platform's quietest failure. It selects, finds nothing,\nlogs nothing, sleeps, and loops \u2014 `attempts` never increments and `last_error`\nstays null, so the process looks healthy indefinitely while the outbox grows\nwithout bound and every consumer downstream starves.\n\nDeliberately **not** part of readiness. A backlog is not a reason to take the\nservice out of rotation: refusing traffic would stop new events being written\nwithout helping drain the ones already queued, which makes the incident worse.\nThis is a metric to alert on, not a health state.\n\nCounted through the outbox engine, not the application one. The app role is\nNOBYPASSRLS and this request binds no tenant, so through it `pending` would be\nzero whatever the table holds \u2014 the probe that exists to expose the stall would\nbe wired to the same blind spot that causes it.",
         "operationId": "outbox_health_outbox_get",
         "responses": {
           "200": {
