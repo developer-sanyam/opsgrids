@@ -23,6 +23,8 @@ applied by the migration run so a new service cannot ship without them; TRUNCATE
 audit-rewrite are withheld by privilege; the test suite runs as the app role so the split is
 visible to it. The tenant chokepoint opens each request's transaction and binds it to the
 caller's organization as the first statement — routes no longer open transactions of their own.
+auth's principal routes (switch-org, me, MFA enrolment, password change) are on the chokepoint
+too, and outside production the binding is read back and asserted immediately after it is set.
 
 Exit gate met: the GUC is set on every transaction, it does **not** survive the transaction,
 and a static check refuses any route that takes a bare session or opens its own transaction.
@@ -49,6 +51,10 @@ session sees nothing at all.
 ADR-0002 lists (`audit_logs` first — its five single-column indexes no longer lead with the
 tenant column now that the policy qual is ANDed into every query). Neither blocks correctness;
 the second is a performance cliff waiting for volume.
+
+The relay and the stall probe now run on `atmora_outbox` (BYPASSRLS, SELECT and UPDATE on
+`outbox` only), so neither is blind to the rows the app role can no longer see — which both were
+the moment the policies landed, since each connected as the app role with no tenant bound.
 
 ---
 

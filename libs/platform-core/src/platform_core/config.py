@@ -78,9 +78,8 @@ class ServiceSettings(BaseSettings):
     #: carry a different password per service without becoming a deployment system.
     db_app_role: str | None = None
 
-    #: The role migrations, relays and consumers connect as. **BYPASSRLS**: a relay claims
-    #: work across every organization, and the purpose of its query is to discover which
-    #: tenants have any — there is no tenant to set beforehand.
+    #: The role migrations and backfills connect as. **BYPASSRLS**, and it owns the schemas,
+    #: so it can write anything — which is why nothing long-running connects as it.
     db_admin_role: str | None = None
 
     #: The role the internal directory lookups connect as. **BYPASSRLS but SELECT-only**, on a
@@ -92,6 +91,16 @@ class ServiceSettings(BaseSettings):
     #: to write anything, and the risk being managed is a route added to that module later, not
     #: the three that exist today.
     db_directory_role: str | None = None
+
+    #: The role the outbox relay and the outbox-lag probe connect as. **BYPASSRLS, with SELECT
+    #: and UPDATE on `outbox` only.**
+    #:
+    #: BYPASSRLS because the relay's query exists to *discover* which tenants have work, so
+    #: there is no tenant to bind before it runs. Not the admin role, because a relay bug must
+    #: not be able to write anything else. Not the app role, because that one is now correctly
+    #: blind: under row-level security with no tenant bound it selects nothing, logs nothing and
+    #: loops while the outbox fills (ADR-0002, "Relay stall").
+    db_outbox_role: str | None = None
 
     redis_url: str = "redis://localhost:6380/0"
     rabbitmq_url: str = "amqp://atmora:atmora@localhost:5673/"
@@ -184,8 +193,13 @@ class ServiceSettings(BaseSettings):
         return self.dsn_as(self.db_directory_role)
 
     @property
+    def outbox_dsn(self) -> str:
+        """What the relay and the outbox-lag probe connect with. BYPASSRLS, `outbox` only."""
+        return self.dsn_as(self.db_outbox_role)
+
+    @property
     def admin_dsn(self) -> str:
-        """What migrations, relays and consumers connect with. BYPASSRLS."""
+        """What migrations connect with. BYPASSRLS, and it owns everything."""
         return self.dsn_as(self.db_admin_role)
 
     def model_post_init(self, _: object) -> None:

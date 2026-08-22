@@ -1,15 +1,23 @@
 """Engine, sessions, and the tenant guard.
 
-Two things here are load-bearing and easy to get wrong.
+Three things here are load-bearing and easy to get wrong.
 
 **`search_path` is per connection; the tenant id must not be.** The pool hands the same
 connection to the next request, so a tenant GUC set in `connect_args` leaks across
 tenants. `set_config(..., true)` inside the transaction is the only safe form — it is
 cleared automatically on commit or rollback.
 
-**`get_session` never commits.** Service functions open `async with session.begin()`
-themselves, which is what lets a state change, its audit row and its outbox row share one
-transaction. A dependency that commits for you takes that away.
+**`get_session` never commits, and opens no transaction.** It is what the pre-organization
+paths — sign-in, invitation acceptance — take, and what the test fixtures override. A
+dependency that commits for you takes away the property that a state change, its audit
+row and its outbox row share one transaction.
+
+**`get_tenant_session` is the chokepoint** (ADR-0002 §1). It opens the one transaction a
+request with a principal runs in and binds it to the caller's organization as the first
+statement. The GUC is transaction-local and does not survive into a later transaction on
+the same session, so it cannot be set once at request entry — it has to be set by whatever
+opens the transaction. Routes with a principal take it and open nothing themselves; a
+route that forgets is caught by the route audit in each service's tests.
 """
 
 from __future__ import annotations
@@ -19,7 +27,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from typing import Annotated, Any
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -30,17 +38,24 @@ from sqlalchemy.ext.asyncio import (
 
 from platform_core.auth import CurrentPrincipal
 from platform_core.config import ServiceSettings
+from platform_core.logging import get_logger
+
+log = get_logger("db")
 
 _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 _directory_engine: AsyncEngine | None = None
 _directory_sessionmaker: async_sessionmaker[AsyncSession] | None = None
+_outbox_engine: AsyncEngine | None = None
+_outbox_sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 #: Transaction-local GUC read by every row-level security policy.
 TENANT_GUC = "app.organization_id"
 
 
-def apply_schema_grants(connection: Any, schema: str, app_role: str | None) -> None:
+def apply_schema_grants(
+    connection: Any, schema: str, app_role: str | None, *, outbox_role: str | None = None
+) -> None:
     """Give this service's app role exactly what it needs on its own schema.
 
     Called from every service's `migrations/env.py` after the migrations run, rather than
@@ -92,6 +107,24 @@ def apply_schema_grants(connection: Any, schema: str, app_role: str | None) -> N
                 text("SELECT to_regclass(:name)"), {"name": f"{schema}.{table}"}
             ).scalar():
                 connection.execute(text(f'GRANT SELECT ON "{schema}"."{table}" TO "{directory}"'))
+
+    # The relay and the outbox-lag probe: cross-tenant, and confined to the one table whose
+    # rows they mark. SELECT and UPDATE are what `FOR UPDATE SKIP LOCKED` and the
+    # `published_at`/`attempts` writes need; INSERT is withheld because only a request
+    # transaction stages events, DELETE because the outbox is the record of what was sent.
+    if (
+        outbox_role
+        and connection.execute(
+            text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": outbox_role}
+        ).scalar()
+    ):
+        connection.execute(text(f'GRANT USAGE ON SCHEMA "{schema}" TO "{outbox_role}"'))
+        if connection.execute(
+            text("SELECT to_regclass(:name)"), {"name": f"{schema}.outbox"}
+        ).scalar():
+            connection.execute(
+                text(f'GRANT SELECT, UPDATE ON "{schema}"."outbox" TO "{outbox_role}"')
+            )
 
     # Append-only, enforced by privilege rather than by convention.
     if connection.execute(
@@ -163,6 +196,39 @@ async def dispose_engine() -> None:
     _sessionmaker = None
 
 
+async def assert_app_role(engine: AsyncEngine, *, environment: str) -> None:
+    """Refuse to serve as a role that row-level security cannot bind.
+
+    A superuser, or any role with BYPASSRLS, ignores every policy unconditionally — not
+    even `FORCE ROW LEVEL SECURITY` applies to it. Policies written against such a
+    connection look enforced in dev, CI, review and production alike, and are not
+    (ADR-0002 finding 2). Outside `local` that is fatal. In `local` it is a warning,
+    because a developer pointed at the wrong DSN should find out without being locked out
+    of their own machine.
+    """
+    probe = text(
+        "SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user"
+    )
+    async with engine.connect() as conn:
+        role, superuser, bypassrls = (await conn.execute(probe)).one()
+
+    if not (superuser or bypassrls):
+        return
+    if environment != "local":
+        raise RuntimeError(
+            f"refusing to start as database role {role!r}: rolsuper={superuser}, "
+            f"rolbypassrls={bypassrls}. Row-level security would be silently inert; "
+            "connect as the service's own NOBYPASSRLS role"
+        )
+    log.warning(
+        "db.role.bypasses_rls",
+        role=role,
+        superuser=superuser,
+        bypassrls=bypassrls,
+        environment=environment,
+    )
+
+
 async def set_tenant(session: AsyncSession, organization_id: uuid.UUID) -> None:
     """Bind this transaction to one organization, for row-level security.
 
@@ -229,6 +295,100 @@ async def get_directory_session() -> AsyncIterator[AsyncSession]:
         yield session
 
 
+def init_outbox_engine(settings: ServiceSettings) -> None:
+    """A third engine, for the two things that must see every tenant's outbox rows.
+
+    The relay and the `/health/outbox` probe connect as a role with BYPASSRLS, because the
+    relay's query exists to discover which organizations have work — there is no tenant to
+    bind before it runs. Not the admin role: that one owns the schema and can write anything,
+    and a relay bug must be able to touch nothing but `outbox`. Not the app role: under
+    row-level security with no tenant bound it selects zero rows, logs nothing and loops
+    while the outbox fills (ADR-0002, "Relay stall").
+
+    When no outbox role is configured this opens nothing, and `get_outbox_sessionmaker` and
+    `get_outbox_engine` fall back to the application engine. **That fallback is the
+    silent-stall configuration.** It exists only so a deployment that has not split its roles
+    still starts; it is logged at warning level here so it is never invisible, because the
+    relay and probe built on it see no rows once the policies are live.
+
+    A small pool on purpose: one polling loop and one probe do not need the application's.
+    """
+    global _outbox_engine, _outbox_sessionmaker
+    if _outbox_engine is not None:
+        return
+    if not settings.db_outbox_role:
+        log.warning(
+            "outbox.role.not_split",
+            service=settings.service_name,
+            hint="db_outbox_role is unset; the relay and /health/outbox run as the app role "
+            "and see no rows under row-level security",
+        )
+        return
+
+    _outbox_engine = create_async_engine(
+        settings.outbox_dsn,
+        pool_size=2,
+        max_overflow=2,
+        pool_pre_ping=True,
+        connect_args={
+            "server_settings": {
+                "search_path": f"{settings.db_schema},public",
+                "application_name": f"{settings.service_name}-outbox",
+            }
+        },
+    )
+    _outbox_sessionmaker = async_sessionmaker(
+        _outbox_engine, expire_on_commit=False, autoflush=False, class_=AsyncSession
+    )
+
+
+def get_outbox_engine() -> AsyncEngine:
+    """The engine `/health/outbox` counts through. Falls back to the app engine when unsplit."""
+    if _outbox_engine is None:
+        return get_engine()
+    return _outbox_engine
+
+
+def get_outbox_sessionmaker() -> async_sessionmaker[AsyncSession]:
+    """What `OutboxRelay` drains through.
+
+    Falls back to the application sessionmaker when no outbox role is configured — see
+    `init_outbox_engine` for why that fallback is the stall, and is tolerated only so an
+    un-split deployment starts.
+    """
+    if _outbox_sessionmaker is None:
+        return get_sessionmaker()
+    return _outbox_sessionmaker
+
+
+async def dispose_outbox_engine() -> None:
+    global _outbox_engine, _outbox_sessionmaker
+    if _outbox_engine is not None:
+        await _outbox_engine.dispose()
+    _outbox_engine = None
+    _outbox_sessionmaker = None
+
+
+async def assert_tenant(session: AsyncSession, organization_id: uuid.UUID) -> None:
+    """Raise unless this transaction's tenant GUC names `organization_id`.
+
+    The ADR-0002 §4 probe. Under RLS an unset or wrong tenant does not error — it returns
+    zero rows, and the application already has friendly messages that dress that up as
+    ordinary empty state. One round trip here turns the quietest failure in the platform
+    into an immediate one. `current_setting(..., true)` returns NULL when the GUC was never
+    set on the connection and '' once an earlier transaction's value has expired; both are
+    a mismatch.
+    """
+    current = (
+        await session.execute(text(f"SELECT current_setting('{TENANT_GUC}', true)"))
+    ).scalar_one()
+    if current != str(organization_id):
+        raise RuntimeError(
+            f"tenant GUC {TENANT_GUC} is {current!r} inside a request for organization "
+            f"{organization_id}: the transaction is not bound to the caller's tenant"
+        )
+
+
 async def get_session() -> AsyncIterator[AsyncSession]:
     """FastAPI dependency. No implicit transaction, and never commits."""
     sessionmaker = get_sessionmaker()
@@ -241,7 +401,9 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 
 async def get_tenant_session(
-    principal: CurrentPrincipal, session: Annotated[AsyncSession, Depends(get_session)]
+    principal: CurrentPrincipal,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    request: Request,
 ) -> AsyncIterator[AsyncSession]:
     """The tenancy chokepoint. **Every tenant-scoped route goes through this.**
 
@@ -264,9 +426,17 @@ async def get_tenant_session(
     Today this is a no-op against a database with no policies: nothing reads the GUC yet.
     That is deliberate — it lands and is proven on its own, before any policy exists to
     confuse a failure with.
+
+    Outside production, one extra round trip reads the GUC back and raises if it is not
+    the principal's organization. Under RLS a missing tenant yields zero rows and the
+    application would report that as normal empty state (ADR-0002 §4); the probe makes it
+    loud instead.
     """
+    settings: ServiceSettings = request.app.state.settings
     async with session.begin():
         await set_tenant(session, principal.organization_id)
+        if not settings.is_production:
+            await assert_tenant(session, principal.organization_id)
         yield session
 
 
@@ -276,9 +446,10 @@ async def session_scope(
 ) -> AsyncIterator[AsyncSession]:
     """Transaction for workers, relays and scripts. Commits on a clean exit.
 
-    Pass `organization_id` when the work belongs to one tenant. Relays and fan-out
-    consumers deliberately pass nothing and must run as a role with BYPASSRLS — see
-    CLAUDE.md, because getting this wrong stops event processing silently.
+    Pass `organization_id` when the work belongs to one tenant. Anything that deliberately
+    passes nothing must run as a role with BYPASSRLS — the relay has its own, `atmora_outbox`,
+    reached through `get_outbox_sessionmaker` rather than this — see CLAUDE.md, because
+    getting this wrong stops event processing silently.
     """
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session, session.begin():

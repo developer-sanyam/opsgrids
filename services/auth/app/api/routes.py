@@ -42,13 +42,19 @@ from app.schemas import (
     TokenOut,
 )
 from platform_core.auth import CurrentPrincipal
-from platform_core.db import get_session
+from platform_core.db import get_session, get_tenant_session
 from platform_core.errors import UnauthorizedProblem
 
 router = APIRouter(tags=["auth"])
 wellknown = APIRouter(tags=["discovery"])
 
+# Two kinds of session, decided by whether a principal exists. The pre-organization routes
+# — sign-in, the second factor, refresh, logout, password reset — take a bare session:
+# there is no tenant to bind before an organization has been chosen. Every route with a
+# `CurrentPrincipal` takes `TenantSessionDep`, which opens the request's one transaction
+# and binds it to the caller's organization first (ADR-0002 §1); none of them opens its own.
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+TenantSessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
 
 
 def _set_refresh_cookie(response: Response, cfg: Settings, token: str) -> None:
@@ -179,7 +185,7 @@ async def select_org(
 async def switch_org(
     payload: SwitchOrgIn,
     response: Response,
-    session: SessionDep,
+    session: TenantSessionDep,
     directory: DirectoryDep,
     entitlements: EntitlementsDep,
     pair: KeyDep,
@@ -247,7 +253,9 @@ async def logout(request: Request, session: SessionDep, pair: KeyDep) -> Respons
 
 
 @router.get("/auth/me", response_model=MeOut, summary="Who the caller is")
-async def me(session: SessionDep, directory: DirectoryDep, principal: CurrentPrincipal) -> MeOut:
+async def me(
+    session: TenantSessionDep, directory: DirectoryDep, principal: CurrentPrincipal
+) -> MeOut:
     user = await directory.get(principal.sub)
     if user is None:
         raise UnauthorizedProblem("That session is no longer valid.")
@@ -299,7 +307,7 @@ async def mfa_verify(
     summary="Start setting up an authenticator app",
 )
 async def mfa_enrol(
-    session: SessionDep, directory: DirectoryDep, principal: CurrentPrincipal
+    session: TenantSessionDep, directory: DirectoryDep, principal: CurrentPrincipal
 ) -> MfaEnrolStart:
     user = await directory.get(principal.sub)
     if user is None:
@@ -316,7 +324,7 @@ async def mfa_enrol(
     summary="Prove the app works and turn MFA on",
 )
 async def mfa_confirm(
-    payload: MfaEnrolConfirmIn, session: SessionDep, principal: CurrentPrincipal
+    payload: MfaEnrolConfirmIn, session: TenantSessionDep, principal: CurrentPrincipal
 ) -> MfaEnrolled:
     codes = await services.confirm_mfa_enrolment(
         session, factor_id=payload.factor_id, user_id=principal.sub, code=payload.code
@@ -336,18 +344,17 @@ async def mfa_confirm(
 async def change_password(
     payload: PasswordChangeIn,
     request: Request,
-    session: SessionDep,
+    session: TenantSessionDep,
     principal: CurrentPrincipal,
 ) -> Response:
-    async with session.begin():
-        await services.change_password(
-            session,
-            cfg=settings(),
-            user_id=principal.sub,
-            current=payload.current_password,
-            new=payload.new_password,
-            request=request,
-        )
+    await services.change_password(
+        session,
+        cfg=settings(),
+        user_id=principal.sub,
+        current=payload.current_password,
+        new=payload.new_password,
+        request=request,
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

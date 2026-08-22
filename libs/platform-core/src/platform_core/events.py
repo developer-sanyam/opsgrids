@@ -126,7 +126,9 @@ class OutboxRelay:
     ``FOR UPDATE SKIP LOCKED``, so several replicas can drain the same table safely.
 
     **This process must not be subject to row-level security** — it deliberately handles
-    every organization's events in one loop. Run it as a role with BYPASSRLS.
+    every organization's events in one loop. Run it as `atmora_outbox` (BYPASSRLS, SELECT and
+    UPDATE on `outbox` only), through `get_outbox_sessionmaker`; as the app role it selects
+    nothing, logs nothing and loops while the outbox fills.
     """
 
     def __init__(

@@ -33,6 +33,7 @@ from platform_core.config import ServiceSettings, settings_for
 class Settings(ServiceSettings):
     service_name: str = "{name}"
     db_schema: str = "{schema}"
+    db_outbox_role: str | None = "atmora_outbox"
 
 
 def settings() -> Settings:
@@ -98,9 +99,11 @@ from __future__ import annotations
 ''',
         "app/services.py": f'''"""Writes for {name}.
 
-Business rules, transactions, audit rows and outbox rows. A write opens its own
-transaction with `async with session.begin()` so the state change, its audit entry and
-any event it emits all commit or all roll back.
+Business rules, audit rows and outbox rows. Nothing here opens or commits a transaction:
+a route with a principal takes its session from `get_tenant_session`, which opens the
+request's one transaction and binds it to the caller's organization first (ADR-0002 §1),
+so the state change, its audit entry and any event it emits all commit or all roll back
+together.
 """
 
 from __future__ import annotations
@@ -140,8 +143,10 @@ app = create_app(
 ''',
         "app/relay.py": f'''"""Outbox relay for {name}. Runs as its own process.
 
-Must run as a role with BYPASSRLS: it drains every organization's events in one loop, so
-under row-level security as the app role it would silently see nothing.
+Runs as `atmora_outbox`: BYPASSRLS, because it drains every organization's events in one
+loop and under row-level security the app role would silently see nothing; privileged to read
+and mark rows in `outbox` and nothing else, because the admin role owns the whole schema and a
+bug here must not be able to write anything but the rows it marks as sent.
 """
 
 from __future__ import annotations
@@ -150,17 +155,20 @@ import asyncio
 
 from app.config import settings
 from app.models import OutboxEvent
-from platform_core.db import get_sessionmaker, init_engine
+from platform_core.db import get_outbox_sessionmaker, init_engine, init_outbox_engine
 from platform_core.events import OutboxRelay
 
 
 async def main() -> None:
     cfg = settings()
+    # The app engine is the fallback `get_outbox_sessionmaker` takes when no outbox role is
+    # configured; `init_outbox_engine` logs `outbox.role.not_split` in that case.
     init_engine(cfg)
+    init_outbox_engine(cfg)
     relay = OutboxRelay(
         amqp_url=cfg.rabbitmq_url,
         outbox_cls=OutboxEvent,
-        session_factory=get_sessionmaker(),
+        session_factory=get_outbox_sessionmaker(),
         producer=cfg.service_name,
     )
     await relay.run()

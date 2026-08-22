@@ -118,7 +118,7 @@ March must use March's rates.
 
 Every table carries `organization_id`. Every query filters on it. **And** Postgres RLS policies
 enforce it with `FORCE ROW LEVEL SECURITY`, driven by a transaction-local
-`set_config('app.org_id', …, true)`.
+`set_config('app.organization_id', …, true)`.
 
 No per-tenant database, and no cross-schema foreign keys — `org_id` stays a plain indexed
 `NOT NULL` UUID, with a nightly orphan check.

@@ -66,7 +66,7 @@ The blockers are gone; these are not blockers but they are not nothing:
 | Gap | Consequence |
 |---|---|
 | **Readiness does not check Redis** | A service reports ready, then fails every permission-changing write and refuses all gateway traffic |
-| **No outbox-lag monitoring** | A stalled relay is completely silent — the process looks healthy while the queue grows without bound |
+| **Outbox-lag monitoring is a probe, not an alert** | `GET /health/outbox` counts every tenant's unpublished rows through `atmora_outbox`, so a stalled relay is visible — but nothing scrapes it yet, and a probe nobody alerts on is a stall nobody notices |
 | **No DLQ alerting** | Moot today (no consumers) — mandatory before the first one |
 | **No metrics, tracing or error tracking** | Correlation ids are propagated and nothing collects them |
 | **Cross-tenant reads are not audited** | `record_sensitive_read` exists and is called by nothing |
@@ -110,7 +110,7 @@ Roughly in order. This is not the full backlog — it is the subset that changes
    isolated" into evidence.
 5. Replace the internal static token with signed service tokens, and make `/internal/v1`
    unreachable from ingress.
-6. Add the outbox-lag probe and Redis readiness check.
+6. Add the outbox-lag probe and Redis readiness check. Done; the probe and the relay run as `atmora_outbox`, which is what makes the count cross-tenant under row-level security.
 7. Write the end-to-end journey suite.
 
 Items 1–4 are one coherent piece of work and should be sequenced together. Items 5 and 6 are

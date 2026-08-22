@@ -59,7 +59,7 @@ def do_run_migrations(connection: Connection) -> None:
     # After the schema is up to date, not before: the grants name tables the migrations
     # just created. Doing it here rather than in a per-service step means a new service
     # cannot ship without them.
-    apply_schema_grants(connection, SCHEMA, cfg.db_app_role)
+    apply_schema_grants(connection, SCHEMA, cfg.db_app_role, outbox_role=cfg.db_outbox_role)
 
 
 async def run_async_migrations() -> None:
