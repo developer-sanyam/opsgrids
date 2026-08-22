@@ -129,6 +129,13 @@ service — the make target, the Dockerfile, the end-to-end harness — starts i
 **Why nobody noticed:** the defaults happen to match the development file. Change a value in
 `.env`, run the service the documented way, and the change does nothing.
 
+**Correction to an earlier entry.** The dev database was once stamped with migration revisions
+that did not exist on disk, and this page attributed that to regenerated initial migrations.
+That was wrong. Those two revision ids belong to a parallel branch, `tenancy-prerequisites`,
+whose worktree had migrated the same shared database. Several branches were being developed
+against one Postgres instance at once, which is worth knowing before diagnosing the next
+mysterious revision.
+
 **What finally surfaced it:** auth-service is the one service with a setting that has no usable
 default — the signing key path. It refused to start, reporting a missing key, which read as a
 missing key rather than a missing config file. The end-to-end suite was the first thing to start

@@ -118,6 +118,22 @@ ten call sites.
 
 ---
 
+## Branches deliberately not merged
+
+`feat/tenant-chokepoint`, `feat/e2e-journey` and `worktree-feat+tenancy-prerequisites` are
+parallel implementations of work `main` already carries. Their tests fail here not because the
+behaviour differs but because they are written against a different internal design — a
+`tenant_transaction` helper where this has `get_tenant_session`, per-service DSN environment
+variables where this rewrites a role name into one URL.
+
+Adopting them would mean adopting that design: a rewrite of working, tested code to arrive at
+the same place. The properties they assert are already asserted here against the design that
+exists. The useful pieces were taken instead — the audit coercion, the gate tooling, the outbox
+role, the invitation-accept fix, and the cross-tenant sweep and query-plan checks.
+
+They are left on the remote rather than deleted, since deleting somebody else's branch is not
+this session's call to make.
+
 ## Delivered
 
 | Slice | Commit |
