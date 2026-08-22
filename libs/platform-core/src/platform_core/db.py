@@ -17,8 +17,9 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
-from typing import Any
+from typing import Annotated, Any
 
+from fastapi import Depends
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -27,6 +28,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from platform_core.auth import CurrentPrincipal
 from platform_core.config import ServiceSettings
 
 _engine: AsyncEngine | None = None
@@ -158,6 +160,36 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         except Exception:
             await session.rollback()
             raise
+
+
+async def get_tenant_session(
+    principal: CurrentPrincipal, session: Annotated[AsyncSession, Depends(get_session)]
+) -> AsyncIterator[AsyncSession]:
+    """The tenancy chokepoint. **Every tenant-scoped route goes through this.**
+
+    Opens the transaction and binds it to the caller's organization as its *first*
+    statement, then yields. Commits on a clean return, rolls back on an exception.
+
+    It has to be the transaction opener rather than something that runs before one. A
+    dependency that merely set the GUC and yielded would autobegin a transaction, and the
+    route's own `async with session.begin()` would then raise "a transaction is already
+    begun" — confirmed against SQLAlchemy rather than assumed. So routes do not open their
+    own transaction; this does it for them.
+
+    The GUC is transaction-local, and that is load-bearing twice over. It stops a pooled
+    connection carrying one tenant's id into the next request that forgets to set it — the
+    failure that returns HTTP 200 with another customer's rows and no error anywhere. And it
+    means the value does **not** survive into a later transaction on the same session, so a
+    single call at request entry would not be enough; it must be set per transaction, which
+    is exactly what this does.
+
+    Today this is a no-op against a database with no policies: nothing reads the GUC yet.
+    That is deliberate — it lands and is proven on its own, before any policy exists to
+    confuse a failure with.
+    """
+    async with session.begin():
+        await set_tenant(session, principal.organization_id)
+        yield session
 
 
 @asynccontextmanager

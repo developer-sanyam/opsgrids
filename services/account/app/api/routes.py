@@ -41,13 +41,16 @@ from app.schemas import (
     ServiceInfo,
 )
 from platform_core.auth import Scope, ScopeContext, require
-from platform_core.db import get_session
+from platform_core.db import get_tenant_session
 from platform_core.errors import NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
 router = APIRouter(tags=["account"])
 
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
+#: **The tenancy chokepoint.** Opens the transaction and binds it to the caller's
+#: organization before the route body runs, so no route can read or write without one.
+#: Routes therefore do not open transactions of their own.
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
 
 # --- read contexts ------------------------------------------------------------------
 OrgRead = Annotated[ScopeContext, Depends(require("core.org.organization.read"))]
@@ -92,12 +95,11 @@ async def read_organization(session: SessionDep, ctx: OrgRead) -> OrganizationOu
 async def update_organization(
     payload: OrganizationPatch, session: SessionDep, ctx: OrgWrite
 ) -> OrganizationOut:
-    async with session.begin():
-        org = await selectors.get_organization(session, ctx.organization_id)
-        if org is None:
-            raise NotFoundProblem("Organization not found")
-        updated = await services.update_organization(session, ctx, org, payload)
-        return OrganizationOut.model_validate(updated)
+    org = await selectors.get_organization(session, ctx.organization_id)
+    if org is None:
+        raise NotFoundProblem("Organization not found")
+    updated = await services.update_organization(session, ctx, org, payload)
+    return OrganizationOut.model_validate(updated)
 
 
 # --------------------------------------------------------------------- structure
@@ -116,9 +118,8 @@ async def list_org_units(session: SessionDep, ctx: UnitRead) -> list[OrgUnitNode
     summary="Create a department",
 )
 async def create_org_unit(payload: OrgUnitIn, session: SessionDep, ctx: UnitWrite) -> OrgUnitOut:
-    async with session.begin():
-        unit = await services.create_org_unit(session, ctx, payload)
-        return OrgUnitOut.model_validate(unit)
+    unit = await services.create_org_unit(session, ctx, payload)
+    return OrgUnitOut.model_validate(unit)
 
 
 @router.post(
@@ -130,12 +131,11 @@ async def move_org_unit(
     ctx: UnitWrite,
     parent_id: Annotated[uuid.UUID | None, Query()] = None,
 ) -> OrgUnitOut:
-    async with session.begin():
-        unit = await selectors.get_org_unit(session, ctx.organization_id, unit_id)
-        if unit is None:
-            raise NotFoundProblem("Department not found")
-        moved = await services.move_org_unit(session, ctx, unit, parent_id)
-        return OrgUnitOut.model_validate(moved)
+    unit = await selectors.get_org_unit(session, ctx.organization_id, unit_id)
+    if unit is None:
+        raise NotFoundProblem("Department not found")
+    moved = await services.move_org_unit(session, ctx, unit, parent_id)
+    return OrgUnitOut.model_validate(moved)
 
 
 @router.get("/locations", response_model=list[LocationOut], summary="Sites")
@@ -153,9 +153,8 @@ async def list_locations(session: SessionDep, ctx: LocationRead) -> list[Locatio
 async def create_location(
     payload: LocationIn, session: SessionDep, ctx: LocationWrite
 ) -> LocationOut:
-    async with session.begin():
-        location = await services.create_location(session, ctx, payload)
-        return LocationOut.model_validate(location)
+    location = await services.create_location(session, ctx, payload)
+    return LocationOut.model_validate(location)
 
 
 # --------------------------------------------------------------------- members
@@ -198,13 +197,12 @@ async def read_member(membership_id: uuid.UUID, session: SessionDep, ctx: Member
 async def update_member(
     membership_id: uuid.UUID, payload: MemberPatch, session: SessionDep, ctx: MemberWrite
 ) -> MemberOut:
-    async with session.begin():
-        found = await selectors.get_member(session, ctx.organization_id, membership_id)
-        if found is None:
-            raise NotFoundProblem("That person is not a member of this organization")
-        membership, user = found
-        updated = await services.update_member(session, ctx, membership, payload)
-        return selectors.to_member_out(updated, user)
+    found = await selectors.get_member(session, ctx.organization_id, membership_id)
+    if found is None:
+        raise NotFoundProblem("That person is not a member of this organization")
+    membership, user = found
+    updated = await services.update_member(session, ctx, membership, payload)
+    return selectors.to_member_out(updated, user)
 
 
 @router.delete(
@@ -218,11 +216,10 @@ async def revoke_member(
     ctx: MemberWrite,
     reason: Annotated[str | None, Query()] = None,
 ) -> Response:
-    async with session.begin():
-        found = await selectors.get_member(session, ctx.organization_id, membership_id)
-        if found is None:
-            raise NotFoundProblem("That person is not a member of this organization")
-        await services.revoke_member(session, ctx, found[0], reason=reason)
+    found = await selectors.get_member(session, ctx.organization_id, membership_id)
+    if found is None:
+        raise NotFoundProblem("That person is not a member of this organization")
+    await services.revoke_member(session, ctx, found[0], reason=reason)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -233,13 +230,12 @@ async def set_member_roles(
     session: SessionDep,
     ctx: RoleWrite,
 ) -> MemberOut:
-    async with session.begin():
-        found = await selectors.get_member(session, ctx.organization_id, membership_id)
-        if found is None:
-            raise NotFoundProblem("That person is not a member of this organization")
-        membership, user = found
-        updated = await services.set_member_roles(session, ctx, membership, payload.role_codes)
-        return selectors.to_member_out(updated, user)
+    found = await selectors.get_member(session, ctx.organization_id, membership_id)
+    if found is None:
+        raise NotFoundProblem("That person is not a member of this organization")
+    membership, user = found
+    updated = await services.set_member_roles(session, ctx, membership, payload.role_codes)
+    return selectors.to_member_out(updated, user)
 
 
 # --------------------------------------------------------------------- roles
@@ -255,23 +251,21 @@ async def list_roles(session: SessionDep, ctx: RoleRead) -> list[RoleOut]:
     "/roles", response_model=RoleOut, status_code=status.HTTP_201_CREATED, summary="Create a role"
 )
 async def create_role(payload: RoleIn, session: SessionDep, ctx: RoleWrite) -> RoleOut:
-    async with session.begin():
-        role = await services.create_role(session, ctx, payload)
-        await session.flush()
-        return selectors.to_role_out(role)
+    role = await services.create_role(session, ctx, payload)
+    await session.flush()
+    return selectors.to_role_out(role)
 
 
 @router.put("/roles/{role_id}", response_model=RoleOut, summary="Replace a role's permissions")
 async def replace_role_grants(
     role_id: uuid.UUID, payload: RoleIn, session: SessionDep, ctx: RoleWrite
 ) -> RoleOut:
-    async with session.begin():
-        role = await selectors.get_role(session, ctx.organization_id, role_id)
-        if role is None:
-            raise NotFoundProblem("Role not found")
-        updated = await services.replace_role_grants(session, ctx, role, payload.grants)
-        await session.flush()
-        return selectors.to_role_out(updated)
+    role = await selectors.get_role(session, ctx.organization_id, role_id)
+    if role is None:
+        raise NotFoundProblem("Role not found")
+    updated = await services.replace_role_grants(session, ctx, role, payload.grants)
+    await session.flush()
+    return selectors.to_role_out(updated)
 
 
 @router.get("/permissions", response_model=list[PermissionOut], summary="Permission catalogue")
@@ -302,10 +296,9 @@ async def list_invitations(session: SessionDep, ctx: MemberRead) -> list[Invitat
 async def create_invitation(
     payload: InvitationIn, session: SessionDep, ctx: MemberWrite
 ) -> InvitationCreated:
-    async with session.begin():
-        invitation, raw = await services.invite(session, ctx, payload)
-        # The only moment the raw token exists outside the email that delivers it.
-        return InvitationCreated(**InvitationOut.model_validate(invitation).model_dump(), token=raw)
+    invitation, raw = await services.invite(session, ctx, payload)
+    # The only moment the raw token exists outside the email that delivers it.
+    return InvitationCreated(**InvitationOut.model_validate(invitation).model_dump(), token=raw)
 
 
 @router.delete(
@@ -316,12 +309,11 @@ async def create_invitation(
 async def revoke_invitation(
     invitation_id: uuid.UUID, session: SessionDep, ctx: MemberWrite
 ) -> Response:
-    async with session.begin():
-        rows = await selectors.list_invitations(session, ctx.organization_id, pending_only=False)
-        invitation = next((i for i in rows if i.id == invitation_id), None)
-        if invitation is None:
-            raise NotFoundProblem("Invitation not found")
-        await services.revoke_invitation(session, ctx, invitation)
+    rows = await selectors.list_invitations(session, ctx.organization_id, pending_only=False)
+    invitation = next((i for i in rows if i.id == invitation_id), None)
+    if invitation is None:
+        raise NotFoundProblem("Invitation not found")
+    await services.revoke_invitation(session, ctx, invitation)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -337,10 +329,9 @@ async def accept_invitation(payload: InvitationAccept, session: SessionDep) -> M
     returns the same message. A distinct "expired" reply confirms to whoever is guessing
     that they found a real one.
     """
-    async with session.begin():
-        membership = await services.accept_invitation(session, payload.token, payload.full_name)
-        await session.flush()
-        found = await selectors.get_member(session, membership.organization_id, membership.id)
-        if found is None:  # pragma: no cover - defensive
-            raise NotFoundProblem("Membership not found")
-        return selectors.to_member_out(found[0], found[1])
+    membership = await services.accept_invitation(session, payload.token, payload.full_name)
+    await session.flush()
+    found = await selectors.get_member(session, membership.organization_id, membership.id)
+    if found is None:  # pragma: no cover - defensive
+        raise NotFoundProblem("Membership not found")
+    return selectors.to_member_out(found[0], found[1])

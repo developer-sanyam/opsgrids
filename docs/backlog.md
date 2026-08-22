@@ -16,13 +16,21 @@ rather than a horizontal layer. Nothing is "done" until its tests pass.
 **[ADR-0002](adr/0002-row-level-security.md) is accepted and its four open questions are
 answered.** In progress, in two slices.
 
-**Slice one — prerequisites, no policies. Roles and DSN split are done** (`c708f60`): services
-connect as per-service NOBYPASSRLS roles, migrations as an owner role, grants applied by the
-migration run, TRUNCATE and audit-rewrite withheld, and the test suite moved onto the app role
-so the split is visible to it. **Remaining: the tenant chokepoint** — a dependency that opens
-the transaction and sets the GUC as its first statement, replacing the `session.begin()` each
-write route currently opens for itself. Its exit gate is an assertion that the GUC is set on
-every transaction, with no policy existing anywhere.
+**Slice one — prerequisites, no policies: DONE** (`c708f60`, `<pending>`).
+
+Services connect as per-service NOBYPASSRLS roles and migrations as an owner role; grants are
+applied by the migration run so a new service cannot ship without them; TRUNCATE and
+audit-rewrite are withheld by privilege; the test suite runs as the app role so the split is
+visible to it. The tenant chokepoint opens each request's transaction and binds it to the
+caller's organization as the first statement — routes no longer open transactions of their own.
+
+Exit gate met: the GUC is set on every transaction, it does **not** survive the transaction,
+and a static check refuses any route that takes a bare session or opens its own transaction.
+Verified by deliberately introducing a bypass and watching the guard fail.
+
+A correction to the record: an earlier commit message said migrations had been "silently doing
+nothing". They had not — `alembic` exits 255 on failure and `make migrate` surfaces it. That
+claim came from reading the exit code of `tail` through a pipe rather than of `alembic`.
 
 **Slice two — policies.** `roles.organization_id` to NOT NULL first, then per-schema policies,
 `users` left un-policied.

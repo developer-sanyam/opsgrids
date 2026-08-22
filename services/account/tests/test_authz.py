@@ -213,6 +213,12 @@ class TestWriteScopeFloors:
         and remove colleagues. This is the regression guard for that.
         """
         principal = principal_for(org.id, people["report"], ["core.identity.membership.write:OWN"])
+        # Read the id up front. The client shares this test's session, so the first refused
+        # request rolls its transaction back and expires every loaded object — a later
+        # attribute access would then try to refresh outside the async context. A real client
+        # gets a fresh session per request and never meets this.
+        outsider_id = people["outsider"].id
+
         from app.main import app
         from platform_core.auth import get_principal
 
@@ -221,7 +227,7 @@ class TestWriteScopeFloors:
             invited = await client.post(
                 "/api/v1/invitations", json={"email": "intruder@example.com"}
             )
-            removed = await client.delete(f"/api/v1/members/{people['outsider'].id}")
+            removed = await client.delete(f"/api/v1/members/{outsider_id}")
         finally:
             app.dependency_overrides.pop(get_principal, None)
 
