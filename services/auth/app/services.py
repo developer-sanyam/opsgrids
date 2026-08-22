@@ -13,6 +13,15 @@ configured constant into its lookup, which meant a second customer literally cou
 sign in. Here the organization is resolved from an explicit slug, the host the gateway
 saw, or the person's single membership — and when there is genuine ambiguity the answer is
 an org picker, never a guess.
+
+**Who commits is decided by whether a principal exists.** The pre-organization flows —
+login, organization selection, the second factor, refresh, logout, password reset — run
+on a bare session and commit for themselves, because some of them must persist
+bookkeeping (a failed attempt, a consumed token) even when they go on to raise. Anything
+a route with a principal calls — switching organization, changing a password, enrolling
+a factor — commits nothing: the route's tenant session (`get_tenant_session`) opened the
+transaction bound to the caller's organization, and it is the one that ends it
+(ADR-0002 §1).
 """
 
 from __future__ import annotations
@@ -455,7 +464,6 @@ async def switch_organization(
         entitlements=entitlements or [],
         audience=audience,
     )
-    await session.commit()
     return issued
 
 
@@ -667,7 +675,6 @@ async def change_password(
         aggregate_id=user_id,
         payload={"user_id": str(user_id)},
     )
-    await session.commit()
 
 
 def _hash_token(raw: str) -> str:
@@ -754,7 +761,9 @@ async def begin_mfa_enrolment(
     # column is bytes so the shape does not change when the KMS lands.
     factor.secret_enc = secret.encode()
     session.add(factor)
-    await session.commit()
+    # Flushed, not committed: the caller returns the factor's id, and the transaction
+    # belongs to the route that opened it.
+    await session.flush()
     return factor, secret, security.totp_uri(secret, account=account_email)
 
 
@@ -799,7 +808,6 @@ async def confirm_mfa_enrolment(
         aggregate_id=user_id,
         payload={"user_id": str(user_id)},
     )
-    await session.commit()
     return codes
 
 

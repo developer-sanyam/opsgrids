@@ -6,6 +6,17 @@ SHELL := /bin/bash
 SERVICES := $(notdir $(wildcard services/*))
 COMPOSE  := docker compose -f tools/dev-bootstrap/compose.yml --env-file .env
 
+# Every per-service target runs from services/<name>, and a service's settings read `.env`
+# relative to the working directory — so without this, `make migrate` and `make test` never
+# see the root .env and silently fall back to the built-in defaults, which point at the
+# shared dev database whatever the developer configured. Export exactly the names the file
+# defines, so make's own variables stay out of the environment. CI has no .env and sets its
+# variables in the environment, so its absence is fine.
+ifneq (,$(wildcard .env))
+include .env
+export $(shell sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' .env)
+endif
+
 .PHONY: help
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \

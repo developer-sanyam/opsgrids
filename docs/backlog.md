@@ -23,6 +23,8 @@ applied by the migration run so a new service cannot ship without them; TRUNCATE
 audit-rewrite are withheld by privilege; the test suite runs as the app role so the split is
 visible to it. The tenant chokepoint opens each request's transaction and binds it to the
 caller's organization as the first statement — routes no longer open transactions of their own.
+auth's principal routes (switch-org, me, MFA enrolment, password change) are on the chokepoint
+too, and outside production the binding is read back and asserted immediately after it is set.
 
 Exit gate met: the GUC is set on every transaction, it does **not** survive the transaction,
 and a static check refuses any route that takes a bare session or opens its own transaction.

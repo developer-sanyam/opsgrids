@@ -25,8 +25,8 @@ These cause data corruption, audit failure, or an unshippable migration — not 
 
 - **Every table carries `organization_id`.** Every query filters on it. RLS enforces it as a net;
   do not treat RLS as permission to skip the filter.
-- **The tenant GUC is transaction-local** (`set_config('app.org_id', …, true)`). Setting it per
-  connection is a cross-tenant leak — the pool reuses connections across requests.
+- **The tenant GUC is transaction-local** (`set_config('app.organization_id', …, true)`). Setting
+  it per connection is a cross-tenant leak — the pool reuses connections across requests.
 - **The outbox relay and consumers need `BYPASSRLS`** (or a per-message GUC). Getting this wrong
   silently stops event processing: nothing errors, the outbox just fills.
 - **No cross-schema foreign keys.** This is what keeps a later database-per-service split a config

@@ -109,6 +109,9 @@ class TestDeclaredDependencies:
             raise AssertionError("init_redis must not be called when redis=False")
 
         monkeypatch.setattr("platform_core.app.init_engine", lambda *a, **k: None)
+        # The role guard needs a real engine and this test has a stub. Its own coverage is
+        # in test_tenancy.py, against the database.
+        monkeypatch.setattr("platform_core.app.assert_app_role", _noop)
         monkeypatch.setattr("platform_core.app.init_redis", _boom)
 
         result = await _ready(_app())

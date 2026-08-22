@@ -16,12 +16,19 @@ from __future__ import annotations
 
 import ast
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from fastapi import Request
+from httpx import AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.main import app
+from platform_core import db
+from platform_core.auth import Principal, get_principal
 from platform_core.db import TENANT_GUC, get_tenant_session
 from tests.helpers import principal_for
 
@@ -30,13 +37,31 @@ pytestmark = pytest.mark.integration
 ROUTES = Path(__file__).resolve().parent.parent / "app" / "api" / "routes.py"
 
 
+def _request() -> Request:
+    """What a direct call to the chokepoint stands in for.
+
+    Only `request.app.state.settings` is read — to decide whether the probe runs — so a
+    scope carrying the real app is the whole of it.
+    """
+    return Request({"type": "http", "app": app})
+
+
+@contextmanager
+def _as(principal: Principal) -> Iterator[None]:
+    app.dependency_overrides[get_principal] = lambda: principal
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
+
+
 class TestTheGucIsSet:
     async def test_the_chokepoint_binds_the_transaction_to_the_organization(
         self, session: AsyncSession, org, people
     ) -> None:
         principal = principal_for(org.id, people["manager"], [])
 
-        agen = get_tenant_session(principal, session)
+        agen = get_tenant_session(principal, session, _request())
         bound = await agen.__anext__()
         try:
             got = (
@@ -75,7 +100,7 @@ class TestTheGucIsSet:
         try:
             async with async_sessionmaker(engine, expire_on_commit=False)() as fresh:
                 principal = principal_for(org.id, people["manager"], [])
-                agen = get_tenant_session(principal, fresh)
+                agen = get_tenant_session(principal, fresh, _request())
                 await agen.__anext__()
                 with pytest.raises(StopAsyncIteration):
                     await agen.__anext__()
@@ -96,7 +121,7 @@ class TestTheGucIsSet:
         """Guards against the GUC being set once and reused — it is per transaction."""
         other = uuid.uuid4()
         principal = principal_for(other, people["manager"], [])
-        agen = get_tenant_session(principal, session)
+        agen = get_tenant_session(principal, session, _request())
         bound = await agen.__anext__()
         try:
             got = (
@@ -164,3 +189,32 @@ class TestNoRouteEscapesTheChokepoint:
             f"{offenders} take a session that is not the tenant-bound one. Every database "
             "access in a tenant-scoped route must carry an organization."
         )
+
+
+class TestTheProbeIsWired:
+    """The ADR-0002 §4 probe is wired into the request path, not merely present in db.py.
+
+    With the transaction bound to the wrong organization, a request must fail loudly rather
+    than return an empty page with HTTP 200 — which is exactly what RLS alone produces, and
+    what nothing would notice.
+
+    The binding is made *wrong* rather than skipped, because the test session fixture
+    re-binds the tenant on every `begin()` of its own accord — so a skipped `set_tenant`
+    would leave the fixture's correct binding in place and prove nothing. A foreign
+    organization is also the more realistic failure: a pooled connection carrying the
+    previous caller's tenant.
+    """
+
+    async def test_a_misbound_transaction_cannot_serve_a_request_quietly(
+        self, client: AsyncClient, org, people, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _misbind(session: AsyncSession, organization_id: uuid.UUID) -> None:
+            await session.execute(
+                text(f"SELECT set_config('{TENANT_GUC}', :org, true)"),
+                {"org": str(uuid.uuid4())},
+            )
+
+        monkeypatch.setattr(db, "set_tenant", _misbind)
+        principal = principal_for(org.id, people["manager"], ["core.org.unit.read:ORG"])
+        with _as(principal), pytest.raises(RuntimeError, match=TENANT_GUC):
+            await client.get("/api/v1/org-units")

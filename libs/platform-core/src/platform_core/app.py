@@ -18,6 +18,7 @@ from sqlalchemy import func, select, text
 from platform_core.cache import close_redis, get_redis, init_redis
 from platform_core.config import ServiceSettings
 from platform_core.db import (
+    assert_app_role,
     dispose_directory_engine,
     dispose_engine,
     get_engine,
@@ -148,7 +149,13 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if database:
-            init_engine(settings)
+            engine = init_engine(settings)
+            # Before the first request, not lazily on it: a process that would serve every
+            # tenant's rows to every tenant must never report itself healthy. The check
+            # lives here rather than in `init_engine` because relays and scripts share
+            # that function and are meant to bypass RLS (ADR-0002 §2). The directory
+            # engine below is exempt for the same reason: bypassing RLS is its purpose.
+            await assert_app_role(engine, environment=settings.environment)
             init_directory_engine(settings)
         if redis:
             init_redis(settings.redis_url)
