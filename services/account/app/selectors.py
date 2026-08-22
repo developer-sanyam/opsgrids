@@ -22,6 +22,7 @@ from typing import Any, cast
 
 from sqlalchemy import Select, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import contains_eager
 
 from app.models import (
     Invitation,
@@ -84,6 +85,12 @@ def members_stmt(
     stmt = (
         select(Membership, User)
         .join(User, User.id == Membership.user_id)
+        # `contains_eager` attaches the joined `User` to `Membership.user`. Without it the
+        # join populates the second column but leaves the relationship *unloaded*, so a
+        # caller that pages to the memberships and then reads `m.user` triggers a lazy load
+        # — sync IO inside an async request, which raises MissingGreenlet rather than
+        # returning a page. Joining and eager-loading are not the same thing.
+        .options(contains_eager(Membership.user))
         .where(
             Membership.organization_id == ctx.organization_id,
             Membership.status != "removed",

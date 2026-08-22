@@ -174,7 +174,8 @@ class OrgUnit(Base, TenantBase):
 
     __table_args__ = (
         UniqueConstraint("organization_id", "code", name="uq_org_units_org_code"),
-        Index("ix_org_units_parent", "parent_id"),
+        # Tenant-leading for the same reason; `descendant_ids` walks this recursively.
+        Index("ix_org_units_parent", "organization_id", "parent_id"),
     )
 
 
@@ -309,7 +310,9 @@ class Membership(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "organization_id", name="uq_memberships_user_org"),
         Index("ix_memberships_org_status", "organization_id", "status"),
-        Index("ix_memberships_manager", "manager_membership_id"),
+        # Leads with the tenant: under row-level security the policy qual is ANDed into
+        # every query, so an index that does not would scan the platform and discard.
+        Index("ix_memberships_manager", "organization_id", "manager_membership_id"),
         # One employee record maps to one membership, enforced in the database — the
         # alternative is two people sharing a payslip.
         Index(

@@ -14,11 +14,12 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, String, Text, func
+import sqlalchemy as sa
+from sqlalchemy import DateTime, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 from starlette.requests import Request
 
 REDACTED = "***"
@@ -59,16 +60,14 @@ class AuditLogMixin:
     id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        PGUUID(as_uuid=True), nullable=False, index=True
-    )
-    actor_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), index=True)
+    organization_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     #: Set when a platform operator is acting on a customer's behalf. Never null on an
     #: impersonated action — an override with no named human is not an audit trail.
     acting_as: Mapped[str | None] = mapped_column(String(120))
-    action: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    entity: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
-    entity_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), index=True)
+    action: Mapped[str] = mapped_column(String(100), nullable=False)
+    entity: Mapped[str] = mapped_column(String(80), nullable=False)
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     before: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     after: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     reason: Mapped[str | None] = mapped_column(Text)
@@ -77,8 +76,26 @@ class AuditLogMixin:
     request_id: Mapped[str | None] = mapped_column(String(64))
     correlation_id: Mapped[str | None] = mapped_column(String(64))
     at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    @declared_attr.directive
+    def __table_args__(cls) -> tuple[Any, ...]:
+        """Every index leads with `organization_id`, and that is not stylistic.
+
+        A row-level security policy qual is ANDed into every query, so an index that does not
+        lead with the tenant column stops doing its job the moment policies are on: the scan
+        reads the whole platform's rows for a value and then discards almost all of them.
+
+        This is the highest-volume table in any service, so it is the one that hurts first —
+        and it hurts silently, as a query that used to be fast quietly becoming a scan.
+        """
+        return (
+            Index(f"ix_{cls.__tablename__}_org_at", "organization_id", sa.desc("at")),
+            Index(f"ix_{cls.__tablename__}_org_entity", "organization_id", "entity", "entity_id"),
+            Index(f"ix_{cls.__tablename__}_org_actor", "organization_id", "actor_id"),
+            Index(f"ix_{cls.__tablename__}_org_action", "organization_id", "action"),
+        )
 
 
 def redact(data: Any) -> Any:
