@@ -130,6 +130,24 @@ CORE = PermissionCatalogue(
             is_dangerous=True,
         ),
         PermissionSpec("identity", "audit", "read", "Read the audit trail", "ORG", "ORG"),
+        # The marketplace and what the organization has turned on. These live in `core`
+        # rather than in a `product` product, because browsing and activating is a platform
+        # capability every customer has whatever they bought — the same reason
+        # product-service marks its own `core` entry `is_platform`.
+        PermissionSpec("product", "catalogue", "read", "Browse the marketplace", "ORG"),
+        PermissionSpec("product", "activation", "read", "See which products are active", "ORG"),
+        PermissionSpec(
+            "product",
+            "activation",
+            "write",
+            "Activate and deactivate products",
+            "ORG",
+            "ORG",
+            # Activation creates a financial commitment. `ORG_OWNER` describes itself as
+            # running billing and activation, and `ORG_ADMIN` as explicitly not billing —
+            # so this is granted to the owner only, and the templates below say so.
+            is_dangerous=True,
+        ),
         PermissionSpec("profile", "self", "read", "See your own profile", "OWN", "OWN"),
         PermissionSpec("profile", "self", "write", "Edit your own profile", "OWN", "OWN"),
     ],
@@ -163,6 +181,10 @@ CORE_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("identity.membership.read", "ORG"),
             ("identity.membership.write", "ORG"),
             ("identity.role.read", "ORG"),
+            # Can see the marketplace and what is active; cannot activate, because that
+            # spends money and this role is defined as the one that does not.
+            ("product.catalogue.read", "ORG"),
+            ("product.activation.read", "ORG"),
             ("profile.self.read", "OWN"),
             ("profile.self.write", "OWN"),
         ),

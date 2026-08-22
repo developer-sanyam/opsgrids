@@ -192,3 +192,59 @@ class TestEntitlementsTravelWithTheToken:
             "reach product-service — sign-in degrades rather than failing, so this is the only "
             "place that notices."
         )
+
+
+class TestTheMarketplaceIsReachable:
+    """The full "adding product N" checklist, exercised rather than described.
+
+    A product is usable only when four things line up: a row in the registry, a prefix in the
+    gateway route table, permission codes in the account catalogue, and a role template that
+    grants them. Miss any one and the route answers 403 or 402 with nothing obviously wrong —
+    which is exactly what happened before the permissions were registered.
+    """
+
+    def _token(self, client: httpx.Client, account: dict) -> str:
+        response = client.post(
+            "/api/v1/auth/login",
+            json={"email": account["email"], "password": account["password"]},
+        )
+        assert response.status_code == 200, response.text[:400]
+        return str(response.json()["access_token"])
+
+    def test_an_administrator_can_browse_the_marketplace(
+        self, client: httpx.Client, account: dict
+    ) -> None:
+        """Not gated on entitlement: the route carries no product, so every customer reaches
+        it whatever they have bought. That is what makes it a marketplace."""
+        token = self._token(client, account)
+        response = client.get("/api/v1/products", headers={"Authorization": f"Bearer {token}"})
+
+        assert response.status_code == 200, (
+            f"{response.status_code} {response.text[:300]}. A 403 means the permission codes "
+            "are not in the account catalogue or no role grants them; a 402 means the route "
+            "was wrongly given a product key."
+        )
+        keys = {p["key"] for p in response.json()}
+        assert "core" in keys and "hrms" in keys, (
+            "the marketplace should list the whole catalogue, including products this "
+            "organization has not bought"
+        )
+
+    def test_an_administrator_cannot_activate_a_product(
+        self, client: httpx.Client, account: dict
+    ) -> None:
+        """Activation spends money, and this role is defined as the one that does not.
+
+        The seeded user is an ORG_ADMIN. Refusing here is the catalogue's owner/administrator
+        split holding all the way through a real request rather than only in a unit test.
+        """
+        token = self._token(client, account)
+        response = client.post(
+            "/api/v1/products/activations",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"product_key": "hrms"},
+        )
+        assert response.status_code == 403, (
+            f"an administrator activated a product ({response.status_code}). Activation is "
+            "owner-only — see the role templates in account-service's catalogue."
+        )

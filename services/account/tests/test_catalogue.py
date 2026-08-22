@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from app import catalogue
 from app.catalogue import (
     CORE,
     CORE_ROLE_TEMPLATES,
@@ -109,3 +110,39 @@ class TestCatalogueIsolation:
         assert {g.code.split(".")[0] for g in crm.all()} == {"crm"}
         with pytest.raises(ValueError):
             crm.pick(("org.unit.read", "ORG"))
+
+
+class TestProductActivationIsOwnerOnly:
+    """Activating a product spends money, so it is not an administrator's to do.
+
+    `ORG_OWNER` describes itself as running billing and product activation; `ORG_ADMIN`
+    describes itself as managing people and structure "but not billing". Those descriptions
+    are load-bearing — a customer reading them decides who to make an administrator — so the
+    grants have to match, and a drift between them is the kind that only surfaces as an
+    unexpected invoice.
+    """
+
+    def test_the_owner_can_activate(self) -> None:
+        owner = next(t for t in catalogue.CORE_ROLE_TEMPLATES if t.code == "ORG_OWNER")
+        codes = {g.code for g in owner.grants}
+        assert "core.product.activation.write" in codes
+
+    def test_an_administrator_cannot_activate(self) -> None:
+        admin = next(t for t in catalogue.CORE_ROLE_TEMPLATES if t.code == "ORG_ADMIN")
+        codes = {g.code for g in admin.grants}
+        assert "core.product.activation.write" not in codes, (
+            "ORG_ADMIN describes itself as not handling billing, but was granted the "
+            "permission that creates one"
+        )
+
+    def test_an_administrator_can_still_see_the_marketplace(self) -> None:
+        """Seeing what could be bought is not the same as buying it."""
+        admin = next(t for t in catalogue.CORE_ROLE_TEMPLATES if t.code == "ORG_ADMIN")
+        codes = {g.code for g in admin.grants}
+        assert "core.product.catalogue.read" in codes
+        assert "core.product.activation.read" in codes
+
+    def test_a_plain_member_gets_none_of_it(self) -> None:
+        member = next(t for t in catalogue.CORE_ROLE_TEMPLATES if t.code == "MEMBER")
+        codes = {g.code for g in member.grants}
+        assert not [c for c in codes if c.startswith("core.product.")]
