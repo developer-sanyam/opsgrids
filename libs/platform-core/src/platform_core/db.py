@@ -36,6 +36,48 @@ _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 TENANT_GUC = "app.organization_id"
 
 
+def apply_schema_grants(connection: Any, schema: str, app_role: str | None) -> None:
+    """Give this service's app role exactly what it needs on its own schema.
+
+    Called from every service's `migrations/env.py` after the migrations run, rather than
+    written into the bootstrap SQL, for two reasons: the schema and its tables do not exist
+    when the bootstrap runs, and a per-service step somebody has to remember is a step
+    somebody eventually forgets — which is exactly how Redis ended up uninitialised.
+
+    Three things are deliberately withheld:
+
+    - **TRUNCATE**, because it is not filtered by row-level security. It is all-or-nothing,
+      so an app role holding it can empty a table across every tenant at once.
+    - **UPDATE and DELETE on `audit_logs`**, because a trail the application can rewrite is
+      not a trail. Table privileges are the right tool for append-only; RLS is not.
+    - Any privilege at all on **another service's schema**. That omission is the point.
+    """
+    if not app_role:
+        return
+
+    for statement in (
+        f'GRANT USAGE ON SCHEMA "{schema}" TO "{app_role}"',
+        f'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "{schema}" TO "{app_role}"',
+        f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "{schema}" TO "{app_role}"',
+        # Tables a *future* migration creates, so grants never drift behind the schema.
+        f'ALTER DEFAULT PRIVILEGES IN SCHEMA "{schema}" '
+        f'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "{app_role}"',
+        f'ALTER DEFAULT PRIVILEGES IN SCHEMA "{schema}" '
+        f'GRANT USAGE, SELECT ON SEQUENCES TO "{app_role}"',
+    ):
+        connection.execute(text(statement))
+
+    # Append-only, enforced by privilege rather than by convention.
+    if connection.execute(
+        text("SELECT to_regclass(:name)"), {"name": f"{schema}.audit_logs"}
+    ).scalar():
+        connection.execute(
+            text(f'REVOKE UPDATE, DELETE ON "{schema}"."audit_logs" FROM "{app_role}"')
+        )
+
+    connection.commit()
+
+
 def init_engine(settings: ServiceSettings) -> AsyncEngine:
     """Create the process-wide engine. Called once, from the app lifespan."""
     global _engine, _sessionmaker
@@ -43,7 +85,7 @@ def init_engine(settings: ServiceSettings) -> AsyncEngine:
         return _engine
 
     _engine = create_async_engine(
-        settings.database_url,
+        settings.app_dsn,
         echo=settings.db_echo,
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_max_overflow,

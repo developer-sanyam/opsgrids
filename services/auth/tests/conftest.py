@@ -115,17 +115,22 @@ def cfg() -> Settings:
 
 @pytest_asyncio.fixture
 async def session() -> AsyncIterator[AsyncSession]:
-    engine = create_async_engine(
-        settings().database_url,
-        connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}},
-    )
+    conf = settings()
+    connect_args = {"server_settings": {"search_path": f"{SCHEMA},public"}}
+    tables = ", ".join(f'"{SCHEMA}"."{t.name}"' for t in reversed(Base.metadata.sorted_tables))
+
+    # Teardown as the admin role: TRUNCATE is withheld from the app role because it is not
+    # filtered by row-level security.
+    admin = create_async_engine(conf.admin_dsn, connect_args=connect_args)
+    async with admin.begin() as conn:
+        await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
+    await admin.dispose()
+
+    # The code under test runs as the app role, so the privilege split is visible here rather
+    # than only in production.
+    engine = create_async_engine(conf.app_dsn, connect_args=connect_args)
     maker = async_sessionmaker(engine, expire_on_commit=False)
     async with maker() as s:
-        async with s.begin():
-            tables = ", ".join(
-                f'"{SCHEMA}"."{t.name}"' for t in reversed(Base.metadata.sorted_tables)
-            )
-            await s.execute(text(f"TRUNCATE {tables} CASCADE"))
         yield s
     await engine.dispose()
 

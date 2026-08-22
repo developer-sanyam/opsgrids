@@ -15,6 +15,7 @@ from typing import Annotated
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 
 class ServiceSettings(BaseSettings):
@@ -42,6 +43,22 @@ class ServiceSettings(BaseSettings):
 
     # --- datastores ---------------------------------------------------------------
     database_url: str = "postgresql+asyncpg://atmora:atmora@localhost:5434/atmora"
+
+    #: The role the API connects as. **NOBYPASSRLS**, granted DML on this service's schema
+    #: only — so account-service cannot read `auth.credentials`, which is the entire reason
+    #: auth-service holds credentials and the directory does not.
+    #:
+    #: `None` means "use `database_url` unchanged". That is what production does: each
+    #: service gets its own DSN carrying its own credentials, and leaves this unset. Locally
+    #: one `.env` is shared and only the username is swapped, because a single file cannot
+    #: carry a different password per service without becoming a deployment system.
+    db_app_role: str | None = None
+
+    #: The role migrations, relays and consumers connect as. **BYPASSRLS**: a relay claims
+    #: work across every organization, and the purpose of its query is to discover which
+    #: tenants have any — there is no tenant to set beforehand.
+    db_admin_role: str | None = None
+
     redis_url: str = "redis://localhost:6380/0"
     rabbitmq_url: str = "amqp://atmora:atmora@localhost:5673/"
 
@@ -95,6 +112,31 @@ class ServiceSettings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    def dsn_as(self, role: str | None) -> str:
+        """`database_url` with its username replaced by `role`.
+
+        Returns the DSN untouched when `role` is None, which is the production path: each
+        service is handed its own DSN with its own credentials and never rewrites it.
+
+        The rewrite exists for local development, where one `.env` serves every service and
+        the bootstrap gives each role the same password. It touches only the username —
+        host, port, database and password are whatever `database_url` already said.
+        """
+        if not role:
+            return self.database_url
+        url = make_url(self.database_url)
+        return url.set(username=role).render_as_string(hide_password=False)
+
+    @property
+    def app_dsn(self) -> str:
+        """What the API connects with. NOBYPASSRLS once the roles are split."""
+        return self.dsn_as(self.db_app_role)
+
+    @property
+    def admin_dsn(self) -> str:
+        """What migrations, relays and consumers connect with. BYPASSRLS."""
+        return self.dsn_as(self.db_admin_role)
 
     def model_post_init(self, _: object) -> None:
         """Refuse to start a real deployment with development secrets."""

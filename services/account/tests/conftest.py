@@ -44,17 +44,25 @@ async def session() -> AsyncIterator[AsyncSession]:
     code under test performs its own real commits — which is the behaviour that matters
     for anything involving locking or constraints.
     """
-    engine = create_async_engine(
-        settings().database_url,
-        connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}},
-    )
+    cfg = settings()
+    connect_args = {"server_settings": {"search_path": f"{SCHEMA},public"}}
+    tables = ", ".join(f'"{SCHEMA}"."{t.name}"' for t in reversed(Base.metadata.sorted_tables))
+
+    # Teardown runs as the admin role. TRUNCATE is deliberately withheld from the app role —
+    # it is not filtered by row-level security, so an app role holding it could empty a table
+    # across every tenant at once.
+    admin = create_async_engine(cfg.admin_dsn, connect_args=connect_args)
+    async with admin.begin() as conn:
+        await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
+    await admin.dispose()
+
+    # The code under test runs as the **app** role: NOBYPASSRLS, granted only what
+    # `apply_schema_grants` gives it. Pointing this at the superuser DSN would make the whole
+    # privilege split invisible here, and every future RLS assertion a false pass — which is
+    # the failure this fixture exists to prevent, not merely a tidiness point.
+    engine = create_async_engine(cfg.app_dsn, connect_args=connect_args)
     maker = async_sessionmaker(engine, expire_on_commit=False)
     async with maker() as s:
-        async with s.begin():
-            tables = ", ".join(
-                f'"{SCHEMA}"."{t.name}"' for t in reversed(Base.metadata.sorted_tables)
-            )
-            await s.execute(text(f"TRUNCATE {tables} CASCADE"))
         yield s
     await engine.dispose()
 

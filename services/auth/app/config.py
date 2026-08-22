@@ -8,6 +8,8 @@ from platform_core.config import ServiceSettings, settings_for
 class Settings(ServiceSettings):
     service_name: str = "auth"
     db_schema: str = "auth"
+    db_app_role: str | None = "atmora_auth"
+    db_admin_role: str | None = "atmora_admin"
 
     #: Where account-service lives. This service holds credentials; the directory — who
     #: exists and which organizations they belong to — is asked for over the internal API
