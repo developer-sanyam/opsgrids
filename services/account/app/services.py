@@ -810,6 +810,26 @@ async def invite(
     return invitation, raw
 
 
+async def resolve_invitation_organization(session: AsyncSession, raw_token: str) -> uuid.UUID:
+    """Read one invitation on the bypass session and return the organization it belongs to.
+
+    This is the *lookup* half of accept's bypass-then-narrow (ADR-0002, path 4): the invitee
+    holds a token, not an account, so there is no tenant to bind before the invitation itself
+    says which one it is. `session` is the directory session — BYPASSRLS, SELECT-only — and
+    this touches exactly one row of one table. Every write that follows happens under a
+    tenant-scoped transaction in `accept_invitation`.
+
+    A hash that matches nothing raises the *same* opaque message a forged or expired token
+    gets. Nothing here distinguishes unknown from anything else, and validation of
+    expiry/revocation is deliberately left to `accept_invitation` so it lives in one place —
+    an attacker must not be able to learn from this call that a token was ever real.
+    """
+    invitation = await selectors.get_invitation_by_hash(session, _hash_token(raw_token))
+    if invitation is None:
+        raise NotFoundProblem("That invitation is not valid")
+    return invitation.organization_id
+
+
 async def accept_invitation(
     session: AsyncSession, raw_token: str, full_name: str, *, request: Request | None = None
 ) -> Membership:

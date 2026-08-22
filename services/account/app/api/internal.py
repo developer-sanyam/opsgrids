@@ -15,8 +15,11 @@ the default.
 They are **not** the only cross-tenant paths in the platform, and an earlier version of this
 docstring wrongly said they were. `POST /api/v1/invitations/accept` is a fourth: it is public
 by design — the invitee holds a token, not yet an account — and unlike these three it
-**writes**, creating a user, a membership and role grants with no organization in context.
-`selectors.get_user_by_email` and `get_invitation_by_hash` are likewise unfiltered on purpose.
+**writes**, creating a user, a membership and role grants. It does not run entirely without a
+tenant, though: it uses *bypass-then-narrow* (ADR-0002, path 4) — the invitation is read on the
+bypass session only to learn its organization, then every write happens under a tenant-scoped
+transaction on the application role. The bypass touches one row of one table; the writes stay
+enforced. `selectors.get_user_by_email` and `get_invitation_by_hash` are unfiltered on purpose.
 Anyone reasoning about tenancy from this file needs all four, so the claim is corrected rather
 than deleted. See docs/adr/0002-row-level-security.md, which depends on the full list.
 

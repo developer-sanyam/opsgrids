@@ -22,6 +22,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -145,6 +146,21 @@ def account(platform: object) -> dict:
     seeded = json.loads(_seed("_seed_account.py", "account").splitlines()[-1])
     _seed("_seed_auth.py", "auth", seeded["user_id"], PASSWORD)
     return {**seeded, "password": PASSWORD}
+
+
+@pytest.fixture(scope="session")
+def seed_password() -> Callable[[str, str], None]:
+    """Set a password for a user the journey created *at runtime* — the accepted invitee.
+
+    The account seeder cannot know that user id: it exists only after an invitation is accepted
+    over HTTP. This gives auth a credential for them without truncating, so the admin whose token
+    created the invitation keeps working.
+    """
+
+    def _set(user_id: str, password: str) -> None:
+        _seed("_seed_auth.py", "auth", user_id, password, "keep")
+
+    return _set
 
 
 @pytest.fixture
