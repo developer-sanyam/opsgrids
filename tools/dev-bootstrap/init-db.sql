@@ -7,14 +7,19 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;      -- name search
 CREATE EXTENSION IF NOT EXISTS citext;       -- email is case-insensitive and globally unique
 
 -- ---------------------------------------------------------------------------
--- Two roles, and the difference between them matters.
+-- The roles, and the difference between them matters.
 --
---   atmora_app    runs the services. NOBYPASSRLS, so a missing tenant filter returns
---                 nothing rather than everything.
---   atmora_admin  runs migrations, outbox relays, fan-out consumers and backfills —
---                 work that legitimately spans organizations. BYPASSRLS.
+--   atmora_app        runs the services. NOBYPASSRLS, so a missing tenant filter returns
+--                     nothing rather than everything. Superseded by the per-service roles
+--                     below, kept so an older .env still connects.
+--   atmora_admin      runs migrations and backfills — work that owns the schema and
+--                     legitimately spans organizations. BYPASSRLS.
+--   atmora_directory  the cross-tenant identity reads sign-in depends on. BYPASSRLS,
+--                     SELECT-only on a named handful of tables.
+--   atmora_outbox     the outbox relay and the outbox-lag probe. BYPASSRLS, SELECT and
+--                     UPDATE on each service's `outbox` and nothing else.
 --
--- Running a relay as atmora_app without setting the tenant GUC per message is the
+-- Running a relay as a NOBYPASSRLS role without setting the tenant GUC per message is the
 -- failure that stops event processing with no error at all: the outbox simply fills.
 -- ---------------------------------------------------------------------------
 DO $$
@@ -87,3 +92,21 @@ END
 $$;
 GRANT CONNECT ON DATABASE atmora TO atmora_directory;
 GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO atmora_directory;
+
+-- The outbox relay (ADR-0002 §2, "The outbox relay must run BYPASSRLS").
+--
+-- The relay's query exists to discover which organizations have work, so there is no tenant to
+-- bind before it runs; as a NOBYPASSRLS role it selects nothing, logs nothing and loops while
+-- the outbox fills. It does not get the admin role for the same reason the directory reader
+-- does not: a bug in the relay must not be able to write anything but the rows it marks as sent.
+-- Table grants (SELECT, UPDATE on `outbox` only) are applied by each service's
+-- `migrations/env.py`, because the table does not exist when this file runs.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'atmora_outbox') THEN
+    CREATE ROLE atmora_outbox LOGIN PASSWORD 'atmora' NOINHERIT BYPASSRLS;
+  END IF;
+END
+$$;
+GRANT CONNECT ON DATABASE atmora TO atmora_outbox;
+GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO atmora_outbox;

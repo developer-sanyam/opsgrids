@@ -117,6 +117,38 @@ class TestDeclaredDependencies:
         result = await _ready(_app())
         assert "redis" not in result["body"]["checks"]
 
+    async def test_declaring_an_outbox_opens_the_outbox_engine(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The probe counts through `atmora_outbox`, so the lifespan has to open it.
+
+        Through the application engine `/health/outbox` reports zero whatever the table
+        holds — the app role is NOBYPASSRLS and the probe binds no tenant — which wires the
+        alarm to the same blind spot as the stall it exists to expose.
+        """
+        opened: list[str] = []
+
+        monkeypatch.setattr("platform_core.app.init_engine", lambda *a, **k: None)
+        monkeypatch.setattr("platform_core.app.assert_app_role", _noop)
+        monkeypatch.setattr(
+            "platform_core.app.init_outbox_engine", lambda s: opened.append(s.service_name)
+        )
+
+        await _ready(_app(outbox_model=type("Outbox", (), {})))
+        assert opened == ["probe"], "outbox_model must open the outbox engine during the lifespan"
+
+    async def test_the_outbox_engine_is_not_opened_unless_declared(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("init_outbox_engine must not be called without outbox_model")
+
+        monkeypatch.setattr("platform_core.app.init_engine", lambda *a, **k: None)
+        monkeypatch.setattr("platform_core.app.assert_app_role", _noop)
+        monkeypatch.setattr("platform_core.app.init_outbox_engine", _boom)
+
+        await _ready(_app())
+
 
 class TestReadinessReflectsReality:
     async def test_a_dead_redis_makes_the_service_not_ready(

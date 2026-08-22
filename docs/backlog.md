@@ -52,6 +52,10 @@ ADR-0002 lists (`audit_logs` first — its five single-column indexes no longer 
 tenant column now that the policy qual is ANDed into every query). Neither blocks correctness;
 the second is a performance cliff waiting for volume.
 
+The relay and the stall probe now run on `atmora_outbox` (BYPASSRLS, SELECT and UPDATE on
+`outbox` only), so neither is blind to the rows the app role can no longer see — which both were
+the moment the policies landed, since each connected as the app role with no tenant bound.
+
 ---
 
 ## Next

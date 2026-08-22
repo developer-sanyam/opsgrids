@@ -21,9 +21,12 @@ from platform_core.db import (
     assert_app_role,
     dispose_directory_engine,
     dispose_engine,
+    dispose_outbox_engine,
     get_engine,
+    get_outbox_engine,
     init_directory_engine,
     init_engine,
+    init_outbox_engine,
 )
 from platform_core.errors import register_error_handlers
 from platform_core.logging import RequestContextMiddleware, configure_logging, get_logger
@@ -96,6 +99,11 @@ def build_health_router(
             service out of rotation: refusing traffic would stop new events being written
             without helping drain the ones already queued, which makes the incident worse.
             This is a metric to alert on, not a health state.
+
+            Counted through the outbox engine, not the application one. The app role is
+            NOBYPASSRLS and this request binds no tenant, so through it `pending` would be
+            zero whatever the table holds — the probe that exists to expose the stall would
+            be wired to the same blind spot that causes it.
             """
             table = outbox_model.__table__
             stmt = select(
@@ -107,7 +115,7 @@ def build_health_router(
                 ),
             ).select_from(table)
 
-            async with get_engine().connect() as conn:
+            async with get_outbox_engine().connect() as conn:
                 pending, oldest = (await conn.execute(stmt)).one()
 
             return {
@@ -157,6 +165,11 @@ def create_app(
             # engine below is exempt for the same reason: bypassing RLS is its purpose.
             await assert_app_role(engine, environment=settings.environment)
             init_directory_engine(settings)
+            # Exempt from the guard too, and for the same reason again: the outbox engine
+            # connects as `atmora_outbox`, BYPASSRLS so `/health/outbox` can count every
+            # tenant's unpublished rows. Opened only by a service that owns an outbox.
+            if outbox_model is not None:
+                init_outbox_engine(settings)
         if redis:
             init_redis(settings.redis_url)
         log.info(
@@ -173,6 +186,7 @@ def create_app(
         if redis:
             await close_redis()
         if database:
+            await dispose_outbox_engine()
             await dispose_directory_engine()
             await dispose_engine()
         log.info("service.stopped")

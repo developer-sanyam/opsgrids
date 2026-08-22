@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from platform_core import db
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_app_role, assert_tenant, set_tenant
 
@@ -96,3 +97,20 @@ class TestAssertAppRole:
         with structlog.testing.capture_logs() as logs:
             await assert_app_role(admin_engine, environment="local")
         assert any(entry["event"] == "db.role.bypasses_rls" for entry in logs)
+
+
+class TestOutboxEngineFallback:
+    async def test_an_unsplit_deployment_is_warned_about_and_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The fallback to the app engine is the silent-stall configuration, so it must not
+        be silent: an un-split deployment starts, and says so at warning level."""
+        await db.dispose_outbox_engine()
+        sentinel = object()
+        monkeypatch.setattr(db, "get_sessionmaker", lambda: sentinel)
+
+        with structlog.testing.capture_logs() as logs:
+            db.init_outbox_engine(_Settings())
+
+        assert any(entry["event"] == "outbox.role.not_split" for entry in logs)
+        assert db.get_outbox_sessionmaker() is sentinel
