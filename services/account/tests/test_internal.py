@@ -25,13 +25,23 @@ from app.models import Membership, Organization
 from app.schemas import GrantIn, MemberPatch
 from platform_core.auth import Scope, ScopeContext
 from platform_core.cache import permission_version_key
+from platform_core.internal_auth import mint_service_token
 from tests.helpers import FakeRedis, ctx_for
 
 pytestmark = pytest.mark.integration
 
 
 def internal() -> dict[str, str]:
-    return {"X-Internal-Token": settings().internal_service_token.get_secret_value()}
+    """A freshly minted service token, as a real caller sends.
+
+    Not the signing key itself: that is exactly what this replaced. A static secret on the
+    wire meant anything capturing request headers captured the credential rather than one
+    expiring use of it.
+    """
+    return {
+        "X-Internal-Token": mint_service_token(settings(), audience="account", caller="tests"),
+        "X-Calling-Service": "tests",
+    }
 
 
 def admin_ctx(org: Organization, membership: Membership) -> ScopeContext:
@@ -56,6 +66,58 @@ class TestGuard:
         response = await client.get(
             "/internal/v1/users/by-email?email=a@example.com",
             headers={"X-Internal-Token": "guessed"},
+        )
+        assert response.status_code == 401
+
+    async def test_the_raw_signing_key_is_not_a_credential(self, client: AsyncClient) -> None:
+        """The whole point of the change.
+
+        Sending the shared secret itself used to be how a service authenticated. It is now
+        only a signing key, and presenting it as a token is refused — so a leaked config value
+        is not immediately a working credential.
+        """
+        response = await client.get(
+            "/internal/v1/users/by-email?email=a@example.com",
+            headers={"X-Internal-Token": settings().internal_service_token.get_secret_value()},
+        )
+        assert response.status_code == 401
+
+    async def test_a_token_for_another_service_is_refused(self, client: AsyncClient) -> None:
+        """Audience binding. The static secret it replaced was accepted by everything.
+
+        A token minted for billing-service must be useless against account-service, or a
+        compromise anywhere is a compromise everywhere.
+        """
+        wrong = mint_service_token(settings(), audience="billing", caller="tests")
+        response = await client.get(
+            "/internal/v1/users/by-email?email=a@example.com",
+            headers={"X-Internal-Token": wrong},
+        )
+        assert response.status_code == 401
+
+    async def test_an_expired_token_is_refused(self, client: AsyncClient) -> None:
+        """Sixty seconds is the window a captured header is worth anything for."""
+        from datetime import UTC, datetime, timedelta
+
+        import jwt
+
+        from platform_core.internal_auth import ALGORITHM
+
+        stale = jwt.encode(
+            {
+                "iss": "tests",
+                "aud": "account",
+                "iat": datetime.now(UTC) - timedelta(minutes=10),
+                "exp": datetime.now(UTC) - timedelta(minutes=5),
+                "jti": "expired",
+                "typ": "service",
+            },
+            settings().internal_service_token.get_secret_value(),
+            algorithm=ALGORITHM,
+        )
+        response = await client.get(
+            "/internal/v1/users/by-email?email=a@example.com",
+            headers={"X-Internal-Token": stale},
         )
         assert response.status_code == 401
 

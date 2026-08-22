@@ -91,7 +91,18 @@ class ServiceSettings(BaseSettings):
 
     # Proves a request came from a gateway or a sibling service. Services trust
     # forwarded identity headers ONLY when this is present and matches.
-    internal_service_token: SecretStr = SecretStr("dev-only-internal-token")
+    #: Signs the short-lived service tokens in `platform_core.internal_auth`. **A signing key,
+    #: not a credential** — presenting it as a token is refused.
+    #:
+    #: At least 32 bytes: HMAC-SHA256 keys shorter than the digest are weaker than the
+    #: algorithm implies, and PyJWT warns about it (RFC 7518 §3.2). The dev default is padded
+    #: to that length so the warning means something when it does appear.
+    internal_service_token: SecretStr = SecretStr(
+        "dev-only-internal-token-padded-to-32-bytes-minimum"
+    )
+    #: How long a minted service token is good for. Short on purpose: long enough for a call
+    #: and a retry, far too short to be worth capturing. See `platform_core.internal_auth`.
+    service_token_ttl_seconds: int = 60
 
     # --- PII ----------------------------------------------------------------------
     pii_encryption_key: SecretStr = SecretStr("dev-only-pii-key-change-me")
@@ -158,11 +169,19 @@ class ServiceSettings(BaseSettings):
         if self.environment not in ("production", "staging", "uat"):
             return
         insecure = {
-            "internal_service_token": self.internal_service_token.get_secret_value()
-            == "dev-only-internal-token",
+            "internal_service_token": self.internal_service_token.get_secret_value().startswith(
+                "dev-only-internal-token"
+            ),
             "pii_encryption_key": self.pii_encryption_key.get_secret_value()
             == "dev-only-pii-key-change-me",
         }
+        if len(self.internal_service_token.get_secret_value().encode()) < 32:
+            raise ValueError(
+                "internal_service_token must be at least 32 bytes: it signs service tokens "
+                "with HMAC-SHA256, and a key shorter than the digest is weaker than the "
+                "algorithm suggests (RFC 7518 §3.2)."
+            )
+
         offenders = [name for name, bad in insecure.items() if bad]
         if offenders:
             raise ValueError(

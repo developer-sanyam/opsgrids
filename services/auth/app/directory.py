@@ -17,7 +17,9 @@ from typing import Any, Protocol
 
 import httpx
 
+from platform_core.config import ServiceSettings
 from platform_core.errors import UpstreamUnavailableProblem
+from platform_core.internal_auth import mint_service_token
 from platform_core.logging import correlation_id_ctx
 
 
@@ -74,15 +76,20 @@ class Directory(Protocol):
 class HttpDirectory:
     """The real client. Talks to account-service over the internal API."""
 
-    def __init__(self, base_url: str, internal_token: str, *, timeout: float = 5.0) -> None:
+    def __init__(self, base_url: str, settings: ServiceSettings, *, timeout: float = 5.0) -> None:
         self._client = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout)
-        self._token = internal_token
+        self._settings = settings
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
     def _headers(self) -> dict[str, str]:
-        headers = {"X-Internal-Token": self._token, "X-Calling-Service": "auth"}
+        # Minted per call: short-lived, and addressed to account-service by name so it cannot
+        # be replayed against anything else. The signing key never leaves this process.
+        headers = {
+            "X-Internal-Token": mint_service_token(self._settings, audience="account"),
+            "X-Calling-Service": "auth",
+        }
         correlation = correlation_id_ctx.get()
         if correlation:
             headers["X-Correlation-ID"] = correlation

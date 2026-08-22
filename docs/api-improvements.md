@@ -5,18 +5,28 @@ reading or testing the code, not a general aspiration. Ordered by how much it ma
 
 ---
 
-## 1. The internal service token is a shared static secret
+## 1. The internal service token was a shared static secret — **largely fixed**
 
-**Severity: high.** `require_service_token` compares an `X-Internal-Token` header against a
-configured string that defaults to `dev-only-internal-token`. One leaked value reads **every
-user, every membership and every organization name on the platform**, because that is exactly
-what the internal API is for.
+**Was:** a static string compared on every call. One leaked value read **every user, every
+membership and every organization name on the platform**, forever, with no way to tell it had
+leaked.
 
-The router is excluded from the OpenAPI document, which is obscurity, not a control.
+**Now:** a short-lived HMAC token minted per call, naming the caller and addressed to the
+service being called — 60 second TTL, `aud` bound, `jti` unique. The signing key no longer
+travels on the wire, so capturing request headers captures one expiring use rather than the
+credential itself. Presenting the raw key as a token is refused, and so is a token minted for a
+different service; both are asserted.
 
-**Fix:** a short-TTL signed service token with an audience claim, or mTLS. Plus a network policy
-making `/internal/v1` unreachable from ingress. Until then, treat the token as a production
-secret and never let the default ship.
+Enforcing this surfaced a second problem: the dev key was 23 bytes, under the 32-byte floor for
+HMAC-SHA256 (RFC 7518 §3.2). The default is longer now and real environments refuse a short one.
+
+**Still open, and worth being precise about.** The signing key is *shared* between services, so
+a service that can verify can also mint — this is not asymmetric identity, and a leaked key is
+still a full compromise. Replay inside the 60-second window is not prevented either; doing so
+needs a `jti` ledger on the callee, which puts Redis in front of every internal call including
+the gateway's per-request permission lookup. The end state is per-service keypairs or mTLS, plus
+a network policy making `/internal/v1` unreachable from ingress. Every call site already passes
+a caller and an audience, so that change touches signing and verification only.
 
 ## 2. Cross-tenant reads left no trace — **partly fixed**
 

@@ -46,6 +46,7 @@ from platform_core.errors import (
     UnauthorizedProblem,
     UpstreamUnavailableProblem,
 )
+from platform_core.internal_auth import mint_service_token
 from platform_core.logging import get_logger
 
 log = get_logger("gateway")
@@ -196,9 +197,11 @@ class PermissionResolver:
     entry for that organization **by construction** rather than by waiting for a TTL.
     """
 
-    def __init__(self, account_url: str, internal_token: str, *, timeout: float = 5.0) -> None:
+    def __init__(
+        self, account_url: str, settings: ServiceSettings, *, timeout: float = 5.0
+    ) -> None:
         self._client = httpx.AsyncClient(base_url=account_url.rstrip("/"), timeout=timeout)
-        self._token = internal_token
+        self._settings = settings
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -207,7 +210,12 @@ class PermissionResolver:
         async def load() -> list[str]:
             response = await self._client.get(
                 f"/internal/v1/memberships/{membership_id}/grants",
-                headers={"X-Internal-Token": self._token, "X-Calling-Service": "gateway"},
+                headers={
+                    # Addressed to account-service and good for seconds, rather than the
+                    # everlasting shared secret this replaced.
+                    "X-Internal-Token": mint_service_token(self._settings, audience="account"),
+                    "X-Calling-Service": "gateway",
+                },
             )
             if response.status_code == 404:
                 return []

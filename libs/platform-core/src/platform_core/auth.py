@@ -35,6 +35,7 @@ from sqlalchemy import false as sa_false
 
 from platform_core.config import ServiceSettings
 from platform_core.errors import ForbiddenProblem, PaymentRequiredProblem, UnauthorizedProblem
+from platform_core.internal_auth import verify_service_token
 
 
 class Scope(enum.StrEnum):
@@ -407,12 +408,24 @@ def require_product(product: str) -> Any:
 
 
 def require_service_token(request: Request) -> None:
-    """Guard for device and agent endpoints that carry no user identity."""
+    """Guard for endpoints called by another service rather than by a person.
+
+    The token is short-lived, signed, and addressed to *this* service by name. It replaced a
+    static shared secret that was sent on every call and accepted by everything — see
+    `platform_core.internal_auth` for what that change does and does not buy.
+
+    The failure message stays deliberately vague. Distinguishing "expired" from "wrong
+    audience" from "bad signature" tells whoever is probing which half of their guess was
+    right.
+    """
     settings: ServiceSettings = request.app.state.settings
     token = request.headers.get("X-Internal-Token")
-    expected = settings.internal_service_token.get_secret_value()
-    if not token or not _constant_time_eq(token, expected):
+    if not token:
         raise UnauthorizedProblem("Valid service token required")
+    try:
+        verify_service_token(settings, token)
+    except Exception as exc:  # PyJWTError and anything a malformed token provokes
+        raise UnauthorizedProblem("Valid service token required") from exc
 
 
 __all__ = [

@@ -47,9 +47,7 @@ policy = GatewayPolicy(
     upstream_timeout=cfg.upstream_timeout_seconds,
 )
 
-resolver = PermissionResolver(
-    cfg.account_service_url, cfg.internal_service_token.get_secret_value()
-)
+resolver = PermissionResolver(cfg.account_service_url, cfg)
 
 
 async def _startup(app: FastAPI) -> None:

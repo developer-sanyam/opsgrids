@@ -23,9 +23,7 @@ async def _startup(application: FastAPI) -> None:
     # Fails loudly here rather than on the first sign-in attempt: a service that cannot
     # sign tokens should not report itself healthy.
     application.state.signing_key = active_key(cfg.jwt_private_key_path)
-    application.state.directory = HttpDirectory(
-        cfg.account_service_url, cfg.internal_service_token.get_secret_value()
-    )
+    application.state.directory = HttpDirectory(cfg.account_service_url, cfg)
 
 
 async def _shutdown(application: FastAPI) -> None:
