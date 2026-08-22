@@ -11,7 +11,8 @@ nested structures rather than only top-level keys.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 import sqlalchemy as sa
@@ -111,6 +112,31 @@ def redact(data: Any) -> Any:
     return data
 
 
+def jsonable(data: Any) -> Any:
+    """Coerce a snapshot into what the JSONB column can actually store, at any depth.
+
+    ``Base.as_dict`` returns column values as they are — UUIDs, timestamps, dates, Decimals —
+    which is precisely what an audit snapshot should record, and precisely what JSONB's default
+    serializer refuses: ``json.dumps`` accepts none of them. Coerced here, once, rather than at
+    every ``before=row.as_dict()`` call site, so that method works the way its docstring promises.
+
+    Found the hard way: the one route that snapshotted a row this way answered 500 to every
+    caller, and no test had ever exercised it.
+    """
+    if isinstance(data, dict):
+        return {k: jsonable(v) for k, v in data.items()}
+    if isinstance(data, list | tuple):
+        return [jsonable(v) for v in data]
+    if isinstance(data, uuid.UUID):
+        return str(data)
+    if isinstance(data, datetime | date):
+        return data.isoformat()
+    if isinstance(data, Decimal):
+        # A string, never a float — the same representation money takes everywhere else here.
+        return str(data)
+    return data
+
+
 def _client_ip(request: Request | None) -> str | None:
     if request is None:
         return None
@@ -145,8 +171,8 @@ def record_audit(
             action=action,
             entity=entity,
             entity_id=entity_id,
-            before=redact(before) if before is not None else None,
-            after=redact(after) if after is not None else None,
+            before=jsonable(redact(before)) if before is not None else None,
+            after=jsonable(redact(after)) if after is not None else None,
             reason=reason,
             ip=_client_ip(request),
             user_agent=request.headers.get("user-agent") if request else None,
