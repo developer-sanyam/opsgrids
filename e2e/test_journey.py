@@ -21,11 +21,39 @@ from __future__ import annotations
 
 import base64
 import json
+import uuid
+from collections.abc import Callable
 
 import httpx
 import pytest
 
 pytestmark = pytest.mark.e2e
+
+
+def _obtain_token(client: httpx.Client, email: str, password: str, org_id: str) -> str:
+    """Sign in and return a usable access token, handling the multi-org exchange.
+
+    Belonging to several organizations makes sign-in two steps: the first returns a pre-auth
+    token and the memberships, the second exchanges it for a real one. Handled here rather than
+    assumed away, because assuming one organization is precisely the bug this platform's identity
+    model exists to avoid.
+    """
+    response = client.post("/api/v1/auth/login", json={"email": email, "password": password})
+    assert response.status_code == 200, response.text[:400]
+    body = response.json()
+
+    token = body.get("access_token")
+    if token:
+        return str(token)
+
+    pre_auth = body.get("pre_auth_token") or body.get("token")
+    assert pre_auth, f"no token and no organization choice in {body}"
+    chosen = client.post(
+        "/api/v1/auth/select-org",
+        json={"token": pre_auth, "organization_id": org_id},
+    )
+    assert chosen.status_code == 200, chosen.text[:400]
+    return str(chosen.json()["access_token"])
 
 
 class TestSignIn:
@@ -71,29 +99,7 @@ class TestSignIn:
 
 class TestTheSignedInJourney:
     def _token(self, client: httpx.Client, account: dict) -> str:
-        response = client.post(
-            "/api/v1/auth/login",
-            json={"email": account["email"], "password": account["password"]},
-        )
-        assert response.status_code == 200, response.text[:400]
-        body = response.json()
-
-        token = body.get("access_token")
-        if token:
-            return str(token)
-
-        # Belonging to several organizations makes sign-in two steps: the first returns a
-        # pre-auth token and the memberships, the second exchanges it for a real one. Handled
-        # here rather than assumed away, because assuming one organization is precisely the
-        # bug this platform's identity model exists to avoid.
-        pre_auth = body.get("pre_auth_token") or body.get("token")
-        assert pre_auth, f"no token and no organization choice in {body}"
-        chosen = client.post(
-            "/api/v1/auth/select-org",
-            json={"token": pre_auth, "organization_id": account["org_id"]},
-        )
-        assert chosen.status_code == 200, chosen.text[:400]
-        return str(chosen.json()["access_token"])
+        return _obtain_token(client, account["email"], account["password"], account["org_id"])
 
     def test_the_token_opens_the_organization(self, client: httpx.Client, account: dict) -> None:
         """The whole platform in one call.
@@ -134,6 +140,63 @@ class TestTheSignedInJourney:
         assert response.status_code == 402, (
             f"expected payment-required for an unactivated product, got {response.status_code}"
         )
+
+
+class TestAnInvitationIsAcceptedOverHttp:
+    """A second person joins the platform entirely over HTTP — the path main could not serve.
+
+    On main this route depended on the tenant chokepoint, which refuses a caller with no
+    principal before the body runs. The invitee — who by definition has no account and no token —
+    got a 401 and could never accept. account-service's own suite missed it because it drove
+    acceptance around the chokepoint. This exercises the real thing: an admin issues the
+    invitation, a genuinely unauthenticated request accepts it (bypass-then-narrow, ADR-0002),
+    and the new person then signs in and reaches an entitled endpoint.
+    """
+
+    def test_an_invitee_accepts_without_a_token_then_signs_in(
+        self,
+        client: httpx.Client,
+        account: dict,
+        seed_password: Callable[[str, str], None],
+    ) -> None:
+        admin_token = _obtain_token(
+            client, account["email"], account["password"], account["org_id"]
+        )
+
+        invitee_email = f"invitee-{uuid.uuid4().hex[:8]}@example.com"
+        created = client.post(
+            "/api/v1/invitations",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"email": invitee_email, "role_codes": ["ORG_ADMIN"], "product_codes": []},
+        )
+        assert created.status_code == 201, created.text[:400]
+        raw_token = created.json()["token"]
+
+        # The step that was impossible on main: no Authorization header at all.
+        accepted = client.post(
+            "/api/v1/invitations/accept",
+            json={"token": raw_token, "full_name": "Ivy Invitee"},
+        )
+        assert accepted.status_code in (200, 201), (
+            f"accept over HTTP failed: {accepted.status_code} {accepted.text[:400]}. A 401 here "
+            "is the original defect — the public path was routed through the tenant chokepoint."
+        )
+        member = accepted.json()
+        assert member["email"] == invitee_email
+        assert "ORG_ADMIN" in member["roles"]
+
+        # Credentials live in auth, not account, and accepting an invitation does not set a
+        # password — so give the new person one, then let them sign in for real.
+        invitee_password = "invitee-Sufficiently-Long-Passw0rd!"
+        seed_password(member["user_id"], invitee_password)
+
+        token = _obtain_token(client, invitee_email, invitee_password, account["org_id"])
+        response = client.get("/api/v1/organization", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200, (
+            f"the accepted invitee could not reach their organization: {response.status_code} "
+            f"{response.text[:400]}"
+        )
+        assert response.json()["slug"] == account["org_slug"]
 
 
 class TestTheGatewayIsTheOnlyDoor:

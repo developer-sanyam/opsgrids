@@ -41,7 +41,7 @@ from app.schemas import (
     ServiceInfo,
 )
 from platform_core.auth import Scope, ScopeContext, require
-from platform_core.db import get_tenant_session
+from platform_core.db import get_directory_session, get_tenant_session, session_scope
 from platform_core.errors import NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
@@ -51,6 +51,13 @@ router = APIRouter(tags=["account"])
 #: organization before the route body runs, so no route can read or write without one.
 #: Routes therefore do not open transactions of their own.
 SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+
+#: The cross-tenant, SELECT-only bypass session. Used by exactly one public route,
+#: `accept_invitation`, to resolve an invitation's organization before any tenant is bound —
+#: never for a write. A route taking this instead of `SessionDep` is opting out of the tenant
+#: chokepoint on purpose, which is why it carries a different name and reads no tenant data
+#: beyond that single lookup.
+DirectorySessionDep = Annotated[AsyncSession, Depends(get_directory_session)]
 
 # --- read contexts ------------------------------------------------------------------
 OrgRead = Annotated[ScopeContext, Depends(require("core.org.organization.read"))]
@@ -322,16 +329,26 @@ async def revoke_invitation(
     response_model=MemberOut,
     summary="Accept an invitation",
 )
-async def accept_invitation(payload: InvitationAccept, session: SessionDep) -> MemberOut:
+async def accept_invitation(payload: InvitationAccept, directory: DirectorySessionDep) -> MemberOut:
     """Public by design: the invitee has a token, not yet an account.
 
-    The token is the credential, so every failure — unknown, expired, already used —
-    returns the same message. A distinct "expired" reply confirms to whoever is guessing
-    that they found a real one.
+    Bypass-then-narrow (ADR-0002, path 4). The caller carries no principal, so there is no
+    tenant to bind until the invitation itself names one. The invitation is therefore read on
+    the bypass session — BYPASSRLS, SELECT-only, one row of one table — purely to learn its
+    organization; then a tenant-scoped transaction is opened on the application role
+    (NOBYPASSRLS) and every write happens under policy. The bypass touches a single lookup;
+    the writes stay enforced.
+
+    The token is the credential, so every failure — unknown, expired, already used — returns
+    the same message. A distinct "expired" reply confirms to whoever is guessing that they
+    found a real one. All of that validation stays inside `accept_invitation` under the tenant
+    session, so the resolver above cannot leak that a token was real either.
     """
-    membership = await services.accept_invitation(session, payload.token, payload.full_name)
-    await session.flush()
-    found = await selectors.get_member(session, membership.organization_id, membership.id)
-    if found is None:  # pragma: no cover - defensive
-        raise NotFoundProblem("Membership not found")
-    return selectors.to_member_out(found[0], found[1])
+    org_id = await services.resolve_invitation_organization(directory, payload.token)
+    async with session_scope(org_id) as session:
+        membership = await services.accept_invitation(session, payload.token, payload.full_name)
+        await session.flush()
+        found = await selectors.get_member(session, membership.organization_id, membership.id)
+        if found is None:  # pragma: no cover - defensive
+            raise NotFoundProblem("Membership not found")
+        return selectors.to_member_out(found[0], found[1])

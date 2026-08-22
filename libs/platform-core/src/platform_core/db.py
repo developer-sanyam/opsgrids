@@ -102,6 +102,12 @@ def apply_schema_grants(
             "role_permissions",
             "permissions",
             "organizations",
+            # The public `POST /api/v1/invitations/accept` path resolves an invitation's
+            # organization on the bypass session before any tenant is bound, then does every
+            # write under a tenant-scoped transaction. This is the one row of the one table
+            # that read touches — SELECT only, no write ever reaches this role (ADR-0002,
+            # "What breaks", path 4: bypass for the lookup only, then narrow).
+            "invitations",
         ):
             if connection.execute(
                 text("SELECT to_regclass(:name)"), {"name": f"{schema}.{table}"}
