@@ -111,7 +111,10 @@ needs a **rehearsed** restore, not a documented one.
 
 ## Rollback
 
-Migrations have `downgrade()`. There is no deployment to roll back yet.
+Migrations have `downgrade()`, and every one of them is exercised: `make migration-roundtrip`
+takes each service to `head`, back to `base`, and up again, and CI runs it on every change.
+A `downgrade()` that does not actually revert is found there rather than during an incident.
+There is no deployment to roll back yet.
 
 For the RLS work specifically, ADR-0002 records three rollback levers, cheapest first — the
 fastest being `ALTER ROLE atmora_app BYPASSRLS`, one statement, no lock. Note that it is also a

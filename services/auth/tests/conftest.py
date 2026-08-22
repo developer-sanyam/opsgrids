@@ -43,7 +43,7 @@ USER = uuid.uuid4()
 MEMBERSHIP_A = uuid.uuid4()
 MEMBERSHIP_B = uuid.uuid4()
 
-PASSWORD = "correct-horse-7"
+PASSWORD = "correct-horse-7"  # pragma: allowlist secret
 
 
 class FakeDirectory:

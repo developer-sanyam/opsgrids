@@ -35,6 +35,10 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "pre-commit>=4.0",
+    "pip-audit>=2.10.1",
+    "pip-licenses>=5.5.5",
+    "detect-secrets>=1.5.0",
+    "import-linter>=2.13",
 ]
 
 [tool.uv.workspace]
@@ -64,6 +68,8 @@ select = [
     "ASYNC",    # async correctness
     "S",        # bandit
     "T20",      # no print
+    "T10",      # no breakpoint() or pdb left behind
+    "PGH",      # a bare `# noqa` or `# type: ignore` silences rules nobody chose
     "RUF",
 ]
 ignore = [

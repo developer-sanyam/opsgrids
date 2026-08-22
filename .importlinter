@@ -1,0 +1,48 @@
+# Dependency boundaries — checked by `make boundaries`, one service at a time.
+#
+# Every service exposes a top-level `app`, so this runs from inside each service directory
+# (the Makefile loop mirrors `typecheck-services`). The contracts describe the one shape
+# every service shares; a layer in parentheses is optional, so a gateway with no `app.api`
+# or a service with no `app.domain` yet has nothing to violate rather than a config error.
+#
+# The layering is the service anatomy in CLAUDE.md, stated as something a build can refuse.
+# A module may import only what sits *below* it:
+#
+#   main
+#   api | consumers | relay     independent of each other — a consumer that imports a
+#                               router has grown a second HTTP surface by accident
+#   services                    writes; may read through selectors
+#   selectors                   reads
+#   schemas | config
+#   domain                      pure functions; nothing from the app except model types
+#   models
+#
+# Reaching further down than the next layer is allowed (a route may name a model type);
+# reaching *up* is the import that turns a layer into a cycle, and the layers contract
+# fails on any cycle between the named layers, which is the "no import cycles" half of
+# the gate.
+
+[importlinter]
+root_packages =
+    app
+    platform_core
+
+[importlinter:contract:platform-core-is-independent]
+name = platform_core must not import any service
+type = forbidden
+source_modules =
+    platform_core
+forbidden_modules =
+    app
+
+[importlinter:contract:service-layers]
+name = the service anatomy, enforced: nothing imports upward, no cycles
+type = layers
+layers =
+    (app.main)
+    (app.api) | (app.consumers) | (app.relay)
+    (app.services)
+    (app.selectors)
+    (app.schemas) | (app.config)
+    (app.domain)
+    (app.models)

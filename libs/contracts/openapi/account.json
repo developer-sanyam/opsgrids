@@ -1,0 +1,2329 @@
+{
+  "components": {
+    "schemas": {
+      "GrantIn": {
+        "properties": {
+          "permission_code": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Permission Code",
+            "type": "string"
+          },
+          "scope": {
+            "default": "OWN",
+            "enum": [
+              "OWN",
+              "TEAM",
+              "LOCATION",
+              "ORG"
+            ],
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "permission_code"
+        ],
+        "title": "GrantIn",
+        "type": "object"
+      },
+      "GrantOut": {
+        "properties": {
+          "permission_code": {
+            "title": "Permission Code",
+            "type": "string"
+          },
+          "scope": {
+            "enum": [
+              "OWN",
+              "TEAM",
+              "LOCATION",
+              "ORG"
+            ],
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "permission_code",
+          "scope"
+        ],
+        "title": "GrantOut",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "InvitationAccept": {
+        "properties": {
+          "full_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Full Name",
+            "type": "string"
+          },
+          "token": {
+            "maxLength": 128,
+            "minLength": 16,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "full_name"
+        ],
+        "title": "InvitationAccept",
+        "type": "object"
+      },
+      "InvitationCreated": {
+        "description": "The one response that carries the raw token.\n\nOnly the hash is stored, so this is the single moment the token exists outside the\nemail that delivers it. It is never readable again.",
+        "properties": {
+          "accepted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "product_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Product Codes",
+            "type": "array"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "role_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Role Codes",
+            "type": "array"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "role_codes",
+          "product_codes",
+          "expires_at",
+          "accepted_at",
+          "revoked_at",
+          "created_at",
+          "token"
+        ],
+        "title": "InvitationCreated",
+        "type": "object"
+      },
+      "InvitationIn": {
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "expires_in_days": {
+            "default": 14,
+            "maximum": 90.0,
+            "minimum": 1.0,
+            "title": "Expires In Days",
+            "type": "integer"
+          },
+          "product_codes": {
+            "items": {
+              "maxLength": 40,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "title": "Product Codes",
+            "type": "array"
+          },
+          "role_codes": {
+            "items": {
+              "maxLength": 40,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "title": "Role Codes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "InvitationIn",
+        "type": "object"
+      },
+      "InvitationOut": {
+        "properties": {
+          "accepted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "product_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Product Codes",
+            "type": "array"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "role_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Role Codes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "role_codes",
+          "product_codes",
+          "expires_at",
+          "accepted_at",
+          "revoked_at",
+          "created_at"
+        ],
+        "title": "InvitationOut",
+        "type": "object"
+      },
+      "LocationIn": {
+        "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "code": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Code",
+            "type": "string"
+          },
+          "country": {
+            "anyOf": [
+              {
+                "maxLength": 2,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "timezone": {
+            "default": "Asia/Kolkata",
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "code"
+        ],
+        "title": "LocationIn",
+        "type": "object"
+      },
+      "LocationOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "code",
+          "timezone",
+          "country",
+          "is_active"
+        ],
+        "title": "LocationOut",
+        "type": "object"
+      },
+      "MemberOut": {
+        "description": "A membership, plus the parts of the person a colleague may see.\n\nDeliberately not the user row: a person exists across organizations, and one customer\nhas no business learning where else they work.",
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee Id"
+          },
+          "full_name": {
+            "title": "Full Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_owner": {
+            "title": "Is Owner",
+            "type": "boolean"
+          },
+          "job_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Title"
+          },
+          "joined_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Joined At"
+          },
+          "location_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Location Codes",
+            "type": "array"
+          },
+          "manager_membership_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manager Membership Id"
+          },
+          "org_unit_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Org Unit Id"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Roles",
+            "type": "array"
+          },
+          "started_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started On"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "email",
+          "full_name",
+          "display_name",
+          "job_title",
+          "status",
+          "is_owner",
+          "org_unit_id",
+          "manager_membership_id",
+          "location_codes",
+          "employee_id",
+          "roles",
+          "joined_at",
+          "started_on"
+        ],
+        "title": "MemberOut",
+        "type": "object"
+      },
+      "MemberPatch": {
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "job_title": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Title"
+          },
+          "location_codes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Codes"
+          },
+          "manager_membership_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manager Membership Id"
+          },
+          "org_unit_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Org Unit Id"
+          },
+          "started_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started On"
+          }
+        },
+        "title": "MemberPatch",
+        "type": "object"
+      },
+      "OrgUnitIn": {
+        "properties": {
+          "code": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Code",
+            "type": "string"
+          },
+          "kind": {
+            "default": "department",
+            "maxLength": 24,
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          }
+        },
+        "required": [
+          "name",
+          "code"
+        ],
+        "title": "OrgUnitIn",
+        "type": "object"
+      },
+      "OrgUnitNode": {
+        "description": "A unit with its children, so the tree renders in one call.",
+        "properties": {
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/OrgUnitNode"
+            },
+            "title": "Children",
+            "type": "array"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "head_membership_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Membership Id"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "code",
+          "parent_id",
+          "head_membership_id",
+          "kind",
+          "is_active"
+        ],
+        "title": "OrgUnitNode",
+        "type": "object"
+      },
+      "OrgUnitOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "head_membership_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Membership Id"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "code",
+          "parent_id",
+          "head_membership_id",
+          "kind",
+          "is_active"
+        ],
+        "title": "OrgUnitOut",
+        "type": "object"
+      },
+      "OrganizationOut": {
+        "properties": {
+          "country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "fiscal_year_start_month": {
+            "title": "Fiscal Year Start Month",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "industry": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Industry"
+          },
+          "legal_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legal Name"
+          },
+          "locale": {
+            "title": "Locale",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_org_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Org Id"
+          },
+          "settings": {
+            "additionalProperties": true,
+            "title": "Settings",
+            "type": "object"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "state_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State Code"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tax_ids": {
+            "additionalProperties": true,
+            "title": "Tax Ids",
+            "type": "object"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
+          "trial_ends_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trial Ends At"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "name",
+          "legal_name",
+          "industry",
+          "status",
+          "country",
+          "state_code",
+          "timezone",
+          "currency",
+          "locale",
+          "fiscal_year_start_month",
+          "tax_ids",
+          "settings",
+          "parent_org_id",
+          "trial_ends_at",
+          "created_at"
+        ],
+        "title": "OrganizationOut",
+        "type": "object"
+      },
+      "OrganizationPatch": {
+        "description": "Partial update. Absent means \"leave alone\" \u2014 a PATCH cannot null a field.",
+        "properties": {
+          "country": {
+            "anyOf": [
+              {
+                "maxLength": 2,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "fiscal_year_start_month": {
+            "anyOf": [
+              {
+                "maximum": 12.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fiscal Year Start Month"
+          },
+          "industry": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Industry"
+          },
+          "legal_name": {
+            "anyOf": [
+              {
+                "maxLength": 240,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legal Name"
+          },
+          "locale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locale"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "primary_contact_email": {
+            "anyOf": [
+              {
+                "format": "email",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Contact Email"
+          },
+          "registered_address": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Registered Address"
+          },
+          "settings": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settings"
+          },
+          "state_code": {
+            "anyOf": [
+              {
+                "maxLength": 10,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State Code"
+          },
+          "tax_ids": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tax Ids"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          }
+        },
+        "title": "OrganizationPatch",
+        "type": "object"
+      },
+      "Page_MemberOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MemberOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[MemberOut]",
+        "type": "object"
+      },
+      "PermissionOut": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "default_scope": {
+            "title": "Default Scope",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "is_dangerous": {
+            "title": "Is Dangerous",
+            "type": "boolean"
+          },
+          "max_scope": {
+            "title": "Max Scope",
+            "type": "string"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          },
+          "product": {
+            "title": "Product",
+            "type": "string"
+          },
+          "resource": {
+            "title": "Resource",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "product",
+          "module",
+          "resource",
+          "action",
+          "description",
+          "default_scope",
+          "max_scope",
+          "is_dangerous"
+        ],
+        "title": "PermissionOut",
+        "type": "object"
+      },
+      "RoleAssignment": {
+        "properties": {
+          "role_codes": {
+            "items": {
+              "maxLength": 40,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            "title": "Role Codes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "role_codes"
+        ],
+        "title": "RoleAssignment",
+        "type": "object"
+      },
+      "RoleIn": {
+        "properties": {
+          "code": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Code",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "grants": {
+            "items": {
+              "$ref": "#/components/schemas/GrantIn"
+            },
+            "title": "Grants",
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "product": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product"
+          }
+        },
+        "required": [
+          "code",
+          "name"
+        ],
+        "title": "RoleIn",
+        "type": "object"
+      },
+      "RoleOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "grants": {
+            "items": {
+              "$ref": "#/components/schemas/GrantOut"
+            },
+            "title": "Grants",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "is_system": {
+            "title": "Is System",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "product": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "description",
+          "product",
+          "is_default",
+          "is_system",
+          "grants"
+        ],
+        "title": "RoleOut",
+        "type": "object"
+      },
+      "ServiceInfo": {
+        "properties": {
+          "schema_name": {
+            "title": "Schema Name",
+            "type": "string"
+          },
+          "service": {
+            "title": "Service",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "schema_name"
+        ],
+        "title": "ServiceInfo",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Account service \u2014 part of the Atmora platform.",
+    "title": "Account service",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/account/info": {
+      "get": {
+        "operationId": "info_api_v1_account_info_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "What this service is",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/invitations": {
+      "get": {
+        "operationId": "list_invitations_api_v1_invitations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/InvitationOut"
+                  },
+                  "title": "Response List Invitations Api V1 Invitations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Pending invitations",
+        "tags": [
+          "account"
+        ]
+      },
+      "post": {
+        "operationId": "create_invitation_api_v1_invitations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationCreated"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Invite somebody",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/invitations/accept": {
+      "post": {
+        "description": "Public by design: the invitee has a token, not yet an account.\n\nThe token is the credential, so every failure \u2014 unknown, expired, already used \u2014\nreturns the same message. A distinct \"expired\" reply confirms to whoever is guessing\nthat they found a real one.",
+        "operationId": "accept_invitation_api_v1_invitations_accept_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationAccept"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Accept an invitation",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/invitations/{invitation_id}": {
+      "delete": {
+        "operationId": "revoke_invitation_api_v1_invitations__invitation_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invitation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Invitation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke an invitation",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/locations": {
+      "get": {
+        "operationId": "list_locations_api_v1_locations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/LocationOut"
+                  },
+                  "title": "Response List Locations Api V1 Locations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Sites",
+        "tags": [
+          "account"
+        ]
+      },
+      "post": {
+        "operationId": "create_location_api_v1_locations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LocationIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a site",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/members": {
+      "get": {
+        "operationId": "list_members_api_v1_members_get",
+        "parameters": [
+          {
+            "description": "Name, email or job title",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Name, email or job title",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "org_unit_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Org Unit Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_MemberOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "People in the organization",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/members/{membership_id}": {
+      "delete": {
+        "operationId": "revoke_member_api_v1_members__membership_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "membership_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Membership Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reason"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove somebody from the organization",
+        "tags": [
+          "account"
+        ]
+      },
+      "get": {
+        "operationId": "read_member_api_v1_members__membership_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "membership_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Membership Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One person",
+        "tags": [
+          "account"
+        ]
+      },
+      "patch": {
+        "operationId": "update_member_api_v1_members__membership_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "membership_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Membership Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update a person",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/members/{membership_id}/roles": {
+      "put": {
+        "operationId": "set_member_roles_api_v1_members__membership_id__roles_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "membership_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Membership Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoleAssignment"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set roles",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/org-units": {
+      "get": {
+        "operationId": "list_org_units_api_v1_org_units_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/OrgUnitNode"
+                  },
+                  "title": "Response List Org Units Api V1 Org Units Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The department tree",
+        "tags": [
+          "account"
+        ]
+      },
+      "post": {
+        "operationId": "create_org_unit_api_v1_org_units_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrgUnitIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgUnitOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a department",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/org-units/{unit_id}/move": {
+      "post": {
+        "operationId": "move_org_unit_api_v1_org_units__unit_id__move_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "unit_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Unit Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "parent_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Parent Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgUnitOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Re-parent a department",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/organization": {
+      "get": {
+        "operationId": "read_organization_api_v1_organization_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The caller's organization",
+        "tags": [
+          "account"
+        ]
+      },
+      "patch": {
+        "operationId": "update_organization_api_v1_organization_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrganizationPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update the organization",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/permissions": {
+      "get": {
+        "operationId": "list_permissions_api_v1_permissions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "product",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Product"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PermissionOut"
+                  },
+                  "title": "Response List Permissions Api V1 Permissions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Permission catalogue",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/roles": {
+      "get": {
+        "operationId": "list_roles_api_v1_roles_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RoleOut"
+                  },
+                  "title": "Response List Roles Api V1 Roles Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Roles",
+        "tags": [
+          "account"
+        ]
+      },
+      "post": {
+        "operationId": "create_role_api_v1_roles_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoleIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a role",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/roles/{role_id}": {
+      "put": {
+        "operationId": "replace_role_grants_api_v1_roles__role_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "role_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Role Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoleIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replace a role's permissions",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Liveness \u2014 is the process up?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/outbox": {
+      "get": {
+        "description": "How far behind the relay is. **Alert on `oldest_seconds`.**\n\nA stalled relay is the platform's quietest failure. It selects, finds nothing,\nlogs nothing, sleeps, and loops \u2014 `attempts` never increments and `last_error`\nstays null, so the process looks healthy indefinitely while the outbox grows\nwithout bound and every consumer downstream starves.\n\nDeliberately **not** part of readiness. A backlog is not a reason to take the\nservice out of rotation: refusing traffic would stop new events being written\nwithout helping drain the ones already queued, which makes the incident worse.\nThis is a metric to alert on, not a health state.",
+        "operationId": "outbox_health_outbox_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Outbox Health Outbox Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Outbox depth and age \u2014 scrape this",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "description": "Route traffic on this; restart on /health.\n\nConflating the two restarts a healthy process that is merely waiting on a\ndependency.\n\nOnly the dependencies a service actually declares are checked. A gateway owns no\ntables, so asking it for a database is asking a question whose answer means nothing\n\u2014 and a readiness probe that reports on something the service does not use is worse\nthan no probe, because it will eventually fail for a reason nobody can act on.",
+        "operationId": "ready_health_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ready Health Ready Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readiness \u2014 can it serve traffic?",
+        "tags": [
+          "health"
+        ]
+      }
+    }
+  }
+}
