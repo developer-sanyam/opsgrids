@@ -19,6 +19,9 @@ What each step proves, and why it is worth a separate assertion:
 
 from __future__ import annotations
 
+import base64
+import json
+
 import httpx
 import pytest
 
@@ -148,3 +151,44 @@ class TestTheGatewayIsTheOnlyDoor:
             assert response.status_code in (401, 404), (
                 f"{path} answered {response.status_code} through the public gateway"
             )
+
+
+class TestEntitlementsTravelWithTheToken:
+    """Signing in asks product-service what the customer has, over real HTTP.
+
+    Four services now have to agree for this to pass: the gateway routes it, auth verifies the
+    password, auth asks account who the person is *and* product what their organization has,
+    and the claim it stamps is what the gateway will gate on next time.
+
+    Before product-service existed this claim was always empty, so every product route refused
+    with payment-required and nobody could say why.
+    """
+
+    def test_the_token_carries_the_platform_entitlement(
+        self, client: httpx.Client, account: dict
+    ) -> None:
+        """`core` needs no activation — every customer has an organization and a profile.
+
+        Asserted through a real sign-in rather than a unit test, because the value has to
+        survive four processes and two internal API calls to get here.
+        """
+        response = client.post(
+            "/api/v1/auth/login",
+            json={"email": account["email"], "password": account["password"]},
+        )
+        assert response.status_code == 200, response.text[:400]
+
+        token = response.json().get("access_token")
+        assert token, "no access token in the sign-in response"
+
+        # Read the claim without verifying: the gateway verifies, and this is asserting what
+        # auth put in rather than re-testing the signature.
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+
+        assert "core" in claims.get("ent", []), (
+            f"the entitlement claim is {claims.get('ent')!r}. If it is empty, auth could not "
+            "reach product-service — sign-in degrades rather than failing, so this is the only "
+            "place that notices."
+        )

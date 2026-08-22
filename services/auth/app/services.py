@@ -31,6 +31,7 @@ from app import security
 from app import tokens as tk
 from app.config import Settings
 from app.directory import Directory, DirectoryMembership, DirectoryUser
+from app.entitlements import Entitlements
 from app.keys import KeyPair
 from app.models import (
     AuditLog,
@@ -225,11 +226,20 @@ async def issue_for(
     cfg: Settings,
     auth_session: Session,
     membership: DirectoryMembership,
-    entitlements: list[str],
+    entitlements: Entitlements,
     audience: str,
     family: str | None = None,
 ) -> Issued:
-    """Mint an access and refresh pair for one organization."""
+    """Mint an access and refresh pair for one organization.
+
+    Entitlements are resolved **here**, from the membership this function already holds,
+    rather than passed in by each caller. There are five paths that issue a token — sign-in,
+    organization selection, organization switching, refresh, and one more — and threading a
+    list through all five is five chances for one of them to pass an empty list and silently
+    strip a customer's products. Resolving once, where the organization is already known,
+    makes that impossible rather than merely unlikely.
+    """
+    granted = await entitlements.for_organization(membership.organization_id)
     auth_session.active_org_id = membership.organization_id
 
     access = tk.mint_access(
@@ -240,7 +250,7 @@ async def issue_for(
         membership_id=membership.membership_id,
         audience=audience,
         session_id=auth_session.id,
-        entitlements=entitlements,
+        entitlements=granted,
         roles=membership.roles,
         locations=membership.locations,
         amr=list(auth_session.amr),
@@ -296,7 +306,7 @@ async def login(
     password: str,
     org_hint: str | None = None,
     audience: str = "app",
-    entitlements: list[str] | None = None,
+    entitlements: Entitlements,
     request: Request | None = None,
 ) -> LoginOutcome:
     """Sign in. Returns what happened rather than raising for the in-between states."""
@@ -356,7 +366,7 @@ async def login(
         cfg=cfg,
         auth_session=auth_session,
         membership=membership,
-        entitlements=entitlements or [],
+        entitlements=entitlements,
         audience=audience,
     )
     publish_event(
@@ -386,7 +396,7 @@ async def select_organization(
     pre_auth_token: str,
     organization_id: uuid.UUID,
     audience: str = "app",
-    entitlements: list[str] | None = None,
+    entitlements: Entitlements,
 ) -> Issued:
     """Finish a sign-in that stopped to ask which organization."""
     claims = _decode_pre_auth(pair, cfg, pre_auth_token, expect_reason="org_selection")
@@ -407,7 +417,7 @@ async def select_organization(
         cfg=cfg,
         auth_session=auth_session,
         membership=membership,
-        entitlements=entitlements or [],
+        entitlements=entitlements,
         audience=audience,
     )
     await session.commit()
@@ -424,7 +434,7 @@ async def switch_organization(
     user_id: uuid.UUID,
     organization_id: uuid.UUID,
     audience: str = "app",
-    entitlements: list[str] | None = None,
+    entitlements: Entitlements,
 ) -> Issued:
     """Move a live session to another organization.
 
@@ -452,7 +462,7 @@ async def switch_organization(
         cfg=cfg,
         auth_session=auth_session,
         membership=membership,
-        entitlements=entitlements or [],
+        entitlements=entitlements,
         audience=audience,
     )
     await session.commit()
@@ -470,7 +480,7 @@ async def rotate_refresh(
     directory: Directory,
     raw_token: str,
     audience: str = "app",
-    entitlements: list[str] | None = None,
+    entitlements: Entitlements,
 ) -> Issued:
     """Exchange a refresh token for a new pair, detecting theft.
 
@@ -534,7 +544,7 @@ async def rotate_refresh(
         cfg=cfg,
         auth_session=auth_session,
         membership=membership,
-        entitlements=entitlements or [],
+        entitlements=entitlements,
         audience=audience,
         family=stored.family,
     )
@@ -813,7 +823,7 @@ async def verify_mfa(
     code: str,
     org_hint: str | None = None,
     audience: str = "app",
-    entitlements: list[str] | None = None,
+    entitlements: Entitlements,
 ) -> LoginOutcome:
     """Second step of sign-in: check the factor, then continue where login left off."""
     claims = _decode_pre_auth(pair, cfg, pre_auth_token, expect_reason="mfa")
@@ -852,7 +862,7 @@ async def verify_mfa(
         cfg=cfg,
         auth_session=auth_session,
         membership=membership,
-        entitlements=entitlements or [],
+        entitlements=entitlements,
         audience=audience,
     )
     await session.commit()

@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from app.api.routes import router, wellknown
 from app.config import settings
 from app.directory import HttpDirectory
+from app.entitlements import HttpEntitlements
 from app.keys import active_key
 from app.models import OutboxEvent
 from platform_core.app import create_app
@@ -24,12 +25,16 @@ async def _startup(application: FastAPI) -> None:
     # sign tokens should not report itself healthy.
     application.state.signing_key = active_key(cfg.jwt_private_key_path)
     application.state.directory = HttpDirectory(cfg.account_service_url, cfg)
+    application.state.entitlements = HttpEntitlements(cfg.product_service_url, cfg)
 
 
 async def _shutdown(application: FastAPI) -> None:
     directory = getattr(application.state, "directory", None)
     if isinstance(directory, HttpDirectory):
         await directory.aclose()
+    entitlements = getattr(application.state, "entitlements", None)
+    if isinstance(entitlements, HttpEntitlements):
+        await entitlements.aclose()
 
 
 app = create_app(

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import services
 from app.config import Settings, settings
-from app.deps import DirectoryDep, KeyDep
+from app.deps import DirectoryDep, EntitlementsDep, KeyDep
 from app.keys import jwks as build_jwks
 from app.models import SCHEMA
 from app.schemas import (
@@ -127,6 +127,7 @@ async def login(
     response: Response,
     session: SessionDep,
     directory: DirectoryDep,
+    entitlements: EntitlementsDep,
     pair: KeyDep,
 ) -> Any:
     """Exchange credentials for tokens, or for the next step.
@@ -142,6 +143,7 @@ async def login(
         cfg=cfg,
         pair=pair,
         directory=directory,
+        entitlements=entitlements,
         email=payload.email,
         password=payload.password,
         org_hint=hint,
@@ -156,6 +158,7 @@ async def select_org(
     response: Response,
     session: SessionDep,
     directory: DirectoryDep,
+    entitlements: EntitlementsDep,
     pair: KeyDep,
 ) -> TokenOut:
     cfg = settings()
@@ -164,6 +167,7 @@ async def select_org(
         cfg=cfg,
         pair=pair,
         directory=directory,
+        entitlements=entitlements,
         pre_auth_token=payload.pre_auth_token,
         organization_id=payload.organization_id,
     )
@@ -177,6 +181,7 @@ async def switch_org(
     response: Response,
     session: SessionDep,
     directory: DirectoryDep,
+    entitlements: EntitlementsDep,
     pair: KeyDep,
     principal: CurrentPrincipal,
 ) -> TokenOut:
@@ -189,6 +194,7 @@ async def switch_org(
         cfg=cfg,
         pair=pair,
         directory=directory,
+        entitlements=entitlements,
         session_id=uuid.UUID(principal.session_id),
         user_id=principal.sub,
         organization_id=payload.organization_id,
@@ -203,6 +209,7 @@ async def refresh(
     response: Response,
     session: SessionDep,
     directory: DirectoryDep,
+    entitlements: EntitlementsDep,
     pair: KeyDep,
 ) -> TokenOut:
     """Rotate the refresh token and mint a new access token.
@@ -215,7 +222,12 @@ async def refresh(
     if not raw:
         raise UnauthorizedProblem("No session to refresh")
     issued = await services.rotate_refresh(
-        session, cfg=cfg, pair=pair, directory=directory, raw_token=raw
+        session,
+        cfg=cfg,
+        pair=pair,
+        directory=directory,
+        entitlements=entitlements,
+        raw_token=raw,
     )
     _set_refresh_cookie(response, cfg, issued.refresh_token)
     return _token_out(issued)
@@ -263,6 +275,7 @@ async def mfa_verify(
     response: Response,
     session: SessionDep,
     directory: DirectoryDep,
+    entitlements: EntitlementsDep,
     pair: KeyDep,
 ) -> Any:
     cfg = settings()
@@ -271,6 +284,7 @@ async def mfa_verify(
         cfg=cfg,
         pair=pair,
         directory=directory,
+        entitlements=entitlements,
         pre_auth_token=payload.pre_auth_token,
         code=payload.code,
         org_hint=payload.organization,

@@ -12,6 +12,7 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from app.directory import Directory
+from app.entitlements import Entitlements
 from app.keys import KeyPair
 
 
@@ -23,5 +24,11 @@ def get_directory(request: Request) -> Directory:
     return request.app.state.directory  # type: ignore[no-any-return]
 
 
+def get_entitlements(request: Request) -> Entitlements:
+    """What this organization has bought, asked of product-service when a token is minted."""
+    return request.app.state.entitlements  # type: ignore[no-any-return]
+
+
 KeyDep = Annotated[KeyPair, Depends(get_key)]
 DirectoryDep = Annotated[Directory, Depends(get_directory)]
+EntitlementsDep = Annotated[Entitlements, Depends(get_entitlements)]

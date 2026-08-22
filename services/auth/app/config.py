@@ -15,6 +15,9 @@ class Settings(ServiceSettings):
     #: exists and which organizations they belong to — is asked for over the internal API
     #: rather than read across a schema boundary.
     account_service_url: str = "http://localhost:8111"
+    #: Where product-service lives. Its answer becomes the `ent` claim in every token, and
+    #: one hop later the difference between a 200 and a 402 at the gateway.
+    product_service_url: str = "http://localhost:8112"
 
     # --- lockout ------------------------------------------------------------------
     #: Enough attempts that a mistyped password is not punished, few enough that online

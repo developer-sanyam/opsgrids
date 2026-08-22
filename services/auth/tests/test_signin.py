@@ -13,6 +13,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import jwt
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +33,7 @@ from tests.conftest import (
     PASSWORD,
     USER,
     FakeDirectory,
+    FakeEntitlements,
     user_in_two_orgs,
 )
 
@@ -52,6 +54,7 @@ async def _login(
         cfg=cfg,
         pair=pair,
         directory=directory,
+        entitlements=FakeEntitlements(),
         email="sam@example.com",
         password=password,
         org_hint=org_hint,
@@ -204,6 +207,7 @@ class TestOrganizationResolution:
             cfg=cfg,
             pair=pair,
             directory=two,
+            entitlements=FakeEntitlements(),
             pre_auth_token=outcome.pre_auth_token,
             organization_id=ORG_B,
         )
@@ -222,6 +226,7 @@ class TestOrganizationResolution:
                 cfg=cfg,
                 pair=pair,
                 directory=two,
+                entitlements=FakeEntitlements(),
                 pre_auth_token=outcome.pre_auth_token,
                 organization_id=uuid.uuid4(),
             )
@@ -243,6 +248,7 @@ class TestOrgSwitching:
             cfg=cfg,
             pair=pair,
             directory=two,
+            entitlements=FakeEntitlements(),
             session_id=first.session_id,
             user_id=USER,
             organization_id=ORG_B,
@@ -264,6 +270,7 @@ class TestOrgSwitching:
             cfg=cfg,
             pair=pair,
             directory=two,
+            entitlements=FakeEntitlements(),
             session_id=outcome.issued.session_id,
             user_id=USER,
             organization_id=ORG_B,
@@ -271,7 +278,12 @@ class TestOrgSwitching:
 
         with pytest.raises(UnauthorizedProblem):
             await services.rotate_refresh(
-                session, cfg=cfg, pair=pair, directory=two, raw_token=stale
+                session,
+                entitlements=FakeEntitlements(),
+                cfg=cfg,
+                pair=pair,
+                directory=two,
+                raw_token=stale,
             )
 
 
@@ -284,6 +296,7 @@ class TestRefreshRotation:
 
         rotated = await services.rotate_refresh(
             session,
+            entitlements=FakeEntitlements(),
             cfg=cfg,
             pair=pair,
             directory=directory,
@@ -305,13 +318,23 @@ class TestRefreshRotation:
         captured = outcome.issued.refresh_token
 
         fresh = await services.rotate_refresh(
-            session, cfg=cfg, pair=pair, directory=directory, raw_token=captured
+            session,
+            entitlements=FakeEntitlements(),
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            raw_token=captured,
         )
 
         # The thief replays the token they captured.
         with pytest.raises(UnauthorizedProblem, match="security reasons"):
             await services.rotate_refresh(
-                session, cfg=cfg, pair=pair, directory=directory, raw_token=captured
+                session,
+                entitlements=FakeEntitlements(),
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                raw_token=captured,
             )
 
         # ...and the legitimate holder's newer token is dead too. Forcing an honest
@@ -319,6 +342,7 @@ class TestRefreshRotation:
         with pytest.raises(UnauthorizedProblem):
             await services.rotate_refresh(
                 session,
+                entitlements=FakeEntitlements(),
                 cfg=cfg,
                 pair=pair,
                 directory=directory,
@@ -344,6 +368,7 @@ class TestRefreshRotation:
         with pytest.raises(UnauthorizedProblem, match="access to that organization has ended"):
             await services.rotate_refresh(
                 session,
+                entitlements=FakeEntitlements(),
                 cfg=cfg,
                 pair=pair,
                 directory=directory,
@@ -355,7 +380,12 @@ class TestRefreshRotation:
     ) -> None:
         with pytest.raises(UnauthorizedProblem):
             await services.rotate_refresh(
-                session, cfg=cfg, pair=pair, directory=directory, raw_token="not.a.token"
+                session,
+                entitlements=FakeEntitlements(),
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                raw_token="not.a.token",
             )
 
     async def test_logging_out_ends_the_session(
@@ -372,6 +402,7 @@ class TestRefreshRotation:
         with pytest.raises(UnauthorizedProblem):
             await services.rotate_refresh(
                 session,
+                entitlements=FakeEntitlements(),
                 cfg=cfg,
                 pair=pair,
                 directory=directory,
@@ -404,6 +435,7 @@ class TestPasswords:
         with pytest.raises(UnauthorizedProblem):
             await services.rotate_refresh(
                 session,
+                entitlements=FakeEntitlements(),
                 cfg=cfg,
                 pair=pair,
                 directory=directory,
@@ -512,6 +544,7 @@ class TestMfa:
                 cfg=cfg,
                 pair=pair,
                 directory=directory,
+                entitlements=FakeEntitlements(),
                 pre_auth_token=outcome.pre_auth_token,
                 organization_id=ORG_A,
             )
@@ -537,6 +570,7 @@ class TestMfa:
             cfg=cfg,
             pair=pair,
             directory=directory,
+            entitlements=FakeEntitlements(),
             pre_auth_token=outcome.pre_auth_token,
             code=security._totp_at(secret, step + 1),
         )
@@ -604,3 +638,70 @@ class TestSessionsAndEvents:
         assert len(rows) == 1
         assert rows[0].organization_id == ORG_A
         assert rows[0].family, "a token always belongs to a rotation family"
+
+
+class TestEntitlementsReachTheToken:
+    """The `ent` claim is what the gateway gates on, so it has to actually arrive.
+
+    Before product-service existed, every token was minted with an empty list and every
+    product route refused with payment-required for no reason anyone could point at. These
+    assert the wiring end of that fix; product-service's own tests cover which activations
+    count as entitling.
+    """
+
+    async def _sign_in(self, session, cfg, pair, directory, entitlements):
+        return await services.login(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            entitlements=entitlements,
+            email="sam@example.com",
+            password=PASSWORD,
+        )
+
+    async def test_the_claim_carries_what_the_organization_bought(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        entitlements = FakeEntitlements(["core", "hrms"])
+        outcome = await self._sign_in(session, cfg, pair, directory, entitlements)
+
+        assert outcome.issued is not None
+        claims = jwt.decode(
+            outcome.issued.access_token,
+            pair.public,
+            algorithms=["EdDSA"],
+            audience="app",
+            issuer=cfg.jwt_issuer,
+        )
+        assert claims["ent"] == ["core", "hrms"], (
+            "the entitlement claim did not reach the token — every product route would refuse "
+            "with payment-required regardless of what the customer bought"
+        )
+
+    async def test_it_asks_about_the_organization_being_signed_into(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """Not some other organization the person also belongs to.
+
+        Asking about the wrong one would hand a customer the products of a different company
+        they happen to be a member of.
+        """
+        entitlements = FakeEntitlements()
+        outcome = await self._sign_in(session, cfg, pair, directory, entitlements)
+
+        assert outcome.issued is not None
+        assert entitlements.asked == [str(ORG_A)]
+
+    async def test_an_unreachable_product_service_does_not_block_sign_in(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """Degrade rather than refuse.
+
+        A customer who cannot log in at all is worse than one who logs in and finds a product
+        temporarily refusing: the first is a total outage, the second looks exactly like having
+        bought nothing, recovers by itself, and leaves them able to reach their account.
+        Refusing here would make product-service a single point of failure for the platform.
+        """
+        outcome = await self._sign_in(session, cfg, pair, directory, FakeEntitlements([]))
+        assert outcome.issued is not None, "sign-in must survive product-service being down"

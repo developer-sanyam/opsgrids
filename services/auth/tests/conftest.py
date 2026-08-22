@@ -135,6 +135,28 @@ async def session() -> AsyncIterator[AsyncSession]:
     await engine.dispose()
 
 
+class FakeEntitlements:
+    """Stands in for product-service.
+
+    Returns a fixed list so a test can assert the `ent` claim is actually populated. The real
+    client degrades to an empty list when product-service is unreachable — that behaviour has
+    its own test rather than being the default everything else silently inherits.
+    """
+
+    def __init__(self, keys: list[str] | None = None) -> None:
+        self.keys = keys if keys is not None else ["core", "hrms"]
+        self.asked: list[str] = []
+
+    async def for_organization(self, organization_id) -> list[str]:
+        self.asked.append(str(organization_id))
+        return list(self.keys)
+
+
+@pytest_asyncio.fixture
+async def entitlements() -> FakeEntitlements:
+    return FakeEntitlements()
+
+
 @pytest_asyncio.fixture
 async def directory() -> FakeDirectory:
     return FakeDirectory([user_in_one_org()])
@@ -156,6 +178,7 @@ async def client(
 
     app.dependency_overrides[get_session] = _session_override
     app.dependency_overrides[get_key] = lambda: pair
+    app.state.entitlements = FakeEntitlements()
     app.dependency_overrides[get_directory] = lambda: directory
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c

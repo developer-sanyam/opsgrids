@@ -33,6 +33,7 @@ PASSWORD = "e2e-Sufficiently-Long-Passw0rd!"
 #: (name, port). Order matters only for readability; they start concurrently.
 SERVICES = (
     ("account", 8111),
+    ("product", 8112),
     ("auth", 8110),
     ("app-gateway", 8100),
 )
