@@ -69,7 +69,7 @@ $$;
 -- `alembic check` with "permission denied for schema tiger" — a confusing error that has
 -- nothing to do with the service's own tables. Reference data, no tenant rows.
 GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
-  TO atmora_admin, atmora_account, atmora_auth;
+  TO atmora_admin, atmora_account, atmora_auth, atmora_product;
 
 -- The directory reader (ADR-0002, "the cross-tenant reader").
 --

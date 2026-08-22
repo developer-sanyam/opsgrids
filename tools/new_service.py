@@ -287,13 +287,16 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import settings
 from app.models import SCHEMA, Base
+from platform_core.db import apply_schema_grants
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 cfg = settings()
-config.set_main_option("sqlalchemy.url", cfg.database_url)
+# Migrations run as the admin role: it owns the schema, and DDL is not subject to
+# row-level security. The API connects as a different, NOBYPASSRLS role.
+config.set_main_option("sqlalchemy.url", cfg.admin_dsn)
 target_metadata = Base.metadata
 
 
@@ -323,6 +326,11 @@ def do_run_migrations(connection: Connection) -> None:
     with context.begin_transaction():
         context.run_migrations()
 
+    # After the schema is up to date, not before: the grants name tables the migrations just
+    # created. Doing it here rather than as a per-service step means a new service cannot ship
+    # without them -- which is exactly what happened the first time this was left out.
+    apply_schema_grants(connection, SCHEMA, cfg.db_app_role)
+
 
 async def run_async_migrations() -> None:
     connectable = async_engine_from_config(
@@ -337,7 +345,7 @@ async def run_async_migrations() -> None:
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=cfg.database_url,
+        url=cfg.admin_dsn,
         target_metadata=target_metadata,
         literal_binds=True,
         include_schemas=True,
