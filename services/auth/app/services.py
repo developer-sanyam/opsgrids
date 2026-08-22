@@ -57,8 +57,8 @@ log = get_logger("auth")
 
 EVT_SIGNED_IN = "core.session.signed_in"
 EVT_SIGNED_OUT = "core.session.signed_out"
-EVT_PASSWORD_CHANGED = "core.user.password_changed"
-EVT_PASSWORD_RESET_REQUESTED = "core.user.password_reset_requested"
+EVT_PASSWORD_CHANGED = "core.user.password_changed"  # pragma: allowlist secret
+EVT_PASSWORD_RESET_REQUESTED = "core.user.password_reset_requested"  # pragma: allowlist secret
 EVT_TOKEN_REUSE = "core.session.token_reuse_detected"
 EVT_MFA_ENROLLED = "core.user.mfa_enrolled"
 

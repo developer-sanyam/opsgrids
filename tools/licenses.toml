@@ -1,0 +1,46 @@
+# Licences a dependency may carry. Read by tools/licenses.py (`make licenses`).
+#
+# pip-licenses reports whatever the distribution declares — an SPDX identifier for newer
+# packages, a trove classifier name for older ones — so the same permissive licence
+# appears under several spellings. The list carries each spelling rather than matching
+# loosely, because a loose match is how "GPL-3.0-or-later" gets waved through by a rule
+# that was thinking of "MIT-0".
+#
+# Copyleft licences (GPL, AGPL, LGPL, SSPL, EUPL) are deliberately absent. MPL-2.0 is
+# file-level copyleft and is fine for a dependency that is used, not modified.
+
+allowed = [
+    # MIT family
+    "MIT",
+    "MIT License",
+    "MIT-0",
+    # BSD family — the classifier does not say which clause count, and all of them are fine
+    "BSD License",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    # Apache
+    "Apache-2.0",
+    "Apache License 2.0",
+    "Apache Software License",
+    # ISC
+    "ISC",
+    "ISC License (ISCL)",
+    # Python Software Foundation
+    "PSF-2.0",
+    "Python Software Foundation License",
+    # Mozilla — file-level copyleft, acceptable for an unmodified dependency
+    "MPL-2.0",
+    "Mozilla Public License 2.0 (MPL 2.0)",
+    # Public domain
+    "Unlicense",
+    "The Unlicense (Unlicense)",
+]
+
+# Packages allowed by name, each with the reason. This is the escape hatch for a package
+# whose metadata is missing or wrong — the licence was checked by hand, and the rule above
+# stays as strict as it is.
+[packages]
+# Our own workspace library. It is first-party code, not a third-party dependency, and
+# its pyproject declares no licence because none is granted.
+platform-core = "first-party workspace package"

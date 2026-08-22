@@ -61,10 +61,20 @@ jobs:
           uv run ruff check .
           uv run ruff format --check .
 
+      - name: Hygiene
+        # No skipped tests, debugger calls, print() or bare noqa. A skipped test is a
+        # test that does not run, and a green build does not say so.
+        run: make hygiene
+
+      - name: Dependency boundaries
+        # import-linter per service: the layering in CLAUDE.md, and no import cycles.
+        run: make boundaries
+
       - name: Type check
-        # libs and every service. `mypy libs services` cannot run at all — each service
-        # exposes a top-level `app`, so they must be checked one process at a time.
-        run: make typecheck-libs typecheck-services
+        # libs, every service, and the tooling. `mypy libs services` cannot run at all —
+        # each service exposes a top-level `app`, so they must be checked one process at
+        # a time.
+        run: make typecheck-libs typecheck-services typecheck-tools
 
       - name: Apply migrations
         run: make migrate
@@ -73,11 +83,50 @@ jobs:
         # Fails if someone changed a model without generating a migration.
         run: make migration-check
 
+      - name: Migrations round-trip
+        # upgrade head → downgrade base → upgrade head. A downgrade() that does not
+        # revert is found here, not during a rollback.
+        run: make migration-roundtrip
+
       - name: Library tests
         run: uv run pytest libs -q
 
       - name: Service tests
         run: make test-services
+
+      - name: OpenAPI contract
+        # The committed documents in libs/contracts/openapi must match the code.
+        # `make openapi` regenerates them.
+        run: make openapi-check
+
+      - name: Boot smoke
+        # The real entrypoint — uvicorn, the lifespan, the pool, Redis — not the
+        # in-process app the tests build. Polls /health and /health/ready.
+        run: make smoke
+
+  supply-chain:
+    name: Supply chain — vulnerabilities, licences, secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+
+      - name: Dependency audit
+        # pip-audit over what uv.lock resolves to. The only step here that needs the
+        # network for anything but installing.
+        run: make audit
+
+      - name: Licence check
+        # Every dependency's licence is on the allow-list in tools/licenses.toml.
+        run: make licenses
+
+      - name: Secret scan
+        # detect-secrets over every tracked file, against the audited baseline. The dev
+        # placeholders are excluded by pattern in the Makefile, with the reasons.
+        run: make secrets
 
   contracts:
     name: Contracts — events validate against their schemas

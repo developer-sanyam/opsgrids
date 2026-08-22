@@ -20,11 +20,17 @@ make migrate     # apply every service's migrations
 Then check it:
 
 ```bash
-make check       # lint + typecheck + tests — this is what CI runs
+make check       # lint + typecheck + tests — the fast path
+make gate        # check, plus the rest of what CI runs
 ```
 
-Expect **194 passing tests**. If you get connection errors, `make infra` has not finished
+Expect **216 passing tests**. If you get connection errors, `make infra` has not finished
 coming up yet; give it a few seconds and retry.
+
+`make gate` adds the dependency audit, licence check, secret scan, hygiene, import
+boundaries, the OpenAPI contract check, a migration round-trip and a boot smoke test. It is
+slower, and the audit needs the network; run it before opening a pull request. Each piece is
+its own target — `make help` lists them — so a failure can be re-run on its own.
 
 ## Ports
 

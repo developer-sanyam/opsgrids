@@ -75,6 +75,7 @@ class TestCredentials:
     ) -> None:
         """The login form must not become an account-enumeration oracle."""
         with pytest.raises(UnauthorizedProblem) as wrong:
+            # pragma: allowlist nextline secret
             await _login(session, cfg, pair, directory, password="not-the-password")
 
         empty = FakeDirectory([])
@@ -88,6 +89,7 @@ class TestCredentials:
     ) -> None:
         for _ in range(cfg.max_failed_attempts):
             with pytest.raises(UnauthorizedProblem):
+                # pragma: allowlist nextline secret
                 await _login(session, cfg, pair, directory, password="wrong")
 
         # The correct password is now refused too — that is the point of a lockout.
@@ -103,12 +105,14 @@ class TestCredentials:
         credential.locked_until = datetime.now(UTC) + timedelta(minutes=5)
 
         with pytest.raises(ForbiddenProblem, match="temporarily locked"):
+            # pragma: allowlist nextline secret
             await _login(session, cfg, pair, directory, password="definitely-wrong")
 
     async def test_a_successful_sign_in_clears_the_failure_count(
         self, session, cfg, pair, directory, registered
     ) -> None:
         with pytest.raises(UnauthorizedProblem):
+            # pragma: allowlist nextline secret
             await _login(session, cfg, pair, directory, password="wrong")
         await _login(session, cfg, pair, directory)
 
@@ -474,11 +478,17 @@ class TestPasswords:
         raw = row.payload["token"]
 
         await services.confirm_password_reset(
-            session, cfg=cfg, raw_token=raw, new_password="fresh-start-9"
+            session,
+            cfg=cfg,
+            raw_token=raw,
+            new_password="fresh-start-9",  # pragma: allowlist secret
         )
         with pytest.raises(NotFoundProblem, match="not valid"):
             await services.confirm_password_reset(
-                session, cfg=cfg, raw_token=raw, new_password="another-one-9"
+                session,
+                cfg=cfg,
+                raw_token=raw,
+                new_password="another-one-9",  # pragma: allowlist secret
             )
 
     async def test_a_weak_password_is_refused_with_every_reason(self, session, cfg) -> None:

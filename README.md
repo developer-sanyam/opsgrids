@@ -27,6 +27,7 @@ make install      # uv sync
 make infra        # postgres+postgis, redis, rabbitmq, minio, mailhog
 make migrate      # every service's schema
 make check        # lint + typecheck + test
+make gate         # check + audit, licences, secrets, hygiene, boundaries, contracts, smoke
 ```
 
 ## Shape
