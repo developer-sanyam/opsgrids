@@ -32,14 +32,13 @@ Legend: **Built** — works and is tested · **Partial** — exists, not wired e
 |---|---|---|
 | `organization_id` on every tenant row | Built | |
 | Every query filtered by organization | Built | Via selectors, by convention |
-| **Row-level security** | **Absent** | [ADR-0002](adr/0002-row-level-security.md) — proposed, not accepted |
-| Non-superuser application role | **Absent** | The app connects as a **superuser** today |
-| Cross-tenant isolation test suite | Absent | The acceptance gate for tenancy |
+| **Row-level security** | **Built** | `account` schema: 11 policied tables, FORCE set, `users`/`permissions`/`processed_events` exempt by design |
+| Non-superuser application role | **Built** | Per-service NOBYPASSRLS roles; separate owner and directory roles |
+| Cross-tenant isolation test suite | Partial | Storage layer proven; the generated per-route sweep is still to write |
 
-**Read this row carefully.** Isolation currently rests *entirely* on every query carrying the
-right filter. The net that is supposed to sit under that — RLS — is designed and not built, and
-three separate things must change together before it does anything at all. Until then, a
-forgotten `WHERE organization_id = …` is a cross-tenant data leak with nothing to stop it.
+All three things that had to change together are done: policies exist, the application connects
+as a NOBYPASSRLS role, and every request transaction is bound to its organization. A forgotten
+`WHERE organization_id = …` now returns nothing instead of another tenant's rows.
 
 ## Gateways
 

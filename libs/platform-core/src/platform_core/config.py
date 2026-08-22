@@ -59,6 +59,16 @@ class ServiceSettings(BaseSettings):
     #: tenants have any — there is no tenant to set beforehand.
     db_admin_role: str | None = None
 
+    #: The role the internal directory lookups connect as. **BYPASSRLS but SELECT-only**, on a
+    #: named handful of tables.
+    #:
+    #: Deliberately not the admin role. Resolving a person before an organization is known is
+    #: genuinely cross-tenant -- it is what lets one login serve several customers -- but it is
+    #: a *read*. Giving those endpoints the migration role would hand a bug there the ability
+    #: to write anything, and the risk being managed is a route added to that module later, not
+    #: the three that exist today.
+    db_directory_role: str | None = None
+
     redis_url: str = "redis://localhost:6380/0"
     rabbitmq_url: str = "amqp://atmora:atmora@localhost:5673/"
 
@@ -132,6 +142,11 @@ class ServiceSettings(BaseSettings):
     def app_dsn(self) -> str:
         """What the API connects with. NOBYPASSRLS once the roles are split."""
         return self.dsn_as(self.db_app_role)
+
+    @property
+    def directory_dsn(self) -> str:
+        """What the cross-tenant directory reads connect with. BYPASSRLS, SELECT-only."""
+        return self.dsn_as(self.db_directory_role)
 
     @property
     def admin_dsn(self) -> str:

@@ -60,19 +60,35 @@ class TestTheGucIsSet:
         HTTP 200 with their rows, with no error anywhere. That is the worst failure available
         in this system.
         """
-        principal = principal_for(org.id, people["manager"], [])
-        agen = get_tenant_session(principal, session)
-        await agen.__anext__()
-        with pytest.raises(StopAsyncIteration):
-            await agen.__anext__()
+        # A session of its own, deliberately. The shared `session` fixture rebinds the tenant
+        # on every `begin()` — mirroring the chokepoint — so reading through it would measure
+        # the fixture rather than the property.
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-        after = (
-            await session.execute(text(f"SELECT current_setting('{TENANT_GUC}', true)"))
-        ).scalar()
-        assert after in (None, ""), (
-            f"the tenant binding survived its transaction as {after!r}. It must be "
-            "transaction-local, or the connection pool carries it into the next request."
+        from app.config import settings
+        from app.models import SCHEMA
+
+        engine = create_async_engine(
+            settings().app_dsn,
+            connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}},
         )
+        try:
+            async with async_sessionmaker(engine, expire_on_commit=False)() as fresh:
+                principal = principal_for(org.id, people["manager"], [])
+                agen = get_tenant_session(principal, fresh)
+                await agen.__anext__()
+                with pytest.raises(StopAsyncIteration):
+                    await agen.__anext__()
+
+                after = (
+                    await fresh.execute(text(f"SELECT current_setting('{TENANT_GUC}', true)"))
+                ).scalar()
+                assert after in (None, ""), (
+                    f"the tenant binding survived its transaction as {after!r}. It must be "
+                    "transaction-local, or the pool carries it into the next request."
+                )
+        finally:
+            await engine.dispose()
 
     async def test_a_different_organization_gets_a_different_binding(
         self, session: AsyncSession, org, people

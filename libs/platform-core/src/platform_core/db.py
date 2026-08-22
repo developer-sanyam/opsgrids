@@ -33,6 +33,8 @@ from platform_core.config import ServiceSettings
 
 _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
+_directory_engine: AsyncEngine | None = None
+_directory_sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 #: Transaction-local GUC read by every row-level security policy.
 TENANT_GUC = "app.organization_id"
@@ -68,6 +70,28 @@ def apply_schema_grants(connection: Any, schema: str, app_role: str | None) -> N
         f'GRANT USAGE, SELECT ON SEQUENCES TO "{app_role}"',
     ):
         connection.execute(text(statement))
+
+    # The directory reader: cross-tenant SELECT on the identity tables only. Granted here for
+    # the same reason as everything else in this function — the tables do not exist when the
+    # bootstrap runs, and a step somebody must remember is a step somebody forgets.
+    directory = "atmora_directory"
+    if connection.execute(
+        text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": directory}
+    ).scalar():
+        connection.execute(text(f'GRANT USAGE ON SCHEMA "{schema}" TO "{directory}"'))
+        for table in (
+            "users",
+            "memberships",
+            "membership_roles",
+            "roles",
+            "role_permissions",
+            "permissions",
+            "organizations",
+        ):
+            if connection.execute(
+                text("SELECT to_regclass(:name)"), {"name": f"{schema}.{table}"}
+            ).scalar():
+                connection.execute(text(f'GRANT SELECT ON "{schema}"."{table}" TO "{directory}"'))
 
     # Append-only, enforced by privilege rather than by convention.
     if connection.execute(
@@ -149,6 +173,60 @@ async def set_tenant(session: AsyncSession, organization_id: uuid.UUID) -> None:
         text(f"SELECT set_config('{TENANT_GUC}', :org, true)"),
         {"org": str(organization_id)},
     )
+
+
+def init_directory_engine(settings: ServiceSettings) -> None:
+    """A second, deliberately tiny engine for the cross-tenant directory reads.
+
+    Separate from the application engine because it connects as a different role — BYPASSRLS
+    so it can resolve a person before an organization is known, and SELECT-only on a named
+    handful of tables so a bug in that module cannot write anything.
+
+    A small pool on purpose: three read-only endpoints do not need the application's.
+    """
+    global _directory_engine, _directory_sessionmaker
+    if _directory_engine is not None or not settings.db_directory_role:
+        return
+
+    _directory_engine = create_async_engine(
+        settings.directory_dsn,
+        pool_size=3,
+        max_overflow=2,
+        pool_pre_ping=True,
+        connect_args={
+            "server_settings": {
+                "search_path": f"{settings.db_schema},public",
+                "application_name": f"{settings.service_name}-directory",
+            }
+        },
+    )
+    _directory_sessionmaker = async_sessionmaker(
+        _directory_engine, expire_on_commit=False, autoflush=False, class_=AsyncSession
+    )
+
+
+async def dispose_directory_engine() -> None:
+    global _directory_engine, _directory_sessionmaker
+    if _directory_engine is not None:
+        await _directory_engine.dispose()
+    _directory_engine = None
+    _directory_sessionmaker = None
+
+
+async def get_directory_session() -> AsyncIterator[AsyncSession]:
+    """Read-only, cross-tenant, and used by nothing except the internal directory routes.
+
+    Falls back to the ordinary session when no directory role is configured, so a deployment
+    that has not split the roles still works — it simply gets no bypass, which is the safe
+    direction to be wrong in.
+    """
+    if _directory_sessionmaker is None:
+        async for session in get_session():
+            yield session
+        return
+
+    async with _directory_sessionmaker() as session:
+        yield session
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

@@ -362,10 +362,19 @@ class Permission(Base):
 
 
 class Role(Base):
-    """A named bundle of grants.
+    """A named bundle of grants. Always belongs to exactly one organization.
 
-    `organization_id` is nullable: NULL means a **platform template**, which activating a
-    product copies into the organization. Customers edit their copy; templates stay clean.
+    `organization_id` used to be nullable, with NULL meaning a platform template. Nothing
+    ever created such a row — both construction sites set an organization — and templates
+    already live somewhere better: `RoleTemplate` in `catalogue.py` is a **code** construct
+    that `install_registration` instantiates as an ordinary org-owned row. Templates are
+    code; instances are rows.
+
+    So the nullable column was a second, unused mechanism for the same idea, and its only
+    live effect would have been to make the tenancy policy subtly wrong: a policy comparing
+    `organization_id` against the current tenant excludes NULL, so every template would
+    vanish and a new organization would silently get no roles at all. Removed rather than
+    special-cased (ADR-0002, decision 1).
     """
 
     __tablename__ = "roles"
@@ -373,12 +382,13 @@ class Role(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    organization_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), index=True)
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), nullable=False, index=True
+    )
     product: Mapped[str | None] = mapped_column(String(40), index=True)
     code: Mapped[str] = mapped_column(String(60), nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
-    template_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     #: Assigned automatically when someone joins.
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     #: A customer may clone a system role but not edit it.
@@ -396,19 +406,9 @@ class Role(Base):
     )
 
     __table_args__ = (
-        Index(
-            "uq_roles_org_code",
-            "organization_id",
-            "code",
-            unique=True,
-            postgresql_where=text("organization_id IS NOT NULL"),
-        ),
-        Index(
-            "uq_role_templates_code",
-            "code",
-            unique=True,
-            postgresql_where=text("organization_id IS NULL"),
-        ),
+        # A plain unique constraint now that the column cannot be NULL — the partial index
+        # existed only to exclude the template rows that no longer exist.
+        UniqueConstraint("organization_id", "code", name="uq_roles_org_code"),
     )
 
 

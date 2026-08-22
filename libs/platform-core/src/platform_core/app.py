@@ -17,7 +17,13 @@ from sqlalchemy import func, select, text
 
 from platform_core.cache import close_redis, get_redis, init_redis
 from platform_core.config import ServiceSettings
-from platform_core.db import dispose_engine, get_engine, init_engine
+from platform_core.db import (
+    dispose_directory_engine,
+    dispose_engine,
+    get_engine,
+    init_directory_engine,
+    init_engine,
+)
 from platform_core.errors import register_error_handlers
 from platform_core.logging import RequestContextMiddleware, configure_logging, get_logger
 
@@ -143,6 +149,7 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if database:
             init_engine(settings)
+            init_directory_engine(settings)
         if redis:
             init_redis(settings.redis_url)
         log.info(
@@ -159,6 +166,7 @@ def create_app(
         if redis:
             await close_redis()
         if database:
+            await dispose_directory_engine()
             await dispose_engine()
         log.info("service.stopped")
 

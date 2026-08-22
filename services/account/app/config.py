@@ -10,6 +10,7 @@ class Settings(ServiceSettings):
     db_schema: str = "account"
     db_app_role: str | None = "atmora_account"
     db_admin_role: str | None = "atmora_admin"
+    db_directory_role: str | None = "atmora_directory"
 
 
 def settings() -> Settings:

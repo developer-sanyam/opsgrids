@@ -11,30 +11,34 @@ enforcement underneath it.
 
 ## Blockers — do not deploy with these open
 
-### 1. Tenant isolation has no enforcement layer
-**The single biggest one.** `organization_id` is on every row and every query filters on it, by
-convention. Row-level security — the net that is supposed to catch a forgotten filter — is
-designed and **not implemented**, and is inert for three independent reasons.
-[ADR-0002](adr/0002-row-level-security.md) is accepted, so this is buildable rather than blocked.
+### ~~1. Tenant isolation has no enforcement layer~~ — **RESOLVED**
+Row-level security is live on the `account` schema: 11 policied tables, `FORCE` set, and the
+application connecting as a NOBYPASSRLS role whose transactions are bound to one organization by
+the chokepoint. A session bound to one tenant cannot read another's rows even by primary key with
+no filter at all, and cannot write into another tenant — asserted in
+`test_cross_tenant_isolation.py`, which is the acceptance test the rest of ADR-0002 existed to
+make pass.
 
-One missing `WHERE organization_id = …` is a cross-tenant data leak with nothing to stop it, and
-it returns `200` with a well-formed body. No error, no log line.
+Isolation is now a property of the database rather than of every query remembering its filter.
 
-### 2. The application connects to Postgres as a superuser
-`DATABASE_URL` uses a role that is `rolsuper` and `rolbypassrls`, and that role owns every table.
-Beyond defeating RLS, it means any SQL injection or code defect has unrestricted database access,
-including `DROP`.
-
-The correct roles exist in the bootstrap and are unused, holding only `CONNECT`.
+### ~~2. The application connects to Postgres as a superuser~~ — **RESOLVED**
+Each service connects as its own NOBYPASSRLS role, granted DML on its own schema only. Migrations
+run as an owner role that serves no traffic, and a third read-only role serves the cross-tenant
+directory lookups. account-service can no longer read `auth.credentials`, TRUNCATE is withheld,
+and audit tables are INSERT/SELECT only.
 
 ### 3. The internal service token is a shared static secret
 A single header value, defaulting to `dev-only-internal-token`, guards an API that reads across
 every tenant. One leak exposes every user, membership and organization name on the platform.
 
-### 4. No cross-tenant isolation test suite
-The acceptance gate for tenancy — enumerate every route, seed data in org A, call with an org-B
-token, assert never `200` — does not exist. Hand-written cross-org tests are always incomplete; a
-generated one stays complete as routes are added.
+### 4. The cross-tenant suite covers the storage layer, not every route
+`test_cross_tenant_isolation.py` proves the *database* refuses: reads, primary-key lookups and
+writes across tenants all fail. What does not exist yet is the generated per-route sweep —
+enumerate every route, seed in org A, call with an org-B token, assert never `200`. Hand-written
+cross-org tests are always incomplete; a generated one stays complete as routes are added.
+
+Materially smaller than it was: a route that forgets its filter now returns nothing rather than
+somebody else's rows.
 
 ### 5. No end-to-end test
 Nothing runs the services together. Two real outage-class defects reached the repository because

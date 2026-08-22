@@ -16,6 +16,7 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import services
@@ -143,9 +144,17 @@ class TestDirectoryContract:
         org: Organization,
     ) -> None:
         """Whatever the membership row says. Otherwise suspending a customer for
-        non-payment would leave everyone in it still able to sign in."""
+        non-payment would leave everyone in it still able to sign in.
+
+        Written through the session rather than by assigning to `org`: that object is created
+        on the admin session and is detached from this one, so a bare attribute assignment
+        would update nothing and the test would pass for the wrong reason.
+        """
         async with session.begin():
-            org.status = "suspended"
+            await session.execute(
+                text("UPDATE account.organizations SET status = 'suspended' WHERE id = :id"),
+                {"id": org.id},
+            )
 
         response = await client.get(
             "/internal/v1/users/by-email",

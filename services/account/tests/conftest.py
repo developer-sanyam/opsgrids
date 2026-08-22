@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # The service directory is the import root: every service exposes a top-level `app`, so
@@ -32,49 +32,89 @@ from app.main import app
 from app.models import SCHEMA, Base, Membership, Organization
 from app.schemas import OrganizationIn
 from platform_core import cache
-from platform_core.db import get_session
+from platform_core.db import TENANT_GUC, get_directory_session, get_session
 from tests.helpers import FakeRedis
 
 
-@pytest_asyncio.fixture
-async def session() -> AsyncIterator[AsyncSession]:
-    """A function-scoped session against a freshly truncated schema.
+def _connect_args() -> dict:
+    return {"server_settings": {"search_path": f"{SCHEMA},public"}}
 
-    Truncating rather than wrapping everything in a rolled-back outer transaction, so the
-    code under test performs its own real commits — which is the behaviour that matters
-    for anything involving locking or constraints.
+
+@pytest_asyncio.fixture
+async def org() -> AsyncIterator[Organization]:
+    """The organization every other fixture hangs off, created on the **admin** engine.
+
+    Two things force this shape, and the fixture graph had to invert for them.
+
+    Truncating needs the admin role: TRUNCATE is withheld from the app role because it is not
+    filtered by row-level security, so a role holding it could empty a table across every
+    tenant at once.
+
+    Creating an organization needs it too. The policy on `organizations` compares `id` against
+    the tenant binding, so a tenant literally cannot insert one — there is no id to name before
+    the row exists. That is correct rather than awkward: bringing an organization into being is
+    a platform operation, not something a customer does to itself.
+
+    So this runs first, and the tenant session below binds to what it created.
     """
     cfg = settings()
-    connect_args = {"server_settings": {"search_path": f"{SCHEMA},public"}}
     tables = ", ".join(f'"{SCHEMA}"."{t.name}"' for t in reversed(Base.metadata.sorted_tables))
 
-    # Teardown runs as the admin role. TRUNCATE is deliberately withheld from the app role —
-    # it is not filtered by row-level security, so an app role holding it could empty a table
-    # across every tenant at once.
-    admin = create_async_engine(cfg.admin_dsn, connect_args=connect_args)
+    admin = create_async_engine(cfg.admin_dsn, connect_args=_connect_args())
     async with admin.begin() as conn:
         await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
+
+    maker = async_sessionmaker(admin, expire_on_commit=False)
+    async with maker() as s, s.begin():
+        organization = await services.create_organization(
+            s,
+            OrganizationIn(name="Acme Technologies", slug="acme"),
+            actor_user_id=None,
+        )
+    yield organization
     await admin.dispose()
 
-    # The code under test runs as the **app** role: NOBYPASSRLS, granted only what
-    # `apply_schema_grants` gives it. Pointing this at the superuser DSN would make the whole
-    # privilege split invisible here, and every future RLS assertion a false pass — which is
-    # the failure this fixture exists to prevent, not merely a tidiness point.
-    engine = create_async_engine(cfg.app_dsn, connect_args=connect_args)
+
+@pytest_asyncio.fixture
+async def session(org: Organization) -> AsyncIterator[AsyncSession]:
+    """A session as the **app** role, with every transaction bound to `org`.
+
+    The binding is reapplied on each `begin()` rather than once, because the GUC is
+    transaction-local: it does not survive its transaction, so a single call would leave the
+    second and later transactions in a test unbound and reading nothing. This mirrors exactly
+    what `get_tenant_session` does per request in production.
+
+    Pointing this at the admin or superuser DSN would make row-level security invisible here
+    and every isolation assertion a false pass — the failure ADR-0002 calls out as worse than
+    having no test at all.
+    """
+    engine = create_async_engine(settings().app_dsn, connect_args=_connect_args())
     maker = async_sessionmaker(engine, expire_on_commit=False)
+
     async with maker() as s:
+
+        @event.listens_for(s.sync_session, "after_begin")
+        def _bind_tenant(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+            connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org.id}', true)")
+
         yield s
     await engine.dispose()
 
 
 @pytest_asyncio.fixture
-async def org(session: AsyncSession) -> Organization:
-    async with session.begin():
-        return await services.create_organization(
-            session,
-            OrganizationIn(name="Acme Technologies", slug="acme"),
-            actor_user_id=None,
-        )
+async def admin_session(org: Organization) -> AsyncIterator[AsyncSession]:
+    """A BYPASSRLS session, for the operations a tenant genuinely cannot perform.
+
+    Creating an organization is the main one: the policy compares `id` to the tenant binding,
+    so there is no value a tenant could set to insert one. Use this only where the operation is
+    legitimately a platform action — reaching for it to make a tenant-scoped test pass would
+    hide exactly what these policies exist to catch.
+    """
+    engine = create_async_engine(settings().admin_dsn, connect_args=_connect_args())
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as s:
+        yield s
+    await engine.dispose()
 
 
 @pytest_asyncio.fixture
@@ -135,13 +175,36 @@ async def redis() -> AsyncIterator[FakeRedis]:
 
 
 @pytest_asyncio.fixture
-async def client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
+async def directory_session() -> AsyncIterator[AsyncSession]:
+    """A real directory session: BYPASSRLS, SELECT-only, no tenant binding.
+
+    The internal routes must be exercised through something that genuinely reads across
+    tenants, because that is what they do in production. Handing them the tenant-bound
+    session instead would make them pass for the wrong reason — and then row-level security
+    landing would break sign-in with the tests still green, which is the exact failure mode
+    ADR-0002 spends its length warning about.
+    """
+    engine = create_async_engine(settings().directory_dsn, connect_args=_connect_args())
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as s:
+        yield s
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def client(
+    session: AsyncSession, directory_session: AsyncSession
+) -> AsyncIterator[AsyncClient]:
     """HTTP client sharing the test's session, so writes are visible to assertions."""
 
     async def _session_override() -> AsyncIterator[AsyncSession]:
         yield session
 
+    async def _directory_override() -> AsyncIterator[AsyncSession]:
+        yield directory_session
+
     app.dependency_overrides[get_session] = _session_override
+    app.dependency_overrides[get_directory_session] = _directory_override
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
     app.dependency_overrides.clear()

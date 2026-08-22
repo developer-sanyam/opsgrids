@@ -260,12 +260,14 @@ async def get_location(
 
 
 async def list_roles(session: AsyncSession, org_id: uuid.UUID) -> list[Role]:
-    """An organization's own roles, plus the platform templates it may clone."""
-    stmt = (
-        select(Role)
-        .where(or_(Role.organization_id == org_id, Role.organization_id.is_(None)))
-        .order_by(Role.code)
-    )
+    """An organization's own roles.
+
+    No NULL branch any more. Templates live in `catalogue.py` as code and are instantiated
+    as org-owned rows, so a role belonging to no organization cannot exist — ADR-0002,
+    decision 1. Leaving the `IS NULL` arm would have quietly widened this query the moment
+    anything wrote such a row.
+    """
+    stmt = select(Role).where(Role.organization_id == org_id).order_by(Role.code)
     return list((await session.execute(stmt)).scalars().all())
 
 

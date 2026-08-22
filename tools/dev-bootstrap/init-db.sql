@@ -70,3 +70,20 @@ $$;
 -- nothing to do with the service's own tables. Reference data, no tenant rows.
 GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
   TO atmora_admin, atmora_account, atmora_auth;
+
+-- The directory reader (ADR-0002, "the cross-tenant reader").
+--
+-- Sign-in has to resolve a person before an organization is known, so those lookups cannot
+-- carry a tenant binding and cannot be served by the application role. They get their own
+-- role rather than the admin one: BYPASSRLS so they can read across tenants, SELECT-only on a
+-- named handful of tables so a bug in that module cannot write anything. Least privilege
+-- inside the bypass, because the risk being managed is a route added there later.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'atmora_directory') THEN
+    CREATE ROLE atmora_directory LOGIN PASSWORD 'atmora' NOINHERIT BYPASSRLS;
+  END IF;
+END
+$$;
+GRANT CONNECT ON DATABASE atmora TO atmora_directory;
+GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO atmora_directory;

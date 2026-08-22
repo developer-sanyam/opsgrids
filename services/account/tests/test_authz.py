@@ -76,9 +76,15 @@ class TestOrganizationBootstrap:
 
 class TestOneIdentityManyOrganizations:
     async def test_the_same_person_joins_a_second_organization_without_a_second_account(
-        self, session: AsyncSession, org: Organization
+        self, session: AsyncSession, admin_session: AsyncSession, org: Organization
     ) -> None:
-        """The single-identity promise, asserted rather than assumed."""
+        """The single-identity promise, asserted rather than assumed.
+
+        The second organization is created on the admin session because a tenant cannot create
+        one — the policy on `organizations` compares `id` to the tenant binding, and there is
+        no id to name before the row exists. Its membership is added there too, since this
+        test is about identity reuse across tenants rather than about tenant-scoped access.
+        """
         from app.schemas import OrganizationIn
 
         async with session.begin():
@@ -89,13 +95,12 @@ class TestOneIdentityManyOrganizations:
                 full_name="Sam Shared",
                 actor_user_id=None,
             )
-        async with session.begin():
+        async with admin_session.begin():
             other = await services.create_organization(
-                session, OrganizationIn(name="Beta Corp", slug="beta"), actor_user_id=None
+                admin_session, OrganizationIn(name="Beta Corp", slug="beta"), actor_user_id=None
             )
-        async with session.begin():
             second = await services.add_member(
-                session,
+                admin_session,
                 org_id=other.id,
                 email="shared@example.com",
                 full_name="Sam Shared",

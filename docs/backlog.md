@@ -32,24 +32,23 @@ A correction to the record: an earlier commit message said migrations had been "
 nothing". They had not — `alembic` exits 255 on failure and `make migrate` surfaces it. That
 claim came from reading the exit code of `tail` through a pipe rather than of `alembic`.
 
-**Slice two — policies.** `roles.organization_id` to NOT NULL first, then per-schema policies,
-`users` left un-policied.
+**Slice two — policies: DONE.**
 
-This is first because every product service adds tables, and each one added before RLS is a
-table to retrofit afterwards. The ADR's key finding is that RLS is inert for **three
-independent reasons**, and fixing one gives you nothing:
+Row-level security is live on the `account` schema. Eleven tables carry a `tenant_isolation`
+policy with both `USING` and `WITH CHECK`; `users`, `permissions` and `processed_events` are
+exempt for the reasons ADR-0002 records. `roles.organization_id` is NOT NULL and the template
+machinery is gone. The cross-tenant reads that sign-in depends on run on a third role —
+BYPASSRLS but SELECT-only on seven identity tables — so they keep working without handing the
+migration role to a module that only reads.
 
-1. No policies exist.
-2. The application connects as a **superuser** — which bypasses RLS unconditionally.
-3. `set_tenant` has no callers, so the tenant GUC is never set.
+`test_cross_tenant_isolation.py` is the acceptance test: a bound session sees only its own rows,
+cannot read another tenant's row by primary key, cannot write into another tenant, and an unbound
+session sees nothing at all.
 
-Enabling policies alone is a **silent no-op** — it looks done, tests pass, nothing is enforced.
-That is worse than the status quo, because the query filter is currently the only defence and
-everybody knows it; install a decorative net and people start trusting it.
-
-The first three steps therefore have no user-visible payoff at all: fix ownership and grants,
-split the migration role from the application role, and wire a chokepoint that opens the
-transaction and sets the GUC as its first statement. Budget for that honestly.
+**Still open here:** the generated per-route cross-tenant sweep, and the index recomposition
+ADR-0002 lists (`audit_logs` first — its five single-column indexes no longer lead with the
+tenant column now that the policy qual is ANDed into every query). Neither blocks correctness;
+the second is a performance cliff waiting for volume.
 
 ---
 

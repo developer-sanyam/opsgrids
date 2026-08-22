@@ -37,7 +37,7 @@ from sqlalchemy.orm import selectinload
 from app.models import Membership, MembershipRole, Organization, Role, User
 from platform_core.auth import require_service_token
 from platform_core.cache import current_permission_version
-from platform_core.db import get_session
+from platform_core.db import get_directory_session
 from platform_core.errors import NotFoundProblem
 from platform_core.logging import get_logger
 
@@ -52,7 +52,11 @@ router = APIRouter(
     dependencies=[Depends(require_service_token)],
 )
 
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
+#: The cross-tenant reader: BYPASSRLS, SELECT-only, and used by nothing else.
+#: These lookups resolve a person *before* an organization is known, so there is no
+#: tenant binding to make — which is precisely why they need their own narrow role
+#: rather than the application's or the migration role's.
+SessionDep = Annotated[AsyncSession, Depends(get_directory_session)]
 
 
 async def _serialise(session: AsyncSession, user: User) -> dict[str, Any]:
