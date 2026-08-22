@@ -77,6 +77,10 @@ ignore = [
 # Event-name constants are not credentials. S105 matches on the variable name containing
 # "password", which is exactly what an event about a password change is called.
 "services/auth/app/services.py" = ["S105"]
+# The end-to-end harness starts the real services and drives them over HTTP, so spawning
+# subprocesses and printing diagnostics is the job rather than a smell. The password is a
+# seeded test credential that never leaves the local database.
+"e2e/**" = ["S105", "S603", "S607", "T201"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["platform_core", "app"]
@@ -98,4 +102,5 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "integration: touches a real database or broker",
+    "e2e: drives the running services over HTTP; needs `make infra` and free ports",
 ]

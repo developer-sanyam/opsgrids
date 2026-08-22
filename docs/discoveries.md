@@ -118,6 +118,25 @@ wrong within days of being written.
 
 ---
 
+## 9. No service loaded its configuration file
+
+**Impact: every setting silently fell back to its default.**
+
+`env_file=".env"` resolves relative to the working directory. Every documented way of running a
+service — the make target, the Dockerfile, the end-to-end harness — starts inside
+`services/<name>`, where there is no `.env`. So nothing configured was read.
+
+**Why nobody noticed:** the defaults happen to match the development file. Change a value in
+`.env`, run the service the documented way, and the change does nothing.
+
+**What finally surfaced it:** auth-service is the one service with a setting that has no usable
+default — the signing key path. It refused to start, reporting a missing key, which read as a
+missing key rather than a missing config file. The end-to-end suite was the first thing to start
+it from its own directory.
+
+**Fix:** the env file is anchored to the repository root, found by walking up for the workspace
+`pyproject.toml`. Production, which supplies real environment variables, is unaffected.
+
 ## The pattern
 
 Six of the eight are **contract failures between two components**, not logic errors inside one.

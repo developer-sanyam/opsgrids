@@ -118,5 +118,10 @@ test-services: ## Each service in its own process
 	  if [ $$rc -eq 5 ]; then echo "  (no tests yet)"; elif [ $$rc -ne 0 ]; then exit $$rc; fi; \
 	done
 
+.PHONY: e2e
+e2e: ## Drive the running platform over HTTP — starts the services itself
+	@echo "→ end-to-end (needs make infra, and ports 8100/8110/8111 free)"
+	uv run pytest e2e -q
+
 .PHONY: check
 check: lint typecheck test ## What CI runs

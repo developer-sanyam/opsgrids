@@ -11,11 +11,24 @@ data, and every system that has one eventually does.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy.engine import make_url
+
+
+def _repo_env_file() -> str:
+    """The workspace `.env`, found by walking up for the root `pyproject.toml`.
+
+    Falls back to the bare name so a deployment that supplies configuration through real
+    environment variables — which is the production path — behaves exactly as before.
+    """
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").exists() and (parent / "services").is_dir():
+            return str(parent / ".env")
+    return ".env"
 
 
 class ServiceSettings(BaseSettings):
@@ -29,7 +42,18 @@ class ServiceSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # Anchored to the repository root, not the working directory.
+        #
+        # `env_file=".env"` resolves relative to wherever the process started. Every service
+        # runs from its own directory — the make target, the Dockerfile and the end-to-end
+        # harness all `cd services/<name>` — and there is no `.env` there, so **no configured
+        # value loaded at all** and every setting silently fell back to its default.
+        #
+        # Nothing noticed because the defaults happen to match the development file. The one
+        # setting with no usable default, auth-service's signing key path, is what finally
+        # surfaced it: the service refused to start, reporting a missing key rather than a
+        # missing configuration file.
+        env_file=_repo_env_file(),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,

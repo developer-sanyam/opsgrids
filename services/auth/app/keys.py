@@ -112,9 +112,34 @@ def private_pem(pair: KeyPair) -> bytes:
     )
 
 
+def _resolve(path: str) -> str:
+    """Make a relative key path work from any working directory.
+
+    `JWT_PRIVATE_KEY_PATH` is relative in `.env`, which resolved only when a process happened
+    to start from the repository root. Every documented way of running this service — the make
+    target, the Dockerfile, the end-to-end suite — starts inside `services/auth`, where it did
+    not resolve at all, and the failure looked like a missing key rather than a wrong
+    directory.
+
+    An absolute path in `.env` would be machine-specific and could not ship in
+    `.env.example`, so relative paths are anchored to the repository root instead, found by
+    walking up for the workspace `pyproject.toml`.
+    """
+    candidate = Path(path)
+    if candidate.is_absolute() or candidate.exists():
+        return str(candidate)
+
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").exists() and (parent / "services").is_dir():
+            anchored = parent / candidate
+            if anchored.exists():
+                return str(anchored)
+    return path
+
+
 @lru_cache(maxsize=1)
 def _cached_active(path: str) -> KeyPair:
-    return load_private_key(path)
+    return load_private_key(_resolve(path))
 
 
 def active_key(path: str | None) -> KeyPair:

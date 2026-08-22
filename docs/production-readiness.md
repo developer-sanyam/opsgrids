@@ -1,6 +1,6 @@
 # Production readiness
 
-**Assessment: not production ready.** This page exists to say exactly why, so the decision to
+**Assessment: the five original blockers are closed. Not yet deployable — see What is left.** This page exists to say exactly why, so the decision to
 deploy is made with the list in front of you rather than around it.
 
 Nothing here is a reason not to keep building. Several items are cheap. But shipping this to a
@@ -40,9 +40,24 @@ cross-org tests are always incomplete; a generated one stays complete as routes 
 Materially smaller than it was: a route that forgets its filter now returns nothing rather than
 somebody else's rows.
 
-### 5. No end-to-end test
-Nothing runs the services together. Two real outage-class defects reached the repository because
-each side stubbed the other, and both suites were green. See [discoveries.md](discoveries.md).
+### ~~5. No end-to-end test~~ — **RESOLVED**
+`make e2e` starts account, auth and the product gateway as real processes and drives the whole
+journey over HTTP: sign in through the gateway (which makes auth call account's internal API for
+real), then read the organization with the issued token (gateway verifies, resolves permissions
+from account, forwards identity; account binds the tenant and reads under row-level security).
+
+It found a configuration bug on its first run — see [discoveries.md](discoveries.md).
+
+## What is left
+
+The blockers are gone; these are not blockers but they are not nothing:
+
+- **No deployment of any kind.** No Kubernetes manifests, no CI/CD beyond test-running CI, no
+  environment to deploy to.
+- **No products.** The platform authorizes access to services that do not exist yet.
+- **Observability is thin** — structured logs and an outbox probe, no metrics or tracing.
+- **Backups are unconfigured**, which becomes mandatory before the PulseBoard migration.
+- **The service signing key is shared** between services rather than per-service keypairs.
 
 ---
 
