@@ -13,8 +13,9 @@ rather than a horizontal layer. Nothing is "done" until its tests pass.
 ## Blocked, and first
 
 ### Row-level security
-**Blocked on review of [ADR-0002](adr/0002-row-level-security.md).** Do not start implementing
-it until that review happens; the ADR leaves four questions deliberately open.
+**[ADR-0002](adr/0002-row-level-security.md) is accepted and its four open questions are
+answered.** Unblocked — this is now the next thing to build, in two slices: prerequisites
+(roles, DSN split, tenant chokepoint, no policies) then policies.
 
 This is first because every product service adds tables, and each one added before RLS is a
 table to retrofit afterwards. The ADR's key finding is that RLS is inert for **three

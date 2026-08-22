@@ -1,6 +1,10 @@
 # ADR-0002 — Row-level security: making tenant isolation enforced rather than promised
 
-**Status: Proposed. Nothing here is implemented. Awaiting review before any code is written.**
+**Status: Accepted 2026-08-22. Not yet implemented.**
+
+The four questions this ADR left open are answered at the bottom, two of them by experiment
+rather than argument. Implementation follows the sequence in *Migration sequence*; the first
+slice deliberately contains no policies at all.
 
 Supersedes nothing. Refines decision 9 of [ADR-0000](0000-phase-0-decisions.md), which chose
 shared-schema tenancy with `organization_id` plus RLS but did not say how RLS is enforced.
@@ -22,7 +26,7 @@ fixing only the obvious one produces a system that looks isolated and is not.**
 
 | # | Finding | Evidence |
 |---|---|---|
-| 1 | **0 of 28 tables** have `rowsecurity` enabled | `pg_tables` on the dev database: `account` 15 tables, `auth` 13, none with RLS |
+| 1 | **No table has `rowsecurity` enabled** | `pg_tables` on the dev database: 28 tables across `account` and `auth`, of which 26 are domain tables and 2 are `alembic_version` |
 | 2 | The application connects as a **superuser** | `.env` → `postgresql+asyncpg://atmora:...`; `pg_roles` shows `atmora` is `rolsuper=t, rolbypassrls=t`. **Superusers bypass RLS unconditionally — `FORCE` cannot override this** |
 | 3 | Every table is **owned by the connecting role** | all 28 owned by `atmora`. A table owner bypasses its own policies unless the table is `FORCE ROW LEVEL SECURITY` |
 | 4 | The purpose-built roles are **unused and unprivileged** | `atmora_app` (NOBYPASSRLS) and `atmora_admin` (BYPASSRLS) exist in `init-db.sql:23,26`, but the only grant either holds is `GRANT CONNECT` (`:31`). No `USAGE`, no table privileges |
@@ -236,6 +240,52 @@ silently, per §4.
 
 ---
 
+## Three consequences the first draft missed
+
+Raised in review and folded in, because each is the kind of thing discovered at 2am otherwise.
+
+### Indexes must lead with `organization_id`
+
+A policy qual is ANDed into every query, so an index that does not lead with the tenant column
+stops serving its purpose the moment RLS is on: the scan reads the whole platform's rows for a
+value and then discards most of them.
+
+Most of the schema is already fine — `locations`, `org_units`, `roles`, `invitations`,
+`org_domains` and both `audit_logs` all carry an `organization_id` index, and the composite
+unique constraints lead with it. `memberships` has no standalone index but
+`ix_memberships_org_status` leads with the column and serves an org-only qual.
+
+**The exceptions, in the order they will hurt:**
+
+- **`audit_logs`** — `ix_*_at`, `_action`, `_entity`, `_entity_id`, `_actor_id` are all
+  single-column. Every audit query becomes org-scoped under RLS, and this is the
+  highest-volume table in the platform. Recompose to `(organization_id, at DESC)`,
+  `(organization_id, entity, entity_id)`, `(organization_id, actor_id)`.
+- **`memberships.ix_memberships_manager`** → `(organization_id, manager_membership_id)`.
+- **`org_units.ix_org_units_parent`** → `(organization_id, parent_id)`; `descendant_ids` walks
+  it recursively.
+- **`outbox`** has no `organization_id` index at all. Latent, not active — only the relay reads
+  it, and the relay runs BYPASSRLS with `ORDER BY created_at`. Worth noting for the day somebody
+  builds a per-org outbox view.
+
+### Global unique indexes leak existence across tenants
+
+`uq_users_email` and `org_domains.domain UNIQUE` are enforced against rows RLS hides, so a
+`23505` on insert proves the value exists in *some* other tenant.
+
+For email this is by design — global identity is the whole point, and it is what lets one person
+hold memberships in several organizations. For `org_domains.domain` it means a customer can probe
+which domains other customers have claimed. Accept it or scope the constraint, but decide rather
+than discover it.
+
+### Foreign-key cascades ignore RLS
+
+`ON DELETE CASCADE` runs as the referenced table's owner with row security off, so deleting an
+organization removes `memberships` and `membership_roles` rows the session could never have seen.
+
+Correct behaviour, and genuinely surprising in a debugging session where every `SELECT` returns
+nothing and the delete still cascades.
+
 ## Migration sequence
 
 **The first three steps contain no RLS at all, and steps 0–2 must land and be verified before a
@@ -243,19 +293,30 @@ single `CREATE POLICY` is written.** Adding policies while connected as a superu
 change that is invisible in dev, CI, review and production alike, and every subsequent test of
 the mechanism is a false pass.
 
-0. **Fix ownership and grants.** Schemas and tables to `atmora_admin`; `USAGE` + DML to
-   `atmora_app` with `ALTER DEFAULT PRIVILEGES`. Deliberately withhold `TRUNCATE`, and withhold
+**Slice one — tenancy prerequisites. No policies in it** (decision 4).
+
+0. **Fix ownership and grants.** Schemas and tables to `atmora_admin`. Create
+   **`atmora_account` and `atmora_auth`** (decision 2), each with `USAGE` on only its own schema
+   and DML via `ALTER DEFAULT PRIVILEGES`. Deliberately withhold `TRUNCATE`, and withhold
    `UPDATE`/`DELETE` on `audit_logs` — table privileges, not RLS, are the right tool for
-   append-only. Split per-service roles here while it is cheap (§6).
+   append-only.
 1. **Split the DSN.** `ServiceSettings` gains a migration URL (`atmora_admin`) distinct from the
-   app URL (`atmora_app`); `migrations/env.py` uses the former. Both read the same setting today.
-2. **Wire the chokepoint** (§1) and ship it *before* any policy exists. It is a no-op against a
-   database with RLS off, so it lands independently and is proven by asserting the GUC is set
-   inside a request.
-3. **Audit the data** — NULL `organization_id` on tables to be policied; nil-UUID sentinel rows;
-   orphaned rows that would become permanently invisible.
-4. **Policies per schema**, `account` first, `auth` last and minimal, with a `downgrade()`.
-5. **Fix the test fixtures** — see below.
+   app URL; `migrations/env.py` uses the former. Both read the same setting today.
+2. **Wire the chokepoint** (§1). A no-op against a database with RLS off, so it lands
+   independently. **Exit gate for this slice:** an assertion that the GUC is set inside every
+   request, with no policy existing anywhere.
+
+**Slice two — policies.**
+
+3. **`roles.organization_id` to NOT NULL** (decision 1), dropping `template_id` and
+   `uq_role_templates_code`. Its own migration — the one step here that is not trivially
+   reversible.
+4. **Audit the data** — nil-UUID sentinel rows in `auth`; orphaned rows that would become
+   permanently invisible.
+5. **Recompose the indexes** that do not lead with `organization_id`, `audit_logs` first.
+6. **Policies per schema**, `account` first, `auth` last and minimal, with a `downgrade()`.
+   `users` is **not** policied (decision 3).
+7. **Fix the test fixtures** — see below.
 
 Migrations themselves do not break: DDL is not subject to RLS, and data migrations run as
 `atmora_admin` with BYPASSRLS. The failure mode to watch is *ownership*, not RLS — if a table
@@ -311,17 +372,89 @@ goes in its own migration.
 
 ---
 
-## Open questions for review
+## Decisions on the open questions
 
-1. **`roles.organization_id`** — implement platform templates properly, or drop the nullability
-   and take the simple policy? (§5)
-2. **Per-service database roles** (`atmora_account`, `atmora_auth`) — do this now, or accept
-   that account-service can read `auth.credentials` for the time being? (§6)
-3. **`users`** — accept the un-policied recommendation with a compensating test, or take the
-   membership-`EXISTS` policy and route user-creating writes through a bypass session? (§5)
-4. **Sequencing** — steps 0–2 are a prerequisite with no user-visible payoff and real risk of
-   being mistaken for the whole job. Land them as their own slice, or as one slice with the
-   policies?
+Answered 2026-08-22. Two were decidable by experiment, and were.
+
+### 1. `roles.organization_id` — **drop the nullability**
+
+The column is nullable so that NULL can mean "platform template". **Nothing has ever created
+such a row.** Both `Role(...)` construction sites set an organization explicitly — `create_role`
+from `ctx.organization_id`, `install_registration` from `org_id` — and the dev database holds 3
+roles, 0 with a NULL organization.
+
+The deciding fact is that templates already exist somewhere better: `RoleTemplate` in
+`catalogue.py` is a **code** construct, and `install_registration` instantiates it as a real
+org-owned row. Templates are code, instances are rows. That is the right split, and it means the
+nullable column is a *second, unused* mechanism for the same idea.
+
+So: `ALTER COLUMN organization_id SET NOT NULL`, drop `template_id` and the
+`uq_role_templates_code` partial index, and take the simple policy without the `OR ... IS NULL`
+branch. Carrying a nullable column whose only effect is to make the policy subtly wrong — a
+naive policy hides every template and new organizations silently get no roles — is worse than
+removing a feature nobody has built. If a real requirement for database-level templates appears,
+reintroducing it is a migration, and it will arrive with an actual use case attached.
+
+Do it as **its own migration**, since it is the one step in this whole ADR that is not trivially
+reversible.
+
+### 2. Per-service database roles — **yes, now**
+
+Split `atmora_app` into `atmora_account` and `atmora_auth` in step 0, each with `USAGE` on only
+its own schema.
+
+With one shared role, account-service's connection can `SELECT * FROM auth.credentials` — the
+password hashes. auth-service exists precisely so that credentials live away from the directory
+(`users` deliberately holds none), and a single shared login quietly undoes that at the database
+layer while the application layer looks correct.
+
+It is also never cheaper than now: two services, two schemas. Every service added before the
+split inherits the shared role, and splitting later means discovering which cross-schema reads
+people have come to rely on in the meantime. Step 0 is already touching roles and grants, so the
+marginal cost is a few lines.
+
+Note this is **privilege isolation, not RLS** — a different control, and the one that actually
+matters for the `auth` schema, where ten of twelve tables are pre-organization by design.
+
+### 3. `users` — **leave it un-policied**, with a compensating test
+
+The membership-`EXISTS` policy is the more secure design and it is not viable. Verified against
+the dev database rather than reasoned about:
+
+```
+INSERT INTO probe DEFAULT VALUES;                  -- succeeds
+INSERT INTO probe DEFAULT VALUES RETURNING id;     -- ERROR: new row violates row-level
+                                                   -- security policy
+```
+
+Both statements ran as a NOBYPASSRLS non-owner under a policy with `WITH CHECK (true)` and a
+`USING` clause the new row does not satisfy. **Postgres applies the SELECT policy to
+`RETURNING`.** SQLAlchemy flushes `User` with `INSERT ... RETURNING` because of the server
+defaults on `created_at`/`updated_at`, and the new user has no membership yet — so `add_member`
+would fail on its first statement, and invitation acceptance with it.
+
+The compensating change (routing every user-creating write through a bypass session) widens the
+bypass surface more than the policy narrows the read surface, which is the wrong trade.
+
+Instead: `users` is classified global, and a test asserts that **no route selects `users` without
+joining `memberships`**. `selectors.py` is already the only place that queries it, so the test is
+guarding an existing property rather than imposing a new one. Revisit if a product service ever
+needs to render a bare user list.
+
+### 4. Sequencing — **prerequisites are their own slice**
+
+Steps 0–2 (roles and grants, DSN split, the tenant chokepoint) land as one slice with **no
+policies in it**. Policies follow in a second.
+
+Combining them produces a single large change with four candidate causes of failure, in a system
+whose characteristic failure here is *silent* — a policy that appears inert could be the role,
+the ownership, the GUC, or the policy itself. Separating them means each is verifiable on its
+own: the chokepoint in particular is a no-op against a database with RLS off, so it can be
+proven independently by asserting the GUC is set inside a request.
+
+The risk of separating is that the first slice gets mistaken for "RLS done". Mitigated by naming
+it for what it is — **tenancy prerequisites** — and by its exit gate being an assertion that the
+GUC is set on every transaction, with no policy anywhere.
 
 ## Consequences
 

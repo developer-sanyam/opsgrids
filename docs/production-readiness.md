@@ -14,8 +14,8 @@ enforcement underneath it.
 ### 1. Tenant isolation has no enforcement layer
 **The single biggest one.** `organization_id` is on every row and every query filters on it, by
 convention. Row-level security — the net that is supposed to catch a forgotten filter — is
-designed and **not implemented**, and is inert for three independent reasons
-([ADR-0002](adr/0002-row-level-security.md)).
+designed and **not implemented**, and is inert for three independent reasons.
+[ADR-0002](adr/0002-row-level-security.md) is accepted, so this is buildable rather than blocked.
 
 One missing `WHERE organization_id = …` is a cross-tenant data leak with nothing to stop it, and
 it returns `200` with a well-formed body. No error, no log line.

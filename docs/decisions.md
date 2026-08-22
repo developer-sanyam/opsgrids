@@ -7,7 +7,7 @@ themselves are the authority — this page exists so you can find the right one 
 |---|---|---|
 | [0000](adr/0000-phase-0-decisions.md) | Phase 0 — eleven irreversible decisions | Accepted |
 | [0001](adr/0001-frontend-topology.md) | One standalone app per surface | Accepted |
-| [0002](adr/0002-row-level-security.md) | Row-level security | **Proposed — under review** |
+| [0002](adr/0002-row-level-security.md) | Row-level security | **Accepted** 2026-08-22, not yet implemented |
 
 ---
 
@@ -47,9 +47,7 @@ apps. Shared code lives in `atmora-ui`, `atmora-client` and `atmora-config`.
 The cost is real — more build config, a risk of visual drift — and the mitigation is the shared
 packages. Both are recorded in the ADR.
 
-## ADR-0002 — row-level security (proposed)
-
-**Under review. Do not implement it yet.**
+## ADR-0002 — row-level security (accepted, not implemented)
 
 Documents that RLS is inert for three independent reasons: no policies exist, the application
 connects as a superuser (which bypasses RLS unconditionally), and the tenant GUC is never set
@@ -59,8 +57,10 @@ The decision that matters for reviewers: **enabling policies alone is a silent n
 looks done, tests pass, nothing is enforced — which is worse than the status quo, because the
 query filter is currently the only defence and everyone knows it.
 
-Four questions are deliberately left open, including whether to build platform role templates or
-drop the nullable column that represents them.
+Four questions were left open at first and are now answered, two of them by experiment: drop the
+nullable column that stood for platform role templates, split the database role per service now,
+leave `users` un-policied because Postgres applies a SELECT policy to `INSERT ... RETURNING`, and
+land the prerequisites as a slice containing no policies at all.
 
 ---
 
