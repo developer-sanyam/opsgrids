@@ -1,6 +1,339 @@
 {
   "components": {
     "schemas": {
+      "AgentOut": {
+        "properties": {
+          "avg_first_response_min": {
+            "title": "Avg First Response Min",
+            "type": "integer"
+          },
+          "csat_pct": {
+            "title": "Csat Pct",
+            "type": "integer"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "online": {
+            "title": "Online",
+            "type": "boolean"
+          },
+          "open_load": {
+            "title": "Open Load",
+            "type": "integer"
+          },
+          "role": {
+            "enum": [
+              "agent",
+              "senior_agent",
+              "team_lead"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "solved_7d": {
+            "title": "Solved 7D",
+            "type": "integer"
+          },
+          "team": {
+            "title": "Team",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "email",
+          "role",
+          "team",
+          "open_load",
+          "avg_first_response_min",
+          "csat_pct",
+          "solved_7d",
+          "online"
+        ],
+        "title": "AgentOut",
+        "type": "object"
+      },
+      "AssignIn": {
+        "additionalProperties": false,
+        "description": "Assign a ticket to an agent, or unassign it with `assignee_id: null`.",
+        "properties": {
+          "assignee_id": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Id"
+          }
+        },
+        "title": "AssignIn",
+        "type": "object"
+      },
+      "BreakdownSliceOut": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "pct": {
+            "title": "Pct",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "count",
+          "pct"
+        ],
+        "title": "BreakdownSliceOut",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "MessageOut": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "author_name": {
+            "title": "Author Name",
+            "type": "string"
+          },
+          "author_type": {
+            "enum": [
+              "customer",
+              "agent",
+              "system"
+            ],
+            "title": "Author Type",
+            "type": "string"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "internal": {
+            "default": false,
+            "title": "Internal",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "author_type",
+          "author_name",
+          "at",
+          "body"
+        ],
+        "title": "MessageOut",
+        "type": "object"
+      },
+      "OverviewOut": {
+        "properties": {
+          "breaching_sla": {
+            "title": "Breaching Sla",
+            "type": "integer"
+          },
+          "csat_pct": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Csat Pct"
+          },
+          "first_response_median_min": {
+            "title": "First Response Median Min",
+            "type": "integer"
+          },
+          "open_tickets": {
+            "title": "Open Tickets",
+            "type": "integer"
+          },
+          "priority_breakdown": {
+            "items": {
+              "$ref": "#/components/schemas/BreakdownSliceOut"
+            },
+            "title": "Priority Breakdown",
+            "type": "array"
+          },
+          "status_breakdown": {
+            "items": {
+              "$ref": "#/components/schemas/BreakdownSliceOut"
+            },
+            "title": "Status Breakdown",
+            "type": "array"
+          },
+          "volume": {
+            "items": {
+              "$ref": "#/components/schemas/VolumePointOut"
+            },
+            "title": "Volume",
+            "type": "array"
+          }
+        },
+        "required": [
+          "open_tickets",
+          "breaching_sla",
+          "first_response_median_min",
+          "csat_pct",
+          "volume",
+          "priority_breakdown",
+          "status_breakdown"
+        ],
+        "title": "OverviewOut",
+        "type": "object"
+      },
+      "Page_TicketOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TicketOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[TicketOut]",
+        "type": "object"
+      },
+      "ReplyIn": {
+        "additionalProperties": false,
+        "description": "Append one message to a ticket's thread.\n\n`author_type` defaults to `agent` \u2014 a reply from the desk is the common case; a `system`\nnote or a logged `customer` message names itself.",
+        "properties": {
+          "author_name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Author Name",
+            "type": "string"
+          },
+          "author_type": {
+            "default": "agent",
+            "enum": [
+              "customer",
+              "agent",
+              "system"
+            ],
+            "title": "Author Type",
+            "type": "string"
+          },
+          "body": {
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "internal": {
+            "default": false,
+            "title": "Internal",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "body",
+          "author_name"
+        ],
+        "title": "ReplyIn",
+        "type": "object"
+      },
+      "Requester": {
+        "properties": {
+          "company": {
+            "title": "Company",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "customer",
+              "staff"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "email",
+          "company",
+          "kind"
+        ],
+        "title": "Requester",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -18,16 +351,313 @@
         ],
         "title": "ServiceInfo",
         "type": "object"
+      },
+      "SlaPolicyOut": {
+        "properties": {
+          "business_hours": {
+            "title": "Business Hours",
+            "type": "string"
+          },
+          "coverage": {
+            "title": "Coverage",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/SlaTargetOut"
+            },
+            "title": "Targets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "business_hours",
+          "coverage",
+          "targets"
+        ],
+        "title": "SlaPolicyOut",
+        "type": "object"
+      },
+      "SlaTargetOut": {
+        "properties": {
+          "first_response_min": {
+            "title": "First Response Min",
+            "type": "integer"
+          },
+          "priority": {
+            "enum": [
+              "urgent",
+              "high",
+              "normal",
+              "low"
+            ],
+            "title": "Priority",
+            "type": "string"
+          },
+          "resolution_min": {
+            "title": "Resolution Min",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "priority",
+          "first_response_min",
+          "resolution_min"
+        ],
+        "title": "SlaTargetOut",
+        "type": "object"
+      },
+      "TicketOut": {
+        "properties": {
+          "assignee_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Id"
+          },
+          "channel": {
+            "enum": [
+              "email",
+              "chat",
+              "web",
+              "phone",
+              "api"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "first_response_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Response At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/MessageOut"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "priority": {
+            "enum": [
+              "urgent",
+              "high",
+              "normal",
+              "low"
+            ],
+            "title": "Priority",
+            "type": "string"
+          },
+          "requester": {
+            "$ref": "#/components/schemas/Requester"
+          },
+          "satisfaction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "good",
+                  "bad"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Satisfaction"
+          },
+          "sla_breached": {
+            "title": "Sla Breached",
+            "type": "boolean"
+          },
+          "sla_due": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sla Due"
+          },
+          "status": {
+            "enum": [
+              "new",
+              "open",
+              "pending",
+              "on_hold",
+              "solved"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "subject",
+          "requester",
+          "priority",
+          "status",
+          "channel",
+          "assignee_id",
+          "tags",
+          "created_at",
+          "updated_at",
+          "first_response_at",
+          "sla_due",
+          "sla_breached",
+          "satisfaction",
+          "messages"
+        ],
+        "title": "TicketOut",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "VolumePointOut": {
+        "properties": {
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "opened": {
+            "title": "Opened",
+            "type": "integer"
+          },
+          "solved": {
+            "title": "Solved",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "label",
+          "date",
+          "opened",
+          "solved"
+        ],
+        "title": "VolumePointOut",
+        "type": "object"
       }
     }
   },
   "info": {
-    "description": "Support service \u2014 part of the Atmora platform.",
+    "description": "The support desk \u2014 part of the Atmora platform.",
     "title": "Support service",
     "version": "0.1.0"
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/support/agents": {
+      "get": {
+        "operationId": "list_agents_api_v1_support_agents_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AgentOut"
+                  },
+                  "title": "Response List Agents Api V1 Support Agents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Agents who work the queue",
+        "tags": [
+          "support"
+        ]
+      }
+    },
     "/api/v1/support/info": {
       "get": {
         "operationId": "info_api_v1_support_info_get",
@@ -44,6 +674,359 @@
           }
         },
         "summary": "What this service is",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/api/v1/support/overview": {
+      "get": {
+        "operationId": "overview_api_v1_support_overview_get",
+        "parameters": [
+          {
+            "description": "Anchor for the volume window",
+            "in": "query",
+            "name": "now",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Anchor for the volume window",
+              "title": "Now"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OverviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queue overview: KPIs, volume and breakdowns",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/api/v1/support/sla-policy": {
+      "get": {
+        "operationId": "get_sla_policy_api_v1_support_sla_policy_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlaPolicyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The SLA policy governing the queue",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/api/v1/support/tickets": {
+      "get": {
+        "operationId": "list_tickets_api_v1_support_tickets_get",
+        "parameters": [
+          {
+            "description": "Subject, number, requester or company",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Subject, number, requester or company",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "priority",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Priority"
+            }
+          },
+          {
+            "description": "Agent id, or 'unassigned'",
+            "in": "query",
+            "name": "assignee",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Agent id, or 'unassigned'",
+              "title": "Assignee"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "number",
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_TicketOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The support queue",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/api/v1/support/tickets/{number}": {
+      "get": {
+        "operationId": "read_ticket_api_v1_support_tickets__number__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One ticket, with its thread",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/api/v1/support/tickets/{number}/assign": {
+      "post": {
+        "operationId": "assign_ticket_api_v1_support_tickets__number__assign_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assign or unassign a ticket",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/api/v1/support/tickets/{number}/reply": {
+      "post": {
+        "operationId": "reply_ticket_api_v1_support_tickets__number__reply_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Append a message to a ticket's thread",
         "tags": [
           "support"
         ]
@@ -69,6 +1052,30 @@
           }
         },
         "summary": "Liveness \u2014 is the process up?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/outbox": {
+      "get": {
+        "description": "How far behind the relay is. **Alert on `oldest_seconds`.**\n\nA stalled relay is the platform's quietest failure. It selects, finds nothing,\nlogs nothing, sleeps, and loops \u2014 `attempts` never increments and `last_error`\nstays null, so the process looks healthy indefinitely while the outbox grows\nwithout bound and every consumer downstream starves.\n\nDeliberately **not** part of readiness. A backlog is not a reason to take the\nservice out of rotation: refusing traffic would stop new events being written\nwithout helping drain the ones already queued, which makes the incident worse.\nThis is a metric to alert on, not a health state.\n\nCounted through the outbox engine, not the application one. The app role is\nNOBYPASSRLS and this request binds no tenant, so through it `pending` would be\nzero whatever the table holds \u2014 the probe that exists to expose the stall would\nbe wired to the same blind spot that causes it.",
+        "operationId": "outbox_health_outbox_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Outbox Health Outbox Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Outbox depth and age \u2014 scrape this",
         "tags": [
           "health"
         ]
