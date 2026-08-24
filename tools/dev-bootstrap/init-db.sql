@@ -19,6 +19,9 @@ CREATE EXTENSION IF NOT EXISTS citext;       -- email is case-insensitive and gl
 --   atmora_outbox     the outbox relay and the outbox-lag probe. BYPASSRLS, SELECT and
 --                     UPDATE on each service's `outbox` and nothing else.
 --
+-- Each service also gets its own NOBYPASSRLS login role — atmora_account, atmora_auth,
+-- atmora_product, atmora_employee — so one service's connection cannot read another's schema.
+--
 -- Running a relay as a NOBYPASSRLS role without setting the tenant GUC per message is the
 -- failure that stops event processing with no error at all: the outbox simply fills.
 -- ---------------------------------------------------------------------------
@@ -60,7 +63,7 @@ DO $$
 DECLARE
   r text;
 BEGIN
-  FOREACH r IN ARRAY ARRAY['atmora_account', 'atmora_auth'] LOOP
+  FOREACH r IN ARRAY ARRAY['atmora_account', 'atmora_auth', 'atmora_product', 'atmora_employee'] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L NOBYPASSRLS', r, 'atmora');
     END IF;
@@ -74,7 +77,7 @@ $$;
 -- `alembic check` with "permission denied for schema tiger" — a confusing error that has
 -- nothing to do with the service's own tables. Reference data, no tenant rows.
 GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
-  TO atmora_admin, atmora_account, atmora_auth, atmora_product;
+  TO atmora_admin, atmora_account, atmora_auth, atmora_product, atmora_employee;
 
 -- The directory reader (ADR-0002, "the cross-tenant reader").
 --

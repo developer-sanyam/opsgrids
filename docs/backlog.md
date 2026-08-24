@@ -60,6 +60,28 @@ the moment the policies landed, since each connected as the app role with no ten
 
 ## Next
 
+### HRMS employee-service — slice 1 landed; follow-ups
+
+The Employee Master (`employee-service`, schema `employee`, port 8120) is in as one green
+vertical slice: the `employees` table, the `probation → active → on_notice → exited` lifecycle
+state machine, the `hrms.people.employee.read/write` permissions with `HR_ADMIN` and `EMPLOYEE`
+role templates, scoped reads (OWN/TEAM/LOCATION/ORG), audit + outbox on every write, RLS on the
+new schema, and the full negative-authz / cross-tenant test set. Two things are deliberately
+left:
+
+- **Sensitive PII is deferred to slice 2.** Date of birth, personal contact, PAN/Aadhaar/UAN/
+  ESI, bank details and documents are *not* stored yet — "PII is encrypted and masked by
+  default" is load-bearing and platform-core has no PII envelope helper. Slice 2 lands the
+  envelope (encryption at rest, masking, `record_sensitive_read` on every unmask) and then adds
+  those fields. Do not add any of them before the envelope exists.
+- **Register the `hrms` product + role templates with account/product service.** The "adding a
+  product" checklist steps 3–5 (publish the permission manifest, ship role templates the
+  platform instantiates per org, declare plan features) are not wired: there is no automated
+  cross-service registration path today, and account-service importing the HRMS catalogue would
+  couple the two across a boundary. The `hrms` row already exists in product-service's
+  catalogue seed (status `soon`) and the gateway route (`/api/v1/employees` → :8120) is in
+  place. Registering the manifest is a platform-mechanism gap to close, not a per-product edit.
+
 ### End-to-end journey suite
 Boot the services together and run one real journey: create an organization → invite → sign in
 → reach an entitled endpoint → be refused an unentitled one → be refused another tenant's data.
