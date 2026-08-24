@@ -1,9 +1,9 @@
 # product-hrms
 
 The standalone **HRMS** product app (ADR-0001). Vite + React + TypeScript + Tailwind CSS v4.
-Visual language is the "PlanIQ" system: Manrope, a mint accent (`#75FC96`) spent sparingly,
-big-radius white cards on a faintly-green cool-grey ground, pills everywhere, and one dark
-emphasis card (the HR assistant).
+Visual language is the "Console" system: Manrope, a single violet accent (`#6C4CF1`) spent
+sparingly, big-radius white cards on a light-grey ground, a grouped left sidebar with an account
+switcher and ⌘K search, and a full light/dark theme (toggle in the sidebar).
 
 ## Run it
 
@@ -21,14 +21,19 @@ sign in with real credentials — the app is **live by default**.
 
 ## Screens
 
-- **Dashboard** — welcome header, four stat cards (big number + inline mini-chart + corner
-  arrow), a weekly Attendance Overview bar chart, today's attendance table, and a right rail
-  with the dark HR Assistant card and Recent Joiners.
-- **Employees** — directory with search, department filter chips, status filter, a responsive
-  card grid, and "load more".
+- **Dashboard** — a CRM-style layout: a breadcrumb + title bar with search / date / period /
+  Add Employee, a row of four KPI cards (icon, sparkline, big value, delta pill), then Headcount
+  by Department (live bars), a Headcount Trend area chart (sample) and a Workforce Mix donut
+  (live), and finally the live Employees table (search / filter / sort / export + row selection)
+  beside a Recent Activity timeline and Tasks Today checklist (both sample). Live widgets derive
+  from `GET /api/v1/employees`; attendance/trend/activity/task widgets are sample and carry a
+  `SampleChip`.
+- **Employees** — directory with search (seeded from the `?q=` param), department filter chips,
+  status filter, a responsive card grid, and "load more".
 - **Attendance** — date picker + week strip, present/late/absent summary tiles, the day's punch
   table (check-in/out, hours, source, status), and a Field-punches panel.
-- **Leave / Payroll** — tasteful "coming soon" placeholders (routed, in the nav).
+- **Records / Workspace** — Notifications, Tasks, Departments, Locations, Reports, Integrations,
+  Team Members, Settings and Help are routed "coming soon" placeholders reachable from the sidebar.
 
 ## Auth
 

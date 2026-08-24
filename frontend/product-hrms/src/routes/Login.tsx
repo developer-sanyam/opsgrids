@@ -18,8 +18,8 @@ interface LocationState {
 }
 
 /**
- * The sign-in screen: a single card floating on the light-grey ground under a soft mint glow.
- * Two labelled fields, a mint primary action, an inline error, and — when a user belongs to more
+ * The sign-in screen: a single card floating on the light-grey ground under a soft accent glow.
+ * Two labelled fields, a accent primary action, an inline error, and — when a user belongs to more
  * than one organization — an org picker. The demo hint fills the fields with one click.
  */
 export function LoginPage() {
@@ -91,15 +91,15 @@ export function LoginPage() {
 
   return (
     <div className="relative min-h-dvh overflow-hidden bg-ground">
-      {/* Atmosphere: two mint glows over a whisper-faint grid. */}
+      {/* Atmosphere: two accent glows over a whisper-faint grid. */}
       <div aria-hidden className="pointer-events-none absolute inset-0">
         <div
           className="absolute left-1/2 top-[-14rem] size-[40rem] -translate-x-1/2 rounded-full blur-[2px]"
-          style={{ background: "radial-gradient(closest-side, rgba(117,252,150,0.30), transparent)" }}
+          style={{ background: "radial-gradient(closest-side, rgba(108,76,241,0.22), transparent)" }}
         />
         <div
           className="absolute bottom-[-12rem] right-[-8rem] size-[30rem] rounded-full"
-          style={{ background: "radial-gradient(closest-side, rgba(117,252,150,0.16), transparent)" }}
+          style={{ background: "radial-gradient(closest-side, rgba(108,76,241,0.12), transparent)" }}
         />
         <div
           className="absolute inset-0 opacity-[0.5]"
@@ -211,10 +211,10 @@ export function LoginPage() {
                 <button
                   type="button"
                   onClick={fillDemo}
-                  className="mt-5 w-full rounded-tile bg-mint-soft px-4 py-3 text-left text-xs text-mint-ink transition-colors hover:bg-mint/40"
+                  className="mt-5 w-full rounded-tile bg-accent-soft px-4 py-3 text-left text-xs text-accent-ink transition-colors hover:bg-accent/40"
                 >
                   <span className="font-bold">Demo access</span>
-                  <span className="block text-mint-ink/80">
+                  <span className="block text-accent-ink/80">
                     Tap to fill · {DEMO_EMAIL}
                   </span>
                 </button>

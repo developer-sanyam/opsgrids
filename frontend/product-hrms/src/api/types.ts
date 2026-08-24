@@ -3,8 +3,8 @@
  *
  * `EmployeeOut` and its enums mirror `services/employee/app/schemas.py` field-for-field, so a
  * generated client can drop in later without the UI changing. Attendance has no service on this
- * branch yet, so `AttendanceRecord` / `DashboardStats` are modelled from the plan (check-in/out,
- * status present|late|absent, work_date) and shaped like the responses the service will return.
+ * branch yet, so `AttendanceRecord` is modelled from the plan (check-in/out, status
+ * present|late|absent, work_date) and shaped like the responses the service will return.
  */
 
 export type EmploymentType = "full_time" | "part_time" | "contract" | "intern";
@@ -68,30 +68,47 @@ export interface AttendanceRecord {
   status: AttendanceStatus;
 }
 
-/** A tiny series used to draw a stat card's inline chart. */
-export interface StatSeriesPoint {
+/* --------------------------- dashboard rollups --------------------------- */
+
+/** One department's share of headcount — grouped live from employees. */
+export interface DeptHeadcount {
+  key: string;
+  name: string;
+  count: number;
+  /** Share of the resolved total, 0–100. */
+  pct: number;
+}
+
+/** One slice of the workforce-mix donut — grouped live by employment type. */
+export interface WorkforceSlice {
+  key: string;
+  label: string;
+  count: number;
+  pct: number;
+}
+
+/** A point on the headcount-trend chart (sample series). */
+export interface TrendPoint {
   label: string;
   value: number;
 }
 
-export interface StatCardData {
-  key: "total_employees" | "present_today" | "on_leave" | "pending_approvals";
-  label: string;
-  value: number;
-  /** Percentage change vs. the prior period; sign drives the arrow tone. */
-  delta_pct: number;
-  series: number[];
+export type TrendRange = "monthly" | "quarterly" | "yearly";
+
+/** One entry in the Recent Activity timeline (sample). */
+export interface ActivityItem {
+  id: string;
+  actor: string;
+  action: string;
+  target: string;
+  when: string;
+  tone: "accent" | "positive" | "info" | "late";
 }
 
-export interface WeekdayAttendance {
-  label: string;
-  present: number;
-  /** The single highlighted bar (today). */
-  highlight: boolean;
-}
-
-export interface DashboardStats {
-  greeting_name: string;
-  cards: StatCardData[];
-  week: WeekdayAttendance[];
+/** One row in Tasks Today (sample). */
+export interface TaskItem {
+  id: string;
+  title: string;
+  due: string;
+  done: boolean;
 }

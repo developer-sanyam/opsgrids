@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { listEmployees } from "@/api/client";
 import type { EmployeeOut, EmployeeStatus } from "@/api/types";
@@ -66,8 +67,15 @@ function EmployeeCard({ emp }: { emp: EmployeeOut }) {
 }
 
 export function EmployeesPage() {
-  const [search, setSearch] = useState("");
+  const [searchParams] = useSearchParams();
+  const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
   const [group, setGroup] = useState<string | null>(null);
+
+  // Seed the search from the ?q= param when arriving from the sidebar / dashboard search.
+  useEffect(() => {
+    const q = searchParams.get("q");
+    if (q !== null) setSearch(q);
+  }, [searchParams]);
   const [status, setStatus] = useState<StatusFilter>("all");
   const [visible, setVisible] = useState(PAGE_SIZE);
 

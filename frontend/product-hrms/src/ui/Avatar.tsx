@@ -11,7 +11,7 @@ const SIZES: Record<Size, string> = {
 
 // A few restrained, on-brand tints. Deterministic per name so a person's colour is stable.
 const TINTS = [
-  "bg-mint-soft text-mint-ink",
+  "bg-accent-soft text-accent-ink",
   "bg-ink text-white",
   "bg-late-soft text-late",
   "bg-present-soft text-present",

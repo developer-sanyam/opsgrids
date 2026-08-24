@@ -10,7 +10,7 @@ interface CardProps extends HTMLAttributes<HTMLDivElement> {
 
 /**
  * The base surface: white, large radius, soft low shadow. `tone="dark"` is the PlanIQ
- * emphasis card — black with white text and a mint CTA — used once or twice per screen.
+ * emphasis card — black with white text and a accent CTA — used once or twice per screen.
  */
 export function Card({ tone = "surface", className, ...props }: CardProps) {
   return (

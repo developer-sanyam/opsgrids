@@ -2,7 +2,7 @@ import { cn } from "@/lib/cn";
 
 /**
  * A small amber chip that marks a surface as representative rather than live — used on the
- * attendance widgets while the attendance service is not yet wired. Amber (not the accent mint,
+ * attendance widgets while the attendance service is not yet wired. Amber (not the accent accent,
  * not an error red) reads as "informational, provisional".
  */
 export function SampleChip({ className }: { className?: string }) {

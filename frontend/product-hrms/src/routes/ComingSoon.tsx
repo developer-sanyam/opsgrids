@@ -15,7 +15,7 @@ export function ComingSoonPage({ icon, title, description }: ComingSoonPageProps
     <div className="rise flex justify-center pt-8">
       <Card className="w-full max-w-lg p-10 text-center flex flex-col items-center gap-5">
         {icon ? (
-          <span className="grid size-16 place-items-center rounded-full bg-mint-soft text-mint-ink">
+          <span className="grid size-16 place-items-center rounded-full bg-accent-soft text-accent-ink">
             {icon}
           </span>
         ) : null}
@@ -30,7 +30,7 @@ export function ComingSoonPage({ icon, title, description }: ComingSoonPageProps
         </div>
         <Link
           to="/"
-          className="rounded-full bg-mint px-5 h-11 inline-flex items-center font-semibold text-ink hover:bg-mint-strong transition-colors"
+          className="rounded-full bg-accent px-5 h-11 inline-flex items-center font-semibold text-white hover:bg-accent-strong transition-colors"
         >
           Back to dashboard
         </Link>

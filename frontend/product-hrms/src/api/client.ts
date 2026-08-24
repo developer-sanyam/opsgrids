@@ -12,18 +12,8 @@
  */
 
 import { apiRequest } from "./http";
-import {
-  ATTENDANCE_TODAY,
-  DASHBOARD,
-  EMPLOYEES,
-  RECENT_JOINERS,
-} from "./fixtures";
-import type {
-  AttendanceRecord,
-  DashboardStats,
-  EmployeeOut,
-  Page,
-} from "./types";
+import { ATTENDANCE_TODAY, EMPLOYEES } from "./fixtures";
+import type { AttendanceRecord, EmployeeOut, Page } from "./types";
 
 /** Default source. Live unless `VITE_USE_FIXTURES=true` pins the app to fixtures. */
 export const USE_FIXTURES = import.meta.env.VITE_USE_FIXTURES === "true";
@@ -75,34 +65,13 @@ export async function listEmployees(
   return apiRequest<Page<EmployeeOut>>(`/employees?${query.toString()}`);
 }
 
-/** All employees for this org (unfiltered), newest joiners first — powers the dashboard rollups. */
-async function allEmployees(): Promise<EmployeeOut[]> {
-  if (USE_FIXTURES) return EMPLOYEES;
-  const page = await apiRequest<Page<EmployeeOut>>(`/employees?size=${FULL_PAGE}`);
-  return page.items;
-}
-
-export async function getDashboardStats(): Promise<DashboardStats> {
-  if (USE_FIXTURES) return settle(DASHBOARD);
-
-  // Total Employees is live; the attendance-derived cards and the weekly chart stay
-  // representative (there is no attendance service yet) and the UI marks them as sample.
-  const total = (await apiRequest<Page<EmployeeOut>>(`/employees?size=1`)).total;
-  return {
-    ...DASHBOARD,
-    cards: DASHBOARD.cards.map((card) =>
-      card.key === "total_employees" ? { ...card, value: total } : card,
-    ),
-  };
-}
-
-export async function getRecentJoiners(): Promise<EmployeeOut[]> {
-  if (USE_FIXTURES) return settle(RECENT_JOINERS);
-  const people = await allEmployees();
-  return [...people]
-    .filter((e) => e.date_of_joining !== null)
-    .sort((a, b) => (a.date_of_joining! < b.date_of_joining! ? 1 : -1))
-    .slice(0, 5);
+/**
+ * The whole employee directory for this org (unfiltered) — powers every dashboard rollup:
+ * KPIs, headcount by department, and the workforce mix are all derived from this one payload.
+ */
+export async function getAllEmployees(): Promise<Page<EmployeeOut>> {
+  if (USE_FIXTURES) return settle({ items: EMPLOYEES, total: EMPLOYEES.length });
+  return apiRequest<Page<EmployeeOut>>(`/employees?size=${FULL_PAGE}`);
 }
 
 export async function listAttendance(workDate: string): Promise<AttendanceRecord[]> {

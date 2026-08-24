@@ -11,7 +11,17 @@ import { EmployeesPage } from "./routes/Employees";
 import { AttendancePage } from "./routes/Attendance";
 import { LoginPage } from "./routes/Login";
 import { ComingSoonPage } from "./routes/ComingSoon";
-import { ClipboardCheckIcon, WalletIcon } from "./ui/icons";
+import {
+  BellIcon,
+  BuildingIcon,
+  ClipboardCheckIcon,
+  FileTextIcon,
+  LifeBuoyIcon,
+  MapPinIcon,
+  PlugIcon,
+  SettingsIcon,
+  UserPlusIcon,
+} from "./ui/icons";
 
 const router = createBrowserRouter([
   {
@@ -35,22 +45,92 @@ const router = createBrowserRouter([
           { path: "employees", element: <EmployeesPage /> },
           { path: "attendance", element: <AttendancePage /> },
           {
-            path: "leave",
+            path: "notifications",
             element: (
               <ComingSoonPage
-                icon={<ClipboardCheckIcon className="size-6" />}
-                title="Leave"
-                description="Balances, requests and the approval flow land in the next slice. Attendance already tracks who's out today."
+                icon={<BellIcon className="size-6" />}
+                title="Notifications"
+                description="Alerts for approvals, joiners and attendance exceptions land here in the next slice."
               />
             ),
           },
           {
-            path: "payroll",
+            path: "tasks",
             element: (
               <ComingSoonPage
-                icon={<WalletIcon className="size-6" />}
-                title="Payroll"
-                description="Runs, payslips and the salary ledger are on the roadmap. Money will be integer minor units, append-only — no floats."
+                icon={<ClipboardCheckIcon className="size-6" />}
+                title="Tasks"
+                description="Your people-ops to-dos, assignable and trackable. Today's list already previews on the dashboard."
+              />
+            ),
+          },
+          {
+            path: "departments",
+            element: (
+              <ComingSoonPage
+                icon={<BuildingIcon className="size-6" />}
+                title="Departments"
+                description="Org units, headcount and team leads. The dashboard already breaks headcount down by department."
+              />
+            ),
+          },
+          {
+            path: "locations",
+            element: (
+              <ComingSoonPage
+                icon={<MapPinIcon className="size-6" />}
+                title="Locations"
+                description="Sites, regions and who works where. Attendance already tags field, remote and office punches."
+              />
+            ),
+          },
+          {
+            path: "reports",
+            element: (
+              <ComingSoonPage
+                icon={<FileTextIcon className="size-6" />}
+                title="Reports"
+                description="Exportable headcount, attendance and workforce reports are on the roadmap."
+              />
+            ),
+          },
+          {
+            path: "integrations",
+            element: (
+              <ComingSoonPage
+                icon={<PlugIcon className="size-6" />}
+                title="Integrations"
+                description="Payroll, identity and calendar connectors will plug in here."
+              />
+            ),
+          },
+          {
+            path: "team",
+            element: (
+              <ComingSoonPage
+                icon={<UserPlusIcon className="size-6" />}
+                title="Team Members"
+                description="Invite and manage the people who administer this HR workspace."
+              />
+            ),
+          },
+          {
+            path: "settings",
+            element: (
+              <ComingSoonPage
+                icon={<SettingsIcon className="size-6" />}
+                title="Settings"
+                description="Workspace preferences, roles and policies will live here."
+              />
+            ),
+          },
+          {
+            path: "help",
+            element: (
+              <ComingSoonPage
+                icon={<LifeBuoyIcon className="size-6" />}
+                title="Help & Getting Started"
+                description="Guides and support for setting up your HR workspace are on the way."
               />
             ),
           },

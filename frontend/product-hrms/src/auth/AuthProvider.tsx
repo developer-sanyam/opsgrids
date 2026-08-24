@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
+import { USE_FIXTURES } from "@/api/client";
 import * as authApi from "./api";
 import { AuthContext } from "./context";
 import type { AuthStatus } from "./context";
@@ -10,6 +11,30 @@ import {
   setUnauthorizedHandler,
 } from "./session";
 import type { LoginResult, LoginStep, MeOut } from "./types";
+
+/**
+ * A stand-in identity for fixture mode (`VITE_USE_FIXTURES=true`), so the whole app renders with
+ * no gateway and no login — used for offline design work and screenshots. Never reached live.
+ */
+const FIXTURE_ORG = {
+  organization_id: "org-fixture-0001",
+  slug: "atmora-india",
+  name: "Atmora India",
+  roles: ["hr_admin"],
+};
+
+const FIXTURE_USER: MeOut = {
+  user_id: "user-fixture-0001",
+  email: "sneha.kulkarni@atmora.example.com",
+  full_name: "Sneha Kulkarni",
+  organization_id: FIXTURE_ORG.organization_id,
+  membership_id: "mem-fixture-0001",
+  roles: FIXTURE_ORG.roles,
+  amr: ["pwd"],
+  must_change_password: false,
+  mfa_enabled: false,
+  organizations: [FIXTURE_ORG],
+};
 
 /**
  * Owns the session: verifies a stored token on boot, drives login / org-selection / logout, and
@@ -39,6 +64,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Boot: verify any token carried over from a reload, else land signed-out.
   useEffect(() => {
     let active = true;
+    // Fixture mode renders the app with a stand-in identity and no gateway call.
+    if (USE_FIXTURES) {
+      setUser(FIXTURE_USER);
+      setStatus("authenticated");
+      return;
+    }
     const token = getAccessToken();
     if (!token) {
       setStatus("unauthenticated");

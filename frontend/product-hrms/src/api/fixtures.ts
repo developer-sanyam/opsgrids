@@ -7,7 +7,6 @@ import { DEPARTMENTS } from "@/data/departments";
 import type {
   AttendanceRecord,
   AttendanceStatus,
-  DashboardStats,
   EmployeeOut,
   EmploymentType,
   PunchSource,
@@ -145,58 +144,3 @@ function pad(n: number): string {
 export const ATTENDANCE_TODAY: AttendanceRecord[] = EMPLOYEES.map((e, i) =>
   attendanceFor(e, i),
 );
-
-/* --------------------------- dashboard rollups --------------------------- */
-
-const presentCount = ATTENDANCE_TODAY.filter((a) => a.status === "present").length;
-const lateCount = ATTENDANCE_TODAY.filter((a) => a.status === "late").length;
-const absentCount = ATTENDANCE_TODAY.filter((a) => a.status === "absent").length;
-
-export const DASHBOARD: DashboardStats = {
-  greeting_name: "Sneha",
-  cards: [
-    {
-      key: "total_employees",
-      label: "Total Employees",
-      value: EMPLOYEES.length,
-      delta_pct: 4.2,
-      series: [18, 19, 20, 21, 21, 23, 24],
-    },
-    {
-      key: "present_today",
-      label: "Present Today",
-      value: presentCount + lateCount,
-      delta_pct: 2.1,
-      series: [16, 20, 18, 22, 19, 21, presentCount + lateCount],
-    },
-    {
-      key: "on_leave",
-      label: "On Leave",
-      value: absentCount,
-      delta_pct: -1.4,
-      series: [2, 1, 3, 2, 4, 3, absentCount],
-    },
-    {
-      key: "pending_approvals",
-      label: "Pending Approvals",
-      value: 6,
-      delta_pct: 3.0,
-      series: [3, 5, 4, 6, 5, 7, 6],
-    },
-  ],
-  week: [
-    { label: "Mon", present: 21, highlight: false },
-    { label: "Tue", present: 23, highlight: false },
-    { label: "Wed", present: 20, highlight: false },
-    { label: "Thu", present: 24, highlight: false },
-    { label: "Fri", present: presentCount + lateCount, highlight: true },
-    { label: "Sat", present: 8, highlight: false },
-    { label: "Sun", present: 3, highlight: false },
-  ],
-};
-
-/** Recently-joined people, newest first — for the dashboard's Recent Joiners card. */
-export const RECENT_JOINERS: EmployeeOut[] = [...EMPLOYEES]
-  .filter((e) => e.date_of_joining !== null)
-  .sort((a, b) => (a.date_of_joining! < b.date_of_joining! ? 1 : -1))
-  .slice(0, 5);

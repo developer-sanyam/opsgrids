@@ -1,237 +1,360 @@
-import { useCallback } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
+import { Link, useNavigate } from "react-router-dom";
 
-import {
-  ATTENDANCE_IS_SAMPLE,
-  getDashboardStats,
-  getRecentJoiners,
-  listAttendance,
-} from "@/api/client";
-import type { StatCardData } from "@/api/types";
+import { getAllEmployees, listAttendance } from "@/api/client";
+import type { EmployeeOut } from "@/api/types";
 import { useAuth } from "@/auth/context";
-import { departmentLabel, departmentName } from "@/data/departments";
+import { DEPARTMENTS } from "@/data/departments";
+import { activeCount, headcountByDepartment, workforceMix } from "@/data/derive";
+import { RECENT_ACTIVITY, SAMPLE_ATTENDANCE, TASKS_TODAY } from "@/data/samples";
 import { useAsync } from "@/lib/useAsync";
-import { formatDate, formatTime } from "@/lib/format";
 import {
-  AssistantPanel,
-  AttendanceBarChart,
-  AttendancePill,
-  Avatar,
+  Button,
   Card,
-  DataTable,
-  EmptyState,
+  EmployeesPanel,
   ErrorState,
-  PageHeader,
+  HeadcountByDepartment,
+  HeadcountTrend,
+  KpiCard,
+  RecentActivity,
   SampleChip,
   SectionHeader,
   Skeleton,
-  StatCard,
+  TasksToday,
+  WorkforceMix,
 } from "@/ui";
-import type { Column } from "@/ui";
-import type { AttendanceRecord } from "@/api/types";
+import type { KpiTone, MiniStat } from "@/ui";
 import {
+  BellIcon,
   CalendarCheckIcon,
-  ClipboardCheckIcon,
+  CalendarIcon,
+  CheckSquareIcon,
   LeafIcon,
+  PlusIcon,
+  SearchIcon,
   UsersIcon,
 } from "@/ui/icons";
 
 const TODAY = "2026-08-24";
 
-const STAT_ICONS: Record<StatCardData["key"], React.ReactNode> = {
-  total_employees: <UsersIcon className="size-5" />,
-  present_today: <CalendarCheckIcon className="size-5" />,
-  on_leave: <LeafIcon className="size-5" />,
-  pending_approvals: <ClipboardCheckIcon className="size-5" />,
+/** A stable empty reference so the derived-data memos don't churn while loading. */
+const EMPTY_EMPLOYEES: EmployeeOut[] = [];
+
+type Period = "weekly" | "monthly" | "quarterly";
+
+const PERIOD_RANGE: Record<Period, string> = {
+  weekly: "18 Aug – 24 Aug 2026",
+  monthly: "01 Aug – 24 Aug 2026",
+  quarterly: "Jul – Sep 2026",
 };
 
-const attendanceColumns: Column<AttendanceRecord>[] = [
-  {
-    key: "name",
-    header: "Employee",
-    render: (r) => (
-      <div className="flex items-center gap-3">
-        <Avatar name={r.full_name} size="sm" />
-        <div className="flex flex-col leading-tight">
-          <span className="font-semibold text-ink">{r.full_name}</span>
-          <span className="text-xs text-muted">{r.employee_no}</span>
-        </div>
+/** The Dashboard's top bar: breadcrumb + title, then the search / date / period / add controls. */
+function DashboardHeader({ orgName }: { orgName: string }) {
+  const navigate = useNavigate();
+  const [query, setQuery] = useState("");
+  const [period, setPeriod] = useState<Period>("monthly");
+
+  return (
+    <header className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+      <div className="flex flex-col gap-1">
+        <nav aria-label="Breadcrumb" className="text-sm font-medium text-muted">
+          Workspace <span className="text-faint">/</span>{" "}
+          <span className="text-ink-soft">{orgName}</span>
+        </nav>
+        <h1 className="display text-3xl font-extrabold leading-tight sm:text-[2.1rem]">
+          Dashboard
+        </h1>
       </div>
-    ),
-  },
-  {
-    key: "department",
-    header: "Department",
-    cellClassName: "hidden sm:table-cell text-muted",
-    headerClassName: "hidden sm:table-cell",
-    render: (r) => departmentName(r.department_id),
-  },
-  {
-    key: "check_in",
-    header: "Check-in",
-    render: (r) => <span className="tnum text-ink-soft">{formatTime(r.check_in)}</span>,
-  },
-  {
-    key: "status",
-    header: "Status",
-    align: "right",
-    render: (r) => <AttendancePill status={r.status} />,
-  },
-];
+
+      <div className="flex flex-wrap items-center gap-2">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const q = query.trim();
+            navigate(q ? `/employees?q=${encodeURIComponent(q)}` : "/employees");
+          }}
+          className="hidden h-11 min-w-0 items-center gap-2 rounded-full bg-surface px-4 shadow-card focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2 md:flex md:w-60"
+        >
+          <SearchIcon className="size-[18px] shrink-0 text-faint" />
+          <label htmlFor="dash-search" className="sr-only">
+            Search employees
+          </label>
+          <input
+            id="dash-search"
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search employees…"
+            className="min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-faint focus:outline-none"
+          />
+        </form>
+
+        <Link
+          to="/notifications"
+          aria-label="Notifications"
+          className="relative grid size-11 shrink-0 place-items-center rounded-full bg-surface text-ink-soft shadow-card hover:bg-ground transition-colors"
+        >
+          <BellIcon className="size-5" />
+          <span className="absolute right-2.5 top-2.5 size-2 rounded-full bg-accent ring-2 ring-surface" aria-hidden />
+        </Link>
+
+        <span className="hidden h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold text-ink-soft shadow-card sm:inline-flex">
+          <CalendarIcon className="size-4 text-muted" />
+          <span className="tnum">{PERIOD_RANGE[period]}</span>
+        </span>
+
+        <label className="inline-flex h-11 items-center rounded-full bg-surface px-2 shadow-card">
+          <span className="sr-only">Reporting period</span>
+          <select
+            value={period}
+            onChange={(e) => setPeriod(e.target.value as Period)}
+            className="h-full cursor-pointer rounded-full bg-transparent px-2 text-sm font-semibold text-ink focus:outline-none"
+          >
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+            <option value="quarterly">Quarterly</option>
+          </select>
+        </label>
+
+        <Button
+          size="md"
+          leadingIcon={<PlusIcon className="size-4" />}
+          onClick={() => navigate("/employees")}
+        >
+          Add Employee
+        </Button>
+      </div>
+    </header>
+  );
+}
+
+interface KpiConfig {
+  key: string;
+  label: string;
+  value: string;
+  deltaPct: number;
+  series: number[];
+  icon: React.ReactNode;
+  tone: KpiTone;
+  sample: boolean;
+}
+
+function buildKpis(
+  employees: EmployeeOut[],
+  total: number,
+  attendance: { rate: string; onLeave: number } | null,
+): KpiConfig[] {
+  const active = activeCount(employees);
+  return [
+    {
+      key: "total",
+      label: "Total Employees",
+      value: String(total),
+      deltaPct: 4.2,
+      series: [18, 19, 20, 21, 21, 23, total],
+      icon: <UsersIcon className="size-5" />,
+      tone: "accent",
+      sample: false,
+    },
+    {
+      key: "active",
+      label: "Active",
+      value: String(active),
+      deltaPct: 2.9,
+      series: [15, 16, 17, 18, 18, 19, active],
+      icon: <CheckSquareIcon className="size-5" />,
+      tone: "positive",
+      sample: false,
+    },
+    {
+      key: "attendance",
+      label: "Attendance Rate",
+      value: attendance ? attendance.rate : `${SAMPLE_ATTENDANCE.ratePct}%`,
+      deltaPct: SAMPLE_ATTENDANCE.rateDelta,
+      series: [90, 92, 91, 93, 94, 93, 94],
+      icon: <CalendarCheckIcon className="size-5" />,
+      tone: "info",
+      sample: true,
+    },
+    {
+      key: "on_leave",
+      label: "On Leave",
+      value: attendance ? String(attendance.onLeave) : "—",
+      deltaPct: SAMPLE_ATTENDANCE.onLeaveDelta,
+      series: [4, 3, 5, 3, 4, 3, attendance?.onLeave ?? 3],
+      icon: <LeafIcon className="size-5" />,
+      tone: "cyan",
+      sample: true,
+    },
+  ];
+}
 
 export function DashboardPage() {
   const { user } = useAuth();
-  const stats = useAsync(getDashboardStats, []);
+  const employees = useAsync(getAllEmployees, []);
   const attendance = useAsync(useCallback(() => listAttendance(TODAY), []), []);
-  const joiners = useAsync(getRecentJoiners, []);
 
-  const greetingName = user?.full_name.split(" ")[0] ?? "there";
+  const orgName =
+    user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
+    user?.organizations[0]?.name ??
+    "Atmora";
+
+  const attendanceSummary = useMemo(() => {
+    if (attendance.status !== "success") return null;
+    const records = attendance.data;
+    const present = records.filter((r) => r.status !== "absent").length;
+    const onLeave = records.filter((r) => r.status === "absent").length;
+    const rate = records.length === 0 ? 0 : (present / records.length) * 100;
+    return { rate: `${rate.toFixed(1)}%`, onLeave };
+  }, [attendance]);
+
+  const items = useMemo(
+    () => (employees.status === "success" ? employees.data.items : EMPTY_EMPLOYEES),
+    [employees],
+  );
+  const total = employees.status === "success" ? employees.data.total : 0;
+
+  const kpis = useMemo(
+    () => buildKpis(items, total, attendanceSummary),
+    [items, total, attendanceSummary],
+  );
+
+  const departments = useMemo(() => headcountByDepartment(items), [items]);
+  const mix = useMemo(() => workforceMix(items), [items]);
+
+  const miniStats: MiniStat[] = useMemo(() => {
+    const locations = new Set(items.map((e) => e.location_code).filter(Boolean)).size;
+    const active = activeCount(items);
+    const activeRate = total === 0 ? 0 : Math.round((active / total) * 100);
+    return [
+      { label: "Departments", metric: "teams", total: String(DEPARTMENTS.length) },
+      { label: "Locations", metric: "sites", total: String(locations) },
+      { label: "Active rate", metric: "of staff", total: `${activeRate}%` },
+    ];
+  }, [items, total]);
 
   return (
-    <div className="rise flex flex-col gap-6">
-      <PageHeader
-        eyebrow="Ready to make today count?"
-        title={
-          <>
-            Welcome back, {greetingName}{" "}
-            <span aria-hidden>👋</span>
-          </>
-        }
-      />
+    <div className="rise flex flex-col gap-5">
+      <DashboardHeader orgName={orgName} />
 
-      {/* Stat cards */}
-      <section aria-label="Key metrics" className="group grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        {stats.status === "loading"
+      {/* Row 1 — KPI cards */}
+      <section aria-label="Key metrics" className="cascade grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {employees.status === "loading"
           ? Array.from({ length: 4 }).map((_, i) => (
-              <Card key={i} className="p-5 flex flex-col gap-4">
-                <Skeleton className="h-4 w-28" />
-                <Skeleton className="h-10 w-20 rounded-tile" />
+              <Card key={i} className="flex flex-col gap-4 p-5" style={{ "--i": i } as CSSProperties}>
+                <div className="flex justify-between">
+                  <Skeleton className="size-10 rounded-tile" />
+                  <Skeleton className="h-8 w-20" />
+                </div>
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-9 w-20 rounded-tile" />
               </Card>
             ))
           : null}
-        {stats.status === "error" ? (
+        {employees.status === "error" ? (
           <Card className="p-5 sm:col-span-2 xl:col-span-4">
-            <ErrorState message={stats.error.message} />
+            <ErrorState message={employees.error.message} />
           </Card>
         ) : null}
-        {stats.status === "success"
-          ? stats.data.cards.map((card) => (
-              <StatCard
-                key={card.key}
-                data={card}
-                icon={STAT_ICONS[card.key]}
-                sample={ATTENDANCE_IS_SAMPLE && card.key !== "total_employees"}
-              />
+        {employees.status === "success"
+          ? kpis.map((kpi, i) => (
+              <div key={kpi.key} style={{ "--i": i } as CSSProperties}>
+                <KpiCard
+                  label={kpi.label}
+                  value={kpi.value}
+                  deltaPct={kpi.deltaPct}
+                  series={kpi.series}
+                  icon={kpi.icon}
+                  tone={kpi.tone}
+                  sample={kpi.sample}
+                />
+              </div>
             ))
           : null}
       </section>
 
-      {/* Main + rail */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
-        <div className="lg:col-span-2 flex flex-col gap-6">
-          {/* Attendance overview */}
-          <Card className="p-6">
-            <SectionHeader
-              title="Attendance Overview"
-              subtitle="Present headcount this week"
-              action={ATTENDANCE_IS_SAMPLE ? <SampleChip /> : undefined}
-            />
-            {stats.status === "success" ? (
-              <AttendanceBarChart
-                data={stats.data.week}
-                max={stats.data.cards[0]?.value ?? 24}
-              />
-            ) : (
-              <Skeleton className="h-44 w-full rounded-tile mt-4" />
-            )}
-          </Card>
+      {/* Row 2 — department bars · trend · mix */}
+      <section aria-label="Workforce overview" className="grid grid-cols-1 gap-5 xl:grid-cols-4">
+        <Card className="flex flex-col gap-5 p-6 xl:col-span-1">
+          <SectionHeader title="Headcount by Department" subtitle="Where people sit" />
+          {employees.status === "success" && departments.length > 0 ? (
+            <HeadcountByDepartment data={departments} total={total} />
+          ) : employees.status === "error" ? (
+            <ErrorState message={employees.error.message} />
+          ) : (
+            <Skeleton className="h-56 w-full rounded-tile" />
+          )}
+        </Card>
 
-          {/* Today's attendance */}
-          <Card className="p-6">
+        <Card className="flex flex-col gap-4 p-6 xl:col-span-2">
+          <SectionHeader title="Headcount Trend" subtitle="Team size over time" />
+          {employees.status === "success" ? (
+            <HeadcountTrend current={total} sample />
+          ) : (
+            <Skeleton className="h-56 w-full rounded-tile" />
+          )}
+        </Card>
+
+        <Card className="flex flex-col gap-5 p-6 xl:col-span-1">
+          <SectionHeader title="Workforce Mix" subtitle="By employment type" />
+          {employees.status === "success" && mix.length > 0 ? (
+            <WorkforceMix slices={mix} total={total} stats={miniStats} />
+          ) : employees.status === "error" ? (
+            <ErrorState message={employees.error.message} />
+          ) : (
+            <Skeleton className="h-56 w-full rounded-tile" />
+          )}
+        </Card>
+      </section>
+
+      {/* Row 3 — employees table · activity + tasks */}
+      <section aria-label="Team detail" className="grid grid-cols-1 gap-5 xl:grid-cols-3 items-start">
+        <Card className="flex flex-col gap-4 p-6 xl:col-span-2">
+          <SectionHeader
+            title="Employees"
+            subtitle={
+              employees.status === "success" ? `${total} people in the directory` : "Loading…"
+            }
+          />
+          {employees.status === "loading" ? (
+            <div className="flex flex-col gap-3 py-2">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <Skeleton key={i} className="h-12 w-full rounded-tile" />
+              ))}
+            </div>
+          ) : null}
+          {employees.status === "error" ? (
+            <ErrorState message={employees.error.message} />
+          ) : null}
+          {employees.status === "success" ? <EmployeesPanel employees={items} /> : null}
+        </Card>
+
+        <div className="flex flex-col gap-5">
+          <Card className="flex flex-col gap-5 p-6">
             <SectionHeader
-              title="Today's Attendance"
-              subtitle={formatDate(TODAY)}
+              title="Recent Activity"
               action={
                 <div className="flex items-center gap-2">
-                  {ATTENDANCE_IS_SAMPLE ? <SampleChip /> : null}
+                  <SampleChip />
                   <Link
-                    to="/attendance"
-                    className="rounded-full bg-ground px-4 h-9 inline-flex items-center text-sm font-semibold text-ink hover:bg-line transition-colors"
+                    to="/reports"
+                    className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
                   >
                     View all
                   </Link>
                 </div>
               }
             />
-            <div className="mt-3">
-              {attendance.status === "loading" ? (
-                <div className="flex flex-col gap-3 py-2">
-                  {Array.from({ length: 5 }).map((_, i) => (
-                    <Skeleton key={i} className="h-12 w-full rounded-tile" />
-                  ))}
-                </div>
-              ) : null}
-              {attendance.status === "error" ? (
-                <ErrorState message={attendance.error.message} />
-              ) : null}
-              {attendance.status === "success" ? (
-                <DataTable
-                  caption="Today's attendance punches"
-                  columns={attendanceColumns}
-                  rows={attendance.data.slice(0, 6)}
-                  rowKey={(r) => r.id}
-                  emptyState={
-                    <EmptyState
-                      title="No punches yet"
-                      description="Attendance for today will appear here as people check in."
-                    />
-                  }
-                />
-              ) : null}
-            </div>
+            <RecentActivity items={RECENT_ACTIVITY} />
+          </Card>
+
+          <Card className="flex flex-col gap-4 p-6">
+            <SectionHeader title="Tasks Today" action={<SampleChip />} />
+            <TasksToday tasks={TASKS_TODAY} />
           </Card>
         </div>
-
-        {/* Right rail */}
-        <div className="flex flex-col gap-6">
-          <AssistantPanel name={greetingName} />
-
-          <Card className="p-6">
-            <SectionHeader title="Recent Joiners" subtitle="Newest members of the team" />
-            <div className="mt-4 flex flex-col gap-1">
-              {joiners.status === "loading"
-                ? Array.from({ length: 4 }).map((_, i) => (
-                    <Skeleton key={i} className="h-14 w-full rounded-tile" />
-                  ))
-                : null}
-              {joiners.status === "error" ? (
-                <ErrorState message={joiners.error.message} />
-              ) : null}
-              {joiners.status === "success"
-                ? joiners.data.map((emp) => (
-                    <div
-                      key={emp.id}
-                      className="flex items-center gap-3 rounded-tile px-2 py-2 hover:bg-ground transition-colors"
-                    >
-                      <Avatar name={emp.full_name} />
-                      <div className="flex min-w-0 flex-col leading-tight">
-                        <span className="truncate font-semibold text-ink">
-                          {emp.full_name}
-                        </span>
-                        <span className="truncate text-xs text-muted">
-                          {emp.designation} · {departmentLabel(emp)}
-                        </span>
-                      </div>
-                      <span className="ml-auto shrink-0 text-xs font-medium text-faint tnum">
-                        {formatDate(emp.date_of_joining)}
-                      </span>
-                    </div>
-                  ))
-                : null}
-            </div>
-          </Card>
-        </div>
-      </div>
+      </section>
     </div>
   );
 }

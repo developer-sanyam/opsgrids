@@ -13,12 +13,12 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const VARIANTS: Record<Variant, string> = {
-  // The single accent, spent on the primary action: mint pill, black text.
+  // The single accent, spent on the primary action: violet pill, white text.
   primary:
-    "bg-mint text-ink hover:bg-mint-strong active:bg-mint-strong disabled:bg-mint/50",
-  dark: "bg-ink text-white hover:bg-ink-soft active:bg-ink-soft disabled:bg-ink/50",
+    "bg-accent text-white hover:bg-accent-strong active:bg-accent-strong disabled:bg-accent/50",
+  dark: "bg-ink text-surface hover:bg-ink-soft active:bg-ink-soft disabled:bg-ink/50",
   outline:
-    "bg-transparent text-ink border border-line hover:bg-ground active:bg-ground disabled:text-faint",
+    "bg-surface text-ink border border-line hover:bg-ground active:bg-ground disabled:text-faint",
   ghost:
     "bg-transparent text-ink-soft hover:bg-ground active:bg-ground disabled:text-faint",
 };

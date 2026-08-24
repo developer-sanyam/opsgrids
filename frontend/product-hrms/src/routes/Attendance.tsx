@@ -174,7 +174,7 @@ export function AttendancePage() {
                 aria-pressed={active}
                 className={cn(
                   "flex flex-1 min-w-14 flex-col items-center gap-0.5 rounded-tile px-3 py-2.5 transition-colors",
-                  active ? "bg-mint text-ink" : "hover:bg-ground text-ink-soft",
+                  active ? "bg-accent text-white" : "hover:bg-ground text-ink-soft",
                 )}
               >
                 <span className="text-xs font-medium opacity-70">{d.weekday}</span>
