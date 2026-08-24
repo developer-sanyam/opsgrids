@@ -26,8 +26,9 @@ CREATE EXTENSION IF NOT EXISTS citext;       -- email is case-insensitive and gl
 --                     UPDATE on each service's `outbox` and nothing else.
 --
 -- Each service also gets its own NOBYPASSRLS login role — atmora_account, atmora_auth,
--- atmora_product, atmora_employee, atmora_attendance — so one service's connection cannot
--- read another's schema.
+-- atmora_product, atmora_employee, atmora_attendance, and one per product/platform service
+-- (atmora_project, atmora_customer, atmora_lead, atmora_document, …) — so one service's
+-- connection cannot read another's schema.
 --
 -- Running a relay as a NOBYPASSRLS role without setting the tenant GUC per message is the
 -- failure that stops event processing with no error at all: the outbox simply fills.
@@ -70,7 +71,18 @@ DO $$
 DECLARE
   r text;
 BEGIN
-  FOREACH r IN ARRAY ARRAY['atmora_account', 'atmora_auth', 'atmora_product', 'atmora_employee', 'atmora_attendance'] LOOP
+  FOREACH r IN ARRAY ARRAY[
+    'atmora_account', 'atmora_auth', 'atmora_product', 'atmora_employee', 'atmora_attendance',
+    -- PulseBoard
+    'atmora_project', 'atmora_timesheet', 'atmora_standup', 'atmora_quotation',
+    -- CRM
+    'atmora_customer', 'atmora_deal', 'atmora_marketing', 'atmora_support',
+    -- Sales CRM
+    'atmora_lead', 'atmora_pipeline', 'atmora_activity',
+    -- Platform (shared)
+    'atmora_document', 'atmora_notification', 'atmora_scheduler',
+    'atmora_eventbridge', 'atmora_config'
+  ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L NOBYPASSRLS', r, 'atmora');
     END IF;
@@ -84,7 +96,12 @@ $$;
 -- `alembic check` with "permission denied for schema tiger" — a confusing error that has
 -- nothing to do with the service's own tables. Reference data, no tenant rows.
 GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
-  TO atmora_admin, atmora_account, atmora_auth, atmora_product, atmora_employee, atmora_attendance;
+  TO atmora_admin, atmora_account, atmora_auth, atmora_product, atmora_employee, atmora_attendance,
+     atmora_project, atmora_timesheet, atmora_standup, atmora_quotation,
+     atmora_customer, atmora_deal, atmora_marketing, atmora_support,
+     atmora_lead, atmora_pipeline, atmora_activity,
+     atmora_document, atmora_notification, atmora_scheduler,
+     atmora_eventbridge, atmora_config;
 
 -- The directory reader (ADR-0002, "the cross-tenant reader").
 --
