@@ -26,9 +26,11 @@ CREATE EXTENSION IF NOT EXISTS citext;       -- email is case-insensitive and gl
 --                     UPDATE on each service's `outbox` and nothing else.
 --
 -- Each service also gets its own NOBYPASSRLS login role — atmora_account, atmora_auth,
--- atmora_product, atmora_employee, atmora_attendance, and one per product/platform service
--- (atmora_project, atmora_customer, atmora_lead, atmora_document, …) — so one service's
--- connection cannot read another's schema.
+-- atmora_product, atmora_employee, atmora_attendance, atmora_catalog, and one per
+-- product/platform service (atmora_project, atmora_customer, atmora_lead, atmora_document, …)
+-- — so one service's connection cannot read another's schema. `atmora_catalog` owns the
+-- commerce definitional layer: its plan/price tables are global and un-policied, but its
+-- `audit_logs`/`outbox` carry a tenant policy, so it too must be a role RLS can bind.
 --
 -- Running a relay as a NOBYPASSRLS role without setting the tenant GUC per message is the
 -- failure that stops event processing with no error at all: the outbox simply fills.
@@ -81,7 +83,9 @@ BEGIN
     'atmora_lead', 'atmora_pipeline', 'atmora_activity',
     -- Platform (shared)
     'atmora_document', 'atmora_notification', 'atmora_scheduler',
-    'atmora_eventbridge', 'atmora_config'
+    'atmora_eventbridge', 'atmora_config',
+    -- Commerce
+    'atmora_catalog'
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L NOBYPASSRLS', r, 'atmora');
@@ -101,7 +105,7 @@ GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
      atmora_customer, atmora_deal, atmora_marketing, atmora_support,
      atmora_lead, atmora_pipeline, atmora_activity,
      atmora_document, atmora_notification, atmora_scheduler,
-     atmora_eventbridge, atmora_config;
+     atmora_eventbridge, atmora_config, atmora_catalog;
 
 -- The directory reader (ADR-0002, "the cross-tenant reader").
 --

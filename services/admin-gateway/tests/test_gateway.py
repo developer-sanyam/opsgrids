@@ -92,6 +92,41 @@ class TestStaffOnly:
         assert response.status_code == 200
 
 
+class TestCatalogAuthoringSurface:
+    """The commerce catalog's operator surface, `/api/v1/admin/catalog`, is staff-gated here.
+
+    The generic `TestStaffOnly` cases already prove the mechanism on another route; this pins it
+    to the catalog prefix specifically, so a later edit that dropped its `staff_only` flag would
+    fail a test that names it.
+    """
+
+    CATALOG_ROUTE = "/api/v1/admin/catalog/plans"
+
+    async def test_a_staff_token_reaches_catalog_as_operator(
+        self, client: AsyncClient, mint, upstream: EchoUpstream
+    ) -> None:
+        response = await client.post(self.CATALOG_ROUTE, headers=auth(mint(staff=True)), json={})
+        assert response.status_code == 200
+        assert upstream.last["path"] == self.CATALOG_ROUTE
+        assert upstream.header("x-audience") == "operator"
+
+    async def test_a_non_staff_operator_token_gets_404(
+        self, client: AsyncClient, mint, upstream: EchoUpstream
+    ) -> None:
+        response = await client.post(self.CATALOG_ROUTE, headers=auth(mint(staff=False)), json={})
+        assert response.status_code == 404
+        assert not upstream.calls
+
+    async def test_a_product_audience_token_is_refused(
+        self, client: AsyncClient, mint, upstream: EchoUpstream
+    ) -> None:
+        response = await client.post(
+            self.CATALOG_ROUTE, headers=auth(mint(audience="app", staff=True)), json={}
+        )
+        assert response.status_code == 401
+        assert not upstream.calls
+
+
 class TestEntitlement:
     async def test_operator_routes_need_no_product_entitlement(
         self, client: AsyncClient, mint

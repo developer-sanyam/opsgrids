@@ -54,6 +54,9 @@
 
     { "prefix": "/api/v1/billing", "upstream": "http://localhost:8160" },
     { "prefix": "/api/v1/subscriptions", "upstream": "http://localhost:8161" },
-    { "prefix": "/api/v1/usage", "upstream": "http://localhost:8162" }
+    { "prefix": "/api/v1/usage", "upstream": "http://localhost:8162" },
+
+    { "prefix": "/api/v1/plans", "upstream": "http://localhost:8164" },
+    { "prefix": "/api/v1/catalog", "upstream": "http://localhost:8164" }
   ]
 }
