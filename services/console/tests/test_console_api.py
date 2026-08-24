@@ -1,0 +1,203 @@
+"""The staff read API's boundary, and that an override delegates rather than writes.
+
+Three properties (ADR-0003 §2):
+
+1. **Audience boundary** — a product (`app`-audience) token is refused with 404 in-service, the same
+   answer an unknown route gives, so the surface is never confirmed to a prober. This is the
+   in-service mirror of the gateway's own staff gate (the gateway refuses a product token at
+   signature time and 404s a non-staff operator token; it does not forward the staff flag, so all
+   the service can check is the audience — exactly what catalog's `require_operator` checks).
+2. **Override delegation** — `POST /admin/overrides` calls the *owning* service's internal endpoint
+   under a service token addressed to that service by name. Console writes no foreign schema; its
+   only local write is an audit row in its own schema, which `/admin/audit` reads back.
+3. **Negative-authz** — an unauthenticated caller is refused; a non-operator override attempts no
+   delegation at all.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import AsyncIterator
+
+import httpx
+import jwt
+import pytest
+from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app import selectors
+from app.api.routes import get_delegation_client
+from app.config import settings
+from app.main import app
+from tests.helpers import as_principal, operator_principal
+
+pytestmark = pytest.mark.integration
+
+
+def _decoded_audience(token: str) -> str:
+    """The `aud` of a minted service token — what stops it being replayed elsewhere."""
+    claims = jwt.decode(
+        token,
+        settings().internal_service_token.get_secret_value(),
+        algorithms=["HS256"],
+        options={"verify_aud": False, "require": ["exp", "iss", "aud", "jti"]},
+    )
+    return str(claims["aud"])
+
+
+class _Captured:
+    """Records the single outbound delegated call so the test can assert on it."""
+
+    def __init__(self) -> None:
+        self.calls: list[httpx.Request] = []
+
+
+def _mock_delegation(captured: _Captured, *, response: dict) -> None:
+    """Override the endpoint's HTTP client with a mock transport recording every request."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.calls.append(request)
+        return httpx.Response(200, json=response)
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def _override() -> AsyncIterator[httpx.AsyncClient]:
+        yield mock_client
+
+    app.dependency_overrides[get_delegation_client] = _override
+
+
+# --------------------------------------------------------------------- audience boundary
+
+
+class TestAudienceBoundary:
+    async def test_an_operator_token_reaches_a_staff_route(self, client: AsyncClient) -> None:
+        with as_principal(operator_principal(staff=True)):
+            response = await client.get("/api/v1/admin/organizations")
+        assert response.status_code == 200
+        assert "organizations" in response.json()
+
+    async def test_a_product_audience_token_gets_404(self, client: AsyncClient) -> None:
+        """A stolen product token is inert here — 404, the same answer an unknown path gives, so the
+        operator surface is never confirmed. Mirrors the admin-gateway staff-route boundary."""
+        with as_principal(operator_principal(staff=False)):
+            response = await client.get("/api/v1/admin/organizations")
+        assert response.status_code == 404
+
+    async def test_an_unauthenticated_caller_is_rejected(self, client: AsyncClient) -> None:
+        response = await client.get("/api/v1/admin/organizations")
+        assert response.status_code == 401
+
+    async def test_every_staff_route_refuses_a_product_token(self, client: AsyncClient) -> None:
+        for path in (
+            "/api/v1/admin/organizations",
+            "/api/v1/admin/subscriptions",
+            "/api/v1/admin/usage",
+            "/api/v1/admin/audit",
+        ):
+            with as_principal(operator_principal(staff=False)):
+                response = await client.get(path)
+            assert response.status_code == 404, path
+
+
+# --------------------------------------------------------------------- override delegation
+
+
+class TestOverrideDelegation:
+    async def test_suspend_delegates_to_subscription_under_a_service_token(
+        self,
+        client: AsyncClient,
+        directory_session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        """The headline: a suspend override calls subscription's internal endpoint under a service
+        token addressed to subscription, and console writes only its own audit row."""
+        captured = _Captured()
+        _mock_delegation(captured, response={"status": "suspended"})
+        subscription_id = uuid.uuid4()
+
+        with as_principal(operator_principal(staff=True)):
+            response = await client.post(
+                "/api/v1/admin/overrides",
+                json={
+                    "action": "suspend",
+                    "organization_id": str(org_id),
+                    "subscription_id": str(subscription_id),
+                    "reason": "non-payment",
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json()["delegated_to"] == "subscription"
+
+        # The outbound call: exactly one, to subscription's internal suspend endpoint, under a
+        # service token whose audience is subscription (so it cannot be replayed against billing).
+        assert len(captured.calls) == 1
+        call = captured.calls[0]
+        assert call.method == "POST"
+        assert f"/internal/v1/subscriptions/{subscription_id}/suspend" in str(call.url)
+        token = call.headers["X-Internal-Token"]
+        assert _decoded_audience(token) == "subscription"
+
+        # Console's only local write is its own audit row, bound to the target organization.
+        audit = await selectors.recent_audit(directory_session)
+        assert len(audit) == 1
+        assert audit[0].action == "override.suspend"
+        assert audit[0].organization_id == org_id
+        assert audit[0].acting_as is not None, "an impersonated action must name the operator"
+
+    async def test_comp_grant_delegates_to_billing(
+        self, client: AsyncClient, org_id: uuid.UUID
+    ) -> None:
+        captured = _Captured()
+        _mock_delegation(captured, response={"credit_id": str(uuid.uuid4())})
+
+        with as_principal(operator_principal(staff=True)):
+            response = await client.post(
+                "/api/v1/admin/overrides",
+                json={
+                    "action": "comp_grant",
+                    "organization_id": str(org_id),
+                    "amount_minor": 100000,
+                    "currency": "INR",
+                    "reason": "goodwill",
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json()["delegated_to"] == "billing"
+        call = captured.calls[0]
+        assert "/internal/v1/credit" in str(call.url)
+        assert _decoded_audience(call.headers["X-Internal-Token"]) == "billing"
+
+    async def test_a_non_operator_override_delegates_nothing(
+        self, client: AsyncClient, org_id: uuid.UUID
+    ) -> None:
+        """A product token is 404 before any delegation — no outbound call, no audit row."""
+        captured = _Captured()
+        _mock_delegation(captured, response={})
+
+        with as_principal(operator_principal(staff=False)):
+            response = await client.post(
+                "/api/v1/admin/overrides",
+                json={
+                    "action": "suspend",
+                    "organization_id": str(org_id),
+                    "subscription_id": str(uuid.uuid4()),
+                },
+            )
+        assert response.status_code == 404
+        assert captured.calls == [], "a refused override must not reach the owning service"
+
+    async def test_suspend_without_a_subscription_id_is_rejected(
+        self, client: AsyncClient, org_id: uuid.UUID
+    ) -> None:
+        captured = _Captured()
+        _mock_delegation(captured, response={})
+        with as_principal(operator_principal(staff=True)):
+            response = await client.post(
+                "/api/v1/admin/overrides",
+                json={"action": "suspend", "organization_id": str(org_id)},
+            )
+        assert response.status_code == 422
+        assert captured.calls == [], "an invalid override must not reach the owning service"

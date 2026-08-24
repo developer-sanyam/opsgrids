@@ -36,6 +36,9 @@ CREATE EXTENSION IF NOT EXISTS citext;       -- email is case-insensitive and gl
 -- finalize-freeze guarantees are enforced below the role, with table privileges and a trigger.
 -- `atmora_metering` owns the append-only usage sink: its `usage_events` additionally has
 -- UPDATE/DELETE revoked from it in a service migration, so append-only holds at the database.
+-- `atmora_console` owns the operator read model: its `revenue_events` projection is likewise
+-- append-only (UPDATE/DELETE revoked in a service migration), and it carries a second BYPASSRLS
+-- reader, `atmora_console_directory`, for the cross-tenant operator read API (below).
 --
 -- Running a relay as a NOBYPASSRLS role without setting the tenant GUC per message is the
 -- failure that stops event processing with no error at all: the outbox simply fills.
@@ -90,7 +93,7 @@ BEGIN
     'atmora_document', 'atmora_notification', 'atmora_scheduler',
     'atmora_eventbridge', 'atmora_config',
     -- Commerce
-    'atmora_catalog', 'atmora_billing', 'atmora_metering', 'atmora_subscription'
+    'atmora_catalog', 'atmora_billing', 'atmora_metering', 'atmora_subscription', 'atmora_console'
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L NOBYPASSRLS', r, 'atmora');
@@ -110,7 +113,7 @@ GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
      atmora_customer, atmora_deal, atmora_marketing, atmora_support,
      atmora_lead, atmora_pipeline, atmora_activity,
      atmora_document, atmora_notification, atmora_scheduler,
-     atmora_eventbridge, atmora_config, atmora_catalog, atmora_billing, atmora_metering, atmora_subscription;
+     atmora_eventbridge, atmora_config, atmora_catalog, atmora_billing, atmora_metering, atmora_subscription, atmora_console;
 
 -- The directory reader (ADR-0002, "the cross-tenant reader").
 --
@@ -149,6 +152,26 @@ END
 $$;
 GRANT CONNECT ON DATABASE atmora TO atmora_product_directory;
 GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO atmora_product_directory;
+
+-- The operator console's cross-tenant reader (ADR-0002 §2/§3, ADR-0003 §2).
+--
+-- The operator console reads *across* tenants — every customer's MRR, subscriptions, usage and
+-- override-audit at once — so its read API cannot carry a tenant binding and cannot run on the
+-- application role. It gets its own BYPASSRLS role, SELECT-only on console's projection tables
+-- (`org_commercial_state`, `revenue_events`, `usage_summary`) and its `audit_logs`, and nothing
+-- else — a named, auditable bypass, not a superuser. A separate role from atmora_directory and
+-- atmora_product_directory because each bypass reader is confined to its own service's named
+-- tables — least privilege inside the bypass. Table grants are applied by console's
+-- `migrations/env.py`, because the tables do not exist when this file runs.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'atmora_console_directory') THEN
+    CREATE ROLE atmora_console_directory LOGIN PASSWORD 'atmora' NOINHERIT BYPASSRLS;
+  END IF;
+END
+$$;
+GRANT CONNECT ON DATABASE atmora TO atmora_console_directory;
+GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO atmora_console_directory;
 
 -- The outbox relay (ADR-0002 §2, "The outbox relay must run BYPASSRLS").
 --
