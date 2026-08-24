@@ -8,6 +8,15 @@ Cross-tenant by necessity: auth asks about an organization it is issuing a token
 moment when there is no tenant context yet — the token being minted is what would establish
 one. Guarded by a short-lived service token addressed to this service by name.
 
+Because there is no tenant to bind, the read runs on the **directory session**: BYPASSRLS and
+SELECT-only, exactly the shape of account-service's directory reads (ADR-0002, "the cross-tenant
+reader"). The application role would be wrong here — `activations` carries a forced row-level
+security policy `USING (organization_id = current_org())`, and with no tenant GUC `current_org()`
+is NULL, so the organization's real activation row is invisible and the endpoint returns only
+the platform products. That is the 402 blocker: an org that activated a product still signs in
+without it. Entitlements is the only route in this module that reads across tenants, so it is
+the only one on the directory session.
+
 Mounted at the root rather than under `/api/v1`, and excluded from the OpenAPI document: this
 is not public API and must not appear as though it were.
 """
@@ -22,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors
 from platform_core.auth import require_service_token
-from platform_core.db import get_session
+from platform_core.db import get_directory_session
 from platform_core.logging import get_logger
 
 log = get_logger("product.internal")
@@ -36,7 +45,10 @@ router = APIRouter(
     dependencies=[Depends(require_service_token)],
 )
 
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
+#: The cross-tenant reader: BYPASSRLS, SELECT-only, and used by nothing else. The entitlements
+#: read resolves an organization's activations before any tenant is bound, so it cannot carry a
+#: tenant binding and cannot be served by the application role.
+SessionDep = Annotated[AsyncSession, Depends(get_directory_session)]
 
 
 @router.get(
@@ -45,6 +57,12 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 )
 async def entitlements(session: SessionDep, organization_id: uuid.UUID) -> dict[str, Any]:
     """What the `ent` claim is built from.
+
+    Resolved on the SELECT-only bypass reader (`get_directory_session`), which sees the
+    organization's activations before any tenant is bound — the same shape as account-service's
+    directory reads (ADR-0002). On the application role this read returns nothing: `activations`
+    is under a forced tenant policy and no GUC is set at token-minting time, so every product's
+    routes would 402.
 
     Returns an empty list for an organization with no activations rather than 404. That is the
     honest answer — "this customer has bought nothing" is a real state, and the platform

@@ -15,7 +15,13 @@ CREATE EXTENSION IF NOT EXISTS citext;       -- email is case-insensitive and gl
 --   atmora_admin      runs migrations and backfills — work that owns the schema and
 --                     legitimately spans organizations. BYPASSRLS.
 --   atmora_directory  the cross-tenant identity reads sign-in depends on. BYPASSRLS,
---                     SELECT-only on a named handful of tables.
+--                     SELECT-only on a named handful of `account` tables.
+--   atmora_product_directory
+--                     the cross-tenant entitlements read auth-service makes while minting a
+--                     token — resolving an organization's activations before any tenant is
+--                     bound. BYPASSRLS, SELECT-only on `product.activations` and
+--                     `product.products`. Its own role rather than atmora_directory because a
+--                     bypass reader is granted only its own service's named tables.
 --   atmora_outbox     the outbox relay and the outbox-lag probe. BYPASSRLS, SELECT and
 --                     UPDATE on each service's `outbox` and nothing else.
 --
@@ -95,6 +101,27 @@ END
 $$;
 GRANT CONNECT ON DATABASE atmora TO atmora_directory;
 GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO atmora_directory;
+
+-- The product entitlements reader (ADR-0002, "the cross-tenant reader"), one per service.
+--
+-- auth-service resolves an organization's activations while it mints that organization a
+-- token, at a moment when there is no tenant context to bind — the token being minted is what
+-- would establish one. Under row-level security the application role reads nothing there, so
+-- every product's routes 402 at the gateway. The read runs on its own BYPASSRLS role instead,
+-- SELECT-only on `product.activations` and `product.products` and nothing else. A separate
+-- role from atmora_directory because each bypass reader is confined to its own service's
+-- named tables — least privilege inside the bypass, for the route added to that module later.
+-- Table grants are applied by product's `migrations/env.py`, because the tables do not exist
+-- when this file runs.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'atmora_product_directory') THEN
+    CREATE ROLE atmora_product_directory LOGIN PASSWORD 'atmora' NOINHERIT BYPASSRLS;
+  END IF;
+END
+$$;
+GRANT CONNECT ON DATABASE atmora TO atmora_product_directory;
+GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO atmora_product_directory;
 
 -- The outbox relay (ADR-0002 §2, "The outbox relay must run BYPASSRLS").
 --

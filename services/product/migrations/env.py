@@ -30,6 +30,35 @@ config.set_main_option("sqlalchemy.url", cfg.admin_dsn)
 target_metadata = Base.metadata
 
 
+def grant_directory_reader(connection: Connection) -> None:
+    """Cross-tenant SELECT for the entitlements read, on the two tables it touches.
+
+    `apply_schema_grants` also grants the directory reader, but its list is account-service's
+    identity tables and its role is `atmora_directory`; product's reader is its own role on its
+    own tables, so it is granted here explicitly. `internal.entitlements` calls
+    `selectors.entitlements_for`, which reads `activations` (the row a 402 depends on) and
+    `products` (for the `is_platform` catalogue). SELECT only — no INSERT, UPDATE or DELETE ever
+    reaches this role, so a bug in that read path cannot write.
+
+    Runs here rather than in the bootstrap SQL because the tables do not exist when that runs,
+    and re-applies on every migration for the same reason every other grant in this file does —
+    a step somebody must remember is a step somebody eventually forgets. Each grant is guarded by
+    `to_regclass`, so a downgrade that has dropped the tables is a no-op rather than an error.
+    """
+    reader = "atmora_product_directory"
+    if not connection.execute(
+        text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": reader}
+    ).scalar():
+        return
+    connection.execute(text(f'GRANT USAGE ON SCHEMA "{SCHEMA}" TO "{reader}"'))
+    for table in ("activations", "products"):
+        if connection.execute(
+            text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.{table}"}
+        ).scalar():
+            connection.execute(text(f'GRANT SELECT ON "{SCHEMA}"."{table}" TO "{reader}"'))
+    connection.commit()
+
+
 def include_object(obj, name, type_, reflected, compare_to) -> bool:  # type: ignore[no-untyped-def]
     """Manage only this service's own schema.
 
@@ -59,6 +88,7 @@ def do_run_migrations(connection: Connection) -> None:
     # After the schema is up to date, not before: the grants name tables the migrations just
     # created.
     apply_schema_grants(connection, SCHEMA, cfg.db_app_role)
+    grant_directory_reader(connection)
 
 
 async def run_async_migrations() -> None:

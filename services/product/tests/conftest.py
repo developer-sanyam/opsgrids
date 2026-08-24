@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.config import settings
 from app.main import app
 from app.models import SCHEMA
-from platform_core.db import TENANT_GUC, get_session
+from platform_core.db import TENANT_GUC, get_directory_session, get_session
 
 #: Tenant-scoped tables only — the catalogue survives.
 TENANT_TABLES = ("activations", "audit_logs", "outbox", "processed_events")
@@ -74,11 +74,63 @@ async def session(org_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
 
 
 @pytest_asyncio.fixture
-async def client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
+async def admin_session() -> AsyncIterator[AsyncSession]:
+    """A BYPASSRLS session, for seeding rows a cross-tenant read has to find.
+
+    Seeding an activation the way the platform does — outside any one request's tenant scope —
+    needs the admin role: it owns the schema and is not subject to the policy on `activations`,
+    so it can write a row for an organization no GUC is bound to.
+    """
+    engine = create_async_engine(settings().admin_dsn, connect_args=_connect_args())
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as s:
+        yield s
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def directory_session() -> AsyncIterator[AsyncSession]:
+    """The real entitlements reader: BYPASSRLS, SELECT-only, and no tenant binding.
+
+    The entitlements read must be exercised through what serves it in production — a session
+    that genuinely resolves activations with no GUC set. Handing it the tenant-bound `session`
+    would make it pass for the wrong reason, and then the forced policy on `activations` would
+    402 every product while the tests stayed green (ADR-0002, "the cross-tenant reader").
+    """
+    engine = create_async_engine(settings().directory_dsn, connect_args=_connect_args())
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as s:
+        yield s
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def unbound_app_session() -> AsyncIterator[AsyncSession]:
+    """The application role with **no** tenant GUC — what the endpoint used to run on.
+
+    Under the forced policy on `activations`, `current_org()` is NULL here, so an organization's
+    real activation is invisible and only the global catalogue comes back. This is the bug, kept
+    as a fixture so a companion test can prove it stays fixed rather than silently returning.
+    """
+    engine = create_async_engine(settings().app_dsn, connect_args=_connect_args())
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as s:
+        yield s
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def client(
+    session: AsyncSession, directory_session: AsyncSession
+) -> AsyncIterator[AsyncClient]:
     async def _session_override() -> AsyncIterator[AsyncSession]:
         yield session
 
+    async def _directory_override() -> AsyncIterator[AsyncSession]:
+        yield directory_session
+
     app.dependency_overrides[get_session] = _session_override
+    app.dependency_overrides[get_directory_session] = _directory_override
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
     app.dependency_overrides.clear()
