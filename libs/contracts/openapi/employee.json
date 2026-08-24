@@ -100,6 +100,16 @@
             ],
             "title": "Membership Id"
           },
+          "pii": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmployeePiiIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "reporting_manager_id": {
             "anyOf": [
               {
@@ -236,6 +246,16 @@
             ],
             "title": "Membership Id"
           },
+          "pii": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmployeePiiMasked"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "reporting_manager_id": {
             "anyOf": [
               {
@@ -370,6 +390,16 @@
             ],
             "title": "Location Code"
           },
+          "pii": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmployeePiiIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "reporting_manager_id": {
             "anyOf": [
               {
@@ -401,6 +431,323 @@
           }
         },
         "title": "EmployeePatch",
+        "type": "object"
+      },
+      "EmployeePiiIn": {
+        "description": "Sensitive PII supplied as **plaintext**. Every field optional: on create it is what is\nknown; on patch, present means \"seal this new value\", absent means \"leave it alone\".\n\nThe service seals each provided value before it touches the database \u2014 the plaintext lives\nonly for the length of that call and is never stored, logged, audited or put in an event.",
+        "properties": {
+          "aadhaar": {
+            "anyOf": [
+              {
+                "maxLength": 12,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aadhaar"
+          },
+          "bank_account": {
+            "anyOf": [
+              {
+                "maxLength": 18,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Account"
+          },
+          "bank_ifsc": {
+            "anyOf": [
+              {
+                "maxLength": 11,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Ifsc"
+          },
+          "date_of_birth": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Birth"
+          },
+          "esi": {
+            "anyOf": [
+              {
+                "maxLength": 17,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Esi"
+          },
+          "pan": {
+            "anyOf": [
+              {
+                "maxLength": 10,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pan"
+          },
+          "personal_email": {
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Personal Email"
+          },
+          "personal_phone": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Personal Phone"
+          },
+          "uan": {
+            "anyOf": [
+              {
+                "maxLength": 12,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uan"
+          }
+        },
+        "title": "EmployeePiiIn",
+        "type": "object"
+      },
+      "EmployeePiiMasked": {
+        "description": "The safe projection of an employee's PII: masks only, plus the whole IFSC.\n\nThis is the default read shape. Every value here is either a non-sensitive hint\n(`\u2022\u2022\u2022\u2022 \u2022\u2022\u2022\u2022 3210`) or a field classified non-sensitive (`bank_ifsc`). It is built from the\nstored `_masked` columns, so producing it never decrypts anything.",
+        "properties": {
+          "aadhaar": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aadhaar"
+          },
+          "bank_account": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Account"
+          },
+          "bank_ifsc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Ifsc"
+          },
+          "date_of_birth": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Birth"
+          },
+          "esi": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Esi"
+          },
+          "pan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pan"
+          },
+          "personal_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Personal Email"
+          },
+          "personal_phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Personal Phone"
+          },
+          "uan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uan"
+          }
+        },
+        "title": "EmployeePiiMasked",
+        "type": "object"
+      },
+      "EmployeePiiUnmasked": {
+        "description": "The **only** response that carries plaintext PII, served by the stepped-up, audited\nunmask endpoint. Every field is optional: only the ones asked for (and present) come back.",
+        "properties": {
+          "aadhaar": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aadhaar"
+          },
+          "bank_account": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Account"
+          },
+          "date_of_birth": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Birth"
+          },
+          "esi": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Esi"
+          },
+          "pan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pan"
+          },
+          "personal_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Personal Email"
+          },
+          "personal_phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Personal Phone"
+          },
+          "uan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uan"
+          }
+        },
+        "title": "EmployeePiiUnmasked",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -450,6 +797,34 @@
           "pages"
         ],
         "title": "Page[EmployeeOut]",
+        "type": "object"
+      },
+      "PiiUnmaskIn": {
+        "description": "Which sensitive fields to reveal. Naming them explicitly keeps an unmask a deliberate,\nminimal act \u2014 and the audit row records exactly this list.",
+        "properties": {
+          "fields": {
+            "items": {
+              "enum": [
+                "date_of_birth",
+                "personal_email",
+                "personal_phone",
+                "pan",
+                "aadhaar",
+                "uan",
+                "esi",
+                "bank_account"
+              ],
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Fields",
+            "type": "array"
+          }
+        },
+        "required": [
+          "fields"
+        ],
+        "title": "PiiUnmaskIn",
         "type": "object"
       },
       "ServiceInfo": {
@@ -805,6 +1180,60 @@
           }
         },
         "summary": "Update an employee",
+        "tags": [
+          "employee"
+        ]
+      }
+    },
+    "/api/v1/employees/{employee_id}/pii/unmask": {
+      "post": {
+        "description": "The single decrypting endpoint. Guarded by the dangerous `read_sensitive` permission and a\nsecond-factor step-up (`amr={\"otp\"}`), then re-scoped to this one employee. The service opens\nthe requested fields and writes the `entity.sensitive_read` audit row in the same\ntransaction, so a revealed value never exists without a record that it was revealed.",
+        "operationId": "unmask_pii_api_v1_employees__employee_id__pii_unmask_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PiiUnmaskIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmployeePiiUnmasked"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reveal an employee's sensitive PII",
         "tags": [
           "employee"
         ]

@@ -1,0 +1,145 @@
+"""The PII envelope: seal, open, mask, and rotate — with no database in sight.
+
+These are the guarantees the "encrypted and masked by default" rule rests on, so they are
+asserted as invariants rather than examples: the ciphertext is never the plaintext, a mask never
+contains the whole secret, a value survives a key rotation, and a tampered envelope refuses
+rather than returning something plausible.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from platform_core.config import ServiceSettings
+from platform_core.pii import PII_KINDS, PiiError, mask, open_sealed, seal
+
+
+def _settings(
+    *, key: str = "unit-test-pii-key", decrypt: list[str] | None = None
+) -> ServiceSettings:
+    """Settings with the PII keys set and no `.env` read, so a developer's real keys and a CI
+    run cannot change what these assert."""
+    return ServiceSettings(
+        _env_file=None,
+        service_name="probe",
+        db_schema="public",
+        pii_encryption_key=key,
+        pii_decrypt_keys=decrypt or [],
+    )
+
+
+# Representative plaintext per kind — real-shaped so the maskers exercise their real branches.
+_SAMPLES = {
+    "email": "jane.doe@example.com",
+    "phone": "9876543210",
+    "pan": "ABCDE1234F",  # pragma: allowlist secret
+    "aadhaar": "123412341234",
+    "uan": "100200300400",
+    "esi": "3100000000000000",
+    "bank_account": "000123456789",
+    "bank_ifsc": "HDFC0001234",
+    "dob": "1990-05-15",
+    "generic": "some-reference-value",
+}
+
+
+class TestRoundtrip:
+    @pytest.mark.parametrize("kind", sorted(PII_KINDS))
+    def test_a_sealed_value_opens_back_to_itself(self, kind: str) -> None:
+        settings = _settings()
+        plaintext = _SAMPLES[kind]
+        ciphertext, _ = seal(plaintext, kind=kind, settings=settings)
+        assert open_sealed(ciphertext, settings=settings) == plaintext
+
+    def test_the_ciphertext_is_not_the_plaintext(self) -> None:
+        settings = _settings()
+        ciphertext, _ = seal("000123456789", kind="bank_account", settings=settings)
+        assert b"000123456789" not in ciphertext
+
+    def test_sealing_twice_differs_because_the_nonce_is_fresh(self) -> None:
+        """No equality oracle: the same value sealed twice must not produce the same bytes, or a
+        reader could tell two rows hold the same secret without ever decrypting either."""
+        settings = _settings()
+        first, _ = seal("123412341234", kind="aadhaar", settings=settings)
+        second, _ = seal("123412341234", kind="aadhaar", settings=settings)
+        assert first != second
+        assert open_sealed(first, settings=settings) == open_sealed(second, settings=settings)
+
+
+class TestMasking:
+    @pytest.mark.parametrize("kind", sorted(PII_KINDS - {"bank_ifsc"}))
+    def test_a_mask_never_contains_the_whole_secret(self, kind: str) -> None:
+        """The point of the mask: recognisable, never disclosing. IFSC is exempt because it is a
+        public branch code shown whole by design."""
+        plaintext = _SAMPLES[kind]
+        _, masked = seal(plaintext, kind=kind, settings=_settings())
+        assert plaintext not in masked
+
+    def test_the_email_mask_keeps_only_the_initials(self) -> None:
+        assert mask("jane.doe@example.com", kind="email") == "j•••@e•••"
+
+    def test_the_phone_mask_is_the_last_four(self) -> None:
+        assert mask("9876543210", kind="phone") == "•••••• 3210"
+
+    def test_the_aadhaar_mask_is_grouped_last_four(self) -> None:
+        assert mask("123412341234", kind="aadhaar") == "•••• •••• 1234"
+
+    def test_the_dob_mask_is_the_year_only(self) -> None:
+        assert mask("1990-05-15", kind="dob") == "••/••/1990"
+
+    def test_an_ifsc_is_shown_whole_because_it_is_not_secret(self) -> None:
+        assert mask("HDFC0001234", kind="bank_ifsc") == "HDFC0001234"
+
+    def test_an_unknown_kind_falls_back_to_generic_without_raising(self) -> None:
+        assert mask("abcd", kind="not-a-real-kind") == "••cd"
+
+    def test_a_short_input_masks_without_raising(self) -> None:
+        """A one-character value must not index past its end — it masks to itself, revealing
+        nothing more than there is."""
+        assert mask("x", kind="bank_account") == "x"
+
+    def test_an_empty_value_masks_to_empty(self) -> None:
+        assert mask("", kind="pan") == ""
+
+
+class TestRotation:
+    def test_a_value_sealed_under_the_old_key_opens_after_rotation(self) -> None:
+        """Rotation is operational, not a migration: seal under K1, then make K2 current and move
+        K1 to the decrypt list. The old row still opens; new rows seal under K2."""
+        old = _settings(key="key-one")
+        ciphertext, _ = seal("000123456789", kind="bank_account", settings=old)
+
+        rotated = _settings(key="key-two", decrypt=["key-one"])
+        assert open_sealed(ciphertext, settings=rotated) == "000123456789"
+
+        fresh, _ = seal("999888777666", kind="bank_account", settings=rotated)
+        assert open_sealed(fresh, settings=rotated) == "999888777666"
+
+    def test_a_value_whose_key_is_gone_cannot_be_opened(self) -> None:
+        """Retire a key entirely and the values sealed under it stop opening — the point of
+        retiring it, and proof `open_sealed` is not silently succeeding on the wrong key."""
+        old = _settings(key="key-one")
+        ciphertext, _ = seal("secret-value", kind="generic", settings=old)
+        with pytest.raises(PiiError):
+            open_sealed(ciphertext, settings=_settings(key="key-two"))
+
+
+class TestTampering:
+    def test_a_flipped_byte_refuses_rather_than_returns(self) -> None:
+        settings = _settings()
+        ciphertext, _ = seal("000123456789", kind="bank_account", settings=settings)
+        tampered = bytearray(ciphertext)
+        tampered[-1] ^= 0x01  # flip one bit of the GCM tag
+        with pytest.raises(PiiError):
+            open_sealed(bytes(tampered), settings=settings)
+
+    def test_a_truncated_envelope_is_malformed(self) -> None:
+        with pytest.raises(PiiError):
+            open_sealed(b"\x01short", settings=_settings())
+
+    def test_an_unknown_version_byte_is_malformed(self) -> None:
+        settings = _settings()
+        ciphertext, _ = seal("000123456789", kind="bank_account", settings=settings)
+        wrong_version = bytes([0xFF]) + ciphertext[1:]
+        with pytest.raises(PiiError):
+            open_sealed(wrong_version, settings=settings)

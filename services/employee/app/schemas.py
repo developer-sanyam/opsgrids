@@ -3,10 +3,11 @@
 This module is the published API surface: a change here is a contract change, and the frontend
 generates its client from it.
 
-Note what is *absent*: no date of birth, no personal phone or email, no PAN/Aadhaar/UAN/ESI,
-no bank details, no documents. Those are sensitive PII and there is no envelope helper in
-platform-core yet, so this slice does not accept or return any of them — they land with the
-envelope in slice 2 (see the models docstring and the backlog).
+Sensitive PII (date of birth, personal contact, PAN/Aadhaar/UAN/ESI, bank details) is accepted
+as **plaintext on the way in** and returned only as a **mask on the way out** — never the
+plaintext, never the ciphertext. The one exception is `bank_ifsc`, a public bank branch code
+that is not a secret and is shown whole. The unmasked plaintext comes back from exactly one
+place, `EmployeePiiUnmasked`, served by the stepped-up, audited unmask endpoint.
 """
 
 from __future__ import annotations
@@ -16,6 +17,20 @@ from datetime import date, datetime
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+#: The sensitive fields a caller may ask the unmask endpoint to reveal. `bank_ifsc` is absent on
+#: purpose: it is non-sensitive and already returned whole in the masked view, so there is
+#: nothing to unmask.
+SensitiveField = Literal[
+    "date_of_birth",
+    "personal_email",
+    "personal_phone",
+    "pan",
+    "aadhaar",
+    "uan",
+    "esi",
+    "bank_account",
+]
 
 EmployeeNo = Annotated[str, Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")]
 EmploymentType = Literal["full_time", "part_time", "contract", "intern"]
@@ -29,6 +44,26 @@ TransitionTarget = Literal["active", "on_notice", "exited"]
 class ServiceInfo(BaseModel):
     service: str
     schema_name: str
+
+
+class EmployeePiiIn(BaseModel):
+    """Sensitive PII supplied as **plaintext**. Every field optional: on create it is what is
+    known; on patch, present means "seal this new value", absent means "leave it alone".
+
+    The service seals each provided value before it touches the database — the plaintext lives
+    only for the length of that call and is never stored, logged, audited or put in an event.
+    """
+
+    date_of_birth: date | None = None
+    personal_email: str | None = Field(default=None, max_length=254)
+    personal_phone: str | None = Field(default=None, max_length=20)
+    pan: str | None = Field(default=None, max_length=10)
+    aadhaar: str | None = Field(default=None, max_length=12)
+    uan: str | None = Field(default=None, max_length=12)
+    esi: str | None = Field(default=None, max_length=17)
+    bank_account: str | None = Field(default=None, max_length=18)
+    #: A public branch code, stored and returned whole — not sensitive.
+    bank_ifsc: str | None = Field(default=None, max_length=11)
 
 
 class EmployeeIn(BaseModel):
@@ -49,6 +84,8 @@ class EmployeeIn(BaseModel):
     date_of_joining: date | None = None
     reporting_manager_id: uuid.UUID | None = None
     membership_id: uuid.UUID | None = None
+    #: Optional sensitive PII, sealed on write. Absent means the person has no PII row yet.
+    pii: EmployeePiiIn | None = None
 
 
 class EmployeePatch(BaseModel):
@@ -64,11 +101,34 @@ class EmployeePatch(BaseModel):
     work_mode: WorkMode | None = None
     date_of_joining: date | None = None
     reporting_manager_id: uuid.UUID | None = None
+    #: Present to seal new sensitive values; only the fields set on it are touched.
+    pii: EmployeePiiIn | None = None
 
 
 class TransitionIn(BaseModel):
     to: TransitionTarget
     reason: str | None = Field(default=None, max_length=500)
+
+
+class EmployeePiiMasked(BaseModel):
+    """The safe projection of an employee's PII: masks only, plus the whole IFSC.
+
+    This is the default read shape. Every value here is either a non-sensitive hint
+    (`•••• •••• 3210`) or a field classified non-sensitive (`bank_ifsc`). It is built from the
+    stored `_masked` columns, so producing it never decrypts anything.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    date_of_birth: str | None = None
+    personal_email: str | None = None
+    personal_phone: str | None = None
+    pan: str | None = None
+    aadhaar: str | None = None
+    uan: str | None = None
+    esi: str | None = None
+    bank_account: str | None = None
+    bank_ifsc: str | None = None
 
 
 class EmployeeOut(BaseModel):
@@ -89,3 +149,27 @@ class EmployeeOut(BaseModel):
     status: str
     date_of_exit: date | None
     created_at: datetime
+    #: Masked PII, when the caller loaded it. Never plaintext, never ciphertext. Null where the
+    #: employee has no PII row, and on the list projection which does not join it.
+    pii: EmployeePiiMasked | None = None
+
+
+class PiiUnmaskIn(BaseModel):
+    """Which sensitive fields to reveal. Naming them explicitly keeps an unmask a deliberate,
+    minimal act — and the audit row records exactly this list."""
+
+    fields: list[SensitiveField] = Field(min_length=1)
+
+
+class EmployeePiiUnmasked(BaseModel):
+    """The **only** response that carries plaintext PII, served by the stepped-up, audited
+    unmask endpoint. Every field is optional: only the ones asked for (and present) come back."""
+
+    date_of_birth: date | None = None
+    personal_email: str | None = None
+    personal_phone: str | None = None
+    pan: str | None = None
+    aadhaar: str | None = None
+    uan: str | None = None
+    esi: str | None = None
+    bank_account: str | None = None

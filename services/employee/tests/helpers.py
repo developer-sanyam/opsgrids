@@ -55,11 +55,14 @@ def principal_for(
     *,
     entitlements: list[str] | None = None,
     locations: list[str] | None = None,
+    amr: list[str] | None = None,
 ) -> Principal:
     """The principal the gateway would have forwarded for this employee.
 
     `subject_ref` is the employee's own id — the HRMS product's subject reference — which is
-    what OWN and TEAM scope resolve against.
+    what OWN and TEAM scope resolve against. `amr` carries the authentication methods used, which
+    is what a stepped-up route (`require(..., amr={"otp"})`) checks — an empty `amr` is a caller
+    who authenticated but did not step up.
     """
     return Principal(
         sub=uuid.uuid4(),
@@ -69,6 +72,7 @@ def principal_for(
         perms=perms,
         entitlements=entitlements if entitlements is not None else ["hrms"],
         locations=locations or [],
+        amr=amr or [],
     )
 
 

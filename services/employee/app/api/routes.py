@@ -20,16 +20,18 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import scope, selectors, services
 from app.config import settings
-from app.models import SCHEMA
+from app.models import SCHEMA, Employee
 from app.schemas import (
     EmployeeIn,
     EmployeeOut,
     EmployeePatch,
+    EmployeePiiUnmasked,
+    PiiUnmaskIn,
     ServiceInfo,
     TransitionIn,
 )
@@ -59,6 +61,27 @@ EmployeeRead = Annotated[ScopeContext, Depends(require("hrms.people.employee.rea
 EmployeeWrite = Annotated[
     ScopeContext, Depends(require("hrms.people.employee.write", minimum=Scope.ORG))
 ]
+#: Unmasking is dangerous: it needs its own permission **and** a recent second factor. `amr` is
+#: the platform's step-up mechanism — the guard refuses a token whose `amr` does not include
+#: `otp`, even when the permission is held. No scope floor: OWN is legitimate (a person unmasking
+#: their own record), and the object-level `assert_can_touch` enforces the rest.
+EmployeeUnmask = Annotated[
+    ScopeContext,
+    Depends(require("hrms.people.employee.read_sensitive", amr={"otp"})),
+]
+
+
+async def _detail(session: AsyncSession, ctx: ScopeContext, employee: Employee) -> EmployeeOut:
+    """An employee with its masked PII attached — the default, non-decrypting detail shape.
+
+    The mask is read straight off the stored `_masked` columns, so building this never opens a
+    sealed value. Employees with no PII row come back with `pii=None`.
+    """
+    out = EmployeeOut.model_validate(employee)
+    pii_row = await selectors.get_employee_pii(session, ctx.organization_id, employee.id)
+    if pii_row is not None:
+        out.pii = services.masked_pii(pii_row)
+    return out
 
 
 @router.get("/employees/info", response_model=ServiceInfo, summary="What this service is")
@@ -94,10 +117,10 @@ async def list_employees(
     dependencies=[Entitled],
 )
 async def create_employee(
-    payload: EmployeeIn, session: SessionDep, ctx: EmployeeWrite
+    payload: EmployeeIn, session: SessionDep, ctx: EmployeeWrite, request: Request
 ) -> EmployeeOut:
-    employee = await services.create_employee(session, ctx, payload)
-    return EmployeeOut.model_validate(employee)
+    employee = await services.create_employee(session, ctx, payload, request=request)
+    return await _detail(session, ctx, employee)
 
 
 @router.get(
@@ -119,7 +142,8 @@ async def read_employee(
         team_owner_id=employee.reporting_manager_id,
         location_code=employee.location_code,
     )
-    return EmployeeOut.model_validate(employee)
+    # The masked PII travels with the detail view by default — masks only, never plaintext.
+    return await _detail(session, ctx, employee)
 
 
 @router.patch(
@@ -133,12 +157,13 @@ async def update_employee(
     payload: EmployeePatch,
     session: SessionDep,
     ctx: EmployeeWrite,
+    request: Request,
 ) -> EmployeeOut:
     employee = await selectors.get_employee(session, ctx.organization_id, employee_id)
     if employee is None:
         raise NotFoundProblem("That employee is not part of this organization")
-    updated = await services.update_employee(session, ctx, employee, payload)
-    return EmployeeOut.model_validate(updated)
+    updated = await services.update_employee(session, ctx, employee, payload, request=request)
+    return await _detail(session, ctx, updated)
 
 
 @router.post(
@@ -160,6 +185,38 @@ async def transition_employee(
         session, ctx, employee, payload.to, reason=payload.reason
     )
     return EmployeeOut.model_validate(updated)
+
+
+@router.post(
+    "/employees/{employee_id}/pii/unmask",
+    response_model=EmployeePiiUnmasked,
+    summary="Reveal an employee's sensitive PII",
+    dependencies=[Entitled],
+)
+async def unmask_pii(
+    employee_id: uuid.UUID,
+    payload: PiiUnmaskIn,
+    session: SessionDep,
+    ctx: EmployeeUnmask,
+    request: Request,
+) -> EmployeePiiUnmasked:
+    """The single decrypting endpoint. Guarded by the dangerous `read_sensitive` permission and a
+    second-factor step-up (`amr={"otp"}`), then re-scoped to this one employee. The service opens
+    the requested fields and writes the `entity.sensitive_read` audit row in the same
+    transaction, so a revealed value never exists without a record that it was revealed."""
+    employee = await selectors.get_employee(session, ctx.organization_id, employee_id)
+    if employee is None:
+        raise NotFoundProblem("That employee is not part of this organization")
+    # Object-level scope: OWN reaches only the caller's own record, TEAM/LOCATION only theirs,
+    # ORG anyone in-org. Filtering a list and forgetting the detail is the named vulnerability.
+    ctx.assert_can_touch(
+        owner_id=employee.id,
+        team_owner_id=employee.reporting_manager_id,
+        location_code=employee.location_code,
+    )
+    return await services.unmask_employee_pii(
+        session, ctx, employee, payload.fields, request=request
+    )
 
 
 @router.get(

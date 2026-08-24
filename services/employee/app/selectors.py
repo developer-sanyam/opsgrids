@@ -22,7 +22,7 @@ from typing import Any
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Employee
+from app.models import Employee, EmployeePii
 from platform_core.auth import ScopeContext
 
 
@@ -75,6 +75,23 @@ async def get_employee(
         Employee.id == employee_id,
         Employee.organization_id == org_id,
         Employee.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_employee_pii(
+    session: AsyncSession, org_id: uuid.UUID, employee_id: uuid.UUID
+) -> EmployeePii | None:
+    """The sealed PII row for one employee, or None when it has none.
+
+    Org-scoped like every read here: the explicit `organization_id` filter sits beside row-level
+    security, not in place of it. Returns the row with its sealed columns intact — this selector
+    reads, it never decrypts; opening a value is `services.unmask_employee_pii`, and only there.
+    """
+    stmt = select(EmployeePii).where(
+        EmployeePii.employee_id == employee_id,
+        EmployeePii.organization_id == org_id,
+        EmployeePii.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 

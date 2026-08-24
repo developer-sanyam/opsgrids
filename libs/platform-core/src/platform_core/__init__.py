@@ -42,8 +42,18 @@ from platform_core.logging import get_logger
 from platform_core.models import Base, TenantBase, utcnow
 from platform_core.money import Money, total
 from platform_core.pagination import Page, PageParams, PageQuery, paginate
+from platform_core.pii import (
+    NON_SENSITIVE_KINDS,
+    PII_KINDS,
+    PiiError,
+    mask,
+    open_sealed,
+    seal,
+)
 
 __all__ = [
+    "NON_SENSITIVE_KINDS",
+    "PII_KINDS",
     "Base",
     "BusinessRuleProblem",
     "ConflictProblem",
@@ -55,6 +65,7 @@ __all__ = [
     "PageParams",
     "PageQuery",
     "PaymentRequiredProblem",
+    "PiiError",
     "Principal",
     "ProblemError",
     "RateLimitedProblem",
@@ -74,10 +85,13 @@ __all__ = [
     "get_settings",
     "get_tenant_session",
     "init_engine",
+    "mask",
+    "open_sealed",
     "paginate",
     "require",
     "require_product",
     "require_service_token",
+    "seal",
     "session_scope",
     "set_tenant",
     "settings_for",

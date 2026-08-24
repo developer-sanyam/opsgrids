@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from sqlalchemy import Date, Index, String, UniqueConstraint, text
+from sqlalchemy import Date, ForeignKey, Index, LargeBinary, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -110,6 +110,75 @@ class Employee(Base, TenantBase):
             unique=True,
             postgresql_where=text("membership_id IS NOT NULL"),
         ),
+    )
+
+
+class EmployeePii(Base, TenantBase):
+    """The sensitive PII for one employee — kept in its own 1:1 table, sealed at rest.
+
+    Separate from `employees` on purpose. The employment record is the hot, widely-read table:
+    every list, every scope check, every directory lookup reads it. Sensitive identifiers are
+    read rarely and only under a stepped-up `read_sensitive` permission. Splitting them keeps the
+    hot table lean and the sensitive data isolated — a plain `SELECT *` on `employees` cannot
+    even reach a sealed value, so the default read path has nothing to leak.
+
+    Each sensitive field is a **pair**: `<field>_enc` holds the AES-256-GCM envelope
+    (`platform_core.seal`) and `<field>_masked` holds the non-sensitive hint the ordinary read
+    path shows. Plaintext is never a column here — it exists only transiently inside `seal` on
+    write and `open_sealed` on an audited unmask.
+
+    `bank_ifsc` is the one exception: an IFSC is a public bank branch code, not a secret (it is
+    printed on every cheque), so it is stored in plaintext as a single column and classified
+    non-sensitive (`platform_core.NON_SENSITIVE_KINDS`). Keeping it here rather than on
+    `employees` simply groups it with the bank details it belongs to.
+
+    The link to `employees` **is** a foreign key: it stays inside the `employee` schema, and only
+    cross-schema foreign keys are banned (ADR-0000 §10). `unique` makes the relationship 1:1 in
+    the database rather than by convention.
+    """
+
+    __tablename__ = "employee_pii"
+
+    #: The employee these details belong to. A real foreign key — same schema, so it is allowed —
+    #: and unique, so an employee has at most one PII row.
+    employee_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("employee.employees.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+
+    date_of_birth_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    date_of_birth_masked: Mapped[str | None] = mapped_column(String(40))
+
+    personal_email_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    personal_email_masked: Mapped[str | None] = mapped_column(String(120))
+
+    personal_phone_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    personal_phone_masked: Mapped[str | None] = mapped_column(String(40))
+
+    pan_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    pan_masked: Mapped[str | None] = mapped_column(String(40))
+
+    aadhaar_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    aadhaar_masked: Mapped[str | None] = mapped_column(String(40))
+
+    uan_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    uan_masked: Mapped[str | None] = mapped_column(String(40))
+
+    esi_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    esi_masked: Mapped[str | None] = mapped_column(String(40))
+
+    bank_account_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    bank_account_masked: Mapped[str | None] = mapped_column(String(40))
+
+    #: Non-sensitive: a public branch code, stored whole in plaintext (see the class docstring).
+    bank_ifsc: Mapped[str | None] = mapped_column(String(20))
+
+    __table_args__ = (
+        # Under row-level security the policy qual is ANDed into every query, so the lookup index
+        # leads with the tenant column like every other (ADR-0002).
+        Index("ix_employee_pii_org_employee", "organization_id", "employee_id"),
     )
 
 

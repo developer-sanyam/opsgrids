@@ -23,7 +23,17 @@ def test_every_permission_code_is_under_the_hrms_product() -> None:
     assert set(HRMS.codes()) == {
         "hrms.people.employee.read",
         "hrms.people.employee.write",
+        "hrms.people.employee.read_sensitive",
     }
+
+
+def test_unmasking_pii_is_a_dangerous_permission() -> None:
+    """`read_sensitive` must carry `is_dangerous`, which is what the route's step-up hangs on —
+    a masked read is routine, an unmask is not."""
+    by_code = {s.code(HRMS.product): s for s in HRMS.specs}
+    assert by_code["hrms.people.employee.read_sensitive"].is_dangerous is True
+    # And plain read stays routine, so the two never collapse into one grant.
+    assert by_code["hrms.people.employee.read"].is_dangerous is False
 
 
 def test_the_role_templates_grant_only_their_expected_scopes() -> None:
@@ -33,10 +43,16 @@ def test_the_role_templates_grant_only_their_expected_scopes() -> None:
     assert hr_admin == {
         ("hrms.people.employee.read", "ORG"),
         ("hrms.people.employee.write", "ORG"),
+        # An HR admin may unmask across the org — behind the second-factor step-up.
+        ("hrms.people.employee.read_sensitive", "ORG"),
     }
 
     employee = {(g.code, g.scope) for g in by_code["EMPLOYEE"].grants}
-    assert employee == {("hrms.people.employee.read", "OWN")}
+    assert employee == {
+        ("hrms.people.employee.read", "OWN"),
+        # A person may unmask their own details, and only their own — hence OWN.
+        ("hrms.people.employee.read_sensitive", "OWN"),
+    }
 
 
 def test_exactly_one_template_is_the_default() -> None:

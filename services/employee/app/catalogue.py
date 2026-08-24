@@ -118,6 +118,20 @@ HRMS = PermissionCatalogue(
             "OWN",
             "ORG",
         ),
+        # Unmasking sensitive PII is a distinct permission, never folded into `read`: the wildcard
+        # match keeps the dot, so `hrms.people.employee.read` can never satisfy
+        # `...read_sensitive`. `is_dangerous` makes it a stepped-up action — the route also
+        # demands a recent second factor (`amr={"otp"}`). It defaults to OWN so a person can see
+        # their own full details, and tops out at ORG for an HR administrator.
+        PermissionSpec(
+            "people",
+            "employee",
+            "read_sensitive",
+            "Unmask an employee's sensitive PII (bank, government identifiers, contact)",
+            "OWN",
+            "ORG",
+            is_dangerous=True,
+        ),
     ],
 )
 
@@ -135,6 +149,9 @@ HRMS_ROLE_TEMPLATES: list[RoleTemplate] = [
         grants=HRMS.pick(
             ("hrms.people.employee.read", "ORG"),
             ("hrms.people.employee.write", "ORG"),
+            # Administering people includes unmasking their details across the organization — but
+            # only ever behind the second-factor step-up the permission is marked dangerous for.
+            ("hrms.people.employee.read_sensitive", "ORG"),
         ),
     ),
     RoleTemplate(
@@ -145,6 +162,8 @@ HRMS_ROLE_TEMPLATES: list[RoleTemplate] = [
         is_default=True,
         grants=HRMS.pick(
             ("hrms.people.employee.read", "OWN"),
+            # A person may unmask their *own* full details — at OWN, so it reaches nobody else's.
+            ("hrms.people.employee.read_sensitive", "OWN"),
         ),
     ),
 ]
