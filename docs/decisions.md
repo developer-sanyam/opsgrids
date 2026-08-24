@@ -8,6 +8,8 @@ themselves are the authority — this page exists so you can find the right one 
 | [0000](adr/0000-phase-0-decisions.md) | Phase 0 — eleven irreversible decisions | Accepted |
 | [0001](adr/0001-frontend-topology.md) | One standalone app per surface | Accepted |
 | [0002](adr/0002-row-level-security.md) | Row-level security | **Accepted** 2026-08-22, not yet implemented |
+| [0003](adr/0003-surfaces-and-authorization-topology.md) | Surfaces and authorization topology | Accepted |
+| [0004](adr/0004-commercial-model.md) | Commercial model — plans, subscriptions, billing | **Accepted** 2026-08-24 (design), not yet implemented |
 
 ---
 
@@ -61,6 +63,36 @@ Four questions were left open at first and are now answered, two of them by expe
 nullable column that stood for platform role templates, split the database role per service now,
 leave `users` un-policied because Postgres applies a SELECT policy to `INSERT ... RETURNING`, and
 land the prerequisites as a slice containing no policies at all.
+
+## ADR-0003 — surfaces and authorization topology
+
+There are three viewers — operator (Atmora staff, cross-tenant), organization admin (their own
+org), employee (their own data) — and they are separated by **two different mechanisms**, which
+this ADR refuses to conflate. Operator-vs-customer is an **audience + gateway** boundary: the
+operator console is its own app on `admin-gateway` with a separate token `aud`, and staff routes
+answer **404, not 403**, so the surface will not confirm its own existence to a product token.
+Org-admin-vs-employee is **not a separate app** — it is the permission **scope**
+(`OWN/TEAM/LOCATION/ORG`) from the grammar, enforced server-side (RLS + `ScopeContext` + a
+negative-authz test per endpoint); the same product SPA renders an admin's whole org and an
+employee's own record from identical code. A UI gate hides a control; it does not protect data.
+Refines ADR-0001: one SPA per **product** (not per service), shared `atmora-ui`/`atmora-client`/
+`atmora-config`, an entitlement-driven shell (`atmora-dashboard`), and mobile as one more client
+on the mobile audience over the same APIs.
+
+## ADR-0004 — commercial model (accepted design, not implemented)
+
+Commerce is five services split by what each owns and how fast it changes: `catalog` (immutable
+plan versions, features, prices), `subscription` (the customer lifecycle state machine, where
+entitlement is decided), `metering` (append-only usage — emitted now with `is_billable=false` so
+it need not be backfilled later), `billing` (append-only invoices, proration, the credit ledger),
+and `payment` (**Razorpay first** — the more constrained provider). **Per-customer custom pricing
+is free**, because ADR-0000 §9 already gives it: a bespoke plan version pinned to one
+subscription prices one customer without re-pricing anyone else or breaking past invoices. Grants,
+discounts and comp-access-with-expiry are **append-only credit-ledger entries** — balance is
+`SUM`, "who is on comp and when it lapses" is a query, and money is integer minor units with no
+floats. A trial is a subscription **state**, conversion is a transition, and every transition is
+an event the operator console reads for revenue, churn and usage. Commerce invents no new
+enforcement point: it drives the existing `product.activations` row → `ent` claim → gateway 402.
 
 ---
 
