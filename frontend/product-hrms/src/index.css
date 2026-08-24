@@ -1,0 +1,106 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ *
+ * Atmora HR — the "PlanIQ" design language, reskinned for HR.
+ * Manrope, mint accent used sparingly, big radii, pill everything,
+ * white cards on a faintly-green cool-grey ground, one dark card.
+ * ------------------------------------------------------------------ */
+@theme {
+  --font-sans:
+    "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+
+  /* Accent — the single mint, spent only on the most important thing on a screen. */
+  --color-mint: #75fc96;
+  --color-mint-strong: #4fe27a;
+  --color-mint-soft: #e4fdeb;
+  --color-mint-ink: #0d3b1c;
+
+  /* Neutrals. The ground carries a faint green bias, not a blue-grey one. */
+  --color-ground: #eef1ec;
+  --color-surface: #ffffff;
+  --color-ink: #0a0a0a;
+  --color-ink-soft: #33383a;
+  /* AA-compliant secondary text (#ADADAD from the guide is decorative only, --color-faint). */
+  --color-muted: #5f6862;
+  --color-faint: #adadad;
+  --color-line: #e7eae4;
+
+  /* Semantic — separate from the accent, never decoration. */
+  --color-present: #1f9d55;
+  --color-present-soft: #e4fdeb;
+  --color-late: #a9711a;
+  --color-late-soft: #fbf0dc;
+  --color-danger: #d13817;
+  --color-danger-soft: #fbe4de;
+
+  --radius-card: 20px;
+  --radius-tile: 16px;
+
+  --shadow-card: 0 1px 2px rgba(15, 23, 20, 0.04), 0 10px 30px -12px rgba(15, 23, 20, 0.12);
+  --shadow-float: 0 1px 2px rgba(15, 23, 20, 0.05), 0 18px 40px -16px rgba(15, 23, 20, 0.18);
+}
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background-color: var(--color-ground);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-synthesis-weight: none;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Digits that line up in columns — most of this app — get tabular figures. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Headings track tight, PlanIQ-style. */
+.display {
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+/* A consistent, visible focus ring for keyboard users on every interactive surface. */
+:where(a, button, input, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* One page-load orchestration: a soft staggered rise, honoured only when motion is welcome. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.rise {
+  animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rise {
+    animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+}
