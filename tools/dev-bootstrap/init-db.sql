@@ -31,6 +31,9 @@ CREATE EXTENSION IF NOT EXISTS citext;       -- email is case-insensitive and gl
 -- — so one service's connection cannot read another's schema. `atmora_catalog` owns the
 -- commerce definitional layer: its plan/price tables are global and un-policied, but its
 -- `audit_logs`/`outbox` carry a tenant policy, so it too must be a role RLS can bind.
+-- `atmora_billing` owns the financial record — invoices, invoice lines and the append-only
+-- credit ledger, all tenant-policied — so it is NOBYPASSRLS too; its append-only and
+-- finalize-freeze guarantees are enforced below the role, with table privileges and a trigger.
 -- `atmora_metering` owns the append-only usage sink: its `usage_events` additionally has
 -- UPDATE/DELETE revoked from it in a service migration, so append-only holds at the database.
 --
@@ -87,7 +90,7 @@ BEGIN
     'atmora_document', 'atmora_notification', 'atmora_scheduler',
     'atmora_eventbridge', 'atmora_config',
     -- Commerce
-    'atmora_catalog', 'atmora_metering'
+    'atmora_catalog', 'atmora_billing', 'atmora_metering'
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L NOBYPASSRLS', r, 'atmora');
@@ -107,7 +110,7 @@ GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
      atmora_customer, atmora_deal, atmora_marketing, atmora_support,
      atmora_lead, atmora_pipeline, atmora_activity,
      atmora_document, atmora_notification, atmora_scheduler,
-     atmora_eventbridge, atmora_config, atmora_catalog, atmora_metering;
+     atmora_eventbridge, atmora_config, atmora_catalog, atmora_billing, atmora_metering;
 
 -- The directory reader (ADR-0002, "the cross-tenant reader").
 --
