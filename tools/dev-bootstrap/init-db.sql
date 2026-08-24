@@ -90,7 +90,7 @@ BEGIN
     'atmora_document', 'atmora_notification', 'atmora_scheduler',
     'atmora_eventbridge', 'atmora_config',
     -- Commerce
-    'atmora_catalog', 'atmora_billing', 'atmora_metering'
+    'atmora_catalog', 'atmora_billing', 'atmora_metering', 'atmora_subscription'
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L NOBYPASSRLS', r, 'atmora');
@@ -110,7 +110,7 @@ GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
      atmora_customer, atmora_deal, atmora_marketing, atmora_support,
      atmora_lead, atmora_pipeline, atmora_activity,
      atmora_document, atmora_notification, atmora_scheduler,
-     atmora_eventbridge, atmora_config, atmora_catalog, atmora_billing, atmora_metering;
+     atmora_eventbridge, atmora_config, atmora_catalog, atmora_billing, atmora_metering, atmora_subscription;
 
 -- The directory reader (ADR-0002, "the cross-tenant reader").
 --

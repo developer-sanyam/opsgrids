@@ -7,6 +7,7 @@ one of its own.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -22,6 +23,78 @@ from platform_core.events import publish_event
 
 EVT_ACTIVATED = "core.product.activated"
 EVT_DEACTIVATED = "core.product.deactivated"
+
+#: The subscription states that keep an activation entitling, and the ones that switch it off.
+#: The activation's own vocabulary is narrower than the subscription's (`trial | active |
+#: suspended`), so several lifecycle states fold onto `active`, and both terminal states fold
+#: onto `suspended` + `deactivated_at` — `Activation.entitles` then evaluates trial expiry at
+#: read time exactly as it does for a hand-activated trial (ADR-0004 §5).
+_PROJECTION_TRIAL = "trial"
+_PROJECTION_DE_ENTITLING = ("suspended", "cancelled")
+
+
+async def project_subscription(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    product_key: str,
+    state: str,
+    trial_ends_at: datetime | None,
+) -> Activation:
+    """Upsert the activation from a subscription lifecycle state — the entitlement projection.
+
+    Called by the event consumer, once per `commerce.subscription.*` message, inside a
+    `session_scope(organization_id=...)` so the tenant GUC is set and this NOBYPASSRLS write
+    passes the forced policy on `activations`. Reuses the write shape of `activate`/`deactivate`:
+    one row per `(organization_id, product_key)`, the row kept and updated rather than duplicated.
+
+    The mapping is deliberately driven off the subscription's `state`, not the event name, so a
+    renew, an upgrade and a downgrade — all of which leave the subscription `active` — all keep
+    the activation entitling without the projection needing to know the difference.
+
+    No product outbox event is emitted here: this is a projection *of* the lifecycle, not a new
+    fact about it, and re-emitting would risk a loop. An audit row is written so the switch has a
+    trail. De-entitlement is **eventual** — see the consumer for why the permission-version is
+    left untouched.
+    """
+    if state in _PROJECTION_DE_ENTITLING:
+        new_status, deactivated, trial_ends = "suspended", datetime.now(UTC), None
+    elif state == _PROJECTION_TRIAL:
+        new_status, deactivated, trial_ends = "trial", None, trial_ends_at
+    else:
+        # active, past_due, and the renew/upgrade/downgrade moves that stay active.
+        new_status, deactivated, trial_ends = "active", None, None
+
+    activation = await selectors.get_activation(session, organization_id, product_key)
+    before = {"status": activation.status} if activation else None
+    if activation is None:
+        activation = Activation(
+            organization_id=organization_id,
+            product_key=product_key,
+            status=new_status,
+            trial_ends_at=trial_ends,
+            deactivated_at=deactivated,
+        )
+        session.add(activation)
+    else:
+        activation.status = new_status
+        activation.trial_ends_at = trial_ends
+        activation.deactivated_at = deactivated
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        acting_as="subscription-projection",
+        action="product.projected",
+        entity="activation",
+        entity_id=activation.id,
+        before=before,
+        after={"status": activation.status, "product_key": product_key, "from_state": state},
+    )
+    return activation
 
 
 def _actor(ctx: ScopeContext) -> dict[str, Any]:

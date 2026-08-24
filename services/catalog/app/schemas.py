@@ -73,6 +73,45 @@ class PlanOut(BaseModel):
     versions: list[PlanVersionOut] = Field(default_factory=list)
 
 
+# --------------------------------------------------------------------- internal read (pin lookup)
+
+
+class InternalPriceOut(BaseModel):
+    """A price as the internal pin-lookup returns it — includes the id, which the customer read
+    omits, because a subscription references the price by that id."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    kind: str
+    amount_minor: int | None = None
+    currency: str
+    unit: str | None = None
+    unit_price_micros: int | None = None
+    meter_key: str | None = None
+
+
+class InternalPlanVersionOut(BaseModel):
+    """One plan version for a sibling service pinning it (subscription).
+
+    Returned **unfiltered** — including `restricted_to_org_id` and whatever state it is in — so the
+    caller applies the published-and-visible rule itself. The customer bespoke filter deliberately
+    does not run here; this is a service-token read behind the internal API, not a customer browse.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    plan_id: uuid.UUID
+    product_key: str | None = None
+    version_no: int
+    state: str
+    billing_interval: str
+    currency: str
+    restricted_to_org_id: uuid.UUID | None = None
+    prices: list[InternalPriceOut] = Field(default_factory=list)
+
+
 # --------------------------------------------------------------------- operator input
 
 
