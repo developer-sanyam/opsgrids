@@ -57,6 +57,11 @@
     { "prefix": "/api/v1/usage", "upstream": "http://localhost:8162" },
 
     { "prefix": "/api/v1/plans", "upstream": "http://localhost:8164" },
-    { "prefix": "/api/v1/catalog", "upstream": "http://localhost:8164" }
+    { "prefix": "/api/v1/catalog", "upstream": "http://localhost:8164" },
+
+    { "prefix": "/api/v1/projects-workspace", "upstream": "http://localhost:8170", "product": "projects" },
+    { "prefix": "/api/v1/finance", "upstream": "http://localhost:8171", "product": "finance" },
+    { "prefix": "/api/v1/operations", "upstream": "http://localhost:8172", "product": "operations" },
+    { "prefix": "/api/v1/itsm", "upstream": "http://localhost:8173", "product": "itsm" }
   ]
 }
