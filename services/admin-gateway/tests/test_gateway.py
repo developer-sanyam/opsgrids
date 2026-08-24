@@ -149,11 +149,17 @@ class TestPublicPaths:
         )
         assert response.status_code == 200
 
-    async def test_the_public_surface_is_only_authentication(self) -> None:
-        """Anything else public here would be a cross-customer endpoint with no token."""
+    async def test_the_public_surface_is_only_authentication_and_signed_webhooks(self) -> None:
+        """Public here is authentication — plus provider webhooks, which authenticate by signature.
+
+        A provider callback carries no platform token, so it cannot go through the bearer path; it
+        is authenticated instead by the HMAC signature payment-service verifies (ADR-0004 §6). That
+        is the one deliberate non-auth exception, and it is a partner *webhook*, never a
+        cross-customer read — so it is enumerated here rather than left open-ended."""
         from app.main import policy
 
-        non_auth = {p for p in policy.public_paths if not p.startswith(("/api/v1/auth", "/health"))}
+        allowed_prefixes = ("/api/v1/auth", "/health", "/api/v1/webhooks/")
+        non_auth = {p for p in policy.public_paths if not p.startswith(allowed_prefixes)}
         assert non_auth == set(), f"unexpected public operator paths: {non_auth}"
 
     async def test_no_staff_route_is_public(self) -> None:

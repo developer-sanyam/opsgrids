@@ -36,6 +36,9 @@ CREATE EXTENSION IF NOT EXISTS citext;       -- email is case-insensitive and gl
 -- finalize-freeze guarantees are enforced below the role, with table privileges and a trigger.
 -- `atmora_metering` owns the append-only usage sink: its `usage_events` additionally has
 -- UPDATE/DELETE revoked from it in a service migration, so append-only holds at the database.
+-- `atmora_payment` owns the provider-facing edge — mandates, charges, and the append-only
+-- `refunds` and `provider_events` (webhook inbox); it is NOBYPASSRLS too, and append-only there
+-- is enforced below the role by a trigger that survives the post-migration grant re-apply.
 -- `atmora_console` owns the operator read model: its `revenue_events` projection is likewise
 -- append-only (UPDATE/DELETE revoked in a service migration), and it carries a second BYPASSRLS
 -- reader, `atmora_console_directory`, for the cross-tenant operator read API (below).
@@ -93,7 +96,7 @@ BEGIN
     'atmora_document', 'atmora_notification', 'atmora_scheduler',
     'atmora_eventbridge', 'atmora_config',
     -- Commerce
-    'atmora_catalog', 'atmora_billing', 'atmora_metering', 'atmora_subscription', 'atmora_console'
+    'atmora_catalog', 'atmora_billing', 'atmora_metering', 'atmora_subscription', 'atmora_console', 'atmora_payment'
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L NOBYPASSRLS', r, 'atmora');
@@ -113,7 +116,8 @@ GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
      atmora_customer, atmora_deal, atmora_marketing, atmora_support,
      atmora_lead, atmora_pipeline, atmora_activity,
      atmora_document, atmora_notification, atmora_scheduler,
-     atmora_eventbridge, atmora_config, atmora_catalog, atmora_billing, atmora_metering, atmora_subscription, atmora_console;
+     atmora_eventbridge, atmora_config, atmora_catalog, atmora_billing, atmora_metering, atmora_subscription,
+     atmora_console, atmora_payment;
 
 -- The directory reader (ADR-0002, "the cross-tenant reader").
 --

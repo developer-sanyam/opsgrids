@@ -370,6 +370,48 @@ async def suspend(
     return subscription
 
 
+async def suspend_on_payment_failure(
+    session: AsyncSession,
+    subscription: Subscription,
+    *,
+    request: Request | None = None,
+) -> Subscription:
+    """Suspend a subscription because a payment failed — the pivot of the entitlement loop.
+
+    This is the subscription-service half of ADR-0004 §5: payment-service emits
+    `commerce.payment.failed`; the consumer here turns that into a `suspended` transition, which
+    emits `commerce.subscription.suspended`, which product-service already projects to a
+    de-entitled `Activation`, which the gateway already turns into a 402. Each step happens in the
+    service that owns it; this function owns exactly one — moving the state and emitting the event.
+
+    **No-dunning MVP.** A failed payment suspends *immediately*. Whether a failure should instead
+    open a grace window or trigger a retry schedule before suspending is a dunning policy ADR-0004
+    explicitly leaves Open — the `suspended` state exists, the *policy* for entering it does not, so
+    the simplest correct default is taken here and flagged for a later ADR.
+
+    Idempotent by construction: a subscription already `suspended` or `cancelled` is left exactly as
+    it is (the state machine forbids those edges anyway), so a redelivered failure — or two distinct
+    failed charges for the same subscription — never raises and never double-emits.
+    """
+    if subscription.state in (STATE_SUSPENDED, STATE_CANCELLED):
+        return subscription
+
+    decision = domain.decide(
+        from_state=subscription.state, to_state=STATE_SUSPENDED, reason="payment_failed"
+    )
+    _transition(
+        session,
+        subscription,
+        decision,
+        actor={"type": "service", "id": "payment"},
+        request=request,
+        from_plan_version_id=subscription.plan_version_id,
+        to_plan_version_id=subscription.plan_version_id,
+    )
+    await session.flush()
+    return subscription
+
+
 async def require_subscription(session: AsyncSession, subscription_id: uuid.UUID) -> Subscription:
     from app import selectors
 

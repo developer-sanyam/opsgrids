@@ -50,6 +50,12 @@ policy = GatewayPolicy(
             "/api/v1/auth/operator/login",
             "/api/v1/auth/operator/refresh",
             "/api/v1/auth/operator/logout",
+            # The Razorpay payment webhook. Public because a provider carries no platform token —
+            # it authenticates with the HMAC **signature** on its body, which payment-service
+            # verifies against the shared webhook secret before recording or acting on anything
+            # (ADR-0004 §6). It is deliberately NOT `staff_only`: a partner callback is not a
+            # staff action. The gateway forwards the raw body and the signature header untouched.
+            "/api/v1/webhooks/razorpay",
         }
     ),
     rate_limit=cfg.rate_limit_per_minute,
