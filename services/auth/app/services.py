@@ -51,6 +51,7 @@ from app.models import (
     PasswordResetToken,
     RefreshToken,
     Session,
+    StaffAccount,
 )
 from platform_core.audit import record_audit
 from platform_core.errors import (
@@ -900,3 +901,239 @@ async def _accept_second_factor(session: AsyncSession, user_id: uuid.UUID, code:
             recovery.used_at = datetime.now(UTC)
             return True
     return False
+
+
+# --------------------------------------------------------------------- operator staff
+#
+# A wholly separate identity from everything above. The tenant flows authenticate a
+# `DirectoryUser` from account-service and mint a token for one of that person's
+# organizations. Operators are Atmora staff (ADR-0003 §2): they live in this service's own
+# `staff_accounts` table, belong to no organization, and are minted a token on the
+# `operator` audience carrying `stf=true`. The two never cross — a tenant email is not in
+# `staff_accounts`, and a staff account is not in the directory.
+
+EVT_OPERATOR_SIGNED_IN = "core.operator.signed_in"
+
+#: The audience the operator gateway accepts. A product/app token names its product here and
+#: is rejected at that gateway's signature-and-audience check before any route is consulted.
+OPERATOR_AUDIENCE = "operator"
+
+#: Operators belong to no organization. The gateway structurally requires a non-empty
+#: `act_org` on every access token (it is how a tenant token names its tenant), so an
+#: operator token carries the platform sentinel org — the same `uuid.UUID(int=0)` this
+#: service already stamps on platform-scoped audit and outbox rows. It is not a tenant: the
+#: console's cross-tenant reads run on the directory bypass role, never on this claim.
+PLATFORM_ORG = uuid.UUID(int=0)
+
+
+@dataclass(frozen=True, slots=True)
+class OperatorIssued:
+    access_token: str
+    expires_in: int
+    refresh_token: str
+    refresh_expires_at: datetime
+    session_id: uuid.UUID
+    staff_id: uuid.UUID
+    operator_roles: list[str]
+
+
+async def _verify_staff(
+    session: AsyncSession, cfg: Settings, email: str, password: str
+) -> StaffAccount:
+    """Check an operator's email and password, or raise the same generic error.
+
+    Mirrors `_verify_credentials`: one message for every failure so the operator login is
+    not an account-enumeration oracle, lockout checked before the password, and the failed
+    attempt committed before raising so rate limiting outlives the request it limits.
+    """
+    invalid = UnauthorizedProblem(INVALID)
+
+    staff = (
+        await session.execute(select(StaffAccount).where(StaffAccount.email == email))
+    ).scalar_one_or_none()
+    if staff is None:
+        # Burn a hash so a missing operator is not detectable by response time.
+        security.verify_password(None, password)
+        raise invalid
+
+    now = datetime.now(UTC)
+    if staff.locked_until and staff.locked_until > now:
+        raise ForbiddenProblem(
+            "This operator account is temporarily locked after several failed attempts. "
+            "Try again shortly."
+        )
+    if not staff.is_active:
+        raise ForbiddenProblem("This operator account has been disabled")
+
+    if not security.verify_password(staff.password_hash, password):
+        staff.failed_attempts += 1
+        if staff.failed_attempts >= cfg.max_failed_attempts:
+            staff.locked_until = now + timedelta(minutes=cfg.lockout_minutes)
+            log.warning("auth.operator_locked", staff_id=str(staff.id))
+        await session.commit()
+        raise invalid
+
+    if security.needs_rehash(staff.password_hash):
+        staff.password_hash = security.hash_password(password)
+    staff.failed_attempts = 0
+    staff.locked_until = None
+    staff.last_login_at = now
+    return staff
+
+
+def _issue_operator(
+    session: AsyncSession,
+    *,
+    pair: KeyPair,
+    cfg: Settings,
+    auth_session: Session,
+    staff: StaffAccount,
+    family: str | None = None,
+) -> OperatorIssued:
+    """Mint an operator access+refresh pair. The single place `stf=true` is minted.
+
+    Same signing key, same JWKS, same verify path as every tenant token — it differs only
+    in `aud="operator"`, the `stf` flag, and carrying the staff account's operator-roles
+    instead of a membership's grants. No `mem`, so the gateway resolves no tenant
+    permissions for it.
+    """
+    auth_session.active_org_id = None
+    roles = list(staff.operator_roles)
+
+    access = tk.mint_access(
+        pair,
+        issuer=cfg.jwt_issuer,
+        user_id=staff.id,
+        organization_id=PLATFORM_ORG,
+        membership_id=None,
+        audience=OPERATOR_AUDIENCE,
+        session_id=auth_session.id,
+        entitlements=[],
+        roles=roles,
+        locations=[],
+        amr=list(auth_session.amr),
+        permission_version=0,
+        subject_ref=None,
+        ttl_seconds=cfg.access_token_ttl_seconds,
+        staff=True,
+    )
+    refresh = tk.mint_refresh(
+        pair,
+        issuer=cfg.jwt_issuer,
+        user_id=staff.id,
+        family=family or secrets.token_urlsafe(24),
+        session_id=auth_session.id,
+        organization_id=None,
+        ttl_seconds=cfg.refresh_token_ttl_seconds,
+    )
+    session.add(
+        RefreshToken(
+            jti=refresh.jti,
+            family=family or _family_of(refresh),
+            session_id=auth_session.id,
+            user_id=staff.id,
+            organization_id=None,
+            expires_at=refresh.expires_at,
+        )
+    )
+    return OperatorIssued(
+        access_token=access.token,
+        expires_in=access.expires_in,
+        refresh_token=refresh.token,
+        refresh_expires_at=refresh.expires_at,
+        session_id=auth_session.id,
+        staff_id=staff.id,
+        operator_roles=roles,
+    )
+
+
+async def operator_login(
+    session: AsyncSession,
+    *,
+    cfg: Settings,
+    pair: KeyPair,
+    email: str,
+    password: str,
+    request: Request | None = None,
+) -> OperatorIssued:
+    """Authenticate a staff account and mint an operator-audience token.
+
+    There is no organization step and no MFA step: an operator belongs to nothing to pick
+    between, so a correct credential completes in one call. The session and refresh chain
+    reuse the same tables and rotation-family theft detection the tenant path uses.
+    """
+    staff = await _verify_staff(session, cfg, email, password)
+
+    auth_session = await start_session(
+        session, user_id=staff.id, cfg=cfg, amr=["pwd"], request=request
+    )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=PLATFORM_ORG,
+        actor_id=staff.id,
+        action="auth.operator_signed_in",
+        entity="staff_account",
+        entity_id=staff.id,
+        request=request,
+    )
+    issued = _issue_operator(session, pair=pair, cfg=cfg, auth_session=auth_session, staff=staff)
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=PLATFORM_ORG,
+        event_type=EVT_OPERATOR_SIGNED_IN,
+        aggregate_type="staff_account",
+        aggregate_id=staff.id,
+        payload={"staff_id": str(staff.id), "session_id": str(auth_session.id)},
+    )
+    await session.commit()
+    return issued
+
+
+async def operator_rotate_refresh(
+    session: AsyncSession, *, cfg: Settings, pair: KeyPair, raw_token: str
+) -> OperatorIssued:
+    """Rotate an operator refresh token, resolving the staff account rather than the directory.
+
+    The same theft detection as the tenant path: a spent token ends the whole family. A
+    *tenant* refresh token presented here resolves to no `staff_accounts` row and is
+    refused — and a staff token presented to the tenant `rotate_refresh` resolves to no
+    directory user and is refused there. Neither crosses into the other.
+    """
+    try:
+        claims = tk.decode_local(pair, raw_token, issuer=cfg.jwt_issuer, expected_type=tk.REFRESH)
+    except Exception as exc:
+        raise UnauthorizedProblem("That session has expired. Please sign in again.") from exc
+
+    stored = await session.get(RefreshToken, str(claims["jti"]))
+    if stored is None:
+        raise UnauthorizedProblem("That session has expired. Please sign in again.")
+
+    if stored.is_spent:
+        await _revoke_family(session, stored.family, reason="token_reuse")
+        log.warning(
+            "auth.operator_refresh_reuse_detected",
+            family=stored.family,
+            staff_id=str(stored.user_id),
+        )
+        await session.commit()
+        raise UnauthorizedProblem(
+            "That session has been ended for security reasons. Please sign in again."
+        )
+
+    if stored.expires_at <= datetime.now(UTC):
+        raise UnauthorizedProblem("That session has expired. Please sign in again.")
+
+    auth_session = await _live_session(session, stored.session_id, stored.user_id)
+    staff = await session.get(StaffAccount, stored.user_id)
+    if staff is None or not staff.is_active:
+        raise UnauthorizedProblem("That session is no longer valid.")
+
+    stored.rotated_at = datetime.now(UTC)
+    auth_session.last_seen_at = datetime.now(UTC)
+    issued = _issue_operator(
+        session, pair=pair, cfg=cfg, auth_session=auth_session, staff=staff, family=stored.family
+    )
+    await session.commit()
+    return issued

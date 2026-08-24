@@ -44,6 +44,12 @@ policy = GatewayPolicy(
             "/api/v1/auth/logout",
             "/api/v1/auth/mfa/verify",
             "/api/v1/auth/select-org",
+            # The pre-auth operator sign-in and its rotation. Public because there is no
+            # token yet; still authentication only, so the "public surface is only auth"
+            # test stays green (all start with /api/v1/auth).
+            "/api/v1/auth/operator/login",
+            "/api/v1/auth/operator/refresh",
+            "/api/v1/auth/operator/logout",
         }
     ),
     rate_limit=cfg.rate_limit_per_minute,

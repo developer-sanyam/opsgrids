@@ -67,7 +67,7 @@ def mint_access(
     issuer: str,
     user_id: uuid.UUID,
     organization_id: uuid.UUID,
-    membership_id: uuid.UUID,
+    membership_id: uuid.UUID | None,
     audience: str,
     session_id: uuid.UUID,
     entitlements: list[str],
@@ -77,16 +77,24 @@ def mint_access(
     permission_version: int,
     subject_ref: uuid.UUID | None,
     ttl_seconds: int,
+    staff: bool = False,
 ) -> MintedToken:
-    """An access token for one product.
+    """An access token for one product — or, when `staff`, for the operator surface.
 
     Note what is absent: `perms`. See the module docstring — the gateway resolves them.
+
+    `staff` is the **only** thing that puts a `stf` claim in a token, and it defaults off.
+    Every tenant caller (via `services.issue_for`) leaves it off, so a product/app token can
+    never carry `stf`: the operator gate at `admin-gateway` keys on that claim, and a token
+    that lacks it gets 404 on a staff route (ADR-0003 §2). An operator token is the same
+    signature, the same key, the same JWKS verify path — it differs only in its audience and
+    this one boolean. `membership_id` is `None` for operators (they hold no membership), and
+    the `mem` claim is then omitted so the gateway resolves no tenant grants for them.
     """
     claims, expires_at, jti = _base(issuer, user_id, ttl_seconds, ACCESS)
     claims |= {
         "aud": audience,
         "act_org": str(organization_id),
-        "mem": str(membership_id),
         "sid": str(session_id),
         "ent": entitlements,
         "roles": roles,
@@ -97,8 +105,15 @@ def mint_access(
         # than when this token happens to expire.
         "pv": permission_version,
     }
+    if membership_id is not None:
+        claims["mem"] = str(membership_id)
     if subject_ref is not None:
         claims["sref"] = str(subject_ref)
+    if staff:
+        # Set only here, only on the operator path. Its presence is what the staff-only
+        # gateway routes check; its absence on every tenant token is what keeps a stolen
+        # product token inert on the operator surface.
+        claims["stf"] = True
     return MintedToken(_sign(pair, claims), jti, expires_at, ttl_seconds)
 
 

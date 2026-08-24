@@ -339,6 +339,70 @@ class SigningKey(Base):
     )
 
 
+# --------------------------------------------------------------------- operator staff
+
+
+class StaffAccount(Base):
+    """An Atmora operator — vendor staff, not a tenant user.
+
+    This is a **separate registry from the tenant user directory** (account-service) and
+    from `Credential` above. Operators are the *vendor* looking across its tenants
+    (ADR-0003 §2); they belong to no organization and hold no membership, so folding them
+    into the tenant `users`/`credentials` tables — as a flag or an "operator org" — is
+    exactly how a staff identity leaks into a tenant token or a tenant reaches across
+    customers. Keeping the table separate is what makes an operator's audience (`operator`)
+    and its `stf` claim a property of *which table authenticated it*, not of a role bit that
+    a tenant path could ever set.
+
+    **Platform/global, deliberately unpolicied.** The `auth` schema carries no row-level
+    security (there is no tenant to bind before a token exists), and even under RLS this
+    would sit in the UNPOLICIED set: it is vendor data, keyed by no `organization_id`, the
+    same category ADR-0002 §5 reserves for platform vocabulary that must never get an org
+    policy.
+
+    Password hashing reuses the *same* Argon2id path tenant credentials use
+    (`security.hash_password`/`verify_password`) — operators get no second, weaker way in.
+    """
+
+    __tablename__ = "staff_accounts"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    #: Case-insensitive and unique — the operator's login handle.
+    email: Mapped[str] = mapped_column(CITEXT, nullable=False, unique=True)
+    #: Always set: there is no operator SSO path, so unlike `Credential.password_hash`
+    #: this is not nullable.
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+
+    #: The operator's roles, e.g. {"owner", "billing_ops", "support"}. These become the
+    #: token's `roles` claim and are what the operator console authorizes against — they are
+    #: NOT tenant permission grants and never cross into the `pv`/grant machinery.
+    operator_roles: Mapped[list[str]] = mapped_column(
+        ARRAY(String(40)), nullable=False, default=list
+    )
+    #: 'active' | 'disabled'. A disabled operator is refused at login the way a deactivated
+    #: tenant user is — access should not outlive the decision to remove it.
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+
+    #: Guessing is rate-limited exactly as the tenant path rate-limits it.
+    failed_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    @property
+    def is_active(self) -> bool:
+        return self.status == "active"
+
+
 # --------------------------------------------------------------------- platform tables
 
 

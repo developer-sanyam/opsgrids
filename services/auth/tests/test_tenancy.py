@@ -46,6 +46,17 @@ BARE_SESSION_ROUTES = {
     ),
     "/api/v1/auth/password/forgot": f"A reset request is anonymous and {PRE_ORGANIZATION}.",
     "/api/v1/auth/password/reset": f"A reset confirmation is anonymous and {PRE_ORGANIZATION}.",
+    "/api/v1/auth/operator/login": (
+        "Operator sign-in authenticates a platform staff account that belongs to no "
+        "organization; there is no tenant to bind."
+    ),
+    "/api/v1/auth/operator/refresh": (
+        "Operator refresh presents a cookie, not a principal; the staff subject is read "
+        "from the stored token, and an operator has no organization to bind."
+    ),
+    "/api/v1/auth/operator/logout": (
+        "Operator logout presents a cookie, not a principal, and must work for a stale one."
+    ),
 }
 
 

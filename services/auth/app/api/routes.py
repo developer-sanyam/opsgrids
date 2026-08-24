@@ -31,6 +31,8 @@ from app.schemas import (
     MfaEnrolStart,
     MfaRequired,
     MfaVerifyIn,
+    OperatorLoginIn,
+    OperatorTokenOut,
     OrganizationChoice,
     OrgSelectionRequired,
     PasswordChangeIn,
@@ -356,6 +358,83 @@ async def change_password(
         request=request,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --------------------------------------------------------------------- operator staff
+#
+# The pre-auth operator sign-in. Deliberately under the `/api/v1/auth` prefix (not a new
+# `/api/v1/admin/...` surface) so it rides the auth route both gateways already carry and
+# stays inside the "public surface is only authentication" invariant the operator gateway
+# asserts. It takes a bare session and no principal — there is no token yet. The token it
+# returns is only accepted on `admin-gateway`, by audience.
+
+
+@router.post(
+    "/auth/operator/login",
+    response_model=OperatorTokenOut,
+    summary="Operator (Atmora staff) sign in",
+)
+async def operator_login(
+    payload: OperatorLoginIn,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    pair: KeyDep,
+) -> OperatorTokenOut:
+    """Authenticate a staff account and return an `operator`-audience token with `stf`.
+
+    A wrong credential answers 401 with the same generic message the tenant login uses, so
+    this endpoint is not an operator-account enumeration oracle.
+    """
+    cfg = settings()
+    issued = await services.operator_login(
+        session, cfg=cfg, pair=pair, email=payload.email, password=payload.password, request=request
+    )
+    _set_refresh_cookie(response, cfg, issued.refresh_token)
+    return OperatorTokenOut(
+        access_token=issued.access_token,
+        expires_in=issued.expires_in,
+        operator_roles=issued.operator_roles,
+    )
+
+
+@router.post(
+    "/auth/operator/refresh",
+    response_model=OperatorTokenOut,
+    summary="Renew an operator access token",
+)
+async def operator_refresh(
+    request: Request, response: Response, session: SessionDep, pair: KeyDep
+) -> OperatorTokenOut:
+    cfg = settings()
+    raw = request.cookies.get(cfg.refresh_cookie_name)
+    if not raw:
+        raise UnauthorizedProblem("No session to refresh")
+    issued = await services.operator_rotate_refresh(session, cfg=cfg, pair=pair, raw_token=raw)
+    _set_refresh_cookie(response, cfg, issued.refresh_token)
+    return OperatorTokenOut(
+        access_token=issued.access_token,
+        expires_in=issued.expires_in,
+        operator_roles=issued.operator_roles,
+    )
+
+
+@router.post(
+    "/auth/operator/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Operator sign out",
+)
+async def operator_logout(request: Request, session: SessionDep, pair: KeyDep) -> Response:
+    """Idempotent. Shares `services.logout`, which touches only the session and refresh
+    tables — no directory, so it ends an operator session as cleanly as a tenant one."""
+    cfg = settings()
+    raw = request.cookies.get(cfg.refresh_cookie_name)
+    if raw:
+        async with session.begin():
+            await services.logout(session, pair=pair, cfg=cfg, raw_token=raw)
+    out = Response(status_code=status.HTTP_204_NO_CONTENT)
+    out.delete_cookie(cfg.refresh_cookie_name, path="/api/v1/auth")
+    return out
 
 
 @router.post(

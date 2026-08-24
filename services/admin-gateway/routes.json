@@ -3,6 +3,11 @@
     "The operator surface. Deliberately narrow: Atmora staff acting across customers,",
     "and the partner webhook endpoint. Nothing else.",
     "",
+    "`/api/v1/auth/operator` is the pre-auth staff sign-in (auth-service): it is NOT",
+    "`staff_only`, because there is no token yet — it is where the operator token is",
+    "obtained. It sits under `/api/v1/auth` so it stays inside the 'public surface is only",
+    "authentication' invariant, and its own login path is the only piece marked public.",
+    "",
     "`staff_only` routes are refused with the same 404 an unknown path gets — the",
     "existence of the operator console is not something to confirm to whoever is probing.",
     "",
@@ -19,6 +24,7 @@
     "that authorizes the caller, never a path into the internal router."
   ],
   "routes": [
+    { "prefix": "/api/v1/auth/operator", "upstream": "http://localhost:8110" },
     { "prefix": "/api/v1/auth", "upstream": "http://localhost:8110" },
 
     { "prefix": "/api/v1/admin/catalog", "upstream": "http://localhost:8164", "staff_only": true },

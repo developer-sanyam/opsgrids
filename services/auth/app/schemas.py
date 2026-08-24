@@ -132,3 +132,28 @@ class MeOut(BaseModel):
     must_change_password: bool
     mfa_enabled: bool
     organizations: list[OrganizationChoice]
+
+
+# --------------------------------------------------------------------- operator staff
+
+
+class OperatorLoginIn(BaseModel):
+    """An Atmora operator signing in. No organization: staff belong to none."""
+
+    email: EmailStr
+    password: Password
+
+
+class OperatorTokenOut(BaseModel):
+    """A completed operator sign-in.
+
+    Carries `aud="operator"` and `stf=true` inside the token (not repeated here); the
+    refresh token is set as an httpOnly cookie, never in this body. `operator_roles` is
+    surfaced so the console can render without decoding the token.
+    """
+
+    status: Literal["complete"] = "complete"
+    access_token: str
+    token_type: Literal["Bearer"] = "Bearer"  # noqa: S105
+    expires_in: int
+    operator_roles: list[str]
