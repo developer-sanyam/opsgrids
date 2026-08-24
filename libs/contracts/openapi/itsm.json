@@ -1,6 +1,705 @@
 {
   "components": {
     "schemas": {
+      "AssetIn": {
+        "description": "Create a CMDB asset.",
+        "properties": {
+          "cost_currency": {
+            "default": "INR",
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Cost Currency",
+            "type": "string"
+          },
+          "cost_minor": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Cost Minor",
+            "type": "integer"
+          },
+          "location": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Location",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
+          },
+          "purchased_at": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purchased At"
+          },
+          "serial": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Serial",
+            "type": "string"
+          },
+          "status": {
+            "default": "in_stock",
+            "enum": [
+              "in_use",
+              "in_stock",
+              "in_repair",
+              "retired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tag": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Tag",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "laptop",
+              "desktop",
+              "server",
+              "monitor",
+              "phone",
+              "network",
+              "license"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "warranty_expires_at": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warranty Expires At"
+          }
+        },
+        "required": [
+          "tag",
+          "name",
+          "type"
+        ],
+        "title": "AssetIn",
+        "type": "object"
+      },
+      "AssetOut": {
+        "description": "Mirrors the SPA's `Asset`. Keyed by `tag`; cost is minor units in `cost_currency`.\n`open_incident_ids` is derived from the incidents currently open against this asset.",
+        "properties": {
+          "cost_currency": {
+            "title": "Cost Currency",
+            "type": "string"
+          },
+          "cost_minor": {
+            "title": "Cost Minor",
+            "type": "integer"
+          },
+          "location": {
+            "title": "Location",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "open_incident_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Open Incident Ids",
+            "type": "array"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
+          },
+          "purchased_at": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purchased At"
+          },
+          "serial": {
+            "title": "Serial",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "in_use",
+              "in_stock",
+              "in_repair",
+              "retired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "laptop",
+              "desktop",
+              "server",
+              "monitor",
+              "phone",
+              "network",
+              "license"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "warranty_expires_at": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warranty Expires At"
+          }
+        },
+        "required": [
+          "tag",
+          "name",
+          "type",
+          "status",
+          "owner",
+          "location",
+          "serial",
+          "purchased_at",
+          "warranty_expires_at",
+          "cost_minor",
+          "cost_currency"
+        ],
+        "title": "AssetOut",
+        "type": "object"
+      },
+      "Breakdown": {
+        "description": "One bar in a by-priority or by-category breakdown of open incidents.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "pct": {
+            "title": "Pct",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "count",
+          "pct"
+        ],
+        "title": "Breakdown",
+        "type": "object"
+      },
+      "CatalogItemOut": {
+        "description": "Mirrors the SPA's `CatalogItem`. `id` is the human `CAT-01` code.",
+        "properties": {
+          "category": {
+            "enum": [
+              "onboarding",
+              "offboarding",
+              "access",
+              "hardware",
+              "software"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "requests_30d": {
+            "title": "Requests 30D",
+            "type": "integer"
+          },
+          "sla_days": {
+            "title": "Sla Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "category",
+          "description",
+          "sla_days",
+          "requests_30d"
+        ],
+        "title": "CatalogItemOut",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "IncidentIn": {
+        "description": "Raise an incident. `status` is not accepted \u2014 a new incident always starts `new`.",
+        "properties": {
+          "affected_asset_tag": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Affected Asset Tag"
+          },
+          "assignee": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Assignee",
+            "type": "string"
+          },
+          "category": {
+            "default": "software",
+            "enum": [
+              "network",
+              "hardware",
+              "software",
+              "access",
+              "email",
+              "security"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 8000,
+            "title": "Description",
+            "type": "string"
+          },
+          "priority": {
+            "default": "P3",
+            "enum": [
+              "P1",
+              "P2",
+              "P3",
+              "P4"
+            ],
+            "title": "Priority",
+            "type": "string"
+          },
+          "requester": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Requester",
+            "type": "string"
+          },
+          "summary": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "summary",
+          "requester"
+        ],
+        "title": "IncidentIn",
+        "type": "object"
+      },
+      "IncidentOut": {
+        "description": "Mirrors the SPA's `Incident`. `id` is the human number; `affected_asset_tag` points at\na CMDB asset by its tag; `worklog` is the ordered activity thread (empty on the list view).",
+        "properties": {
+          "affected_asset_tag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Affected Asset Tag"
+          },
+          "assignee": {
+            "title": "Assignee",
+            "type": "string"
+          },
+          "category": {
+            "enum": [
+              "network",
+              "hardware",
+              "software",
+              "access",
+              "email",
+              "security"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "priority": {
+            "enum": [
+              "P1",
+              "P2",
+              "P3",
+              "P4"
+            ],
+            "title": "Priority",
+            "type": "string"
+          },
+          "requester": {
+            "title": "Requester",
+            "type": "string"
+          },
+          "sla_minutes_remaining": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sla Minutes Remaining"
+          },
+          "sla_state": {
+            "enum": [
+              "met",
+              "on_track",
+              "at_risk",
+              "breached"
+            ],
+            "title": "Sla State",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "new",
+              "in_progress",
+              "on_hold",
+              "resolved",
+              "closed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "worklog": {
+            "items": {
+              "$ref": "#/components/schemas/WorklogEntryOut"
+            },
+            "title": "Worklog",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "summary",
+          "description",
+          "priority",
+          "status",
+          "category",
+          "assignee",
+          "requester",
+          "affected_asset_tag",
+          "sla_state",
+          "sla_minutes_remaining",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "IncidentOut",
+        "type": "object"
+      },
+      "OverviewOut": {
+        "description": "The Overview dashboard's server-side rollup. The SPA can derive these from the list\nendpoints; this is the same arithmetic exposed once, so a reporting view can share it.",
+        "properties": {
+          "assets_under_management": {
+            "title": "Assets Under Management",
+            "type": "integer"
+          },
+          "by_category": {
+            "items": {
+              "$ref": "#/components/schemas/Breakdown"
+            },
+            "title": "By Category",
+            "type": "array"
+          },
+          "by_priority": {
+            "items": {
+              "$ref": "#/components/schemas/Breakdown"
+            },
+            "title": "By Priority",
+            "type": "array"
+          },
+          "open_incidents": {
+            "title": "Open Incidents",
+            "type": "integer"
+          },
+          "requests_awaiting_approval": {
+            "title": "Requests Awaiting Approval",
+            "type": "integer"
+          },
+          "sla_compliance_pct": {
+            "title": "Sla Compliance Pct",
+            "type": "number"
+          },
+          "volume": {
+            "items": {
+              "$ref": "#/components/schemas/TrendPoint"
+            },
+            "title": "Volume",
+            "type": "array"
+          }
+        },
+        "required": [
+          "open_incidents",
+          "sla_compliance_pct",
+          "requests_awaiting_approval",
+          "assets_under_management",
+          "volume",
+          "by_priority",
+          "by_category"
+        ],
+        "title": "OverviewOut",
+        "type": "object"
+      },
+      "Page_AssetOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AssetOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[AssetOut]",
+        "type": "object"
+      },
+      "Page_CatalogItemOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CatalogItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[CatalogItemOut]",
+        "type": "object"
+      },
+      "Page_IncidentOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/IncidentOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[IncidentOut]",
+        "type": "object"
+      },
+      "Page_ServiceRequestOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ServiceRequestOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ServiceRequestOut]",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -18,16 +717,737 @@
         ],
         "title": "ServiceInfo",
         "type": "object"
+      },
+      "ServiceRequestOut": {
+        "description": "Mirrors the SPA's `ServiceRequest`. `id` is the human number; `catalog_item_id` is the\ncatalog item's code, with its name denormalised so a table row renders without a lookup.",
+        "properties": {
+          "assignee": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee"
+          },
+          "catalog_item_id": {
+            "title": "Catalog Item Id",
+            "type": "string"
+          },
+          "catalog_item_name": {
+            "title": "Catalog Item Name",
+            "type": "string"
+          },
+          "category": {
+            "enum": [
+              "onboarding",
+              "offboarding",
+              "access",
+              "hardware",
+              "software"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "requester": {
+            "title": "Requester",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "approval",
+              "in_progress",
+              "fulfilled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "catalog_item_id",
+          "catalog_item_name",
+          "category",
+          "requester",
+          "subject",
+          "status",
+          "assignee",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ServiceRequestOut",
+        "type": "object"
+      },
+      "TrendPoint": {
+        "description": "A point on the incident-volume-over-time chart.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "opened": {
+            "title": "Opened",
+            "type": "integer"
+          },
+          "resolved": {
+            "title": "Resolved",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "label",
+          "opened",
+          "resolved"
+        ],
+        "title": "TrendPoint",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "WorklogEntryOut": {
+        "description": "One entry in an incident's activity thread. Mirrors the SPA's `WorklogEntry`.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "author": {
+            "title": "Author",
+            "type": "string"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "note",
+              "status",
+              "assignment",
+              "sla",
+              "resolution"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "author",
+          "body",
+          "at",
+          "kind"
+        ],
+        "title": "WorklogEntryOut",
+        "type": "object"
+      },
+      "WorklogIn": {
+        "description": "Append one entry to an incident's thread. There is no update or delete \u2014 by design.",
+        "properties": {
+          "author": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Author",
+            "type": "string"
+          },
+          "body": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "kind": {
+            "default": "note",
+            "enum": [
+              "note",
+              "status",
+              "assignment",
+              "sla",
+              "resolution"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "author",
+          "body"
+        ],
+        "title": "WorklogIn",
+        "type": "object"
       }
     }
   },
   "info": {
-    "description": "Itsm service \u2014 part of the Atmora platform.",
-    "title": "Itsm service",
+    "description": "The IT service desk and CMDB \u2014 incidents, service requests and assets, part of the Atmora platform.",
+    "title": "ITSM service",
     "version": "0.1.0"
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/itsm/assets": {
+      "get": {
+        "operationId": "list_assets_api_v1_itsm_assets_get",
+        "parameters": [
+          {
+            "description": "Tag, name, owner or serial",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tag, name, owner or serial",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_AssetOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "CMDB assets",
+        "tags": [
+          "itsm"
+        ]
+      },
+      "post": {
+        "operationId": "create_asset_api_v1_itsm_assets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssetIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a CMDB asset",
+        "tags": [
+          "itsm"
+        ]
+      }
+    },
+    "/api/v1/itsm/assets/{tag}": {
+      "get": {
+        "operationId": "read_asset_api_v1_itsm_assets__tag__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tag",
+            "required": true,
+            "schema": {
+              "title": "Tag",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One CMDB asset, with the incidents open against it",
+        "tags": [
+          "itsm"
+        ]
+      }
+    },
+    "/api/v1/itsm/catalog": {
+      "get": {
+        "operationId": "list_catalog_api_v1_itsm_catalog_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CatalogItemOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The service catalog",
+        "tags": [
+          "itsm"
+        ]
+      }
+    },
+    "/api/v1/itsm/incidents": {
+      "get": {
+        "operationId": "list_incidents_api_v1_itsm_incidents_get",
+        "parameters": [
+          {
+            "description": "Number, summary, assignee or requester",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Number, summary, assignee or requester",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "priority",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Priority"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "description": "updated | priority | created",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "updated | priority | created",
+              "title": "Sort"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_IncidentOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Incidents in the service desk",
+        "tags": [
+          "itsm"
+        ]
+      },
+      "post": {
+        "operationId": "raise_incident_api_v1_itsm_incidents_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Raise an incident",
+        "tags": [
+          "itsm"
+        ]
+      }
+    },
+    "/api/v1/itsm/incidents/{number}": {
+      "get": {
+        "operationId": "read_incident_api_v1_itsm_incidents__number__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One incident, with its worklog thread and affected asset",
+        "tags": [
+          "itsm"
+        ]
+      }
+    },
+    "/api/v1/itsm/incidents/{number}/worklog": {
+      "post": {
+        "operationId": "add_worklog_api_v1_itsm_incidents__number__worklog_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorklogIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Append an entry to an incident's thread (append-only)",
+        "tags": [
+          "itsm"
+        ]
+      }
+    },
     "/api/v1/itsm/info": {
       "get": {
         "operationId": "info_api_v1_itsm_info_get",
@@ -44,6 +1464,117 @@
           }
         },
         "summary": "What this service is",
+        "tags": [
+          "itsm"
+        ]
+      }
+    },
+    "/api/v1/itsm/overview": {
+      "get": {
+        "operationId": "overview_api_v1_itsm_overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OverviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Service-desk overview rollups",
+        "tags": [
+          "itsm"
+        ]
+      }
+    },
+    "/api/v1/itsm/service-requests": {
+      "get": {
+        "operationId": "list_requests_api_v1_itsm_service_requests_get",
+        "parameters": [
+          {
+            "description": "Number, requester or subject",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Number, requester or subject",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ServiceRequestOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Service requests (the JML and fulfilment flows)",
         "tags": [
           "itsm"
         ]
@@ -69,6 +1600,30 @@
           }
         },
         "summary": "Liveness \u2014 is the process up?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/outbox": {
+      "get": {
+        "description": "How far behind the relay is. **Alert on `oldest_seconds`.**\n\nA stalled relay is the platform's quietest failure. It selects, finds nothing,\nlogs nothing, sleeps, and loops \u2014 `attempts` never increments and `last_error`\nstays null, so the process looks healthy indefinitely while the outbox grows\nwithout bound and every consumer downstream starves.\n\nDeliberately **not** part of readiness. A backlog is not a reason to take the\nservice out of rotation: refusing traffic would stop new events being written\nwithout helping drain the ones already queued, which makes the incident worse.\nThis is a metric to alert on, not a health state.\n\nCounted through the outbox engine, not the application one. The app role is\nNOBYPASSRLS and this request binds no tenant, so through it `pending` would be\nzero whatever the table holds \u2014 the probe that exists to expose the stall would\nbe wired to the same blind spot that causes it.",
+        "operationId": "outbox_health_outbox_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Outbox Health Outbox Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Outbox depth and age \u2014 scrape this",
         "tags": [
           "health"
         ]

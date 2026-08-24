@@ -80,6 +80,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["S105", "S106"]   # hardcoded test credentials are fine
 "tools/**" = ["T201"]              # a CLI talks to the terminal; that is its job
+# Demo seeders mirror the SPA fixtures verbatim; the long lines and typographic punctuation
+# (en dashes, ×) are display data copied from the approved fixtures, not code.
+"tools/demo/seed_*.py" = ["E501", "T201", "RUF001"]
 # Event-name constants are not credentials. S105 matches on the variable name containing
 # "password", which is exactly what an event about a password change is called.
 "services/auth/app/services.py" = ["S105"]
