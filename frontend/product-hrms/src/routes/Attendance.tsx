@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 
 import { ATTENDANCE_IS_SAMPLE, listAttendance } from "@/api/client";
 import type { AttendanceRecord, AttendanceStatus } from "@/api/types";
-import { departmentName } from "@/data/departments";
+import { departmentLabel } from "@/data/departments";
 import { useAsync } from "@/lib/useAsync";
 import { cn } from "@/lib/cn";
 import { formatMinutes, formatTime } from "@/lib/format";
@@ -60,7 +60,7 @@ const columns: Column<AttendanceRecord>[] = [
         <Avatar name={r.full_name} size="sm" />
         <div className="flex flex-col leading-tight">
           <span className="font-semibold text-ink">{r.full_name}</span>
-          <span className="text-xs text-muted">{departmentName(r.department_id)}</span>
+          <span className="text-xs text-muted">{departmentLabel(r)}</span>
         </div>
       </div>
     ),

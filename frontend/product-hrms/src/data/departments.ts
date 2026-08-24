@@ -1,40 +1,43 @@
 /**
- * Department reference data. The employee service stores `department_id` (a UUID) and no name,
- * so the product resolves names here. When an org-units endpoint exists this becomes a fetch.
+ * Department-name resolution for an employee.
+ *
+ * The employee service stores `department_id` (an account-service org-unit UUID) and never a
+ * name — ADR-0000 forbids the cross-schema join. Names come from the account service's
+ * `GET /api/v1/org-units` tree, flattened to an `id -> name` map (see `@/api/orgUnits`). That tree
+ * is permission-gated and often empty (no units seeded), so every employee also carries a human
+ * `job_title` that names their functional group, which we fall back to. One resolver backs both
+ * the dashboard's headcount rollup and the employee/attendance tables so their labels never
+ * diverge.
  */
-export interface Department {
-  id: string;
-  name: string;
-}
 
-export const DEPARTMENTS: Department[] = [
-  { id: "d1a00000-0000-4000-8000-000000000001", name: "Engineering" },
-  { id: "d1a00000-0000-4000-8000-000000000002", name: "Sales" },
-  { id: "d1a00000-0000-4000-8000-000000000003", name: "HR" },
-  { id: "d1a00000-0000-4000-8000-000000000004", name: "Finance" },
-  { id: "d1a00000-0000-4000-8000-000000000005", name: "Operations" },
-];
-
-const BY_ID = new Map(DEPARTMENTS.map((d) => [d.id, d]));
-
-export function departmentName(id: string | null): string {
-  if (id === null) return "Unassigned";
-  return BY_ID.get(id)?.name ?? "Unassigned";
+/** The fields any labelled record must expose — an employee row, or an attendance punch. */
+export interface HasDepartment {
+  department_id: string | null;
+  job_title: string | null;
 }
 
 /**
- * A display label for an employee's team. The live employee service stores `department_id` as an
- * account-service UUID we don't resolve here (ADR: no cross-schema joins); it also carries a
- * human `job_title` that names the functional group. Prefer a resolved department name, fall back
- * to the job title, then to an em dash — never block on resolving the id.
+ * Resolve one record's department label: prefer the live org-unit name (when `orgUnitNameById`
+ * holds its `department_id`), fall back to the trimmed `job_title` (where the demo data's
+ * department name actually lives), then to `fallback`. Never blocks on resolving the id.
  */
-export function departmentLabel(emp: {
-  department_id: string | null;
-  job_title: string | null;
-}): string {
-  if (emp.department_id !== null) {
-    const known = BY_ID.get(emp.department_id);
-    if (known) return known.name;
+export function resolveDepartment(
+  record: HasDepartment,
+  orgUnitNameById?: ReadonlyMap<string, string>,
+  fallback = "Unassigned",
+): string {
+  if (record.department_id !== null) {
+    const live = orgUnitNameById?.get(record.department_id);
+    if (live) return live;
   }
-  return emp.job_title?.trim() || "—";
+  return record.job_title?.trim() || fallback;
+}
+
+/**
+ * A display label for a record's team in a table cell — the resolved department, or an em dash
+ * when nothing resolves. The tables don't fetch the org-unit tree, so they resolve through the
+ * `job_title` fallback; the dashboard passes a live map into `resolveDepartment` directly.
+ */
+export function departmentLabel(record: HasDepartment): string {
+  return resolveDepartment(record, undefined, "—");
 }

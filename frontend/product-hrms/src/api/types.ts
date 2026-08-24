@@ -60,6 +60,8 @@ export interface AttendanceRecord {
   employee_no: string;
   full_name: string;
   department_id: string | null;
+  /** The employee's functional group; carries the department name where `department_id` is null. */
+  job_title: string | null;
   work_date: string;
   check_in: string | null;
   check_out: string | null;

@@ -3,10 +3,15 @@ import type { CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { getAllEmployees, listAttendance } from "@/api/client";
+import { getOrgUnitNameById } from "@/api/orgUnits";
 import type { EmployeeOut } from "@/api/types";
 import { useAuth } from "@/auth/context";
-import { DEPARTMENTS } from "@/data/departments";
-import { activeCount, headcountByDepartment, workforceMix } from "@/data/derive";
+import {
+  activeCount,
+  distinctDepartmentCount,
+  headcountByDepartment,
+  workforceMix,
+} from "@/data/derive";
 import { RECENT_ACTIVITY, SAMPLE_ATTENDANCE, TASKS_TODAY } from "@/data/samples";
 import { useAsync } from "@/lib/useAsync";
 import {
@@ -40,6 +45,9 @@ const TODAY = "2026-08-24";
 
 /** A stable empty reference so the derived-data memos don't churn while loading. */
 const EMPTY_EMPLOYEES: EmployeeOut[] = [];
+
+/** A stable empty org-unit map, used while the tree loads or when the org has none to read. */
+const EMPTY_ORG_UNITS: ReadonlyMap<string, string> = new Map();
 
 type Period = "weekly" | "monthly" | "quarterly";
 
@@ -194,6 +202,12 @@ export function DashboardPage() {
   const { user } = useAuth();
   const employees = useAsync(getAllEmployees, []);
   const attendance = useAsync(useCallback(() => listAttendance(TODAY), []), []);
+  // Department names come from the org-unit tree. It is permission-gated and often empty, and its
+  // loader already degrades any failure to an empty map — so a 403 here is never a dashboard error,
+  // just names that fall back to each employee's job_title.
+  const orgUnits = useAsync(getOrgUnitNameById, []);
+  const orgUnitMap =
+    orgUnits.status === "success" ? orgUnits.data : EMPTY_ORG_UNITS;
 
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
@@ -220,19 +234,23 @@ export function DashboardPage() {
     [items, total, attendanceSummary],
   );
 
-  const departments = useMemo(() => headcountByDepartment(items), [items]);
+  const departments = useMemo(
+    () => headcountByDepartment(items, orgUnitMap),
+    [items, orgUnitMap],
+  );
   const mix = useMemo(() => workforceMix(items), [items]);
 
   const miniStats: MiniStat[] = useMemo(() => {
     const locations = new Set(items.map((e) => e.location_code).filter(Boolean)).size;
     const active = activeCount(items);
     const activeRate = total === 0 ? 0 : Math.round((active / total) * 100);
+    const deptCount = distinctDepartmentCount(items, orgUnitMap);
     return [
-      { label: "Departments", metric: "teams", total: String(DEPARTMENTS.length) },
+      { label: "Departments", metric: "teams", total: String(deptCount) },
       { label: "Locations", metric: "sites", total: String(locations) },
       { label: "Active rate", metric: "of staff", total: `${activeRate}%` },
     ];
-  }, [items, total]);
+  }, [items, total, orgUnitMap]);
 
   return (
     <div className="rise flex flex-col gap-5">

@@ -3,26 +3,29 @@
  * without a live login. Swapped out by the `USE_FIXTURES` flag in `client.ts`.
  */
 
-import { DEPARTMENTS } from "@/data/departments";
 import type {
   AttendanceRecord,
   AttendanceStatus,
   EmployeeOut,
   EmploymentType,
-  PunchSource,
   WorkMode,
+  PunchSource,
 } from "./types";
 
-const ENGINEERING = DEPARTMENTS[0]!.id;
-const SALES = DEPARTMENTS[1]!.id;
-const HR = DEPARTMENTS[2]!.id;
-const FINANCE = DEPARTMENTS[3]!.id;
-const OPERATIONS = DEPARTMENTS[4]!.id;
+// This org, like the live demo org, has no org-units seeded: every employee's `department_id` is
+// null and the department name lives in `job_title` (see `dept` below). Names resolve through the
+// `job_title` fallback in `resolveDepartment`, not through the org-unit tree.
+const ENGINEERING = "Engineering";
+const SALES = "Sales";
+const HR = "HR";
+const FINANCE = "Finance";
+const OPERATIONS = "Operations";
 
 interface Seed {
   no: string;
   name: string;
   designation: string;
+  /** The department name — stored in `job_title`, since `department_id` is unseeded (null). */
   dept: string;
   location: string;
   employment: EmploymentType;
@@ -68,8 +71,9 @@ export const EMPLOYEES: EmployeeOut[] = SEEDS.map((s, i) => ({
   employee_no: s.no,
   full_name: s.name,
   designation: s.designation,
-  job_title: s.designation,
-  department_id: s.dept,
+  // The demo seed carries the department name in `job_title`; `department_id` is unseeded.
+  job_title: s.dept,
+  department_id: null,
   location_code: s.location,
   employment_type: s.employment,
   work_mode: s.mode,
@@ -105,6 +109,7 @@ function attendanceFor(emp: EmployeeOut, index: number): AttendanceRecord {
       employee_no: emp.employee_no,
       full_name: emp.full_name,
       department_id: emp.department_id,
+      job_title: emp.job_title,
       work_date: TODAY,
       check_in: null,
       check_out: null,
@@ -128,6 +133,7 @@ function attendanceFor(emp: EmployeeOut, index: number): AttendanceRecord {
     employee_no: emp.employee_no,
     full_name: emp.full_name,
     department_id: emp.department_id,
+    job_title: emp.job_title,
     work_date: TODAY,
     check_in: checkIn,
     check_out: checkOut,

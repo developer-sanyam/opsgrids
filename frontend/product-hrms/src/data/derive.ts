@@ -9,7 +9,7 @@ import type {
   EmploymentType,
   WorkforceSlice,
 } from "@/api/types";
-import { departmentName } from "./departments";
+import { resolveDepartment } from "./departments";
 import { employmentLabel } from "@/lib/format";
 
 /** How many of these employees are in the `active` lifecycle state. */
@@ -30,18 +30,20 @@ function pct(part: number, whole: number): number {
 }
 
 /**
- * Headcount grouped by department, largest first. `department_id` resolves through
- * `departments.ts`; anything unresolved collapses into a single "—" bucket. Returns the top
- * `limit` departments (default 5).
+ * Headcount grouped by department, largest first. Each employee resolves through
+ * `resolveDepartment`: a live org-unit name (from `orgUnitNameById`) when its `department_id` is
+ * populated, else the `job_title` that names the functional group, else "Unassigned" — so the
+ * bars stay named even when the org has no org-units seeded and `department_id` is null. Returns
+ * the top `limit` departments (default 5).
  */
 export function headcountByDepartment(
   employees: readonly EmployeeOut[],
+  orgUnitNameById: ReadonlyMap<string, string>,
   limit = 5,
 ): DeptHeadcount[] {
   const counts = new Map<string, number>();
   for (const emp of employees) {
-    const known = emp.department_id ? departmentName(emp.department_id) : null;
-    const name = known && known !== "Unassigned" ? known : "—";
+    const name = resolveDepartment(emp, orgUnitNameById);
     counts.set(name, (counts.get(name) ?? 0) + 1);
   }
   const total = employees.length;
@@ -49,6 +51,19 @@ export function headcountByDepartment(
     .map(([name, count]) => ({ key: name, name, count, pct: pct(count, total) }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
     .slice(0, limit);
+}
+
+/**
+ * How many distinct departments these employees resolve to, using the same rules as the headcount
+ * bars (live org-unit name, else `job_title`, else "Unassigned"). Powers the "Departments" stat.
+ */
+export function distinctDepartmentCount(
+  employees: readonly EmployeeOut[],
+  orgUnitNameById: ReadonlyMap<string, string>,
+): number {
+  const names = new Set<string>();
+  for (const emp of employees) names.add(resolveDepartment(emp, orgUnitNameById));
+  return names.size;
 }
 
 const EMPLOYMENT_ORDER: EmploymentType[] = [
