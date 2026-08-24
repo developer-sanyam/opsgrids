@@ -1,6 +1,657 @@
 {
   "components": {
     "schemas": {
+      "AgingBucket": {
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "amount_minor",
+          "count"
+        ],
+        "title": "AgingBucket",
+        "type": "object"
+      },
+      "CashflowPoint": {
+        "properties": {
+          "inflow_minor": {
+            "title": "Inflow Minor",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "outflow_minor": {
+            "title": "Outflow Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "label",
+          "inflow_minor",
+          "outflow_minor"
+        ],
+        "title": "CashflowPoint",
+        "type": "object"
+      },
+      "CustomerOut": {
+        "description": "A billed party. `id` is the finance customer id invoices and payments reference.",
+        "properties": {
+          "city": {
+            "title": "City",
+            "type": "string"
+          },
+          "contact_name": {
+            "title": "Contact Name",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "gstin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gstin"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "contact_name",
+          "email",
+          "gstin",
+          "city",
+          "state"
+        ],
+        "title": "CustomerOut",
+        "type": "object"
+      },
+      "CustomerSummary": {
+        "description": "One row of the customers ledger: the party plus their receivable position.",
+        "properties": {
+          "customer": {
+            "$ref": "#/components/schemas/CustomerOut"
+          },
+          "invoice_count": {
+            "title": "Invoice Count",
+            "type": "integer"
+          },
+          "last_invoice_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Invoice Date"
+          },
+          "overdue_minor": {
+            "title": "Overdue Minor",
+            "type": "integer"
+          },
+          "receivables_minor": {
+            "title": "Receivables Minor",
+            "type": "integer"
+          },
+          "standing": {
+            "title": "Standing",
+            "type": "string"
+          }
+        },
+        "required": [
+          "customer",
+          "receivables_minor",
+          "overdue_minor",
+          "invoice_count",
+          "last_invoice_date",
+          "standing"
+        ],
+        "title": "CustomerSummary",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "InvoiceLineOut": {
+        "description": "One line on an invoice. `amount_minor` foots to `quantity x unit_price_minor`.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "number"
+          },
+          "unit_price_minor": {
+            "title": "Unit Price Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "description",
+          "quantity",
+          "unit_price_minor",
+          "amount_minor"
+        ],
+        "title": "InvoiceLineOut",
+        "type": "object"
+      },
+      "InvoiceOut": {
+        "description": "An invoice or credit note. Totals foot exactly:\n`subtotal_minor = \u03a3 line.amount_minor`, `total_minor = subtotal_minor + tax_minor`.\nA credit note carries negative amounts and a `corrects_invoice_id`.",
+        "properties": {
+          "amount_paid_minor": {
+            "title": "Amount Paid Minor",
+            "type": "integer"
+          },
+          "corrects_invoice_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Corrects Invoice Id"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "customer_id": {
+            "format": "uuid",
+            "title": "Customer Id",
+            "type": "string"
+          },
+          "document_type": {
+            "title": "Document Type",
+            "type": "string"
+          },
+          "due_date": {
+            "format": "date",
+            "title": "Due Date",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "issued_date": {
+            "format": "date",
+            "title": "Issued Date",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/InvoiceLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "subtotal_minor": {
+            "title": "Subtotal Minor",
+            "type": "integer"
+          },
+          "tax_minor": {
+            "title": "Tax Minor",
+            "type": "integer"
+          },
+          "tax_rate_pct": {
+            "title": "Tax Rate Pct",
+            "type": "number"
+          },
+          "total_minor": {
+            "title": "Total Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "document_type",
+          "customer_id",
+          "issued_date",
+          "due_date",
+          "status",
+          "currency",
+          "lines",
+          "subtotal_minor",
+          "tax_rate_pct",
+          "tax_minor",
+          "total_minor",
+          "amount_paid_minor",
+          "notes",
+          "corrects_invoice_id"
+        ],
+        "title": "InvoiceOut",
+        "type": "object"
+      },
+      "LedgerAccount": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "credit_minor": {
+            "title": "Credit Minor",
+            "type": "integer"
+          },
+          "debit_minor": {
+            "title": "Debit Minor",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "type",
+          "debit_minor",
+          "credit_minor"
+        ],
+        "title": "LedgerAccount",
+        "type": "object"
+      },
+      "LedgerReport": {
+        "properties": {
+          "accounts": {
+            "items": {
+              "$ref": "#/components/schemas/LedgerAccount"
+            },
+            "title": "Accounts",
+            "type": "array"
+          },
+          "as_of": {
+            "format": "date",
+            "title": "As Of",
+            "type": "string"
+          },
+          "period_label": {
+            "title": "Period Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "period_label",
+          "as_of",
+          "accounts"
+        ],
+        "title": "LedgerReport",
+        "type": "object"
+      },
+      "OverviewKpi": {
+        "description": "A headline KPI for the overview, pre-derived from the ledger.",
+        "properties": {
+          "caption": {
+            "title": "Caption",
+            "type": "string"
+          },
+          "deltaPct": {
+            "title": "Deltapct",
+            "type": "number"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "series": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "value_minor": {
+            "title": "Value Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "value_minor",
+          "deltaPct",
+          "series",
+          "caption"
+        ],
+        "title": "OverviewKpi",
+        "type": "object"
+      },
+      "OverviewSummary": {
+        "description": "Everything the Overview screen needs, in one payload.",
+        "properties": {
+          "aging": {
+            "items": {
+              "$ref": "#/components/schemas/AgingBucket"
+            },
+            "title": "Aging",
+            "type": "array"
+          },
+          "attention": {
+            "items": {
+              "$ref": "#/components/schemas/InvoiceOut"
+            },
+            "title": "Attention",
+            "type": "array"
+          },
+          "cashflow": {
+            "items": {
+              "$ref": "#/components/schemas/CashflowPoint"
+            },
+            "title": "Cashflow",
+            "type": "array"
+          },
+          "kpis": {
+            "items": {
+              "$ref": "#/components/schemas/OverviewKpi"
+            },
+            "title": "Kpis",
+            "type": "array"
+          },
+          "period_label": {
+            "title": "Period Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "period_label",
+          "kpis",
+          "cashflow",
+          "aging",
+          "attention"
+        ],
+        "title": "OverviewSummary",
+        "type": "object"
+      },
+      "Page_CustomerSummary_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CustomerSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[CustomerSummary]",
+        "type": "object"
+      },
+      "Page_InvoiceOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InvoiceOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[InvoiceOut]",
+        "type": "object"
+      },
+      "Page_PaymentOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[PaymentOut]",
+        "type": "object"
+      },
+      "PaymentAllocationOut": {
+        "description": "How much of a received payment was applied to one invoice.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "invoice_id": {
+            "format": "uuid",
+            "title": "Invoice Id",
+            "type": "string"
+          },
+          "invoice_number": {
+            "title": "Invoice Number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "invoice_id",
+          "invoice_number",
+          "amount_minor"
+        ],
+        "title": "PaymentAllocationOut",
+        "type": "object"
+      },
+      "PaymentOut": {
+        "description": "A payment received from a customer, split across one or more invoices.",
+        "properties": {
+          "allocations": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentAllocationOut"
+            },
+            "title": "Allocations",
+            "type": "array"
+          },
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "customer_id": {
+            "format": "uuid",
+            "title": "Customer Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "received_date": {
+            "format": "date",
+            "title": "Received Date",
+            "type": "string"
+          },
+          "reference": {
+            "title": "Reference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "reference",
+          "customer_id",
+          "received_date",
+          "method",
+          "amount_minor",
+          "allocations",
+          "note"
+        ],
+        "title": "PaymentOut",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -18,6 +669,46 @@
         ],
         "title": "ServiceInfo",
         "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
       }
     }
   },
@@ -28,6 +719,92 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/finance/customers": {
+      "get": {
+        "operationId": "list_customers_api_v1_finance_customers_get",
+        "parameters": [
+          {
+            "description": "Customer name or city",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Customer name or city",
+              "title": "Q"
+            }
+          },
+          {
+            "description": "receivables_desc|overdue_desc|name_asc",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "receivables_desc",
+              "description": "receivables_desc|overdue_desc|name_asc",
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CustomerSummary_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Customers and their receivable positions",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
     "/api/v1/finance/info": {
       "get": {
         "operationId": "info_api_v1_finance_info_get",
@@ -44,6 +821,251 @@
           }
         },
         "summary": "What this service is",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/invoices": {
+      "get": {
+        "operationId": "list_invoices_api_v1_finance_invoices_get",
+        "parameters": [
+          {
+            "description": "Invoice number or customer name",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Invoice number or customer name",
+              "title": "Q"
+            }
+          },
+          {
+            "description": "Lifecycle status filter",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Lifecycle status filter",
+              "title": "Status"
+            }
+          },
+          {
+            "description": "issued_desc|issued_asc|amount_desc|amount_asc|due_asc",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "issued_desc",
+              "description": "issued_desc|issued_asc|amount_desc|amount_asc|due_asc",
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_InvoiceOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Invoices and credit notes",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/invoices/{invoice_id}": {
+      "get": {
+        "operationId": "read_invoice_api_v1_finance_invoices__invoice_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Invoice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One invoice",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/ledger": {
+      "get": {
+        "operationId": "get_ledger_api_v1_finance_ledger_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Ledger / trial balance",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/overview": {
+      "get": {
+        "operationId": "get_overview_api_v1_finance_overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OverviewSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Finance overview \u2014 KPIs, cashflow, AR aging, attention",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/payments": {
+      "get": {
+        "operationId": "list_payments_api_v1_finance_payments_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PaymentOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Payments received",
         "tags": [
           "finance"
         ]
