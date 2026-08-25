@@ -1,0 +1,159 @@
+{
+  "manifest_version": 1,
+  "permissions": [
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See CMDB assets",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "cmdb",
+      "resource": "asset"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Create and update CMDB assets",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "cmdb",
+      "resource": "asset"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See incidents and their worklog",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "service",
+      "resource": "incident"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Raise incidents, update them and add worklog",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "service",
+      "resource": "incident"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See service requests and the catalog",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "service",
+      "resource": "request"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Raise and fulfil service requests",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "service",
+      "resource": "request"
+    }
+  ],
+  "product": "itsm",
+  "role_templates": [
+    {
+      "code": "ITSM_ADMIN",
+      "cross_product": false,
+      "description": "Administers the whole service desk and CMDB across the organization. Built from the ITSM catalogue alone \u2014 administering IT is not the same job as owning the account.",
+      "grants": [
+        {
+          "code": "itsm.cmdb.asset.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "itsm.cmdb.asset.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "itsm.service.incident.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "itsm.service.incident.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "itsm.service.request.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "itsm.service.request.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": true,
+      "is_default": false,
+      "name": "Service desk administrator"
+    },
+    {
+      "code": "ITSM_AGENT",
+      "cross_product": false,
+      "description": "Works the incident and request queues org-wide and reads the CMDB, but does not administer assets.",
+      "grants": [
+        {
+          "code": "itsm.cmdb.asset.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "itsm.service.incident.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "itsm.service.incident.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "itsm.service.request.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "itsm.service.request.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "Service desk agent"
+    },
+    {
+      "code": "ITSM_USER",
+      "cross_product": false,
+      "description": "Every person with an ITSM seat. Sees and raises their own tickets.",
+      "grants": [
+        {
+          "code": "itsm.cmdb.asset.read",
+          "scope": "OWN"
+        },
+        {
+          "code": "itsm.service.incident.read",
+          "scope": "OWN"
+        },
+        {
+          "code": "itsm.service.incident.write",
+          "scope": "OWN"
+        },
+        {
+          "code": "itsm.service.request.read",
+          "scope": "OWN"
+        },
+        {
+          "code": "itsm.service.request.write",
+          "scope": "OWN"
+        }
+      ],
+      "is_admin": false,
+      "is_default": true,
+      "name": "ITSM user"
+    }
+  ],
+  "sources": [
+    "itsm"
+  ]
+}

@@ -142,6 +142,21 @@ async def get_member(
     return (row[0], row[1]) if row else None
 
 
+async def list_owner_memberships(session: AsyncSession, org_id: uuid.UUID) -> list[Membership]:
+    """The organization's active owners.
+
+    Who a newly installed product's admin role is handed to: the owner is the only principal
+    guaranteed to exist when a product is activated, and activation is owner-gated
+    (`core.product.activation.write` is granted to `ORG_OWNER` alone).
+    """
+    stmt = select(Membership).where(
+        Membership.organization_id == org_id,
+        Membership.is_owner.is_(True),
+        Membership.status == "active",
+    )
+    return list((await session.execute(stmt)).scalars())
+
+
 async def get_membership_for_user(
     session: AsyncSession, org_id: uuid.UUID, user_id: uuid.UUID
 ) -> Membership | None:

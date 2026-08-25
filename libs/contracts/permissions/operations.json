@@ -1,0 +1,146 @@
+{
+  "manifest_version": 1,
+  "permissions": [
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See inventory on hand",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "item"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See warehouses",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "warehouse"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See purchase orders and their lines",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "purchase_order"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Raise and receive purchase orders",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "purchase_order"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See the supplier directory",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "supplier"
+    }
+  ],
+  "product": "operations",
+  "role_templates": [
+    {
+      "code": "OPERATIONS_ADMIN",
+      "cross_product": false,
+      "description": "Administers procurement and inventory across the organization. Built from the Operations catalogue alone \u2014 running operations is not the same job as owning the account.",
+      "grants": [
+        {
+          "code": "operations.inventory.item.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.warehouse.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.purchase_order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.purchase_order.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.supplier.read",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": true,
+      "is_default": false,
+      "name": "Operations administrator"
+    },
+    {
+      "code": "OPERATIONS_MANAGER",
+      "cross_product": false,
+      "description": "Raises and receives purchase orders org-wide and reads suppliers, inventory and warehouses.",
+      "grants": [
+        {
+          "code": "operations.inventory.item.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.warehouse.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.purchase_order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.purchase_order.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.supplier.read",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "Procurement manager"
+    },
+    {
+      "code": "OPERATIONS_USER",
+      "cross_product": false,
+      "description": "Every person with an Operations seat. Raises and sees their own purchase orders, and reads the shared suppliers, inventory and warehouses.",
+      "grants": [
+        {
+          "code": "operations.inventory.item.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.warehouse.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.purchase_order.read",
+          "scope": "OWN"
+        },
+        {
+          "code": "operations.procurement.purchase_order.write",
+          "scope": "OWN"
+        },
+        {
+          "code": "operations.procurement.supplier.read",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": true,
+      "name": "Operations user"
+    }
+  ],
+  "sources": [
+    "operations"
+  ]
+}

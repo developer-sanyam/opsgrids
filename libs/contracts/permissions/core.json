@@ -1,0 +1,321 @@
+{
+  "manifest_version": 1,
+  "permissions": [
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "Read the audit trail",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "identity",
+      "resource": "audit"
+    },
+    {
+      "action": "read",
+      "default_scope": "TEAM",
+      "description": "See who is in the organization",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "identity",
+      "resource": "membership"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Invite, deactivate and edit members",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "identity",
+      "resource": "membership"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See roles and what they grant",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "identity",
+      "resource": "role"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Create roles and change grants",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "identity",
+      "resource": "role"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See sites",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "org",
+      "resource": "location"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Create and edit sites",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "org",
+      "resource": "location"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See the organization's profile",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "org",
+      "resource": "organization"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Change name, address, tax identifiers",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "org",
+      "resource": "organization"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See departments and teams",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "org",
+      "resource": "unit"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Create and reorganize departments",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "org",
+      "resource": "unit"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See which products are active",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "product",
+      "resource": "activation"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Activate and deactivate products",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "product",
+      "resource": "activation"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "Browse the marketplace",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "product",
+      "resource": "catalogue"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See your own profile",
+      "is_dangerous": false,
+      "max_scope": "OWN",
+      "module": "profile",
+      "resource": "self"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Edit your own profile",
+      "is_dangerous": false,
+      "max_scope": "OWN",
+      "module": "profile",
+      "resource": "self"
+    }
+  ],
+  "product": "core",
+  "role_templates": [
+    {
+      "code": "ORG_OWNER",
+      "cross_product": false,
+      "description": "Runs the account: billing, product activation, members and roles. Deliberately separate from a product administrator \u2014 owning the company is not the same job as administering its HR data.",
+      "grants": [
+        {
+          "code": "core.identity.audit.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.identity.membership.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.identity.membership.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.identity.role.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.identity.role.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.org.location.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.org.location.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.org.organization.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.org.organization.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.org.unit.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.org.unit.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.product.activation.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.product.activation.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.product.catalogue.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.profile.self.read",
+          "scope": "OWN"
+        },
+        {
+          "code": "core.profile.self.write",
+          "scope": "OWN"
+        }
+      ],
+      "is_admin": true,
+      "is_default": false,
+      "name": "Organization owner"
+    },
+    {
+      "code": "ORG_ADMIN",
+      "cross_product": false,
+      "description": "Manages people and structure, but not billing.",
+      "grants": [
+        {
+          "code": "core.identity.membership.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.identity.membership.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.identity.role.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.org.location.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.org.location.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.org.organization.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.org.unit.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.org.unit.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.product.activation.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.product.catalogue.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.profile.self.read",
+          "scope": "OWN"
+        },
+        {
+          "code": "core.profile.self.write",
+          "scope": "OWN"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "Administrator"
+    },
+    {
+      "code": "MEMBER",
+      "cross_product": false,
+      "description": "Everyone. Sees the organization chart and edits their own profile.",
+      "grants": [
+        {
+          "code": "core.identity.membership.read",
+          "scope": "TEAM"
+        },
+        {
+          "code": "core.org.location.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.org.organization.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.org.unit.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.profile.self.read",
+          "scope": "OWN"
+        },
+        {
+          "code": "core.profile.self.write",
+          "scope": "OWN"
+        }
+      ],
+      "is_admin": false,
+      "is_default": true,
+      "name": "Member"
+    }
+  ],
+  "sources": [
+    "account"
+  ]
+}

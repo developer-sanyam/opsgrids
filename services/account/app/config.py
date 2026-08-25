@@ -13,6 +13,12 @@ class Settings(ServiceSettings):
     db_outbox_role: str | None = "atmora_outbox"
     db_directory_role: str | None = "atmora_directory"
 
+    #: Where the product permission manifests live (`<product>.json`, written by
+    #: `tools/export_permissions.py`). Unset means "walk up to the repository's
+    #: `libs/contracts/permissions/`", which is the development and CI layout; a packaged
+    #: deployment ships the manifests and points this at them.
+    permission_manifest_dir: str | None = None
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

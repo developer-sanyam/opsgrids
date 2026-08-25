@@ -221,13 +221,18 @@ boundaries: ## import-linter: the service layering and no import cycles
 	  (cd services/$$s && PYTHONPATH=. uv run lint-imports --config ../../.importlinter --no-cache); \
 	done
 
+# The permission manifests ride with the OpenAPI targets rather than owning their own gate
+# row: both are committed contracts generated from the code, both go stale the same way, and
+# CI already runs `make openapi-check` — one habit covers both.
 .PHONY: openapi
-openapi: ## Regenerate libs/contracts/openapi/<service>.json from the code
+openapi: ## Regenerate libs/contracts/{openapi,permissions}/*.json from the code
 	uv run python tools/export_openapi.py
+	uv run python tools/export_permissions.py
 
 .PHONY: openapi-check
-openapi-check: ## Fail if a committed OpenAPI document is behind the code
+openapi-check: ## Fail if a committed OpenAPI document or permission manifest is behind the code
 	uv run python tools/export_openapi.py --check
+	uv run python tools/export_permissions.py --check
 
 .PHONY: gate
 gate: check audit licenses secrets hygiene boundaries openapi-check migration-roundtrip smoke ## The whole quality gate — everything CI runs

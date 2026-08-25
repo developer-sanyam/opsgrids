@@ -1,0 +1,159 @@
+{
+  "manifest_version": 1,
+  "permissions": [
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See the workflow board",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "board",
+      "resource": "task"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Create and move board cards",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "board",
+      "resource": "task"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See project milestones",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "delivery",
+      "resource": "milestone"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Create and update milestones",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "delivery",
+      "resource": "milestone"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See projects and the portfolio",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "portfolio",
+      "resource": "project"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Create and edit projects",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "portfolio",
+      "resource": "project"
+    }
+  ],
+  "product": "projects",
+  "role_templates": [
+    {
+      "code": "PROJECTS_ADMIN",
+      "cross_product": false,
+      "description": "Administers the whole delivery portfolio across the organization. Built from the projects catalogue alone \u2014 running delivery is not the same job as owning the account.",
+      "grants": [
+        {
+          "code": "projects.board.task.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.board.task.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.delivery.milestone.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.delivery.milestone.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.portfolio.project.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.portfolio.project.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": true,
+      "is_default": false,
+      "name": "Delivery administrator"
+    },
+    {
+      "code": "PROJECTS_MANAGER",
+      "cross_product": false,
+      "description": "Runs projects, milestones and the board org-wide: reads and writes every portfolio resource, but does not administer the product.",
+      "grants": [
+        {
+          "code": "projects.board.task.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.board.task.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.delivery.milestone.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.delivery.milestone.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.portfolio.project.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.portfolio.project.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "Delivery manager"
+    },
+    {
+      "code": "PROJECTS_MEMBER",
+      "cross_product": false,
+      "description": "Every person with a projects seat. Reads the portfolio, milestones and board, and works their own board cards.",
+      "grants": [
+        {
+          "code": "projects.board.task.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.board.task.write",
+          "scope": "OWN"
+        },
+        {
+          "code": "projects.delivery.milestone.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.portfolio.project.read",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": true,
+      "name": "Project member"
+    }
+  ],
+  "sources": [
+    "projects"
+  ]
+}

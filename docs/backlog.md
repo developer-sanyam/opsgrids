@@ -74,13 +74,17 @@ left:
   default" is load-bearing and platform-core has no PII envelope helper. Slice 2 lands the
   envelope (encryption at rest, masking, `record_sensitive_read` on every unmask) and then adds
   those fields. Do not add any of them before the envelope exists.
-- **Register the `hrms` product + role templates with account/product service.** The "adding a
-  product" checklist steps 3–5 (publish the permission manifest, ship role templates the
-  platform instantiates per org, declare plan features) are not wired: there is no automated
-  cross-service registration path today, and account-service importing the HRMS catalogue would
-  couple the two across a boundary. The `hrms` row already exists in product-service's
-  catalogue seed (status `soon`) and the gateway route (`/api/v1/employees` → :8120) is in
-  place. Registering the manifest is a platform-mechanism gap to close, not a per-product edit.
+- **Register the `hrms` product + role templates with account/product service: DONE** —
+  closed as a platform mechanism, not a per-product edit (ADR-0005). Every product's
+  `app/catalogue.py` is exported to a committed JSON manifest in `libs/contracts/permissions/`
+  (`tools/export_permissions.py`, checked by the `openapi-check` gate row; the `hrms` manifest
+  merges the employee and attendance slices), and account-service's consumer installs the
+  activated product's manifest on `core.product.activated` / entitling
+  `commerce.subscription.*` — permissions join the catalogue, role templates become org-owned
+  system roles, and the admin-most template is granted to the org's owners.
+  `tools/wire_product.py` drives the same install by hand for an already-activated org.
+  Still open from the checklist: **declare plan features** (step 5) — that remains
+  product-service seed data.
 
 ### End-to-end journey suite
 Boot the services together and run one real journey: create an organization → invite → sign in

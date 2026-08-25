@@ -1,0 +1,79 @@
+{
+  "manifest_version": 1,
+  "permissions": [
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See the support queue: tickets, threads, agents, SLA policy and the overview",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "desk",
+      "resource": "ticket"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Reply to tickets and assign them",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "desk",
+      "resource": "ticket"
+    }
+  ],
+  "product": "support",
+  "role_templates": [
+    {
+      "code": "SUPPORT_ADMIN",
+      "cross_product": false,
+      "description": "Runs the support desk: reads the whole queue and every thread, replies and assigns. Built from the support catalogue alone \u2014 running the desk is not the same job as owning the account.",
+      "grants": [
+        {
+          "code": "support.desk.ticket.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "support.desk.ticket.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": true,
+      "is_default": false,
+      "name": "Support administrator"
+    },
+    {
+      "code": "SUPPORT_AGENT",
+      "cross_product": false,
+      "description": "Works the shared queue: reads every ticket, replies and assigns.",
+      "grants": [
+        {
+          "code": "support.desk.ticket.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "support.desk.ticket.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": true,
+      "name": "Support agent"
+    },
+    {
+      "code": "SUPPORT_VIEWER",
+      "cross_product": false,
+      "description": "Read-only visibility into the queue and overview \u2014 no replies, no assigns.",
+      "grants": [
+        {
+          "code": "support.desk.ticket.read",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "Support viewer"
+    }
+  ],
+  "sources": [
+    "support"
+  ]
+}

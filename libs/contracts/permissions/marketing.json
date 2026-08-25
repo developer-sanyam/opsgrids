@@ -1,0 +1,61 @@
+{
+  "manifest_version": 1,
+  "permissions": [
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See campaigns, audiences and marketing analytics",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "analytics",
+      "resource": "campaign"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Create and edit campaigns and audiences",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "analytics",
+      "resource": "campaign"
+    }
+  ],
+  "product": "marketing",
+  "role_templates": [
+    {
+      "code": "MARKETING_ADMIN",
+      "cross_product": false,
+      "description": "Runs the marketing function: reads every campaign and audience and creates and edits them. Built from the Marketing catalogue alone \u2014 administering marketing is not the same job as owning the account.",
+      "grants": [
+        {
+          "code": "marketing.analytics.campaign.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "marketing.analytics.campaign.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": true,
+      "is_default": false,
+      "name": "Marketing administrator"
+    },
+    {
+      "code": "MARKETING_ANALYST",
+      "cross_product": false,
+      "description": "Every person with a Marketing seat. Reads the org's campaigns and analytics.",
+      "grants": [
+        {
+          "code": "marketing.analytics.campaign.read",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": true,
+      "name": "Marketing analyst"
+    }
+  ],
+  "sources": [
+    "marketing"
+  ]
+}

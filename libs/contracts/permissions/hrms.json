@@ -1,0 +1,143 @@
+{
+  "manifest_version": 1,
+  "permissions": [
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See employee records",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "people",
+      "resource": "employee"
+    },
+    {
+      "action": "read_sensitive",
+      "default_scope": "OWN",
+      "description": "Unmask an employee's sensitive PII (bank, government identifiers, contact)",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "people",
+      "resource": "employee"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Create, edit and transition employee records",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "people",
+      "resource": "employee"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See attendance records",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "time",
+      "resource": "attendance"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Punch, and correct, attendance records",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "time",
+      "resource": "attendance"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See shift definitions",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "time",
+      "resource": "shift"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Define shifts and field geo-fences",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "time",
+      "resource": "shift"
+    }
+  ],
+  "product": "hrms",
+  "role_templates": [
+    {
+      "code": "HR_ADMIN",
+      "cross_product": false,
+      "description": "Administers time and attendance across the organization: reads and corrects every employee's attendance, and defines the organization's shifts and field geo-fences. Deliberately built from the HRMS catalogue alone. Administers people data across the organization: reads every employee and creates, edits and transitions their records. Deliberately built from the HRMS catalogue alone \u2014 administering HR is not the same job as owning the account.",
+      "grants": [
+        {
+          "code": "hrms.people.employee.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "hrms.people.employee.read_sensitive",
+          "scope": "ORG"
+        },
+        {
+          "code": "hrms.people.employee.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "hrms.time.attendance.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "hrms.time.attendance.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "hrms.time.shift.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "hrms.time.shift.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": true,
+      "is_default": false,
+      "name": "HR administrator"
+    },
+    {
+      "code": "EMPLOYEE",
+      "cross_product": false,
+      "description": "Every person with an HRMS seat. Punches and reads their own attendance, and sees the organization's shifts. Every person with an HRMS seat. Sees their own employment record.",
+      "grants": [
+        {
+          "code": "hrms.people.employee.read",
+          "scope": "OWN"
+        },
+        {
+          "code": "hrms.people.employee.read_sensitive",
+          "scope": "OWN"
+        },
+        {
+          "code": "hrms.time.attendance.read",
+          "scope": "OWN"
+        },
+        {
+          "code": "hrms.time.attendance.write",
+          "scope": "OWN"
+        },
+        {
+          "code": "hrms.time.shift.read",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": true,
+      "name": "Employee"
+    }
+  ],
+  "sources": [
+    "attendance",
+    "employee"
+  ]
+}

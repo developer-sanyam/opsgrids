@@ -1,0 +1,116 @@
+{
+  "manifest_version": 1,
+  "permissions": [
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See customers and their receivables",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "billing",
+      "resource": "customer"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See invoices and credit notes",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "billing",
+      "resource": "invoice"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See payments received",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "billing",
+      "resource": "payment"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See the ledger / trial balance",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "reports",
+      "resource": "ledger"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See the finance overview / KPIs",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "reports",
+      "resource": "summary"
+    }
+  ],
+  "product": "finance",
+  "role_templates": [
+    {
+      "code": "FINANCE_ADMIN",
+      "cross_product": false,
+      "description": "Runs the receivable book for the organization: every invoice, payment, customer position and report, at ORG. Deliberately built from the finance catalogue alone.",
+      "grants": [
+        {
+          "code": "finance.billing.customer.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.billing.invoice.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.billing.payment.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.reports.ledger.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.reports.summary.read",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": true,
+      "is_default": false,
+      "name": "Finance administrator"
+    },
+    {
+      "code": "FINANCE_VIEWER",
+      "cross_product": false,
+      "description": "Read-only access to the finance book. The default finance seat.",
+      "grants": [
+        {
+          "code": "finance.billing.customer.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.billing.invoice.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.billing.payment.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.reports.ledger.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.reports.summary.read",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": true,
+      "name": "Finance viewer"
+    }
+  ],
+  "sources": [
+    "finance"
+  ]
+}

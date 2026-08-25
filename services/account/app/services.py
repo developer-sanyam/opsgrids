@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import selectors
-from app.catalogue import CORE_REGISTRATION, ProductRegistration
+from app.catalogue import CORE_REGISTRATION, ProductManifest, ProductRegistration
 from app.models import (
     AuditLog,
     Invitation,
@@ -930,3 +930,90 @@ async def install_registration(
             session.add(
                 RolePermission(role_id=role.id, permission_id=permission.id, scope=grant.scope)
             )
+
+
+async def install_product_registration(
+    session: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    manifest: ProductManifest,
+    acting_as: str,
+    grant_admin_to_owners: bool = True,
+) -> dict[str, Any]:
+    """Install a product's manifest for one organization — the activation-time half of
+    registration, driven by the `core.product.activated` consumer and by
+    `tools/wire_product.py`.
+
+    Builds on `install_registration` (idempotent, so re-activation re-installs safely) and
+    adds the piece an activation needs that organization creation does not: the product's
+    admin-most role template is granted to the organization's active **owners**. The owner is
+    the only principal guaranteed to exist at activation time, activation is owner-gated
+    (`core.product.activation.write` sits on `ORG_OWNER` alone), and a product whose admin
+    role has no holder is dead until somebody phones support — the owner can hand the role to
+    the person who will actually run the product, and drop their own, through the ordinary
+    role APIs. Members who join later pick up the product's `is_default` template exactly as
+    they pick up `MEMBER`.
+
+    The permission-version bump happens only when a grant was actually added: installing
+    permissions and instantiating roles changes what *exists*, not what anybody may do, so a
+    pure re-install must not invalidate every token in the organization.
+    """
+    registration = manifest.registration
+    await install_registration(session, org_id, registration)
+
+    granted: list[uuid.UUID] = []
+    if grant_admin_to_owners and manifest.admin_role_code:
+        role = await selectors.get_role_by_code(session, org_id, manifest.admin_role_code)
+        if role is not None:
+            for owner in await selectors.list_owner_memberships(session, org_id):
+                if any(link.role_id == role.id for link in owner.roles):
+                    continue
+                session.add(
+                    MembershipRole(membership_id=owner.id, role_id=role.id, granted_by=None)
+                )
+                granted.append(owner.id)
+            await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=org_id,
+        actor_id=None,
+        acting_as=acting_as,
+        action="product.registration_installed",
+        entity="organization",
+        entity_id=org_id,
+        after={
+            "product": registration.product,
+            "permissions": registration.catalogue.codes(),
+            "role_templates": [t.code for t in registration.role_templates],
+            "admin_role": manifest.admin_role_code,
+            "admin_role_granted_to": [str(m) for m in granted],
+        },
+    )
+    for membership_id in granted:
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=org_id,
+            event_type=EVT_GRANTS_CHANGED,
+            aggregate_type="membership",
+            aggregate_id=membership_id,
+            payload={
+                "organization_id": str(org_id),
+                "membership_id": str(membership_id),
+                "granted_role": manifest.admin_role_code,
+            },
+        )
+    if granted:
+        # A grant landed, so tokens minted before it are stale — same rule as every other
+        # write that changes what somebody may do.
+        await _invalidate_grants(org_id)
+
+    return {
+        "product": registration.product,
+        "permissions": len(registration.catalogue.specs),
+        "role_templates": [t.code for t in registration.role_templates],
+        "admin_role": manifest.admin_role_code,
+        "owners_granted": len(granted),
+    }

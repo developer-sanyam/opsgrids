@@ -19,7 +19,11 @@ super-grant discovered during an audit.
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 Scope = str  # "OWN" | "TEAM" | "LOCATION" | "ORG"
 
@@ -247,3 +251,140 @@ class ProductRegistration:
 CORE_REGISTRATION = ProductRegistration(
     product="core", catalogue=CORE, role_templates=CORE_ROLE_TEMPLATES
 )
+
+
+# --------------------------------------------------------------------- product manifests
+#
+# Core is the only catalogue this service declares. Every *product's* catalogue lives with
+# the product — and deliberately cannot be imported from here, because importing another
+# service's module would couple the two across the very boundary the platform exists to keep
+# clean. So products publish their catalogues as **data**: `tools/export_permissions.py`
+# writes one JSON manifest per product to `libs/contracts/permissions/` at build time (the
+# same committed-contract idea as the OpenAPI documents beside them), and this section reads
+# a manifest back into the same `ProductRegistration` shape `install_registration` already
+# installs. The consumer installs a product's manifest when the product is activated for an
+# organization; `tools/wire_product.py` drives the identical path by hand.
+
+MANIFEST_VERSION = 1
+
+#: A product key as it appears in a manifest filename. The key arrives in an event payload,
+#: so it is validated before it goes anywhere near a path — `../../secret` is not a product.
+_PRODUCT_KEY = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
+
+
+@dataclass(frozen=True, slots=True)
+class ProductManifest:
+    """One product's catalogue and role templates, parsed from its committed manifest."""
+
+    product: str
+    registration: ProductRegistration
+    #: The template the exporter marked admin-most — the one granting the widest slice of
+    #: the product's own catalogue. Installed like any other template, and additionally
+    #: granted to the organization's owners on activation so a newly activated product has
+    #: an administrator from the first minute.
+    admin_role_code: str | None
+
+
+def registration_from_manifest(data: dict[str, Any]) -> ProductManifest:
+    """Parse one manifest into the shape `install_registration` installs.
+
+    Every guard the in-code catalogues get at import time runs here too: constructing the
+    `ProductRegistration` re-runs `validate()`, so a manifest whose template reaches into a
+    foreign product is refused exactly as a wrong-product grant in code would be. On top of
+    that, a grant naming a permission its own catalogue does not declare is refused —
+    `install_registration` would silently skip it, and a silently skipped grant is a role
+    that quietly does less than its manifest says.
+    """
+    version = data.get("manifest_version")
+    if version != MANIFEST_VERSION:
+        raise ValueError(f"unsupported manifest_version {version!r}")
+    product = data["product"]
+
+    catalogue = PermissionCatalogue(
+        product,
+        [
+            PermissionSpec(
+                module=spec["module"],
+                resource=spec["resource"],
+                action=spec["action"],
+                description=spec["description"],
+                default_scope=spec["default_scope"],
+                max_scope=spec["max_scope"],
+                is_dangerous=bool(spec.get("is_dangerous", False)),
+            )
+            for spec in data["permissions"]
+        ],
+    )
+
+    own_codes = set(catalogue.codes())
+    templates: list[RoleTemplate] = []
+    admin_role_code: str | None = None
+    for raw in data["role_templates"]:
+        template = RoleTemplate(
+            code=raw["code"],
+            name=raw["name"],
+            product=product,
+            grants=[Grant(g["code"], g["scope"]) for g in raw["grants"]],
+            description=raw.get("description", ""),
+            is_default=bool(raw.get("is_default", False)),
+            cross_product=bool(raw.get("cross_product", False)),
+        )
+        if not template.cross_product:
+            unknown = [g.code for g in template.grants if g.code not in own_codes]
+            if unknown:
+                raise ValueError(
+                    f"Role template {template.code!r} grants {unknown} which the "
+                    f"{product} manifest does not declare"
+                )
+        templates.append(template)
+        if raw.get("is_admin"):
+            admin_role_code = template.code
+
+    registration = ProductRegistration(
+        product=product, catalogue=catalogue, role_templates=templates
+    )
+    return ProductManifest(
+        product=product, registration=registration, admin_role_code=admin_role_code
+    )
+
+
+def _default_manifest_dir() -> Path | None:
+    """`libs/contracts/permissions/`, found the way settings find the workspace `.env`.
+
+    A deployment that does not ship the repository layout sets
+    `permission_manifest_dir` instead; walking up is the development and CI path.
+    """
+    # Imported here rather than at module top so the catalogue definitions above stay a
+    # pure, settings-free module — tests and the seeder import them with no environment.
+    from app.config import settings
+
+    configured = settings().permission_manifest_dir
+    if configured:
+        return Path(configured)
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").exists() and (parent / "services").is_dir():
+            return parent / "libs" / "contracts" / "permissions"
+    return None
+
+
+def load_product_manifest(product_key: str) -> ProductManifest | None:
+    """The committed manifest for `product_key`, or None when there is none.
+
+    None is a normal answer, not an error: a product with no backend catalogue — a purely
+    presentational one — has nothing to register, and the consumer records the activation as
+    processed either way.
+    """
+    if not _PRODUCT_KEY.match(product_key):
+        return None
+    directory = _default_manifest_dir()
+    if directory is None:
+        return None
+    path = directory / f"{product_key}.json"
+    if not path.is_file():
+        return None
+    manifest = registration_from_manifest(json.loads(path.read_text(encoding="utf-8")))
+    if manifest.product != product_key:
+        raise ValueError(
+            f"manifest {path.name} declares product {manifest.product!r}; the file is misnamed"
+        )
+    return manifest
