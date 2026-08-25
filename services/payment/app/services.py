@@ -24,11 +24,14 @@ from starlette.requests import Request
 from app import domain, selectors
 from app.models import (
     CHARGE_AUTHORIZED,
+    CHARGE_CAPTURED,
     CHARGE_CREATED,
     CHARGE_FAILED,
+    MANDATE_ACTIVE,
     REFUND_CREATED,
     AuditLog,
     Charge,
+    Mandate,
     OutboxEvent,
     ProviderEvent,
     Refund,
@@ -69,6 +72,37 @@ def _notes(charge_id: uuid.UUID, payload: ChargeIn) -> dict[str, str]:
     return notes
 
 
+async def _require_usable_mandate(session: AsyncSession, payload: ChargeIn) -> Mandate | None:
+    """The mandate named by a charge, refused unless it can actually authorize the debit.
+
+    models.Mandate states the invariant — "no debit under this mandate may exceed it" — and
+    until this guard nothing enforced it: `mandate_id` went straight to the provider without
+    a lookup, so a charge could exceed the cap, debit a pending or revoked mandate, cross
+    currencies, or name a mandate that does not exist. Every rule is checked here, before a
+    charge row exists to reconcile or a provider call is made.
+    """
+    if payload.mandate_id is None:
+        return None
+    mandate = await selectors.get_mandate(session, payload.organization_id, payload.mandate_id)
+    if mandate is None:
+        # Same-shaped answer whether the id is another tenant's or nobody's: not found.
+        raise NotFoundProblem("No such mandate")
+    if mandate.state != MANDATE_ACTIVE or mandate.activated_at is None:
+        raise BusinessRuleProblem(
+            f"mandate {mandate.id} is {mandate.state!r} and cannot be debited"
+        )
+    if mandate.currency != payload.currency.upper():
+        raise BusinessRuleProblem(
+            f"mandate {mandate.id} is denominated in {mandate.currency}, "
+            f"not {payload.currency.upper()}"
+        )
+    if payload.amount_minor > mandate.max_amount_minor:
+        raise BusinessRuleProblem(
+            f"amount {payload.amount_minor} exceeds mandate cap {mandate.max_amount_minor}"
+        )
+    return mandate
+
+
 async def create_charge(
     session: AsyncSession,
     provider: PaymentProvider,
@@ -83,7 +117,14 @@ async def create_charge(
     calls the provider exactly once. The provider call (stubbed HTTP) assigns the
     `provider_payment_id` the webhook will later reconcile against; the terminal captured/failed
     outcome is **not** decided here — it arrives by webhook, as it does in production.
+
+    A charge that names a mandate is validated against it **before anything is written**: the
+    mandate must exist in this organization, be `active` (bank-confirmed, `activated_at` set),
+    match the charge currency, and its cap must cover the amount — the model's own stated
+    invariant, previously enforced nowhere. The mandate id is persisted on the charge so the
+    authority a debit ran under is a column, not a reconstruction.
     """
+    await _require_usable_mandate(session, payload)
     charge_id = uuid.uuid4()
     stmt = (
         pg_insert(Charge)
@@ -93,6 +134,7 @@ async def create_charge(
             invoice_id=payload.invoice_id,
             subscription_id=payload.subscription_id,
             product_key=payload.product_key,
+            mandate_id=payload.mandate_id,
             provider=provider.name,
             amount_minor=payload.amount_minor,
             currency=payload.currency.upper(),
@@ -340,19 +382,41 @@ async def create_refund(
 ) -> Refund:
     """Refund a captured charge. Append-only: a refund is a new row, never an edit (ADR-0000 §9).
 
-    Kept minimal and un-exposed for now — there is no customer or operator refund endpoint yet —
-    but the table and the provider method exist, so the append-only guarantee is real and tested.
+    Un-exposed for now — there is no customer or operator refund endpoint yet — but the
+    docstring's own precondition is enforced rather than advertised: the charge must actually
+    be `captured` (a failed or merely-authorized charge keeps its `provider_payment_id`, so
+    that alone proved nothing), the amount must be positive, and the running total of
+    non-failed refunds may never exceed what was collected.
+
+    The provider idempotency key is derived from the **refund's** identity, not the charge's.
+    Keyed on the charge, every partial refund of it replayed the first at the provider while
+    the local append-only table recorded a new row with a different amount — a silent,
+    permanent divergence between the platform and provider ledgers.
     """
+    if charge.state != CHARGE_CAPTURED:
+        raise BusinessRuleProblem(
+            f"only a captured charge can be refunded; this one is {charge.state!r}"
+        )
     if charge.provider_payment_id is None:
         raise BusinessRuleProblem("cannot refund a charge with no provider payment id")
+    if amount_minor <= 0:
+        raise BusinessRuleProblem("a refund must be a positive amount")
+    already_refunded = await selectors.refunded_total_for_charge(session, charge.id)
+    if already_refunded + amount_minor > charge.amount_minor:
+        raise BusinessRuleProblem(
+            f"refunding {amount_minor} would exceed the charge: {already_refunded} of "
+            f"{charge.amount_minor} minor units already refunded"
+        )
 
+    refund_id = uuid.uuid4()
     result = provider.refund(
-        idempotency_key=f"refund:{charge.id}",
+        idempotency_key=f"refund:{refund_id}",
         provider_payment_id=charge.provider_payment_id,
         amount_minor=amount_minor,
         currency=charge.currency,
     )
     refund = Refund(
+        id=refund_id,
         organization_id=charge.organization_id,
         charge_id=charge.id,
         provider=result.provider,

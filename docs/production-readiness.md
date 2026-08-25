@@ -27,9 +27,13 @@ run as an owner role that serves no traffic, and a third read-only role serves t
 directory lookups. account-service can no longer read `auth.credentials`, TRUNCATE is withheld,
 and audit tables are INSERT/SELECT only.
 
-### 3. The internal service token is a shared static secret
-A single header value, defaulting to `dev-only-internal-token`, guards an API that reads across
-every tenant. One leak exposes every user, membership and organization name on the platform.
+### 3. ~~The internal service token is a shared static secret~~ — **RESOLVED** (with a caveat)
+Both internal channels now carry short-TTL signed tokens: `/internal/v1` calls mint per-callee
+tokens, and the gateway's identity-forwarding hop mints a per-request token bound to the
+forwarded user and organization. The raw signing key never travels, and production refuses the
+`dev-only-`/`ci-only-` placeholders. The caveat: the signing key is still one shared HMAC
+secret (per-service keypairs or mTLS is the end state), and no network policy yet makes
+`/internal/v1` unreachable from ingress — see `docs/api-improvements.md` §1.
 
 ### 4. The cross-tenant suite covers the storage layer, not every route
 `test_cross_tenant_isolation.py` proves the *database* refuses: reads, primary-key lookups and
@@ -67,9 +71,9 @@ The blockers are gone; these are not blockers but they are not nothing:
 |---|---|
 | **Readiness does not check Redis** | A service reports ready, then fails every permission-changing write and refuses all gateway traffic |
 | **Outbox-lag monitoring is a probe, not an alert** | `GET /health/outbox` counts every tenant's unpublished rows through `atmora_outbox`, so a stalled relay is visible — but nothing scrapes it yet, and a probe nobody alerts on is a stall nobody notices |
-| **No DLQ alerting** | Moot today (no consumers) — mandatory before the first one |
+| **No DLQ alerting** | Consumers ship in product, subscription, payment and console; failures retry once then park in `{queue}.dlq`. `tools/dlq.py` inspects and replays, but nothing alerts on depth yet |
 | **No metrics, tracing or error tracking** | Correlation ids are propagated and nothing collects them |
-| **Cross-tenant reads are not audited** | `record_sensitive_read` exists and is called by nothing |
+| **Cross-tenant reads are not audited** | Closed: employee PII unmasks write `entity.sensitive_read` rows, and the account directory reads log `directory.cross_tenant_read` |
 | **No backup or restore** | Mandatory before the PulseBoard migration, and it needs to be *rehearsed* |
 | **No rate limiting beyond per-caller counters** | No global or per-IP ceiling on the unauthenticated surface |
 | **Secrets come from `.env`** | No secret manager, no rotation story |
@@ -108,8 +112,9 @@ Roughly in order. This is not the full backlog — it is the subset that changes
 3. Land RLS policies, `account` schema first.
 4. Write the generated cross-tenant isolation suite. This is what turns "we believe it is
    isolated" into evidence.
-5. Replace the internal static token with signed service tokens, and make `/internal/v1`
-   unreachable from ingress.
+5. Replace the internal static token with signed service tokens — done, on both the
+   `/internal/v1` and gateway-forwarding channels; making `/internal/v1` unreachable from
+   ingress (network policy) is still open.
 6. Add the outbox-lag probe and Redis readiness check. Done; the probe and the relay run as `atmora_outbox`, which is what makes the count cross-tenant under row-level security.
 7. Write the end-to-end journey suite.
 

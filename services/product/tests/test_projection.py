@@ -46,11 +46,13 @@ def _envelope(
     trial_ends_at: str | None = None,
     product_key: str = "hrms",
     event_id: uuid.UUID | None = None,
+    occurred_at: datetime | None = None,
 ) -> dict[str, Any]:
     return {
         "event_id": str(event_id or uuid.uuid4()),
         "event_type": event_type,
         "organization_id": str(org_id),
+        "occurred_at": occurred_at.isoformat() if occurred_at else None,
         "payload": {
             "organization_id": str(org_id),
             "product_key": product_key,
@@ -150,6 +152,150 @@ class TestProjection:
         async with session.begin():
             theirs = await selectors.entitlements_for(session, stranger)
         assert "hrms" not in theirs
+
+
+class TestOutOfOrderDelivery:
+    """The `occurred_at` guard of migration a6b1c8d3e9f2.
+
+    Idempotency (above) only dedupes an exact redelivery; a *distinct older* event folded late —
+    multi-replica relays, consumer replicas sharing the queue, a DLQ replay — used to win by
+    arriving last. The row now remembers when the fact it reflects occurred, and drops anything
+    older. Delivery order must not change where the row ends up.
+    """
+
+    async def test_in_order_transitions_land_on_the_newer_state(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """The baseline: delivered in event-time order, the newer transition wins (as ever)."""
+        t1 = datetime.now(UTC) - timedelta(minutes=10)
+        t2 = t1 + timedelta(minutes=5)
+        await project_subscription_event(
+            _envelope(
+                org_id,
+                event_type="commerce.subscription.activated",
+                state="active",
+                occurred_at=t1,
+            )
+        )
+        await project_subscription_event(
+            _envelope(
+                org_id,
+                event_type="commerce.subscription.suspended",
+                state="suspended",
+                occurred_at=t2,
+            )
+        )
+        async with session.begin():
+            activation = await selectors.get_activation(session, org_id, "hrms")
+        assert activation is not None
+        assert activation.status == "suspended"
+        assert activation.entitles is False
+
+    async def test_the_same_transitions_out_of_order_also_land_on_the_newer_state(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """The regression: the same two events, newer delivered first. Last-write-wins used to
+        leave the row on the stale activation — the guard must drop it instead."""
+        t1 = datetime.now(UTC) - timedelta(minutes=10)
+        t2 = t1 + timedelta(minutes=5)
+        await project_subscription_event(
+            _envelope(
+                org_id,
+                event_type="commerce.subscription.suspended",
+                state="suspended",
+                occurred_at=t2,
+            )
+        )
+        await project_subscription_event(
+            _envelope(
+                org_id,
+                event_type="commerce.subscription.activated",
+                state="active",
+                occurred_at=t1,
+            )
+        )
+        async with session.begin():
+            activation = await selectors.get_activation(session, org_id, "hrms")
+        assert activation is not None
+        assert activation.status == "suspended", (
+            "a stale activation overwrote the newer suspension — the ordering guard failed"
+        )
+        assert activation.entitles is False
+
+    async def test_a_reversed_suspend_reactivate_does_not_leave_the_customer_suspended(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """The customer-facing shape of the bug: suspended then reactivated, delivered reversed.
+        The late-arriving suspension is the stale one; the customer must stay entitled."""
+        suspended_at = datetime.now(UTC) - timedelta(minutes=10)
+        reactivated_at = suspended_at + timedelta(minutes=5)
+        await project_subscription_event(
+            _envelope(
+                org_id,
+                event_type="commerce.subscription.activated",
+                state="active",
+                occurred_at=reactivated_at,
+            )
+        )
+        await project_subscription_event(
+            _envelope(
+                org_id,
+                event_type="commerce.subscription.suspended",
+                state="suspended",
+                occurred_at=suspended_at,
+            )
+        )
+        async with session.begin():
+            activation = await selectors.get_activation(session, org_id, "hrms")
+        assert activation is not None
+        assert activation.status == "active", (
+            "a stale suspension re-suspended a reactivated customer"
+        )
+        assert activation.entitles is True
+
+    async def test_events_and_rows_without_occurred_at_still_fold(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """No timestamp, no guard. A row with `state_occurred_at` NULL (the manual `activate`
+        path writes these) accepts any event, and an event with no `occurred_at` folds onto a
+        timestamped row — neither drops, neither crashes."""
+        t1 = datetime.now(UTC) - timedelta(minutes=10)
+
+        # An untimestamped event creates the row with state_occurred_at NULL — the same row
+        # shape the manual activate path leaves behind.
+        await project_subscription_event(
+            _envelope(org_id, event_type="commerce.subscription.activated", state="active")
+        )
+        async with session.begin():
+            activation = await selectors.get_activation(session, org_id, "hrms")
+        assert activation is not None
+        assert activation.state_occurred_at is None
+
+        # A timestamped event folds onto the NULL row (nothing to compare against) and stamps it.
+        await project_subscription_event(
+            _envelope(
+                org_id,
+                event_type="commerce.subscription.suspended",
+                state="suspended",
+                occurred_at=t1,
+            )
+        )
+        async with session.begin():
+            session.expire_all()
+            activation = await selectors.get_activation(session, org_id, "hrms")
+        assert activation is not None
+        assert activation.status == "suspended"
+        assert activation.state_occurred_at is not None
+
+        # And an untimestamped event folds onto the timestamped row — no ordering claim, no drop.
+        await project_subscription_event(
+            _envelope(org_id, event_type="commerce.subscription.activated", state="active")
+        )
+        async with session.begin():
+            session.expire_all()
+            activation = await selectors.get_activation(session, org_id, "hrms")
+        assert activation is not None
+        assert activation.status == "active"
 
 
 class TestTheGucIsLoadBearing:

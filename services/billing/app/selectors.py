@@ -80,9 +80,23 @@ async def get_credit_entry(session: AsyncSession, entry_id: uuid.UUID) -> Credit
     ).scalar_one_or_none()
 
 
+async def get_reversal_of(session: AsyncSession, entry_id: uuid.UUID) -> CreditLedgerEntry | None:
+    """The reversal already written against `entry_id`, if any.
+
+    At most one exists — `ix_credit_ledger_org_reversal_of` is partial-unique — so this is
+    how `reverse_credit` stays idempotent under at-least-once delivery.
+    """
+    return (
+        await session.execute(
+            select(CreditLedgerEntry).where(CreditLedgerEntry.reversal_of == entry_id)
+        )
+    ).scalar_one_or_none()
+
+
 __all__ = [
     "credit_balance",
     "get_credit_entry",
     "get_invoice",
+    "get_reversal_of",
     "list_invoices",
 ]

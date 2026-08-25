@@ -155,16 +155,25 @@ import asyncio
 
 from app.config import settings
 from app.models import OutboxEvent
-from platform_core.db import get_outbox_sessionmaker, init_engine, init_outbox_engine
+from platform_core.db import (
+    assert_outbox_role,
+    get_outbox_engine,
+    get_outbox_sessionmaker,
+    init_engine,
+    init_outbox_engine,
+)
 from platform_core.events import OutboxRelay
 
 
 async def main() -> None:
     cfg = settings()
     # The app engine is the fallback `get_outbox_sessionmaker` takes when no outbox role is
-    # configured; `init_outbox_engine` logs `outbox.role.not_split` in that case.
+    # configured; `init_outbox_engine` logs `outbox.role.not_split` in that case, and the
+    # assertion below turns the silent-stall configuration into a startup failure outside
+    # local development.
     init_engine(cfg)
     init_outbox_engine(cfg)
+    await assert_outbox_role(get_outbox_engine(), environment=cfg.environment)
     relay = OutboxRelay(
         amqp_url=cfg.rabbitmq_url,
         outbox_cls=OutboxEvent,
@@ -188,14 +197,19 @@ from __future__ import annotations
 import asyncio
 
 from app.config import settings
-from platform_core.db import init_engine
+from platform_core.db import assert_app_role, init_engine
 from platform_core.events import EventConsumer
 
 consumer = EventConsumer(amqp_url=settings().rabbitmq_url, queue_name="{name}.events")
 
 
 async def main() -> None:
-    init_engine(settings())
+    cfg = settings()
+    engine = init_engine(cfg)
+    # Consumers run NOBYPASSRLS: the per-message tenant GUC only means something if
+    # row-level security can bind this role. Started on the admin or outbox DSN by
+    # mistake, RLS would be silently inert — refuse outside local (ADR-0002).
+    await assert_app_role(engine, environment=cfg.environment)
     await consumer.run()
 
 
@@ -337,7 +351,7 @@ def do_run_migrations(connection: Connection) -> None:
     # After the schema is up to date, not before: the grants name tables the migrations just
     # created. Doing it here rather than as a per-service step means a new service cannot ship
     # without them -- which is exactly what happened the first time this was left out.
-    apply_schema_grants(connection, SCHEMA, cfg.db_app_role)
+    apply_schema_grants(connection, SCHEMA, cfg.db_app_role, outbox_role=cfg.db_outbox_role)
 
 
 async def run_async_migrations() -> None:

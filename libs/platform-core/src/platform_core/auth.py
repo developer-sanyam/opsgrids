@@ -35,7 +35,7 @@ from sqlalchemy import false as sa_false
 
 from platform_core.config import ServiceSettings
 from platform_core.errors import ForbiddenProblem, PaymentRequiredProblem, UnauthorizedProblem
-from platform_core.internal_auth import verify_service_token
+from platform_core.internal_auth import verify_gateway_token, verify_service_token
 
 
 class Scope(enum.StrEnum):
@@ -186,20 +186,35 @@ def _csv(request: Request, header: str) -> list[str]:
 
 
 def _principal_from_gateway(request: Request, settings: ServiceSettings) -> Principal | None:
-    """Identity forwarded by a gateway, trusted only with a valid internal token.
+    """Identity forwarded by a gateway, trusted only with a valid forwarding token.
 
     The gateway verifies the JWT once and resolves permissions; services take its word
-    because the shared secret proves the hop. Any service reachable *without* going
-    through a gateway must therefore not be reachable from outside the cluster.
+    because a short-lived signed token proves the hop **and names the identity being
+    forwarded**. This replaced a raw shared-secret comparison: the secret doubling as the
+    service-token signing key travelled on every proxied request, so one header capture
+    could forge any user in any organization against any service, forever. A captured
+    forwarding token is now good for the token TTL, for one user in one organization, and
+    opens no `/internal/v1` endpoint (its audience is the forwarding channel, never a
+    service name). Any service reachable *without* going through a gateway must still not
+    be reachable from outside the cluster.
     """
     internal = request.headers.get("X-Internal-Token")
-    expected = settings.internal_service_token.get_secret_value()
-    if not internal or not _constant_time_eq(internal, expected):
+    if not internal:
+        return None
+    try:
+        hop = verify_gateway_token(settings, internal)
+    except Exception:
+        # Not a forwarding token — perhaps a service token for an internal route, perhaps
+        # garbage. Fall through to bearer authentication rather than judging it here.
         return None
     user_id = request.headers.get("X-User-Id")
     org_id = request.headers.get("X-Org-Id")
     if not user_id or not org_id:
         return None
+    if hop.get("uid") != user_id or hop.get("org") != org_id:
+        # A valid hop token accompanied by identity headers it does not vouch for is not a
+        # configuration mistake — it is tampering, and it must not fall back to anything.
+        raise UnauthorizedProblem("Forwarded identity does not match the hop token")
 
     try:
         sub = uuid.UUID(user_id)
@@ -230,12 +245,6 @@ def _principal_from_gateway(request: Request, settings: ServiceSettings) -> Prin
         amr=_csv(request, "X-Amr"),
         permission_version=int(request.headers.get("X-Permission-Version") or 0),
     )
-
-
-def _constant_time_eq(a: str, b: str) -> bool:
-    import hmac
-
-    return hmac.compare_digest(a.encode(), b.encode())
 
 
 def get_principal(request: Request) -> Principal:
@@ -322,6 +331,11 @@ class ScopeContext(BaseModel):
         if self.scope is Scope.TEAM:
             if team_col is None:
                 raise ForbiddenProblem("TEAM scope is not supported on this resource")
+            if self.principal.subject_ref is None:
+                # Same guard as OWN, for the same reason: `team_col == None` renders as
+                # `team_col IS NULL`, which would return every unmanaged row in the tenant
+                # instead of nothing.
+                return stmt.where(sa_false())
             return stmt.where(team_col == self.principal.subject_ref)
         if self.scope is Scope.LOCATION:
             if location_col is None:

@@ -49,13 +49,31 @@ USAGE_EVENT = "commerce.usage.recorded"
 MRR_STATES: frozenset[str] = frozenset({"active"})
 #: States that entitle a product: `active`, or a trial that has not lapsed.
 ENTITLED_STATES: frozenset[str] = frozenset({"active", "trial"})
-#: A cancelled subscription is removed from the snapshot — the customer no longer has it.
+#: A cancelled subscription contributes nothing to the snapshot. The entry is *kept* as a
+#: tombstone rather than popped: its `occurred_at` is what stops a stale pre-cancellation
+#: event, replayed late, from resurrecting the product.
 TERMINAL_STATE = "cancelled"
 
 
 def period_bucket(occurred_at: datetime) -> str:
     """Coarse `YYYY-MM` bucket a usage event rolls into. A trend, not a bill."""
     return f"{occurred_at.year:04d}-{occurred_at.month:02d}"
+
+
+def _is_stale(entry: dict[str, Any], occurred_at: str | None) -> bool:
+    """True when `occurred_at` predates (or ties) what the entry already reflects.
+
+    Parsed, not string-compared: both values come from `build_envelope`'s UTC isoformat
+    today, but a lexicographic comparison would silently misorder the moment any producer
+    serialises a different offset.
+    """
+    applied = entry.get("occurred_at")
+    if not applied or not occurred_at:
+        return False
+    try:
+        return datetime.fromisoformat(occurred_at) <= datetime.fromisoformat(applied)
+    except ValueError:
+        return False
 
 
 def apply_subscription_transition(
@@ -67,16 +85,30 @@ def apply_subscription_transition(
     amount_minor: int,
     currency: str | None,
     trial_ends_at: str | None,
-) -> str | None:
-    """Fold one subscription transition into `states`, returning the *from* state.
+    occurred_at: str | None = None,
+) -> tuple[bool, str | None]:
+    """Fold one subscription transition into `states`.
 
-    Mutates `states` in place: sets the product's new entry, or removes it on cancellation. The
-    returned previous state is what classifies the transition — `None` for a brand-new
-    subscription, `"active"` when this is a churn, `"trial"` when this is a conversion.
+    Returns ``(applied, from_state)``. The previous state is what classifies the transition
+    — `None` for a brand-new subscription, `"active"` when this is a churn, `"trial"` when
+    this is a conversion.
+
+    Not applied when the transition is **stale**: delivery is unordered across relay and
+    consumer replicas and DLQ replays, and this fold used to be last-write-wins — a
+    suspension delivered after the reactivation that superseded it left the org's snapshot
+    `locked` and its MRR wrong until the next transition. An event whose `occurred_at` does
+    not advance the entry's is dropped, and `states` is untouched.
+
+    Mutates `states` in place otherwise: sets the product's new entry, or tombstones it on
+    cancellation (state kept, contributes nothing to the snapshot) so the ordering guard
+    survives the subscription it guards.
     """
-    previous: str | None = states.get(product_key, {}).get("state")
+    entry: dict[str, Any] = states.get(product_key, {})
+    if _is_stale(entry, occurred_at):
+        return False, None
+    previous: str | None = entry.get("state")
     if to_state == TERMINAL_STATE:
-        states.pop(product_key, None)
+        states[product_key] = {"state": TERMINAL_STATE, "occurred_at": occurred_at}
     else:
         states[product_key] = {
             "state": to_state,
@@ -84,8 +116,9 @@ def apply_subscription_transition(
             "amount_minor": int(amount_minor),
             "currency": currency,
             "trial_ends_at": trial_ends_at,
+            "occurred_at": occurred_at,
         }
-    return previous
+    return True, previous
 
 
 def recompute_snapshot(states: dict[str, Any]) -> dict[str, Any]:

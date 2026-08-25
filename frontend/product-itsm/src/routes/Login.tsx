@@ -7,8 +7,11 @@ import type { OrganizationChoice } from "@/auth/types";
 import { Button } from "@/ui";
 import { EyeIcon, EyeOffIcon, LogoMark } from "@/ui/icons";
 
-const DEMO_EMAIL = "it-admin@atmora-demo.example.com";
-const DEMO_PASSWORD = "Demo-atmora-2026"; // pragma: allowlist secret — seeded dev-demo credential, not a real secret
+/** Dev-build only: Vite replaces `import.meta.env.DEV` with a literal, so production
+ *  bundles carry neither the credential strings nor the button below. */
+const DEMO_CREDENTIALS = import.meta.env.DEV
+  ? { email: "it-admin@atmora-demo.example.com", password: "Demo-atmora-2026" } // pragma: allowlist secret — seeded dev-demo credential, not a real secret
+  : null;
 
 /** Never leak which half was wrong — one message covers a bad email, bad password, or a 4xx. */
 const CREDENTIAL_ERROR = "That email or password is incorrect.";
@@ -84,8 +87,9 @@ export function LoginPage() {
   }
 
   function fillDemo() {
-    setEmail(DEMO_EMAIL);
-    setPassword(DEMO_PASSWORD);
+    if (!DEMO_CREDENTIALS) return;
+    setEmail(DEMO_CREDENTIALS.email);
+    setPassword(DEMO_CREDENTIALS.password);
     setError(null);
   }
 
@@ -208,16 +212,18 @@ export function LoginPage() {
                   </Button>
                 </form>
 
-                <button
-                  type="button"
-                  onClick={fillDemo}
-                  className="mt-5 w-full rounded-tile bg-accent-soft px-4 py-3 text-left text-xs text-accent-ink transition-colors hover:bg-accent/40"
-                >
-                  <span className="font-bold">Demo access</span>
-                  <span className="block text-accent-ink/80">
-                    Tap to fill · {DEMO_EMAIL}
-                  </span>
-                </button>
+                {DEMO_CREDENTIALS && (
+                  <button
+                    type="button"
+                    onClick={fillDemo}
+                    className="mt-5 w-full rounded-tile bg-accent-soft px-4 py-3 text-left text-xs text-accent-ink transition-colors hover:bg-accent/40"
+                  >
+                    <span className="font-bold">Demo access</span>
+                    <span className="block text-accent-ink/80">
+                      Tap to fill · {DEMO_CREDENTIALS.email}
+                    </span>
+                  </button>
+                )}
               </>
             )}
           </div>

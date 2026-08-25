@@ -17,6 +17,12 @@ travels on the wire, so capturing request headers captures one expiring use rath
 credential itself. Presenting the raw key as a token is refused, and so is a token minted for a
 different service; both are asserted.
 
+The gateway's identity-forwarding hop — the highest-volume channel, and the last place the raw
+secret still travelled — is on the same machinery now: a per-request token on a dedicated
+channel audience (so it opens no `/internal/v1` endpoint), with the forwarded user and
+organization bound into the claims, so services refuse identity headers the token does not
+vouch for. The raw secret is no longer accepted anywhere.
+
 Enforcing this surfaced a second problem: the dev key was 23 bytes, under the 32-byte floor for
 HMAC-SHA256 (RFC 7518 §3.2). The default is longer now and real environments refuse a short one.
 

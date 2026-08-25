@@ -45,6 +45,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -201,7 +202,15 @@ class CreditLedgerEntry(Base, TenantBase):
         # The balance query filters org, currency and the window, so those lead the index.
         Index("ix_credit_ledger_org_currency_window", "organization_id", "currency", "valid_from"),
         Index("ix_credit_ledger_org_valid_until", "organization_id", "valid_until"),
-        Index("ix_credit_ledger_org_reversal_of", "organization_id", "reversal_of"),
+        # Partial and UNIQUE: one reversal per entry, enforced below the service check —
+        # the layer a retried internal POST or two racing transactions cannot reach.
+        Index(
+            "ix_credit_ledger_org_reversal_of",
+            "organization_id",
+            "reversal_of",
+            unique=True,
+            postgresql_where=text("reversal_of IS NOT NULL"),
+        ),
         CheckConstraint("length(currency) = 3", name="currency_iso"),
         CheckConstraint(
             "entry_type in ('grant', 'consume', 'reversal', 'expiry')", name="entry_type"

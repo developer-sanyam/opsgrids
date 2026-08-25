@@ -17,9 +17,11 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import consumers, selectors, services
+from app.models import RevenueEvent
 from tests.helpers import envelope, make_fake_resolver, subscription_payload
 
 pytestmark = pytest.mark.integration
@@ -128,6 +130,57 @@ class TestMetricsOnASeededStream:
         states = await selectors.all_org_states(directory_session)
         assert states[0].mrr_minor == 0, "a suspended subscription pays nothing"
         assert states[0].locked is True, "a suspension locks the organization"
+
+
+class TestOutOfOrderFold:
+    async def test_a_stale_suspension_does_not_relock_a_reactivated_org(
+        self, engine_ready: None, directory_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """The service wiring over the domain guard: a suspension delivered *after* the
+        reactivation that superseded it must fold nothing — the snapshot stays active and
+        unlocked — while the stale arrival is still appended to the revenue log, marked
+        `stale` so churn/conversion reads can exclude it."""
+        reactivated_at = datetime.now(UTC)
+        suspended_at = reactivated_at - timedelta(minutes=5)
+
+        await _fold_subscription(
+            envelope(
+                "commerce.subscription.activated",
+                organization_id=org_id,
+                payload=subscription_payload(
+                    org_id, product_key="hrms", state="active", plan_version_id=PV1
+                ),
+                occurred_at=reactivated_at,
+            )
+        )
+        await _fold_subscription(
+            envelope(
+                "commerce.subscription.suspended",
+                organization_id=org_id,
+                payload=subscription_payload(
+                    org_id, product_key="hrms", state="suspended", plan_version_id=PV1
+                ),
+                occurred_at=suspended_at,
+            )
+        )
+
+        states = await selectors.all_org_states(directory_session)
+        assert states[0].mrr_minor == 50000, "a stale suspension zeroed a reactivated org's MRR"
+        assert states[0].locked is False, "a stale suspension locked a reactivated org"
+
+        rows = (
+            (
+                await directory_session.execute(
+                    select(RevenueEvent).where(
+                        RevenueEvent.kind == "commerce.subscription.suspended"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1, "the stale arrival must still be recorded"
+        assert rows[0].meta["stale"] is True, "a stale fold must be marked in the revenue log"
 
 
 class TestIdempotentFold:

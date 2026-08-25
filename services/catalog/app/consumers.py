@@ -9,14 +9,19 @@ from __future__ import annotations
 import asyncio
 
 from app.config import settings
-from platform_core.db import init_engine
+from platform_core.db import assert_app_role, init_engine
 from platform_core.events import EventConsumer
 
 consumer = EventConsumer(amqp_url=settings().rabbitmq_url, queue_name="catalog.events")
 
 
 async def main() -> None:
-    init_engine(settings())
+    cfg = settings()
+    engine = init_engine(cfg)
+    # Consumers run NOBYPASSRLS: the per-message tenant GUC only means something if
+    # row-level security can bind this role. Started on the admin or outbox DSN by
+    # mistake, RLS would be silently inert — refuse outside local (ADR-0002).
+    await assert_app_role(engine, environment=cfg.environment)
     await consumer.run()
 
 

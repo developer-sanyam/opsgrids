@@ -231,10 +231,18 @@ class TestTheGucIsSetInsideEveryRequest:
         assert value in ("", None), f"the tenant leaked: {value!r}"
 
 
-class TestNoPolicyExistsYet:
-    """Slice one has no policies; this keeps that honest until slice two lands them."""
+class TestThePolicyClassificationHolds:
+    """ADR-0002 §6 for auth: policy `org_idp_configs`, exempt the rest and say so.
 
-    async def test_no_table_in_this_schema_has_row_security(self, session: AsyncSession) -> None:
+    Auth is deliberately "last and minimal": almost everything here is user-keyed or
+    platform-global and predates any organization, so `org_idp_configs` — per-organization
+    IdP secrets, certificates and the `enforce_sso` switch — is the one table a tenant
+    policy is expressable on. This pins both halves: the mandated table is under a forced
+    policy, and nothing else silently grows one (a policy on `processed_events` or on the
+    sentinel-org tables would break idempotency and the pre-organization flows).
+    """
+
+    async def test_exactly_org_idp_configs_has_row_security(self, session: AsyncSession) -> None:
         secured = (
             (
                 await session.execute(
@@ -246,4 +254,25 @@ class TestNoPolicyExistsYet:
             .all()
         )
         await session.rollback()
-        assert secured == []
+        assert secured == ["org_idp_configs"]
+
+    async def test_the_policy_is_forced_and_checks_writes(self, session: AsyncSession) -> None:
+        """FORCE covers a future owner mistake; WITH CHECK covers cross-tenant INSERTs."""
+        forced = (
+            await session.execute(
+                text("SELECT relforcerowsecurity FROM pg_class WHERE oid = to_regclass(:t)"),
+                {"t": f"{SCHEMA}.org_idp_configs"},
+            )
+        ).scalar_one()
+        with_check = (
+            await session.execute(
+                text(
+                    "SELECT polwithcheck IS NOT NULL FROM pg_policy "
+                    "WHERE polrelid = to_regclass(:t) AND polname = 'tenant_isolation'"
+                ),
+                {"t": f"{SCHEMA}.org_idp_configs"},
+            )
+        ).scalar_one()
+        await session.rollback()
+        assert forced is True
+        assert with_check is True

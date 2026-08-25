@@ -22,6 +22,12 @@ The end state is per-service keypairs or mTLS, and this is deliberately shaped s
 `_sign` and `_verify` change when that happens — every call site already passes a caller and an
 audience, which is the part that would otherwise need retrofitting.
 
+The same machinery covers **both** internal channels. Service-to-service `/internal/v1` calls
+mint per-callee tokens (`aud` = the service being called). The gateway's identity-forwarding
+hop — the highest-volume channel, and the last place the raw secret used to travel — mints a
+per-request token on the `GATEWAY_AUDIENCE` channel with the forwarded `uid`/`org` bound in,
+so a capture can neither open an internal endpoint nor vouch for any other identity.
+
 Replay inside the TTL window is not prevented. Doing so needs a `jti` ledger in Redis on the
 *callee*, which puts a hard dependency on Redis in front of every internal call — including the
 gateway's permission lookup on every authenticated request. That trade is not obviously worth it
@@ -43,26 +49,44 @@ ALGORITHM = "HS256"
 #: Short on purpose. Long enough for a call and a retry, far too short to be worth stealing.
 DEFAULT_TTL_SECONDS = 60
 
+#: The audience of the gateway's identity-forwarding tokens. A channel name rather than a
+#: service name, because the gateway proxies to every service and the route table maps URL
+#: prefixes to ports, not to service identities. Deliberately distinct from any
+#: `service_name`, so a captured forwarding token can never open an `/internal/v1` endpoint —
+#: `verify_service_token` checks `aud == settings.service_name` and this value never matches.
+GATEWAY_AUDIENCE = "atmora-gateway-forward"
+
 
 def mint_service_token(
-    settings: ServiceSettings, *, audience: str, caller: str | None = None
+    settings: ServiceSettings,
+    *,
+    audience: str,
+    caller: str | None = None,
+    claims: dict[str, Any] | None = None,
 ) -> str:
     """A credential for one call to one service.
 
     `audience` is what stops a token minted for account-service being replayed against
     billing-service — the static secret it replaces was accepted by everything.
+
+    `claims` lets a caller bind extra facts into the token — the gateway binds the forwarded
+    user and organization ids, so a captured forwarding token cannot vouch for any *other*
+    identity. Reserved JWT claim names cannot be overridden.
     """
     now = datetime.now(UTC)
-    claims: dict[str, Any] = {
-        "iss": caller or settings.service_name,
-        "aud": audience,
-        "iat": now,
-        "exp": now + timedelta(seconds=settings.service_token_ttl_seconds),
-        "jti": uuid.uuid4().hex,
-        "typ": "service",
-    }
+    payload: dict[str, Any] = dict(claims or {})
+    payload.update(
+        {
+            "iss": caller or settings.service_name,
+            "aud": audience,
+            "iat": now,
+            "exp": now + timedelta(seconds=settings.service_token_ttl_seconds),
+            "jti": uuid.uuid4().hex,
+            "typ": "service",
+        }
+    )
     return jwt.encode(
-        claims, settings.internal_service_token.get_secret_value(), algorithm=ALGORITHM
+        payload, settings.internal_service_token.get_secret_value(), algorithm=ALGORITHM
     )
 
 
@@ -86,4 +110,38 @@ def verify_service_token(settings: ServiceSettings, token: str) -> dict[str, Any
     return claims
 
 
-__all__ = ["ALGORITHM", "DEFAULT_TTL_SECONDS", "mint_service_token", "verify_service_token"]
+def verify_gateway_token(settings: ServiceSettings, token: str) -> dict[str, Any]:
+    """Decode and check a gateway identity-forwarding token.
+
+    This is what replaced the raw shared secret the gateway used to send on **every** proxied
+    request: a header capture used to yield the signing key itself — forge any identity
+    against any service, forever, and mint `/internal/v1` credentials with it. Now the wire
+    carries a derived, expiring token bound to the one identity being forwarded.
+
+    The audience is the forwarding *channel*, not a service name, so this token opens no
+    `/internal/v1` endpoint (those verify `aud == service_name`). Replay within the TTL
+    against a sibling service forwards only the same `uid`/`org` the token names —
+    `_principal_from_gateway` refuses identity headers the token does not vouch for.
+
+    Raises `jwt.PyJWTError` on anything wrong, like `verify_service_token`.
+    """
+    claims: dict[str, Any] = jwt.decode(
+        token,
+        settings.internal_service_token.get_secret_value(),
+        algorithms=[ALGORITHM],
+        audience=GATEWAY_AUDIENCE,
+        options={"require": ["exp", "iss", "aud", "jti"]},
+    )
+    if claims.get("typ") != "service":
+        raise jwt.InvalidTokenError("not a service token")
+    return claims
+
+
+__all__ = [
+    "ALGORITHM",
+    "DEFAULT_TTL_SECONDS",
+    "GATEWAY_AUDIENCE",
+    "mint_service_token",
+    "verify_gateway_token",
+    "verify_service_token",
+]

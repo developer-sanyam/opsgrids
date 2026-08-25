@@ -41,7 +41,7 @@ from app.catalogue import load_product_manifest
 from app.config import settings
 from app.models import ProcessedEvent
 from platform_core.cache import init_redis
-from platform_core.db import init_engine, session_scope
+from platform_core.db import assert_app_role, init_engine, session_scope
 from platform_core.events import EventConsumer, already_processed, mark_processed
 from platform_core.logging import get_logger
 
@@ -126,10 +126,15 @@ for _event_type in ENTITLING_SUBSCRIPTION_EVENTS:
 
 
 async def main() -> None:
-    init_engine(settings())
+    cfg = settings()
+    engine = init_engine(cfg)
+    # Consumers run NOBYPASSRLS: the per-message tenant GUC only means something if
+    # row-level security can bind this role. Started on the admin or outbox DSN by
+    # mistake, RLS would be silently inert — refuse outside local (ADR-0002).
+    await assert_app_role(engine, environment=cfg.environment)
     # Granting the admin role to an owner bumps the organization's permission version, and
     # that bump raises rather than degrading — losing it would leave stale tokens working.
-    init_redis(settings().redis_url)
+    init_redis(cfg.redis_url)
     await consumer.run()
 
 

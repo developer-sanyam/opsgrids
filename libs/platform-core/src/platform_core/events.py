@@ -140,7 +140,8 @@ class OutboxRelay:
         producer: str,
         batch_size: int = 100,
         poll_interval: float = 1.0,
-        max_attempts: int = 10,
+        max_attempts: int = 50,
+        max_backoff: float = 60.0,
     ) -> None:
         self._amqp_url = amqp_url
         self._outbox_cls = outbox_cls
@@ -149,6 +150,7 @@ class OutboxRelay:
         self._batch_size = batch_size
         self._poll_interval = poll_interval
         self._max_attempts = max_attempts
+        self._max_backoff = max_backoff
         self._stop = False
 
     def stop(self) -> None:
@@ -164,13 +166,30 @@ class OutboxRelay:
                 EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
             )
             log.info("outbox.relay.started", producer=self._producer)
+            backoff = self._poll_interval
             while not self._stop:
-                sent = await self._drain(exchange)
-                if sent == 0:
+                published, failed = await self._drain(exchange)
+                if failed:
+                    # A struggling broker must not be retried in a tight loop. Each pass
+                    # burns one of every failing row's attempts, so without spacing a
+                    # seconds-long outage used to exhaust all of them and abandon the rows
+                    # for good. Exponential, capped, and reset by the first clean pass.
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, self._max_backoff)
+                    continue
+                backoff = self._poll_interval
+                if published == 0:
                     await asyncio.sleep(self._poll_interval)
 
-    async def _drain(self, exchange: aio_pika.abc.AbstractExchange) -> int:
+    async def _drain(self, exchange: aio_pika.abc.AbstractExchange) -> tuple[int, int]:
+        """One pass over the claimable backlog. Returns ``(published, failed)``.
+
+        Failures are counted rather than folded into the batch size, because the run loop
+        must know the difference: a full batch of failed publishes used to come back as
+        "progress" and drive a sleepless retry loop.
+        """
         cls: Any = self._outbox_cls
+        published = failed = 0
         async with self._session_factory() as session, session.begin():
             rows = (
                 (
@@ -199,16 +218,30 @@ class OutboxRelay:
                         routing_key=row.event_type,
                     )
                     row.published_at = datetime.now(UTC)
+                    published += 1
                 except Exception as exc:
+                    failed += 1
                     row.attempts += 1
                     row.last_error = str(exc)[:500]
-                    log.warning(
-                        "outbox.publish.failed",
-                        event_id=str(row.id),
-                        attempts=row.attempts,
-                        error=str(exc)[:200],
-                    )
-            return len(rows)
+                    if row.attempts >= self._max_attempts:
+                        # From here the drain query skips the row: it will never be sent
+                        # without an operator resetting `attempts` (tools/outbox.py). That
+                        # is data standing still, so it is an error, not a warning.
+                        log.error(
+                            "outbox.abandoned",
+                            event_id=str(row.id),
+                            event_type=row.event_type,
+                            attempts=row.attempts,
+                            error=str(exc)[:200],
+                        )
+                    else:
+                        log.warning(
+                            "outbox.publish.failed",
+                            event_id=str(row.id),
+                            attempts=row.attempts,
+                            error=str(exc)[:200],
+                        )
+            return published, failed
 
 
 Handler = Callable[[dict[str, Any]], Awaitable[None]]
@@ -217,9 +250,11 @@ Handler = Callable[[dict[str, Any]], Awaitable[None]]
 class EventConsumer:
     """Binds handlers to routing keys and runs them with a dead-letter queue.
 
-    A handler that raises dead-letters the message rather than retrying forever. The DLQ
-    is not a graveyard — it needs alerting and a replay path, or it is data loss with
-    extra steps.
+    A handler that raises gets the message redelivered **once** — a transient failure (a
+    database restart, a deadlock, a connection blip) must not cost the event — and a second
+    failure dead-letters it rather than retrying forever. The DLQ is not a graveyard: depth
+    is visible on it as a queue metric, and `tools/dlq.py` inspects and replays it. A
+    dead-lettered event in a money path is an incident, not a log line.
     """
 
     def __init__(self, *, amqp_url: str, queue_name: str, prefetch: int = 16) -> None:
@@ -278,14 +313,27 @@ class EventConsumer:
                 await handler(envelope)
             await message.ack()
         except Exception as exc:
-            log.error(
-                "consumer.handler.failed",
-                queue=self._queue_name,
-                event_type=envelope.get("event_type"),
-                event_id=envelope.get("event_id"),
-                error=str(exc)[:300],
-            )
-            await message.nack(requeue=False)
+            if not message.redelivered:
+                # First failure: put it back. Handlers are idempotent by contract, so a
+                # retry is free — and most of what raises here (a DB restart, a deadlock,
+                # a pool blip) is gone by the time the message comes around again.
+                log.warning(
+                    "consumer.handler.retrying",
+                    queue=self._queue_name,
+                    event_type=envelope.get("event_type"),
+                    event_id=envelope.get("event_id"),
+                    error=str(exc)[:300],
+                )
+                await message.nack(requeue=True)
+            else:
+                log.error(
+                    "consumer.handler.dead_lettered",
+                    queue=self._queue_name,
+                    event_type=envelope.get("event_type"),
+                    event_id=envelope.get("event_id"),
+                    error=str(exc)[:300],
+                )
+                await message.nack(requeue=False)
         finally:
             correlation_id_ctx.reset(token)
 

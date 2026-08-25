@@ -169,6 +169,16 @@ class Charge(Base, TenantBase):
     #: failure event is self-describing without a lookup. A plain string, no FK.
     product_key: Mapped[str | None] = mapped_column(String(40))
 
+    #: The mandate this charge debits, when one was named. `create_charge` refuses the debit
+    #: unless the mandate exists in this organization, is `active`, matches the currency, and
+    #: the amount is within its cap — and records which mandate authorized the debit here, so
+    #: the authority a debit ran under is never a matter of reconstruction. Intra-schema FK,
+    #: which the boundary rule allows (ADR-0000 §10 forbids only cross-schema keys).
+    mandate_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.mandates.id", name="fk_charges_mandate_id"),
+    )
+
     provider: Mapped[str] = mapped_column(String(40), nullable=False)
     #: The provider's payment id. Null until the provider accepts the charge (the stub returns a
     #: deterministic fake); unique per organization once set. The webhook reconciles against it.
@@ -237,9 +247,21 @@ class Refund(Base, TenantBase):
 
     __table_args__ = (
         CheckConstraint("length(currency) = 3", name="currency_iso"),
-        CheckConstraint("amount_minor >= 0", name="amount_non_negative"),
+        # Zero refunds nothing and negative would mint money; both are refused in the service
+        # too, but a CHECK is the layer a stray script cannot argue with.
+        CheckConstraint("amount_minor > 0", name="amount_positive"),
         CheckConstraint("state in ('created', 'processed', 'failed')", name="state"),
         Index("ix_refunds_org_charge", "organization_id", "charge_id"),
+        # Mirrors charges/mandates: one local row per provider refund. Without it a replayed
+        # provider response could be recorded twice, and the append-only trigger would make
+        # the duplicate uncorrectable in place.
+        Index(
+            "uq_refunds_org_provider_refund_id",
+            "organization_id",
+            "provider_refund_id",
+            unique=True,
+            postgresql_where=text("provider_refund_id IS NOT NULL"),
+        ),
     )
 
 

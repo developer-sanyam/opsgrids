@@ -46,7 +46,7 @@ from platform_core.errors import (
     UnauthorizedProblem,
     UpstreamUnavailableProblem,
 )
-from platform_core.internal_auth import mint_service_token
+from platform_core.internal_auth import GATEWAY_AUDIENCE, mint_service_token
 from platform_core.logging import get_logger
 
 log = get_logger("gateway")
@@ -270,7 +270,6 @@ def build_gateway(
         }
         headers["x-request-id"] = request.state.request_id
         headers["x-correlation-id"] = request.state.correlation_id
-        headers["x-internal-token"] = settings.internal_service_token.get_secret_value()
 
         if full_path in policy.public_paths:
             # Unauthenticated: limit by address, and pass the host through so login can
@@ -323,6 +322,18 @@ def build_gateway(
         headers["x-user-id"] = str(claims["sub"])
         headers["x-org-id"] = org_id
         headers["x-audience"] = policy.audience
+        # The hop credential. Never the raw signing secret — that used to travel here on
+        # every request, and one header capture was a forever-valid key that could forge any
+        # identity against any service *and* mint `/internal/v1` tokens. What travels now is
+        # derived, expiring, channel-audienced (so it opens no internal endpoint), and bound
+        # to the one identity being forwarded: `_principal_from_gateway` refuses identity
+        # headers the token does not vouch for.
+        headers["x-internal-token"] = mint_service_token(
+            settings,
+            audience=GATEWAY_AUDIENCE,
+            caller="gateway",
+            claims={"uid": str(claims["sub"]), "org": org_id},
+        )
         for claim, header in (
             ("mem", "x-membership-id"),
             ("sref", "x-subject-ref"),

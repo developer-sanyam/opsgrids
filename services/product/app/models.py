@@ -115,6 +115,14 @@ class Activation(Base, TenantBase):
     trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    #: When the lifecycle fact this row currently reflects occurred (the envelope's
+    #: `occurred_at`), NULL for rows written by the manual `activate` path. The projection's
+    #: out-of-order guard: delivery is at-least-once and unordered across relay/consumer
+    #: replicas and DLQ replays, so a stale transition folded late must not overwrite a newer
+    #: one — a customer suspended-then-reactivated must never end up suspended because the
+    #: suspension arrived last.
+    state_occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     #: Per-organization switches, keyed by the product's own feature names.
     features: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 

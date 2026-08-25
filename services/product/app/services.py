@@ -20,6 +20,9 @@ from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import BusinessRuleProblem, NotFoundProblem
 from platform_core.events import publish_event
+from platform_core.logging import get_logger
+
+log = get_logger("product.services")
 
 EVT_ACTIVATED = "core.product.activated"
 EVT_DEACTIVATED = "core.product.deactivated"
@@ -40,6 +43,7 @@ async def project_subscription(
     product_key: str,
     state: str,
     trial_ends_at: datetime | None,
+    occurred_at: datetime | None = None,
 ) -> Activation:
     """Upsert the activation from a subscription lifecycle state — the entitlement projection.
 
@@ -56,6 +60,12 @@ async def project_subscription(
     fact about it, and re-emitting would risk a loop. An audit row is written so the switch has a
     trail. De-entitlement is **eventual** — see the consumer for why the permission-version is
     left untouched.
+
+    `occurred_at` is the ordering guard. Idempotency (the `processed_events` ledger) catches an
+    exact redelivery, but not a *distinct older* event folded late — multi-replica relays and
+    consumers, and a DLQ replay, can all deliver transitions out of order, and last-write-wins
+    would then leave a reactivated customer suspended (or a suspended one entitled) until the
+    next transition. An event older than what the row already reflects is dropped.
     """
     if state in _PROJECTION_DE_ENTITLING:
         new_status, deactivated, trial_ends = "suspended", datetime.now(UTC), None
@@ -66,6 +76,21 @@ async def project_subscription(
         new_status, deactivated, trial_ends = "active", None, None
 
     activation = await selectors.get_activation(session, organization_id, product_key)
+    if (
+        activation is not None
+        and occurred_at is not None
+        and activation.state_occurred_at is not None
+        and occurred_at <= activation.state_occurred_at
+    ):
+        log.info(
+            "subscription.projection.stale_dropped",
+            organization_id=str(organization_id),
+            product_key=product_key,
+            event_occurred_at=occurred_at.isoformat(),
+            row_reflects=activation.state_occurred_at.isoformat(),
+        )
+        return activation
+
     before = {"status": activation.status} if activation else None
     if activation is None:
         activation = Activation(
@@ -74,12 +99,15 @@ async def project_subscription(
             status=new_status,
             trial_ends_at=trial_ends,
             deactivated_at=deactivated,
+            state_occurred_at=occurred_at,
         )
         session.add(activation)
     else:
         activation.status = new_status
         activation.trial_ends_at = trial_ends
         activation.deactivated_at = deactivated
+        if occurred_at is not None:
+            activation.state_occurred_at = occurred_at
     await session.flush()
 
     record_audit(

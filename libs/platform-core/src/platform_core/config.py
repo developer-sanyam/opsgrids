@@ -203,15 +203,23 @@ class ServiceSettings(BaseSettings):
         return self.dsn_as(self.db_admin_role)
 
     def model_post_init(self, _: object) -> None:
-        """Refuse to start a real deployment with development secrets."""
+        """Refuse to start a real deployment with development or CI secrets.
+
+        Placeholders are matched by their documented prefixes (`dev-only-`, `ci-only-` —
+        see the Makefile's secret-scan contract), not by exact string: an exact-equality
+        check rots the moment a placeholder is edited, and the `ci-only-pii-key` committed
+        in ci.yml sailed straight past one for exactly that reason.
+        """
         if self.environment not in ("production", "staging", "uat"):
             return
+        placeholder_prefixes = ("dev-only-", "ci-only-")
         insecure = {
             "internal_service_token": self.internal_service_token.get_secret_value().startswith(
-                "dev-only-internal-token"
+                placeholder_prefixes
             ),
-            "pii_encryption_key": self.pii_encryption_key.get_secret_value()
-            == "dev-only-pii-key-change-me",
+            "pii_encryption_key": self.pii_encryption_key.get_secret_value().startswith(
+                placeholder_prefixes
+            ),
         }
         if len(self.internal_service_token.get_secret_value().encode()) < 32:
             raise ValueError(
@@ -219,11 +227,17 @@ class ServiceSettings(BaseSettings):
                 "with HMAC-SHA256, and a key shorter than the digest is weaker than the "
                 "algorithm suggests (RFC 7518 §3.2)."
             )
+        if len(self.pii_encryption_key.get_secret_value().encode()) < 32:
+            raise ValueError(
+                "pii_encryption_key must be at least 32 bytes: it is the passphrase every "
+                "tenant's PII is sealed under, and a short or guessable one makes the "
+                "encryption theatre. Generate 32+ random bytes and treat them as a secret."
+            )
 
         offenders = [name for name, bad in insecure.items() if bad]
         if offenders:
             raise ValueError(
-                f"{self.environment} refuses development secrets: {', '.join(offenders)}"
+                f"{self.environment} refuses development/CI secrets: {', '.join(offenders)}"
             )
         if self.debug:
             raise ValueError(f"debug must be off in {self.environment}")

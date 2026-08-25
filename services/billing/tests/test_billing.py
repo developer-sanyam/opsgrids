@@ -19,7 +19,7 @@ from __future__ import annotations
 import contextlib
 import uuid
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -30,7 +30,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import domain, selectors, services
 from app.config import settings
 from app.main import app
-from app.models import INVOICE_FINALIZED, INVOICE_VOID, Invoice, OutboxEvent
+from app.models import (
+    INVOICE_FINALIZED,
+    INVOICE_VOID,
+    CreditLedgerEntry,
+    Invoice,
+    OutboxEvent,
+)
 from app.schemas import (
     CreditConsumeIn,
     CreditGrantIn,
@@ -271,6 +277,33 @@ class TestFinalizedInvoiceIsFrozen:
                     session, again, VoidInvoiceIn(organization_id=org_id, reason="twice")
                 )
 
+    async def test_a_late_line_insert_under_a_finalized_invoice_is_refused(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """The insert-shaped hole next to the freeze trigger: the legitimate flow writes an
+        invoice and its lines in ONE transaction (`_finalize` above, which succeeded), so a raw
+        INSERT of a further line in a LATER transaction is exactly the corruption the
+        `trg_invoice_lines_no_late_insert` trigger refuses — a frozen total that no longer
+        foots."""
+        invoice = await _finalize(session, _finalize_payload(org_id))
+        invoice_id = invoice.id  # read before the failed transaction expires the object
+        with pytest.raises(IntegrityError, match="frozen"):
+            async with session.begin():
+                await session.execute(
+                    text(
+                        "INSERT INTO billing.invoice_lines "
+                        "(id, organization_id, invoice_id, description, quantity, amount_minor) "
+                        "VALUES (gen_random_uuid(), :org, CAST(:inv AS uuid), 'smuggled', 1, 100)"
+                    ),
+                    {"org": str(org_id), "inv": str(invoice_id)},
+                )
+
+        # The refusal left the financial record intact: the lines still foot to the total.
+        async with session.begin():
+            fresh = await services.require_invoice(session, invoice_id)
+            assert sum(line.amount_minor for line in fresh.lines) == fresh.total_minor
+            assert len(fresh.lines) == 2
+
 
 # --------------------------------------------------------------------- append-only at the DB
 
@@ -411,6 +444,127 @@ class TestCreditBalanceIsAWindowedSum:
             )
         assert during == 1000, "inside its window the grant counts"
         assert after == 0, "past its window the grant drops out of the SUM on its own"
+
+
+# --------------------------------------------------------------------- reversal is exactly once
+
+
+class TestReversalNetsToZeroAndHappensOnce:
+    async def test_reversing_a_time_boxed_grant_nets_to_zero_at_every_instant(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """The reversal inherits the ORIGINAL entry's window, so a reversed pair sums to zero at
+        any instant the balance can be asked about. The old bug windowed the reversal
+        `[now, NULL)`: once the grant's `valid_until` passed, the grant left the SUM while the
+        open-ended reversal kept counting — the balance read -amount forever after."""
+        now = datetime.now(UTC)
+        window_start = now - timedelta(hours=1)
+        window_end = now + timedelta(hours=1)
+        async with session.begin():
+            grant = await services.grant_credit(
+                session,
+                CreditGrantIn(
+                    organization_id=org_id,
+                    amount_minor=1000,
+                    currency="USD",
+                    reason="time-boxed comp",
+                    valid_from=window_start,
+                    valid_until=window_end,
+                ),
+                request=None,
+            )
+        async with session.begin():
+            reversal = await services.reverse_credit(
+                session,
+                CreditReverseIn(
+                    organization_id=org_id, reversal_of=grant.id, reason="granted in error"
+                ),
+                request=None,
+            )
+        assert reversal.valid_from == window_start, "the reversal inherits the grant's window"
+        assert reversal.valid_until == window_end
+
+        async with session.begin():
+            during = await selectors.credit_balance(session, currency="USD", at=now)
+            after = await selectors.credit_balance(
+                session, currency="USD", at=window_end + timedelta(hours=1)
+            )
+        assert during == 0, "inside the window the pair nets to zero"
+        assert after == 0, "past the window BOTH rows drop out — never -1000"
+
+    async def test_reversing_the_same_entry_twice_returns_the_one_reversal(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """Idempotent under at-least-once delivery: a retried reverse returns the reversal the
+        first attempt wrote — same row, same id — and the balance moves exactly once."""
+        async with session.begin():
+            grant = await services.grant_credit(
+                session,
+                CreditGrantIn(
+                    organization_id=org_id, amount_minor=1000, currency="USD", reason="comp"
+                ),
+                request=None,
+            )
+        async with session.begin():
+            first = await services.reverse_credit(
+                session,
+                CreditReverseIn(organization_id=org_id, reversal_of=grant.id, reason="undo"),
+                request=None,
+            )
+        async with session.begin():
+            second = await services.reverse_credit(
+                session,
+                CreditReverseIn(
+                    organization_id=org_id, reversal_of=grant.id, reason="undo, retried"
+                ),
+                request=None,
+            )
+        assert second.id == first.id, "a retry returns the existing reversal, not a new row"
+
+        async with session.begin():
+            balance = await selectors.credit_balance(session, currency="USD", at=datetime.now(UTC))
+            reversals = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(CreditLedgerEntry)
+                    .where(CreditLedgerEntry.reversal_of == grant.id)
+                )
+            ).scalar_one()
+        assert balance == 0, "the balance moved once, not once per retry"
+        assert reversals == 1
+
+    async def test_a_second_reversal_row_is_refused_by_the_database(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """The net under the service's idempotency check: a raw INSERT naming the same
+        `reversal_of` — the write of a racing transaction or a stray script, which the pre-check
+        cannot see — is refused by the partial-unique `ix_credit_ledger_org_reversal_of`."""
+        async with session.begin():
+            grant = await services.grant_credit(
+                session,
+                CreditGrantIn(
+                    organization_id=org_id, amount_minor=1000, currency="USD", reason="comp"
+                ),
+                request=None,
+            )
+        async with session.begin():
+            await services.reverse_credit(
+                session,
+                CreditReverseIn(organization_id=org_id, reversal_of=grant.id, reason="undo"),
+                request=None,
+            )
+        with pytest.raises(IntegrityError, match="ix_credit_ledger_org_reversal_of"):
+            async with session.begin():
+                await session.execute(
+                    text(
+                        "INSERT INTO billing.credit_ledger "
+                        "(id, organization_id, entry_type, amount_minor, currency, reason, "
+                        " valid_from, reversal_of) "
+                        "VALUES (gen_random_uuid(), :org, 'reversal', -1000, 'USD', "
+                        "'rogue second reversal', now(), CAST(:rev AS uuid))"
+                    ),
+                    {"org": str(org_id), "rev": str(grant.id)},
+                )
 
 
 # --------------------------------------------------------------------- isolation

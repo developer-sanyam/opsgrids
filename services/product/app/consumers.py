@@ -33,7 +33,7 @@ from typing import Any
 from app import services
 from app.config import settings
 from app.models import ProcessedEvent
-from platform_core.db import init_engine, session_scope
+from platform_core.db import assert_app_role, init_engine, session_scope
 from platform_core.events import EventConsumer, already_processed, mark_processed
 from platform_core.logging import get_logger
 
@@ -84,6 +84,9 @@ async def project_subscription_event(envelope: dict[str, Any]) -> None:
             product_key=payload["product_key"],
             state=payload["state"],
             trial_ends_at=_parse_dt(payload.get("trial_ends_at")),
+            # The envelope's occurred_at, not now(): the out-of-order guard compares event
+            # time to event time, so a stale transition folded late is dropped.
+            occurred_at=_parse_dt(envelope.get("occurred_at")),
         )
         mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
     log.info(
@@ -100,7 +103,12 @@ for _event_type in SUBSCRIPTION_EVENTS:
 
 
 async def main() -> None:
-    init_engine(settings())
+    cfg = settings()
+    engine = init_engine(cfg)
+    # Consumers run NOBYPASSRLS: the per-message tenant GUC only means something if
+    # row-level security can bind this role. Started on the admin or outbox DSN by
+    # mistake, RLS would be silently inert — refuse outside local (ADR-0002).
+    await assert_app_role(engine, environment=cfg.environment)
     await consumer.run()
 
 

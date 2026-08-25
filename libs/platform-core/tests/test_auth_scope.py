@@ -144,6 +144,23 @@ class TestScopeInjection:
         with pytest.raises(ForbiddenProblem, match="TEAM scope"):
             c.apply(select(self.owner), owner_col=self.owner)
 
+    def test_team_scope_filters_to_the_subject(self) -> None:
+        out = ctx(["x.y.z.read:TEAM"], "x.y.z.read").apply(
+            select(self.owner), owner_col=self.owner, team_col=self.manager
+        )
+        assert out.whereclause is not None
+        assert "manager_id" in str(out)
+
+    def test_team_scope_with_no_subject_matches_nothing(self) -> None:
+        """The OWN guard's mirror. `manager_id == None` renders as `IS NULL`, which is every
+        unmanaged row in the tenant — a TEAM grant on a membership never linked to an
+        employee record must see nothing, not the whole management chain's roots."""
+        c = ctx(["x.y.z.read:TEAM"], "x.y.z.read", subject=None)
+        out = c.apply(select(self.owner), owner_col=self.owner, team_col=self.manager)
+        rendered = str(out).lower()
+        assert "false" in rendered
+        assert "is null" not in rendered
+
     def test_location_scope_without_a_location_column_is_refused(self) -> None:
         c = ctx(["x.y.z.read:LOCATION"], "x.y.z.read", locations=["MUM"])
         with pytest.raises(ForbiddenProblem, match="LOCATION scope"):

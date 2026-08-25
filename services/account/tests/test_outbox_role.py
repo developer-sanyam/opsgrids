@@ -184,9 +184,9 @@ class TestTheRelayDrains:
         """One drain, two organizations, both rows sent and stamped."""
         exchange = _FakeExchange()
         async with _sessionmaker(settings().outbox_dsn) as maker:
-            drained = await _relay(maker)._drain(exchange)
+            published, failed = await _relay(maker)._drain(exchange)
 
-        assert drained == 2
+        assert (published, failed) == (2, 0)
         assert [key for _, key in exchange.published] == ["test.outbox.seeded"] * 2
 
         rows = await _all_rows(admin_session)
@@ -196,9 +196,15 @@ class TestTheRelayDrains:
     async def test_as_the_outbox_role_a_broker_failure_is_counted_on_every_tenant_row(
         self, two_tenants_pending: dict[str, uuid.UUID], admin_session: AsyncSession
     ) -> None:
-        """`attempts` is the only trace a live relay leaves; it has to move for every tenant."""
+        """`attempts` is the only trace a live relay leaves; it has to move for every tenant.
+
+        The failure count coming back non-zero is what tells `run()` to back off instead of
+        counting a batch of failed publishes as progress and spinning through the retry
+        budget in seconds."""
         async with _sessionmaker(settings().outbox_dsn) as maker:
-            await _relay(maker)._drain(_DownExchange())
+            published, failed = await _relay(maker)._drain(_DownExchange())
+
+        assert (published, failed) == (0, 2)
 
         rows = await _all_rows(admin_session)
         assert len(rows) == 2
@@ -211,9 +217,9 @@ class TestTheRelayDrains:
         """The stall, demonstrated: no error, no publish, no mark, no evidence."""
         exchange = _FakeExchange()
         async with _sessionmaker(settings().app_dsn) as maker:
-            drained = await _relay(maker)._drain(exchange)
+            published, failed = await _relay(maker)._drain(exchange)
 
-        assert drained == 0
+        assert (published, failed) == (0, 0)
         assert exchange.published == []
 
         rows = await _all_rows(admin_session)

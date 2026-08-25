@@ -128,12 +128,18 @@ ten call sites.
 
 ## Known gaps not yet scheduled
 
-- **The internal service token is a shared static secret** in a header, defaulting to
-  `dev-only-internal-token`. One leak reads every user, membership and organization name on the
-  platform. Needs a short-TTL signed service token or mTLS, plus a network policy making
-  `/internal/v1` unreachable from ingress.
-- **`record_sensitive_read` exists and is never called** — the cross-tenant internal reads are
-  the highest-value reads in the system and currently leave no trace.
+- **Internal credentials are now short-TTL signed tokens on both channels** — the
+  `/internal/v1` calls mint per-callee tokens, and the gateway's identity-forwarding hop mints
+  a per-request token bound to the forwarded user and organization
+  (`platform_core.internal_auth`); the raw secret no longer travels and production refuses the
+  `dev-only-`/`ci-only-` placeholders. Still open: the signing key is one shared HMAC secret
+  (end state is per-service keypairs or mTLS), and no network policy makes `/internal/v1`
+  unreachable from ingress.
+- **`record_sensitive_read` is wired in**: the employee PII unmask writes an
+  `entity.sensitive_read` row in the caller's transaction (tested in
+  `services/employee/tests/test_pii.py`), and the account directory's cross-tenant reads leave
+  a structured-log trace (`directory.cross_tenant_read`) — an `audit_logs` row is unwritable
+  there, since the read predates any organization and the caller is a service, not an actor.
 - **No outbox-lag probe.** A stalled relay is silent. Worth adding before RLS lands, so there is
   a baseline to compare against.
 - **SSO is modelled but has no flow** — `org_idp_configs` exists; no OIDC or SAML implementation.

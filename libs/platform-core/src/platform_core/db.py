@@ -235,6 +235,40 @@ async def assert_app_role(engine: AsyncEngine, *, environment: str) -> None:
     )
 
 
+async def assert_outbox_role(engine: AsyncEngine, *, environment: str) -> None:
+    """Refuse to run a relay as a role row-level security still binds.
+
+    The mirror image of `assert_app_role`. The relay's query exists to discover which
+    organizations have work, so it binds no tenant — and a NOBYPASSRLS role with no tenant
+    bound selects zero rows, logs nothing and loops while the outbox fills (ADR-0002,
+    "Relay stall"). That is the platform's quietest failure, so outside `local` a relay
+    handed such a connection must die loudly at startup rather than stall silently. In
+    `local` it is a warning, for the same reason `assert_app_role` warns there: a developer
+    who has not split the roles should find out without being locked out.
+    """
+    probe = text(
+        "SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user"
+    )
+    async with engine.connect() as conn:
+        role, superuser, bypassrls = (await conn.execute(probe)).one()
+
+    if superuser or bypassrls:
+        return
+    if environment != "local":
+        raise RuntimeError(
+            f"refusing to run the outbox relay as database role {role!r}: it has neither "
+            "BYPASSRLS nor superuser, so under row-level security its drain query matches "
+            "zero rows and the outbox fills silently. Configure db_outbox_role "
+            "(atmora_outbox) and its grants"
+        )
+    log.warning(
+        "outbox.role.rls_bound",
+        role=role,
+        environment=environment,
+        hint="the relay would stall silently under row-level security; split the outbox role",
+    )
+
+
 async def set_tenant(session: AsyncSession, organization_id: uuid.UUID) -> None:
     """Bind this transaction to one organization, for row-level security.
 

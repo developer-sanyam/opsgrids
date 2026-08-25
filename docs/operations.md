@@ -81,8 +81,11 @@ rows, and the API turns that into "Organization not found" or an empty page with
 no log line that distinguishes it from a genuinely empty tenant. The mitigation in ADR-0002 is an
 assertion, outside production, that the tenant context matches the principal.
 
-**A dead-letter queue nobody watches.** Consumers nack to a DLQ on failure. Nothing alerts on DLQ
-depth. Currently moot — no consumers — but it must exist before the first one ships.
+**A dead-letter queue nobody watches.** Consumers retry a failed message once, then nack to a
+DLQ. Real consumers ship today (product, subscription, payment, console), so this is **not**
+moot: a dead-lettered event in the money path is an incident. `tools/dlq.py` peeks and replays
+a queue's DLQ; queue-depth alerting on `*.dlq` is still to be wired into whatever scrapes
+RabbitMQ.
 
 ## Logs
 

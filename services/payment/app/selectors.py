@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Charge, ProviderEvent
+from app.models import REFUND_FAILED, Charge, Mandate, ProviderEvent, Refund
 
 
 async def get_charge(session: AsyncSession, charge_id: uuid.UUID) -> Charge | None:
@@ -58,3 +58,31 @@ async def get_provider_event(
         )
     )
     return result.scalar_one_or_none()
+
+
+async def get_mandate(
+    session: AsyncSession, organization_id: uuid.UUID, mandate_id: uuid.UUID
+) -> Mandate | None:
+    """A mandate by id, explicitly scoped to the organization (the RLS net notwithstanding)."""
+    result = await session.execute(
+        select(Mandate).where(
+            Mandate.organization_id == organization_id,
+            Mandate.id == mandate_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def refunded_total_for_charge(session: AsyncSession, charge_id: uuid.UUID) -> int:
+    """Minor units already refunded against a charge, failed refunds excluded.
+
+    What the over-refund guard compares against `charge.amount_minor`: the sum of every
+    refund still standing, so partial refunds accumulate toward the cap.
+    """
+    result = await session.execute(
+        select(func.coalesce(func.sum(Refund.amount_minor), 0)).where(
+            Refund.charge_id == charge_id,
+            Refund.state != REFUND_FAILED,
+        )
+    )
+    return int(result.scalar_one())

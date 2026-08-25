@@ -21,7 +21,7 @@ from app.config import settings
 from app.deps import get_provider
 from app.models import ProcessedEvent
 from app.schemas import ChargeIn
-from platform_core.db import init_engine, session_scope
+from platform_core.db import assert_app_role, init_engine, session_scope
 from platform_core.events import EventConsumer, already_processed, mark_processed
 from platform_core.logging import get_logger
 
@@ -79,7 +79,12 @@ async def charge_on_invoice_finalized(envelope: dict[str, Any]) -> None:
 
 
 async def main() -> None:
-    init_engine(settings())
+    cfg = settings()
+    engine = init_engine(cfg)
+    # Consumers run NOBYPASSRLS: the per-message tenant GUC only means something if
+    # row-level security can bind this role. Started on the admin or outbox DSN by
+    # mistake, RLS would be silently inert — refuse outside local (ADR-0002).
+    await assert_app_role(engine, environment=cfg.environment)
     await consumer.run()
 
 

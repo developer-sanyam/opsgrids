@@ -217,6 +217,143 @@ class TestPublishedImmutability:
         assert version.published_at is not None
 
 
+# --------------------------------------------------------------------- frozen price sheet
+
+
+class TestFrozenPriceSheet:
+    """The triggers of migration e3f8a91c7b2d: a published version's *children* are frozen too.
+
+    The version-row trigger above never covered the money — `prices.amount_minor` and the
+    entitlements in `features` lived on unguarded child tables, and `plans → plan_versions →
+    prices/features` is an ON DELETE CASCADE chain. These tests raw-UPDATE and raw-DELETE below
+    the service layer, mirroring `test_the_database_trigger_refuses_a_raw_update`, and prove the
+    one mutation the clone flow depends on — editing a *draft*'s sheet — still works.
+    """
+
+    async def test_a_raw_update_of_a_published_price_is_refused(
+        self, platform_session: AsyncSession
+    ) -> None:
+        """Re-pricing a published version by editing its price row directly must raise."""
+        async with platform_session.begin():
+            plan = await _make_plan(platform_session, product_key="sheet-upd")
+            version = await _make_published_version(platform_session, plan, amount_minor=1000)
+
+        with pytest.raises(IntegrityError, match="immutable"):
+            async with platform_session.begin():
+                await platform_session.execute(
+                    text(
+                        "UPDATE catalog.prices SET amount_minor = 1 "
+                        "WHERE plan_version_id = CAST(:id AS uuid)"
+                    ),
+                    {"id": str(version.id)},
+                )
+
+    async def test_a_raw_delete_of_a_published_price_is_refused(
+        self, platform_session: AsyncSession
+    ) -> None:
+        async with platform_session.begin():
+            plan = await _make_plan(platform_session, product_key="sheet-del")
+            version = await _make_published_version(platform_session, plan)
+
+        with pytest.raises(IntegrityError, match="immutable"):
+            async with platform_session.begin():
+                await platform_session.execute(
+                    text("DELETE FROM catalog.prices WHERE plan_version_id = CAST(:id AS uuid)"),
+                    {"id": str(version.id)},
+                )
+
+    async def test_a_raw_delete_of_a_published_feature_is_refused(
+        self, platform_session: AsyncSession
+    ) -> None:
+        """The entitlements are part of what the customer signed under, same rule as the price."""
+        async with platform_session.begin():
+            plan = await _make_plan(platform_session, product_key="sheet-feat")
+            version = await _make_published_version(
+                platform_session, plan, features=[FeatureIn(feature_key="seats", value=10)]
+            )
+
+        with pytest.raises(IntegrityError, match="immutable"):
+            async with platform_session.begin():
+                await platform_session.execute(
+                    text("DELETE FROM catalog.features WHERE plan_version_id = CAST(:id AS uuid)"),
+                    {"id": str(version.id)},
+                )
+
+    async def test_a_published_version_row_cannot_be_deleted(
+        self, platform_session: AsyncSession
+    ) -> None:
+        """UPDATE was already guarded; DELETE was the hole. A pinned sheet must not vanish."""
+        async with platform_session.begin():
+            plan = await _make_plan(platform_session, product_key="sheet-vdel")
+            version = await _make_published_version(platform_session, plan)
+
+        with pytest.raises(IntegrityError, match="retire the plan"):
+            async with platform_session.begin():
+                await platform_session.execute(
+                    text("DELETE FROM catalog.plan_versions WHERE id = CAST(:id AS uuid)"),
+                    {"id": str(version.id)},
+                )
+
+    async def test_deleting_the_parent_plan_cannot_cascade_over_a_published_version(
+        self, platform_session: AsyncSession
+    ) -> None:
+        """One DELETE on `plans` used to cascade a customer's whole price sheet into nothing —
+        the version trigger now stops the cascade itself."""
+        async with platform_session.begin():
+            plan = await _make_plan(platform_session, product_key="sheet-pdel")
+            await _make_published_version(platform_session, plan)
+
+        with pytest.raises(IntegrityError, match="retire the plan"):
+            async with platform_session.begin():
+                await platform_session.execute(
+                    text("DELETE FROM catalog.plans WHERE id = CAST(:id AS uuid)"),
+                    {"id": str(plan.id)},
+                )
+
+    async def test_a_draft_price_sheet_stays_freely_mutable(
+        self, platform_session: AsyncSession
+    ) -> None:
+        """The mutation the triggers must *allow*: a draft's children are working material —
+        `create_version`'s clone flow edits and replaces them before publish."""
+        async with platform_session.begin():
+            plan = await _make_plan(platform_session, product_key="sheet-draft")
+            draft = await services.create_version(
+                platform_session,
+                operator_principal(),
+                plan,
+                VersionCreateIn(
+                    currency="USD",
+                    prices=[PriceIn(kind="flat", amount_minor=1000, currency="USD")],
+                ),
+                request=None,
+            )
+
+        async with platform_session.begin():
+            await platform_session.execute(
+                text(
+                    "UPDATE catalog.prices SET amount_minor = 2500 "
+                    "WHERE plan_version_id = CAST(:id AS uuid)"
+                ),
+                {"id": str(draft.id)},
+            )
+            amount = (
+                await platform_session.execute(
+                    text(
+                        "SELECT amount_minor FROM catalog.prices "
+                        "WHERE plan_version_id = CAST(:id AS uuid)"
+                    ),
+                    {"id": str(draft.id)},
+                )
+            ).scalar_one()
+            assert amount == 2500, "a draft price must accept a raw update"
+
+            deleted = await platform_session.execute(
+                text("DELETE FROM catalog.prices WHERE plan_version_id = CAST(:id AS uuid)"),
+                {"id": str(draft.id)},
+            )
+            assert deleted.rowcount == 1, "a draft price must accept a raw delete"
+
+
 # --------------------------------------------------------------------- clone-to-draft
 
 

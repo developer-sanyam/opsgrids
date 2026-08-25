@@ -70,7 +70,7 @@ def do_run_migrations(connection: Connection) -> None:
     # After the schema is up to date, not before: the grants name tables the migrations just
     # created. Doing it here rather than as a per-service step means a new service cannot ship
     # without them -- which is exactly what happened the first time this was left out.
-    apply_schema_grants(connection, SCHEMA, cfg.db_app_role)
+    apply_schema_grants(connection, SCHEMA, cfg.db_app_role, outbox_role=cfg.db_outbox_role)
     _enforce_append_only(connection)
 
 

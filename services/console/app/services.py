@@ -101,7 +101,7 @@ async def fold_subscription_event(
 
     state_row = await _get_or_create_state(session, organization_id)
     states = dict(state_row.subscription_states)
-    from_state = domain.apply_subscription_transition(
+    applied, from_state = domain.apply_subscription_transition(
         states,
         product_key=product_key,
         to_state=to_state,
@@ -109,29 +109,35 @@ async def fold_subscription_event(
         amount_minor=amount_minor,
         currency=currency,
         trial_ends_at=trial_ends_at,
+        occurred_at=envelope.get("occurred_at"),
     )
-    snapshot = domain.recompute_snapshot(states)
+    if applied:
+        snapshot = domain.recompute_snapshot(states)
 
-    # Reassign (not mutate) so SQLAlchemy sees the JSONB change.
-    state_row.subscription_states = states
-    state_row.mrr_minor = snapshot["mrr_minor"]
-    state_row.currency = snapshot["currency"]
-    state_row.active_products = snapshot["active_products"]
-    state_row.locked = snapshot["locked"]
-    state_row.trial_ends_at = _parse_dt(snapshot["trial_ends_at"])
+        # Reassign (not mutate) so SQLAlchemy sees the JSONB change.
+        state_row.subscription_states = states
+        state_row.mrr_minor = snapshot["mrr_minor"]
+        state_row.currency = snapshot["currency"]
+        state_row.active_products = snapshot["active_products"]
+        state_row.locked = snapshot["locked"]
+        state_row.trial_ends_at = _parse_dt(snapshot["trial_ends_at"])
 
     session.add(
         RevenueEvent(
             organization_id=organization_id,
             kind=str(envelope["event_type"]),
-            amount_minor=amount_minor if to_state in domain.MRR_STATES else 0,
+            amount_minor=amount_minor if applied and to_state in domain.MRR_STATES else 0,
             currency=currency,
             occurred_at=_occurred_at(envelope),
             meta={
+                # A stale transition (out-of-order delivery, DLQ replay) is recorded — the
+                # revenue log is the record of what arrived — but folds nothing, and is
+                # marked so churn/conversion reads can exclude it.
                 "from_state": from_state,
                 "to_state": to_state,
                 "product_key": product_key,
                 "plan_version_id": str(plan_version_id) if plan_version_id else None,
+                "stale": not applied,
             },
         )
     )

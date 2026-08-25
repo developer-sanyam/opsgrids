@@ -140,6 +140,27 @@ class TestHeaderSpoofing:
         assert upstream.header("x-session-id")
         assert upstream.header("x-internal-token")
 
+    async def test_the_hop_token_is_signed_expiring_and_bound_to_the_identity(
+        self, client: AsyncClient, mint, upstream: EchoUpstream
+    ) -> None:
+        """The raw signing secret must never travel — it used to go out on every request,
+        and one header capture forged any identity against any service forever. What goes
+        out now is a short-lived token naming exactly the user and organization the other
+        headers claim, so a capture cannot vouch for anybody else."""
+        from app.config import settings
+        from platform_core.internal_auth import verify_gateway_token
+
+        cfg = settings()
+        await client.get(HRMS, headers=auth(mint()))
+        hop = upstream.header("x-internal-token")
+        assert hop != cfg.internal_service_token.get_secret_value()
+
+        claims = verify_gateway_token(cfg, hop)
+        assert claims["uid"] == USER
+        assert claims["org"] == ORG
+        assert claims["iss"] == "gateway"
+        assert claims["exp"] - claims["iat"] <= 300, "a hop credential must be short-lived"
+
     async def test_the_correlation_id_is_propagated(
         self, client: AsyncClient, mint, upstream: EchoUpstream
     ) -> None:

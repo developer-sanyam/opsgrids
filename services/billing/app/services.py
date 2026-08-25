@@ -22,6 +22,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -344,18 +345,35 @@ async def reverse_credit(
     if original.entry_type == CREDIT_REVERSAL:
         raise BusinessRuleProblem("a reversal cannot itself be reversed")
 
+    existing = await selectors.get_reversal_of(session, original.id)
+    if existing is not None:
+        # Idempotent, because the caller's delivery contract is at-least-once: a retried
+        # reverse must move the balance once, not once per retry. The partial-unique index
+        # on `reversal_of` is the net under this check for two racing transactions.
+        return existing
+
     entry = CreditLedgerEntry(
         organization_id=payload.organization_id,
         entry_type=CREDIT_REVERSAL,
         amount_minor=-original.amount_minor,
         currency=original.currency,
         reason=payload.reason,
-        valid_from=datetime.now(UTC),
-        valid_until=None,
+        # The negating row inherits the window it negates, so the pair sums to zero at
+        # every instant the balance can be asked about. A reversal windowed `[now, NULL)`
+        # used to outlive a time-boxed grant: once the grant's `valid_until` passed, the
+        # grant left the SUM and the open-ended reversal kept counting — the balance
+        # permanently understated by the grant amount, eating unrelated credit.
+        valid_from=original.valid_from,
+        valid_until=original.valid_until,
         reversal_of=original.id,
     )
     session.add(entry)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        # The race the pre-check cannot see: another transaction reversed this entry
+        # between our SELECT and our INSERT, and the partial-unique index refused ours.
+        raise ConflictProblem("this credit ledger entry has already been reversed") from exc
 
     record_audit(
         session,
