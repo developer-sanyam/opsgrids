@@ -1,6 +1,547 @@
 {
   "components": {
     "schemas": {
+      "AudienceIn": {
+        "description": "Create a saved audience segment.",
+        "properties": {
+          "created_at": {
+            "format": "date",
+            "title": "Created At",
+            "type": "string"
+          },
+          "criteria": {
+            "default": "",
+            "maxLength": 400,
+            "title": "Criteria",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "minimum": 0.0,
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "size",
+          "created_at"
+        ],
+        "title": "AudienceIn",
+        "type": "object"
+      },
+      "AudienceOut": {
+        "description": "A saved audience segment. `created_at` is the segment's definition date (a plain date),\nnot the row's write timestamp.",
+        "properties": {
+          "created_at": {
+            "format": "date",
+            "title": "Created At",
+            "type": "string"
+          },
+          "criteria": {
+            "title": "Criteria",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "size",
+          "criteria",
+          "created_at"
+        ],
+        "title": "AudienceOut",
+        "type": "object"
+      },
+      "CampaignIn": {
+        "description": "Create a campaign.\n\nMoney arrives as minor units, matching how it is stored and returned. `audience_id` must name\nan audience in the same organization \u2014 enforced in `services`, so naming another tenant's\naudience reads as \"not found\" rather than resolving.",
+        "properties": {
+          "audience_id": {
+            "format": "uuid",
+            "title": "Audience Id",
+            "type": "string"
+          },
+          "budget_minor": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Budget Minor",
+            "type": "integer"
+          },
+          "channel": {
+            "enum": [
+              "email",
+              "social",
+              "search",
+              "events"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "conversions": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Conversions",
+            "type": "integer"
+          },
+          "currency": {
+            "default": "INR",
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Currency",
+            "type": "string"
+          },
+          "end_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Date"
+          },
+          "goal": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Goal",
+            "type": "string"
+          },
+          "leads": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Leads",
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Owner",
+            "type": "string"
+          },
+          "pipeline_minor": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Pipeline Minor",
+            "type": "integer"
+          },
+          "revenue_minor": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Revenue Minor",
+            "type": "integer"
+          },
+          "spent_minor": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Spent Minor",
+            "type": "integer"
+          },
+          "start_date": {
+            "format": "date",
+            "title": "Start Date",
+            "type": "string"
+          },
+          "status": {
+            "default": "draft",
+            "enum": [
+              "draft",
+              "live",
+              "paused",
+              "ended"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "channel",
+          "audience_id",
+          "start_date"
+        ],
+        "title": "CampaignIn",
+        "type": "object"
+      },
+      "CampaignOut": {
+        "description": "A campaign, shaped exactly as `types.ts#Campaign`. All amounts are minor units of\n`currency`; the derived ratios are computed client-side (and server-side in the rollups).",
+        "properties": {
+          "audience_id": {
+            "format": "uuid",
+            "title": "Audience Id",
+            "type": "string"
+          },
+          "budget_minor": {
+            "title": "Budget Minor",
+            "type": "integer"
+          },
+          "channel": {
+            "title": "Channel",
+            "type": "string"
+          },
+          "conversions": {
+            "title": "Conversions",
+            "type": "integer"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "end_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Date"
+          },
+          "goal": {
+            "title": "Goal",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "leads": {
+            "title": "Leads",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
+          "pipeline_minor": {
+            "title": "Pipeline Minor",
+            "type": "integer"
+          },
+          "revenue_minor": {
+            "title": "Revenue Minor",
+            "type": "integer"
+          },
+          "spent_minor": {
+            "title": "Spent Minor",
+            "type": "integer"
+          },
+          "start_date": {
+            "format": "date",
+            "title": "Start Date",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "channel",
+          "status",
+          "currency",
+          "budget_minor",
+          "spent_minor",
+          "revenue_minor",
+          "pipeline_minor",
+          "leads",
+          "conversions",
+          "goal",
+          "audience_id",
+          "start_date",
+          "end_date",
+          "owner"
+        ],
+        "title": "CampaignOut",
+        "type": "object"
+      },
+      "ChannelPerformance": {
+        "description": "One channel's rolled-up performance across the org's campaigns.\n\n`roas` is a plain ratio (revenue / spend), `0` when there is no spend. `cac_minor` and\n`cpl_minor` are minor units and `null` when their denominator (conversions, leads) is zero \u2014\nthe same divide-by-zero contract the SPA's `derive.ts` uses.",
+        "properties": {
+          "cac_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cac Minor"
+          },
+          "campaigns": {
+            "title": "Campaigns",
+            "type": "integer"
+          },
+          "channel": {
+            "title": "Channel",
+            "type": "string"
+          },
+          "conversions": {
+            "title": "Conversions",
+            "type": "integer"
+          },
+          "cpl_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpl Minor"
+          },
+          "leads": {
+            "title": "Leads",
+            "type": "integer"
+          },
+          "pipeline_minor": {
+            "title": "Pipeline Minor",
+            "type": "integer"
+          },
+          "revenue_minor": {
+            "title": "Revenue Minor",
+            "type": "integer"
+          },
+          "roas": {
+            "title": "Roas",
+            "type": "number"
+          },
+          "spend_minor": {
+            "title": "Spend Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "channel",
+          "campaigns",
+          "spend_minor",
+          "revenue_minor",
+          "pipeline_minor",
+          "leads",
+          "conversions",
+          "roas",
+          "cac_minor",
+          "cpl_minor"
+        ],
+        "title": "ChannelPerformance",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "OverviewSummary": {
+        "description": "The Overview screen in one payload: the four KPI headlines, the revenue-vs-spend series,\nand the per-channel breakdown. Every figure is derived server-side from the same campaign set\nand monthly series the list endpoints expose, so the number here and the number the SPA\nderives from the lists cannot disagree.",
+        "properties": {
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelPerformance"
+            },
+            "title": "Channels",
+            "type": "array"
+          },
+          "conversions": {
+            "title": "Conversions",
+            "type": "integer"
+          },
+          "cpl_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpl Minor"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "leads": {
+            "title": "Leads",
+            "type": "integer"
+          },
+          "pipeline_minor": {
+            "title": "Pipeline Minor",
+            "type": "integer"
+          },
+          "revenue_minor": {
+            "title": "Revenue Minor",
+            "type": "integer"
+          },
+          "revenue_vs_spend": {
+            "items": {
+              "$ref": "#/components/schemas/RevenueSpendPoint"
+            },
+            "title": "Revenue Vs Spend",
+            "type": "array"
+          },
+          "roas": {
+            "title": "Roas",
+            "type": "number"
+          },
+          "spend_minor": {
+            "title": "Spend Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "currency",
+          "revenue_minor",
+          "spend_minor",
+          "pipeline_minor",
+          "leads",
+          "conversions",
+          "roas",
+          "cpl_minor",
+          "revenue_vs_spend",
+          "channels"
+        ],
+        "title": "OverviewSummary",
+        "type": "object"
+      },
+      "Page_AudienceOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AudienceOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[AudienceOut]",
+        "type": "object"
+      },
+      "Page_CampaignOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[CampaignOut]",
+        "type": "object"
+      },
+      "RevenueSpendPoint": {
+        "description": "A point on a revenue-vs-spend time series (minor units).",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "revenue_minor": {
+            "title": "Revenue Minor",
+            "type": "integer"
+          },
+          "spend_minor": {
+            "title": "Spend Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "label",
+          "revenue_minor",
+          "spend_minor"
+        ],
+        "title": "RevenueSpendPoint",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -18,16 +559,471 @@
         ],
         "title": "ServiceInfo",
         "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
       }
     }
   },
   "info": {
-    "description": "Marketing service \u2014 part of the Atmora platform.",
+    "description": "Marketing analytics \u2014 campaigns, audiences and attribution \u2014 part of Atmora.",
     "title": "Marketing service",
     "version": "0.1.0"
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/marketing/analytics/revenue-vs-spend": {
+      "get": {
+        "operationId": "revenue_vs_spend_api_v1_marketing_analytics_revenue_vs_spend_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RevenueSpendPoint"
+                  },
+                  "title": "Response Revenue Vs Spend Api V1 Marketing Analytics Revenue Vs Spend Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The monthly revenue-vs-spend series",
+        "tags": [
+          "marketing"
+        ]
+      }
+    },
+    "/api/v1/marketing/audiences": {
+      "get": {
+        "operationId": "list_audiences_api_v1_marketing_audiences_get",
+        "parameters": [
+          {
+            "description": "Name or criteria",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Name or criteria",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_AudienceOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Saved audience segments",
+        "tags": [
+          "marketing"
+        ]
+      },
+      "post": {
+        "operationId": "create_audience_api_v1_marketing_audiences_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AudienceIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AudienceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create an audience segment",
+        "tags": [
+          "marketing"
+        ]
+      }
+    },
+    "/api/v1/marketing/campaigns": {
+      "get": {
+        "operationId": "list_campaigns_api_v1_marketing_campaigns_get",
+        "parameters": [
+          {
+            "description": "Name, goal or owner",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Name, goal or owner",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "channel",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Channel"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "audience_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Audience Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CampaignOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Campaigns for the organization",
+        "tags": [
+          "marketing"
+        ]
+      },
+      "post": {
+        "operationId": "create_campaign_api_v1_marketing_campaigns_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a campaign",
+        "tags": [
+          "marketing"
+        ]
+      }
+    },
+    "/api/v1/marketing/campaigns/{campaign_id}": {
+      "get": {
+        "operationId": "read_campaign_api_v1_marketing_campaigns__campaign_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One campaign",
+        "tags": [
+          "marketing"
+        ]
+      }
+    },
+    "/api/v1/marketing/campaigns/{campaign_id}/performance": {
+      "get": {
+        "operationId": "campaign_performance_api_v1_marketing_campaigns__campaign_id__performance_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RevenueSpendPoint"
+                  },
+                  "title": "Response Campaign Performance Api V1 Marketing Campaigns  Campaign Id  Performance Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A campaign's weekly revenue-and-spend series",
+        "tags": [
+          "marketing"
+        ]
+      }
+    },
+    "/api/v1/marketing/channels": {
+      "get": {
+        "operationId": "channels_api_v1_marketing_channels_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ChannelPerformance"
+                  },
+                  "title": "Response Channels Api V1 Marketing Channels Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Per-channel performance, rolled up from the campaigns",
+        "tags": [
+          "marketing"
+        ]
+      }
+    },
     "/api/v1/marketing/info": {
       "get": {
         "operationId": "info_api_v1_marketing_info_get",
@@ -44,6 +1040,27 @@
           }
         },
         "summary": "What this service is",
+        "tags": [
+          "marketing"
+        ]
+      }
+    },
+    "/api/v1/marketing/overview": {
+      "get": {
+        "operationId": "overview_api_v1_marketing_overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OverviewSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The Overview screen in one payload \u2014 KPIs, the series, and the channel breakdown",
         "tags": [
           "marketing"
         ]
@@ -69,6 +1086,30 @@
           }
         },
         "summary": "Liveness \u2014 is the process up?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/outbox": {
+      "get": {
+        "description": "How far behind the relay is. **Alert on `oldest_seconds`.**\n\nA stalled relay is the platform's quietest failure. It selects, finds nothing,\nlogs nothing, sleeps, and loops \u2014 `attempts` never increments and `last_error`\nstays null, so the process looks healthy indefinitely while the outbox grows\nwithout bound and every consumer downstream starves.\n\nDeliberately **not** part of readiness. A backlog is not a reason to take the\nservice out of rotation: refusing traffic would stop new events being written\nwithout helping drain the ones already queued, which makes the incident worse.\nThis is a metric to alert on, not a health state.\n\nCounted through the outbox engine, not the application one. The app role is\nNOBYPASSRLS and this request binds no tenant, so through it `pending` would be\nzero whatever the table holds \u2014 the probe that exists to expose the stall would\nbe wired to the same blind spot that causes it.",
+        "operationId": "outbox_health_outbox_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Outbox Health Outbox Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Outbox depth and age \u2014 scrape this",
         "tags": [
           "health"
         ]
