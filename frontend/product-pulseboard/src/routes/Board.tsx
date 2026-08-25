@@ -1,9 +1,9 @@
 import { useCallback } from "react";
 
 import { getTasks } from "@/api/client";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import { Card, ErrorState, KanbanBoard, PageHeader, Skeleton, TASK_STATUS_META } from "@/ui";
-import { ColumnsIcon } from "@/ui/icons";
+import { ColumnsIcon } from "@atmora/ui";
 
 const COLUMN_ORDER = ["backlog", "in_progress", "review", "done"] as const;
 

@@ -4,9 +4,9 @@ import { Link } from "react-router-dom";
 import { listContacts } from "@/api/client";
 import type { Contact, ContactStatus } from "@/api/types";
 import { companyName, ownerName } from "@/data/lookups";
-import { cn } from "@/lib/cn";
+import { ArrowRightIcon, ChevronDown, MailIcon, PhoneIcon, UsersIcon, cn } from "@atmora/ui";
 import { formatDate, formatRelative } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   Avatar,
   Card,
@@ -18,13 +18,6 @@ import {
   SearchInput,
   Skeleton,
 } from "@/ui";
-import {
-  ArrowRightIcon,
-  ChevronDown,
-  MailIcon,
-  PhoneIcon,
-  UsersIcon,
-} from "@/ui/icons";
 
 type StatusFilter = ContactStatus | "all";
 type Sort = "name" | "recent";

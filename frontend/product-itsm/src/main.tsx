@@ -2,6 +2,18 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
+import { configureSession } from "@atmora/client";
+import {
+  BellIcon,
+  FileTextIcon,
+  KeyIcon,
+  LifeBuoyIcon,
+  PlugIcon,
+  RefreshIcon,
+  SettingsIcon,
+  ThemeProvider,
+  UserPlusIcon,
+} from "@atmora/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
@@ -14,16 +26,6 @@ import { AssetsPage } from "./routes/Assets";
 import { AssetDetailPage } from "./routes/AssetDetail";
 import { LoginPage } from "./routes/Login";
 import { ComingSoonPage } from "./routes/ComingSoon";
-import {
-  BellIcon,
-  FileTextIcon,
-  KeyIcon,
-  LifeBuoyIcon,
-  PlugIcon,
-  RefreshIcon,
-  SettingsIcon,
-  UserPlusIcon,
-} from "./ui/icons";
 
 const router = createBrowserRouter([
   {
@@ -146,11 +148,17 @@ const router = createBrowserRouter([
   },
 ]);
 
+// Name this app's session slot before anything can read a token, so two Atmora apps open
+// in one browser never share a session.
+configureSession("atmora.itsm.access_token");
+
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("Root element #root not found");
 
 createRoot(rootEl).render(
   <StrictMode>
-    <RouterProvider router={router} />
+    <ThemeProvider storageKey="atmora.itsm.theme">
+      <RouterProvider router={router} />
+    </ThemeProvider>
   </StrictMode>,
 );

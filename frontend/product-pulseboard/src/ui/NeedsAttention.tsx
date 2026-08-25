@@ -1,8 +1,14 @@
 import { Link } from "react-router-dom";
 
 import type { AttentionItem } from "@/api/types";
-import { cn } from "@/lib/cn";
-import { AlertTriangleIcon, ArrowRightIcon, CoinsIcon, ClockIcon, OctagonIcon } from "./icons";
+import {
+  AlertTriangleIcon,
+  ArrowRightIcon,
+  ClockIcon,
+  CoinsIcon,
+  OctagonIcon,
+  cn,
+} from "@atmora/ui";
 
 const SEVERITY: Record<
   AttentionItem["severity"],

@@ -2,11 +2,16 @@ import { Link } from "react-router-dom";
 
 import type { AttentionItem } from "@/api/types";
 import { companyName } from "@/data/lookups";
-import { cn } from "@/lib/cn";
+import {
+  AlertTriangleIcon,
+  ArrowRightIcon,
+  CheckSquareIcon,
+  ClockIcon,
+  EmptyState,
+  cn,
+} from "@atmora/ui";
 import { formatMoneyCompact } from "@/lib/format";
-import { EmptyState } from "./States";
 import { OwnerBadge } from "./OwnerBadge";
-import { AlertTriangleIcon, ArrowRightIcon, CheckSquareIcon, ClockIcon } from "./icons";
 
 const REASON_META: Record<
   AttentionItem["reason"],

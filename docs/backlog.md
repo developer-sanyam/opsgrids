@@ -187,7 +187,13 @@ ten call sites.
 - **10 of the 18 quality-gate rows have no tooling** — production build, E2E, schema drift,
   visual regression, automated accessibility, performance budget, query plans, SAST and licence,
   dependency boundaries, token lint.
-- **`atmora-ui` and `atmora-client` are empty** workspace packages.
+- **`atmora-internal` is not on the shared packages yet.** `atmora-ui` and `atmora-client` now
+  hold the design system and the auth/HTTP layer, and all nine `product-*` apps consume them;
+  the staff console still carries its own copies. It is a real fork rather than an oversight —
+  its palette is a different token family (lifecycle statuses, a monospaced control-panel face)
+  and its auth is the staff registry from ADR-0004 P6a, which has no organization selection. It
+  joins once that endpoint lands and the operator palette is expressed as a theme over the
+  Console tokens rather than a replacement for them.
 
 ---
 

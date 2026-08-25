@@ -1,15 +1,9 @@
 import type { ComponentType, SVGProps } from "react";
 
 import type { Ticket } from "@/api/types";
-import { cn } from "@/lib/cn";
+import { AlertTriangleIcon, CheckCircleIcon, ClockIcon, PauseCircleIcon, cn } from "@atmora/ui";
 import { slaInfo } from "@/lib/sla";
 import type { SlaState } from "@/lib/sla";
-import {
-  AlertTriangleIcon,
-  CheckCircleIcon,
-  ClockIcon,
-  PauseCircleIcon,
-} from "./icons";
 
 type IconType = ComponentType<SVGProps<SVGSVGElement>>;
 

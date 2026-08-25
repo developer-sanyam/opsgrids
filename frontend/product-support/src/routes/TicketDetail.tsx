@@ -3,11 +3,11 @@ import { Link, useParams } from "react-router-dom";
 
 import { getTicket, listAgents } from "@/api/client";
 import type { Agent, Message, Ticket } from "@/api/types";
-import { useAuth } from "@/auth/context";
+import { useAuth } from "@atmora/client";
 import { agentById } from "@/data/derive";
-import { cn } from "@/lib/cn";
+import { ChevronRightIcon, MailIcon, PaperclipIcon, ReplyIcon, cn } from "@atmora/ui";
 import { channelLabel, formatDateTime, initials } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   Avatar,
   Button,
@@ -20,12 +20,6 @@ import {
   Tag,
   TicketStatusPill,
 } from "@/ui";
-import {
-  ChevronRightIcon,
-  MailIcon,
-  PaperclipIcon,
-  ReplyIcon,
-} from "@/ui/icons";
 
 /** One message in the thread — styled by who wrote it, with internal notes clearly set apart. */
 function MessageBubble({ message }: { message: Message }) {

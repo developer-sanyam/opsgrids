@@ -4,7 +4,7 @@ import { useSearchParams } from "react-router-dom";
 import { listEmployees } from "@/api/client";
 import type { EmployeeOut, EmployeeStatus } from "@/api/types";
 import { departmentLabel } from "@/data/departments";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import { employmentLabel } from "@/lib/format";
 import {
   Avatar,
@@ -18,7 +18,7 @@ import {
   Skeleton,
   Tag,
 } from "@/ui";
-import { MapPinIcon, UsersIcon } from "@/ui/icons";
+import { MapPinIcon, UsersIcon } from "@atmora/ui";
 
 type StatusFilter = EmployeeStatus | "all";
 

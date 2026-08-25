@@ -6,8 +6,8 @@ import type { CustomerSort } from "@/api/client";
 import type { CustomerStanding, CustomerSummary } from "@/api/types";
 import { formatDate } from "@/lib/format";
 import { formatAmount } from "@/lib/money";
-import { cn } from "@/lib/cn";
-import { useAsync } from "@/lib/useAsync";
+import { UsersIcon, cn } from "@atmora/ui";
+import { useAsync } from "@atmora/client";
 import {
   Avatar,
   Card,
@@ -19,7 +19,6 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { UsersIcon } from "@/ui/icons";
 
 const SORTS: { value: CustomerSort; label: string }[] = [
   { value: "receivables_desc", label: "Receivables: high to low" },

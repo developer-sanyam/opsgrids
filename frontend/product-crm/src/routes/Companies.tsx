@@ -5,7 +5,7 @@ import { listCompanies } from "@/api/client";
 import type { Company, CompanyStatus } from "@/api/types";
 import { contactsForCompany, ownerName } from "@/data/lookups";
 import { formatMoneyCompact } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   Avatar,
   Card,
@@ -19,7 +19,7 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { BuildingIcon, GlobeIcon, MapPinIcon } from "@/ui/icons";
+import { BuildingIcon, GlobeIcon, MapPinIcon } from "@atmora/ui";
 
 type StatusFilter = CompanyStatus | "all";
 type Sort = "name" | "revenue" | "contacts";

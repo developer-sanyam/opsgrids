@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { getAllDeals, listActivities } from "@/api/client";
 import type { Deal } from "@/api/types";
-import { useAuth } from "@/auth/context";
+import { useAuth } from "@atmora/client";
 import {
   needsAttention,
   openCount,
@@ -14,7 +14,7 @@ import {
 } from "@/data/derive";
 import { ACTIVITIES_THIS_WEEK, KPI_TRENDS } from "@/data/samples";
 import { NOW_ISO, formatMoneyCompact } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   ActivityTimeline,
   Button,
@@ -36,7 +36,8 @@ import {
   PlusIcon,
   SearchIcon,
   TargetIcon,
-} from "@/ui/icons";
+} from "@atmora/ui";
+import { SAMPLE_DATA } from "@/ui/sampleCopy";
 
 const TODAY = NOW_ISO.slice(0, 10);
 const CURRENCY = "INR";
@@ -229,7 +230,7 @@ export function OverviewPage() {
                   series={kpi.series}
                   icon={kpi.icon}
                   tone={kpi.tone}
-                  sample={kpi.sample}
+                  sample={kpi.sample ? SAMPLE_DATA : false}
                 />
               </div>
             ))

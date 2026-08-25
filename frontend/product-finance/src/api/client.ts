@@ -17,7 +17,7 @@ import {
   totalOutstanding,
   totalOverdue,
 } from "@/data/derive";
-import { apiRequest } from "./http";
+import { apiRequest } from "@atmora/client";
 import {
   CASHFLOW,
   CASH_BALANCE_MINOR,

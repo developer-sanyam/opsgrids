@@ -3,11 +3,9 @@ import { useMemo, useState } from "react";
 import { NOW } from "@/api/fixtures";
 import type { TaskOut, TaskStage } from "@/api/types";
 import { STAGE_LABEL } from "@/data/labels";
-import { cn } from "@/lib/cn";
+import { Avatar, ChevronRight, ClockIcon, cn } from "@atmora/ui";
 import { daysBetween, formatDateShort } from "@/lib/format";
-import { Avatar } from "./Avatar";
 import { PriorityPill } from "./ProjectPills";
-import { ChevronRight, ClockIcon } from "./icons";
 
 const STAGES: { key: TaskStage; dot: string }[] = [
   { key: "backlog", dot: "var(--color-faint)" },

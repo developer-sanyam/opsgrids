@@ -3,8 +3,8 @@ import { useCallback, useMemo, useState } from "react";
 import { ATTENDANCE_IS_SAMPLE, listAttendance } from "@/api/client";
 import type { AttendanceRecord, AttendanceStatus } from "@/api/types";
 import { departmentLabel } from "@/data/departments";
-import { useAsync } from "@/lib/useAsync";
-import { cn } from "@/lib/cn";
+import { useAsync } from "@atmora/client";
+import { CalendarCheckIcon, ClockIcon, MapPinIcon, cn } from "@atmora/ui";
 import { formatMinutes, formatTime } from "@/lib/format";
 import {
   AttendancePill,
@@ -19,7 +19,7 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { CalendarCheckIcon, ClockIcon, MapPinIcon } from "@/ui/icons";
+import { SAMPLE_DATA } from "@/ui/sampleCopy";
 
 const TODAY_ISO = "2026-08-24";
 
@@ -146,7 +146,7 @@ export function AttendancePage() {
         title="Attendance"
         actions={
           <>
-            {ATTENDANCE_IS_SAMPLE ? <SampleChip /> : null}
+            {ATTENDANCE_IS_SAMPLE ? <SampleChip {...SAMPLE_DATA} /> : null}
             <label className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold cursor-pointer">
             <CalendarCheckIcon className="size-4 text-muted" />
             <span className="sr-only">Select date</span>

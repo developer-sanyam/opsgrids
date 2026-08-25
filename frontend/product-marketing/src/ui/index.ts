@@ -1,19 +1,25 @@
-export { Card } from "./Card";
-export { Button } from "./Button";
-export { Pill } from "./Pill";
-export { Tag } from "./Tag";
-export { Avatar } from "./Avatar";
-export { SearchInput } from "./SearchInput";
-export { KpiCard } from "./KpiCard";
-export type { KpiTone } from "./KpiCard";
-export { SampleChip } from "./SampleChip";
-export { DeltaPill } from "./DeltaPill";
-export { Sparkline } from "./Sparkline";
-export { PageHeader } from "./PageHeader";
-export { DataTable } from "./DataTable";
-export type { Column } from "./DataTable";
+/**
+ * This app's UI barrel: the shared design system, re-exported, plus the widgets that only make
+ * sense here. A component below is one nothing else in the suite would render — anything general
+ * belongs in `@atmora/ui` as a variant (ADR-0001).
+ */
+
+export {
+  Button,
+  Card,
+  DataTable,
+  EmptyState,
+  ErrorState,
+  KpiCard,
+  PageHeader,
+  Pill,
+  SearchInput,
+  SectionHeader,
+  Skeleton,
+} from "@atmora/ui";
+export type { Column, KpiTone } from "@atmora/ui";
+
 export { Sidebar } from "./Sidebar";
-export { ThemeToggle } from "./ThemeToggle";
 export { CampaignStatusPill } from "./StatusPill";
 export { ChannelBadge } from "./ChannelBadge";
 export { CHANNEL_COLOR, CHANNEL_ICON, CHANNEL_TONE } from "./channelMeta";
@@ -24,4 +30,3 @@ export { ChannelBreakdown } from "./ChannelBreakdown";
 export { NeedsAttention } from "./NeedsAttention";
 export { CampaignPerformanceChart } from "./CampaignPerformanceChart";
 export type { WeekPoint } from "./CampaignPerformanceChart";
-export { Skeleton, EmptyState, ErrorState, SectionHeader } from "./States";

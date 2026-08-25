@@ -1,5 +1,5 @@
 import type { AgingBucket } from "@/api/types";
-import { cn } from "@/lib/cn";
+import { cn } from "@atmora/ui";
 import { formatMoney } from "@/lib/money";
 
 interface AgingBreakdownProps {

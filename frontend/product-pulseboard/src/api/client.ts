@@ -8,7 +8,7 @@
  * (`VITE_USE_FIXTURES=false`), not a rewrite.
  */
 
-import { apiRequest } from "./http";
+import { apiRequest } from "@atmora/client";
 import { PEOPLE } from "@/data/people";
 import {
   PROJECTS,

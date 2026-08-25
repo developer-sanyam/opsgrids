@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 
 import { listActivities } from "@/api/client";
 import type { ActivityType } from "@/api/types";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   ActivityTimeline,
   Card,
@@ -12,7 +12,7 @@ import {
   Pill,
   Skeleton,
 } from "@/ui";
-import { ActivityIcon } from "@/ui/icons";
+import { ActivityIcon } from "@atmora/ui";
 
 type TypeFilter = ActivityType | "all";
 

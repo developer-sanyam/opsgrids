@@ -8,7 +8,7 @@ import { customerName, getCustomer } from "@/data/customers";
 import { outstandingMinor } from "@/data/derive";
 import { formatDate } from "@/lib/format";
 import { formatAmount, formatMoney } from "@/lib/money";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   Avatar,
   Button,
@@ -18,11 +18,7 @@ import {
   Skeleton,
   Tag,
 } from "@/ui";
-import {
-  ArrowLeftIcon,
-  CheckCircleIcon,
-  PlusIcon,
-} from "@/ui/icons";
+import { ArrowLeftIcon, CheckCircleIcon, PlusIcon } from "@atmora/ui";
 
 /** A labelled figure in the totals footer. */
 function TotalRow({

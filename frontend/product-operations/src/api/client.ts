@@ -7,7 +7,7 @@
  * app from `fixtures.ts` with no login — handy for offline design work.
  */
 
-import { apiRequest } from "./http";
+import { apiRequest } from "@atmora/client";
 import { INVENTORY, PURCHASE_ORDERS, SUPPLIERS } from "./fixtures";
 import type {
   InventoryItemOut,

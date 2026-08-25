@@ -2,9 +2,8 @@ import { Link } from "react-router-dom";
 
 import type { Incident } from "@/api/types";
 import { formatSlaClock } from "@/lib/format";
-import { EmptyState } from "./States";
+import { ChevronRight, EmptyState, ShieldCheckIcon } from "@atmora/ui";
 import { PriorityPill, SlaPill } from "./StatusPill";
-import { ChevronRight, ShieldCheckIcon } from "./icons";
 
 /**
  * The escalation queue: open incidents that are P1 or already breaching SLA, each linking to its

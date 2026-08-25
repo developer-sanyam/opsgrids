@@ -5,7 +5,7 @@ import { useNavigate } from "react-router-dom";
 import { listAssets } from "@/api/client";
 import type { Asset, AssetStatus, AssetType } from "@/api/types";
 import { assetTypeLabel, formatDate } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   AssetStatusPill,
   Card,
@@ -26,7 +26,7 @@ import {
   NetworkIcon,
   PhoneIcon,
   ServerIcon,
-} from "@/ui/icons";
+} from "@atmora/ui";
 
 type IconType = ComponentType<SVGProps<SVGSVGElement>>;
 

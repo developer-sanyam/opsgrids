@@ -11,7 +11,7 @@
  * a "Sample data" chip whenever the app is running live (`ATTENDANCE_IS_SAMPLE`).
  */
 
-import { apiRequest } from "./http";
+import { apiRequest } from "@atmora/client";
 import { ATTENDANCE_TODAY, EMPLOYEES } from "./fixtures";
 import type { AttendanceRecord, EmployeeOut, Page } from "./types";
 

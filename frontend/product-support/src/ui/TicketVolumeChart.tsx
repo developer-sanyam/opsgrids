@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import type { VolumePoint } from "@/api/types";
-import { cn } from "@/lib/cn";
+import { cn } from "@atmora/ui";
 
 interface TicketVolumeChartProps {
   data: VolumePoint[];

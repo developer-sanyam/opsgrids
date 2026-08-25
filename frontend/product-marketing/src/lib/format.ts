@@ -48,11 +48,6 @@ export function formatDate(iso: string | null): string {
   });
 }
 
-/** Format a delta like 4.2 -> "+4.2%" / -1.4 -> "−1.4%" (true minus sign, not a hyphen). */
-export function formatDelta(pct: number): string {
-  const sign = pct >= 0 ? "+" : "−";
-  return `${sign}${Math.abs(pct).toFixed(1)}%`;
-}
 
 const CHANNEL_LABELS: Record<Channel, string> = {
   email: "Email",
@@ -74,12 +69,4 @@ const STATUS_LABELS: Record<CampaignStatus, string> = {
 
 export function campaignStatusLabel(status: CampaignStatus): string {
   return STATUS_LABELS[status];
-}
-
-/** Initials for an avatar fallback: "Meghna Rao" -> "MR". */
-export function initials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  const first = parts[0]?.[0] ?? "";
-  const last = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? "") : "";
-  return (first + last).toUpperCase();
 }

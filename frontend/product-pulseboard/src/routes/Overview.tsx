@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { getPeople, getProjects, getTasks, getTimesheets, WEEK_DATES, TODAY } from "@/api/client";
 import type { Person, Project, Task, TimesheetRow } from "@/api/types";
-import { useAuth } from "@/auth/context";
+import { useAuth } from "@atmora/client";
 import { PEOPLE } from "@/data/people";
 import {
   activeProjects,
@@ -17,7 +17,7 @@ import {
 } from "@/data/derive";
 import { BILLABLE_THIS_MONTH, KPI_TREND, UTILIZATION_TREND } from "@/data/samples";
 import { formatHours, formatMoneyCompact } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   Button,
   Card,
@@ -41,7 +41,7 @@ import {
   PlusIcon,
   SearchIcon,
   UsersIcon,
-} from "@/ui/icons";
+} from "@atmora/ui";
 
 interface OverviewData {
   projects: Project[];
@@ -119,7 +119,7 @@ interface KpiConfig {
   series: number[];
   icon: React.ReactNode;
   tone: KpiTone;
-  invertDelta?: boolean;
+  goodWhen?: "down";
 }
 
 function buildKpis(data: OverviewData): KpiConfig[] {
@@ -144,7 +144,7 @@ function buildKpis(data: OverviewData): KpiConfig[] {
       series: KPI_TREND.tasksDue.series,
       icon: <ClipboardCheckIcon className="size-5" />,
       tone: "info",
-      invertDelta: true,
+      goodWhen: "down",
     },
     {
       key: "util",
@@ -237,7 +237,7 @@ export function OverviewPage() {
                   series={kpi.series}
                   icon={kpi.icon}
                   tone={kpi.tone}
-                  invertDelta={kpi.invertDelta ?? false}
+                  goodWhen={kpi.goodWhen ?? "up"}
                 />
               </div>
             ))

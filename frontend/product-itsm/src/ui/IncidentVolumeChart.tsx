@@ -2,9 +2,8 @@ import { useId, useMemo, useState } from "react";
 
 import type { TrendPoint, TrendRange } from "@/api/types";
 import { INCIDENT_VOLUME, VOLUME_DELTA } from "@/data/samples";
-import { cn } from "@/lib/cn";
-import { DeltaPill } from "./DeltaPill";
-import { SampleChip } from "./SampleChip";
+import { DeltaPill, SampleChip, cn } from "@atmora/ui";
+import { SAMPLE_DATA } from "./sampleCopy";
 
 const RANGES: { value: TrendRange; label: string }[] = [
   { value: "weekly", label: "Weekly" },
@@ -92,12 +91,12 @@ export function IncidentVolumeChart({ sample }: IncidentVolumeChartProps) {
             <span className="display text-3xl font-extrabold tnum leading-none">
               {totalOpened}
             </span>
-            <DeltaPill value={delta} higherIsBetter={false} />
+            <DeltaPill value={delta} goodWhen="down" />
           </div>
           <span className="text-sm text-muted">incidents opened this period · vs last</span>
         </div>
         <div className="flex items-center gap-2">
-          {sample ? <SampleChip /> : null}
+          {sample ? <SampleChip {...SAMPLE_DATA} /> : null}
           <div
             role="tablist"
             aria-label="Trend range"

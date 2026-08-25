@@ -6,6 +6,42 @@ settings:
 
 importers:
 
+  atmora-client:
+    devDependencies:
+      '@atmora/config':
+        specifier: workspace:*
+        version: link:../atmora-config
+      '@eslint/js':
+        specifier: ^9.17.0
+        version: 9.39.5
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.2.18
+      eslint:
+        specifier: ^9.17.0
+        version: 9.39.5(jiti@2.7.0)(supports-color@7.2.0)
+      eslint-plugin-react-hooks:
+        specifier: ^5.1.0
+        version: 5.2.0(eslint@9.39.5(jiti@2.7.0)(supports-color@7.2.0))
+      eslint-plugin-react-refresh:
+        specifier: ^0.4.16
+        version: 0.4.26(eslint@9.39.5(jiti@2.7.0)(supports-color@7.2.0))
+      globals:
+        specifier: ^15.14.0
+        version: 15.15.0
+      react:
+        specifier: ^19.0.0
+        version: 19.2.8
+      react-router-dom:
+        specifier: ^7.1.0
+        version: 7.18.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      typescript-eslint:
+        specifier: ^8.19.0
+        version: 8.67.0(eslint@9.39.5(jiti@2.7.0)(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)
+
   atmora-config: {}
 
   atmora-internal:
@@ -69,6 +105,42 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(supports-color@7.2.0)
 
+  atmora-ui:
+    devDependencies:
+      '@atmora/config':
+        specifier: workspace:*
+        version: link:../atmora-config
+      '@eslint/js':
+        specifier: ^9.17.0
+        version: 9.39.5
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.2.18
+      eslint:
+        specifier: ^9.17.0
+        version: 9.39.5(jiti@2.7.0)(supports-color@7.2.0)
+      eslint-plugin-react-hooks:
+        specifier: ^5.1.0
+        version: 5.2.0(eslint@9.39.5(jiti@2.7.0)(supports-color@7.2.0))
+      eslint-plugin-react-refresh:
+        specifier: ^0.4.16
+        version: 0.4.26(eslint@9.39.5(jiti@2.7.0)(supports-color@7.2.0))
+      globals:
+        specifier: ^15.14.0
+        version: 15.15.0
+      react:
+        specifier: ^19.0.0
+        version: 19.2.8
+      react-router-dom:
+        specifier: ^7.1.0
+        version: 7.18.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      typescript-eslint:
+        specifier: ^8.19.0
+        version: 8.67.0(eslint@9.39.5(jiti@2.7.0)(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)
+
   atmora-website:
     dependencies:
       next:
@@ -102,6 +174,12 @@ importers:
 
   product-crm:
     dependencies:
+      '@atmora/client':
+        specifier: workspace:*
+        version: link:../atmora-client
+      '@atmora/ui':
+        specifier: workspace:*
+        version: link:../atmora-ui
       react:
         specifier: ^19.0.0
         version: 19.2.8
@@ -163,6 +241,12 @@ importers:
 
   product-finance:
     dependencies:
+      '@atmora/client':
+        specifier: workspace:*
+        version: link:../atmora-client
+      '@atmora/ui':
+        specifier: workspace:*
+        version: link:../atmora-ui
       react:
         specifier: ^19.0.0
         version: 19.2.8
@@ -224,6 +308,12 @@ importers:
 
   product-hrms:
     dependencies:
+      '@atmora/client':
+        specifier: workspace:*
+        version: link:../atmora-client
+      '@atmora/ui':
+        specifier: workspace:*
+        version: link:../atmora-ui
       react:
         specifier: ^19.0.0
         version: 19.2.8
@@ -285,6 +375,12 @@ importers:
 
   product-itsm:
     dependencies:
+      '@atmora/client':
+        specifier: workspace:*
+        version: link:../atmora-client
+      '@atmora/ui':
+        specifier: workspace:*
+        version: link:../atmora-ui
       react:
         specifier: ^19.0.0
         version: 19.2.8
@@ -346,6 +442,12 @@ importers:
 
   product-marketing:
     dependencies:
+      '@atmora/client':
+        specifier: workspace:*
+        version: link:../atmora-client
+      '@atmora/ui':
+        specifier: workspace:*
+        version: link:../atmora-ui
       react:
         specifier: ^19.0.0
         version: 19.2.8
@@ -407,6 +509,12 @@ importers:
 
   product-operations:
     dependencies:
+      '@atmora/client':
+        specifier: workspace:*
+        version: link:../atmora-client
+      '@atmora/ui':
+        specifier: workspace:*
+        version: link:../atmora-ui
       react:
         specifier: ^19.0.0
         version: 19.2.8
@@ -468,6 +576,12 @@ importers:
 
   product-projects:
     dependencies:
+      '@atmora/client':
+        specifier: workspace:*
+        version: link:../atmora-client
+      '@atmora/ui':
+        specifier: workspace:*
+        version: link:../atmora-ui
       react:
         specifier: ^19.0.0
         version: 19.2.8
@@ -529,6 +643,12 @@ importers:
 
   product-pulseboard:
     dependencies:
+      '@atmora/client':
+        specifier: workspace:*
+        version: link:../atmora-client
+      '@atmora/ui':
+        specifier: workspace:*
+        version: link:../atmora-ui
       react:
         specifier: ^19.0.0
         version: 19.2.8
@@ -590,6 +710,12 @@ importers:
 
   product-support:
     dependencies:
+      '@atmora/client':
+        specifier: workspace:*
+        version: link:../atmora-client
+      '@atmora/ui':
+        specifier: workspace:*
+        version: link:../atmora-ui
       react:
         specifier: ^19.0.0
         version: 19.2.8

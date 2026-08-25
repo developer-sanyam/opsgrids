@@ -5,7 +5,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { listInventory, listPurchaseOrders, listSuppliers, TRENDS_ARE_SAMPLE } from "@/api/client";
 import { TODAY, ON_TIME_SAMPLE } from "@/api/fixtures";
 import type { InventoryItemOut, PurchaseOrderOut, SupplierOut } from "@/api/types";
-import { useAuth } from "@/auth/context";
+import { useAuth } from "@atmora/client";
 import {
   attentionItems,
   inventoryValueMinor,
@@ -16,7 +16,7 @@ import {
   spendByCategory,
   weightedOnTimePct,
 } from "@/data/derive";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import { formatMoneyCompact, formatNumber } from "@/lib/format";
 import {
   Button,
@@ -43,7 +43,8 @@ import {
   PlusIcon,
   SearchIcon,
   TruckIcon,
-} from "@/ui/icons";
+} from "@atmora/ui";
+import { SAMPLE_DATA, SAMPLE_TREND } from "@/ui/sampleCopy";
 
 type Period = "weekly" | "monthly" | "quarterly";
 
@@ -140,7 +141,7 @@ interface KpiConfig {
   label: string;
   value: string;
   deltaPct: number;
-  deltaInvert?: boolean;
+  goodWhen?: "down";
   series: number[];
   icon: React.ReactNode;
   tone: KpiTone;
@@ -179,10 +180,10 @@ function buildKpis(
       label: "Low-stock items",
       value: formatNumber(low),
       deltaPct: -1.8,
-      deltaInvert: true,
+      goodWhen: "down",
       series: [9, 8, 8, 7, 6, 6, low],
       icon: <AlertTriangleIcon className="size-5" />,
-      tone: "late",
+      tone: "warning",
     },
     {
       key: "on_time",
@@ -321,11 +322,11 @@ export function OverviewPage() {
                   label={kpi.label}
                   value={kpi.value}
                   deltaPct={kpi.deltaPct}
-                  {...(kpi.deltaInvert ? { deltaInvert: true } : {})}
+                  {...(kpi.goodWhen ? { goodWhen: kpi.goodWhen } : {})}
                   series={kpi.series}
                   icon={kpi.icon}
                   tone={kpi.tone}
-                  sample={TRENDS_ARE_SAMPLE}
+                  sample={TRENDS_ARE_SAMPLE ? SAMPLE_TREND : false}
                 />
               </div>
             ))
@@ -349,7 +350,7 @@ export function OverviewPage() {
           <SectionHeader
             title="Spend Over Time"
             subtitle="Committed procurement spend"
-            {...(TRENDS_ARE_SAMPLE ? { action: <SampleChip /> } : {})}
+            {...(TRENDS_ARE_SAMPLE ? { action: <SampleChip {...SAMPLE_DATA} /> } : {})}
           />
           {ready ? <SpendTrend /> : <Skeleton className="h-56 w-full rounded-tile" />}
         </Card>

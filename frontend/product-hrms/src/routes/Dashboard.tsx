@@ -5,7 +5,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { getAllEmployees, listAttendance } from "@/api/client";
 import { getOrgUnitNameById } from "@/api/orgUnits";
 import type { EmployeeOut } from "@/api/types";
-import { useAuth } from "@/auth/context";
+import { useAuth } from "@atmora/client";
 import {
   activeCount,
   distinctDepartmentCount,
@@ -13,7 +13,7 @@ import {
   workforceMix,
 } from "@/data/derive";
 import { RECENT_ACTIVITY, SAMPLE_ATTENDANCE, TASKS_TODAY } from "@/data/samples";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   Button,
   Card,
@@ -39,7 +39,8 @@ import {
   PlusIcon,
   SearchIcon,
   UsersIcon,
-} from "@/ui/icons";
+} from "@atmora/ui";
+import { SAMPLE_DATA } from "@/ui/sampleCopy";
 
 const TODAY = "2026-08-24";
 
@@ -285,7 +286,7 @@ export function DashboardPage() {
                   series={kpi.series}
                   icon={kpi.icon}
                   tone={kpi.tone}
-                  sample={kpi.sample}
+                  sample={kpi.sample ? SAMPLE_DATA : false}
                 />
               </div>
             ))
@@ -354,7 +355,7 @@ export function DashboardPage() {
               title="Recent Activity"
               action={
                 <div className="flex items-center gap-2">
-                  <SampleChip />
+                  <SampleChip {...SAMPLE_DATA} />
                   <Link
                     to="/reports"
                     className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
@@ -368,7 +369,7 @@ export function DashboardPage() {
           </Card>
 
           <Card className="flex flex-col gap-4 p-6">
-            <SectionHeader title="Tasks Today" action={<SampleChip />} />
+            <SectionHeader title="Tasks Today" action={<SampleChip {...SAMPLE_DATA} />} />
             <TasksToday tasks={TASKS_TODAY} />
           </Card>
         </div>

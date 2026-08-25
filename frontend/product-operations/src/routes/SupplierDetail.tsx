@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { getSupplier, listPurchaseOrders } from "@/api/client";
 import type { PurchaseOrderOut } from "@/api/types";
 import { CATEGORY_LABEL, poTotalMinor } from "@/data/derive";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import { formatDate, formatMoney, formatMoneyCompact } from "@/lib/format";
 import {
   Avatar,
@@ -19,7 +19,15 @@ import {
   SupplierStatusPill,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { ArrowRightIcon, ClipboardListIcon, ClockIcon, CoinsIcon, MailIcon, MapPinIcon, TruckIcon } from "@/ui/icons";
+import {
+  ArrowRightIcon,
+  ClipboardListIcon,
+  ClockIcon,
+  CoinsIcon,
+  MailIcon,
+  MapPinIcon,
+  TruckIcon,
+} from "@atmora/ui";
 
 interface StatTileProps {
   icon: React.ReactNode;

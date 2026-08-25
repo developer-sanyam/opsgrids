@@ -5,7 +5,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { getAllProjects, listMilestones, TRENDS_ARE_SAMPLE } from "@/api/client";
 import { NOW, RESOURCE_UTILIZATION } from "@/api/fixtures";
 import type { MilestoneOut, ProjectOut } from "@/api/types";
-import { useAuth } from "@/auth/context";
+import { useAuth } from "@atmora/client";
 import {
   activeProjects,
   averageProgress,
@@ -17,7 +17,7 @@ import {
   totalSpentMinor,
 } from "@/data/derive";
 import { formatMoney, formatPct } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   Burndown,
   Button,
@@ -42,7 +42,8 @@ import {
   PlusIcon,
   SearchIcon,
   TargetIcon,
-} from "@/ui/icons";
+} from "@atmora/ui";
+import { SAMPLE_DATA } from "@/ui/sampleCopy";
 
 /** A stable empty reference so the derived-data memos don't churn while loading. */
 const EMPTY_PROJECTS: ProjectOut[] = [];
@@ -144,7 +145,7 @@ interface KpiConfig {
   series: number[];
   icon: React.ReactNode;
   tone: KpiTone;
-  goodWhenDown?: boolean;
+  goodWhen?: "down";
   sample?: boolean;
 }
 
@@ -304,8 +305,8 @@ export function OverviewPage() {
                   series={kpi.series}
                   icon={kpi.icon}
                   tone={kpi.tone}
-                  {...(kpi.goodWhenDown ? { goodWhenDown: true } : {})}
-                  {...(kpi.sample ? { sample: true } : {})}
+                  {...(kpi.goodWhen ? { goodWhen: kpi.goodWhen } : {})}
+                  {...(kpi.sample ? { sample: SAMPLE_DATA } : {})}
                 />
               </div>
             ))
@@ -318,7 +319,7 @@ export function OverviewPage() {
           <SectionHeader
             title="Release burndown"
             subtitle="Remaining scope against the plan"
-            {...(TRENDS_ARE_SAMPLE ? { action: <SampleChip /> } : {})}
+            {...(TRENDS_ARE_SAMPLE ? { action: <SampleChip {...SAMPLE_DATA} /> } : {})}
           />
           {ready ? (
             <Burndown />

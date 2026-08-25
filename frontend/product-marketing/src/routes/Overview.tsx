@@ -4,10 +4,18 @@ import { useNavigate } from "react-router-dom";
 
 import { getCampaigns, getRevenueSpendSeries, TRENDS_ARE_SAMPLE } from "@/api/client";
 import type { Campaign } from "@/api/types";
-import { useAuth } from "@/auth/context";
+import { useAuth } from "@atmora/client";
 import { channelPerformance, needsAttention, overviewTotals } from "@/data/derive";
-import { useAsync } from "@/lib/useAsync";
-import { cn } from "@/lib/cn";
+import { useAsync } from "@atmora/client";
+import {
+  AlertTriangleIcon,
+  FunnelIcon,
+  GaugeIcon,
+  PlusIcon,
+  TargetIcon,
+  TrendingUpIcon,
+  cn,
+} from "@atmora/ui";
 import { formatMoney, formatMoneyCompact, formatRoas } from "@/lib/format";
 import {
   Button,
@@ -21,14 +29,7 @@ import {
   Skeleton,
 } from "@/ui";
 import type { KpiTone } from "@/ui";
-import {
-  AlertTriangleIcon,
-  FunnelIcon,
-  GaugeIcon,
-  PlusIcon,
-  TargetIcon,
-  TrendingUpIcon,
-} from "@/ui/icons";
+import { SAMPLE_TREND } from "@/ui/sampleCopy";
 
 const CURRENCY = "INR";
 
@@ -209,7 +210,7 @@ export function OverviewPage() {
                   icon={kpi.icon}
                   tone={kpi.tone}
                   caption={caption}
-                  sample={TRENDS_ARE_SAMPLE}
+                  sample={TRENDS_ARE_SAMPLE ? SAMPLE_TREND : false}
                 />
               </div>
             ))

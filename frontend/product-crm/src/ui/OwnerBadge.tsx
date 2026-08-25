@@ -1,6 +1,5 @@
 import { ownerById } from "@/data/lookups";
-import { cn } from "@/lib/cn";
-import { Avatar } from "./Avatar";
+import { Avatar, cn } from "@atmora/ui";
 
 interface OwnerBadgeProps {
   ownerId: string;

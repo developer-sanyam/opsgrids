@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { getAllAssets, getAllIncidents, getAllRequests, TRENDS_ARE_SAMPLE } from "@/api/client";
 import type { Asset, Incident, ServiceRequest } from "@/api/types";
-import { useAuth } from "@/auth/context";
+import { useAuth } from "@atmora/client";
 import {
   assetsUnderManagement,
   breakdownByCategory,
@@ -15,7 +15,7 @@ import {
   slaCompliancePct,
 } from "@/data/derive";
 import { KPI_SAMPLE } from "@/data/samples";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   Button,
   Card,
@@ -39,7 +39,8 @@ import {
   SearchIcon,
   ShieldCheckIcon,
   TicketIcon,
-} from "@/ui/icons";
+} from "@atmora/ui";
+import { SAMPLE_TREND } from "@/ui/sampleCopy";
 
 interface OverviewData {
   incidents: Incident[];
@@ -134,7 +135,7 @@ interface KpiConfig {
   series: number[];
   icon: ReactNode;
   tone: KpiTone;
-  higherIsBetter: boolean;
+  goodWhen: "up" | "down";
   sample: boolean;
 }
 
@@ -148,7 +149,7 @@ function buildKpis(data: OverviewData): KpiConfig[] {
       series: KPI_SAMPLE.openIncidents.series,
       icon: <AlertTriangleIcon className="size-5" />,
       tone: "danger",
-      higherIsBetter: false,
+      goodWhen: "down",
       sample: true,
     },
     {
@@ -159,7 +160,7 @@ function buildKpis(data: OverviewData): KpiConfig[] {
       series: KPI_SAMPLE.slaCompliance.series,
       icon: <ShieldCheckIcon className="size-5" />,
       tone: "positive",
-      higherIsBetter: true,
+      goodWhen: "up",
       sample: true,
     },
     {
@@ -170,7 +171,7 @@ function buildKpis(data: OverviewData): KpiConfig[] {
       series: KPI_SAMPLE.awaitingApproval.series,
       icon: <TicketIcon className="size-5" />,
       tone: "info",
-      higherIsBetter: false,
+      goodWhen: "down",
       sample: true,
     },
     {
@@ -181,7 +182,7 @@ function buildKpis(data: OverviewData): KpiConfig[] {
       series: KPI_SAMPLE.assetsManaged.series,
       icon: <BoxIcon className="size-5" />,
       tone: "cyan",
-      higherIsBetter: true,
+      goodWhen: "up",
       sample: true,
     },
   ];
@@ -279,8 +280,8 @@ export function OverviewPage() {
                   series={kpi.series}
                   icon={kpi.icon}
                   tone={kpi.tone}
-                  higherIsBetter={kpi.higherIsBetter}
-                  sample={kpi.sample}
+                  goodWhen={kpi.goodWhen}
+                  sample={kpi.sample ? SAMPLE_TREND : false}
                 />
               </div>
             ))

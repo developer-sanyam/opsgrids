@@ -6,9 +6,9 @@ import type { Deal, DealStage, Owner } from "@/api/types";
 import { dealsByStage } from "@/data/derive";
 import { companyName } from "@/data/lookups";
 import { STAGES } from "@/data/stages";
-import { cn } from "@/lib/cn";
+import { HandshakeIcon, KanbanIcon, LayoutIcon, PlusIcon, cn } from "@atmora/ui";
 import { formatDate, formatMoney } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   Button,
   Card,
@@ -24,7 +24,6 @@ import {
   StagePill,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { HandshakeIcon, KanbanIcon, LayoutIcon, PlusIcon } from "@/ui/icons";
 
 type StageFilter = DealStage | "all";
 type View = "board" | "list";

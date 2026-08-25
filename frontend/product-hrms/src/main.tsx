@@ -2,15 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
-import "./index.css";
-import { AppShell } from "./App";
-import { AuthProvider } from "./auth/AuthProvider";
-import { RequireAuth } from "./auth/RequireAuth";
-import { DashboardPage } from "./routes/Dashboard";
-import { EmployeesPage } from "./routes/Employees";
-import { AttendancePage } from "./routes/Attendance";
-import { LoginPage } from "./routes/Login";
-import { ComingSoonPage } from "./routes/ComingSoon";
+import { configureSession } from "@atmora/client";
 import {
   BellIcon,
   BuildingIcon,
@@ -20,8 +12,18 @@ import {
   MapPinIcon,
   PlugIcon,
   SettingsIcon,
+  ThemeProvider,
   UserPlusIcon,
-} from "./ui/icons";
+} from "@atmora/ui";
+import "./index.css";
+import { AppShell } from "./App";
+import { AuthProvider } from "./auth/AuthProvider";
+import { RequireAuth } from "./auth/RequireAuth";
+import { DashboardPage } from "./routes/Dashboard";
+import { EmployeesPage } from "./routes/Employees";
+import { AttendancePage } from "./routes/Attendance";
+import { LoginPage } from "./routes/Login";
+import { ComingSoonPage } from "./routes/ComingSoon";
 
 const router = createBrowserRouter([
   {
@@ -149,11 +151,17 @@ const router = createBrowserRouter([
   },
 ]);
 
+// Name this app's session slot before anything can read a token, so two Atmora apps open
+// in one browser never share a session.
+configureSession("atmora.hrms.access_token");
+
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("Root element #root not found");
 
 createRoot(rootEl).render(
   <StrictMode>
-    <RouterProvider router={router} />
+    <ThemeProvider storageKey="atmora.hrms.theme">
+      <RouterProvider router={router} />
+    </ThemeProvider>
   </StrictMode>,
 );

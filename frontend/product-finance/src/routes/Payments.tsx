@@ -7,7 +7,7 @@ import type { Payment } from "@/api/types";
 import { customerName } from "@/data/customers";
 import { formatDate } from "@/lib/format";
 import { formatMoney, sumMinor } from "@/lib/money";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   Card,
   DataTable,
@@ -18,7 +18,7 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { CreditCardIcon } from "@/ui/icons";
+import { CreditCardIcon } from "@atmora/ui";
 
 /** The invoices a payment was applied to, each a link to that invoice. */
 function Allocations({ payment }: { payment: Payment }) {

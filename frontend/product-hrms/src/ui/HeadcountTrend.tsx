@@ -2,9 +2,8 @@ import { useId, useMemo, useState } from "react";
 
 import type { TrendPoint, TrendRange } from "@/api/types";
 import { HEADCOUNT_TREND, TREND_DELTA } from "@/data/samples";
-import { cn } from "@/lib/cn";
-import { DeltaPill } from "./DeltaPill";
-import { SampleChip } from "./SampleChip";
+import { DeltaPill, SampleChip, cn } from "@atmora/ui";
+import { SAMPLE_DATA } from "./sampleCopy";
 
 const RANGES: { value: TrendRange; label: string }[] = [
   { value: "monthly", label: "Monthly" },
@@ -72,7 +71,7 @@ export function HeadcountTrend({ current, sample }: HeadcountTrendProps) {
           <span className="text-sm text-muted">current headcount · vs last period</span>
         </div>
         <div className="flex items-center gap-2">
-          {sample ? <SampleChip /> : null}
+          {sample ? <SampleChip {...SAMPLE_DATA} /> : null}
           <div
             role="tablist"
             aria-label="Trend range"

@@ -1,11 +1,12 @@
 import { useId, useState } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 
-import { ApiError } from "@/api/http";
-import { useAuth } from "@/auth/context";
-import type { OrganizationChoice } from "@/auth/types";
+import { ApiError } from "@atmora/client";
+import { useAuth } from "@atmora/client";
+import type { OrganizationChoice } from "@atmora/client";
 import { Button } from "@/ui";
-import { EyeIcon, EyeOffIcon, LogoMark } from "@/ui/icons";
+import { EyeIcon, EyeOffIcon } from "@atmora/ui";
+import { LogoMark } from "@/ui/LogoMark";
 
 /** Dev-build only: Vite replaces `import.meta.env.DEV` with a literal, so production
  *  bundles carry neither the credential strings nor the button below. */

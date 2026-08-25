@@ -1,7 +1,7 @@
 import type { ComponentType, SVGProps } from "react";
 
 import type { Channel } from "@/api/types";
-import { MailIcon, SearchIcon, Share2Icon, TicketIcon } from "./icons";
+import { MailIcon, SearchIcon, Share2Icon, TicketIcon } from "@atmora/ui";
 
 type IconType = ComponentType<SVGProps<SVGSVGElement>>;
 

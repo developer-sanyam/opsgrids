@@ -1,6 +1,6 @@
 import type { CompanyStatus, ContactStatus, DealStage } from "@/api/types";
 import { stageLabel } from "@/data/stages";
-import { cn } from "@/lib/cn";
+import { cn } from "@atmora/ui";
 
 const PILL_BASE =
   "inline-flex items-center gap-1.5 rounded-full pl-2 pr-2.5 py-1 text-xs font-semibold whitespace-nowrap";

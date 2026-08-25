@@ -6,7 +6,7 @@ import type { Deal } from "@/api/types";
 import { contactsForCompany, ownerById } from "@/data/lookups";
 import { isOpen } from "@/data/stages";
 import { formatDate, formatMoney, formatMoneyCompact } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   ActivityTimeline,
   Avatar,
@@ -26,7 +26,7 @@ import {
   GlobeIcon,
   HandshakeIcon,
   MapPinIcon,
-} from "@/ui/icons";
+} from "@atmora/ui";
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (

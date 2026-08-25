@@ -3,8 +3,7 @@ import { Link } from "react-router-dom";
 import type { SupplierOut } from "@/api/types";
 import { CATEGORY_LABEL } from "@/data/derive";
 import { formatMoneyCompact } from "@/lib/format";
-import { Avatar } from "./Avatar";
-import { ChevronRight } from "./icons";
+import { Avatar, ChevronRight } from "@atmora/ui";
 
 /**
  * A compact leaderboard of suppliers by spend, each linking to its detail. On-time rate rides

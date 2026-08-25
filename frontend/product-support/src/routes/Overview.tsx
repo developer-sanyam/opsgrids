@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { getAllTickets, listAgents, TRENDS_ARE_SAMPLE } from "@/api/client";
 import type { Agent, Ticket } from "@/api/types";
-import { useAuth } from "@/auth/context";
+import { useAuth } from "@atmora/client";
 import {
   agentById,
   breachingCount,
@@ -17,7 +17,7 @@ import {
 } from "@/data/derive";
 import { KPI_DELTA, KPI_TREND, TICKET_VOLUME } from "@/data/samples";
 import { formatMinutes } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   Avatar,
   Button,
@@ -42,7 +42,8 @@ import {
   InboxIcon,
   PlusIcon,
   SearchIcon,
-} from "@/ui/icons";
+} from "@atmora/ui";
+import { SAMPLE_DATA, SAMPLE_TREND } from "@/ui/sampleCopy";
 
 /** A stable empty reference so derived-data memos don't churn while loading. */
 const EMPTY_TICKETS: Ticket[] = [];
@@ -128,7 +129,7 @@ interface KpiConfig {
   series: number[];
   icon: React.ReactNode;
   tone: KpiTone;
-  invertDelta: boolean;
+  goodWhen: "up" | "down";
 }
 
 function buildKpis(tickets: Ticket[]): KpiConfig[] {
@@ -142,7 +143,7 @@ function buildKpis(tickets: Ticket[]): KpiConfig[] {
       series: [...KPI_TREND.open],
       icon: <InboxIcon className="size-5" />,
       tone: "accent",
-      invertDelta: true,
+      goodWhen: "down",
     },
     {
       key: "breaching",
@@ -152,7 +153,7 @@ function buildKpis(tickets: Ticket[]): KpiConfig[] {
       series: [...KPI_TREND.breaching],
       icon: <AlertTriangleIcon className="size-5" />,
       tone: "warning",
-      invertDelta: true,
+      goodWhen: "down",
     },
     {
       key: "frt",
@@ -162,7 +163,7 @@ function buildKpis(tickets: Ticket[]): KpiConfig[] {
       series: [...KPI_TREND.firstResponse],
       icon: <ClockIcon className="size-5" />,
       tone: "info",
-      invertDelta: true,
+      goodWhen: "down",
     },
     {
       key: "csat",
@@ -172,7 +173,7 @@ function buildKpis(tickets: Ticket[]): KpiConfig[] {
       series: [...KPI_TREND.csat],
       icon: <CheckCircleIcon className="size-5" />,
       tone: "positive",
-      invertDelta: false,
+      goodWhen: "up",
     },
   ];
 }
@@ -270,8 +271,8 @@ export function OverviewPage() {
                   series={kpi.series}
                   icon={kpi.icon}
                   tone={kpi.tone}
-                  invertDelta={kpi.invertDelta}
-                  sample={TRENDS_ARE_SAMPLE}
+                  goodWhen={kpi.goodWhen}
+                  sample={TRENDS_ARE_SAMPLE ? SAMPLE_TREND : false}
                 />
               </div>
             ))
@@ -284,7 +285,7 @@ export function OverviewPage() {
           <SectionHeader
             title="Ticket volume"
             subtitle="Opened vs solved, last 7 days"
-            {...(TRENDS_ARE_SAMPLE ? { action: <SampleChip /> } : {})}
+            {...(TRENDS_ARE_SAMPLE ? { action: <SampleChip {...SAMPLE_DATA} /> } : {})}
           />
           <TicketVolumeChart data={TICKET_VOLUME} />
         </Card>

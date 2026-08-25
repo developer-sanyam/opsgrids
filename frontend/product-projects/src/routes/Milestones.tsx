@@ -5,7 +5,7 @@ import { NOW } from "@/api/fixtures";
 import type { MilestoneOut, MilestoneStatus } from "@/api/types";
 import { MILESTONE_STATUS_LABEL } from "@/data/labels";
 import { formatDate, relativeDue } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   Avatar,
   Card,
@@ -17,7 +17,7 @@ import {
   ProgressBar,
   Skeleton,
 } from "@/ui";
-import { FlagIcon } from "@/ui/icons";
+import { FlagIcon } from "@atmora/ui";
 
 const NO_MILESTONES: MilestoneOut[] = [];
 

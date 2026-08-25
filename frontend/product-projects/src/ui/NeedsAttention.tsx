@@ -3,10 +3,8 @@ import { Link } from "react-router-dom";
 import { NOW } from "@/api/fixtures";
 import type { MilestoneOut } from "@/api/types";
 import { formatDateShort, relativeDue } from "@/lib/format";
-import { Avatar } from "./Avatar";
+import { Avatar, CheckSquareIcon, EmptyState } from "@atmora/ui";
 import { MilestoneStatusPill } from "./ProjectPills";
-import { EmptyState } from "./States";
-import { CheckSquareIcon } from "./icons";
 
 /**
  * The "needs attention" list: milestones that are slipping or at risk, soonest first. Each row

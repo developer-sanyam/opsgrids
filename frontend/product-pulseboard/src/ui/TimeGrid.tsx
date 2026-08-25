@@ -1,10 +1,8 @@
 import { useMemo, useState } from "react";
 
 import type { Person, TimesheetRow, TimesheetStatus } from "@/api/types";
-import { cn } from "@/lib/cn";
+import { Avatar, CheckCircleIcon, cn } from "@atmora/ui";
 import { formatDayMonth, formatHours } from "@/lib/format";
-import { Avatar } from "./Avatar";
-import { CheckCircleIcon } from "./icons";
 
 const STATUS_META: Record<TimesheetStatus, { label: string; tone: string }> = {
   draft: { label: "Draft", tone: "bg-ground text-muted" },

@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { getAsset, getIncident } from "@/api/client";
 import type { Asset, Incident } from "@/api/types";
 import { assetStatusLabel, assetTypeLabel, formatDate, formatMoney } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   AssetStatusPill,
   Card,
@@ -14,7 +14,7 @@ import {
   SectionHeader,
   Skeleton,
 } from "@/ui";
-import { ArrowLeftIcon, BoxIcon, CheckCircleIcon, ChevronRight } from "@/ui/icons";
+import { ArrowLeftIcon, BoxIcon, CheckCircleIcon, ChevronRight } from "@atmora/ui";
 
 interface AssetDetail {
   asset: Asset;

@@ -2,19 +2,19 @@ import { useMemo, useState } from "react";
 
 import type { EmployeeOut } from "@/api/types";
 import { departmentLabel } from "@/data/departments";
-import { cn } from "@/lib/cn";
-import { Avatar } from "./Avatar";
-import { EmployeeStatusPill } from "./StatusPill";
-import { EmptyState } from "./States";
 import {
+  Avatar,
   DownloadIcon,
+  EmptyState,
   FilterIcon,
   MapPinIcon,
   MoreHorizontalIcon,
   SearchIcon,
   SortIcon,
   UsersIcon,
-} from "./icons";
+  cn,
+} from "@atmora/ui";
+import { EmployeeStatusPill } from "./StatusPill";
 
 /** Build a CSV of the given rows and hand it to the browser as a download. */
 function exportCsv(rows: EmployeeOut[]): void {

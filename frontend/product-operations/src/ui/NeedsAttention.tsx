@@ -1,8 +1,7 @@
 import { Link } from "react-router-dom";
 
 import type { AttentionItem } from "@/api/types";
-import { cn } from "@/lib/cn";
-import { AlertTriangleIcon, ChevronRight, PackageIcon, TruckIcon } from "./icons";
+import { AlertTriangleIcon, ChevronRight, PackageIcon, TruckIcon, cn } from "@atmora/ui";
 
 const KIND_ICON: Record<AttentionItem["kind"], typeof PackageIcon> = {
   out_of_stock: AlertTriangleIcon,

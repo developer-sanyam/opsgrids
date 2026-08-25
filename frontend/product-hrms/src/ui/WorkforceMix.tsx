@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 
 import type { WorkforceSlice } from "@/api/types";
-import { ArrowRightIcon } from "./icons";
+import { ArrowRightIcon } from "@atmora/ui";
 
 const PALETTE = [
   "var(--color-accent)",

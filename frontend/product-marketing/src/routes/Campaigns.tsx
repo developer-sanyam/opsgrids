@@ -4,8 +4,8 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { getCampaigns } from "@/api/client";
 import type { Campaign, CampaignStatus, Channel } from "@/api/types";
 import { roas } from "@/data/derive";
-import { useAsync } from "@/lib/useAsync";
-import { cn } from "@/lib/cn";
+import { useAsync } from "@atmora/client";
+import { ArrowRightIcon, ChevronDown, MegaphoneIcon, PlusIcon, cn } from "@atmora/ui";
 import {
   campaignStatusLabel,
   channelLabel,
@@ -26,7 +26,6 @@ import {
   SearchInput,
   Skeleton,
 } from "@/ui";
-import { ArrowRightIcon, ChevronDown, MegaphoneIcon, PlusIcon } from "@/ui/icons";
 
 const NO_CAMPAIGNS: Campaign[] = [];
 

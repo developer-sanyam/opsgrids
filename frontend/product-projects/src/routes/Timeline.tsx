@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { getAllProjects, listMilestones } from "@/api/client";
 import type { MilestoneOut, ProjectHealth, ProjectOut } from "@/api/types";
 import { HEALTH_LABEL } from "@/data/labels";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   Card,
   EmptyState,
@@ -13,7 +13,7 @@ import {
   Pill,
   Skeleton,
 } from "@/ui";
-import { GanttIcon } from "@/ui/icons";
+import { GanttIcon } from "@atmora/ui";
 
 const EMPTY_PROJECTS: ProjectOut[] = [];
 const EMPTY_MILESTONES: MilestoneOut[] = [];

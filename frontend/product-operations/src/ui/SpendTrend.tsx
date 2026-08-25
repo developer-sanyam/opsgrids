@@ -2,9 +2,8 @@ import { useId, useMemo, useState } from "react";
 
 import type { SpendPoint, SpendRange } from "@/api/types";
 import { SPEND_DELTA, SPEND_TREND } from "@/api/fixtures";
-import { cn } from "@/lib/cn";
+import { DeltaPill, cn } from "@atmora/ui";
 import { formatMoney, formatMoneyCompact } from "@/lib/format";
-import { DeltaPill } from "./DeltaPill";
 
 const RANGES: { value: SpendRange; label: string }[] = [
   { value: "monthly", label: "Monthly" },
@@ -65,7 +64,7 @@ export function SpendTrend() {
             <span className="display text-3xl font-extrabold tnum leading-none">
               {formatMoneyCompact(total)}
             </span>
-            <DeltaPill value={delta} invert />
+            <DeltaPill value={delta} goodWhen="down" />
           </div>
           <span className="text-sm text-muted">committed spend · this {range.replace("ly", "")} window</span>
         </div>

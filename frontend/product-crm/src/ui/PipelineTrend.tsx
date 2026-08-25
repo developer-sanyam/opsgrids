@@ -3,8 +3,8 @@ import { useId, useMemo, useState } from "react";
 import type { TrendPoint } from "@/api/types";
 import { PIPELINE_DELTA, PIPELINE_TREND } from "@/data/samples";
 import { formatMoneyCompact } from "@/lib/format";
-import { DeltaPill } from "./DeltaPill";
-import { SampleChip } from "./SampleChip";
+import { DeltaPill, SampleChip } from "@atmora/ui";
+import { SAMPLE_DATA } from "./sampleCopy";
 
 const W = 640;
 const H = 200;
@@ -62,7 +62,7 @@ export function PipelineTrend({ currentMinor, currency }: PipelineTrendProps) {
           </div>
           <span className="text-sm text-muted">open pipeline · vs last month</span>
         </div>
-        <SampleChip />
+        <SampleChip {...SAMPLE_DATA} />
       </div>
 
       <figure className="relative m-0">

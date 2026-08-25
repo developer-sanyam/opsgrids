@@ -5,13 +5,13 @@ import { Link, useNavigate } from "react-router-dom";
 import { getOverview } from "@/api/client";
 import { getCustomerById } from "@/api/customers";
 import type { Customer, Invoice, OverviewKpi } from "@/api/types";
-import { useAuth } from "@/auth/context";
+import { useAuth } from "@atmora/client";
 import { customerName } from "@/data/customers";
 import { daysOverdue, outstandingMinor } from "@/data/derive";
 import { TODAY } from "@/api/fixtures";
 import { formatDate } from "@/lib/format";
 import { formatMoney, formatMoneyCompact } from "@/lib/money";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   AgingBreakdown,
   Avatar,
@@ -31,7 +31,7 @@ import {
   ReceiptIcon,
   TrendingUpIcon,
   WalletIcon,
-} from "@/ui/icons";
+} from "@atmora/ui";
 
 /** Per-KPI presentation: icon, pastel tone, and whether a rise reads as bad news. */
 const KPI_STYLE: Record<string, { icon: ReactNode; tone: KpiTone; invert: boolean }> = {
@@ -83,7 +83,9 @@ function KpiValue({ kpi }: { kpi: OverviewKpi }) {
       icon={style.icon}
       tone={style.tone}
       caption={kpi.caption}
-      invertDelta={style.invert}
+      captionPlacement="label"
+      figure="money"
+      goodWhen={style.invert ? "down" : "up"}
     />
   );
 }

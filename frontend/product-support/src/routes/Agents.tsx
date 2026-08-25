@@ -2,9 +2,9 @@ import { useMemo } from "react";
 
 import { getSlaPolicy, listAgents } from "@/api/client";
 import type { Agent, Priority } from "@/api/types";
-import { cn } from "@/lib/cn";
+import { GaugeIcon, cn } from "@atmora/ui";
 import { formatMinutes, priorityLabel } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   Avatar,
   Card,
@@ -15,7 +15,6 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { GaugeIcon } from "@/ui/icons";
 
 const ROLE_LABEL: Record<Agent["role"], string> = {
   agent: "Agent",

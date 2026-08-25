@@ -2,8 +2,7 @@ import { useId, useMemo, useState } from "react";
 
 import type { BurndownPoint, BurndownRange } from "@/api/types";
 import { BURNDOWN, BURNDOWN_DELTA } from "@/api/fixtures";
-import { cn } from "@/lib/cn";
-import { DeltaPill } from "./DeltaPill";
+import { DeltaPill, cn } from "@atmora/ui";
 
 const RANGES: { value: BurndownRange; label: string }[] = [
   { value: "sprint", label: "Sprint" },
@@ -88,7 +87,7 @@ export function Burndown() {
               {remaining}
             </span>
             <span className="text-sm font-medium text-muted">pts left</span>
-            <DeltaPill value={delta} goodWhenDown />
+            <DeltaPill value={delta} goodWhen="down" />
           </div>
           <span className="text-sm text-muted">remaining scope · burndown vs plan</span>
         </div>

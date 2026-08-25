@@ -73,19 +73,7 @@ export function formatDate(iso: string | null): string {
   });
 }
 
-/** Format a delta like 4.2 -> "+4.2%" / -1.4 -> "−1.4%". */
-export function formatDelta(pct: number): string {
-  const sign = pct >= 0 ? "+" : "−";
-  return `${sign}${Math.abs(pct).toFixed(1)}%`;
-}
 
-/** Initials for an avatar fallback: "Meridian Metals" -> "MM". */
-export function initials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  const first = parts[0]?.[0] ?? "";
-  const last = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? "") : "";
-  return (first + last).toUpperCase();
-}
 
 /**
  * Whole-day difference between an ISO date and a reference "today", both read in UTC so a stored

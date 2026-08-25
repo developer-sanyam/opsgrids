@@ -4,7 +4,7 @@ import { NOW } from "@/api/fixtures";
 import type { MilestoneOut, ProjectOut } from "@/api/types";
 import { HEALTH_LABEL, MILESTONE_STATUS_LABEL, PHASE_LABEL } from "@/data/labels";
 import { formatDate } from "@/lib/format";
-import { Avatar } from "./Avatar";
+import { Avatar } from "@atmora/ui";
 import { healthColor } from "./healthColor";
 
 const DAY_PX = 3.4;

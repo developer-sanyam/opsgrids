@@ -4,7 +4,7 @@ import { getLedger } from "@/api/client";
 import type { LedgerAccount, LedgerReport } from "@/api/types";
 import { formatDate } from "@/lib/format";
 import { formatAmount, formatMoney } from "@/lib/money";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   Button,
   Card,
@@ -13,7 +13,7 @@ import {
   SectionHeader,
   Skeleton,
 } from "@/ui";
-import { DownloadIcon } from "@/ui/icons";
+import { DownloadIcon } from "@atmora/ui";
 
 /** Revenue less contra-revenue; expenses; and the profit that falls out of the two. */
 function summarise(accounts: LedgerAccount[]) {

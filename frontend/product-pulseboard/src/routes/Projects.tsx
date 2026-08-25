@@ -4,9 +4,9 @@ import { useSearchParams } from "react-router-dom";
 import { listProjects } from "@/api/client";
 import type { Project, ProjectStatus } from "@/api/types";
 import { personName } from "@/data/people";
-import { cn } from "@/lib/cn";
+import { ChevronDown, CloseIcon, LayersIcon, cn } from "@atmora/ui";
 import { formatDate, formatMoney } from "@/lib/format";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import {
   Avatar,
   Card,
@@ -20,7 +20,6 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { ChevronDown, CloseIcon, LayersIcon } from "@/ui/icons";
 
 type StatusFilter = ProjectStatus | "all";
 type SortKey = "name" | "client" | "progress" | "budget" | "spent";

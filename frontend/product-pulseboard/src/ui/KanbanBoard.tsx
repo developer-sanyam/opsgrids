@@ -3,13 +3,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Task, TaskStatus } from "@/api/types";
 import { personName } from "@/data/people";
 import { PROJECTS } from "@/api/fixtures";
-import { cn } from "@/lib/cn";
+import { Avatar, GripIcon, MoreHorizontalIcon, Tag, cn } from "@atmora/ui";
 import { formatHours } from "@/lib/format";
-import { Avatar } from "./Avatar";
 import { PriorityPill } from "./StatusPill";
 import { TASK_STATUS_META } from "./statusMeta";
-import { Tag } from "./Tag";
-import { GripIcon, MoreHorizontalIcon } from "./icons";
 
 const COLUMNS: TaskStatus[] = ["backlog", "in_progress", "review", "done"];
 

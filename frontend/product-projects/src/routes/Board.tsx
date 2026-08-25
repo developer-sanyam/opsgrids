@@ -1,7 +1,7 @@
 import { getAllProjects, listTasks } from "@/api/client";
-import { useAsync } from "@/lib/useAsync";
+import { useAsync } from "@atmora/client";
 import { Card, ErrorState, KanbanBoard, PageHeader, Skeleton } from "@/ui";
-import { LayoutIcon } from "@/ui/icons";
+import { BoardIcon } from "@atmora/ui";
 
 export function BoardPage() {
   const tasksState = useAsync(listTasks, []);
@@ -15,7 +15,7 @@ export function BoardPage() {
         title="Board"
         actions={
           <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
-            <LayoutIcon className="size-4 text-muted" />
+            <BoardIcon className="size-4 text-muted" />
             <span className="tnum">
               {tasksState.status === "success" ? tasksState.data.total : "—"}
             </span>

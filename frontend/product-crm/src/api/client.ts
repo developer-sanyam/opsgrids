@@ -8,7 +8,7 @@
  * are wired here already, so going live is a flag flip.
  */
 
-import { apiRequest } from "./http";
+import { apiRequest } from "@atmora/client";
 import { ACTIVITIES, COMPANIES, CONTACTS, DEALS, OWNERS } from "./fixtures";
 import type {
   Activity,

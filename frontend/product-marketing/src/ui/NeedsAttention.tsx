@@ -2,9 +2,8 @@ import { Link } from "react-router-dom";
 
 import type { AttentionItem } from "@/data/derive";
 import { formatMoneyCompact } from "@/lib/format";
-import { AlertTriangleIcon, ArrowRightIcon } from "./icons";
+import { AlertTriangleIcon, ArrowRightIcon, EmptyState } from "@atmora/ui";
 import { ChannelBadge } from "./ChannelBadge";
-import { EmptyState } from "./States";
 
 /**
  * Underperforming campaigns that warrant a look: each row names the campaign, its channel and the
