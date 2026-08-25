@@ -151,9 +151,15 @@ test-services: ## Each service in its own process
 	  if [ $$rc -eq 5 ]; then echo "  (no tests yet)"; elif [ $$rc -ne 0 ]; then exit $$rc; fi; \
 	done
 
+# The one suite where nothing is stubbed: six services, an outbox relay and an event
+# consumer, all started by the harness on ports the OS hands out, driven over real HTTP
+# against real Postgres and RabbitMQ. It needs no free port reserved and no stack stopped —
+# it allocates its own and generates the gateway's route table to match, so it can run
+# alongside a stack you already have up. Ordered: the steps share state and read as one
+# journey. `make infra` is the only prerequisite.
 .PHONY: e2e
-e2e: ## Drive the running platform over HTTP — starts the services itself
-	@echo "→ end-to-end (needs make infra, and ports 8100/8110/8111 free)"
+e2e: ## Boot the real services and drive one ordered journey over HTTP
+	@echo "→ end-to-end (needs make infra; ports are allocated, not fixed)"
 	uv run pytest e2e -q
 
 .PHONY: check

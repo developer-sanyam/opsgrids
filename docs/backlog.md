@@ -86,13 +86,40 @@ left:
   Still open from the checklist: **declare plan features** (step 5) — that remains
   product-service seed data.
 
-### End-to-end journey suite
-Boot the services together and run one real journey: create an organization → invite → sign in
-→ reach an entitled endpoint → be refused an unentitled one → be refused another tenant's data.
+### End-to-end journey suite — DONE
+`make e2e` boots six services (account, product, auth, customer, deal, app-gateway), an outbox
+relay and an event consumer as subprocesses on ports the OS allocates, and drives one ordered
+journey over real HTTP against real Postgres and RabbitMQ. Nothing is stubbed. ~20s.
 
-This is high value because **the two most recent real defects were both invisible to unit
-tests** — each side stubbed the other. Until this exists, "194 tests pass" says less than it
-appears to.
+The journey: the owner signs in → an administrator is refused activation → the owner activates
+CRM → **the relay publishes the event and account-service consumes it** → the manifest installs
+→ **every admin role the product ships is granted** → an entitled endpoint returns seeded rows →
+the second service answers too → an unentitled product is 402 → another tenant's row is 404 →
+every service resolves grants through the current internal-token scheme.
+
+Written against the three defects that reached `main` on 2026-08-25, each invisible to unit
+tests because each side stubbed the other:
+
+- **(a) the silent relay stall** — steps 4-5 assert the outbox row reaches `published_at` and
+  account-service's `processed_events`. The harness also runs every process with
+  `ENVIRONMENT=ci`, which turns `assert_outbox_role`/`assert_app_role` from a warning into a
+  startup failure, so a relay handed an RLS-bound role now dies at boot with the reason.
+- **(b) version skew** — step 13 asserts every service in the suite answers 200 to a request
+  the gateway signed. A service still verifying the old static shared secret cannot.
+- **(c) a product spanning two services** — CRM is the only product with two admin templates.
+  Step 7 asserts the owner holds both, and step 9 proves it with data from the second service.
+
+Three things the harness itself is careful about, each having already bitten: ports are
+allocated rather than fixed (fixed ports made the suite silently drive a stack that was already
+running); `DATABASE_URL`, the broker vhost and the Redis db are pinned by the harness and passed
+explicitly, so no developer's `.env` can steer it into the shared database; and the gateway is
+addressed as `localhost`, because an IP host makes it infer a tenant slug from the Host header.
+
+**Still open:** the suite seeds its owner by setting `Membership.is_owner` directly, because
+`add_member` cannot create one and there is no HTTP route for organization creation — the same
+gap `tools/demo/promote_owner.py` exists to repair. And `_seed_product.py` promotes `crm` from
+`soon` to `available` in the test database, since it is the only multi-service product and
+activation rightly refuses a product that has not shipped.
 
 ### `product-service`
 Product registry, per-org activation, entitlements, marketplace catalogue. Turns the gateway's
