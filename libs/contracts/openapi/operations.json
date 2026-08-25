@@ -1,6 +1,546 @@
 {
   "components": {
     "schemas": {
+      "AttentionItem": {
+        "description": "One row in the \"needs attention\" queue. Mirrors the SPA's `AttentionItem`.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "href": {
+            "title": "Href",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "low_stock",
+              "out_of_stock",
+              "late_delivery"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "tone": {
+            "enum": [
+              "danger",
+              "late"
+            ],
+            "title": "Tone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "detail",
+          "href",
+          "tone"
+        ],
+        "title": "AttentionItem",
+        "type": "object"
+      },
+      "CategorySpend": {
+        "description": "One category's share of committed spend \u2014 grouped from purchase orders. Mirrors the\nSPA's `CategorySpend`.",
+        "properties": {
+          "key": {
+            "enum": [
+              "raw_materials",
+              "packaging",
+              "components",
+              "mro",
+              "logistics",
+              "services"
+            ],
+            "title": "Key",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "pct": {
+            "title": "Pct",
+            "type": "integer"
+          },
+          "spend_minor": {
+            "title": "Spend Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "spend_minor",
+          "pct"
+        ],
+        "title": "CategorySpend",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "InventoryItemOut": {
+        "description": "Mirrors the SPA's `InventoryItemOut`. Stock value = `on_hand * unit_value_minor`;\nlow-stock is derived by the client (and the overview) as `on_hand <= reorder_point`.",
+        "properties": {
+          "category": {
+            "enum": [
+              "raw_materials",
+              "packaging",
+              "components",
+              "mro",
+              "logistics",
+              "services"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "on_hand": {
+            "title": "On Hand",
+            "type": "integer"
+          },
+          "reorder_point": {
+            "title": "Reorder Point",
+            "type": "integer"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "unit_value_minor": {
+            "title": "Unit Value Minor",
+            "type": "integer"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "warehouse": {
+            "title": "Warehouse",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "sku",
+          "name",
+          "category",
+          "warehouse",
+          "on_hand",
+          "reorder_point",
+          "uom",
+          "unit_value_minor",
+          "currency",
+          "updated_at"
+        ],
+        "title": "InventoryItemOut",
+        "type": "object"
+      },
+      "OverviewOut": {
+        "description": "The Operations overview's server-side rollup. The SPA can derive all of this from the\nlist endpoints; this exposes the same arithmetic once, so a reporting view can share it.\n\n`open_pos` counts POs still in flight (draft or approved); `inventory_value_minor` is the\nvalue of stock on hand; `low_stock_count` is items at or below their reorder point;\n`on_time_pct` is the spend-weighted on-time delivery rate. The series and breakdowns feed the\ncharts.",
+        "properties": {
+          "attention": {
+            "items": {
+              "$ref": "#/components/schemas/AttentionItem"
+            },
+            "title": "Attention",
+            "type": "array"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "inventory_value_minor": {
+            "title": "Inventory Value Minor",
+            "type": "integer"
+          },
+          "low_stock_count": {
+            "title": "Low Stock Count",
+            "type": "integer"
+          },
+          "on_time_pct": {
+            "title": "On Time Pct",
+            "type": "number"
+          },
+          "open_pos": {
+            "title": "Open Pos",
+            "type": "integer"
+          },
+          "po_status_mix": {
+            "items": {
+              "$ref": "#/components/schemas/StatusSlice"
+            },
+            "title": "Po Status Mix",
+            "type": "array"
+          },
+          "spend_by_category": {
+            "items": {
+              "$ref": "#/components/schemas/CategorySpend"
+            },
+            "title": "Spend By Category",
+            "type": "array"
+          },
+          "spend_trend": {
+            "items": {
+              "$ref": "#/components/schemas/SpendPoint"
+            },
+            "title": "Spend Trend",
+            "type": "array"
+          },
+          "top_suppliers": {
+            "items": {
+              "$ref": "#/components/schemas/SupplierSpend"
+            },
+            "title": "Top Suppliers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "open_pos",
+          "inventory_value_minor",
+          "low_stock_count",
+          "on_time_pct",
+          "currency"
+        ],
+        "title": "OverviewOut",
+        "type": "object"
+      },
+      "Page_InventoryItemOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InventoryItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[InventoryItemOut]",
+        "type": "object"
+      },
+      "Page_PurchaseOrderOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PurchaseOrderOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[PurchaseOrderOut]",
+        "type": "object"
+      },
+      "Page_SupplierOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SupplierOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[SupplierOut]",
+        "type": "object"
+      },
+      "Page_WarehouseOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WarehouseOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[WarehouseOut]",
+        "type": "object"
+      },
+      "PoLineItem": {
+        "description": "One line on a purchase order. `unit_price_minor` is per-unit minor units of the PO\ncurrency; the line total (`quantity * unit_price_minor`) is summed into the PO total.",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "received_qty": {
+            "title": "Received Qty",
+            "type": "integer"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "unit_price_minor": {
+            "title": "Unit Price Minor",
+            "type": "integer"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "sku",
+          "description",
+          "quantity",
+          "uom",
+          "unit_price_minor",
+          "received_qty"
+        ],
+        "title": "PoLineItem",
+        "type": "object"
+      },
+      "PurchaseOrderOut": {
+        "description": "Mirrors the SPA's `PurchaseOrderOut`. The total is derived from `line_items`, never\nstored, so it never appears here \u2014 the client sums the lines.",
+        "properties": {
+          "category": {
+            "enum": [
+              "raw_materials",
+              "packaging",
+              "components",
+              "mro",
+              "logistics",
+              "services"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "created_date": {
+            "format": "date",
+            "title": "Created Date",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "expected_date": {
+            "format": "date",
+            "title": "Expected Date",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "line_items": {
+            "items": {
+              "$ref": "#/components/schemas/PoLineItem"
+            },
+            "title": "Line Items",
+            "type": "array"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "po_number": {
+            "title": "Po Number",
+            "type": "string"
+          },
+          "raised_by": {
+            "title": "Raised By",
+            "type": "string"
+          },
+          "received_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received Date"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "approved",
+              "received",
+              "closed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "supplier_id": {
+            "title": "Supplier Id",
+            "type": "string"
+          },
+          "supplier_name": {
+            "title": "Supplier Name",
+            "type": "string"
+          },
+          "warehouse": {
+            "title": "Warehouse",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "po_number",
+          "supplier_id",
+          "supplier_name",
+          "category",
+          "status",
+          "currency",
+          "warehouse",
+          "raised_by",
+          "created_date",
+          "expected_date",
+          "received_date",
+          "notes"
+        ],
+        "title": "PurchaseOrderOut",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -17,6 +557,264 @@
           "schema_name"
         ],
         "title": "ServiceInfo",
+        "type": "object"
+      },
+      "SpendPoint": {
+        "description": "A point on the spend-over-time chart, in minor units. Mirrors the SPA's `SpendPoint`.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "spend_minor": {
+            "title": "Spend Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "label",
+          "spend_minor"
+        ],
+        "title": "SpendPoint",
+        "type": "object"
+      },
+      "StatusSlice": {
+        "description": "One slice of the PO-status donut \u2014 grouped by status. Mirrors the SPA's `StatusSlice`.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "key": {
+            "enum": [
+              "draft",
+              "approved",
+              "received",
+              "closed"
+            ],
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "pct": {
+            "title": "Pct",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "count",
+          "pct"
+        ],
+        "title": "StatusSlice",
+        "type": "object"
+      },
+      "SupplierOut": {
+        "description": "Mirrors the SPA's `SupplierOut`. `spend_minor` is lifetime spend in minor units of\n`currency`; `on_time_pct` is the trailing on-time delivery rate, 0-100.",
+        "properties": {
+          "category": {
+            "enum": [
+              "raw_materials",
+              "packaging",
+              "components",
+              "mro",
+              "logistics",
+              "services"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "contact_email": {
+            "title": "Contact Email",
+            "type": "string"
+          },
+          "contact_name": {
+            "title": "Contact Name",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lead_time_days": {
+            "title": "Lead Time Days",
+            "type": "integer"
+          },
+          "location": {
+            "title": "Location",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "on_time_pct": {
+            "title": "On Time Pct",
+            "type": "number"
+          },
+          "open_pos": {
+            "title": "Open Pos",
+            "type": "integer"
+          },
+          "since": {
+            "format": "date",
+            "title": "Since",
+            "type": "string"
+          },
+          "spend_minor": {
+            "title": "Spend Minor",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "on_hold",
+              "pending"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "category",
+          "status",
+          "lead_time_days",
+          "on_time_pct",
+          "spend_minor",
+          "currency",
+          "open_pos",
+          "contact_name",
+          "contact_email",
+          "location",
+          "since"
+        ],
+        "title": "SupplierOut",
+        "type": "object"
+      },
+      "SupplierSpend": {
+        "description": "One supplier's share of lifetime spend \u2014 the supplier-breakdown row on the overview.",
+        "properties": {
+          "category": {
+            "enum": [
+              "raw_materials",
+              "packaging",
+              "components",
+              "mro",
+              "logistics",
+              "services"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "pct": {
+            "title": "Pct",
+            "type": "integer"
+          },
+          "spend_minor": {
+            "title": "Spend Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "category",
+          "spend_minor",
+          "pct"
+        ],
+        "title": "SupplierSpend",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "WarehouseOut": {
+        "description": "A stocking location. Reference data behind the warehouse names the POs and inventory\nrows carry.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "location": {
+            "title": "Location",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "location"
+        ],
+        "title": "WarehouseOut",
         "type": "object"
       }
     }
@@ -44,6 +842,602 @@
           }
         },
         "summary": "What this service is",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory": {
+      "get": {
+        "operationId": "list_inventory_api_v1_operations_inventory_get",
+        "parameters": [
+          {
+            "description": "SKU, name or warehouse",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "SKU, name or warehouse",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Category"
+            }
+          },
+          {
+            "in": "query",
+            "name": "warehouse",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Warehouse"
+            }
+          },
+          {
+            "description": "Only items at/under reorder point",
+            "in": "query",
+            "name": "low_stock",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only items at/under reorder point",
+              "title": "Low Stock"
+            }
+          },
+          {
+            "description": "on_hand | value | sku",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "on_hand | value | sku",
+              "title": "Sort"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_InventoryItemOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inventory on hand (low-stock is derived, and labelled \u2014 never colour alone)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/overview": {
+      "get": {
+        "operationId": "overview_api_v1_operations_overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OverviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Procurement & inventory overview rollups",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/purchase-orders": {
+      "get": {
+        "operationId": "list_purchase_orders_api_v1_operations_purchase_orders_get",
+        "parameters": [
+          {
+            "description": "Number, supplier, raiser or warehouse",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Number, supplier, raiser or warehouse",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Category"
+            }
+          },
+          {
+            "description": "expected | created | number",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "expected | created | number",
+              "title": "Sort"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PurchaseOrderOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Purchase orders, with their line items",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/purchase-orders/{po_id}": {
+      "get": {
+        "operationId": "read_purchase_order_api_v1_operations_purchase_orders__po_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "po_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Po Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseOrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One purchase order, with its line items",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/purchase-orders/{po_id}/receive": {
+      "post": {
+        "operationId": "receive_purchase_order_api_v1_operations_purchase_orders__po_id__receive_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "po_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Po Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseOrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Receive a purchase order (marks it received and fills received quantities)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/suppliers": {
+      "get": {
+        "operationId": "list_suppliers_api_v1_operations_suppliers_get",
+        "parameters": [
+          {
+            "description": "Code, name, contact or location",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Code, name, contact or location",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Category"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "description": "spend | on_time | lead_time | name",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "spend | on_time | lead_time | name",
+              "title": "Sort"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_SupplierOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The supplier directory",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/suppliers/{supplier_id}": {
+      "get": {
+        "operationId": "read_supplier_api_v1_operations_suppliers__supplier_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "supplier_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Supplier Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One supplier",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/warehouses": {
+      "get": {
+        "operationId": "list_warehouses_api_v1_operations_warehouses_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_WarehouseOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The org's warehouses",
         "tags": [
           "operations"
         ]
