@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { listInvoices } from "@/api/client";
 import type { InvoiceSort, InvoiceStatusFilter } from "@/api/client";
+import { getCustomerById } from "@/api/customers";
 import type { Invoice } from "@/api/types";
 import { customerName } from "@/data/customers";
 import { outstandingMinor } from "@/data/derive";
@@ -86,6 +87,9 @@ export function InvoicesPage() {
     [search, status, sort],
   );
   const invoices = useAsync(loader, [search, status, sort]);
+  // The directory resolves `customer_id` to a name; it never gates the table from rendering.
+  const customers = useAsync(getCustomerById, []);
+  const customerById = customers.status === "success" ? customers.data : undefined;
 
   const rows = useMemo(
     () => (invoices.status === "success" ? invoices.data.items : []),
@@ -110,7 +114,9 @@ export function InvoicesPage() {
     {
       key: "customer",
       header: "Customer",
-      render: (inv) => <span className="text-ink-soft">{customerName(inv.customer_id)}</span>,
+      render: (inv) => (
+        <span className="text-ink-soft">{customerName(customerById, inv.customer_id)}</span>
+      ),
     },
     {
       key: "issued",

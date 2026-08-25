@@ -33,7 +33,7 @@ VITE_USE_FIXTURES=false pnpm dev
 
 ```sh
 pnpm install
-pnpm dev         # http://localhost:4340
+pnpm dev         # http://localhost:4350
 pnpm typecheck   # tsc --noEmit, strict
 pnpm lint        # eslint
 pnpm build       # tsc + vite build

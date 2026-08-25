@@ -27,7 +27,10 @@ interface KpiCardProps {
   tone: KpiTone;
   /** Whether a rising value is good for this metric. Open incidents → false. */
   higherIsBetter?: boolean;
-  /** Representative rather than live — renders a "Sample data" chip. */
+  /**
+   * The delta and sparkline are representative while no reporting service serves trend history.
+   * The headline `value` stays live, so the chip says "Sample trend", not "Sample data".
+   */
   sample?: boolean;
 }
 
@@ -69,7 +72,7 @@ export function KpiCard({
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-muted">{label}</span>
-          {sample ? <SampleChip /> : null}
+          {sample ? <SampleChip label="Sample trend" /> : null}
         </div>
         <div className="flex items-center gap-2.5">
           <span className="display text-[2.1rem] leading-none font-extrabold tnum">

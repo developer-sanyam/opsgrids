@@ -3,7 +3,8 @@ import type { CSSProperties, ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { getOverview } from "@/api/client";
-import type { Invoice, OverviewKpi } from "@/api/types";
+import { getCustomerById } from "@/api/customers";
+import type { Customer, Invoice, OverviewKpi } from "@/api/types";
 import { useAuth } from "@/auth/context";
 import { customerName } from "@/data/customers";
 import { daysOverdue, outstandingMinor } from "@/data/derive";
@@ -88,8 +89,14 @@ function KpiValue({ kpi }: { kpi: OverviewKpi }) {
 }
 
 /** One overdue invoice in the "needs attention" queue. */
-function AttentionRow({ invoice }: { invoice: Invoice }) {
-  const name = customerName(invoice.customer_id);
+function AttentionRow({
+  invoice,
+  customerById,
+}: {
+  invoice: Invoice;
+  customerById: ReadonlyMap<string, Customer> | undefined;
+}) {
+  const name = customerName(customerById, invoice.customer_id);
   const overdueDays = daysOverdue(invoice, TODAY);
   return (
     <Link
@@ -118,6 +125,9 @@ function AttentionRow({ invoice }: { invoice: Invoice }) {
 export function OverviewPage() {
   const { user } = useAuth();
   const overview = useAsync(getOverview, []);
+  // The directory resolves `customer_id` to a name; it never gates the screen from rendering.
+  const customers = useAsync(getCustomerById, []);
+  const customerById = customers.status === "success" ? customers.data : undefined;
 
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
@@ -221,7 +231,11 @@ export function OverviewPage() {
             ) : (
               <div className="flex flex-col divide-y divide-line/70">
                 {attention.map((invoice) => (
-                  <AttentionRow key={invoice.id} invoice={invoice} />
+                  <AttentionRow
+                    key={invoice.id}
+                    invoice={invoice}
+                    customerById={customerById}
+                  />
                 ))}
               </div>
             )

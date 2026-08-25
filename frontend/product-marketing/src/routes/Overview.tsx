@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { getCampaigns, getRevenueSpendSeries } from "@/api/client";
+import { getCampaigns, getRevenueSpendSeries, TRENDS_ARE_SAMPLE } from "@/api/client";
 import type { Campaign } from "@/api/types";
 import { useAuth } from "@/auth/context";
 import { channelPerformance, needsAttention, overviewTotals } from "@/data/derive";
@@ -209,6 +209,7 @@ export function OverviewPage() {
                   icon={kpi.icon}
                   tone={kpi.tone}
                   caption={caption}
+                  sample={TRENDS_ARE_SAMPLE}
                 />
               </div>
             ))

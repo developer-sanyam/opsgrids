@@ -1,11 +1,10 @@
 /**
  * Typed Marketing API client.
  *
- * **Fixtures by default.** The marketing service is still a skeleton on this branch, so the whole
- * app renders from `fixtures.ts` with no login. Once the service ships, set
- * `VITE_USE_FIXTURES=false` and every function below calls the gateway at the same-origin
- * `/api/v1/marketing/*` prefix (Vite proxies it to `http://localhost:8100` in dev) with the bearer
- * token from the session — wiring the product to live data is a single flag flip.
+ * Live by default: every function calls the marketing service through the gateway at the
+ * same-origin `/api/v1/marketing/*` prefix (Vite proxies it to `http://localhost:8100` in dev)
+ * with the bearer token from the session. Set `VITE_USE_FIXTURES=true` to render the whole app
+ * from `fixtures.ts` with no login — handy for offline design work.
  */
 
 import { apiRequest } from "./http";
@@ -18,14 +17,21 @@ import {
 import { ApiError } from "./http";
 import type { Audience, Campaign, Page, RevenueSpendPoint } from "./types";
 
-/** Fixtures unless `VITE_USE_FIXTURES=false` explicitly points the app at the live gateway.
+/** Default source. Live unless `VITE_USE_FIXTURES=true` pins the app to fixtures.
  *  Dev builds only: `import.meta.env.DEV` compiles to `false` in production, so a stray
  *  CI/production env var can never ship fixture mode — an app rendering fabricated data
  *  with the "Sample data" markers suppressed. */
-export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES !== "false";
+export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES === "true";
 
 /** True when the app is talking to the real gateway. */
 export const LIVE = !USE_FIXTURES;
+
+/**
+ * The Overview's KPI deltas and sparkline histories have no reporting service yet, so they are
+ * representative rather than live. When the app runs live those cards carry a "Sample data" chip;
+ * in fixture mode the whole app is illustrative, so nothing is singled out.
+ */
+export const TRENDS_ARE_SAMPLE = LIVE;
 
 /** A generous page size — one request returns the whole (small) working set for this org. */
 const FULL_PAGE = 200;

@@ -66,7 +66,8 @@ const NOW_MS = Date.parse("2026-08-24T18:00:00Z");
 const WARRANTY_WINDOW_DAYS = 60;
 
 /** A small flag on the warranty cell: expired, or expiring within 60 days. */
-function warrantyFlag(iso: string): { label: string; tone: string } | null {
+function warrantyFlag(iso: string | null): { label: string; tone: string } | null {
+  if (iso === null) return null;
   const exp = Date.parse(`${iso}T00:00:00Z`);
   if (exp < NOW_MS) return { label: "Expired", tone: "bg-danger-soft text-danger" };
   if (exp <= NOW_MS + WARRANTY_WINDOW_DAYS * 86_400_000) {

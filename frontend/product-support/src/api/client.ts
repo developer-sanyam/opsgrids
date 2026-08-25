@@ -1,24 +1,32 @@
 /**
  * Typed Support API client.
  *
- * Fixtures-first: the support-service is a skeleton on this branch, so the whole app renders from
- * `fixtures.ts` with no login by default. Every function keeps the shape of the live call it will
- * make later, so wiring the real gateway is a flag flip (`VITE_USE_FIXTURES=false`) — the live path
- * targets the same-origin `/api/v1/support/...` prefix that Vite proxies to the gateway in dev.
+ * Live by default: every function calls the support-service through the gateway at the
+ * same-origin `/api/v1/support/...` prefix (Vite proxies it to `http://localhost:8100` in dev)
+ * with the bearer token from the session. Set `VITE_USE_FIXTURES=true` to render the whole app
+ * from `fixtures.ts` with no login — handy for offline design work.
  */
 
 import { apiRequest } from "./http";
 import { AGENTS, SLA_POLICY, TICKETS } from "./fixtures";
 import type { Agent, Page, SlaPolicy, Ticket } from "./types";
 
-/** Fixtures unless explicitly turned off — the backend for this product is a skeleton.
+/** Default source. Live unless `VITE_USE_FIXTURES=true` pins the app to fixtures.
  *  Dev builds only: `import.meta.env.DEV` compiles to `false` in production, so a stray
  *  CI/production env var can never ship fixture mode — an app rendering fabricated data
  *  with the "Sample data" markers suppressed. */
-export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES !== "false";
+export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES === "true";
 
 /** True when the app is talking to the real gateway. */
 export const LIVE = !USE_FIXTURES;
+
+/**
+ * The Overview's trend history (KPI deltas / sparklines and the volume chart) has no reporting
+ * service yet, so it is representative rather than live. When the app runs live those surfaces
+ * carry a "Sample data" chip; in fixture mode the whole app is illustrative, so nothing is
+ * singled out.
+ */
+export const TRENDS_ARE_SAMPLE = LIVE;
 
 /** A generous page size — one request returns the whole (small) queue for this org. */
 const FULL_PAGE = 100;

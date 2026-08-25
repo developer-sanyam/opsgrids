@@ -134,9 +134,10 @@ export interface Asset {
   owner: string | null;
   location: string;
   serial: string;
-  purchased_at: string;
-  /** Warranty / support expiry; drives the "expiring soon" flag. */
-  warranty_expires_at: string;
+  /** ISO date, or null when the purchase date was never recorded. */
+  purchased_at: string | null;
+  /** Warranty / support expiry; drives the "expiring soon" flag. Null when untracked. */
+  warranty_expires_at: string | null;
   cost_minor: number;
   cost_currency: string;
   /** Incident ids currently open against this CI (for the drill-down). */

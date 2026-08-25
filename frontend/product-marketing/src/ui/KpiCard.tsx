@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { cn } from "@/lib/cn";
 import { Card } from "./Card";
 import { DeltaPill } from "./DeltaPill";
+import { SampleChip } from "./SampleChip";
 import { Sparkline } from "./Sparkline";
 import { MoreHorizontalIcon } from "./icons";
 
@@ -27,6 +28,11 @@ interface KpiCardProps {
   tone: KpiTone;
   /** A one-line note under the value, e.g. "vs last quarter". */
   caption?: string;
+  /**
+   * The delta and sparkline are representative while no reporting service serves trend history.
+   * The headline `value` stays live, so the chip says "Sample trend", not "Sample data".
+   */
+  sample?: boolean;
 }
 
 /**
@@ -43,6 +49,7 @@ export function KpiCard({
   icon,
   tone,
   caption,
+  sample = false,
 }: KpiCardProps) {
   const rising = deltaPct >= 0;
   const good = rising === (goodWhen === "up");
@@ -65,7 +72,10 @@ export function KpiCard({
       </div>
 
       <div className="flex flex-col gap-2">
-        <span className="text-sm font-medium text-muted">{label}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-muted">{label}</span>
+          {sample ? <SampleChip label="Sample trend" /> : null}
+        </div>
         <div className="flex flex-wrap items-center gap-2.5">
           <span className="display text-[2.1rem] leading-none font-extrabold tnum">{value}</span>
           <DeltaPill value={deltaPct} goodWhen={goodWhen} />

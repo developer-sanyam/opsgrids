@@ -29,7 +29,7 @@ call switches to the gateway at `/api/v1/...` — no other code changes.
 
 ```bash
 pnpm install
-pnpm dev         # http://localhost:4340
+pnpm dev         # http://localhost:4390
 pnpm typecheck
 pnpm lint
 pnpm build

@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { getAllProjects, listMilestones } from "@/api/client";
+import { getAllProjects, listMilestones, TRENDS_ARE_SAMPLE } from "@/api/client";
 import { NOW, RESOURCE_UTILIZATION } from "@/api/fixtures";
 import type { MilestoneOut, ProjectOut } from "@/api/types";
 import { useAuth } from "@/auth/context";
@@ -27,6 +27,7 @@ import {
   KpiCard,
   NeedsAttention,
   ProgressBar,
+  SampleChip,
   SectionHeader,
   Skeleton,
 } from "@/ui";
@@ -314,7 +315,11 @@ export function OverviewPage() {
       {/* Row 2 — burndown · health breakdown */}
       <section aria-label="Delivery overview" className="grid grid-cols-1 gap-5 xl:grid-cols-3">
         <Card className="flex flex-col gap-4 p-6 xl:col-span-2">
-          <SectionHeader title="Release burndown" subtitle="Remaining scope against the plan" />
+          <SectionHeader
+            title="Release burndown"
+            subtitle="Remaining scope against the plan"
+            {...(TRENDS_ARE_SAMPLE ? { action: <SampleChip /> } : {})}
+          />
           {ready ? (
             <Burndown />
           ) : failed ? (

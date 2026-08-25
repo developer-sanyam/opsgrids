@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { getAllTickets, listAgents } from "@/api/client";
+import { getAllTickets, listAgents, TRENDS_ARE_SAMPLE } from "@/api/client";
 import type { Agent, Ticket } from "@/api/types";
 import { useAuth } from "@/auth/context";
 import {
@@ -26,6 +26,7 @@ import {
   ErrorState,
   KpiCard,
   PriorityPill,
+  SampleChip,
   SectionHeader,
   Skeleton,
   SlaPill,
@@ -270,6 +271,7 @@ export function OverviewPage() {
                   icon={kpi.icon}
                   tone={kpi.tone}
                   invertDelta={kpi.invertDelta}
+                  sample={TRENDS_ARE_SAMPLE}
                 />
               </div>
             ))
@@ -279,7 +281,11 @@ export function OverviewPage() {
       {/* Row 2 — volume · priority · status */}
       <section aria-label="Ticket trends" className="grid grid-cols-1 gap-5 xl:grid-cols-4">
         <Card className="flex flex-col gap-5 p-6 xl:col-span-2">
-          <SectionHeader title="Ticket volume" subtitle="Opened vs solved, last 7 days" />
+          <SectionHeader
+            title="Ticket volume"
+            subtitle="Opened vs solved, last 7 days"
+            {...(TRENDS_ARE_SAMPLE ? { action: <SampleChip /> } : {})}
+          />
           <TicketVolumeChart data={TICKET_VOLUME} />
         </Card>
 

@@ -75,7 +75,9 @@ export function AssetDetailPage() {
       {state.status === "success"
         ? (() => {
             const { asset, incidents } = state.data;
-            const warrantyExpired = Date.parse(`${asset.warranty_expires_at}T00:00:00Z`) < NOW_MS;
+            const warrantyExpired =
+              asset.warranty_expires_at !== null &&
+              Date.parse(`${asset.warranty_expires_at}T00:00:00Z`) < NOW_MS;
             return (
               <>
                 <header className="flex flex-col gap-3">

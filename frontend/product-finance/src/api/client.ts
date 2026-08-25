@@ -1,13 +1,13 @@
 /**
  * Typed Finance API client.
  *
- * Fixtures by default: `finance-service` is a skeleton, so `USE_FIXTURES` is **true** and the whole
- * app renders from `fixtures.ts` with no login. Set `VITE_USE_FIXTURES=false` to point every call
- * at the gateway (same-origin `/api/v1`, Vite-proxied to the gateway in dev) — the live branches are
- * wired to the endpoints the service will expose, so switching over is a flag flip, not a rewrite.
+ * Live by default: every function calls the finance service through the gateway at the
+ * same-origin `/api/v1/finance/...` prefix (Vite proxies it to `http://localhost:8100` in dev)
+ * with the bearer token from the session. Set `VITE_USE_FIXTURES=true` to render the whole app
+ * from `fixtures.ts` with no login — handy for offline design work.
  */
 
-import { customerName, CUSTOMERS } from "@/data/customers";
+import { customerName, CUSTOMERS, FIXTURE_CUSTOMERS } from "@/data/customers";
 import {
   agingBuckets,
   isOpenInvoice,
@@ -38,14 +38,17 @@ import type {
   Payment,
 } from "./types";
 
-/** Default source. Fixtures unless `VITE_USE_FIXTURES=false` points the app at the gateway.
+/** Default source. Live unless `VITE_USE_FIXTURES=true` pins the app to fixtures.
  *  Dev builds only: `import.meta.env.DEV` compiles to `false` in production, so a stray
  *  CI/production env var can never ship fixture mode — an app rendering fabricated data
  *  with the "Sample data" markers suppressed. */
-export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES !== "false";
+export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES === "true";
 
 /** True when the app is talking to the real gateway. */
 export const LIVE = !USE_FIXTURES;
+
+/** A generous page size — one request returns the whole (small) working set for this org. */
+const FULL_PAGE = 100;
 
 /** Small artificial delay so loading states are exercised in fixture mode. */
 function settle<T>(value: T, ms = 240): Promise<T> {
@@ -93,10 +96,10 @@ export async function listInvoices(params: ListInvoicesParams = {}): Promise<Pag
     return settle({ items: sortInvoices(filtered, sort), total: filtered.length });
   }
 
-  const query = new URLSearchParams({ sort });
+  const query = new URLSearchParams({ sort, size: String(FULL_PAGE) });
   if (search.trim()) query.set("q", search.trim());
   if (status !== "all") query.set("status", status);
-  return apiRequest<Page<Invoice>>(`/invoices?${query.toString()}`);
+  return apiRequest<Page<Invoice>>(`/finance/invoices?${query.toString()}`);
 }
 
 export async function getInvoice(id: string): Promise<Invoice> {
@@ -105,12 +108,12 @@ export async function getInvoice(id: string): Promise<Invoice> {
     if (!inv) throw new Error(`Invoice ${id} was not found.`);
     return settle(inv);
   }
-  return apiRequest<Invoice>(`/invoices/${encodeURIComponent(id)}`);
+  return apiRequest<Invoice>(`/finance/invoices/${encodeURIComponent(id)}`);
 }
 
 export async function listPayments(): Promise<Page<Payment>> {
   if (USE_FIXTURES) return settle({ items: PAYMENTS, total: PAYMENTS.length });
-  return apiRequest<Page<Payment>>(`/payments`);
+  return apiRequest<Page<Payment>>(`/finance/payments?size=${FULL_PAGE}`);
 }
 
 export async function getOverview(): Promise<OverviewSummary> {
@@ -161,7 +164,7 @@ export async function getOverview(): Promise<OverviewSummary> {
     };
     return settle(summary);
   }
-  return apiRequest<OverviewSummary>(`/overview`);
+  return apiRequest<OverviewSummary>(`/finance/overview`);
 }
 
 export type CustomerSort = "receivables_desc" | "overdue_desc" | "name_asc";
@@ -217,9 +220,9 @@ export async function listCustomers(params: ListCustomersParams = {}): Promise<P
     return settle({ items: rows, total: rows.length });
   }
 
-  const query = new URLSearchParams({ sort });
+  const query = new URLSearchParams({ sort, size: String(FULL_PAGE) });
   if (search.trim()) query.set("q", search.trim());
-  return apiRequest<Page<CustomerSummary>>(`/customers?${query.toString()}`);
+  return apiRequest<Page<CustomerSummary>>(`/finance/customers?${query.toString()}`);
 }
 
 export async function getLedger(): Promise<LedgerReport> {
@@ -230,9 +233,13 @@ export async function getLedger(): Promise<LedgerReport> {
       accounts: [...LEDGER_ACCOUNTS],
     });
   }
-  return apiRequest<LedgerReport>(`/ledger`);
+  return apiRequest<LedgerReport>(`/finance/ledger`);
 }
 
+/**
+ * Only reached from the fixtures branch of `listInvoices`, where searching by customer name has
+ * to resolve the id locally. Live, the service does that match server-side via `?q=`.
+ */
 function invoiceCustomerName(inv: Invoice): string {
-  return customerName(inv.customer_id);
+  return customerName(FIXTURE_CUSTOMERS, inv.customer_id);
 }

@@ -9,13 +9,13 @@ light/dark theme (toggle in the sidebar).
 ## Run it
 
 ```bash
-pnpm --filter @atmora/product-operations dev        # http://localhost:4340
+pnpm --filter @atmora/product-operations dev        # http://localhost:4380
 pnpm --filter @atmora/product-operations build
 pnpm --filter @atmora/product-operations typecheck
 pnpm --filter @atmora/product-operations lint
 ```
 
-Dev serves on **:4340** (`--strictPort`), clear of the marketing site (4300) and product-hrms
+Dev serves on **:4380** (`--strictPort`), clear of the marketing site (4300) and product-hrms
 (4310). In dev, Vite proxies `/api/*` to the gateway on **:8100** (`server.proxy` in
 `vite.config.ts`), so the browser makes only same-origin calls and CORS never enters the picture.
 

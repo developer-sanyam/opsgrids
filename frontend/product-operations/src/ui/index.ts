@@ -6,6 +6,7 @@ export { Avatar } from "./Avatar";
 export { SearchInput } from "./SearchInput";
 export { KpiCard } from "./KpiCard";
 export type { KpiTone } from "./KpiCard";
+export { SampleChip } from "./SampleChip";
 export { DeltaPill } from "./DeltaPill";
 export { Sparkline } from "./Sparkline";
 export { PageHeader } from "./PageHeader";

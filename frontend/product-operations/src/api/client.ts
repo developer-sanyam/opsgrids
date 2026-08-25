@@ -1,11 +1,10 @@
 /**
  * Typed Operations API client.
  *
- * Fixtures-first: the Operations backend is a skeleton, so `USE_FIXTURES` defaults **true** and
- * the whole app renders from `fixtures.ts` with no login. Flip `VITE_USE_FIXTURES=false` once the
- * service ships and every function falls through to the gateway at the same-origin `/api/v1`
- * prefix (Vite proxies it to `http://localhost:8100` in dev) with the bearer token from the
- * session — so wiring the live backend is a flag flip, not a rewrite.
+ * Live by default: every function calls the operations service through the gateway at the
+ * same-origin `/api/v1/operations/...` prefix (Vite proxies it to `http://localhost:8100` in
+ * dev) with the bearer token from the session. Set `VITE_USE_FIXTURES=true` to render the whole
+ * app from `fixtures.ts` with no login — handy for offline design work.
  */
 
 import { apiRequest } from "./http";
@@ -17,14 +16,22 @@ import type {
   SupplierOut,
 } from "./types";
 
-/** Default source. Fixtures unless `VITE_USE_FIXTURES=false` points the app at the gateway.
+/** Default source. Live unless `VITE_USE_FIXTURES=true` pins the app to fixtures.
  *  Dev builds only: `import.meta.env.DEV` compiles to `false` in production, so a stray
  *  CI/production env var can never ship fixture mode — an app rendering fabricated data
  *  with the "Sample data" markers suppressed. */
-export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES !== "false";
+export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES === "true";
 
 /** True when the app is talking to the real gateway. */
 export const LIVE = !USE_FIXTURES;
+
+/**
+ * The Overview's trend history (KPI deltas / sparklines and the spend-over-time series) has no
+ * reporting service yet, so it is representative rather than live. When the app runs live those
+ * surfaces carry a "Sample data" chip; in fixture mode the whole app is illustrative, so nothing
+ * is singled out.
+ */
+export const TRENDS_ARE_SAMPLE = LIVE;
 
 /** A generous page size — one request returns the whole (small) working set for this org. */
 const FULL_PAGE = 200;
@@ -38,7 +45,7 @@ function settle<T>(value: T, ms = 220): Promise<T> {
 
 export async function listSuppliers(): Promise<Page<SupplierOut>> {
   if (USE_FIXTURES) return settle({ items: SUPPLIERS, total: SUPPLIERS.length });
-  return apiRequest<Page<SupplierOut>>(`/suppliers?size=${FULL_PAGE}`);
+  return apiRequest<Page<SupplierOut>>(`/operations/suppliers?size=${FULL_PAGE}`);
 }
 
 export async function getSupplier(id: string): Promise<SupplierOut> {
@@ -47,14 +54,14 @@ export async function getSupplier(id: string): Promise<SupplierOut> {
     if (!found) throw new Error(`Supplier ${id} not found`);
     return settle(found);
   }
-  return apiRequest<SupplierOut>(`/suppliers/${id}`);
+  return apiRequest<SupplierOut>(`/operations/suppliers/${encodeURIComponent(id)}`);
 }
 
 /* ----------------------------- purchase orders ---------------------------- */
 
 export async function listPurchaseOrders(): Promise<Page<PurchaseOrderOut>> {
   if (USE_FIXTURES) return settle({ items: PURCHASE_ORDERS, total: PURCHASE_ORDERS.length });
-  return apiRequest<Page<PurchaseOrderOut>>(`/purchase-orders?size=${FULL_PAGE}`);
+  return apiRequest<Page<PurchaseOrderOut>>(`/operations/purchase-orders?size=${FULL_PAGE}`);
 }
 
 export async function getPurchaseOrder(id: string): Promise<PurchaseOrderOut> {
@@ -63,12 +70,12 @@ export async function getPurchaseOrder(id: string): Promise<PurchaseOrderOut> {
     if (!found) throw new Error(`Purchase order ${id} not found`);
     return settle(found);
   }
-  return apiRequest<PurchaseOrderOut>(`/purchase-orders/${id}`);
+  return apiRequest<PurchaseOrderOut>(`/operations/purchase-orders/${encodeURIComponent(id)}`);
 }
 
 /* -------------------------------- inventory ------------------------------- */
 
 export async function listInventory(): Promise<Page<InventoryItemOut>> {
   if (USE_FIXTURES) return settle({ items: INVENTORY, total: INVENTORY.length });
-  return apiRequest<Page<InventoryItemOut>>(`/inventory?size=${FULL_PAGE}`);
+  return apiRequest<Page<InventoryItemOut>>(`/operations/inventory?size=${FULL_PAGE}`);
 }

@@ -5,7 +5,16 @@ import { cn } from "@/lib/cn";
  * violet accent, not an error red) reads as "informational, provisional" — used where a widget
  * shows a modelled figure the backing service does not yet compute live.
  */
-export function SampleChip({ className }: { className?: string }) {
+interface SampleChipProps {
+  className?: string;
+  /**
+   * What is representative. Defaults to "Sample data" — the whole widget. Pass "Sample trend"
+   * where the headline number is live and only its delta and sparkline are stand-ins.
+   */
+  label?: string;
+}
+
+export function SampleChip({ className, label = "Sample data" }: SampleChipProps) {
   return (
     <span
       className={cn(
@@ -15,7 +24,7 @@ export function SampleChip({ className }: { className?: string }) {
       title="Representative data — this metric's service isn't wired to this workspace yet"
     >
       <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      Sample data
+      {label}
     </span>
   );
 }

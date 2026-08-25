@@ -1,10 +1,11 @@
 /**
  * Typed Projects API client.
  *
- * Fixtures-first: the `projects` service backend is a skeleton on this branch, so the app renders
- * entirely from `fixtures.ts` by default. Flip `VITE_USE_FIXTURES=false` once the service ships and
- * every call switches to the gateway at the same-origin `/api/v1` prefix (Vite proxies it to
- * `http://localhost:8100` in dev) with the bearer token from the session — no other code changes.
+ * Live by default: every function calls the projects service through the gateway at the
+ * same-origin `/api/v1/projects-workspace/...` prefix (Vite proxies it to
+ * `http://localhost:8100` in dev) with the bearer token from the session. Set
+ * `VITE_USE_FIXTURES=true` to render the whole app from `fixtures.ts` with no login — handy for
+ * offline design work.
  */
 
 import { apiRequest } from "./http";
@@ -18,14 +19,21 @@ import type {
   TaskOut,
 } from "./types";
 
-/** Default source. Fixtures unless `VITE_USE_FIXTURES=false` points the app at the gateway.
+/** Default source. Live unless `VITE_USE_FIXTURES=true` pins the app to fixtures.
  *  Dev builds only: `import.meta.env.DEV` compiles to `false` in production, so a stray
  *  CI/production env var can never ship fixture mode — an app rendering fabricated data
  *  with the "Sample data" markers suppressed. */
-export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES !== "false";
+export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES === "true";
 
 /** True when the app is talking to the real gateway. */
 export const LIVE = !USE_FIXTURES;
+
+/**
+ * The release-burndown series has no reporting service yet, so it is representative rather than
+ * live. When the app runs live that chart carries a "Sample data" chip; in fixture mode the whole
+ * app is illustrative, so nothing is singled out.
+ */
+export const TRENDS_ARE_SAMPLE = LIVE;
 
 /** A generous page size — one request returns the whole (small) portfolio for this org. */
 const FULL_PAGE = 100;
@@ -66,23 +74,23 @@ export async function listProjects(
   if (params.search?.trim()) query.set("q", params.search.trim());
   if (params.health && params.health !== "all") query.set("health", params.health);
   if (params.phase && params.phase !== "all") query.set("phase", params.phase);
-  return apiRequest<Page<ProjectOut>>(`/projects?${query.toString()}`);
+  return apiRequest<Page<ProjectOut>>(`/projects-workspace/projects?${query.toString()}`);
 }
 
 /** The whole portfolio (unfiltered) — powers the overview rollups and the timeline. */
 export async function getAllProjects(): Promise<Page<ProjectOut>> {
   if (USE_FIXTURES) return settle({ items: PROJECTS, total: PROJECTS.length });
-  return apiRequest<Page<ProjectOut>>(`/projects?size=${FULL_PAGE}`);
+  return apiRequest<Page<ProjectOut>>(`/projects-workspace/projects?size=${FULL_PAGE}`);
 }
 
 /** Every milestone across the portfolio, for the overview and the milestones screen. */
 export async function listMilestones(): Promise<Page<MilestoneOut>> {
   if (USE_FIXTURES) return settle({ items: MILESTONES, total: MILESTONES.length });
-  return apiRequest<Page<MilestoneOut>>(`/milestones?size=${FULL_PAGE}`);
+  return apiRequest<Page<MilestoneOut>>(`/projects-workspace/milestones?size=${FULL_PAGE}`);
 }
 
 /** Every open/closed card on the workflow board. */
 export async function listTasks(): Promise<Page<TaskOut>> {
   if (USE_FIXTURES) return settle({ items: TASKS, total: TASKS.length });
-  return apiRequest<Page<TaskOut>>(`/tasks?size=${FULL_PAGE}`);
+  return apiRequest<Page<TaskOut>>(`/projects-workspace/tasks?size=${FULL_PAGE}`);
 }

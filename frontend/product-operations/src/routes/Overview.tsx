@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { listInventory, listPurchaseOrders, listSuppliers } from "@/api/client";
+import { listInventory, listPurchaseOrders, listSuppliers, TRENDS_ARE_SAMPLE } from "@/api/client";
 import { TODAY, ON_TIME_SAMPLE } from "@/api/fixtures";
 import type { InventoryItemOut, PurchaseOrderOut, SupplierOut } from "@/api/types";
 import { useAuth } from "@/auth/context";
@@ -26,6 +26,7 @@ import {
   KpiCard,
   NeedsAttention,
   PoStatusPill,
+  SampleChip,
   SectionHeader,
   Skeleton,
   SpendTrend,
@@ -324,6 +325,7 @@ export function OverviewPage() {
                   series={kpi.series}
                   icon={kpi.icon}
                   tone={kpi.tone}
+                  sample={TRENDS_ARE_SAMPLE}
                 />
               </div>
             ))
@@ -344,7 +346,11 @@ export function OverviewPage() {
         </Card>
 
         <Card className="flex flex-col gap-4 p-6 xl:col-span-2">
-          <SectionHeader title="Spend Over Time" subtitle="Committed procurement spend" />
+          <SectionHeader
+            title="Spend Over Time"
+            subtitle="Committed procurement spend"
+            {...(TRENDS_ARE_SAMPLE ? { action: <SampleChip /> } : {})}
+          />
           {ready ? <SpendTrend /> : <Skeleton className="h-56 w-full rounded-tile" />}
         </Card>
 

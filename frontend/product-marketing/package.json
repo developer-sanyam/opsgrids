@@ -6,7 +6,7 @@
   "type": "module",
   "engines": { "node": ">=22" },
   "scripts": {
-    "dev": "vite --port 4340 --strictPort",
+    "dev": "vite --port 4370 --strictPort",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --port 4340 --strictPort",
     "lint": "eslint .",

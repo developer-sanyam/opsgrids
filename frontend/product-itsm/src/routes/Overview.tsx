@@ -54,7 +54,7 @@ const NOW_MS = Date.parse("2026-08-24T18:00:00Z");
 function warrantyExpiringSoon(assets: readonly Asset[]): number {
   const horizon = NOW_MS + WARRANTY_WINDOW_DAYS * 86_400_000;
   return assets.filter((a) => {
-    if (a.status === "retired") return false;
+    if (a.status === "retired" || a.warranty_expires_at === null) return false;
     const exp = Date.parse(`${a.warranty_expires_at}T00:00:00Z`);
     return exp >= NOW_MS && exp <= horizon;
   }).length;

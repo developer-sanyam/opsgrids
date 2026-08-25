@@ -1,11 +1,10 @@
 /**
  * Typed ITSM API client.
  *
- * The backend for this product is still a skeleton, so `USE_FIXTURES` defaults to **true**: the
- * whole app renders from `fixtures.ts` with no gateway and no login. Flip it with
- * `VITE_USE_FIXTURES=false` once the incident / request / asset services ship — every function
- * already points at the same-origin `/api/v1/...` prefix the gateway will serve, so wiring later
- * is a flag flip, not a rewrite.
+ * Live by default: every function calls the itsm-service through the gateway at the same-origin
+ * `/api/v1/itsm/...` prefix (Vite proxies it to `http://localhost:8100` in dev) with the bearer
+ * token from the session. Set `VITE_USE_FIXTURES=true` to render the whole app from `fixtures.ts`
+ * with no login — handy for offline design work.
  */
 
 import { apiRequest } from "./http";
@@ -23,11 +22,11 @@ import type {
   ServiceRequest,
 } from "./types";
 
-/** Default source. Fixtures unless `VITE_USE_FIXTURES=false` points the app at the gateway.
+/** Default source. Live unless `VITE_USE_FIXTURES=true` pins the app to fixtures.
  *  Dev builds only: `import.meta.env.DEV` compiles to `false` in production, so a stray
  *  CI/production env var can never ship fixture mode — an app rendering fabricated data
  *  with the "Sample data" markers suppressed. */
-export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES !== "false";
+export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES === "true";
 
 /** True when the app is talking to the real gateway. */
 export const LIVE = !USE_FIXTURES;
@@ -103,13 +102,13 @@ export async function listIncidents(
   if (params.priority && params.priority !== "all") query.set("priority", params.priority);
   if (params.status && params.status !== "all") query.set("status", params.status);
   if (params.sort) query.set("sort", params.sort);
-  return apiRequest<Page<Incident>>(`/incidents?${query.toString()}`);
+  return apiRequest<Page<Incident>>(`/itsm/incidents?${query.toString()}`);
 }
 
 /** Every incident for this org (unfiltered) — powers every Overview rollup. */
 export async function getAllIncidents(): Promise<Incident[]> {
   if (USE_FIXTURES) return settle(INCIDENTS);
-  const page = await apiRequest<Page<Incident>>(`/incidents?size=${FULL_PAGE}`);
+  const page = await apiRequest<Page<Incident>>(`/itsm/incidents?size=${FULL_PAGE}`);
   return page.items;
 }
 
@@ -119,7 +118,7 @@ export async function getIncident(id: string): Promise<Incident> {
     if (!found) throw new Error(`Incident ${id} not found`);
     return settle(found);
   }
-  return apiRequest<Incident>(`/incidents/${encodeURIComponent(id)}`);
+  return apiRequest<Incident>(`/itsm/incidents/${encodeURIComponent(id)}`);
 }
 
 /* --------------------------- service requests --------------------------- */
@@ -151,18 +150,18 @@ export async function listRequests(
   const query = new URLSearchParams({ size: String(FULL_PAGE) });
   if (params.search?.trim()) query.set("q", params.search.trim());
   if (params.status && params.status !== "all") query.set("status", params.status);
-  return apiRequest<Page<ServiceRequest>>(`/service-requests?${query.toString()}`);
+  return apiRequest<Page<ServiceRequest>>(`/itsm/service-requests?${query.toString()}`);
 }
 
 export async function getAllRequests(): Promise<ServiceRequest[]> {
   if (USE_FIXTURES) return settle(REQUESTS);
-  const page = await apiRequest<Page<ServiceRequest>>(`/service-requests?size=${FULL_PAGE}`);
+  const page = await apiRequest<Page<ServiceRequest>>(`/itsm/service-requests?size=${FULL_PAGE}`);
   return page.items;
 }
 
 export async function listCatalog(): Promise<CatalogItem[]> {
   if (USE_FIXTURES) return settle(CATALOG);
-  const page = await apiRequest<Page<CatalogItem>>(`/catalog?size=${FULL_PAGE}`);
+  const page = await apiRequest<Page<CatalogItem>>(`/itsm/catalog?size=${FULL_PAGE}`);
   return page.items;
 }
 
@@ -196,12 +195,12 @@ export async function listAssets(params: ListAssetsParams = {}): Promise<Page<As
   if (params.search?.trim()) query.set("q", params.search.trim());
   if (params.type && params.type !== "all") query.set("type", params.type);
   if (params.status && params.status !== "all") query.set("status", params.status);
-  return apiRequest<Page<Asset>>(`/assets?${query.toString()}`);
+  return apiRequest<Page<Asset>>(`/itsm/assets?${query.toString()}`);
 }
 
 export async function getAllAssets(): Promise<Asset[]> {
   if (USE_FIXTURES) return settle(ASSETS);
-  const page = await apiRequest<Page<Asset>>(`/assets?size=${FULL_PAGE}`);
+  const page = await apiRequest<Page<Asset>>(`/itsm/assets?size=${FULL_PAGE}`);
   return page.items;
 }
 
@@ -211,5 +210,5 @@ export async function getAsset(tag: string): Promise<Asset> {
     if (!found) throw new Error(`Asset ${tag} not found`);
     return settle(found);
   }
-  return apiRequest<Asset>(`/assets/${encodeURIComponent(tag)}`);
+  return apiRequest<Asset>(`/itsm/assets/${encodeURIComponent(tag)}`);
 }

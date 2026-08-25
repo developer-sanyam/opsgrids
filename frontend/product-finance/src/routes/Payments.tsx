@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Link } from "react-router-dom";
 
 import { listPayments } from "@/api/client";
+import { getCustomerById } from "@/api/customers";
 import type { Payment } from "@/api/types";
 import { customerName } from "@/data/customers";
 import { formatDate } from "@/lib/format";
@@ -39,6 +40,9 @@ function Allocations({ payment }: { payment: Payment }) {
 
 export function PaymentsPage() {
   const payments = useAsync(listPayments, []);
+  // The directory resolves `customer_id` to a name; it never gates the table from rendering.
+  const customers = useAsync(getCustomerById, []);
+  const customerById = customers.status === "success" ? customers.data : undefined;
 
   const rows = useMemo(
     () => (payments.status === "success" ? payments.data.items : []),
@@ -64,7 +68,9 @@ export function PaymentsPage() {
     {
       key: "customer",
       header: "Customer",
-      render: (p) => <span className="text-ink-soft">{customerName(p.customer_id)}</span>,
+      render: (p) => (
+        <span className="text-ink-soft">{customerName(customerById, p.customer_id)}</span>
+      ),
     },
     {
       key: "received",

@@ -1,7 +1,13 @@
 /**
- * Customer reference data. A `finance-service` will resolve `customer_id` from an accounts
- * endpoint; until then the product resolves names here (ADR: no cross-schema joins, so the id is
- * a plain UUID the UI maps to a display record).
+ * Customer-name resolution for an invoice or a payment.
+ *
+ * Invoices and payments carry `customer_id` and never the party's name — ADR-0000 forbids the
+ * cross-schema join, so the id is a plain UUID the UI maps to a display record. Live, that map
+ * comes from the customers ledger (`@/api/customers`), whose rows embed their `Customer`. The
+ * fixture list below is the same reference data for offline work, keyed by slug rather than UUID.
+ *
+ * Both paths go through one resolver so the label a table shows and the label the detail screen
+ * shows can never diverge.
  */
 import type { Customer } from "@/api/types";
 
@@ -20,13 +26,26 @@ export const CUSTOMERS: Customer[] = [
   { id: "cust-12", name: "Apex Motors", contact_name: "Iqbal Ahmed", email: "accounts@apexmotors.in", gstin: "07AANCA6789S1Z2", city: "New Delhi", state: "Delhi" },
 ];
 
-const BY_ID = new Map(CUSTOMERS.map((c) => [c.id, c]));
+/** The fixture directory as a map — the offline stand-in for the live customers ledger. */
+export const FIXTURE_CUSTOMERS: ReadonlyMap<string, Customer> = new Map(
+  CUSTOMERS.map((c) => [c.id, c]),
+);
 
-export function getCustomer(id: string): Customer | null {
-  return BY_ID.get(id) ?? null;
+/** Resolve one `customer_id` against a directory. Null when the id isn't in it. */
+export function getCustomer(
+  byId: ReadonlyMap<string, Customer> | undefined,
+  id: string,
+): Customer | null {
+  return byId?.get(id) ?? null;
 }
 
-/** A customer's display name, or a stable fallback when the id can't be resolved. */
-export function customerName(id: string): string {
-  return BY_ID.get(id)?.name ?? "Unknown customer";
+/**
+ * A customer's display name, or a stable fallback while the directory is still loading or the id
+ * doesn't resolve. Never throws and never blocks a row from rendering.
+ */
+export function customerName(
+  byId: ReadonlyMap<string, Customer> | undefined,
+  id: string,
+): string {
+  return byId?.get(id)?.name ?? "Unknown customer";
 }

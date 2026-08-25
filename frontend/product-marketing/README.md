@@ -10,13 +10,13 @@ light/dark theme (toggle in the sidebar). The semantic palette doubles as the ch
 ## Run it
 
 ```bash
-pnpm --filter @atmora/product-marketing dev        # http://localhost:4340
+pnpm --filter @atmora/product-marketing dev        # http://localhost:4370
 pnpm --filter @atmora/product-marketing build
 pnpm --filter @atmora/product-marketing typecheck
 pnpm --filter @atmora/product-marketing lint
 ```
 
-Dev serves on **:4340** (`--strictPort`), clear of the marketing website (4300) and product-hrms
+Dev serves on **:4370** (`--strictPort`), clear of the marketing website (4300) and product-hrms
 (4310). In dev, Vite proxies `/api/*` to the gateway on **:8100** so the browser makes only
 same-origin calls and CORS never enters the picture.
 

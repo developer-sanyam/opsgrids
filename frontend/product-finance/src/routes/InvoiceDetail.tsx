@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { getInvoice } from "@/api/client";
+import { getCustomerById } from "@/api/customers";
 import type { Invoice } from "@/api/types";
 import { customerName, getCustomer } from "@/data/customers";
 import { outstandingMinor } from "@/data/derive";
@@ -184,7 +185,11 @@ export function InvoiceDetailPage() {
 }
 
 function InvoiceBody({ invoice }: { invoice: Invoice }) {
-  const customer = getCustomer(invoice.customer_id);
+  // The directory resolves `customer_id` to a display record; it never gates the document.
+  const customers = useAsync(getCustomerById, []);
+  const customerById = customers.status === "success" ? customers.data : undefined;
+  const customer = getCustomer(customerById, invoice.customer_id);
+  const billedTo = customerName(customerById, invoice.customer_id);
   const isCreditNote = invoice.document_type === "credit_note";
   const outstanding = outstandingMinor(invoice);
   const canRecord =
@@ -224,18 +229,16 @@ function InvoiceBody({ invoice }: { invoice: Invoice }) {
             to={`/invoices/${invoice.corrects_invoice_id}`}
             className="inline-flex w-fit items-center gap-1.5 rounded-tile bg-accent-soft px-3 py-2 text-xs font-semibold text-accent-ink hover:bg-accent/30 transition-colors"
           >
-            Corrects {invoice.corrects_invoice_id.replace("inv-", "")}
+            View the invoice this corrects
           </Link>
         ) : null}
 
         {/* Bill-to */}
         <div className="flex items-center gap-3 border-y border-line py-4">
-          <Avatar name={customerName(invoice.customer_id)} size="lg" />
+          <Avatar name={billedTo} size="lg" />
           <div className="flex min-w-0 flex-col leading-tight">
             <span className="text-xs font-semibold uppercase tracking-wide text-faint">Billed to</span>
-            <span className="truncate text-base font-bold text-ink">
-              {customerName(invoice.customer_id)}
-            </span>
+            <span className="truncate text-base font-bold text-ink">{billedTo}</span>
             {customer ? (
               <span className="truncate text-sm text-muted">
                 {customer.contact_name} · {customer.email}
