@@ -1,0 +1,188 @@
+{
+  "manifest_version": 1,
+  "permissions": [
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See companies and the rep directory",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "book",
+      "resource": "company"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Create and update companies",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "book",
+      "resource": "company"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See contacts",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "book",
+      "resource": "contact"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Create and update contacts",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "book",
+      "resource": "contact"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See the activity timeline",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "pipeline",
+      "resource": "activity"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Log calls, emails, meetings and notes",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "pipeline",
+      "resource": "activity"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See deals and the pipeline summary",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "pipeline",
+      "resource": "deal"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Create deals and move them through stages",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "pipeline",
+      "resource": "deal"
+    }
+  ],
+  "product": "crm",
+  "role_templates": [
+    {
+      "code": "CRM_BOOK_ADMIN",
+      "cross_product": false,
+      "description": "Administers the whole account book across the organization. Built from this service's own slice of the CRM catalogue alone \u2014 administering the CRM is not the same job as owning the account.",
+      "grants": [
+        {
+          "code": "crm.book.company.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "crm.book.company.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "crm.book.contact.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "crm.book.contact.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": true,
+      "is_default": false,
+      "name": "CRM administrator (book)"
+    },
+    {
+      "code": "CRM_SALES_REP",
+      "cross_product": false,
+      "description": "Every person with a CRM seat. Reads the whole book \u2014 sales works from one shared book \u2014 and maintains the companies and contacts they own.",
+      "grants": [
+        {
+          "code": "crm.book.company.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "crm.book.company.write",
+          "scope": "OWN"
+        },
+        {
+          "code": "crm.book.contact.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "crm.book.contact.write",
+          "scope": "OWN"
+        }
+      ],
+      "is_admin": false,
+      "is_default": true,
+      "name": "Sales representative"
+    },
+    {
+      "code": "CRM_PIPELINE_ADMIN",
+      "cross_product": false,
+      "description": "Administers the whole pipeline across the organization. Built from this service's own slice of the CRM catalogue alone \u2014 administering the CRM is not the same job as owning the account.",
+      "grants": [
+        {
+          "code": "crm.pipeline.activity.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "crm.pipeline.activity.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "crm.pipeline.deal.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "crm.pipeline.deal.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "CRM administrator (pipeline)"
+    },
+    {
+      "code": "CRM_DEAL_REP",
+      "cross_product": false,
+      "description": "Every person with a CRM seat. Reads the whole board \u2014 sales works from one shared pipeline \u2014 and moves and logs against the deals they own.",
+      "grants": [
+        {
+          "code": "crm.pipeline.activity.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "crm.pipeline.activity.write",
+          "scope": "OWN"
+        },
+        {
+          "code": "crm.pipeline.deal.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "crm.pipeline.deal.write",
+          "scope": "OWN"
+        }
+      ],
+      "is_admin": false,
+      "is_default": true,
+      "name": "Sales representative"
+    }
+  ],
+  "sources": [
+    "customer",
+    "deal"
+  ]
+}

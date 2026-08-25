@@ -1,6 +1,296 @@
 {
   "components": {
     "schemas": {
+      "ActivityOut": {
+        "description": "Mirrors the SPA's `Activity`. `type` is the wire name for the touch kind; exactly\none of the target ids is usually set, and the owner always is.",
+        "properties": {
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
+          },
+          "company_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Company Id"
+          },
+          "contact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Id"
+          },
+          "deal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deal Id"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "inbound",
+                  "outbound"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "owner_id": {
+            "title": "Owner Id",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "call",
+              "email",
+              "meeting",
+              "note",
+              "task"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "subject",
+          "body",
+          "deal_id",
+          "company_id",
+          "contact_id",
+          "owner_id",
+          "occurred_at",
+          "direction"
+        ],
+        "title": "ActivityOut",
+        "type": "object"
+      },
+      "DealOut": {
+        "description": "Mirrors the SPA's `Deal`. `value_minor` is minor units of `currency`; `probability`\nis 0-100; a past `close_date` on an open deal reads as overdue; `last_activity_at` is\nthe staleness clock (NULL: never touched).",
+        "properties": {
+          "close_date": {
+            "format": "date",
+            "title": "Close Date",
+            "type": "string"
+          },
+          "company_id": {
+            "title": "Company Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "last_activity_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Activity At"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner_id": {
+            "title": "Owner Id",
+            "type": "string"
+          },
+          "primary_contact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Contact Id"
+          },
+          "probability": {
+            "title": "Probability",
+            "type": "integer"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "stage": {
+            "enum": [
+              "lead",
+              "qualified",
+              "proposal",
+              "negotiation",
+              "closed_won",
+              "closed_lost"
+            ],
+            "title": "Stage",
+            "type": "string"
+          },
+          "value_minor": {
+            "title": "Value Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "company_id",
+          "primary_contact_id",
+          "value_minor",
+          "currency",
+          "stage",
+          "owner_id",
+          "probability",
+          "close_date",
+          "created_at",
+          "last_activity_at",
+          "source"
+        ],
+        "title": "DealOut",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Page_ActivityOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ActivityOut]",
+        "type": "object"
+      },
+      "Page_DealOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DealOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[DealOut]",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -17,6 +307,165 @@
           "schema_name"
         ],
         "title": "ServiceInfo",
+        "type": "object"
+      },
+      "StageRollupOut": {
+        "description": "One column of the pipeline funnel \u2014 count and summed open value per stage, with\n`pct` scaled to the richest stage so the bars read as a funnel. Mirrors the SPA's\n`StageRollup` (and its `stageFunnel` arithmetic in `data/derive.ts`).",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "pct": {
+            "title": "Pct",
+            "type": "integer"
+          },
+          "stage": {
+            "enum": [
+              "lead",
+              "qualified",
+              "proposal",
+              "negotiation",
+              "closed_won",
+              "closed_lost"
+            ],
+            "title": "Stage",
+            "type": "string"
+          },
+          "value_minor": {
+            "title": "Value Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stage",
+          "label",
+          "count",
+          "value_minor",
+          "pct"
+        ],
+        "title": "StageRollupOut",
+        "type": "object"
+      },
+      "SummaryOut": {
+        "description": "The Overview dashboard's server-side rollup: the same arithmetic the SPA's\n`data/derive.ts` runs over the deal list, exposed once so a reporting view can share\nit. Headline figures are computed live from the deals and activities; the trend's\nearlier months are representative history (the seam a reporting service replaces \u2014\nsee `app.domain.pipeline_trend`), with the final point always the live open pipeline.",
+        "properties": {
+          "activities_this_week": {
+            "title": "Activities This Week",
+            "type": "integer"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "funnel": {
+            "items": {
+              "$ref": "#/components/schemas/StageRollupOut"
+            },
+            "title": "Funnel",
+            "type": "array"
+          },
+          "open_deals": {
+            "title": "Open Deals",
+            "type": "integer"
+          },
+          "pipeline_value_minor": {
+            "title": "Pipeline Value Minor",
+            "type": "integer"
+          },
+          "trend": {
+            "items": {
+              "$ref": "#/components/schemas/TrendPointOut"
+            },
+            "title": "Trend",
+            "type": "array"
+          },
+          "weighted_pipeline_minor": {
+            "title": "Weighted Pipeline Minor",
+            "type": "integer"
+          },
+          "win_rate_pct": {
+            "title": "Win Rate Pct",
+            "type": "integer"
+          },
+          "won_value_minor": {
+            "title": "Won Value Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pipeline_value_minor",
+          "weighted_pipeline_minor",
+          "open_deals",
+          "win_rate_pct",
+          "won_value_minor",
+          "activities_this_week",
+          "currency"
+        ],
+        "title": "SummaryOut",
+        "type": "object"
+      },
+      "TrendPointOut": {
+        "description": "A point on the pipeline-value-over-time chart. Mirrors the SPA's `TrendPoint`.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value_minor": {
+            "title": "Value Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "label",
+          "value_minor"
+        ],
+        "title": "TrendPointOut",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
         "type": "object"
       }
     }
@@ -44,6 +493,301 @@
           }
         },
         "summary": "What this service is",
+        "tags": [
+          "deal"
+        ]
+      }
+    },
+    "/api/v1/deals": {
+      "get": {
+        "operationId": "list_deals_api_v1_deals_get",
+        "parameters": [
+          {
+            "description": "Deal name",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Deal name",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stage",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Stage"
+            }
+          },
+          {
+            "in": "query",
+            "name": "owner_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Owner Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_DealOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deals in the pipeline",
+        "tags": [
+          "deal"
+        ]
+      }
+    },
+    "/api/v1/deals/activities": {
+      "get": {
+        "operationId": "list_activities_api_v1_deals_activities_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "deal_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Deal Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "company_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Company Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "contact_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Contact Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ActivityOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The activity timeline",
+        "tags": [
+          "deal"
+        ]
+      }
+    },
+    "/api/v1/deals/summary": {
+      "get": {
+        "description": "The same arithmetic the SPA's `data/derive.ts` runs over the deal list, computed\nserver-side over the caller's scope: an OWN-scoped rep gets their own numbers.",
+        "operationId": "summary_api_v1_deals_summary_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SummaryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Pipeline summary \u2014 the Overview rollups",
+        "tags": [
+          "deal"
+        ]
+      }
+    },
+    "/api/v1/deals/{deal_id}": {
+      "get": {
+        "operationId": "read_deal_api_v1_deals__deal_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Deal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DealOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One deal",
         "tags": [
           "deal"
         ]
