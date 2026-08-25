@@ -1,0 +1,182 @@
+{
+  "manifest_version": 1,
+  "permissions": [
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See the board",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "board",
+      "resource": "task"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Create and move board cards",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "board",
+      "resource": "task"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See engagements and the portfolio",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "engagements",
+      "resource": "project"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Create and edit engagements",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "engagements",
+      "resource": "project"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See the team's daily check-ins",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "standup",
+      "resource": "entry"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Post and update daily check-ins",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "standup",
+      "resource": "entry"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See the delivery-team roster",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "team",
+      "resource": "person"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See timesheets and the weekly grid",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "time",
+      "resource": "timesheet"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Record and update timesheet weeks",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "time",
+      "resource": "timesheet"
+    }
+  ],
+  "product": "pulseboard",
+  "role_templates": [
+    {
+      "code": "PULSEBOARD_ADMIN",
+      "cross_product": false,
+      "description": "Administers engagements and the board across the organization. Built from the pulseboard catalogue alone \u2014 running delivery is not the same job as owning the account. Administers the daily check-ins across the organization. Built from the pulseboard catalogue alone. Administers the team's time across the organization: sees the whole grid and can record or correct any week. Built from the pulseboard catalogue alone.",
+      "grants": [
+        {
+          "code": "pulseboard.board.task.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "pulseboard.board.task.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "pulseboard.engagements.project.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "pulseboard.engagements.project.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "pulseboard.standup.entry.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "pulseboard.standup.entry.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "pulseboard.team.person.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "pulseboard.time.timesheet.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "pulseboard.time.timesheet.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": true,
+      "is_default": false,
+      "name": "Delivery administrator"
+    },
+    {
+      "code": "PULSEBOARD_MEMBER",
+      "cross_product": false,
+      "description": "Every person with a PulseBoard seat. Reads the portfolio, the board and the roster, and works their own board cards. Every person with a PulseBoard seat. Reads the team's wall and posts their own check-in. Every person with a PulseBoard seat. Sees the team's weekly grid and records their own time.",
+      "grants": [
+        {
+          "code": "pulseboard.board.task.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "pulseboard.board.task.write",
+          "scope": "OWN"
+        },
+        {
+          "code": "pulseboard.engagements.project.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "pulseboard.standup.entry.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "pulseboard.standup.entry.write",
+          "scope": "OWN"
+        },
+        {
+          "code": "pulseboard.team.person.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "pulseboard.time.timesheet.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "pulseboard.time.timesheet.write",
+          "scope": "OWN"
+        }
+      ],
+      "is_admin": false,
+      "is_default": true,
+      "name": "Delivery-team member"
+    }
+  ],
+  "sources": [
+    "project",
+    "standup",
+    "timesheet"
+  ]
+}

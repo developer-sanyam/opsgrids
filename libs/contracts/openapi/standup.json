@@ -1,6 +1,55 @@
 {
   "components": {
     "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Page_StandupEntryOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StandupEntryOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[StandupEntryOut]",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -18,19 +67,285 @@
         ],
         "title": "ServiceInfo",
         "type": "object"
+      },
+      "StandupEntryIn": {
+        "description": "Post (or repost) a day's check-in. `person_ref` names the roster person; `person_id` is\ntheir roster UUID (the OWN-scope subject). Reposting the same person+day replaces the\nentry \u2014 a standup is the day's current word, not an append-only ledger.",
+        "properties": {
+          "blockers": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blockers"
+          },
+          "date": {
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "person_id": {
+            "description": "The roster person's UUID",
+            "minLength": 1,
+            "title": "Person Id",
+            "type": "string"
+          },
+          "person_ref": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Person Ref",
+            "type": "string"
+          },
+          "today": {
+            "default": "",
+            "maxLength": 4000,
+            "title": "Today",
+            "type": "string"
+          },
+          "yesterday": {
+            "default": "",
+            "maxLength": 4000,
+            "title": "Yesterday",
+            "type": "string"
+          }
+        },
+        "required": [
+          "person_ref",
+          "person_id",
+          "date"
+        ],
+        "title": "StandupEntryIn",
+        "type": "object"
+      },
+      "StandupEntryOut": {
+        "description": "Mirrors the SPA's `StandupEntry` \u2014 one person's check-in for one day.",
+        "properties": {
+          "blockers": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blockers"
+          },
+          "date": {
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "person_id": {
+            "title": "Person Id",
+            "type": "string"
+          },
+          "today": {
+            "title": "Today",
+            "type": "string"
+          },
+          "yesterday": {
+            "title": "Yesterday",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "person_id",
+          "date",
+          "yesterday",
+          "today",
+          "blockers"
+        ],
+        "title": "StandupEntryOut",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
       }
     }
   },
   "info": {
-    "description": "Standup service \u2014 part of the Atmora platform.",
+    "description": "PulseBoard's daily check-ins \u2014 yesterday, today and blockers, part of the Atmora platform.",
     "title": "Standup service",
     "version": "0.1.0"
   },
   "openapi": "3.1.0",
   "paths": {
-    "/api/v1/standup/info": {
+    "/api/v1/standups": {
       "get": {
-        "operationId": "info_api_v1_standup_info_get",
+        "operationId": "list_standups_api_v1_standups_get",
+        "parameters": [
+          {
+            "description": "The day (ISO date). Defaults to today.",
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The day (ISO date). Defaults to today.",
+              "title": "Date"
+            }
+          },
+          {
+            "description": "Only entries with something blocking them",
+            "in": "query",
+            "name": "blocked",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Only entries with something blocking them",
+              "title": "Blocked",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_StandupEntryOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The team's check-ins for one day",
+        "tags": [
+          "standups"
+        ]
+      },
+      "post": {
+        "operationId": "post_standup_api_v1_standups_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StandupEntryIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StandupEntryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Post (or repost) a day's check-in",
+        "tags": [
+          "standups"
+        ]
+      }
+    },
+    "/api/v1/standups/info": {
+      "get": {
+        "operationId": "info_api_v1_standups_info_get",
         "responses": {
           "200": {
             "content": {
@@ -45,7 +360,7 @@
         },
         "summary": "What this service is",
         "tags": [
-          "standup"
+          "standups"
         ]
       }
     },
@@ -69,6 +384,30 @@
           }
         },
         "summary": "Liveness \u2014 is the process up?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/outbox": {
+      "get": {
+        "description": "How far behind the relay is. **Alert on `oldest_seconds`.**\n\nA stalled relay is the platform's quietest failure. It selects, finds nothing,\nlogs nothing, sleeps, and loops \u2014 `attempts` never increments and `last_error`\nstays null, so the process looks healthy indefinitely while the outbox grows\nwithout bound and every consumer downstream starves.\n\nDeliberately **not** part of readiness. A backlog is not a reason to take the\nservice out of rotation: refusing traffic would stop new events being written\nwithout helping drain the ones already queued, which makes the incident worse.\nThis is a metric to alert on, not a health state.\n\nCounted through the outbox engine, not the application one. The app role is\nNOBYPASSRLS and this request binds no tenant, so through it `pending` would be\nzero whatever the table holds \u2014 the probe that exists to expose the stall would\nbe wired to the same blind spot that causes it.",
+        "operationId": "outbox_health_outbox_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Outbox Health Outbox Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Outbox depth and age \u2014 scrape this",
         "tags": [
           "health"
         ]

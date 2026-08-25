@@ -1,21 +1,26 @@
 # Standup service
 
-Part of the Atmora platform. Owns the `standup` schema.
+Part of the Atmora platform. Owns the `standup` schema — PulseBoard's daily check-ins,
+behind the gateway's `/api/v1/standups` prefix.
 
 ```bash
-make run SERVICE=standup PORT=8110    # API
+make run SERVICE=standup PORT=8142    # API
 make worker SERVICE=standup           # event consumer
 make relay SERVICE=standup            # outbox relay
 ```
 
 ## Owns
 
-_Describe the tables and the domain rules this service is the authority for._
+- `standup_entries` — one person's check-in for one day: yesterday, today, and `blockers`
+  (null when nothing blocks — the flagged state the SPA renders is exactly non-null). One
+  entry per person per day; reposting replaces. The person is the project service's roster
+  person, carried as a plain UUID + ref.
 
 ## Publishes
 
-_Event types, with a line each on what they mean._
+- `pulseboard.standup.entry.posted` — a check-in was posted or reposted (payload flags
+  whether it carries a blocker).
 
 ## Consumes
 
-_Event types, and which projection each one maintains._
+Nothing yet.

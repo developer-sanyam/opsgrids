@@ -18,9 +18,10 @@ def test_health_reports_this_service() -> None:
     assert response.json() == {"status": "ok", "service": "project"}
 
 
-def test_info_is_mounted_under_the_versioned_prefix() -> None:
+def test_info_is_mounted_under_the_gateway_prefix() -> None:
+    # The gateway routes `/api/v1/projects` here, so info lives under that prefix too.
     with TestClient(app) as client:
-        response = client.get("/api/v1/project/info")
+        response = client.get("/api/v1/projects/info")
     assert response.status_code == 200
     assert response.json()["schema_name"] == "project"
 
@@ -28,7 +29,7 @@ def test_info_is_mounted_under_the_versioned_prefix() -> None:
 def test_unknown_route_returns_problem_json() -> None:
     # Every failure in the platform has the same shape, including 404s.
     with TestClient(app) as client:
-        response = client.get("/api/v1/project/nope")
+        response = client.get("/api/v1/project-nope/nope")
     assert response.status_code == 404
     assert response.headers["content-type"].startswith("application/problem+json")
     assert "request_id" in response.json()
