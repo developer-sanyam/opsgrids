@@ -86,6 +86,11 @@ mutable plans — the thing sales asks for on week one is free.
 Migrating a customer *off* a bespoke version later is the same audited, delta-previewing operation
 ADR-0000 §9 already requires for any version migration. No new machinery.
 
+> Since accepted: this same mechanism turned out to carry **partner/reseller pricing** and
+> **graduated bundles** with no code at all — a wholesale price is `restricted_to_org_id` pointed
+> at the reseller, and a bundle is a plan version whose features name its members. See
+> [commerce-packaging.md](../commerce-packaging.md).
+
 ### 3. Grants, discounts, credits and comp access are ledger entries, never mutable balances
 
 A grant — a discount, a credit, three months complimentary, a goodwill adjustment with an expiry —
@@ -108,6 +113,12 @@ bite you"):
 Every amount is integer minor units with an ISO currency (ADR-0000 §8). There are **no floats in
 billing** — not in a grant, not in proration, not in a line total. Proration and largest-remainder
 discount allocation are integer arithmetic, which is the other reason §8 chose this representation.
+
+> Since accepted: a **prepaid credit pack** is this and nothing more — a time-boxed grant drawn
+> down by later invoices — and it is how an annual commitment above a UPI Autopay mandate's
+> per-debit cap is collected without a debit that would fail into dunning. One correction was
+> needed: a draw-down must inherit the window of the pack it spends
+> ([commerce-packaging.md](../commerce-packaging.md)), or a lapsed pack drags the balance negative.
 
 ### 4. Trials and the lifecycle are subscription states, and every transition is an event
 

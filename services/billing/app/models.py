@@ -198,6 +198,22 @@ class CreditLedgerEntry(Base, TenantBase):
     #: service checks it, so no self-FK is needed and none is added.
     reversal_of: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
 
+    #: The grant this row draws down, for a `consume` that spends a **specific** pack. Set, the
+    #: consumption inherits that grant's `[valid_from, valid_until)`.
+    #:
+    #: This is what makes a prepaid credit pack work (docs/commerce-packaging.md). A pack is a
+    #: time-boxed grant, and a consumption windowed `[now, NULL)` outlives it: once the pack's
+    #: `valid_until` passes the grant leaves the SUM while the open-ended consumption keeps
+    #: counting, and the balance reads *minus what was spent* forever after — quietly eating
+    #: unrelated credit. That is the same defect `reversal_of` already fixes for a reversal by
+    #: inheriting the window it negates; a draw-down needs the same treatment, and needs it per
+    #: row rather than once, because a pack is spent across many invoices.
+    #:
+    #: Nullable, and deliberately **not** unique: unlike `reversal_of`, many consumptions
+    #: legitimately draw on one pack. A consumption that spends the organization's general
+    #: balance rather than one named pack leaves it NULL and behaves exactly as before.
+    drawn_from: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
     __table_args__ = (
         # The balance query filters org, currency and the window, so those lead the index.
         Index("ix_credit_ledger_org_currency_window", "organization_id", "currency", "valid_from"),
@@ -210,6 +226,14 @@ class CreditLedgerEntry(Base, TenantBase):
             "reversal_of",
             unique=True,
             postgresql_where=text("reversal_of IS NOT NULL"),
+        ),
+        # Partial and NOT unique: "what is left on this pack?" is a SUM over the grant and every
+        # consumption that named it, so the query is by `drawn_from` and there are many rows.
+        Index(
+            "ix_credit_ledger_org_drawn_from",
+            "organization_id",
+            "drawn_from",
+            postgresql_where=text("drawn_from IS NOT NULL"),
         ),
         CheckConstraint("length(currency) = 3", name="currency_iso"),
         CheckConstraint(

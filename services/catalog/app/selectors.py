@@ -33,7 +33,11 @@ def _audience_ok(org_id: uuid.UUID) -> Any:
 
 
 def _with_children(stmt: Select[Any]) -> Select[Any]:
-    return stmt.options(selectinload(PlanVersion.prices), selectinload(PlanVersion.features))
+    return stmt.options(
+        selectinload(PlanVersion.prices),
+        selectinload(PlanVersion.features),
+        selectinload(PlanVersion.seat_classes),
+    )
 
 
 async def visible_plans(

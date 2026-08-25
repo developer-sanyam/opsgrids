@@ -261,6 +261,7 @@ def _publish_credit(session: AsyncSession, entry: CreditLedgerEntry, event_type:
             if entry.valid_until
             else None,
             "reversal_of": str(entry.reversal_of) if entry.reversal_of else None,
+            "drawn_from": str(entry.drawn_from) if entry.drawn_from else None,
         },
         actor=_ACTOR,
     )
@@ -297,19 +298,82 @@ async def grant_credit(
     return entry
 
 
+async def _resolve_pack(
+    session: AsyncSession, payload: CreditConsumeIn, pack_id: Any
+) -> CreditLedgerEntry:
+    """The grant a draw-down names, checked before a paisa of it is spent.
+
+    Five refusals, and each of them is a way a prepaid pack goes wrong quietly rather than
+    loudly (docs/commerce-packaging.md):
+
+    * **Not this tenant's.** Row-level security scopes the lookup, so another organization's pack
+      is simply not found — the same 404 an invented id gets.
+    * **Not a grant.** Drawing "from" a consumption or a reversal would name a negative row as a
+      source of credit, and the remaining-balance sum would then read as though there were more.
+    * **Wrong currency.** Money is minor units *and* an ISO code (ADR-0000 §8); spending a rupee
+      pack against a dollar invoice is not a conversion, it is a mistake.
+    * **Lapsed.** Past its `valid_until` the pack no longer counts toward any balance, so a draw
+      against it would net to zero and *look* like it had paid an invoice it did not pay.
+    * **Overdrawn.** The draw may not exceed what is left, computed as a `SUM` over the pack and
+      everything already drawn from it. Without this a pack can be spent twice over and the
+      organization's balance simply goes negative.
+    """
+    pack = await selectors.get_credit_entry(session, pack_id)
+    if pack is None:
+        raise NotFoundProblem("No such credit ledger entry to draw down")
+    if pack.entry_type != CREDIT_GRANT:
+        raise BusinessRuleProblem(
+            f"credit can only be drawn from a grant; entry {pack.id} is a {pack.entry_type}"
+        )
+    if pack.currency != payload.currency.upper():
+        raise BusinessRuleProblem(
+            f"this pack is in {pack.currency} and the draw-down is in {payload.currency.upper()}"
+        )
+    if pack.valid_until is not None and pack.valid_until <= datetime.now(UTC):
+        raise BusinessRuleProblem(
+            f"this pack lapsed at {pack.valid_until.astimezone(UTC).isoformat()} "
+            "and can no longer be drawn down"
+        )
+
+    remaining = await selectors.pack_remaining(session, pack.id)
+    if payload.amount_minor > remaining:
+        raise BusinessRuleProblem(
+            f"this pack has {remaining} {pack.currency} minor units left; "
+            f"{payload.amount_minor} was asked for"
+        )
+    return pack
+
+
 async def consume_credit(
     session: AsyncSession, payload: CreditConsumeIn, *, request: Request | None = None
 ) -> CreditLedgerEntry:
     """Spend credit: a negative append-only row. The grant it draws down is never mutated —
-    the balance falls out of the `SUM`, not out of an edited row (ADR-0004 §3)."""
+    the balance falls out of the `SUM`, not out of an edited row (ADR-0004 §3).
+
+    With `drawn_from` set the row spends **one named pack** and inherits that pack's validity
+    window, so the pair nets to zero at every instant the balance can be asked about. A
+    consumption windowed `[now, NULL)` against a time-boxed pack is the bug the reversal path
+    already fixed once: the moment the pack lapses the grant leaves the `SUM` while the
+    open-ended consumption keeps counting, and the balance reads minus-what-was-spent forever,
+    eating credit that has nothing to do with this pack.
+
+    Without `drawn_from` the row spends the general balance and is open-ended, exactly as before.
+    """
+    pack = (
+        None
+        if payload.drawn_from is None
+        else await _resolve_pack(session, payload, payload.drawn_from)
+    )
+
     entry = CreditLedgerEntry(
         organization_id=payload.organization_id,
         entry_type=CREDIT_CONSUME,
         amount_minor=-payload.amount_minor,
         currency=payload.currency.upper(),
         reason=payload.reason,
-        valid_from=datetime.now(UTC),
-        valid_until=None,
+        valid_from=datetime.now(UTC) if pack is None else pack.valid_from,
+        valid_until=None if pack is None else pack.valid_until,
+        drawn_from=None if pack is None else pack.id,
     )
     session.add(entry)
     await session.flush()
@@ -322,7 +386,11 @@ async def consume_credit(
         action="billing.credit.consumed",
         entity="credit_ledger_entry",
         entity_id=entry.id,
-        after={"amount_minor": entry.amount_minor, "currency": entry.currency},
+        after={
+            "amount_minor": entry.amount_minor,
+            "currency": entry.currency,
+            "drawn_from": str(entry.drawn_from) if entry.drawn_from else None,
+        },
         request=request,
     )
     _publish_credit(session, entry, EVT_CREDIT_CONSUMED)
@@ -365,6 +433,12 @@ async def reverse_credit(
         # permanently understated by the grant amount, eating unrelated credit.
         valid_from=original.valid_from,
         valid_until=original.valid_until,
+        # And the pack it was drawn from, for the same reason the window is inherited: a
+        # reversal has to be indistinguishable from the row it negates in every dimension a
+        # balance is summed over. Reversing a draw-down without carrying `drawn_from` restores
+        # the organization's balance but leaves the *pack* still showing the credit as spent —
+        # a per-pack remainder that disagrees with the ledger it is computed from.
+        drawn_from=original.drawn_from,
         reversal_of=original.id,
     )
     session.add(entry)

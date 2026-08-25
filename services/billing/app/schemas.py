@@ -61,6 +61,26 @@ class CreditBalanceOut(BaseModel):
     as_of: datetime
 
 
+class CreditPackOut(BaseModel):
+    """One prepaid pack and what is left on it — both derived, neither stored.
+
+    `remaining_minor` is a `SUM` over the grant and every consumption that named it, so it is
+    correct by construction rather than by a column somebody remembered to decrement. `lapsed`
+    compares the pack's own `valid_until` to the instant asked about; nothing runs to expire a
+    pack, so a lapsed one is simply a row whose window has closed (ADR-0004 §3).
+    """
+
+    id: uuid.UUID
+    currency: str
+    granted_minor: int
+    remaining_minor: int
+    reason: str
+    valid_from: datetime
+    valid_until: datetime | None = None
+    lapsed: bool
+    as_of: datetime
+
+
 # --------------------------------------------------------------------- internal input
 
 
@@ -91,7 +111,13 @@ class FinalizeInvoiceIn(BaseModel):
 
 
 class CreditGrantIn(BaseModel):
-    """A grant, comp-access or goodwill credit — a positive ledger row with a validity window."""
+    """A grant, comp-access or goodwill credit — a positive ledger row with a validity window.
+
+    A **prepaid credit pack** is this and nothing more (docs/commerce-packaging.md): money the
+    customer paid up front, recorded as one positive row with `valid_from`/`valid_until` set to
+    the commitment term. It needs no product of its own, because a pack is not a thing the
+    customer owns — it is credit, and credit is already a ledger entry.
+    """
 
     organization_id: uuid.UUID
     amount_minor: int = Field(gt=0, description="Positive minor units; a grant adds credit")
@@ -108,6 +134,14 @@ class CreditConsumeIn(BaseModel):
     amount_minor: int = Field(gt=0, description="Positive minor units; stored as a negative row")
     currency: str = Field(min_length=3, max_length=3)
     reason: str = Field(min_length=1, max_length=200)
+    drawn_from: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "Draw this down against one specific grant — a prepaid pack. The consumption "
+            "inherits that grant's validity window, may not exceed what is left on it, and is "
+            "refused once the pack has lapsed. Omit to spend the general balance."
+        ),
+    )
 
 
 class CreditReverseIn(BaseModel):
@@ -137,3 +171,4 @@ class CreditEntryOut(BaseModel):
     valid_from: datetime
     valid_until: datetime | None = None
     reversal_of: uuid.UUID | None = None
+    drawn_from: uuid.UUID | None = None

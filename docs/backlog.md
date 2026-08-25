@@ -298,6 +298,54 @@ it rather than being invented. And **an e-Way bill is never raised automatically
 facts are not on an invoice, and guessing a distance or a vehicle number would be forging the part
 a checkpoint actually reads.
 
+### Commerce packaging — DONE
+
+The four packaging shapes the market research flagged, over the commerce machinery already
+merged. Written up in full in [commerce-packaging.md](commerce-packaging.md); the short version is
+that **three of the four were configuration**, which is the payoff of immutable plan versions and
+an append-only ledger rather than a coincidence.
+
+- **Graduated bundle discounts — configuration.** A bundle is an ordinary immutable plan version
+  whose `features` declare `bundled_products` and `bundle_tier`; its price sheet *is* the bundled
+  price. Not a discount flag over the standalone plans, so a bundled invoice stays reconstructable
+  from the `plan_version_id` its line already records. The seeded ladder is 58,200 / 80,700 /
+  95,600 paise per seat for 2, 3 and 4 products — 29,100 → 26,900 → 23,900 **per product**, which
+  is what graduated means — and `domain.ladder_is_graduated` proves the monotonicity by
+  cross-multiplying rather than dividing, because a rounded comparison of two prices is a
+  comparison of two other prices. The test reads the seed migration's own numbers, so re-pricing a
+  rung into a dearer-per-product ladder is a red build.
+- **Prepaid credit packs — configuration, plus one correction.** A pack is a time-boxed credit
+  grant and each invoice draws against it. What needed code was `drawn_from`: every consumption
+  used to be windowed `[now, NULL)`, which outlives a time-boxed pack — the instant the pack
+  lapses the grant leaves the balance `SUM` while the consumption keeps counting, and the balance
+  reads *minus what was spent* for ever, eating unrelated credit. Exactly the defect the reversal
+  path was fixed for, from the other direction, and it takes the same answer: name the pack and
+  inherit its window. Remaining is a `SUM` over the grant and its draws, never a column.
+- **A free view-only seat class — the one that needed a table.** `catalog.seat_classes` on the
+  plan version: a `code`, a nullable `price_id` (NULL is free — the absence of a price row, never
+  a zero-amount one), `included_count`, and `can_write`. Frozen with its version by the same
+  trigger that freezes prices, because what a seat may do is a term of the deal.
+  `domain.seat_class_grants` *computes* the permission set from the class: a view-only seat gets a
+  whitelist of read actions with dangerous permissions excluded, so no write survives, a PII
+  unmask does not survive either, and an unclassified verb (`approve`, `export`) is excluded by
+  default rather than falling through.
+- **Partner / reseller pricing — configuration, no code at all.** `restricted_to_org_id` pointed
+  at the reseller: the same audience-of-one mechanism ADR-0004 §2 built for a negotiated
+  enterprise price, inheriting the same `_audience_ok` filter and the same negative-authz test.
+  Channel distribution was the same problem wearing a hat.
+
+**Also true, and deliberately out of scope:** a bundle prices the packaging, it does not yet fan
+entitlement out to its members. A subscription entitles one `product_key`. Lighting up all three
+products of a `suite/trio` means the product-service projection reading `bundled_products` off the
+subscription event and upserting one activation per member — real code in the entitlement path,
+across three services, which is not a packaging slice. `bundled_products` ships now so that work
+has a contract to read rather than a convention to guess.
+
+**Next here:** the bundle entitlement fan-out above; per-seat-class quantities on
+`subscription_items` (the pin already carries the classes, nothing counts seats by class yet); and
+a customer-facing read of an organization's own prepaid packs, which today is an internal route a
+billing run drives.
+
 ### HRMS employee-service — slice 1 landed; follow-ups
 
 The Employee Master (`employee-service`, schema `employee`, port 8120) is in as one green

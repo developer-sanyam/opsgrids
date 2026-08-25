@@ -22,7 +22,11 @@ make relay SERVICE=billing            # outbox relay
 - **`credit_ledger`** — append-only, **balance derived not stored**. A grant, a consumption, a
   reversal and an expiry are all rows; the balance available at an instant is a `SUM` over the
   rows whose `[valid_from, valid_until)` window covers it (ADR-0004 §3). A lapsed grant drops
-  out of the balance on its own — nothing runs to expire it.
+  out of the balance on its own — nothing runs to expire it. A consumption may name the grant it
+  draws down in **`drawn_from`**, which is what makes a **prepaid credit pack** work: the draw
+  inherits the pack's window, so the pair nets to zero at every instant and a lapsed pack cannot
+  drag the balance negative. What is left on a pack is a `SUM` over it and its draws, never a
+  column ([docs/commerce-packaging.md](../../docs/commerce-packaging.md)).
 - **`tax_rates`** — global, un-policied platform reference data, versioned by `effective_from`.
   The table is modelled; jurisdiction resolution is deferred (ADR-0004 "Open: Tax").
 
@@ -57,4 +61,7 @@ _Nothing yet. The billing-run orchestration that consumes catalog + metering is 
   `GET /credit-balance?currency=` (the windowed SUM). Reads only.
 - Internal (`/internal/v1`, service token, excluded from OpenAPI):
   `POST /invoices:finalize`, `POST /invoices/{id}:void`, `POST /credit`,
-  `POST /credit:consume`, `POST /credit:reverse`. Each binds the tenant from the request body.
+  `POST /credit:consume`, `POST /credit:reverse`, and
+  `GET /organizations/{org}/credit/packs/{pack}` (what is left on one prepaid pack, so a billing
+  run knows how much of an invoice it covers before it draws). Each binds the tenant from the
+  request body or path.

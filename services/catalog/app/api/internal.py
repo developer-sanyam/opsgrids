@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors
-from app.schemas import InternalPlanVersionOut, InternalPriceOut
+from app.schemas import FeatureOut, InternalPlanVersionOut, InternalPriceOut, SeatClassOut
 from platform_core.auth import require_service_token
 from platform_core.db import get_session
 from platform_core.errors import NotFoundProblem
@@ -49,7 +49,12 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
     summary="Resolve a plan version for a sibling service pinning it",
 )
 async def get_plan_version(version_id: uuid.UUID, session: SessionDep) -> InternalPlanVersionOut:
-    """The version, its prices, and the product it belongs to — unfiltered.
+    """The version, its prices, features and seat classes, and the product it belongs to —
+    unfiltered.
+
+    The feature sheet rides along because packaging is declared there (`bundled_products`,
+    `bundle_tier`), and a caller that has to make a second call to learn what it just pinned
+    will eventually make it against a catalogue that has moved on.
 
     404 when it does not exist, which the caller treats as a definite "no such version"; anything
     else (unpublished, restricted to another org) is returned as data for the caller to judge,
@@ -71,4 +76,6 @@ async def get_plan_version(version_id: uuid.UUID, session: SessionDep) -> Intern
         currency=version.currency,
         restricted_to_org_id=version.restricted_to_org_id,
         prices=[InternalPriceOut.model_validate(p) for p in version.prices],
+        features=[FeatureOut.model_validate(f) for f in version.features],
+        seat_classes=[SeatClassOut.model_validate(sc) for sc in version.seat_classes],
     )

@@ -19,6 +19,7 @@ Start here.
 | Call the API | [api-reference.md](api-reference.md) |
 | Know what is wrong with the API and what to fix | [api-improvements.md](api-improvements.md) |
 | Write or run tests | [testing.md](testing.md) |
+| Package and price something — bundles, prepaid packs, seat classes, reseller pricing | [commerce-packaging.md](commerce-packaging.md) |
 | Use or extend the visual system | [theme-guide.md](theme-guide.md) |
 | Know what the theme already provides | [existing-theme-features.md](existing-theme-features.md) |
 

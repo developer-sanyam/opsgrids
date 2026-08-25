@@ -21,9 +21,15 @@ make relay SERVICE=catalog           # outbox relay
 - **`prices`** — a priced component (`flat` / `per_seat` / `usage`). Money is integer minor
   units; a usage rate is integer micros of a major unit (ADR-0000 §8). No floats, no `Numeric`.
 - **`features`** — capability flags/limits a version switches on, keyed by the product's own
-  feature names, value as JSONB.
+  feature names, value as JSONB. Three keys are read by the *platform* rather than a product:
+  `bundled_products` and `bundle_tier` declare a bundle, and `partner_of` labels a reseller price.
+- **`seat_classes`** — the classes of seat a version sells: a `code`, a nullable `price_id` (NULL
+  is a **free** class, e.g. a view-only seat), an `included_count`, and `can_write`. Frozen with
+  its version by the same trigger that freezes prices, because what a seat may do is a term of the
+  deal. `domain.seat_class_grants` derives the permission set: a `can_write=False` class can only
+  ever produce non-dangerous read grants.
 
-These four are **global and un-policied** (ADR-0002 §5): they carry no `organization_id` and
+These five are **global and un-policied** (ADR-0002 §5): they carry no `organization_id` and
 take no RLS policy. Bespoke visibility is an application filter
 (`restricted_to_org_id IS NULL OR = principal.organization_id`), defended by a negative-authz
 test — a global table cannot lean on row-level security. Only `audit_logs` and `outbox` are
@@ -40,6 +46,16 @@ rows belong to.
 ## Consumes
 
 _None yet._
+
+## Packaging
+
+Bundles, prepaid packs, seat classes and reseller pricing are written up in
+[docs/commerce-packaging.md](../../docs/commerce-packaging.md). Three of the four are pure
+configuration over the tables above — a **bundle** is a plan version whose features name its
+members and its rung, and a **partner price** is `restricted_to_org_id` pointed at the reseller,
+the same audience-of-one mechanism a negotiated enterprise price uses. `seat_classes` is the one
+that needed a table. Migration `f78c86fcec78` seeds a graduated ladder (`suite/duo`, `trio`,
+`full`) whose monotonicity is checked by a test against the seed's own numbers.
 
 ## Surfaces
 

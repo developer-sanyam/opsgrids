@@ -213,6 +213,13 @@
             ],
             "title": "Restricted To Org Id"
           },
+          "seat_classes": {
+            "items": {
+              "$ref": "#/components/schemas/SeatClassOut"
+            },
+            "title": "Seat Classes",
+            "type": "array"
+          },
           "state": {
             "title": "State",
             "type": "string"
@@ -363,6 +370,139 @@
         "title": "PriceOut",
         "type": "object"
       },
+      "SeatClassIn": {
+        "description": "A class of seat to author on the new version.\n\n`price_index` points at a position in the **same payload's** `prices` list rather than at a\nprice id, because the prices do not exist yet when the version is drafted. Left NULL the\nclass is free \u2014 which is the shape of the view-only seat the market now expects, and it is\nfree by having no price at all rather than a zero-amount one.",
+        "properties": {
+          "can_write": {
+            "default": true,
+            "title": "Can Write",
+            "type": "boolean"
+          },
+          "code": {
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "included_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Included Count"
+          },
+          "name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "price_index": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Index into this payload's `prices`; NULL means free",
+            "title": "Price Index"
+          },
+          "sort_order": {
+            "default": 100,
+            "title": "Sort Order",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "name"
+        ],
+        "title": "SeatClassIn",
+        "type": "object"
+      },
+      "SeatClassOut": {
+        "description": "A class of seat this version sells. `price_id` NULL is a free class.\n\n`can_write` is on the wire because it is the *entitlement* half of the seat class, not a\npresentational one: a client rendering a seat picker has to be able to say \"view-only\" out\nloud, and the grant computed server-side for such a seat contains no write permission\n(`domain.seat_class_grants`).",
+        "properties": {
+          "can_write": {
+            "title": "Can Write",
+            "type": "boolean"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "included_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Included Count"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "price_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Id"
+          },
+          "sort_order": {
+            "title": "Sort Order",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "can_write",
+          "sort_order"
+        ],
+        "title": "SeatClassOut",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -422,7 +562,7 @@
         "type": "object"
       },
       "VersionCreateIn": {
-        "description": "Clone the plan's active version into a new draft, with these prices and features.\n\n`restricted_to_org_id` set makes it a bespoke, audience-of-one version (ADR-0004 \u00a72);\nleft NULL it is a public version every customer of the product can see once published.",
+        "description": "Clone the plan's active version into a new draft, with these prices and features.\n\n`restricted_to_org_id` set makes it a bespoke, audience-of-one version (ADR-0004 \u00a72);\nleft NULL it is a public version every customer of the product can see once published. The\nsame field, pointed at a reseller's organization, is how a partner wholesale price is\nauthored \u2014 one mechanism, two commercial uses (docs/commerce-packaging.md).\n\nA **bundle** is authored here too, with no special field: its `features` declare\n`bundled_products` and `bundle_tier`, and its `prices` are the bundled rate. A bundle is a\nplan version, not a discount layered over one, which is what keeps a bundled invoice\nreconstructable from the version it pinned.",
         "properties": {
           "billing_interval": {
             "default": "month",
@@ -461,6 +601,13 @@
               }
             ],
             "title": "Restricted To Org Id"
+          },
+          "seat_classes": {
+            "items": {
+              "$ref": "#/components/schemas/SeatClassIn"
+            },
+            "title": "Seat Classes",
+            "type": "array"
           }
         },
         "required": [

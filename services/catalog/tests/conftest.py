@@ -45,6 +45,7 @@ CATALOG_TABLES = (
     "plan_versions",
     "prices",
     "features",
+    "seat_classes",
     "audit_logs",
     "outbox",
     "processed_events",

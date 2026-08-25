@@ -15,17 +15,20 @@ appear as though it were.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import services
+from app import selectors, services
+from app.models import CREDIT_GRANT
 from app.schemas import (
     CreditConsumeIn,
     CreditEntryOut,
     CreditGrantIn,
+    CreditPackOut,
     CreditReverseIn,
     FinalizeInvoiceIn,
     InvoiceOut,
@@ -34,6 +37,7 @@ from app.schemas import (
 from platform_core.auth import require_service_token
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
+from platform_core.errors import BusinessRuleProblem, NotFoundProblem
 
 router = APIRouter(
     prefix="/internal/v1",
@@ -114,6 +118,49 @@ async def consume_credit(
         await _bind(session, payload.organization_id, request)
         entry = await services.consume_credit(session, payload, request=request)
         return CreditEntryOut.model_validate(entry)
+
+
+@router.get(
+    "/organizations/{organization_id}/credit/packs/{pack_id}",
+    response_model=CreditPackOut,
+    summary="What is left on one prepaid credit pack",
+)
+async def get_credit_pack(
+    organization_id: uuid.UUID, pack_id: uuid.UUID, session: SessionDep, request: Request
+) -> CreditPackOut:
+    """The pack, and its remaining balance as a `SUM` over everything drawn from it.
+
+    A billing run asks this **before** drawing so it knows how much of an invoice the pack can
+    cover and how much is still payable. Asking afterwards, by trying to draw the whole invoice
+    and catching the refusal, would work — and would make the ordinary case an exception path.
+
+    The organization is in the path rather than inferred, because the transaction has to be bound
+    to a tenant as its first statement and there is no principal on an internal call to infer one
+    from. Row-level security then confirms the pack really belongs there: another tenant's id is
+    a 404, not a 403.
+    """
+    async with session.begin():
+        await _bind(session, organization_id, request)
+        pack = await selectors.get_credit_entry(session, pack_id)
+        if pack is None:
+            raise NotFoundProblem("No such credit ledger entry")
+        if pack.entry_type != CREDIT_GRANT:
+            raise BusinessRuleProblem(
+                f"entry {pack.id} is a {pack.entry_type}, not a grant, so it is not a pack"
+            )
+        remaining = await selectors.pack_remaining(session, pack.id)
+        at = datetime.now(UTC)
+        return CreditPackOut(
+            id=pack.id,
+            currency=pack.currency,
+            granted_minor=pack.amount_minor,
+            remaining_minor=remaining,
+            reason=pack.reason,
+            valid_from=pack.valid_from,
+            valid_until=pack.valid_until,
+            lapsed=pack.valid_until is not None and pack.valid_until <= at,
+            as_of=at,
+        )
 
 
 @router.post(

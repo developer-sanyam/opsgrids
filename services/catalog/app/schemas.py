@@ -43,6 +43,26 @@ class FeatureOut(BaseModel):
     value: Any = None
 
 
+class SeatClassOut(BaseModel):
+    """A class of seat this version sells. `price_id` NULL is a free class.
+
+    `can_write` is on the wire because it is the *entitlement* half of the seat class, not a
+    presentational one: a client rendering a seat picker has to be able to say "view-only" out
+    loud, and the grant computed server-side for such a seat contains no write permission
+    (`domain.seat_class_grants`).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    code: str
+    name: str
+    price_id: uuid.UUID | None = None
+    included_count: int | None = None
+    can_write: bool
+    sort_order: int
+    description: str | None = None
+
+
 class PlanVersionOut(BaseModel):
     """A priced snapshot. `restricted_to_org_id` is echoed so an operator UI can see an
     audience-of-one at a glance; the customer read only ever returns versions the caller is
@@ -59,6 +79,7 @@ class PlanVersionOut(BaseModel):
     published_at: datetime | None = None
     prices: list[PriceOut] = Field(default_factory=list)
     features: list[FeatureOut] = Field(default_factory=list)
+    seat_classes: list[SeatClassOut] = Field(default_factory=list)
 
 
 class PlanOut(BaseModel):
@@ -110,6 +131,13 @@ class InternalPlanVersionOut(BaseModel):
     currency: str
     restricted_to_org_id: uuid.UUID | None = None
     prices: list[InternalPriceOut] = Field(default_factory=list)
+    #: The version's feature sheet, so a caller can read the packaging declarations
+    #: (`bundled_products`, `bundle_tier`) without a second round trip. Unfiltered, like the
+    #: rest of this response.
+    features: list[FeatureOut] = Field(default_factory=list)
+    #: The seat classes this version sells. A subscription that wants per-class seat counts
+    #: needs them at pin time, and a pin is the only moment they are guaranteed to be read.
+    seat_classes: list[SeatClassOut] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------- operator input
@@ -143,6 +171,26 @@ class FeatureIn(BaseModel):
     value: Any = None
 
 
+class SeatClassIn(BaseModel):
+    """A class of seat to author on the new version.
+
+    `price_index` points at a position in the **same payload's** `prices` list rather than at a
+    price id, because the prices do not exist yet when the version is drafted. Left NULL the
+    class is free — which is the shape of the view-only seat the market now expects, and it is
+    free by having no price at all rather than a zero-amount one.
+    """
+
+    code: str = Field(min_length=1, max_length=60)
+    name: str = Field(min_length=1, max_length=160)
+    price_index: int | None = Field(
+        default=None, ge=0, description="Index into this payload's `prices`; NULL means free"
+    )
+    included_count: int | None = Field(default=None, ge=0)
+    can_write: bool = True
+    sort_order: int = 100
+    description: str | None = Field(default=None, max_length=300)
+
+
 class PlanCreateIn(BaseModel):
     product_key: str = Field(min_length=1, max_length=40)
     code: str = Field(min_length=1, max_length=60)
@@ -162,7 +210,14 @@ class VersionCreateIn(BaseModel):
     """Clone the plan's active version into a new draft, with these prices and features.
 
     `restricted_to_org_id` set makes it a bespoke, audience-of-one version (ADR-0004 §2);
-    left NULL it is a public version every customer of the product can see once published.
+    left NULL it is a public version every customer of the product can see once published. The
+    same field, pointed at a reseller's organization, is how a partner wholesale price is
+    authored — one mechanism, two commercial uses (docs/commerce-packaging.md).
+
+    A **bundle** is authored here too, with no special field: its `features` declare
+    `bundled_products` and `bundle_tier`, and its `prices` are the bundled rate. A bundle is a
+    plan version, not a discount layered over one, which is what keeps a bundled invoice
+    reconstructable from the version it pinned.
     """
 
     billing_interval: str = Field(default="month", pattern="^(month|year|one_time)$")
@@ -170,3 +225,4 @@ class VersionCreateIn(BaseModel):
     restricted_to_org_id: uuid.UUID | None = None
     prices: list[PriceIn] = Field(default_factory=list)
     features: list[FeatureIn] = Field(default_factory=list)
+    seat_classes: list[SeatClassIn] = Field(default_factory=list)

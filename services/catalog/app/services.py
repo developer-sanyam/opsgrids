@@ -23,6 +23,7 @@ from app import selectors
 from app.models import (
     PLAN_RETIRED,
     PLATFORM_ORG,
+    PRICE_PER_SEAT,
     VERSION_DRAFT,
     VERSION_PUBLISHED,
     AuditLog,
@@ -31,8 +32,9 @@ from app.models import (
     Plan,
     PlanVersion,
     Price,
+    SeatClass,
 )
-from app.schemas import PlanCreateIn, PlanPatchIn, VersionCreateIn
+from app.schemas import PlanCreateIn, PlanPatchIn, SeatClassIn, VersionCreateIn
 from platform_core.audit import record_audit
 from platform_core.auth import Principal
 from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
@@ -172,15 +174,16 @@ async def create_version(
 ) -> PlanVersion:
     """Clone the plan's latest version into a new **draft**, never mutating a published one.
 
-    Prices and features are taken from the payload when supplied; otherwise they are cloned
-    from the latest version, so bumping a version does not mean re-typing an unchanged price
-    sheet. `restricted_to_org_id` set makes this a bespoke, audience-of-one version — the same
-    table, the same mechanism, as every public plan (ADR-0004 §2).
+    Prices, features and seat classes are taken from the payload when supplied; otherwise all
+    three are cloned from the latest version, so bumping a version does not mean re-typing an
+    unchanged price sheet. `restricted_to_org_id` set makes this a bespoke, audience-of-one
+    version — the same table, the same mechanism, as every public plan (ADR-0004 §2), and the
+    same one a partner wholesale price uses (docs/commerce-packaging.md).
     """
     next_no = await selectors.latest_version_no(session, plan.id) + 1
     # Capture the clone source *before* inserting the new version, or it would find itself as
     # the latest and clone nothing.
-    supplied = bool(payload.prices or payload.features)
+    supplied = bool(payload.prices or payload.features or payload.seat_classes)
     source = None if supplied else await selectors.clone_source(session, plan.id)
 
     version = PlanVersion(
@@ -211,14 +214,22 @@ async def create_version(
             Feature(plan_version_id=version.id, feature_key=f.feature_key, value=f.value)
             for f in payload.features
         ]
+        seat_drafts = list(payload.seat_classes)
     else:
         # `source` is the plan's previous latest version (or None for a first version) —
         # captured above, so cloning copies the real predecessor's price sheet.
-        prices, features = _clone_children(version, source)
+        prices, features, seat_drafts = _clone_children(version, source)
 
     for price in prices:
         _reject_currency_mismatch(version, price)
+    _reject_unresolvable_seat_prices(seat_drafts, prices)
+
+    # Two flushes, deliberately: a seat class carries a real foreign key to the price it is
+    # charged at, and a price's id is only assigned when its row is flushed. Building the
+    # classes first would point them at NULL.
     session.add_all([*prices, *features])
+    await session.flush()
+    session.add_all(_build_seat_classes(version, seat_drafts, prices))
     await session.flush()
 
     record_audit(
@@ -243,9 +254,16 @@ async def create_version(
 
 def _clone_children(
     version: PlanVersion, source: PlanVersion | None
-) -> tuple[list[Price], list[Feature]]:
+) -> tuple[list[Price], list[Feature], list[SeatClassIn]]:
+    """The previous version's price sheet, feature sheet and seat classes, as fresh material.
+
+    Seat classes come back as *drafts* rather than rows: each names its price by position in the
+    cloned price list, because the new price rows do not have ids until they are flushed. The
+    positions are stable because `PlanVersion.prices` is explicitly ordered, and the clone builds
+    the new list in exactly that order.
+    """
     if source is None or source.id == version.id:
-        return [], []
+        return [], [], []
     prices = [
         Price(
             plan_version_id=version.id,
@@ -262,7 +280,63 @@ def _clone_children(
         Feature(plan_version_id=version.id, feature_key=f.feature_key, value=f.value)
         for f in source.features
     ]
-    return prices, features
+    position = {price.id: index for index, price in enumerate(source.prices)}
+    seat_classes = [
+        SeatClassIn(
+            code=sc.code,
+            name=sc.name,
+            price_index=position.get(sc.price_id) if sc.price_id else None,
+            included_count=sc.included_count,
+            can_write=sc.can_write,
+            sort_order=sc.sort_order,
+            description=sc.description,
+        )
+        for sc in source.seat_classes
+    ]
+    return prices, features, seat_classes
+
+
+def _reject_unresolvable_seat_prices(seat_classes: list[SeatClassIn], prices: list[Price]) -> None:
+    """A seat class must point at a real `per_seat` price of this same version, or at nothing.
+
+    Refused here, before anything is written, because both failures are silent otherwise: an
+    index past the end of the price list would raise a bare `IndexError` from inside a flush,
+    and a class charged at a `flat` or `usage` price would bill one amount however many seats
+    were bought — which is not a seat class at all.
+    """
+    for seat_class in seat_classes:
+        if seat_class.price_index is None:
+            continue
+        if seat_class.price_index >= len(prices):
+            raise BusinessRuleProblem(
+                f"seat class {seat_class.code!r} names price #{seat_class.price_index}, "
+                f"but this version has {len(prices)} price(s)"
+            )
+        priced_at = prices[seat_class.price_index]
+        if priced_at.kind != PRICE_PER_SEAT:
+            raise BusinessRuleProblem(
+                f"seat class {seat_class.code!r} must be charged at a {PRICE_PER_SEAT} price, "
+                f"not a {priced_at.kind!r} one"
+            )
+
+
+def _build_seat_classes(
+    version: PlanVersion, seat_classes: list[SeatClassIn], prices: list[Price]
+) -> list[SeatClass]:
+    """Materialize the seat classes once their prices have ids. Validated already."""
+    return [
+        SeatClass(
+            plan_version_id=version.id,
+            code=sc.code,
+            name=sc.name,
+            price_id=None if sc.price_index is None else prices[sc.price_index].id,
+            included_count=sc.included_count,
+            can_write=sc.can_write,
+            sort_order=sc.sort_order,
+            description=sc.description,
+        )
+        for sc in seat_classes
+    ]
 
 
 def _reject_currency_mismatch(version: PlanVersion, price: Price) -> None:

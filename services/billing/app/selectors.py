@@ -74,6 +74,28 @@ async def credit_balance(session: AsyncSession, *, currency: str, at: datetime) 
     return int((await session.execute(stmt)).scalar_one())
 
 
+async def pack_remaining(session: AsyncSession, pack_id: uuid.UUID) -> int:
+    """What is left on one prepaid pack: a `SUM` over the grant and everything drawn from it.
+
+    Derived exactly like the organization-wide balance and for the same reason (ADR-0004 §3) — a
+    "remaining" column on the grant would be a second source of truth that drifts from the ledger
+    the first time two invoices draw on the pack at once. The grant is the positive row; each
+    draw-down is a negative row naming it in `drawn_from`; a reversal of either is a further row
+    that is picked up here too, because it carries the same `drawn_from`.
+
+    Deliberately **not** windowed: this answers "how much of this pack has been spent", which is
+    a fact about the pack and not about the clock. Whether the pack still counts toward the
+    organization's balance is `credit_balance`'s question, and it answers it by the window.
+    """
+    stmt = select(func.coalesce(func.sum(CreditLedgerEntry.amount_minor), 0)).where(
+        or_(
+            CreditLedgerEntry.id == pack_id,
+            CreditLedgerEntry.drawn_from == pack_id,
+        )
+    )
+    return int((await session.execute(stmt)).scalar_one())
+
+
 async def get_credit_entry(session: AsyncSession, entry_id: uuid.UUID) -> CreditLedgerEntry | None:
     return (
         await session.execute(select(CreditLedgerEntry).where(CreditLedgerEntry.id == entry_id))
@@ -99,4 +121,5 @@ __all__ = [
     "get_invoice",
     "get_reversal_of",
     "list_invoices",
+    "pack_remaining",
 ]

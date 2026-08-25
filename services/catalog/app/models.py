@@ -22,6 +22,13 @@ Two invariants are load-bearing and enforced below the application (ADR-0000 §9
   `BIGINT` minor units; a usage rate that needs sub-minor precision is `BIGINT` micros of a
   major unit (`platform_core.money`). No floats, no `Numeric`.
 
+Packaging rides on that, and mostly adds nothing (docs/commerce-packaging.md). A **bundle** is a
+plan version whose `features` declare the products it covers and the rung of the graduated
+ladder it sits on; a **partner/reseller price** is `restricted_to_org_id` pointed at the
+reseller. Both are configuration — the same tables, the same immutability. **Seat classes** are
+the exception and are a table here (`seat_classes`), because nothing in a price sheet could say
+that a plan sells two kinds of seat and that one of them may not write.
+
 The platform tables (`outbox`, `audit_logs`, `processed_events`) come from the scaffold and
 carry the events this service emits.
 """
@@ -34,6 +41,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -72,6 +80,21 @@ VERSION_GRANDFATHERED = "grandfathered"
 PRICE_FLAT = "flat"
 PRICE_PER_SEAT = "per_seat"
 PRICE_USAGE = "usage"
+
+#: Feature keys the *platform* reads rather than a product. Everything else in `features` is a
+#: product's own vocabulary and catalog never interprets it; these three are the exception,
+#: because packaging is a catalogue concern (docs/commerce-packaging.md).
+#:
+#: A bundle is a plan version like any other — not a discount flag layered on top — so what
+#: makes it a bundle is declarative: the products it covers, and which rung of the graduated
+#: ladder it sits on. Past invoices stay reconstructable because the rung, its members and its
+#: price are all frozen together on the version the invoice line names.
+FEATURE_BUNDLED_PRODUCTS = "bundled_products"
+FEATURE_BUNDLE_TIER = "bundle_tier"
+#: The reseller this version is wholesale-priced for. Documentation on the row: the *enforcement*
+#: is `restricted_to_org_id`, which is the same audience-of-one mechanism a negotiated enterprise
+#: price uses. Present so an operator screen can say "partner price" rather than infer it.
+FEATURE_PARTNER_OF = "partner_of"
 
 
 class Base(_Base):
@@ -168,11 +191,21 @@ class PlanVersion(Base):
     )
 
     plan: Mapped[Plan] = relationship(back_populates="versions")
+    #: Ordered deterministically: a seat class names its price by **position** in this list when
+    #: a version is authored or cloned (see `services._clone_children`), so an unordered
+    #: collection would silently re-point a seat class at another class's rate.
     prices: Mapped[list[Price]] = relationship(
-        back_populates="plan_version", cascade="all, delete-orphan"
+        back_populates="plan_version",
+        cascade="all, delete-orphan",
+        order_by="Price.created_at, Price.id",
     )
     features: Mapped[list[Feature]] = relationship(
         back_populates="plan_version", cascade="all, delete-orphan"
+    )
+    seat_classes: Mapped[list[SeatClass]] = relationship(
+        back_populates="plan_version",
+        cascade="all, delete-orphan",
+        order_by="SeatClass.sort_order, SeatClass.code",
     )
 
     __table_args__ = (
@@ -274,6 +307,89 @@ class Feature(Base):
     __table_args__ = (
         UniqueConstraint("plan_version_id", "feature_key", name="uq_features_version_key"),
         Index("ix_features_plan_version_id", "plan_version_id"),
+    )
+
+
+class SeatClass(Base):
+    """A class of seat a plan version sells, and what a seat of that class may *do*.
+
+    This is the one packaging shape the existing machinery genuinely could not express
+    (docs/commerce-packaging.md). A `per_seat` price says what a seat costs; nothing said that a
+    plan sells **two kinds** of seat at different rates, still less that one of them is
+    read-only. Modelling a free view-only seat as "a `per_seat` price of zero" would have been a
+    price with no meaning attached — it would have priced the seat correctly and entitled it
+    wrongly, which is the expensive half.
+
+    Two columns carry the weight:
+
+    * **`price_id`** — the version's own `per_seat` price this class is charged at, or NULL for a
+      free class. An intra-schema foreign key, which the boundary rule allows (ADR-0000 §10
+      forbids only *cross-schema* keys). Money stays in `prices` and exists in exactly one place;
+      a seat class never carries an amount of its own, so the two can never disagree.
+    * **`can_write`** — whether a seat of this class may hold a writing permission at all. It is
+      not a UI hint: `domain.seat_class_grants` derives the permission set from it, and a
+      read-only class can only ever produce read permissions (never `write`, never a dangerous
+      one such as a PII unmask). "Authorization is server-side" means the seat class has to be
+      the thing the grant is computed *from*, not a label beside it.
+
+    Frozen with its version, like `prices` and `features`: once the parent is published the row
+    is immutable, by the same `BEFORE UPDATE OR DELETE` trigger. What a seat could do is part of
+    what the customer signed under.
+    """
+
+    __tablename__ = "seat_classes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    plan_version_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(
+            f"{SCHEMA}.plan_versions.id",
+            ondelete="CASCADE",
+            name="fk_seat_classes_plan_version_id",
+        ),
+        nullable=False,
+    )
+    #: Stable machine code, unique within the version: `member`, `viewer`, `approver`.
+    code: Mapped[str] = mapped_column(String(60), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+
+    #: The `per_seat` price this class is billed at. NULL is a **free** class — the free
+    #: view-only seat the market now expects — and free means no price row, not a zero one.
+    price_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.prices.id", ondelete="RESTRICT", name="fk_seat_classes_price_id"),
+    )
+
+    #: How many seats of this class the plan includes at no extra charge. NULL is unlimited,
+    #: which is the usual shape for a free class; a paid class normally leaves it NULL and bills
+    #: per seat through `price_id`.
+    included_count: Mapped[int | None] = mapped_column(Integer)
+
+    #: May a seat of this class hold a writing permission? False makes it view-only, and
+    #: `domain.seat_class_grants` refuses to produce a write grant for it.
+    can_write: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    description: Mapped[str | None] = mapped_column(String(300))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    plan_version: Mapped[PlanVersion] = relationship(back_populates="seat_classes")
+    price: Mapped[Price | None] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("plan_version_id", "code", name="uq_seat_classes_version_code"),
+        CheckConstraint(
+            "included_count is null or included_count >= 0", name="included_count_non_negative"
+        ),
+        Index("ix_seat_classes_plan_version_id", "plan_version_id"),
     )
 
 
