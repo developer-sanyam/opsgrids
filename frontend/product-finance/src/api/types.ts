@@ -31,13 +31,79 @@ export type InvoiceStatus = "draft" | "sent" | "paid" | "overdue" | "void";
 /** A tax invoice bills; a credit note corrects a prior invoice with a negative total. */
 export type DocumentType = "invoice" | "credit_note";
 
-/** One line on an invoice. `amount_minor` foots to `quantity × unit_price_minor`. */
+/**
+ * One line on an invoice. `amount_minor` foots to `quantity × unit_price_minor`, and is the
+ * **taxable value** the line's GST is computed on.
+ *
+ * The GST fields are optional here because documents raised before the compliance slice carry
+ * none — a null HSN is "not recorded", which is a real state and one the filing screen surfaces
+ * rather than hides. Exactly one tax shape is ever populated: CGST+SGST intra-state, IGST
+ * inter-state, and the three always sum to the tax charged.
+ */
 export interface InvoiceLine {
   id: string;
   description: string;
   quantity: number;
   unit_price_minor: Minor;
   amount_minor: Minor;
+  /** HSN (goods) or SAC (services) code — 4, 6 or 8 digits. */
+  hsn_sac?: string | null;
+  tax_rate_pct?: number;
+  cgst_minor?: Minor;
+  sgst_minor?: Minor;
+  igst_minor?: Minor;
+}
+
+/** How a supply is classified for GST. B2C is the one that needs no IRN. */
+export type SupplyType = "b2b" | "b2c" | "export" | "sez";
+
+/** One attempt at registering a document with the Invoice Registration Portal. */
+export type FilingStatus = "pending" | "filed" | "failed" | "cancelled";
+
+/**
+ * An invoice's current e-invoice position, derived server-side from its newest filing attempt.
+ *
+ * `required` is the statutory question and is answered even when nothing has been attempted, so
+ * `{ required: true, status: null }` is exactly the "not yet filed" queue rather than an absence.
+ */
+export interface EInvoiceState {
+  required: boolean;
+  status: FilingStatus | null;
+  /** The 64-character Invoice Reference Number, once registered. */
+  irn?: string | null;
+  ack_no?: string | null;
+  ack_date?: string | null;
+  /** The portal's own numbered error and message on a failed attempt. */
+  error_code?: string | null;
+  error?: string | null;
+  attempted_at?: string | null;
+  attempts: number;
+}
+
+/** One row of a document's filing history. Append-only server-side: a retry is a further row. */
+export interface EInvoiceFiling {
+  id: string;
+  status: FilingStatus;
+  irn: string | null;
+  ack_no: string | null;
+  ack_date: string | null;
+  /** The signed QR the invoice must print, verbatim as the portal returned it. */
+  qr_payload: string | null;
+  error_code: string | null;
+  error: string | null;
+  attempted_at: string;
+}
+
+/** The organization's own GST registration — who this seller is, to the portal. */
+export interface GstRegistration {
+  id: string;
+  gstin: string;
+  state_code: string;
+  state_name: string;
+  legal_name: string;
+  trade_name: string;
+  registration_type: string;
+  is_primary: boolean;
 }
 
 /**
@@ -64,6 +130,21 @@ export interface Invoice {
   notes: string | null;
   /** Set on a credit note: the invoice this document corrects. */
   corrects_invoice_id: string | null;
+
+  // --- GST. Frozen with the rest of the document; both GSTINs are snapshots, not lookups, so a
+  // filed invoice keeps naming the numbers it was raised under after either party re-registers.
+  /** The GST state code the supply is taxed in. */
+  place_of_supply?: string | null;
+  supply_type?: SupplyType;
+  /** The recipient pays the tax instead of the supplier: rate stated, nothing charged. */
+  reverse_charge?: boolean;
+  seller_gstin?: string | null;
+  buyer_gstin?: string | null;
+  cgst_minor?: Minor;
+  sgst_minor?: Minor;
+  igst_minor?: Minor;
+  /** Where this document stands with the portal. Never null from the live API. */
+  einvoice?: EInvoiceState;
 }
 
 export type PaymentMethod = "bank_transfer" | "upi" | "card" | "cheque" | "cash";

@@ -10,8 +10,13 @@ GUC on every transaction (the GUC is transaction-local), so every write goes thr
 row-level-security path a real request does — and through the service's own `services.*` write
 functions, so totals foot and audit + outbox rows are written exactly as in production.
 
-Idempotent: a customer name, invoice number or payment reference that already exists in the org
-is reused/skipped, so re-running does not duplicate.
+The book is GST-complete: the org's own registration is seeded first (Maharashtra), every customer
+GSTIN is checksum-valid, and every line carries an HSN or SAC code — so the demo documents are
+documents that can actually be filed with the Invoice Registration Portal, and the CGST/SGST vs
+IGST split is exercised on real data rather than only in tests.
+
+Idempotent: a GST registration, customer name, invoice number or payment reference that already
+exists in the org is reused/skipped, so re-running does not duplicate.
 
 Usage: seed_finance.py <finance_service_dir> <org_id> <admin_user_id> <admin_membership_id>
        DATABASE_URL must point at atmora_wt (never the shared atmora).
@@ -32,6 +37,18 @@ from platform_core.auth import ScopeContext
 
 REFERENCE_TODAY = date(2026, 8, 24)  # the fixtures' "today" — statuses are frozen against it
 
+#: The demo organization's own GST registration. Maharashtra, so the two Maharashtra customers
+#: (Orbit Logistics in Pune, Deccan AgriTech in Nagpur) are intra-state supplies taxed CGST+SGST
+#: and everyone else is inter-state IGST — both halves of the split are visible in the demo book
+#: rather than one of them being theoretical.
+#:
+#: Every GSTIN in this file is **checksum-valid**: `services.create_customer` parses each one
+#: before storing it, so an invented number fails the seed rather than sitting in the demo data
+#: looking real. They were computed with `domain.gstin_check_digit`.
+SELLER_GSTIN = "27AABCA9012D1Z5"
+SELLER_LEGAL_NAME = "Atmora Industries Private Limited"
+SELLER_TRADE_NAME = "Atmora"
+
 
 @dataclass(frozen=True)
 class CustomerSeed:
@@ -50,7 +67,7 @@ CUSTOMERS: list[CustomerSeed] = [
         "Meridian Textiles Pvt Ltd",
         "Harish Patel",
         "accounts@meridiantex.in",
-        "24AABCM1234F1Z5",
+        "24AABCM1234F1Z3",
         "Surat",
         "Gujarat",
     ),
@@ -59,7 +76,7 @@ CUSTOMERS: list[CustomerSeed] = [
         "Kanaka Foods Ltd",
         "Latha Subramaniam",
         "finance@kanakafoods.in",
-        "33AAACK5678G1Z2",
+        "33AAACK5678G1ZH",
         "Chennai",
         "Tamil Nadu",
     ),
@@ -68,7 +85,7 @@ CUSTOMERS: list[CustomerSeed] = [
         "Orbit Logistics",
         "Devendra Joshi",
         "billing@orbitlogistics.in",
-        "27AAECO9012H1Z8",
+        "27AAECO9012H1ZG",
         "Pune",
         "Maharashtra",
     ),
@@ -77,7 +94,7 @@ CUSTOMERS: list[CustomerSeed] = [
         "Sundara Electricals",
         "Ravi Gopal",
         "ap@sundaraelec.in",
-        "29AADCS3456J1Z4",
+        "29AADCS3456J1Z0",
         "Bengaluru",
         "Karnataka",
     ),
@@ -86,7 +103,7 @@ CUSTOMERS: list[CustomerSeed] = [
         "Nimbus Cloud Services",
         "Ayesha Khan",
         "ap@nimbuscloud.in",
-        "36AAFCN7890K1Z0",
+        "36AAFCN7890K1ZS",
         "Hyderabad",
         "Telangana",
     ),
@@ -95,7 +112,7 @@ CUSTOMERS: list[CustomerSeed] = [
         "Trishul Steel Works",
         "Manoj Agrawal",
         "accounts@trishulsteel.in",
-        "22AAGCT2345L1Z6",
+        "22AAGCT2345L1ZC",
         "Raipur",
         "Chhattisgarh",
     ),
@@ -104,7 +121,7 @@ CUSTOMERS: list[CustomerSeed] = [
         "Anand Pharma",
         "Sunita Rao",
         "finance@anandpharma.in",
-        "24AAHCA6789M1Z3",
+        "24AAHCA6789M1Z0",
         "Ahmedabad",
         "Gujarat",
     ),
@@ -113,7 +130,7 @@ CUSTOMERS: list[CustomerSeed] = [
         "Coastal Traders LLP",
         "Thomas Kurian",
         "billing@coastaltraders.in",
-        "32AAJFC0123N1Z9",
+        "32AAJFC0123N1ZR",
         "Kochi",
         "Kerala",
     ),
@@ -122,7 +139,7 @@ CUSTOMERS: list[CustomerSeed] = [
         "Vega Interiors",
         "Priyanka Sethi",
         "accounts@vegainteriors.in",
-        "06AAKCV4567P1Z1",
+        "06AAKCV4567P1ZG",
         "Gurugram",
         "Haryana",
     ),
@@ -131,7 +148,7 @@ CUSTOMERS: list[CustomerSeed] = [
         "Lotus Hospitality Group",
         "Rajat Chauhan",
         "ap@lotushospitality.in",
-        "08AALCL8901Q1Z7",
+        "08AALCL8901Q1ZP",
         "Jaipur",
         "Rajasthan",
     ),
@@ -140,7 +157,7 @@ CUSTOMERS: list[CustomerSeed] = [
         "Deccan AgriTech",
         "Vaishnavi Kulkarni",
         "finance@deccanagritech.in",
-        "27AAMCD2345R1Z5",
+        "27AAMCD2345R1Z0",
         "Nagpur",
         "Maharashtra",
     ),
@@ -149,7 +166,7 @@ CUSTOMERS: list[CustomerSeed] = [
         "Apex Motors",
         "Iqbal Ahmed",
         "accounts@apexmotors.in",
-        "07AANCA6789S1Z2",
+        "07AANCA6789S1ZE",
         "New Delhi",
         "Delhi",
     ),
@@ -161,6 +178,10 @@ class LineSeed:
     description: str
     quantity: float
     rate: float  # rupees per unit
+    #: HSN (goods) or SAC (services), six digits — the length mandatory above ₹5 crore turnover,
+    #: which is the same threshold e-invoicing binds at. Without one the portal refuses the line,
+    #: so a demo book with no codes would be a demo book that cannot be filed.
+    hsn: str = ""
 
 
 @dataclass(frozen=True)
@@ -184,7 +205,7 @@ INVOICES: list[InvoiceSeed] = [
         "2026-03-10",
         "2026-04-09",
         18,
-        [LineSeed("MS plates 10mm (tonnes)", 18, 58000)],
+        [LineSeed("MS plates 10mm (tonnes)", 18, 58000, "720851")],
         notes="Site delivery, Raipur plant. Payment overdue — third reminder issued.",
     ),
     InvoiceSeed(
@@ -193,7 +214,7 @@ INVOICES: list[InvoiceSeed] = [
         "2026-05-01",
         "2026-05-31",
         18,
-        [LineSeed("Teak wood logs, seasoned (cft)", 300, 3200)],
+        [LineSeed("Teak wood logs, seasoned (cft)", 300, 3200, "440349")],
     ),
     InvoiceSeed(
         "INV-2026-0130",
@@ -201,7 +222,7 @@ INVOICES: list[InvoiceSeed] = [
         "2026-04-15",
         "2026-05-15",
         18,
-        [LineSeed("Cotton yarn — 30s count (kg)", 1800, 265)],
+        [LineSeed("Cotton yarn — 30s count (kg)", 1800, 265, "520512")],
     ),
     InvoiceSeed(
         "INV-2026-0137",
@@ -209,7 +230,7 @@ INVOICES: list[InvoiceSeed] = [
         "2026-04-28",
         "2026-05-28",
         18,
-        [LineSeed("Line-haul freight — Pune⇄Mumbai (trips)", 30, 18000)],
+        [LineSeed("Line-haul freight — Pune⇄Mumbai (trips)", 30, 18000, "996511")],
     ),
     InvoiceSeed(
         "INV-2026-0142",
@@ -218,8 +239,8 @@ INVOICES: list[InvoiceSeed] = [
         "2026-06-01",
         18,
         [
-            LineSeed("Cotton yarn — 40s count (kg)", 2400, 285),
-            LineSeed("Dyeing & finishing charges", 1, 65000),
+            LineSeed("Cotton yarn — 40s count (kg)", 2400, 285, "520512"),
+            LineSeed("Dyeing & finishing charges", 1, 65000, "998821"),
         ],
     ),
     InvoiceSeed(
@@ -228,7 +249,7 @@ INVOICES: list[InvoiceSeed] = [
         "2026-05-20",
         "2026-06-19",
         18,
-        [LineSeed("Ceiling fan — BLDC (units)", 700, 2350)],
+        [LineSeed("Ceiling fan — BLDC (units)", 700, 2350, "841451")],
     ),
     InvoiceSeed(
         "INV-2026-0148",
@@ -237,8 +258,8 @@ INVOICES: list[InvoiceSeed] = [
         "2026-07-10",
         5,
         [
-            LineSeed("Packaged spices — bulk (cartons)", 320, 1250),
-            LineSeed("Cold storage handling", 1, 28000),
+            LineSeed("Packaged spices — bulk (cartons)", 320, 1250, "091099"),
+            LineSeed("Cold storage handling", 1, 28000, "996799"),
         ],
     ),
     InvoiceSeed(
@@ -248,8 +269,8 @@ INVOICES: list[InvoiceSeed] = [
         "2026-07-18",
         18,
         [
-            LineSeed("Line-haul freight — Pune⇄Delhi (trips)", 42, 18500),
-            LineSeed("Fuel surcharge", 1, 54000),
+            LineSeed("Line-haul freight — Pune⇄Delhi (trips)", 42, 18500, "996511"),
+            LineSeed("Fuel surcharge", 1, 54000, "996511"),
         ],
     ),
     InvoiceSeed(
@@ -259,8 +280,8 @@ INVOICES: list[InvoiceSeed] = [
         "2026-07-31",
         18,
         [
-            LineSeed("LED panel 40W (units)", 1500, 640),
-            LineSeed("Installation labour (site-days)", 12, 4200),
+            LineSeed("LED panel 40W (units)", 1500, 640, "940540"),
+            LineSeed("Installation labour (site-days)", 12, 4200, "995461"),
         ],
         notes="Partly paid. Credit note CN-2026-0008 issued for 30 returned panels.",
     ),
@@ -270,7 +291,7 @@ INVOICES: list[InvoiceSeed] = [
         "2026-07-14",
         "2026-08-13",
         5,
-        [LineSeed("Edible oil — refined (litres)", 6000, 145)],
+        [LineSeed("Edible oil — refined (litres)", 6000, 145, "151790")],
     ),
     InvoiceSeed(
         "INV-2026-0160",
@@ -279,8 +300,8 @@ INVOICES: list[InvoiceSeed] = [
         "2026-08-19",
         18,
         [
-            LineSeed("Managed hosting — August (nodes)", 24, 8500),
-            LineSeed("Support retainer", 1, 75000),
+            LineSeed("Managed hosting — August (nodes)", 24, 8500, "998315"),
+            LineSeed("Support retainer", 1, 75000, "998313"),
         ],
     ),
     InvoiceSeed(
@@ -289,7 +310,10 @@ INVOICES: list[InvoiceSeed] = [
         "2026-07-28",
         "2026-08-27",
         18,
-        [LineSeed("TMT bars Fe500 (tonnes)", 60, 62000), LineSeed("Cutting & bending", 1, 145000)],
+        [
+            LineSeed("TMT bars Fe500 (tonnes)", 60, 62000, "721420"),
+            LineSeed("Cutting & bending", 1, 145000, "998873"),
+        ],
     ),
     InvoiceSeed(
         "INV-2026-0166",
@@ -298,8 +322,8 @@ INVOICES: list[InvoiceSeed] = [
         "2026-09-01",
         12,
         [
-            LineSeed("API — Paracetamol grade (kg)", 800, 1450),
-            LineSeed("QC batch testing", 6, 18000),
+            LineSeed("API — Paracetamol grade (kg)", 800, 1450, "292429"),
+            LineSeed("QC batch testing", 6, 18000, "998346"),
         ],
         notes="Advance of ₹3,00,000 received against this invoice.",
     ),
@@ -310,8 +334,8 @@ INVOICES: list[InvoiceSeed] = [
         "2026-09-04",
         18,
         [
-            LineSeed("Marine plywood 18mm (sheets)", 900, 2100),
-            LineSeed("Freight to yard", 1, 42000),
+            LineSeed("Marine plywood 18mm (sheets)", 900, 2100, "441231"),
+            LineSeed("Freight to yard", 1, 42000, "996511"),
         ],
         notes="Credit note CN-2026-0012 issued for 40 damaged sheets.",
     ),
@@ -321,7 +345,7 @@ INVOICES: list[InvoiceSeed] = [
         "2026-08-06",
         "2026-09-05",
         18,
-        [LineSeed("Reception desk — custom (units)", 2, 145000)],
+        [LineSeed("Reception desk — custom (units)", 2, 145000, "940330")],
         status_override="void",
         notes="Voided — superseded by INV-2026-0172 after a spec change.",
     ),
@@ -332,8 +356,8 @@ INVOICES: list[InvoiceSeed] = [
         "2026-09-07",
         18,
         [
-            LineSeed("Modular workstation (units)", 48, 22500),
-            LineSeed("On-site assembly", 1, 96000),
+            LineSeed("Modular workstation (units)", 48, 22500, "940330"),
+            LineSeed("On-site assembly", 1, 96000, "995466"),
         ],
     ),
     InvoiceSeed(
@@ -343,8 +367,8 @@ INVOICES: list[InvoiceSeed] = [
         "2026-09-11",
         18,
         [
-            LineSeed("Banquet catering (per plate)", 850, 1250),
-            LineSeed("Décor & floral", 1, 185000),
+            LineSeed("Banquet catering (per plate)", 850, 1250, "996334"),
+            LineSeed("Décor & floral", 1, 185000, "998596"),
         ],
         status_override="draft",
         notes="Draft — awaiting final headcount from the events team.",
@@ -356,8 +380,8 @@ INVOICES: list[InvoiceSeed] = [
         "2026-09-14",
         5,
         [
-            LineSeed("Drip irrigation kit (acres)", 120, 7800),
-            LineSeed("Agronomy advisory", 1, 60000),
+            LineSeed("Drip irrigation kit (acres)", 120, 7800, "842482"),
+            LineSeed("Agronomy advisory", 1, 60000, "998611"),
         ],
         notes="Part payment of ₹2,00,000 received on account.",
     ),
@@ -368,8 +392,8 @@ INVOICES: list[InvoiceSeed] = [
         "2026-09-17",
         28,
         [
-            LineSeed("Spare parts — brake assembly (sets)", 220, 3400),
-            LineSeed("Logistics & handling", 1, 36000),
+            LineSeed("Spare parts — brake assembly (sets)", 220, 3400, "870830"),
+            LineSeed("Logistics & handling", 1, 36000, "996511"),
         ],
     ),
     # Credit notes — append-only corrections, never edits to the original invoice.
@@ -379,7 +403,7 @@ INVOICES: list[InvoiceSeed] = [
         "2026-07-22",
         "2026-07-22",
         18,
-        [LineSeed("Return — LED panel 40W (units)", -30, 640)],
+        [LineSeed("Return — LED panel 40W (units)", -30, 640, "940540")],
         document_type="credit_note",
         corrects="INV-2026-0155",
         notes="Correction: 30 LED panels returned as faulty.",
@@ -390,7 +414,7 @@ INVOICES: list[InvoiceSeed] = [
         "2026-08-14",
         "2026-08-14",
         18,
-        [LineSeed("Return — Marine plywood 18mm (sheets)", -40, 2100)],
+        [LineSeed("Return — Marine plywood 18mm (sheets)", -40, 2100, "441231")],
         document_type="credit_note",
         corrects="INV-2026-0169",
         notes="Correction: 40 marine plywood sheets damaged in transit.",
@@ -510,13 +534,18 @@ def _paid_by_number() -> dict[str, int]:
 
 
 def _expected_status(seed: InvoiceSeed, paid: int) -> str:
-    """Replicate the fixtures' deriveStatus, frozen against REFERENCE_TODAY."""
+    """Replicate the fixtures' deriveStatus, frozen against REFERENCE_TODAY.
+
+    The tax is summed **per line**, matching what `services.create_invoice` now does, so this
+    prediction and the row it predicts cannot disagree by a paisa on an odd rate.
+    """
     if seed.status_override:
         return seed.status_override
     if seed.document_type == "credit_note":
         return "sent"
-    subtotal = sum(round(line.quantity * _paise(line.rate)) for line in seed.lines)
-    tax = round(subtotal * seed.tax_rate_pct / 100)
+    amounts = [round(line.quantity * _paise(line.rate)) for line in seed.lines]
+    subtotal = sum(amounts)
+    tax = sum(round(amount * seed.tax_rate_pct / 100) for amount in amounts)
     total = subtotal + tax
     if paid >= total:
         return "paid"
@@ -541,6 +570,7 @@ async def seed_finance(session: AsyncSession, ctx: ScopeContext) -> dict[str, in
     from app.models import Customer, Invoice  # type: ignore[import-not-found]
     from app.schemas import (  # type: ignore[import-not-found]
         CustomerCreate,
+        GstRegistrationUpsert,
         InvoiceCreate,
         InvoiceLineCreate,
         PaymentAllocationCreate,
@@ -548,8 +578,25 @@ async def seed_finance(session: AsyncSession, ctx: ScopeContext) -> dict[str, in
     )
 
     org_id = ctx.organization_id
-    created = {"customers": 0, "invoices": 0, "payments": 0}
-    skipped = {"customers": 0, "invoices": 0, "payments": 0}
+    created = {"customers": 0, "invoices": 0, "payments": 0, "registrations": 0}
+    skipped = {"customers": 0, "invoices": 0, "payments": 0, "registrations": 0}
+
+    # 0) The seller's own GST registration, **first**: every invoice below reads it to decide its
+    #    place of supply and whether the tax is CGST+SGST or IGST. Seeded after the fact, the
+    #    documents would already be frozen with no seller identity.
+    if await selectors.get_gst_registration(session, org_id) is None:
+        await services.set_gst_registration(
+            session,
+            ctx,
+            GstRegistrationUpsert(
+                gstin=SELLER_GSTIN,
+                legal_name=SELLER_LEGAL_NAME,
+                trade_name=SELLER_TRADE_NAME,
+            ),
+        )
+        created["registrations"] += 1
+    else:
+        skipped["registrations"] += 1
 
     # 1) Customers — reuse by name so a re-run does not duplicate.
     customer_ids: dict[str, uuid.UUID] = {}
@@ -615,6 +662,7 @@ async def seed_finance(session: AsyncSession, ctx: ScopeContext) -> dict[str, in
                         description=line.description,
                         quantity=line.quantity,
                         unit_price_minor=_paise(line.rate),
+                        hsn_sac=line.hsn or None,
                     )
                     for line in inv_seed.lines
                 ],
@@ -655,9 +703,11 @@ async def seed_finance(session: AsyncSession, ctx: ScopeContext) -> dict[str, in
         created["payments"] += 1
 
     return {
+        "created_registrations": created["registrations"],
         "created_customers": created["customers"],
         "created_invoices": created["invoices"],
         "created_payments": created["payments"],
+        "skipped_registrations": skipped["registrations"],
         "skipped_customers": skipped["customers"],
         "skipped_invoices": skipped["invoices"],
         "skipped_payments": skipped["payments"],

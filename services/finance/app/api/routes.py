@@ -22,12 +22,16 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
 
-from app import scope, selectors
+from app import scope, selectors, services
 from app.config import settings
 from app.models import SCHEMA
 from app.schemas import (
     CustomerSummary,
+    EInvoiceFilingOut,
+    GstRegistrationOut,
+    GstRegistrationUpsert,
     InvoiceOut,
     LedgerReport,
     OverviewSummary,
@@ -68,6 +72,15 @@ SummaryRead = Annotated[
 LedgerRead = Annotated[
     ScopeContext, Depends(require("finance.reports.ledger.read", minimum=Scope.ORG))
 ]
+FilingRead = Annotated[
+    ScopeContext, Depends(require("finance.compliance.einvoice.read", minimum=Scope.ORG))
+]
+RegistrationRead = Annotated[
+    ScopeContext, Depends(require("finance.compliance.registration.read", minimum=Scope.ORG))
+]
+RegistrationWrite = Annotated[
+    ScopeContext, Depends(require("finance.compliance.registration.write", minimum=Scope.ORG))
+]
 
 
 @router.get("/finance/info", response_model=ServiceInfo, summary="What this service is")
@@ -96,8 +109,7 @@ async def list_invoices(
 ) -> Page[InvoiceOut]:
     stmt = selectors.invoices_stmt(ctx, q=q, status=status, sort=sort)
     rows, total = await paginate(session, stmt, params)
-    paid = await selectors.paid_by_invoice(session, ctx.organization_id, [r.id for r in rows])
-    items = [selectors.to_invoice_out(inv, paid.get(inv.id, 0)) for inv in rows]
+    items = await selectors.invoices_with_filings(session, ctx.organization_id, rows)
     return Page.build(items, total=total, params=params)
 
 
@@ -111,8 +123,66 @@ async def read_invoice(invoice_id: uuid.UUID, session: SessionDep, ctx: InvoiceR
     invoice = await selectors.get_invoice(session, ctx.organization_id, invoice_id)
     if invoice is None:
         raise NotFoundProblem("That invoice is not part of this organization")
-    paid = await selectors.paid_by_invoice(session, ctx.organization_id, [invoice.id])
-    return selectors.to_invoice_out(invoice, paid.get(invoice.id, 0))
+    items = await selectors.invoices_with_filings(session, ctx.organization_id, [invoice])
+    return items[0]
+
+
+# --------------------------------------------------------------------- GST compliance
+
+
+@router.get(
+    "/finance/invoices/{invoice_id}/filings",
+    response_model=list[EInvoiceFilingOut],
+    summary="Every e-invoice filing attempt for one document, newest first",
+    dependencies=[Entitled],
+)
+async def list_filings(
+    invoice_id: uuid.UUID, session: SessionDep, ctx: FilingRead
+) -> list[EInvoiceFilingOut]:
+    """The filing history, which is a plain query because the table is append-only.
+
+    Behind its own permission rather than the invoice one: seeing the receivable book and seeing
+    what was reported to the tax authority are different questions, and an organization may
+    reasonably answer them for different people.
+    """
+    invoice = await selectors.get_invoice(session, ctx.organization_id, invoice_id)
+    if invoice is None:
+        raise NotFoundProblem("That invoice is not part of this organization")
+    rows = await selectors.filings_for_invoice(session, ctx.organization_id, invoice_id)
+    return [selectors.to_filing_out(row) for row in rows]
+
+
+@router.get(
+    "/finance/gst/registration",
+    response_model=GstRegistrationOut,
+    summary="This organization's GST registration",
+    dependencies=[Entitled],
+)
+async def read_gst_registration(session: SessionDep, ctx: RegistrationRead) -> GstRegistrationOut:
+    registration = await selectors.get_gst_registration(session, ctx.organization_id)
+    if registration is None:
+        raise NotFoundProblem("This organization has no GST registration configured")
+    return selectors.to_gst_registration_out(registration)
+
+
+@router.put(
+    "/finance/gst/registration",
+    response_model=GstRegistrationOut,
+    summary="Set this organization's GST registration",
+    dependencies=[Entitled],
+)
+async def set_gst_registration(
+    payload: GstRegistrationUpsert, session: SessionDep, ctx: RegistrationWrite, request: Request
+) -> GstRegistrationOut:
+    """The one write on the public finance surface, and the only one this slice adds.
+
+    It is not a document: a registration is configuration, so it is idempotent on the GSTIN and
+    updates in place. What it must never do is rewrite history — an invoice already filed keeps
+    the `seller_gstin` it was filed under, because that column is a snapshot on the invoice and
+    not a join to here.
+    """
+    registration = await services.set_gst_registration(session, ctx, payload, request=request)
+    return selectors.to_gst_registration_out(registration)
 
 
 # --------------------------------------------------------------------- payments

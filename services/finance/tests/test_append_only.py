@@ -4,6 +4,10 @@ The guarantee is architectural — the service exposes no path that mutates a fi
 and a correction adds a new `credit_note` document that points back at the original with
 `corrects_invoice_id`. These tests pin both halves: the original's lines are untouched after a
 correction, and the HTTP surface for invoices is read-only (no PUT/PATCH/DELETE).
+
+The same property holds for `einvoice_filings`, and there it is enforced by the database rather
+than only by the absence of a route — see `TestFilingsAreAppendOnlyAtTheDatabase` in
+`test_einvoice.py`, which tries UPDATE and DELETE as the app role and is refused by a trigger.
 """
 
 from __future__ import annotations
@@ -80,10 +84,16 @@ class TestCorrectionsAreNewRows:
 
     async def test_the_invoice_surface_is_read_only(self) -> None:
         """No write verb is published for invoices — the only way to change the book is a new
-        document. Checked against the OpenAPI contract the SPA is generated from."""
+        document. Checked against the OpenAPI contract the SPA is generated from.
+
+        The filing history hangs off an invoice path, so it is covered by the same sweep: a
+        recorded attempt is not editable through the public API either, and the internal route
+        that appends one is excluded from this document entirely.
+        """
         paths = app.openapi()["paths"]
         invoice_paths = {p: ops for p, ops in paths.items() if "/finance/invoices" in p}
         assert invoice_paths, "expected the invoice routes to be published"
+        assert any(p.endswith("/filings") for p in invoice_paths)
         verbs = {verb for ops in invoice_paths.values() for verb in ops if verb != "parameters"}
         assert verbs == {"get"}
 

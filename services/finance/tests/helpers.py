@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import uuid
 
+from app.config import settings
 from platform_core.auth import Principal, Scope, ScopeContext
+from platform_core.internal_auth import mint_service_token
 
 FINANCE_READS = (
     "finance.billing.invoice.read",
@@ -16,7 +18,27 @@ FINANCE_READS = (
     "finance.billing.customer.read",
     "finance.reports.summary.read",
     "finance.reports.ledger.read",
+    "finance.compliance.einvoice.read",
+    "finance.compliance.registration.read",
 )
+
+#: The one write on the public finance surface. Kept apart from the reads so a test can hand a
+#: caller the whole read book without also handing them the ability to change who the
+#: organization files as.
+FINANCE_WRITES = ("finance.compliance.registration.write",)
+
+FINANCE_PERMISSIONS = FINANCE_READS + FINANCE_WRITES
+
+
+def service_token_headers(*, audience: str | None = None) -> dict[str, str]:
+    """A **real** short-lived service token addressed to finance — what an internal caller sends.
+
+    Minted rather than stubbed so `require_service_token` is exercised for real, including the
+    audience binding: a token minted for another service must not open this one's internal API.
+    """
+    cfg = settings()
+    token = mint_service_token(cfg, audience=audience or cfg.service_name, caller="tests")
+    return {"X-Internal-Token": token}
 
 
 class FakeRedis:
@@ -81,8 +103,9 @@ def ctx_for(
 
 
 def admin_ctx(org_id: uuid.UUID) -> ScopeContext:
-    """A context holding every finance read at ORG — what the demo seed and rollups run under."""
-    principal = principal_for(org_id, [f"{p}:ORG" for p in FINANCE_READS])
+    """A context holding every finance permission at ORG — what the demo seed and rollups run
+    under. The seed sets the org's GST registration, so it needs the write too."""
+    principal = principal_for(org_id, [f"{p}:ORG" for p in FINANCE_PERMISSIONS])
     return ScopeContext(
         principal=principal, scope=Scope.ORG, permission="finance.billing.invoice.read"
     )

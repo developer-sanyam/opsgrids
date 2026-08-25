@@ -60,6 +60,80 @@ the moment the policies landed, since each connected as the app role with no ten
 
 ## Next
 
+### GST compliance engine — foundation landed; the integrations remain
+
+**Why this is first.** India's e-invoicing mandate reaches every business above ₹5 crore
+aggregate annual turnover from April 2026, and the window for reporting an invoice to the Invoice
+Registration Portal is tightening toward three days from the document date. Three days is not a
+deadline a person meets by remembering; it is a deadline a system meets. That makes compliance the
+platform's chosen primary differentiator — "Compliance Autopilot" — and this the slice everything
+else in it stands on.
+
+**Why it is a structural advantage rather than an integration.** Anyone can call the IRP. What is
+hard to copy is that Atmora's invoices were already append-only with corrections as credit notes
+(ADR-0000 §9), which is *exactly* GST's own legal model: a filed document is never edited, and a
+correction is a new document that references it. The two models line up with nothing left over, so
+every filing action can be a provable, reversible ledger row instead of a status column somebody
+has to trust.
+
+**Slice one — the foundation: DONE.**
+
+- **GSTIN is a value object, not a string.** `domain.parse_gstin` checks length, structure, a real
+  state code, and the government's own folded base-36 check digit; it returns a `Gstin` carrying
+  the state code, PAN and entity code. Anchored to two public GSTINs, and property-tested: every
+  single-character corruption and every adjacent transposition of a valid number is caught.
+  Customer GSTINs are verified on write, so this service stores no unverified one.
+- **The seller's identity is a finance-side config row.** `gst_registrations` — per state, one
+  primary, with `state_code` *derived from* the GSTIN rather than entered beside it. A partial
+  unique index makes "at most one primary" a database guarantee.
+- **Documents carry their tax facts.** Place of supply, supply type (B2B/B2C/export/SEZ),
+  reverse-charge, both parties' GSTINs as snapshots, and per-line HSN/SAC plus per-line rate.
+- **The split is integer arithmetic that foots exactly.** `domain.split_gst` computes the tax
+  once and then divides it — CGST+SGST intra-state (odd paisa to SGST, in both signs), IGST
+  inter-state, with export and SEZ always inter-state by statute. Rounding each half
+  independently is the bug the shape exists to prevent. Property-tested across every band and a
+  range of amounts from one paisa past the 32-bit boundary; a credit note reverses an invoice
+  head for head.
+- **`einvoice_filings` is append-only at the database.** One row per attempt — `pending`, `filed`,
+  `failed`, `cancelled` — never mutated, so a document's filing history is a query rather than an
+  archaeology exercise. Enforced by a `BEFORE UPDATE OR DELETE` trigger, because a privilege
+  `REVOKE` does not survive `apply_schema_grants` re-granting DML after every migration run; the
+  platform learned that on payment's `refunds` and it is the same shape here. Under RLS like
+  every other tenant table.
+- **The portal is a `Protocol` with a deterministic stub.** `IrpClient` speaks the document; the
+  stub computes the **real** IRN (`SHA-256(supplier GSTIN + doc type + doc number + FY)`) and
+  refuses documents the way the portal does, with numbered error codes. No network, no
+  credentials — the same bargain payment's Razorpay adapter strikes, so the state machine and the
+  persistence are real and testable today and only the wire is left.
+- **Endpoints.** Filing status on the invoice read model (`einvoice`, never null, so an unmet
+  obligation is visible rather than absent), `GET /finance/invoices/{id}/filings` for the history,
+  `GET`/`PUT /finance/gst/registration`, and internal `POST /internal/v1/einvoice/filings` and
+  `…:cancel` for the auto-filing agent. New permissions `finance.compliance.einvoice.read` and
+  `finance.compliance.registration.read/write`, the last marked dangerous.
+- **Events.** `finance.compliance.invoice.filed`, `.filing_failed` (carrying `retryable`, so an
+  outage is retried and a rejection is not) and `.filing_cancelled`. `finance.billing.invoice.issued`
+  now carries `requires_einvoice` and `place_of_supply`, so an agent can decide from the event
+  alone without reading back.
+- The demo book is GST-complete: a Maharashtra seller registration, checksum-valid customer
+  GSTINs, HSN/SAC on every line, and both split shapes exercised on real data.
+
+**Still open, in the order the market forces it:**
+
+| Next | Why it is next |
+|---|---|
+| **IRP / GSP integration** | The one stubbed seam. `IrpClient` is the whole change surface; NIC direct vs a GSP is a credentials-and-envelope decision, not an architecture one. |
+| **The auto-filing agent** | What makes it "autopilot" rather than a button. Consumes `finance.billing.invoice.issued`, files inside the reporting window, retries only what is retryable. Needs the scheduler and a backoff policy. |
+| **IMS reconciliation** | GSTN's Invoice Management System turns a supplier's filings into a recurring accept/reject queue on the buyer's side. This is a *recurring* workflow, which makes it stickier than filing — and it is the natural second product surface. |
+| **GSTR-1 preparation** | Falls out of the data this slice now stores: the HSN summary groups by `hsn_sac` and rate, and the B2B/B2C/export tables by `supply_type`. Mostly reporting, once the filings are trustworthy. |
+| **e-Way bills** | A different portal with a different obligation (movement of goods above ₹50,000) and its own 24-hour-ish cancellation rules. Shares the seller registration and the document, not the client. |
+| **GST-TDS: 194Q / 206C(1H)** | Withholding at source on purchases and collection at source on sales, with the buyer/seller threshold interplay that decides which applies. Touches the payment ledger, not the filing ledger. |
+| **B2C dynamic QR** | The obligation B2C carries instead of an IRN. Deliberately out of this slice: `requires_einvoice` already answers `false` for it, so it is additive. |
+
+Two things this slice deliberately did **not** do. Historical documents were not back-split into
+tax heads: which head a supply was taxed under depends on a seller state that no column recorded
+when those documents were frozen, and deriving it now would be inventing a legal fact rather than
+recording one. And UIN/OIDAR registrations are refused rather than half-supported.
+
 ### HRMS employee-service — slice 1 landed; follow-ups
 
 The Employee Master (`employee-service`, schema `employee`, port 8120) is in as one green

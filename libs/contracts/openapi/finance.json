@@ -150,6 +150,288 @@
         "title": "CustomerSummary",
         "type": "object"
       },
+      "EInvoiceFilingOut": {
+        "description": "One recorded attempt to register a document with the Invoice Registration Portal.\n\nAppend-only: this is a row of history, never a mutable status. A retry is a further row.",
+        "properties": {
+          "ack_date": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ack Date"
+          },
+          "ack_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ack No"
+          },
+          "attempted_at": {
+            "format": "date-time",
+            "title": "Attempted At",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "irn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Irn"
+          },
+          "qr_payload": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qr Payload"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "irn",
+          "ack_no",
+          "ack_date",
+          "qr_payload",
+          "error_code",
+          "error",
+          "attempted_at"
+        ],
+        "title": "EInvoiceFilingOut",
+        "type": "object"
+      },
+      "EInvoiceState": {
+        "description": "An invoice's *current* e-invoice position, derived from its newest filing row.\n\nCarried on the invoice read model so a screen never has to fetch the history to know whether\na document is registered. `required` is the statutory question (B2B, export and SEZ documents\nneed an IRN; B2C does not), and it is answered even when nothing has been attempted \u2014 that is\nwhat makes an un-filed obligation visible instead of silent.",
+        "properties": {
+          "ack_date": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ack Date"
+          },
+          "ack_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ack No"
+          },
+          "attempted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempted At"
+          },
+          "attempts": {
+            "default": 0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "irn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Irn"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "required": [
+          "required",
+          "status"
+        ],
+        "title": "EInvoiceState",
+        "type": "object"
+      },
+      "GstRegistrationOut": {
+        "description": "The organization's own GST registration \u2014 who this seller is, to the portal.",
+        "properties": {
+          "gstin": {
+            "title": "Gstin",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_primary": {
+            "title": "Is Primary",
+            "type": "boolean"
+          },
+          "legal_name": {
+            "title": "Legal Name",
+            "type": "string"
+          },
+          "registration_type": {
+            "title": "Registration Type",
+            "type": "string"
+          },
+          "state_code": {
+            "title": "State Code",
+            "type": "string"
+          },
+          "state_name": {
+            "title": "State Name",
+            "type": "string"
+          },
+          "trade_name": {
+            "title": "Trade Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "gstin",
+          "state_code",
+          "state_name",
+          "legal_name",
+          "trade_name",
+          "registration_type",
+          "is_primary"
+        ],
+        "title": "GstRegistrationOut",
+        "type": "object"
+      },
+      "GstRegistrationUpsert": {
+        "description": "Register or update this organization's GSTIN. The number is parsed and checksum-verified\nbefore a row is written \u2014 an unverified GSTIN is not stored anywhere in this service.",
+        "properties": {
+          "gstin": {
+            "title": "Gstin",
+            "type": "string"
+          },
+          "is_primary": {
+            "default": true,
+            "title": "Is Primary",
+            "type": "boolean"
+          },
+          "legal_name": {
+            "title": "Legal Name",
+            "type": "string"
+          },
+          "registration_type": {
+            "default": "regular",
+            "title": "Registration Type",
+            "type": "string"
+          },
+          "trade_name": {
+            "default": "",
+            "title": "Trade Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "gstin",
+          "legal_name"
+        ],
+        "title": "GstRegistrationUpsert",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -164,23 +446,54 @@
         "type": "object"
       },
       "InvoiceLineOut": {
-        "description": "One line on an invoice. `amount_minor` foots to `quantity x unit_price_minor`.",
+        "description": "One line on an invoice. `amount_minor` foots to `quantity x unit_price_minor`, and is the\n**taxable value** the line's GST is computed on.\n\nExactly one tax shape is populated: `cgst_minor` + `sgst_minor` on an intra-state supply,\n`igst_minor` on an inter-state one. The three always sum to the tax actually charged.",
         "properties": {
           "amount_minor": {
             "title": "Amount Minor",
+            "type": "integer"
+          },
+          "cgst_minor": {
+            "default": 0,
+            "title": "Cgst Minor",
             "type": "integer"
           },
           "description": {
             "title": "Description",
             "type": "string"
           },
+          "hsn_sac": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hsn Sac"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
             "type": "string"
           },
+          "igst_minor": {
+            "default": 0,
+            "title": "Igst Minor",
+            "type": "integer"
+          },
           "quantity": {
             "title": "Quantity",
+            "type": "number"
+          },
+          "sgst_minor": {
+            "default": 0,
+            "title": "Sgst Minor",
+            "type": "integer"
+          },
+          "tax_rate_pct": {
+            "default": 0,
+            "title": "Tax Rate Pct",
             "type": "number"
           },
           "unit_price_minor": {
@@ -199,10 +512,26 @@
         "type": "object"
       },
       "InvoiceOut": {
-        "description": "An invoice or credit note. Totals foot exactly:\n`subtotal_minor = \u03a3 line.amount_minor`, `total_minor = subtotal_minor + tax_minor`.\nA credit note carries negative amounts and a `corrects_invoice_id`.",
+        "description": "An invoice or credit note. Totals foot exactly:\n`subtotal_minor = \u03a3 line.amount_minor`, `total_minor = subtotal_minor + tax_minor`,\nand `tax_minor = cgst_minor + sgst_minor + igst_minor = \u03a3 line tax`.\nA credit note carries negative amounts and a `corrects_invoice_id`.",
         "properties": {
           "amount_paid_minor": {
             "title": "Amount Paid Minor",
+            "type": "integer"
+          },
+          "buyer_gstin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buyer Gstin"
+          },
+          "cgst_minor": {
+            "default": 0,
+            "title": "Cgst Minor",
             "type": "integer"
           },
           "corrects_invoice_id": {
@@ -235,10 +564,18 @@
             "title": "Due Date",
             "type": "string"
           },
+          "einvoice": {
+            "$ref": "#/components/schemas/EInvoiceState"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "igst_minor": {
+            "default": 0,
+            "title": "Igst Minor",
+            "type": "integer"
           },
           "issued_date": {
             "format": "date",
@@ -267,6 +604,38 @@
             "title": "Number",
             "type": "string"
           },
+          "place_of_supply": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place Of Supply"
+          },
+          "reverse_charge": {
+            "default": false,
+            "title": "Reverse Charge",
+            "type": "boolean"
+          },
+          "seller_gstin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seller Gstin"
+          },
+          "sgst_minor": {
+            "default": 0,
+            "title": "Sgst Minor",
+            "type": "integer"
+          },
           "status": {
             "title": "Status",
             "type": "string"
@@ -274,6 +643,11 @@
           "subtotal_minor": {
             "title": "Subtotal Minor",
             "type": "integer"
+          },
+          "supply_type": {
+            "default": "b2b",
+            "title": "Supply Type",
+            "type": "string"
           },
           "tax_minor": {
             "title": "Tax Minor",
@@ -304,7 +678,8 @@
           "total_minor",
           "amount_paid_minor",
           "notes",
-          "corrects_invoice_id"
+          "corrects_invoice_id",
+          "einvoice"
         ],
         "title": "InvoiceOut",
         "type": "object"
@@ -805,6 +1180,67 @@
         ]
       }
     },
+    "/api/v1/finance/gst/registration": {
+      "get": {
+        "operationId": "read_gst_registration_api_v1_finance_gst_registration_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GstRegistrationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "This organization's GST registration",
+        "tags": [
+          "finance"
+        ]
+      },
+      "put": {
+        "description": "The one write on the public finance surface, and the only one this slice adds.\n\nIt is not a document: a registration is configuration, so it is idempotent on the GSTIN and\nupdates in place. What it must never do is rewrite history \u2014 an invoice already filed keeps\nthe `seller_gstin` it was filed under, because that column is a snapshot on the invoice and\nnot a join to here.",
+        "operationId": "set_gst_registration_api_v1_finance_gst_registration_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GstRegistrationUpsert"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GstRegistrationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set this organization's GST registration",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
     "/api/v1/finance/info": {
       "get": {
         "operationId": "info_api_v1_finance_info_get",
@@ -973,6 +1409,54 @@
         ]
       }
     },
+    "/api/v1/finance/invoices/{invoice_id}/filings": {
+      "get": {
+        "description": "The filing history, which is a plain query because the table is append-only.\n\nBehind its own permission rather than the invoice one: seeing the receivable book and seeing\nwhat was reported to the tax authority are different questions, and an organization may\nreasonably answer them for different people.",
+        "operationId": "list_filings_api_v1_finance_invoices__invoice_id__filings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Invoice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EInvoiceFilingOut"
+                  },
+                  "title": "Response List Filings Api V1 Finance Invoices  Invoice Id  Filings Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Every e-invoice filing attempt for one document, newest first",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
     "/api/v1/finance/ledger": {
       "get": {
         "operationId": "get_ledger_api_v1_finance_ledger_get",
@@ -1091,6 +1575,30 @@
           }
         },
         "summary": "Liveness \u2014 is the process up?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/outbox": {
+      "get": {
+        "description": "How far behind the relay is. **Alert on `oldest_seconds`.**\n\nA stalled relay is the platform's quietest failure. It selects, finds nothing,\nlogs nothing, sleeps, and loops \u2014 `attempts` never increments and `last_error`\nstays null, so the process looks healthy indefinitely while the outbox grows\nwithout bound and every consumer downstream starves.\n\nDeliberately **not** part of readiness. A backlog is not a reason to take the\nservice out of rotation: refusing traffic would stop new events being written\nwithout helping drain the ones already queued, which makes the incident worse.\nThis is a metric to alert on, not a health state.\n\nCounted through the outbox engine, not the application one. The app role is\nNOBYPASSRLS and this request binds no tenant, so through it `pending` would be\nzero whatever the table holds \u2014 the probe that exists to expose the stall would\nbe wired to the same blind spot that causes it.",
+        "operationId": "outbox_health_outbox_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Outbox Health Outbox Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Outbox depth and age \u2014 scrape this",
         "tags": [
           "health"
         ]

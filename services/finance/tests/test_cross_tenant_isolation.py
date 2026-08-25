@@ -14,9 +14,11 @@ import pytest
 from sqlalchemy import event, func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app import selectors
+from app import selectors, services
 from app.config import settings
-from app.models import SCHEMA, Invoice
+from app.irp.stub import StubIrpClient
+from app.models import SCHEMA, EInvoiceFiling, GstRegistration, Invoice
+from app.schemas import FileInvoiceIn
 from platform_core.db import TENANT_GUC
 from tests.helpers import admin_ctx
 
@@ -72,6 +74,97 @@ class TestCrossTenantIsolation:
                 # 4) The paid-amount rollup returns nothing for A's ids under B's tenant.
                 paid = await selectors.paid_by_invoice(s_b, org_b, [a_invoice_id])
                 assert paid == {}
+        finally:
+            await s_b.close()
+            await engine.dispose()
+
+    async def test_org_b_cannot_see_org_a_gst_identity_or_filings(
+        self, session, org_id, book
+    ) -> None:
+        """The compliance tables are under the same policy as the rest of the book, and must be.
+
+        A GSTIN is a company's tax identity and a filing history is the evidence of its reporting;
+        either leaking across a tenant boundary is worse than an invoice doing so. The seed
+        configures org A's registration and files one of its documents, then org B is asked for
+        both — by list, by primary key, and through the rollup the invoice read model uses.
+        """
+        org_a = org_id
+        org_b = uuid.uuid4()
+        ctx_a = admin_ctx(org_a)
+
+        async with session.begin():
+            registration = await selectors.get_gst_registration(session, org_a)
+            assert registration is not None
+            a_registration_id = registration.id
+
+            invoice = next(
+                inv
+                for inv in await selectors.all_invoices(session, org_a)
+                if inv.supply_type == "b2b" and inv.document_type == "invoice"
+            )
+            a_invoice_id = invoice.id
+            filing = await services.file_invoice(
+                session,
+                ctx_a,
+                StubIrpClient(),
+                FileInvoiceIn(organization_id=org_a, invoice_id=a_invoice_id),
+            )
+            a_filing_id = filing.id
+            a_irn = filing.irn
+
+        engine, s_b = await _session_bound_to(org_b)
+        try:
+            async with s_b.begin():
+                # 1) Org B has no registration, and cannot borrow org A's.
+                assert await selectors.get_gst_registration(s_b, org_b) is None
+                assert await selectors.all_gst_registrations(s_b, org_b) == []
+                assert (
+                    await s_b.execute(select(func.count()).select_from(GstRegistration))
+                ).scalar_one() == 0
+
+                # 2) Naming org A's registration id directly resolves to nothing.
+                assert (
+                    await s_b.execute(
+                        select(GstRegistration).where(GstRegistration.id == a_registration_id)
+                    )
+                ).scalar_one_or_none() is None
+
+                # 3) The filing history of org A's invoice is empty for org B — by invoice id...
+                assert await selectors.filings_for_invoice(s_b, org_b, a_invoice_id) == []
+                # ...and through the rollup the list and detail read models both use.
+                latest, counts = await selectors.latest_filings(s_b, org_b, [a_invoice_id])
+                assert (latest, counts) == ({}, {})
+
+                # 4) Not by primary key, and not by the IRN either.
+                assert (
+                    await s_b.execute(
+                        select(EInvoiceFiling).where(EInvoiceFiling.id == a_filing_id)
+                    )
+                ).scalar_one_or_none() is None
+                assert (
+                    await s_b.execute(select(EInvoiceFiling).where(EInvoiceFiling.irn == a_irn))
+                ).scalar_one_or_none() is None
+        finally:
+            await s_b.close()
+            await engine.dispose()
+
+    async def test_a_filing_cannot_be_written_into_another_tenant(self, session, org_id) -> None:
+        """`WITH CHECK`, not just `USING`. Without it a tenant could insert a row belonging to
+        somebody else — invisible to them, fully visible to the victim."""
+        org_b = uuid.uuid4()
+        engine, s_b = await _session_bound_to(org_b)
+        try:
+            with pytest.raises(Exception, match="row-level security"):
+                async with s_b.begin():
+                    s_b.add(
+                        GstRegistration(
+                            organization_id=org_id,  # not org B's own
+                            gstin="27AABCA9012D1Z5",
+                            state_code="27",
+                            legal_name="Planted By Another Tenant",
+                        )
+                    )
+                    await s_b.flush()
         finally:
             await s_b.close()
             await engine.dispose()

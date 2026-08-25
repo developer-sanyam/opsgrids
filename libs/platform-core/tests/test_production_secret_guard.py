@@ -9,8 +9,10 @@ sealed under a string in the repository. These tests pin the closed hole.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
-from pydantic_settings import SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from platform_core.config import ServiceSettings
 
@@ -27,6 +29,27 @@ class _Settings(ServiceSettings):
     # ships `DEBUG=true`, so a developer who followed the documented setup saw this file fail
     # on a production guard their change never touched. The probe reads only what it is given.
     model_config = SettingsConfigDict(env_file=None, extra="ignore")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+        **kwargs: Any,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Only the constructor arguments. Nothing from the process environment.
+
+        `env_file=None` above closed half the hole: the `.env` *file* is no longer read. The
+        other half is that the Makefile `export`s the names that file defines, so `DEBUG=true`
+        arrives as a real environment variable and pydantic reads it anyway — and this file
+        failed again, on the same guard, for the same developer following the same documented
+        setup. Dropping every source but `init_settings` is what actually makes the probe read
+        only what it is given.
+        """
+        return (init_settings,)
 
 
 def _production(**overrides: str) -> ServiceSettings:

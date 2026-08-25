@@ -26,12 +26,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app import domain
-from app.models import Customer, Invoice, Payment, PaymentAllocation
+from app.models import (
+    Customer,
+    EInvoiceFiling,
+    GstRegistration,
+    Invoice,
+    Payment,
+    PaymentAllocation,
+)
 from app.schemas import (
     AgingBucket,
     CashflowPoint,
     CustomerOut,
     CustomerSummary,
+    EInvoiceFilingOut,
+    EInvoiceState,
+    GstRegistrationOut,
     InvoiceLineOut,
     InvoiceOut,
     LedgerAccount,
@@ -115,8 +125,40 @@ async def paid_by_invoice(
     return {inv_id: int(total) for inv_id, total in (await session.execute(stmt)).all()}
 
 
-def to_invoice_out(invoice: Invoice, paid_minor: int) -> InvoiceOut:
-    """Serialise one invoice with its derived paid-so-far figure attached."""
+def to_einvoice_state(
+    invoice: Invoice, latest: EInvoiceFiling | None, attempts: int = 0
+) -> EInvoiceState:
+    """An invoice's current e-invoice position, from its newest filing attempt.
+
+    `required` is answered from the document itself, not from the filings, so a document that has
+    never been attempted still reports the obligation. A status of `None` alongside
+    `required=True` is precisely the queue an auto-filing agent drains.
+    """
+    required = domain.requires_einvoice(
+        supply_type=invoice.supply_type, document_type=invoice.document_type
+    )
+    if latest is None:
+        return EInvoiceState(required=required, status=None, attempts=attempts)
+    return EInvoiceState(
+        required=required,
+        status=latest.status,
+        irn=latest.irn,
+        ack_no=latest.ack_no,
+        ack_date=latest.ack_date,
+        error_code=latest.error_code,
+        error=latest.error,
+        attempted_at=latest.attempted_at,
+        attempts=attempts,
+    )
+
+
+def to_invoice_out(
+    invoice: Invoice,
+    paid_minor: int,
+    latest_filing: EInvoiceFiling | None = None,
+    attempts: int = 0,
+) -> InvoiceOut:
+    """Serialise one invoice with its derived paid-so-far figure and filing position attached."""
     return InvoiceOut(
         id=invoice.id,
         number=invoice.number,
@@ -134,6 +176,15 @@ def to_invoice_out(invoice: Invoice, paid_minor: int) -> InvoiceOut:
         amount_paid_minor=paid_minor,
         notes=invoice.notes,
         corrects_invoice_id=invoice.corrects_invoice_id,
+        place_of_supply=invoice.place_of_supply,
+        supply_type=invoice.supply_type,
+        reverse_charge=invoice.reverse_charge,
+        seller_gstin=invoice.seller_gstin,
+        buyer_gstin=invoice.buyer_gstin,
+        cgst_minor=invoice.cgst_minor,
+        sgst_minor=invoice.sgst_minor,
+        igst_minor=invoice.igst_minor,
+        einvoice=to_einvoice_state(invoice, latest_filing, attempts),
     )
 
 
@@ -197,6 +248,145 @@ async def all_invoices(session: AsyncSession, org_id: uuid.UUID) -> list[Invoice
         .order_by(Invoice.issued_date.desc(), Invoice.number.desc())
     )
     return list((await session.execute(stmt)).scalars().all())
+
+
+# --------------------------------------------------------------------- e-invoicing
+
+
+async def filings_for_invoice(
+    session: AsyncSession, org_id: uuid.UUID, invoice_id: uuid.UUID
+) -> list[EInvoiceFiling]:
+    """Every recorded attempt for one document, newest first.
+
+    This is the whole filing history and it is a plain query, which is the point of the table
+    being append-only: nothing has to be reconstructed, because nothing was overwritten.
+    """
+    stmt = (
+        select(EInvoiceFiling)
+        .where(
+            EInvoiceFiling.organization_id == org_id,
+            EInvoiceFiling.invoice_id == invoice_id,
+            EInvoiceFiling.deleted_at.is_(None),
+        )
+        .order_by(EInvoiceFiling.attempted_at.desc(), EInvoiceFiling.created_at.desc())
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def latest_filings(
+    session: AsyncSession, org_id: uuid.UUID, invoice_ids: list[uuid.UUID]
+) -> tuple[dict[uuid.UUID, EInvoiceFiling], dict[uuid.UUID, int]]:
+    """The newest attempt per invoice, and how many attempts each has had.
+
+    `DISTINCT ON` rather than a per-invoice query: a list page of invoices must not become a
+    filing query per row. Org-scoped like every read here, so the map can never carry another
+    tenant's attempts.
+    """
+    if not invoice_ids:
+        return {}, {}
+
+    latest_stmt = (
+        select(EInvoiceFiling)
+        .where(
+            EInvoiceFiling.organization_id == org_id,
+            EInvoiceFiling.invoice_id.in_(invoice_ids),
+            EInvoiceFiling.deleted_at.is_(None),
+        )
+        .distinct(EInvoiceFiling.invoice_id)
+        .order_by(
+            EInvoiceFiling.invoice_id,
+            EInvoiceFiling.attempted_at.desc(),
+            EInvoiceFiling.created_at.desc(),
+        )
+    )
+    latest = {row.invoice_id: row for row in (await session.execute(latest_stmt)).scalars().all()}
+
+    count_stmt = (
+        select(EInvoiceFiling.invoice_id, func.count())
+        .where(
+            EInvoiceFiling.organization_id == org_id,
+            EInvoiceFiling.invoice_id.in_(invoice_ids),
+            EInvoiceFiling.deleted_at.is_(None),
+        )
+        .group_by(EInvoiceFiling.invoice_id)
+    )
+    counts = {inv_id: int(n) for inv_id, n in (await session.execute(count_stmt)).all()}
+    return latest, counts
+
+
+async def invoices_with_filings(
+    session: AsyncSession, org_id: uuid.UUID, invoices: list[Invoice]
+) -> list[InvoiceOut]:
+    """Serialise a page of invoices with their paid-so-far figures and filing positions.
+
+    One round trip for the cash applied, two for the filings — never one per row.
+    """
+    ids = [inv.id for inv in invoices]
+    paid = await paid_by_invoice(session, org_id, ids)
+    latest, counts = await latest_filings(session, org_id, ids)
+    return [
+        to_invoice_out(inv, paid.get(inv.id, 0), latest.get(inv.id), counts.get(inv.id, 0))
+        for inv in invoices
+    ]
+
+
+def to_filing_out(filing: EInvoiceFiling) -> EInvoiceFilingOut:
+    return EInvoiceFilingOut.model_validate(filing)
+
+
+# --------------------------------------------------------------------- GST registration
+
+
+async def get_gst_registration(session: AsyncSession, org_id: uuid.UUID) -> GstRegistration | None:
+    """This organization's primary GST registration — the seller side of every tax decision.
+
+    None means the org has not configured one, which is a real state and not an error: an invoice
+    can still be raised, it simply cannot be filed, and the filing attempt says so.
+    """
+    stmt = select(GstRegistration).where(
+        GstRegistration.organization_id == org_id,
+        GstRegistration.is_primary.is_(True),
+        GstRegistration.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalars().first()
+
+
+async def all_gst_registrations(session: AsyncSession, org_id: uuid.UUID) -> list[GstRegistration]:
+    """Every live registration for the org. A company registers per state, so there may be
+    several; exactly one is primary."""
+    stmt = (
+        select(GstRegistration)
+        .where(
+            GstRegistration.organization_id == org_id,
+            GstRegistration.deleted_at.is_(None),
+        )
+        .order_by(GstRegistration.is_primary.desc(), GstRegistration.state_code)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def gst_registration_by_gstin(
+    session: AsyncSession, org_id: uuid.UUID, gstin: str
+) -> GstRegistration | None:
+    stmt = select(GstRegistration).where(
+        GstRegistration.organization_id == org_id,
+        GstRegistration.gstin == gstin,
+        GstRegistration.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def to_gst_registration_out(registration: GstRegistration) -> GstRegistrationOut:
+    return GstRegistrationOut(
+        id=registration.id,
+        gstin=registration.gstin,
+        state_code=registration.state_code,
+        state_name=domain.GST_STATE_CODES.get(registration.state_code, ""),
+        legal_name=registration.legal_name,
+        trade_name=registration.trade_name,
+        registration_type=registration.registration_type,
+        is_primary=registration.is_primary,
+    )
 
 
 # --------------------------------------------------------------------- payments
@@ -402,7 +592,11 @@ async def get_overview(session: AsyncSession, ctx: ScopeContext) -> OverviewSumm
         ),
         reverse=True,
     )
-    attention = [to_invoice_out(inv, paid.get(inv.id, 0)) for inv in attention_rows]
+    latest, counts = await latest_filings(session, org_id, [inv.id for inv in attention_rows])
+    attention = [
+        to_invoice_out(inv, paid.get(inv.id, 0), latest.get(inv.id), counts.get(inv.id, 0))
+        for inv in attention_rows
+    ]
 
     return OverviewSummary(
         period_label=domain.PERIOD_LABEL,

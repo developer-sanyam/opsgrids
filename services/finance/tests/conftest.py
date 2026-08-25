@@ -35,13 +35,19 @@ from app.models import SCHEMA
 from platform_core import cache
 from platform_core.auth import ScopeContext, get_principal
 from platform_core.db import TENANT_GUC, get_session
-from tests.helpers import FINANCE_READS, FakeRedis, admin_ctx, principal_for
+from tests.helpers import FINANCE_PERMISSIONS, FakeRedis, admin_ctx, principal_for
 
 #: Every table here is tenant-scoped or global; all are safe to truncate before a test.
+#:
+#: `einvoice_filings` is append-only *for the application* — a trigger refuses UPDATE and DELETE.
+#: TRUNCATE is neither, and this runs as the admin role that owns the table, so the fixture can
+#: still reset it between tests without the trigger being weakened for anybody else.
 TENANT_TABLES = (
     "customers",
     "invoices",
     "invoice_lines",
+    "einvoice_filings",
+    "gst_registrations",
     "payments",
     "payment_allocations",
     "audit_logs",
@@ -138,7 +144,7 @@ async def client(session: AsyncSession, org_id: uuid.UUID) -> AsyncIterator[Asyn
 
     from app.main import app
 
-    default_principal = principal_for(org_id, [f"{p}:ORG" for p in FINANCE_READS])
+    default_principal = principal_for(org_id, [f"{p}:ORG" for p in FINANCE_PERMISSIONS])
     app.dependency_overrides[get_session] = _session_override
     app.dependency_overrides[get_principal] = lambda: default_principal
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:

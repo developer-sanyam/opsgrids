@@ -31,6 +31,33 @@
     {
       "action": "read",
       "default_scope": "ORG",
+      "description": "See e-invoice filing status and history",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "compliance",
+      "resource": "einvoice"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See the organization's GST registration",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "compliance",
+      "resource": "registration"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Set the organization's GST registration",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "compliance",
+      "resource": "registration"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
       "description": "See the ledger / trial balance",
       "is_dangerous": false,
       "max_scope": "ORG",
@@ -67,6 +94,18 @@
           "scope": "ORG"
         },
         {
+          "code": "finance.compliance.einvoice.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.compliance.registration.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.compliance.registration.write",
+          "scope": "ORG"
+        },
+        {
           "code": "finance.reports.ledger.read",
           "scope": "ORG"
         },
@@ -94,6 +133,14 @@
         },
         {
           "code": "finance.billing.payment.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.compliance.einvoice.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.compliance.registration.read",
           "scope": "ORG"
         },
         {

@@ -103,6 +103,20 @@ FINANCE = PermissionCatalogue(
         PermissionSpec("billing", "customer", "read", "See customers and their receivables"),
         PermissionSpec("reports", "summary", "read", "See the finance overview / KPIs"),
         PermissionSpec("reports", "ledger", "read", "See the ledger / trial balance"),
+        # Compliance. Reading a filing history is an ordinary finance read; *changing* the
+        # organization's GST registration is not — it decides which identity every invoice is
+        # filed under, so it is the one write in this catalogue and it is marked dangerous.
+        PermissionSpec("compliance", "einvoice", "read", "See e-invoice filing status and history"),
+        PermissionSpec(
+            "compliance", "registration", "read", "See the organization's GST registration"
+        ),
+        PermissionSpec(
+            "compliance",
+            "registration",
+            "write",
+            "Set the organization's GST registration",
+            is_dangerous=True,
+        ),
     ],
 )
 
@@ -130,6 +144,9 @@ FINANCE_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("finance.billing.customer.read", "ORG"),
             ("finance.reports.summary.read", "ORG"),
             ("finance.reports.ledger.read", "ORG"),
+            # A viewer sees whether a document is filed; they cannot change who it is filed as.
+            ("finance.compliance.einvoice.read", "ORG"),
+            ("finance.compliance.registration.read", "ORG"),
         ),
     ),
 ]
