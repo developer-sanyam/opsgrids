@@ -38,6 +38,15 @@
       "resource": "einvoice"
     },
     {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See e-Way bills and their validity",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "compliance",
+      "resource": "eway"
+    },
+    {
       "action": "decide",
       "default_scope": "ORG",
       "description": "Accept, reject or park an inbound supplier document",
@@ -72,6 +81,42 @@
       "max_scope": "ORG",
       "module": "compliance",
       "resource": "registration"
+    },
+    {
+      "action": "file",
+      "default_scope": "ORG",
+      "description": "Mark a generated GST return as filed with the portal",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "compliance",
+      "resource": "returns"
+    },
+    {
+      "action": "generate",
+      "default_scope": "ORG",
+      "description": "Assemble a GST return from the invoices recorded for a period",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "compliance",
+      "resource": "returns"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See generated and filed GST returns",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "compliance",
+      "resource": "returns"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See TDS deducted and TCS collected per document",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "compliance",
+      "resource": "withholding"
     },
     {
       "action": "read",
@@ -116,6 +161,10 @@
           "scope": "ORG"
         },
         {
+          "code": "finance.compliance.eway.read",
+          "scope": "ORG"
+        },
+        {
           "code": "finance.compliance.ims.decide",
           "scope": "ORG"
         },
@@ -129,6 +178,22 @@
         },
         {
           "code": "finance.compliance.registration.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.compliance.returns.file",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.compliance.returns.generate",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.compliance.returns.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.compliance.withholding.read",
           "scope": "ORG"
         },
         {
@@ -166,11 +231,23 @@
           "scope": "ORG"
         },
         {
+          "code": "finance.compliance.eway.read",
+          "scope": "ORG"
+        },
+        {
           "code": "finance.compliance.ims.read",
           "scope": "ORG"
         },
         {
           "code": "finance.compliance.registration.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.compliance.returns.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.compliance.withholding.read",
           "scope": "ORG"
         },
         {

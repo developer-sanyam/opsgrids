@@ -60,7 +60,7 @@ the moment the policies landed, since each connected as the app role with no ten
 
 ## Next
 
-### GST compliance engine — filing is automatic and IMS has landed; the credentials remain
+### GST compliance engine — returns, e-Way and withholding have landed; the credentials remain
 
 **Why this is first.** India's e-invoicing mandate reaches every business above ₹5 crore
 aggregate annual turnover from April 2026, and the window for reporting an invoice to the Invoice
@@ -181,25 +181,122 @@ has to trust.
   state, so the same fixture is CGST+SGST for a Maharashtra buyer and IGST for a Gujarat one. No
   network, no credentials, asserted by a test that forbids opening a socket.
 
+**Slice three — the returns, the road, and the money withheld at source: DONE.**
+
+- **GSTR-1 is assembled, not transcribed.** `domain.assemble_gstr1` builds a period's outward
+  supplies from the invoices already recorded, and **nothing in it computes tax** — every figure
+  is a sum of the splits the invoices already carry, so the return foots to its own documents by
+  construction rather than by a reconciliation step somebody has to remember to run. Every
+  reported document lands in **exactly one** section (EXP, then CDNR/CDNUR, then B2B, then B2CL,
+  then B2CS), which is what makes the footing provable: two sections would double a figure and
+  none would lose one. The sections are the real ones — B2B and B2CL invoice-wise, **B2CS
+  aggregated** by place of supply and rate because that is what the return declares, CDNR carrying
+  the number each note corrects, EXP, an **HSN summary** built in parallel from the same lines
+  rather than from the section entries, and a **document series** where a void's number is
+  declared and counted as cancelled even though its figures are not a supply.
+- **The footing is proved three independent ways.** Sections against the lines, the HSN summary
+  against the lines, and the one-line totals against both. The HSN summary and the totals each
+  start from the lines rather than from the assembled sections precisely so that comparing them is
+  a real cross-foot and not a tautology — the portal cross-foots them too. Property-style across
+  every rate band and a range of amounts from one paisa upward, in both split shapes.
+- **A filed return is frozen at the database.** `gst_returns` holds one row per (registration,
+  period, type) with the snapshot as JSONB; `gst_return_transitions` is the append-only status
+  trail the `status` column is only the head of. A trigger refuses any change to the snapshot,
+  the totals, the period — or `deleted_at`, since a soft delete is still an UPDATE and would
+  otherwise be the last route to erasing what was reported. So a correction arriving in September
+  shows up through `GET .../diff` as a **difference**, per section and in total, which is what an
+  amendment in a later period declares. The boundary is `filed` rather than `generated` on
+  purpose: before it goes to the portal nothing has been reported to anybody, and re-assembling a
+  period after a late invoice is the *point* of looking at a return before sending it.
+- **Generating and filing are separate permissions.** Generating states what this platform
+  believes about its own book and can be repeated; filing makes a claim to a government and is
+  terminal. Only the second is marked dangerous, and a test asserts neither grant implies the
+  other in either direction.
+- **e-Way bills, and validity the platform can explain.** `eway_bills` is one row per attempt with
+  the same append-only-at-the-database shape as `einvoice_filings`. The obligation starts above
+  50,000 rupees of consignment value — strictly, so the invoice landing exactly on the threshold
+  is tested at the rupee. `EwayAck` deliberately carries **no deadline**: one day per 200 km *or
+  part thereof*, each day expiring at midnight of the day immediately following generation,
+  computed by `domain.eway_valid_until` from the `distance_km` and `valid_from` the row
+  **stores**. A bill raised at 23:50 for 150 km is therefore valid for ten minutes, which is the
+  statute and which a screen saying "valid for a day" would be lying about. A deadline only the
+  portal knows is one nothing can explain and no test can check, and the cost of a screen and a
+  checkpoint disagreeing falls on a driver.
+- **`expired` is a read, not a write.** The table is append-only, so nothing can update a row when
+  the clock passes it; `effective_status` derives it from the stored `valid_until`. Cancellation
+  is the same 24-hour window as an IRN, enforced against the stored `valid_from` — but with no
+  credit-note fallback, because the movement happened and has to be reported as it happened.
+- **GST-TDS and the income-tax pair, as pure integer functions.** Section 51 is a **cliff**: 2 % of
+  the *whole* taxable value above 2,50,000 rupees, split across CGST/SGST/IGST by reusing
+  `domain.split_gst` so a deduction cannot round differently from the levy beside it. 194Q and
+  206C(1H) are **aggregates** over a financial year with one counterparty, biting only on the
+  excess, so the invoice that crosses 50 lakh is withheld on partially — the case a naive
+  implementation over-deducts on by lakhs. They are mutually exclusive by statute and the buyer's
+  194Q liability wins; charging both is the error "apply every matching rule" produces. Every
+  boundary is tested at the exact rupee.
+- **Rates are versioned and do not restate history.** `withholding_rates` joins `tax_rates` as
+  global, unpolicied vocabulary — a 2 % deduction under s. 51 is the law of one country, not one
+  tenant's data. A change is a new row with a later `effective_from`; resolution is against the
+  **document's** date; and the resolved rate and threshold are snapshotted onto the register row
+  beside the id of the version they came from. A test publishes a future rate, re-derives an
+  August invoice, and gets August's answer.
+- **Withholding is opt-in by construction.** Assessment runs inline at finalize (arithmetic over
+  rows already in the transaction, unlike filing, which calls a portal and therefore goes through
+  the outbox), gated on three flags on the customer that all default false. Whether a body is
+  notified under s. 51, and whether a buyer is liable under 194Q, are facts about somebody else's
+  registration and somebody else's books; the platform cannot infer them, so it does not guess.
+- **Reporting.** `GET /finance/gst/withholdings/summary?period=` groups the register **per
+  counterparty**, which is how GSTR-7 is declared — the shape that makes these figures comparable
+  to the return a deductor actually files, and therefore reconcilable. The totals sum the grouped
+  rows exactly, and a test says so, because a summary that does not foot to its own rows is worse
+  than no summary.
+- **Endpoints.** `GET/POST /finance/gst/returns`, `GET /finance/gst/returns/{id}` (with every
+  section), `GET .../diff`, `POST .../filing`; `GET /finance/eway-bills`,
+  `GET /finance/invoices/{id}/eway-bills`, `GET /finance/invoices/{id}/eway`;
+  `GET /finance/gst/withholdings`, `.../summary`, `GET /finance/gst/withholding-rates`; internal
+  `POST /internal/v1/eway/bills` and `...:cancel`. Six new permissions:
+  `finance.compliance.returns.read/generate/file`, `finance.compliance.eway.read` and
+  `finance.compliance.withholding.read`.
+- **Events.** `finance.compliance.gst_return.generated` and `.filed`,
+  `finance.compliance.eway_bill.generated`, `.failed` (carrying `retryable`, like the filing
+  events) and `.cancelled`, and `finance.compliance.withholding.recorded` — announced because the
+  money it names never arrives, and a collections consumer expecting the gross would chase a
+  receivable that was settled net.
+- **The third portal is stubbed like the first two.** `EwayClient` speaks consignments;
+  `StubEwayClient` refuses what the real portal refuses with its numbered codes and opens no
+  socket, which a test asserts. Its one honest deviation is called out in its own docstring: the
+  real portal issues numbers from a sequence, and this one keys them on the document **and the
+  moment the bill was raised** — deterministic in its inputs, but not one number per document,
+  because a document legitimately carries several bills over its life and keying on the document
+  alone would collide on the unique index and strand a lorry.
+
 **Still open, in the order the market forces it:**
 
 | Next | Why it is next |
 |---|---|
-| **IRP / GSP credentials and the wire** | The remaining seam on the filing side, and now the *only* one: the state machine, the retry policy, the idempotency guard and the persistence are all real and exercised. `IrpClient` is the whole change surface; NIC direct vs a GSP is a credentials-and-envelope decision, not an architecture one. |
-| **IMS credentials, and pushing actions back** | Reading a supplier ledger and recording a decision about it are done; telling GSTN what was decided is a second integration with its own filing window. `ImsClient` deliberately has no `submit()` — inventing a method nothing implements would read as finished. |
-| **A scheduler that honours the backoff** | `filing_requested` already carries `attempt` and `not_before`, so the retry knows its own delay; what does not exist yet is something that waits for it rather than redelivering at once. A delivery change, not a redesign. |
-| **GSTR-1 generation** | Falls out of the data now stored: the HSN summary groups by `hsn_sac` and rate, the B2B/B2C/export tables by `supply_type`, and the inward side by the IMS decisions. Mostly reporting, once the filings are trustworthy. |
-| **e-Way bills** | A different portal with a different obligation (movement of goods above ₹50,000) and its own cancellation rules. Shares the seller registration and the document, not the client. |
-| **GST-TDS: 194Q / 206C(1H)** | Withholding at source on purchases and collection at source on sales, with the buyer/seller threshold interplay that decides which applies. Touches the payment ledger, not the filing ledger — and now also the purchase book, which is where the ₹50 lakh threshold is measured. |
+| **IRP / GSP / e-Way credentials and the wire** | The remaining seam on all three portals, and now the *only* one: the state machines, the retry policy, the idempotency guards, the validity arithmetic and the persistence are real and exercised. `IrpClient`, `ImsClient` and `EwayClient` are the whole change surface. e-Way needs its **own** credentials — NIC runs it as a separate product with separate downtime, which is why it is a separate client rather than a method on the IRP one. |
+| **GSTR-3B** | The summary return GSTR-1 feeds, and the one that actually settles the liability. It needs the *inward* side as well: the IMS decisions decide what input tax credit may be claimed, and GSTR-3B is where the two halves net. Every input exists; nothing about it is assembled yet. |
+| **The input-tax-credit ledger** | GSTR-3B's other prerequisite, and a ledger in its own right: credit accrued from accepted IMS documents, credit utilised against output liability, and the balance carried forward. Append-only like every other ledger here, and the place a wrongly accepted supplier document eventually costs money. |
+| **Returns in the dunning loop** | An unfiled return past its deadline is a business risk exactly as an overdue receivable is, and the dunning and grace policy already knows how to escalate one. Wiring `gst_return.generated`/`.filed` — and their *absence* — into it is a policy change rather than a new mechanism; nothing chases a return today. |
+| **GSTR-7 as the deductor** | This slice reports withholding from the **supplier** side: what was deducted from what this organization is owed, grouped per deductor so it reconciles against the return they file. Filing GSTR-7 as the *deductor* is the mirror image, measured over `purchase_documents` rather than `invoices`, and it is a second obligation with its own window. |
+| **A scheduler that honours the backoff** | `filing_requested` already carries `attempt` and `not_before`, so the retry knows its own delay; what does not exist yet is something that waits for it rather than redelivering at once. An e-Way outage now wants the same thing, and more urgently — the goods are already loaded. A delivery change, not a redesign. |
+| **IMS credentials, and pushing actions back** | Reading a supplier ledger and recording a decision about it are done; telling GSTN what was decided is a second integration. `ImsClient` deliberately has no `submit()` — inventing a method nothing implements would read as finished. |
 | **B2C dynamic QR** | The obligation B2C carries instead of an IRN. Deliberately out: `requires_einvoice` already answers `false` for it, so it is additive. |
 
-Four things these slices deliberately did **not** do. Historical documents were not back-split into
-tax heads: which head a supply was taxed under depends on a seller state that no column recorded
-when those documents were frozen, and deriving it now would be inventing a legal fact rather than
-recording one. UIN/OIDAR registrations are refused rather than half-supported. `purchase_documents`
-is a reconciliation counterpart, not an accounts-payable lifecycle — there is no approval, no
-three-way match, no payment run. And nothing auto-accepts an IMS document, however exact the match,
-because the credit that follows is a person's to answer for.
+Seven things these slices deliberately did **not** do. Historical documents were not back-split
+into tax heads: which head a supply was taxed under depends on a seller state that no column
+recorded when those documents were frozen, and deriving it now would be inventing a legal fact
+rather than recording one. UIN/OIDAR registrations are refused rather than half-supported.
+`purchase_documents` is a reconciliation counterpart, not an accounts-payable lifecycle — there is
+no approval, no three-way match, no payment run. Nothing auto-accepts an IMS document, however
+exact the match, because the credit that follows is a person's to answer for. **Nothing files a
+return by itself**: generating could be automated, filing is a person's claim to a government, and
+collapsing the two would mean nobody ever looked at a period before it went. **No route lets a
+person type a withholding in** — a figure somebody could type is a figure nobody can trust, so the
+register is only ever computed at finalize, and a deduction the platform cannot see stays out of
+it rather than being invented. And **an e-Way bill is never raised automatically**: the transport
+facts are not on an invoice, and guessing a distance or a vehicle number would be forging the part
+a checkpoint actually reads.
 
 ### HRMS employee-service — slice 1 landed; follow-ups
 

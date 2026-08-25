@@ -46,6 +46,12 @@ FilingStatus = str  # pending | filed | failed | cancelled
 ImsStatus = str  # pending | accepted | rejected | pending_action
 ImsAction = str  # accept | reject | pending_action
 ImsReason = str  # matched | amount_mismatch | supplier_unknown | no_purchase_record | duplicate
+ReturnType = str  # gstr1 | gstr7
+ReturnStatus = str  # draft | generated | filed
+EwayStatus = str  # pending | generated | failed | cancelled | expired
+WithholdingCode = str  # gst_tds_51 | itax_194q | itax_206c_1h
+WithholdingBasis = str  # supply | aggregate
+WithholdingDirection = str  # deducted | collected
 
 
 # --------------------------------------------------------------------- customers
@@ -387,6 +393,15 @@ class CustomerCreate(BaseModel):
     gstin: str | None = None
     city: str
     state: str
+    # Withholding facts about the buyer. All three default to false, which is what keeps
+    # withholding opt-in: an organization that has not told the platform about its counterparties
+    # has no TDS or TCS figures invented for it.
+    #: A body notified under GST s. 51 — it must deduct 2 % on supplies above the threshold.
+    is_tds_deductor: bool = False
+    #: A buyer liable to deduct income tax under s. 194Q. Excludes 206C(1H) by statute.
+    deducts_tds_194q: bool = False
+    #: This organization collects TCS from this buyer under s. 206C(1H).
+    tcs_applicable: bool = False
 
 
 class PaymentAllocationCreate(BaseModel):
@@ -581,3 +596,419 @@ class ImsSyncOut(BaseModel):
     reconciled: int
     #: Groups every suggestion this pass produced, so a run can be read back whole.
     run_id: uuid.UUID
+
+
+# --------------------------------------------------------------------- GST returns
+# The outward-supplies return, assembled from the invoices already recorded. Every figure here is
+# a sum of stored line splits — nothing in this section recomputes tax, because a return that
+# recomputed would be a second implementation of the one calculation that must foot exactly.
+
+
+class RateGroupOut(BaseModel):
+    """One rate group inside a section — the grain GSTR-1 is actually declared at."""
+
+    rate_pct: float
+    taxable_minor: int
+    cgst_minor: int
+    sgst_minor: int
+    igst_minor: int
+    total_minor: int
+
+
+class ReturnInvoiceOut(BaseModel):
+    """One document as B2B, B2CL, CDNR, CDNUR or EXP declares it: header plus rate groups."""
+
+    document_id: uuid.UUID
+    number: str
+    document_type: DocumentType
+    issued_date: date
+    place_of_supply: str | None
+    counterparty_gstin: str | None
+    counterparty_name: str
+    reverse_charge: bool
+    invoice_value_minor: int
+    #: Set on a credit note: the number of the invoice it corrects, which is what CDNR declares
+    #: alongside the note itself.
+    corrects_number: str | None
+    items: list[RateGroupOut]
+
+
+class B2csOut(BaseModel):
+    """One aggregated B2C-small figure: place of supply x rate x inter/intra-state.
+
+    Aggregated because that is what the return declares — B2CS is not invoice-wise. Credit notes
+    to unregistered buyers below the B2CL threshold net in here with their sign, so the figure
+    can legitimately be negative in a heavy-returns month.
+    """
+
+    place_of_supply: str | None
+    rate_pct: float
+    inter_state: bool
+    taxable_minor: int
+    cgst_minor: int
+    sgst_minor: int
+    igst_minor: int
+    total_minor: int
+    document_count: int
+
+
+class HsnSummaryOut(BaseModel):
+    """One row of the HSN summary. A line with no code groups under a null rather than vanishing:
+    a missing classification is a gap the return must show, not one it should quietly close."""
+
+    hsn_sac: str | None
+    rate_pct: float
+    quantity: float
+    taxable_minor: int
+    cgst_minor: int
+    sgst_minor: int
+    igst_minor: int
+    total_minor: int
+
+
+class DocumentSeriesOut(BaseModel):
+    """One declared document series — the numbers issued and how many were cancelled.
+
+    The one section a **void** belongs in: its figures are not a supply, but its number was
+    consumed, and a gap in a series is how an unreported invoice announces itself.
+    """
+
+    document_type: DocumentType
+    from_number: str
+    to_number: str
+    total_count: int
+    cancelled_count: int
+    net_count: int
+
+
+class ReturnTotalsOut(BaseModel):
+    """The return's one-line declaration. Every section sums to exactly this."""
+
+    taxable_minor: int
+    cgst_minor: int
+    sgst_minor: int
+    igst_minor: int
+    tax_minor: int
+    total_minor: int
+    document_count: int
+    line_count: int
+
+
+class Gstr1Sections(BaseModel):
+    """Every section of one GSTR-1, and the shape the snapshot is stored in.
+
+    This *is* the persisted JSONB on `gst_returns.sections`, validated on the way in and on the
+    way out, so a snapshot written by an older revision cannot be served back as something the
+    contract no longer describes.
+    """
+
+    b2b: list[ReturnInvoiceOut]
+    b2cl: list[ReturnInvoiceOut]
+    b2cs: list[B2csOut]
+    cdnr: list[ReturnInvoiceOut]
+    cdnur: list[ReturnInvoiceOut]
+    exp: list[ReturnInvoiceOut]
+    hsn: list[HsnSummaryOut]
+    docs: list[DocumentSeriesOut]
+
+
+class GstReturnOut(BaseModel):
+    """One period's return: the record, not the snapshot. What a list page renders."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    gst_registration_id: uuid.UUID
+    #: The GSTIN as it stood when the return was generated — a snapshot, like an invoice's.
+    gstin: str
+    state_code: str
+    period: str
+    return_type: ReturnType
+    status: ReturnStatus
+    total_taxable_minor: int
+    total_cgst_minor: int
+    total_sgst_minor: int
+    total_igst_minor: int
+    document_count: int
+    line_count: int
+    generated_at: datetime | None
+    filed_at: datetime | None
+    arn: str | None
+
+
+class GstReturnTransitionOut(BaseModel):
+    """One movement between statuses — a row of the append-only trail."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    from_status: ReturnStatus | None
+    to_status: ReturnStatus
+    arn: str | None
+    note: str | None
+    total_taxable_minor: int
+    total_tax_minor: int
+    transitioned_by: str
+    transitioned_at: datetime
+
+
+class GstReturnDetail(BaseModel):
+    """The return with its sections and its whole status trail.
+
+    `sections` is null on a `draft` — a period nobody has assembled has nothing to declare, and
+    an empty return and an unassembled one are different answers.
+    """
+
+    ret: GstReturnOut
+    sections: Gstr1Sections | None
+    transitions: list[GstReturnTransitionOut]
+
+
+class GenerateReturnIn(BaseModel):
+    """Assemble one period's return from the invoices already recorded.
+
+    Generating twice replaces the snapshot with what the book says *now* and appends a second
+    `generated` transition, which is the honest answer before filing. After filing it is refused
+    — a filed return is what was reported, and the remedy for a later correction is the diff.
+    """
+
+    #: The tax period, `YYYY-MM`.
+    period: str
+    return_type: ReturnType = "gstr1"
+    #: Which registration to file under. Defaults to the organization's primary one.
+    gst_registration_id: uuid.UUID | None = None
+
+
+class FileReturnIn(BaseModel):
+    """Record that a generated return went to the portal, with the ARN it came back with."""
+
+    #: The portal's Acknowledgement Reference Number. The one fact about a return that only
+    #: exists after it has left this platform, so it is required rather than derived.
+    arn: str
+    note: str | None = None
+
+
+class SectionDeltaOut(BaseModel):
+    """How one section moved between the snapshot and the book as it stands now."""
+
+    section: str
+    snapshot: ReturnTotalsOut
+    current: ReturnTotalsOut
+    delta: ReturnTotalsOut
+    changed: bool
+
+
+class ReturnDiffOut(BaseModel):
+    """What has changed since the return was generated — never a rewrite of the return.
+
+    The whole reason a generated return is frozen. An invoice corrected after August was filed
+    does not make August a different return; it makes a **difference**, which is what an
+    amendment in a later period declares. This endpoint is that difference, per section and in
+    total, so the amendment is prepared from an answer rather than from a memory.
+    """
+
+    ret: GstReturnOut
+    #: The book as it stands at `computed_at`, re-assembled from the same invoices.
+    current: ReturnTotalsOut
+    snapshot: ReturnTotalsOut
+    delta: ReturnTotalsOut
+    sections: list[SectionDeltaOut]
+    #: True when anything at all moved. The cheap question a screen asks first.
+    changed: bool
+    computed_at: datetime
+
+
+# --------------------------------------------------------------------- e-Way bills
+# The third portal. Unlike an IRN, a bill expires — so every read of one is a read *at a moment*,
+# and `effective_status` is what the bill is now rather than what was written down.
+
+
+class EwayBillOut(BaseModel):
+    """One recorded attempt to raise an e-Way bill. Append-only: a retry is a further row."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    invoice_id: uuid.UUID
+    #: The **stored** status, as written. `expired` is not among the ones the live path writes.
+    status: EwayStatus
+    #: The status as of now — `expired` once `valid_until` has passed. Derived on read, because
+    #: the table is append-only and nothing can update a row when the clock moves past it.
+    effective_status: EwayStatus
+    eway_bill_no: str | None
+    transport_mode: str
+    distance_km: int
+    vehicle_no: str | None
+    transporter_id: str | None
+    transport_doc_no: str | None
+    transport_doc_date: date | None
+    over_dimensional: bool
+    consignment_value_minor: int
+    valid_from: datetime | None
+    #: Computed from `valid_from` and `distance_km` by `domain.eway_valid_until` and stored, so a
+    #: screen and a checkpoint are reading the same arithmetic over the same two values.
+    valid_until: datetime | None
+    #: `cancel` while the 24-hour window is open, null once it has closed or there is nothing to
+    #: withdraw. One answer, never a set of flags: a screen must offer the action that will work.
+    remedy: str | None
+    error_code: str | None
+    error: str | None
+    attempted_at: datetime
+
+
+class EwayState(BaseModel):
+    """A document's *current* e-Way position, derived from its newest attempt.
+
+    Never null on a document that needs a bill: an unmet obligation must be **visible** rather
+    than absent, which is the same reason `EInvoiceState.required` exists.
+    """
+
+    required: bool
+    status: EwayStatus | None
+    eway_bill_no: str | None
+    valid_from: datetime | None
+    valid_until: datetime | None
+    #: True once the platform has stopped: a refusal stands until the consignment changes.
+    terminal: bool
+    #: The instant the cancellation window closes, or null when there is nothing to withdraw.
+    cancellable_until: datetime | None
+    remedy: str | None
+    attempts: int
+
+
+class EwayBillWithInvoice(BaseModel):
+    """One bill on a list page, with enough of its document to be recognisable."""
+
+    bill: EwayBillOut
+    invoice_number: str
+    customer_name: str
+
+
+class GenerateEwayIn(BaseModel):
+    """Raise an e-Way bill for one document's goods movement.
+
+    Service-to-service, so `organization_id` travels in the body. The transport facts are the
+    caller's — a distance and a vehicle are not derivable from an invoice — and everything else
+    comes off the frozen document.
+    """
+
+    organization_id: uuid.UUID
+    invoice_id: uuid.UUID
+    #: Approximate road distance in kilometres. The **input** to validity, stored so the deadline
+    #: stays recomputable.
+    distance_km: int
+    transport_mode: str = "road"
+    vehicle_no: str | None = None
+    transporter_id: str | None = None
+    transport_doc_no: str | None = None
+    transport_doc_date: date | None = None
+    over_dimensional: bool = False
+
+
+class CancelEwayIn(BaseModel):
+    """Withdraw a raised e-Way bill, inside the portal's 24-hour window."""
+
+    organization_id: uuid.UUID
+    invoice_id: uuid.UUID
+    #: 1 Duplicate | 2 Order cancelled | 3 Data entry mistake | 4 Others. No free text.
+    reason_code: str
+    remark: str = ""
+
+
+# --------------------------------------------------------------------- withholding: TDS / TCS
+# What somebody else already paid to a tax authority out of what they owe this organization, and
+# what this organization collected on top. Two statutes, three heads, one register.
+
+
+class WithholdingRateOut(BaseModel):
+    """One version of one withholding head. Global vocabulary, versioned by `effective_from`."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    code: WithholdingCode
+    name: str
+    rate_pct: float
+    threshold_minor: int
+    basis: WithholdingBasis
+    jurisdiction: str
+    effective_from: date
+    effective_to: date | None
+
+
+class InvoiceWithholdingOut(BaseModel):
+    """One deduction or collection on one document — a row of the register.
+
+    `rate_pct` and `threshold_minor` are **snapshots** of the version named by
+    `withholding_rate_id`, not a live read of the schedule: a rate change must not restate a
+    figure somebody has already been paid net of.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    invoice_id: uuid.UUID
+    code: WithholdingCode
+    direction: WithholdingDirection
+    withholding_rate_id: uuid.UUID
+    rate_pct: float
+    threshold_minor: int
+    basis: WithholdingBasis
+    #: What the rate was applied to: the whole taxable value for a per-supply head, this
+    #: document's share of the excess over the threshold for an aggregate one.
+    basis_minor: int
+    amount_minor: int
+    cgst_minor: int
+    sgst_minor: int
+    igst_minor: int
+    counterparty_gstin: str | None
+    counterparty_name: str
+    resolved_on: date
+    period: str
+
+
+class WithholdingWithInvoice(BaseModel):
+    """One register row on a list page, with enough of its document to be recognisable."""
+
+    withholding: InvoiceWithholdingOut
+    invoice_number: str
+    invoice_issued_date: date
+    invoice_total_minor: int
+
+
+class WithholdingDeductorRow(BaseModel):
+    """One counterparty's line in the GSTR-7-style summary.
+
+    GSTR-7 is declared **per deductor**: the number they hold, the value they deducted against,
+    and the three heads. Grouping the register that way is what makes the platform's figures
+    comparable to the return the deductor actually files — which is the reconciliation a supplier
+    does, and the reason this summary exists on the receivable side at all.
+    """
+
+    counterparty_gstin: str | None
+    counterparty_name: str
+    document_count: int
+    basis_minor: int
+    amount_minor: int
+    cgst_minor: int
+    sgst_minor: int
+    igst_minor: int
+
+
+class WithholdingSummaryOut(BaseModel):
+    """One period's withholding, grouped the way the return declares it, and footed.
+
+    `total_*` sums the rows exactly; a test asserts it, because a summary that does not foot to
+    its own rows is worse than no summary.
+    """
+
+    period: str
+    code: WithholdingCode | None
+    direction: WithholdingDirection | None
+    rows: list[WithholdingDeductorRow]
+    document_count: int
+    total_basis_minor: int
+    total_amount_minor: int
+    total_cgst_minor: int
+    total_sgst_minor: int
+    total_igst_minor: int

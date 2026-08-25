@@ -12,6 +12,21 @@ because the sum of the three components is what a GSTR-1 return and an e-invoice
 declare independently, and a paisa of drift between them is a filing mismatch a human has to
 reconcile by hand. Nothing here divides by 100, and nothing here is a float.
 
+Three further compliance vocabularies sit on top of that split, and each is here rather than in
+`services` for the same reason — they are arithmetic somebody has to be able to check:
+
+* **GSTR-1 assembly** (`assemble_gstr1`) turns a period's frozen documents into the sections the
+  return declares. It **never computes tax**: every figure is a sum of the splits the invoices
+  already carry, so the return foots to its own documents by construction. Each reported document
+  lands in exactly one section, which is what makes that footing provable rather than hopeful.
+* **e-Way validity** (`eway_valid_until`) — one day per 200 km or part thereof, each expiring at
+  midnight of the day *following* generation. Computed from stored values so a screen and a
+  roadside checkpoint read the same arithmetic.
+* **Withholding** (`compute_gst_tds`, `compute_income_tax_withholding`) — GST s. 51 as a cliff on
+  a document's whole taxable value, 194Q/206C(1H) as aggregates biting only on a financial year's
+  excess. The s. 51 split reuses `split_gst` rather than re-halving, because a deduction must
+  round exactly as the levy it sits beside does.
+
 The block of *representative* figures at the bottom — the cash balance, the KPI spark-lines and
 deltas, the six-month cashflow, and the trial-balance accounts — are not derivable from an AR
 book alone (they need a cash ledger and a general ledger this slice does not own). They are
@@ -25,7 +40,7 @@ import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 # --------------------------------------------------------------------- vocabularies
@@ -803,6 +818,975 @@ def suggest_action(
         delta_minor=delta,
         matched_purchase_id=nearest.id,
     )
+
+
+# --------------------------------------------------------------------- GSTR-1
+# The outward-supplies return. Everything below assembles it and nothing below computes tax: the
+# splits were decided once, per line, when the document was finalized, and a return that
+# recomputed them would be a second implementation of the one calculation that must foot exactly
+# — which is precisely how a return comes to disagree with the invoices it is made of.
+#
+# The invariant that makes the whole thing checkable: **every reported document lands in exactly
+# one section, and every section's figures are sums of that document's stored line splits.** So
+# the sections foot to the lines by construction, not by a reconciliation step, and a test can
+# assert the equality directly rather than approximately.
+
+#: The returns this service models. `gstr1` is outward supplies; `gstr7` is the deductor's
+#: TDS return, which this slice reports the *figures* for without filing (see the README).
+GST_RETURN_TYPES: frozenset[str] = frozenset({"gstr1", "gstr7"})
+
+#: A return's lifecycle. `draft` is a period nobody has assembled yet; `generated` carries a
+#: snapshot of what would be reported; `filed` says the snapshot went to the portal. Forward
+#: only — see `RETURN_TRANSITIONS`.
+RETURN_STATUSES: frozenset[str] = frozenset({"draft", "generated", "filed"})
+
+#: Which moves are legal. A filed return is terminal: the correction for a mistake in a filed
+#: period is an amendment *in a later period*, which is GST's own model and the platform's — the
+#: same shape as a credit note against a filed invoice.
+RETURN_TRANSITIONS: dict[str, frozenset[str]] = {
+    "draft": frozenset({"generated"}),
+    "generated": frozenset({"generated", "filed"}),
+    "filed": frozenset(),
+}
+
+#: The B2C split. An inter-state supply to an unregistered person is reported invoice by invoice
+#: (B2CL) once its value passes this; everything else B2C is reported as a single aggregated
+#: figure per place of supply and rate (B2CS). ₹2,50,000, in paise.
+#:
+#: **Strictly greater.** A ₹2,50,000 invoice is B2C-small; ₹2,50,000.01 is B2C-large. The
+#: statute says "invoice value more than two and a half lakh rupees", and a boundary implemented
+#: as `>=` misfiles every invoice that lands exactly on it — a class of error that is invisible
+#: until a notice arrives, which is why it has a test at the exact rupee.
+B2C_LARGE_THRESHOLD_MINOR: int = 250_000_00
+
+#: The GSTR-1 sections this service assembles, in the order the return declares them.
+GSTR1_SECTIONS: tuple[str, ...] = ("b2b", "b2cl", "b2cs", "cdnr", "cdnur", "exp", "hsn", "docs")
+
+
+@dataclass(frozen=True, slots=True)
+class ReturnLine:
+    """One line of a document, as the return reads it — the stored split, never a recomputation."""
+
+    hsn_sac: str | None
+    description: str
+    quantity: Decimal
+    rate_pct: Decimal
+    taxable_minor: int
+    cgst_minor: int
+    sgst_minor: int
+    igst_minor: int
+
+    @property
+    def split(self) -> TaxSplit:
+        return TaxSplit(self.cgst_minor, self.sgst_minor, self.igst_minor)
+
+    @property
+    def total_minor(self) -> int:
+        return self.taxable_minor + self.split.total_minor
+
+
+@dataclass(frozen=True, slots=True)
+class ReturnDocument:
+    """One finalized document, reduced to what a return declares about it.
+
+    A plain dataclass rather than an ORM row so the assembly below is pure and can be property-
+    tested over generated books without a database. The selectors build these from `invoices`.
+    """
+
+    id: uuid.UUID
+    number: str
+    document_type: str
+    issued_date: date
+    supply_type: str
+    place_of_supply: str | None
+    reverse_charge: bool
+    buyer_gstin: str | None
+    buyer_name: str
+    #: The document's own taxable value and total, as frozen. Carried so the assembly can assert
+    #: the lines it was handed still foot to the header it was handed.
+    taxable_minor: int
+    total_minor: int
+    status: str
+    corrects_number: str | None
+    lines: tuple[ReturnLine, ...]
+
+    @property
+    def split(self) -> TaxSplit:
+        """The document's tax, summed from its lines — never read off the header."""
+        total = ZERO_TAX
+        for line in self.lines:
+            total = total + line.split
+        return total
+
+
+@dataclass(frozen=True, slots=True)
+class RateGroup:
+    """One (rate, tax-head) group inside a section — the grain GSTR-1 is actually declared at."""
+
+    rate_pct: Decimal
+    taxable_minor: int
+    cgst_minor: int
+    sgst_minor: int
+    igst_minor: int
+
+    @property
+    def total_minor(self) -> int:
+        return self.taxable_minor + self.cgst_minor + self.sgst_minor + self.igst_minor
+
+
+@dataclass(frozen=True, slots=True)
+class ReturnInvoiceEntry:
+    """One document as B2B, B2CL, CDNR, CDNUR or EXP declares it: header plus rate groups."""
+
+    document_id: uuid.UUID
+    number: str
+    document_type: str
+    issued_date: date
+    place_of_supply: str | None
+    counterparty_gstin: str | None
+    counterparty_name: str
+    reverse_charge: bool
+    invoice_value_minor: int
+    corrects_number: str | None
+    items: tuple[RateGroup, ...]
+
+    @property
+    def taxable_minor(self) -> int:
+        return sum(item.taxable_minor for item in self.items)
+
+    @property
+    def split(self) -> TaxSplit:
+        total = ZERO_TAX
+        for item in self.items:
+            total = total + TaxSplit(item.cgst_minor, item.sgst_minor, item.igst_minor)
+        return total
+
+
+@dataclass(frozen=True, slots=True)
+class B2csEntry:
+    """One aggregated B2C-small figure: place of supply x rate x whether it is inter-state.
+
+    Aggregated because that is what the return declares — B2CS is not invoice-wise, it is a
+    single number per (place of supply, rate). Credit notes to unregistered buyers below the
+    B2CL threshold are netted in here with their sign, which is GST's own treatment and the
+    reason the figure can legitimately be negative in a heavy-returns month.
+    """
+
+    place_of_supply: str | None
+    rate_pct: Decimal
+    inter_state: bool
+    taxable_minor: int
+    cgst_minor: int
+    sgst_minor: int
+    igst_minor: int
+    document_count: int
+
+    @property
+    def total_minor(self) -> int:
+        return self.taxable_minor + self.cgst_minor + self.sgst_minor + self.igst_minor
+
+
+@dataclass(frozen=True, slots=True)
+class HsnEntry:
+    """One row of the HSN summary: the code, the rate, and everything supplied under both."""
+
+    hsn_sac: str | None
+    rate_pct: Decimal
+    quantity: Decimal
+    taxable_minor: int
+    cgst_minor: int
+    sgst_minor: int
+    igst_minor: int
+
+    @property
+    def total_minor(self) -> int:
+        return self.taxable_minor + self.cgst_minor + self.sgst_minor + self.igst_minor
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentSeriesEntry:
+    """One declared document series — the numbers issued, and how many were cancelled.
+
+    GSTR-1 asks for the *range* of numbers a taxpayer used, not only the ones with tax on them,
+    because a gap in a series is the first sign of an unreported invoice. Void documents are
+    counted as cancelled rather than dropped, which is exactly why the range is asked for.
+    """
+
+    document_type: str
+    from_number: str
+    to_number: str
+    total_count: int
+    cancelled_count: int
+
+    @property
+    def net_count(self) -> int:
+        return self.total_count - self.cancelled_count
+
+
+@dataclass(frozen=True, slots=True)
+class ReturnTotals:
+    """What the return declares in one line. Every section sums to exactly this."""
+
+    taxable_minor: int = 0
+    cgst_minor: int = 0
+    sgst_minor: int = 0
+    igst_minor: int = 0
+    document_count: int = 0
+    line_count: int = 0
+
+    @property
+    def tax_minor(self) -> int:
+        return self.cgst_minor + self.sgst_minor + self.igst_minor
+
+    @property
+    def total_minor(self) -> int:
+        return self.taxable_minor + self.tax_minor
+
+
+@dataclass(frozen=True, slots=True)
+class Gstr1Return:
+    """One period's outward supplies, assembled. Pure data — the snapshot a `gst_returns` row
+    stores and the shape the read model serves back."""
+
+    period: str
+    gstin: str
+    b2b: tuple[ReturnInvoiceEntry, ...]
+    b2cl: tuple[ReturnInvoiceEntry, ...]
+    b2cs: tuple[B2csEntry, ...]
+    cdnr: tuple[ReturnInvoiceEntry, ...]
+    cdnur: tuple[ReturnInvoiceEntry, ...]
+    exp: tuple[ReturnInvoiceEntry, ...]
+    hsn: tuple[HsnEntry, ...]
+    docs: tuple[DocumentSeriesEntry, ...]
+    totals: ReturnTotals
+
+
+def in_period(on: date, period: str) -> bool:
+    """Whether a document dated `on` belongs to return period `period` (`YYYY-MM`)."""
+    year, month = parse_period(period)
+    return on.year == year and on.month == month
+
+
+def is_reportable_in_return(document_type: str, status: str) -> bool:
+    """Whether a document's *figures* belong in a return.
+
+    A draft was never issued, so it is not a supply. A void was withdrawn — it carries no tax,
+    but its **number** is still declared in the document series, which is why `assemble_gstr1`
+    keeps voids for that section and drops them from every other.
+    """
+    return document_type in DOCUMENT_TYPES and status not in UNREPORTED_STATUSES
+
+
+def gstr1_section_for(document: ReturnDocument, *, seller_state_code: str = "") -> str:
+    """The one section this document is declared in. Total, and mutually exclusive.
+
+    Order matters and is the order the statute reads in:
+
+    1. an **export** is EXP whoever the buyer is — it is inter-state by statute and carries no
+       recipient GSTIN to file it against;
+    2. a **credit note** goes to CDNR when the recipient is registered and CDNUR when they are
+       not, because the two are reconciled by different parties;
+    3. a supply to a **registered** recipient (including SEZ) is B2B;
+    4. an unregistered recipient above the threshold, inter-state, is **B2CL**;
+    5. everything else unregistered is **B2CS**.
+
+    Exhaustive by construction: every branch returns, so a document cannot fall out of the
+    return, which is the failure a reconciliation would only find months later.
+
+    `seller_state_code` is needed for one case only — deciding whether a *nil-rated* B2C supply is
+    inter-state, where there is no tax split to read the answer off. `assemble_gstr1` takes it
+    from the GSTIN the return is being filed under.
+    """
+    if document.supply_type == "export":
+        return "exp"
+    if document.document_type == "credit_note":
+        return "cdnr" if document.buyer_gstin else "cdnur"
+    if document.buyer_gstin:
+        return "b2b"
+    return "b2cl" if _is_b2c_large(document, seller_state_code) else "b2cs"
+
+
+def _is_b2c_large(document: ReturnDocument, seller_state_code: str) -> bool:
+    """Inter-state, unregistered, and above ₹2.5 lakh — the three conditions, all required.
+
+    "Above" is strict: an invoice landing exactly on the threshold is B2C-small.
+    """
+    if document.buyer_gstin:
+        return False
+    if not _is_inter_state(document, seller_state_code):
+        return False
+    return abs(document.total_minor) > B2C_LARGE_THRESHOLD_MINOR
+
+
+def intra_state_from_split(
+    split: TaxSplit, *, supply_type: str, seller_state_code: str, place_of_supply: str | None
+) -> bool:
+    """Whether a **frozen** document was taxed intra-state — read off its split, not re-derived.
+
+    The distinction from `is_intra_state` matters, and it is why both exist. That one decides the
+    heads a supply *will* be taxed under, at the moment it is raised. This one answers what a
+    document *was* taxed under, months later, and the honest answer is the one written on it:
+    re-deciding from the state codes would let a return — or a TDS deduction — disagree with the
+    invoice it belongs to the moment the seller re-registers in another state.
+
+    The fallback matters too. A **zero-rated or reverse-charge** document has no tax at all, and
+    the two shapes are indistinguishable at zero — which is exactly the case B2C-large turns on,
+    since a large nil-rated inter-state supply is still declared invoice-wise. So where there is
+    nothing to read, it falls back to `is_intra_state`: the same rule that decided the heads when
+    the document was raised, rather than a guess that quietly makes every nil-rated supply
+    intra-state.
+
+    One function rather than one per caller, because a second copy of this three-branch rule is a
+    second copy that drifts.
+    """
+    if split.igst_minor:
+        return False
+    if split.cgst_minor or split.sgst_minor:
+        return True
+    return is_intra_state(
+        supply_type=supply_type,
+        seller_state_code=seller_state_code,
+        place_of_supply=place_of_supply or "",
+    )
+
+
+def _is_inter_state(document: ReturnDocument, seller_state_code: str) -> bool:
+    return not intra_state_from_split(
+        document.split,
+        supply_type=document.supply_type,
+        seller_state_code=seller_state_code,
+        place_of_supply=document.place_of_supply,
+    )
+
+
+def _rate_groups(lines: Sequence[ReturnLine]) -> tuple[RateGroup, ...]:
+    """Collapse a document's lines onto the (rate) grain the return declares, summing splits."""
+    buckets: dict[Decimal, list[int]] = {}
+    for line in lines:
+        bucket = buckets.setdefault(line.rate_pct, [0, 0, 0, 0])
+        bucket[0] += line.taxable_minor
+        bucket[1] += line.cgst_minor
+        bucket[2] += line.sgst_minor
+        bucket[3] += line.igst_minor
+    return tuple(
+        RateGroup(
+            rate_pct=rate,
+            taxable_minor=values[0],
+            cgst_minor=values[1],
+            sgst_minor=values[2],
+            igst_minor=values[3],
+        )
+        for rate, values in sorted(buckets.items())
+    )
+
+
+def _entry_for(document: ReturnDocument) -> ReturnInvoiceEntry:
+    return ReturnInvoiceEntry(
+        document_id=document.id,
+        number=document.number,
+        document_type=document.document_type,
+        issued_date=document.issued_date,
+        place_of_supply=document.place_of_supply,
+        counterparty_gstin=document.buyer_gstin,
+        counterparty_name=document.buyer_name,
+        reverse_charge=document.reverse_charge,
+        invoice_value_minor=document.total_minor,
+        corrects_number=document.corrects_number,
+        items=_rate_groups(document.lines),
+    )
+
+
+def _b2cs_entries(
+    documents: Sequence[ReturnDocument], seller_state_code: str
+) -> tuple[B2csEntry, ...]:
+    """Aggregate the B2C-small supplies by place of supply, rate and inter/intra-state.
+
+    Aggregation is the section's whole shape: a retailer's thousand counter sales are one number
+    per rate, not a thousand rows. The counts are carried alongside so a diff can say *how many*
+    documents moved a figure, which is the first question anybody asks of an aggregate.
+    """
+    buckets: dict[tuple[str | None, Decimal, bool], list[int]] = {}
+    seen: dict[tuple[str | None, Decimal, bool], set[uuid.UUID]] = {}
+    for document in documents:
+        inter = _is_inter_state(document, seller_state_code)
+        for line in document.lines:
+            key = (document.place_of_supply, line.rate_pct, inter)
+            bucket = buckets.setdefault(key, [0, 0, 0, 0])
+            bucket[0] += line.taxable_minor
+            bucket[1] += line.cgst_minor
+            bucket[2] += line.sgst_minor
+            bucket[3] += line.igst_minor
+            seen.setdefault(key, set()).add(document.id)
+    return tuple(
+        B2csEntry(
+            place_of_supply=pos,
+            rate_pct=rate,
+            inter_state=inter,
+            taxable_minor=values[0],
+            cgst_minor=values[1],
+            sgst_minor=values[2],
+            igst_minor=values[3],
+            document_count=len(seen[(pos, rate, inter)]),
+        )
+        for (pos, rate, inter), values in sorted(
+            buckets.items(), key=lambda kv: (kv[0][0] or "", kv[0][1], kv[0][2])
+        )
+    )
+
+
+def _hsn_summary(documents: Sequence[ReturnDocument]) -> tuple[HsnEntry, ...]:
+    """Every line of every reported document, grouped by HSN/SAC and rate.
+
+    Deliberately assembled from the *same* lines the sections are, rather than from the section
+    entries: the HSN summary and the taxable-supply sections are two independent declarations of
+    one book, and the portal cross-foots them. Building the second from the first would make them
+    agree by construction and hide exactly the disagreement the cross-foot exists to catch — so
+    they are built in parallel from the lines, and a test asserts they agree.
+
+    A line with no HSN groups under `None` rather than being dropped: a missing code is a gap the
+    return must show, not one it should quietly close.
+    """
+    buckets: dict[tuple[str | None, Decimal], list[int]] = {}
+    quantities: dict[tuple[str | None, Decimal], Decimal] = {}
+    for document in documents:
+        for line in document.lines:
+            key = (line.hsn_sac, line.rate_pct)
+            bucket = buckets.setdefault(key, [0, 0, 0, 0])
+            bucket[0] += line.taxable_minor
+            bucket[1] += line.cgst_minor
+            bucket[2] += line.sgst_minor
+            bucket[3] += line.igst_minor
+            quantities[key] = quantities.get(key, Decimal(0)) + line.quantity
+    return tuple(
+        HsnEntry(
+            hsn_sac=hsn,
+            rate_pct=rate,
+            quantity=quantities[(hsn, rate)],
+            taxable_minor=values[0],
+            cgst_minor=values[1],
+            sgst_minor=values[2],
+            igst_minor=values[3],
+        )
+        for (hsn, rate), values in sorted(
+            buckets.items(), key=lambda kv: (kv[0][0] or "", kv[0][1])
+        )
+    )
+
+
+def _document_series(documents: Sequence[ReturnDocument]) -> tuple[DocumentSeriesEntry, ...]:
+    """The number ranges issued in the period, per document type, with the voids counted.
+
+    This is the one section a *void* belongs in: its figures are not a supply, but its number was
+    consumed, and a series with a hole in it is how an unreported invoice announces itself.
+    """
+    by_type: dict[str, list[str]] = {}
+    cancelled: dict[str, int] = {}
+    for document in documents:
+        by_type.setdefault(document.document_type, []).append(document.number)
+        if document.status == "void":
+            cancelled[document.document_type] = cancelled.get(document.document_type, 0) + 1
+    return tuple(
+        DocumentSeriesEntry(
+            document_type=document_type,
+            from_number=min(numbers),
+            to_number=max(numbers),
+            total_count=len(numbers),
+            cancelled_count=cancelled.get(document_type, 0),
+        )
+        for document_type, numbers in sorted(by_type.items())
+    )
+
+
+def _totals_of(documents: Sequence[ReturnDocument]) -> ReturnTotals:
+    """The return's one-line declaration, summed straight off the lines.
+
+    Summed from the *lines*, not from the assembled sections, for the same reason the HSN summary
+    is: two independent paths to one number, so a test comparing them is a real check rather than
+    a tautology.
+    """
+    taxable = 0
+    split = ZERO_TAX
+    line_count = 0
+    for document in documents:
+        for line in document.lines:
+            taxable += line.taxable_minor
+            split = split + line.split
+            line_count += 1
+    return ReturnTotals(
+        taxable_minor=taxable,
+        cgst_minor=split.cgst_minor,
+        sgst_minor=split.sgst_minor,
+        igst_minor=split.igst_minor,
+        document_count=len(documents),
+        line_count=line_count,
+    )
+
+
+def assemble_gstr1(documents: Sequence[ReturnDocument], *, period: str, gstin: str) -> Gstr1Return:
+    """Assemble one period's outward-supplies return. Pure, and the only place sections are built.
+
+    `documents` is every finalized document the organization issued in the period, voids and all.
+    The voids are dropped from every section except the document series, where their numbers are
+    declared and counted as cancelled.
+
+    Nothing here computes tax. Every figure is a sum of stored line splits, so the return foots
+    to the invoices it is made of by construction — which is the property the tests assert three
+    ways: sections against lines, HSN summary against lines, and the one-line totals against
+    both.
+
+    The seller's state comes off the GSTIN this return is being filed under — the first two
+    characters, by construction — rather than being passed separately, so the two can never
+    disagree. It is used for exactly one decision: whether a nil-rated B2C supply is inter-state,
+    where there is no tax split to read the answer off.
+    """
+    parse_period(period)  # refuse a malformed period before anything is assembled
+    seller_state = gstin[:2]
+    reported = [d for d in documents if is_reportable_in_return(d.document_type, d.status)]
+
+    sections: dict[str, list[ReturnDocument]] = {
+        name: [] for name in ("b2b", "b2cl", "cdnr", "cdnur", "exp", "b2cs")
+    }
+    for document in reported:
+        sections[gstr1_section_for(document, seller_state_code=seller_state)].append(document)
+
+    return Gstr1Return(
+        period=period,
+        gstin=gstin,
+        b2b=tuple(_entry_for(d) for d in sections["b2b"]),
+        b2cl=tuple(_entry_for(d) for d in sections["b2cl"]),
+        b2cs=_b2cs_entries(sections["b2cs"], seller_state),
+        cdnr=tuple(_entry_for(d) for d in sections["cdnr"]),
+        cdnur=tuple(_entry_for(d) for d in sections["cdnur"]),
+        exp=tuple(_entry_for(d) for d in sections["exp"]),
+        hsn=_hsn_summary(reported),
+        docs=_document_series(list(documents)),
+        totals=_totals_of(reported),
+    )
+
+
+def section_totals(section: str, ret: Gstr1Return) -> ReturnTotals:
+    """One section's own footing, so a diff and a test can talk about sections individually."""
+    if section == "b2cs":
+        rows = ret.b2cs
+        return ReturnTotals(
+            taxable_minor=sum(r.taxable_minor for r in rows),
+            cgst_minor=sum(r.cgst_minor for r in rows),
+            sgst_minor=sum(r.sgst_minor for r in rows),
+            igst_minor=sum(r.igst_minor for r in rows),
+            document_count=sum(r.document_count for r in rows),
+            line_count=len(rows),
+        )
+    if section == "hsn":
+        return ReturnTotals(
+            taxable_minor=sum(r.taxable_minor for r in ret.hsn),
+            cgst_minor=sum(r.cgst_minor for r in ret.hsn),
+            sgst_minor=sum(r.sgst_minor for r in ret.hsn),
+            igst_minor=sum(r.igst_minor for r in ret.hsn),
+            document_count=0,
+            line_count=len(ret.hsn),
+        )
+    entries: tuple[ReturnInvoiceEntry, ...] = getattr(ret, section)
+    split = ZERO_TAX
+    for entry in entries:
+        split = split + entry.split
+    return ReturnTotals(
+        taxable_minor=sum(e.taxable_minor for e in entries),
+        cgst_minor=split.cgst_minor,
+        sgst_minor=split.sgst_minor,
+        igst_minor=split.igst_minor,
+        document_count=len(entries),
+        line_count=sum(len(e.items) for e in entries),
+    )
+
+
+def totals_delta(before: ReturnTotals, after: ReturnTotals) -> ReturnTotals:
+    """`after - before`, component-wise — the shape a diff between two snapshots reports.
+
+    Signed on purpose. "The book moved by -4,200 paise" is an answer; "the book differs" is not.
+    """
+    return ReturnTotals(
+        taxable_minor=after.taxable_minor - before.taxable_minor,
+        cgst_minor=after.cgst_minor - before.cgst_minor,
+        sgst_minor=after.sgst_minor - before.sgst_minor,
+        igst_minor=after.igst_minor - before.igst_minor,
+        document_count=after.document_count - before.document_count,
+        line_count=after.line_count - before.line_count,
+    )
+
+
+def may_transition_return(current: str, wanted: str) -> bool:
+    """Whether a return may move from `current` to `wanted`. Forward only; `filed` is terminal."""
+    return wanted in RETURN_TRANSITIONS.get(current, frozenset())
+
+
+# --------------------------------------------------------------------- e-Way bills
+# A second portal with a second obligation, and it is not e-invoicing with a different endpoint:
+# an IRN says a supply was reported, an e-Way bill says goods are *moving right now* and is
+# checked at the roadside. That is why it expires and an IRN does not.
+
+#: Goods moving under a consignment worth more than this need an e-Way bill. ₹50,000, in paise.
+#: Strictly greater, like the B2CL threshold and for the same reason.
+EWAY_THRESHOLD_MINOR: int = 50_000_00
+
+#: How the goods travel. The portal wants a vehicle number for road and a transport document
+#: number for everything else, which is a real branch rather than a formatting difference.
+TRANSPORT_MODES: frozenset[str] = frozenset({"road", "rail", "air", "ship"})
+
+#: The lifecycle of one attempt, and of the bill it produces.
+#:
+#:   pending    — an attempt recorded before an answer came back (a portal outage).
+#:   generated  — the portal issued a bill number; it is live until `valid_until`.
+#:   failed     — the portal refused. Not one of the four states a *bill* has, because an attempt
+#:                that never became a bill has no bill lifecycle; it is here for the same reason
+#:                `einvoice_filings` carries it, since this table records attempts and not bills.
+#:   cancelled  — a generated bill was withdrawn inside the 24-hour window.
+#:   expired    — validity ran out. **Never written by the live path** — it is derived on read
+#:                from the stored `valid_until`, because the table is append-only and a row
+#:                cannot be updated when the clock passes it. Storable so a bill imported from
+#:                the portal already past its validity is representable.
+EWAY_STATUSES: frozenset[str] = frozenset(
+    {"pending", "generated", "failed", "cancelled", "expired"}
+)
+
+#: Kilometres of approximate distance one day of validity buys, for ordinary cargo.
+EWAY_KM_PER_DAY: int = 200
+
+#: The same, for over-dimensional cargo — a tenth of the distance for the same day, because it
+#: moves under escort and at a fraction of the speed.
+EWAY_ODC_KM_PER_DAY: int = 20
+
+#: The portal refuses a distance outside this band: zero is not a movement, and 4,000 km is
+#: further than any road journey inside India.
+EWAY_MIN_DISTANCE_KM: int = 1
+EWAY_MAX_DISTANCE_KM: int = 4_000
+
+#: How long after generation an e-Way bill may be withdrawn. Same 24 hours as an IRN, and for
+#: the same reason it is enforced locally: the answer is arithmetic over a stored timestamp.
+EWAY_CANCELLATION_WINDOW: timedelta = timedelta(hours=24)
+
+#: The portal's cancellation reasons. Four, like the IRP's, and no free-text alternative.
+EWAY_CANCELLATION_REASONS: dict[str, str] = {
+    "1": "Duplicate",
+    "2": "Order cancelled",
+    "3": "Data entry mistake",
+    "4": "Others",
+}
+
+
+def requires_eway_bill(
+    *, consignment_value_minor: int, document_type: str, supply_type: str, status: str
+) -> bool:
+    """Whether this document's goods movement needs an e-Way bill.
+
+    Three conditions, and the value one is strict: *more than* ₹50,000. The absolute value is
+    taken because a credit note's negative total still describes goods physically moving — back
+    to the seller — and a return consignment needs a bill exactly as the outward one did.
+
+    A draft or a void is excluded for the same reason it is excluded from filing: nothing is
+    moving under a document nobody issued.
+    """
+    if status in UNREPORTED_STATUSES or document_type not in DOCUMENT_TYPES:
+        return False
+    if supply_type not in SUPPLY_TYPES:
+        return False
+    return abs(consignment_value_minor) > EWAY_THRESHOLD_MINOR
+
+
+def eway_validity_days(distance_km: int, *, over_dimensional: bool = False) -> int:
+    """How many days of validity `distance_km` buys. One day per 200 km **or part thereof**.
+
+    "Or part thereof" is the whole rule: 201 km is two days, not one and a bit. Minimum one, so a
+    5 km delivery is still valid for a day rather than for none.
+    """
+    if distance_km < EWAY_MIN_DISTANCE_KM or distance_km > EWAY_MAX_DISTANCE_KM:
+        raise ValueError(
+            f"{distance_km} km is not a distance the portal accepts "
+            f"({EWAY_MIN_DISTANCE_KM} to {EWAY_MAX_DISTANCE_KM} km)"
+        )
+    per_day = EWAY_ODC_KM_PER_DAY if over_dimensional else EWAY_KM_PER_DAY
+    return max(1, -(-distance_km // per_day))
+
+
+def eway_valid_until(
+    valid_from: datetime, distance_km: int, *, over_dimensional: bool = False
+) -> datetime:
+    """When a bill generated at `valid_from` for `distance_km` stops being valid.
+
+    The statutory shape, which is *not* "generation time plus N x 24 hours": each day of validity
+    expires at midnight of the day immediately following the date of generation. So a bill
+    generated at 23:50 on the 1st for 150 km expires at midnight ending the 1st — ten minutes
+    later — and a driver who reads it as "a day from now" is stopped at a checkpoint.
+
+    Computed here, from the two values the platform *stores*, so the deadline a screen shows and
+    the deadline enforced are the same arithmetic over the same timestamp — never a figure the
+    portal returned and nothing can re-derive.
+    """
+    days = eway_validity_days(distance_km, over_dimensional=over_dimensional)
+    end_date = valid_from.date() + timedelta(days=days)
+    return datetime.combine(end_date, datetime.min.time(), tzinfo=valid_from.tzinfo or UTC)
+
+
+def eway_expired(valid_until: datetime, at: datetime) -> bool:
+    """Whether validity has run out at `at`. Inclusive of the instant it ends: at midnight the
+    bill is already expired, which is the direction that fails safe at a checkpoint."""
+    return at >= valid_until
+
+
+def eway_cancellation_deadline(generated_at: datetime) -> datetime:
+    return generated_at + EWAY_CANCELLATION_WINDOW
+
+
+def eway_cancellation_window_open(generated_at: datetime, at: datetime) -> bool:
+    """Whether a generated bill may still be withdrawn at `at`."""
+    return at - generated_at <= EWAY_CANCELLATION_WINDOW
+
+
+def eway_status_at(*, status: str, valid_until: datetime | None, at: datetime) -> str:
+    """The status a stored attempt *actually* has now.
+
+    The only place `expired` is produced. A `generated` row whose validity has passed reads as
+    `expired`; every other status is what it was, because a cancelled bill does not later expire
+    and a refusal has no validity to run out.
+    """
+    if status == "generated" and valid_until is not None and eway_expired(valid_until, at):
+        return "expired"
+    return status
+
+
+def eway_remedy_for(*, status: str, generated_at: datetime | None, at: datetime) -> str | None:
+    """What can still be done to a bill: `cancel` inside the window, otherwise nothing.
+
+    Named as a single answer rather than a set of flags for the same reason `remedy_for` is: a
+    screen must offer the one action that will work, and offering both is how a user learns
+    which is right by having the other fail.
+    """
+    if status != "generated" or generated_at is None:
+        return None
+    return "cancel" if eway_cancellation_window_open(generated_at, at) else None
+
+
+# --------------------------------------------------------------------- withholding: TDS and TCS
+# Two different statutes that both take a slice off an invoice, and they are not variants of each
+# other:
+#
+#   GST s. 51    the *recipient* deducts 2 % of the taxable value and pays it to the GST
+#                authority, on notified supplies (metal scrap is the case this platform's
+#                vertical meets) above ₹2.5 lakh under one contract. It splits across tax heads
+#                exactly as GST does, because it *is* GST.
+#   IT s. 194Q   the *buyer* deducts 0.1 % of purchases from one seller beyond ₹50 lakh in a
+#                financial year. Income tax, no heads, cumulative rather than per-invoice.
+#   IT s. 206C(1H)  the *seller* collects 0.1 % of receipts from one buyer beyond the same
+#                ₹50 lakh — and must **not** when the buyer is already deducting under 194Q.
+#
+# All three are versioned by `effective_from` the way `tax_rates` is, and for the sharper reason:
+# a rate change here must not restate history. The rate that applied is the one in force on the
+# *document's* date, resolved once and snapshotted onto the row, so adding tomorrow's rate today
+# changes nothing that was already computed.
+
+#: The withholding heads this service models.
+WITHHOLDING_CODES: frozenset[str] = frozenset({"gst_tds_51", "itax_194q", "itax_206c_1h"})
+
+#: How each one measures its threshold.
+#:
+#:   supply     — per document, against that document's own taxable value (GST s. 51).
+#:   aggregate  — against the running financial-year total with that party, so the rate bites
+#:                only on the part above the threshold (194Q, 206C(1H)).
+WITHHOLDING_BASES: frozenset[str] = frozenset({"supply", "aggregate"})
+
+#: Which side of the invoice the money leaves from.
+#:
+#:   deducted   — somebody withheld it from what they owe us (s. 51, 194Q). We are paid less and
+#:                claim the credit.
+#:   collected  — we charged it on top and owe it onward (206C(1H)).
+WITHHOLDING_DIRECTIONS: frozenset[str] = frozenset({"deducted", "collected"})
+
+WITHHOLDING_DIRECTION: dict[str, str] = {
+    "gst_tds_51": "deducted",
+    "itax_194q": "deducted",
+    "itax_206c_1h": "collected",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class WithholdingRate:
+    """One version of one withholding head. Immutable, and superseded rather than edited."""
+
+    id: uuid.UUID
+    code: str
+    rate_pct: Decimal
+    threshold_minor: int
+    basis: str
+    effective_from: date
+    effective_to: date | None
+    jurisdiction: str = "IN"
+
+    def covers(self, on: date) -> bool:
+        """Half-open: `[effective_from, effective_to)`, so a version ending the day another
+        begins leaves neither a gap nor an overlap on the changeover date."""
+        if on < self.effective_from:
+            return False
+        return self.effective_to is None or on < self.effective_to
+
+
+@dataclass(frozen=True, slots=True)
+class Withholding:
+    """One computed deduction or collection — the row that goes in the register.
+
+    Carries the resolved rate and threshold as *snapshots* beside the id of the version they
+    came from, which is what makes "why is this figure what it is" answerable years later
+    without depending on the schedule still saying the same thing.
+    """
+
+    code: str
+    rate_id: uuid.UUID
+    rate_pct: Decimal
+    threshold_minor: int
+    basis: str
+    direction: str
+    #: The amount the rate was applied to — the part above the threshold, not the whole invoice.
+    basis_minor: int
+    amount_minor: int
+    cgst_minor: int = 0
+    sgst_minor: int = 0
+    igst_minor: int = 0
+
+
+def resolve_withholding_rate(
+    schedule: Sequence[WithholdingRate], code: str, on: date, *, jurisdiction: str = "IN"
+) -> WithholdingRate | None:
+    """The version of `code` in force on `on` — the document's date, never today's.
+
+    Resolving against the document's date is the whole of "a rate change must not restate
+    history": a new row with a later `effective_from` is invisible to every document that came
+    before it, so no recomputation of an old invoice can produce a new answer.
+
+    The newest covering version wins, so a correction issued as a second row with the same
+    `effective_from` supersedes the first rather than being ambiguous.
+    """
+    covering = [
+        rate
+        for rate in schedule
+        if rate.code == code and rate.jurisdiction == jurisdiction and rate.covers(on)
+    ]
+    if not covering:
+        return None
+    return max(covering, key=lambda r: (r.effective_from, r.id.int))
+
+
+def withholding_amount_minor(basis_minor: int, rate_pct: Decimal) -> int:
+    """A withholding, in minor units, rounded half-up **once**.
+
+    Deliberately the same shape as `gst_amount_minor`, and deliberately not a call to it: that
+    function is the GST levy and this is a deduction under a different statute. They agree today
+    at 2 % of a taxable value and they are not the same rule, so they are not the same function.
+    """
+    exact = Decimal(basis_minor) * rate_pct / Decimal(100)
+    return int(exact.to_integral_value(rounding=ROUND_HALF_UP))
+
+
+def supply_withholding_basis(taxable_minor: int, threshold_minor: int) -> int:
+    """What a per-supply head applies to: the whole taxable value, or nothing.
+
+    Not "the excess". GST s. 51 is a cliff — below the threshold nothing is deducted, above it
+    the 2 % is on the *entire* taxable value — which is the opposite of how 194Q works and the
+    single most common way the two get conflated.
+    """
+    return taxable_minor if abs(taxable_minor) > threshold_minor else 0
+
+
+def aggregate_withholding_basis(
+    *, prior_minor: int, current_minor: int, threshold_minor: int
+) -> int:
+    """What an aggregate head applies to: this document's share of the excess over the threshold.
+
+    The rate bites only on the part of the financial year's running total that sits above the
+    threshold, so the invoice that *crosses* ₹50 lakh is withheld on partially — the part above —
+    and every one after it in full. Computed as the difference of two excesses rather than with
+    a branch, so the three cases (wholly below, straddling, wholly above) are one expression and
+    the straddling one cannot be the case somebody forgot.
+    """
+    excess_before = max(0, prior_minor - threshold_minor)
+    excess_after = max(0, prior_minor + current_minor - threshold_minor)
+    return excess_after - excess_before
+
+
+def income_tax_head(*, buyer_deducts_194q: bool) -> str | None:
+    """Which income-tax head applies to a sale, when either could.
+
+    194Q and 206C(1H) are mutually exclusive by statute and the tie is not a coin toss: where the
+    buyer is liable to deduct under 194Q, the seller must **not** collect under 206C(1H). Charging
+    both is the error, and it is the error a naive "apply every rule that matches" produces.
+    """
+    return "itax_194q" if buyer_deducts_194q else "itax_206c_1h"
+
+
+def compute_gst_tds(
+    *,
+    taxable_minor: int,
+    rate: WithholdingRate,
+    intra_state: bool,
+) -> Withholding | None:
+    """GST s. 51 on one supply, split across the heads it is payable under.
+
+    The split reuses `split_gst`, which is the point: a 2 % deduction is 1 % CGST + 1 % SGST
+    intra-state and 2 % IGST inter-state, with the odd paisa landing in the same place it lands
+    on the levy itself. Re-halving it here would be the second implementation of the platform's
+    one calculation that has to foot exactly.
+    """
+    basis = supply_withholding_basis(taxable_minor, rate.threshold_minor)
+    if not basis:
+        return None
+    split = split_gst(basis, rate.rate_pct, intra_state=intra_state)
+    return Withholding(
+        code=rate.code,
+        rate_id=rate.id,
+        rate_pct=rate.rate_pct,
+        threshold_minor=rate.threshold_minor,
+        basis=rate.basis,
+        direction=WITHHOLDING_DIRECTION[rate.code],
+        basis_minor=basis,
+        amount_minor=split.total_minor,
+        cgst_minor=split.cgst_minor,
+        sgst_minor=split.sgst_minor,
+        igst_minor=split.igst_minor,
+    )
+
+
+def compute_income_tax_withholding(
+    *, prior_minor: int, current_minor: int, rate: WithholdingRate
+) -> Withholding | None:
+    """194Q or 206C(1H) on one invoice, given the year's running total before it.
+
+    No tax heads: income tax is not GST, so `cgst/sgst/igst` stay zero rather than being given a
+    meaning they do not have.
+    """
+    basis = aggregate_withholding_basis(
+        prior_minor=prior_minor,
+        current_minor=current_minor,
+        threshold_minor=rate.threshold_minor,
+    )
+    if not basis:
+        return None
+    return Withholding(
+        code=rate.code,
+        rate_id=rate.id,
+        rate_pct=rate.rate_pct,
+        threshold_minor=rate.threshold_minor,
+        basis=rate.basis,
+        direction=WITHHOLDING_DIRECTION[rate.code],
+        basis_minor=basis,
+        amount_minor=withholding_amount_minor(basis, rate.rate_pct),
+    )
+
+
+def financial_year_bounds(on: date) -> tuple[date, date]:
+    """India's financial year around `on`, as a half-open `[start, end)` pair — April to April.
+
+    The window an aggregate threshold is measured over, returned rather than reconstructed at
+    each call site so "which year is this invoice in" has exactly one answer.
+    """
+    start_year = on.year if on.month >= 4 else on.year - 1
+    return date(start_year, 4, 1), date(start_year + 1, 4, 1)
 
 
 # --------------------------------------------------------------------- invoice facts

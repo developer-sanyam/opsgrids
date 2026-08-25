@@ -15,18 +15,25 @@ Two platform rules shape every table here:
   summing the payment allocations that point at a document, so the invoice row cannot drift out
   of agreement with the cash applied to it.
 
-`tax_rates` is the one deliberately different table: it carries **no `organization_id`** and is
-left UNPOLICIED. A GST rate schedule is platform vocabulary — the same 5/12/18/28 % bands for
-every tenant in India — not tenant data, so RLS on it would be meaningless (see the RLS
-migration, which lists it as exempt alongside `processed_events`).
+`tax_rates` and `withholding_rates` are the two deliberately different tables: they carry **no
+`organization_id`** and are left UNPOLICIED. A GST rate schedule and a statutory withholding rate
+are platform vocabulary — the same 5/12/18/28 % bands and the same 2 % under s. 51 for every
+tenant in India — not tenant data, so RLS on them would be meaningless (see the RLS migrations,
+which list them as exempt alongside `processed_events`).
 
-`einvoice_filings` and `ims_decisions` are append-only at the *database*, not merely by
-convention: a trigger refuses UPDATE and DELETE. A privilege REVOKE would not survive
-`apply_schema_grants`, which re-grants DML on every table at the end of every migration run — see
-the migrations for the whole reasoning. Both hold **evidence**: what the tax portal was told, and
-what a person decided about somebody else's claim on this business. `ims_reconciliations` is
+`einvoice_filings`, `ims_decisions`, `eway_bills`, `gst_return_transitions` and
+`invoice_withholdings` are append-only at the *database*, not merely by convention: a trigger
+refuses UPDATE and DELETE. A privilege REVOKE would not survive `apply_schema_grants`, which
+re-grants DML on every table at the end of every migration run — see the migrations for the whole
+reasoning. Each holds **evidence**: what a tax portal was told, what a person decided about
+somebody else's claim on this business, what licence goods moved under, when a return was filed,
+and what somebody else already withheld and paid to a tax authority. `ims_reconciliations` is
 pointedly not among them — a suggestion is recomputed opinion, and freezing an opinion buys an
-auditor nothing.
+auditor nothing. `gst_returns` is the one hybrid: its *snapshot* is frozen by a trigger the moment
+the return is **filed**, while `status`, `filed_at` and `arn` may still move forward, because a
+return is a record that gets filed rather than a row that gets appended. Before filing it may be
+re-assembled — nothing has been reported to anybody yet — and every assembly appends its own
+transition row, so "this was generated three times before it went" stays visible.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -49,6 +57,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -86,6 +95,25 @@ class Customer(Base, TenantBase):
     gstin: Mapped[str | None] = mapped_column(String(20))
     city: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     state: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+
+    # ---------------------------------------------------------------- withholding
+    # Three facts about the *buyer* that decide whether tax is withheld on what this organization
+    # bills them. They live on the customer because that is what they are facts about, and they
+    # are flags rather than derivations because the platform genuinely cannot infer them: whether
+    # a body is notified under GST s. 51, and whether a buyer's own turnover makes them liable to
+    # deduct under s. 194Q, are facts about somebody else's registration and somebody else's
+    # books. Defaulting all three to false is what keeps withholding opt-in: an organization that
+    # has not told the platform about its counterparties has no figures invented for it.
+
+    #: A body notified under GST s. 51 — a government department, local authority or PSU — which
+    #: must deduct 2 % of the taxable value on supplies above the threshold.
+    is_tds_deductor: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: A buyer liable to deduct income tax under s. 194Q. Mutually exclusive with 206C(1H) by
+    #: statute, and this flag is which side of that exclusion the pair falls on.
+    deducts_tds_194q: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: This organization collects TCS from this buyer under s. 206C(1H). Set once the seller has
+    #: notified the buyer, which is how the obligation actually starts in practice.
+    tcs_applicable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     __table_args__ = (
         # Every index leads with `organization_id`: under RLS the policy qual is ANDed into
@@ -626,6 +654,289 @@ class ImsDecision(Base, TenantBase):
     __table_args__ = (
         Index("ix_ims_decisions_org_document", "organization_id", "ims_document_id"),
         Index("ix_ims_decisions_org_decided", "organization_id", "decided_at"),
+    )
+
+
+class GstReturn(Base, TenantBase):
+    """One period's return for one registration — the record, and its frozen snapshot.
+
+    **One row per (registration, period, type)**, which is the grain the obligation itself has: a
+    taxpayer files GSTR-1 once for August under one GSTIN, and a second row for the same three
+    would be a second filing, not a second version.
+
+    The row's *snapshot* — `sections` and the totals beside it — is frozen by a trigger the moment
+    the return is **filed**. That is the whole design: a filed return is what was reported, so an
+    invoice corrected in September must show up as a **difference** against August's snapshot
+    rather than by August quietly becoming a different return. Only `status`, `filed_at` and `arn`
+    may move afterwards, and only forward. Before filing the snapshot may still be re-assembled —
+    nothing has been reported to anybody yet, and looking at a return before sending it is the
+    point of generating one.
+
+    The status trail is not a column's history — it is `gst_return_transitions`, appended to and
+    never rewritten, so "when did this become filed, and who said so" is a query.
+    """
+
+    __tablename__ = "gst_returns"
+
+    #: The registration this return is filed under. Same-schema reference; the GSTIN beside it is
+    #: a **snapshot**, for the same reason `invoices.seller_gstin` is one: a return already filed
+    #: keeps naming the number it was filed under even if the registration is later corrected.
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    gstin: Mapped[str] = mapped_column(String(15), nullable=False)
+    state_code: Mapped[str] = mapped_column(String(2), nullable=False)
+    #: The tax period, `YYYY-MM`. A string rather than a date because it is an identifier the
+    #: portal echoes back, not a point in time to do arithmetic on.
+    period: Mapped[str] = mapped_column(String(7), nullable=False)
+    #: gstr1 | gstr7 — `domain.GST_RETURN_TYPES`.
+    return_type: Mapped[str] = mapped_column(String(10), nullable=False, default="gstr1")
+    #: draft | generated | filed. Forward only; `filed` is terminal.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+
+    #: The snapshot: every section, exactly as assembled, in the shape `schemas.Gstr1Sections`
+    #: validates. JSONB because a return is one atomic declaration — splitting it across tables
+    #: would let half of it be replaced.
+    sections: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+    #: The one-line declaration, denormalised out of the snapshot so the list page does not have
+    #: to open it. Foots to the sections, and a test asserts that it does.
+    total_taxable_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    total_cgst_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    total_sgst_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    total_igst_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    document_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    line_count: Mapped[int] = mapped_column(nullable=False, default=0)
+
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    filed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The portal's Acknowledgement Reference Number for the filing. The one fact about a return
+    #: that only exists after it has left this platform.
+    arn: Mapped[str | None] = mapped_column(String(40))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "gst_registration_id",
+            "period",
+            "return_type",
+            name="uq_gst_returns_org_registration_period_type",
+        ),
+        Index("ix_gst_returns_org_period", "organization_id", "period"),
+        Index("ix_gst_returns_org_status", "organization_id", "status"),
+    )
+
+
+class GstReturnTransition(Base, TenantBase):
+    """One movement of one return between statuses — append-only.
+
+    The trail the return's `status` column is only the head of. A filing is a claim about a tax
+    period made to a government, and "who moved this to filed, when, and what ARN came back" is
+    evidence rather than telemetry — so it is a row per transition, refused UPDATE and DELETE by
+    a trigger, exactly as `einvoice_filings` and `ims_decisions` are.
+    """
+
+    __tablename__ = "gst_return_transitions"
+
+    gst_return_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("finance.gst_returns.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: Null on the first transition — a return that did not exist has no status to leave.
+    from_status: Mapped[str | None] = mapped_column(String(20))
+    to_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: The ARN, on the transition to `filed`. Kept here as well as on the header so the evidence
+    #: row is self-contained.
+    arn: Mapped[str | None] = mapped_column(String(40))
+    note: Mapped[str | None] = mapped_column(Text)
+    #: The totals as they stood at this transition, so the trail records *what* was filed and not
+    #: merely that something was.
+    total_taxable_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    total_tax_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    transitioned_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    transitioned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_gst_return_transitions_org_return", "organization_id", "gst_return_id"),
+        Index("ix_gst_return_transitions_org_at", "organization_id", "transitioned_at"),
+    )
+
+
+class EwayBill(Base, TenantBase):
+    """One attempt to raise an e-Way bill for one document — append-only.
+
+    The same shape as `einvoice_filings`, because it is the same kind of fact: a trip to a
+    government portal, and what came back. One row per attempt, never mutated; the document's
+    current position is its newest row.
+
+    What is different is that an e-Way bill **expires**. An IRN is permanent once issued; a bill
+    is a licence for goods to be on a road for a stated number of days, and `expired` is not a
+    status anybody writes — the table is append-only, so nothing can update a row when the clock
+    passes it. It is derived on read from `valid_until`, which is itself derived from the stored
+    `distance_km` and `valid_from` by `domain.eway_valid_until`. Storing the deadline **and**
+    keeping it recomputable from the inputs is deliberate: a screen and a checkpoint must agree,
+    and the only way to be sure they do is for both to be the same arithmetic over the same two
+    stored values.
+    """
+
+    __tablename__ = "eway_bills"
+
+    invoice_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("finance.invoices.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: pending | generated | failed | cancelled | expired — `domain.EWAY_STATUSES`.
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: The portal's 12-digit bill number. Present only once a bill exists.
+    eway_bill_no: Mapped[str | None] = mapped_column(String(16))
+
+    #: road | rail | air | ship.
+    transport_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="road")
+    #: Approximate road distance in kilometres — an **input** to validity, so it is stored rather
+    #: than the deadline alone.
+    distance_km: Mapped[int] = mapped_column(nullable=False, default=0)
+    #: Required for road movement; the portal refuses without it.
+    vehicle_no: Mapped[str | None] = mapped_column(String(20))
+    #: The transporter's GSTIN or 15-character transporter id, required when they move it.
+    transporter_id: Mapped[str | None] = mapped_column(String(20))
+    transport_doc_no: Mapped[str | None] = mapped_column(String(40))
+    transport_doc_date: Mapped[date | None] = mapped_column(Date)
+    #: Over-dimensional cargo buys a tenth of the distance per day of validity.
+    over_dimensional: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: The consignment value the threshold was tested against, snapshotted so the decision to
+    #: raise a bill can be explained without re-reading a document that may since be corrected.
+    consignment_value_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    error_code: Mapped[str | None] = mapped_column(String(20))
+    error: Mapped[str | None] = mapped_column(Text)
+    attempted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_eway_bills_org_invoice", "organization_id", "invoice_id"),
+        Index("ix_eway_bills_org_attempted", "organization_id", "attempted_at"),
+        # A bill number is unique nationally; within a tenant it must never be duplicated.
+        Index(
+            "uq_eway_bills_org_number",
+            "organization_id",
+            "eway_bill_no",
+            unique=True,
+            postgresql_where=text("eway_bill_no IS NOT NULL"),
+        ),
+    )
+
+
+class WithholdingRate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """One version of one withholding head — **global platform vocabulary**, like `tax_rates`.
+
+    Carries no `organization_id` and is left UNPOLICIED for the same reason the GST rate schedule
+    is: 2 % under GST s. 51 and 0.1 % under s. 194Q are the law of one country, identical for
+    every tenant, and row-level security over a statute would be meaningless.
+
+    Versioned by `effective_from`, and versioned for a sharper reason than the rate bands are: a
+    withholding is computed *per document* and stored, so a rate change that edited this row
+    would silently restate every figure any recomputation touched. A change is a new row; the
+    resolution is against the **document's** date; and the resolved rate is snapshotted onto the
+    register row beside the id of the version it came from.
+    """
+
+    __tablename__ = "withholding_rates"
+
+    #: gst_tds_51 | itax_194q | itax_206c_1h — `domain.WITHHOLDING_CODES`.
+    code: Mapped[str] = mapped_column(String(30), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    #: A percentage, not money — a rate, so `Numeric` is right where a float never is.
+    rate_pct: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
+    #: The value the head bites above, in minor units. How it is measured — per supply or against
+    #: the financial year's running total — is `basis`.
+    threshold_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    #: supply | aggregate — `domain.WITHHOLDING_BASES`.
+    basis: Mapped[str] = mapped_column(String(20), nullable=False, default="supply")
+    jurisdiction: Mapped[str] = mapped_column(String(2), nullable=False, default="IN")
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "jurisdiction", "code", "effective_from", name="uq_withholding_rates_version"
+        ),
+        Index("ix_withholding_rates_code_effective", "jurisdiction", "code", "effective_from"),
+    )
+
+
+class InvoiceWithholding(Base, TenantBase):
+    """Tax withheld on one document under one head — append-only.
+
+    The register GSTR-7 reconciliation is done against, and a TDS certificate is claimed from.
+    Append-only at the database, by trigger, because it is evidence about money somebody else
+    already paid to a tax authority on this organization's behalf: a figure that can be rewritten
+    is a figure an auditor cannot use.
+
+    The rate and threshold are **snapshots** beside `withholding_rate_id`. Recomputing this row
+    from today's schedule would restate history the first time a rate changed, which is exactly
+    what versioning the schedule exists to prevent — so the answer is stored, not derived, and
+    the version it came from is named so it can still be explained.
+    """
+
+    __tablename__ = "invoice_withholdings"
+
+    invoice_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("finance.invoices.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: gst_tds_51 | itax_194q | itax_206c_1h.
+    code: Mapped[str] = mapped_column(String(30), nullable=False)
+    #: deducted | collected — which way the money went.
+    direction: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: The version of the schedule that produced this figure, plus the two numbers it supplied.
+    withholding_rate_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("finance.withholding_rates.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    rate_pct: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
+    threshold_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: supply | aggregate — carried so the register explains *why* the basis is what it is.
+    basis: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: What the rate was applied to: the whole taxable value for a per-supply head, this
+    #: document's share of the excess for an aggregate one.
+    basis_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: GST s. 51 splits across heads exactly as the levy does. Income tax does not, so these stay
+    #: zero there rather than being given a meaning they do not have.
+    cgst_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    sgst_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    igst_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    #: The counterparty as the register names them: the deductor under s. 51 and 194Q, the buyer
+    #: TCS was collected from under 206C(1H). Snapshotted like every other GSTIN here.
+    counterparty_gstin: Mapped[str | None] = mapped_column(String(15))
+    counterparty_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    #: The document date the rate was resolved against — the reason a later rate change cannot
+    #: reach this row.
+    resolved_on: Mapped[date] = mapped_column(Date, nullable=False)
+    #: The return period this belongs to, `YYYY-MM`, denormalised so the report is one query.
+    period: Mapped[str] = mapped_column(String(7), nullable=False)
+
+    __table_args__ = (
+        # One head bites once per document. A second deduction under the same section is a
+        # correction, and a correction to a document is a new document.
+        UniqueConstraint(
+            "organization_id", "invoice_id", "code", name="uq_invoice_withholdings_invoice_code"
+        ),
+        Index("ix_invoice_withholdings_org_period", "organization_id", "period"),
+        Index("ix_invoice_withholdings_org_code", "organization_id", "code"),
+        Index("ix_invoice_withholdings_org_invoice", "organization_id", "invoice_id"),
     )
 
 

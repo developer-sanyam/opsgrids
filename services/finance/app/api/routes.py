@@ -30,8 +30,15 @@ from app.models import SCHEMA
 from app.schemas import (
     CustomerSummary,
     EInvoiceFilingOut,
+    EwayBillOut,
+    EwayBillWithInvoice,
+    EwayState,
+    FileReturnIn,
+    GenerateReturnIn,
     GstRegistrationOut,
     GstRegistrationUpsert,
+    GstReturnDetail,
+    GstReturnOut,
     ImsDecisionCreate,
     ImsDecisionOut,
     ImsDocumentDetail,
@@ -40,7 +47,11 @@ from app.schemas import (
     LedgerReport,
     OverviewSummary,
     PaymentOut,
+    ReturnDiffOut,
     ServiceInfo,
+    WithholdingRateOut,
+    WithholdingSummaryOut,
+    WithholdingWithInvoice,
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.db import get_tenant_session
@@ -93,6 +104,24 @@ ImsRead = Annotated[
 #: this is a separate, dangerous permission rather than a wider read.
 ImsDecide = Annotated[
     ScopeContext, Depends(require("finance.compliance.ims.decide", minimum=Scope.ORG))
+]
+ReturnRead = Annotated[
+    ScopeContext, Depends(require("finance.compliance.returns.read", minimum=Scope.ORG))
+]
+#: Assembling a period and *filing* it are two different acts behind two different permissions.
+#: Generating states what this platform believes about its own book; filing makes a claim to a
+#: government. Only the second is marked dangerous, and only the second is irreversible.
+ReturnGenerate = Annotated[
+    ScopeContext, Depends(require("finance.compliance.returns.generate", minimum=Scope.ORG))
+]
+ReturnFile = Annotated[
+    ScopeContext, Depends(require("finance.compliance.returns.file", minimum=Scope.ORG))
+]
+EwayRead = Annotated[
+    ScopeContext, Depends(require("finance.compliance.eway.read", minimum=Scope.ORG))
+]
+WithholdingRead = Annotated[
+    ScopeContext, Depends(require("finance.compliance.withholding.read", minimum=Scope.ORG))
 ]
 
 
@@ -196,6 +225,243 @@ async def set_gst_registration(
     """
     registration = await services.set_gst_registration(session, ctx, payload, request=request)
     return selectors.to_gst_registration_out(registration)
+
+
+# --------------------------------------------------------------------- GST returns
+
+
+@router.get(
+    "/finance/gst/returns",
+    response_model=Page[GstReturnOut],
+    summary="Returns generated and filed, newest period first",
+    dependencies=[Entitled],
+)
+async def list_returns(
+    session: SessionDep,
+    ctx: ReturnRead,
+    params: PageQuery,
+    period: Annotated[str | None, Query(description="Tax period, YYYY-MM")] = None,
+    status_filter: Annotated[
+        str | None, Query(alias="status", description="draft|generated|filed")
+    ] = None,
+    return_type: Annotated[str | None, Query(description="gstr1|gstr7")] = None,
+    sort: Annotated[str, Query(description="period_desc|period_asc")] = "period_desc",
+) -> Page[GstReturnOut]:
+    """The list page: one row per (registration, period, type), which is the grain the obligation
+    itself has. The snapshot is not here — it is opened, not scrolled past."""
+    stmt = selectors.returns_stmt(
+        ctx, period=period, status=status_filter, return_type=return_type, sort=sort
+    )
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([selectors.to_return_out(row) for row in rows], total=total, params=params)
+
+
+@router.get(
+    "/finance/gst/returns/{return_id}",
+    response_model=GstReturnDetail,
+    summary="One return, with every section and its whole status trail",
+    dependencies=[Entitled],
+)
+async def read_return(
+    return_id: uuid.UUID, session: SessionDep, ctx: ReturnRead
+) -> GstReturnDetail:
+    """The return as it was assembled — the snapshot, not a re-derivation.
+
+    Serving the stored sections rather than re-assembling on read is the whole point of freezing
+    them: this is what was reported, and it must keep saying so after the book moves underneath
+    it. What the book says *now* is a different question, answered by the diff endpoint.
+    """
+    ret = await selectors.get_return(session, ctx.organization_id, return_id)
+    if ret is None:
+        raise NotFoundProblem("That return is not part of this organization")
+    return await selectors.return_detail(session, ctx.organization_id, ret)
+
+
+@router.get(
+    "/finance/gst/returns/{return_id}/diff",
+    response_model=ReturnDiffOut,
+    summary="What has changed in the book since this return was generated",
+    dependencies=[Entitled],
+)
+async def read_return_diff(
+    return_id: uuid.UUID, session: SessionDep, ctx: ReturnRead
+) -> ReturnDiffOut:
+    """The difference, per section and in total, between the snapshot and the book as it stands.
+
+    A credit note raised in September against an August invoice does not make August a different
+    return; it makes a difference, and a difference is what an amendment in a later period
+    declares. This is that difference, so the amendment is prepared from an answer rather than
+    from somebody's memory of what August looked like.
+    """
+    return await services.diff_return(session, ctx, return_id)
+
+
+@router.post(
+    "/finance/gst/returns",
+    response_model=GstReturnOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Assemble one period's return from the invoices already recorded",
+    dependencies=[Entitled],
+)
+async def generate_return(
+    payload: GenerateReturnIn, session: SessionDep, ctx: ReturnGenerate, request: Request
+) -> GstReturnOut:
+    """Generate the return and freeze the snapshot.
+
+    A 201 whether or not the record already existed, because what is created either way is the
+    snapshot — the return record is only the box it lives in. Refused outright on a **filed**
+    period: the snapshot is what was reported, and regenerating over it would erase the only
+    record of what the filing actually said.
+    """
+    ret = await services.generate_return(session, ctx, payload, request=request)
+    return selectors.to_return_out(ret)
+
+
+@router.post(
+    "/finance/gst/returns/{return_id}/filing",
+    response_model=GstReturnOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record that a generated return went to the portal, with its ARN",
+    dependencies=[Entitled],
+)
+async def file_return(
+    return_id: uuid.UUID,
+    payload: FileReturnIn,
+    session: SessionDep,
+    ctx: ReturnFile,
+    request: Request,
+) -> GstReturnOut:
+    """Mark the return filed. Behind its own dangerous permission, and terminal.
+
+    A POST to a `filing` sub-collection rather than a PATCH of `status`, for the same reason IMS
+    decisions are a collection: this appends a row to a trail that is never rewritten, and the
+    verb should say so.
+    """
+    ret = await services.file_return(session, ctx, return_id, payload, request=request)
+    return selectors.to_return_out(ret)
+
+
+# --------------------------------------------------------------------- e-Way bills
+
+
+@router.get(
+    "/finance/eway-bills",
+    response_model=Page[EwayBillWithInvoice],
+    summary="e-Way bill attempts, newest first",
+    dependencies=[Entitled],
+)
+async def list_eway_bills(
+    session: SessionDep,
+    ctx: EwayRead,
+    params: PageQuery,
+    status_filter: Annotated[
+        str | None,
+        Query(
+            alias="status",
+            description=(
+                "pending|generated|failed|cancelled — filters the **stored** status. An expired "
+                "bill is stored as `generated`; read `effective_status` for those."
+            ),
+        ),
+    ] = None,
+    invoice_id: Annotated[uuid.UUID | None, Query(description="One document's attempts")] = None,
+) -> Page[EwayBillWithInvoice]:
+    stmt = selectors.eway_bills_stmt(ctx, status=status_filter, invoice_id=invoice_id)
+    rows, total = await paginate(session, stmt, params)
+    items = await selectors.eway_bills_with_invoice(session, ctx.organization_id, rows)
+    return Page.build(items, total=total, params=params)
+
+
+@router.get(
+    "/finance/invoices/{invoice_id}/eway-bills",
+    response_model=list[EwayBillOut],
+    summary="Every e-Way bill attempt for one document, newest first",
+    dependencies=[Entitled],
+)
+async def list_eway_bills_for_invoice(
+    invoice_id: uuid.UUID, session: SessionDep, ctx: EwayRead
+) -> list[EwayBillOut]:
+    """The attempt history, which is a plain query because the table is append-only.
+
+    Behind its own permission rather than the invoice one: seeing the receivable book and seeing
+    which consignments are legally on the road are different questions.
+    """
+    invoice = await selectors.get_invoice(session, ctx.organization_id, invoice_id)
+    if invoice is None:
+        raise NotFoundProblem("That invoice is not part of this organization")
+    rows = await selectors.eway_bills_for_invoice(session, ctx.organization_id, invoice_id)
+    return [selectors.to_eway_bill_out(row) for row in rows]
+
+
+@router.get(
+    "/finance/invoices/{invoice_id}/eway",
+    response_model=EwayState,
+    summary="One document's current e-Way position",
+    dependencies=[Entitled],
+)
+async def read_eway_state(invoice_id: uuid.UUID, session: SessionDep, ctx: EwayRead) -> EwayState:
+    """`required` is answered even when nothing has been attempted, which is the point: an
+    obligation nobody has met must be visible rather than absent."""
+    invoice = await selectors.get_invoice(session, ctx.organization_id, invoice_id)
+    if invoice is None:
+        raise NotFoundProblem("That invoice is not part of this organization")
+    latest, counts = await selectors.latest_eway_bills(session, ctx.organization_id, [invoice.id])
+    return selectors.to_eway_state(invoice, latest.get(invoice.id), counts.get(invoice.id, 0))
+
+
+# --------------------------------------------------------------------- withholding: TDS / TCS
+
+
+@router.get(
+    "/finance/gst/withholdings",
+    response_model=Page[WithholdingWithInvoice],
+    summary="The withholding register — TDS deducted and TCS collected, per document",
+    dependencies=[Entitled],
+)
+async def list_withholdings(
+    session: SessionDep,
+    ctx: WithholdingRead,
+    params: PageQuery,
+    period: Annotated[str | None, Query(description="Tax period, YYYY-MM")] = None,
+    code: Annotated[str | None, Query(description="gst_tds_51|itax_194q|itax_206c_1h")] = None,
+    invoice_id: Annotated[uuid.UUID | None, Query(description="One document's rows")] = None,
+) -> Page[WithholdingWithInvoice]:
+    stmt = selectors.withholdings_stmt(ctx, period=period, code=code, invoice_id=invoice_id)
+    rows, total = await paginate(session, stmt, params)
+    items = await selectors.withholdings_with_invoice(session, ctx.organization_id, rows)
+    return Page.build(items, total=total, params=params)
+
+
+@router.get(
+    "/finance/gst/withholdings/summary",
+    response_model=WithholdingSummaryOut,
+    summary="One period's withholding grouped per counterparty — the GSTR-7 shape",
+    dependencies=[Entitled],
+)
+async def read_withholding_summary(
+    session: SessionDep,
+    ctx: WithholdingRead,
+    period: Annotated[str, Query(description="Tax period, YYYY-MM")],
+    code: Annotated[str | None, Query(description="gst_tds_51|itax_194q|itax_206c_1h")] = None,
+) -> WithholdingSummaryOut:
+    """Grouped per deductor, because that is how GSTR-7 is declared — which is what makes these
+    figures comparable to the return the deductor actually files, and therefore reconcilable."""
+    return await selectors.withholding_summary(session, ctx, period=period, code=code)
+
+
+@router.get(
+    "/finance/gst/withholding-rates",
+    response_model=list[WithholdingRateOut],
+    summary="The statutory withholding schedule, every version",
+    dependencies=[Entitled],
+)
+async def list_withholding_rates(
+    session: SessionDep, ctx: WithholdingRead
+) -> list[WithholdingRateOut]:
+    """Global vocabulary rather than tenant data — a rate under GST s. 51 is the law of one
+    country. Published beside the register because a figure is only explicable next to the
+    version of the rate that produced it."""
+    return await selectors.withholding_rates_out(session)
 
 
 # --------------------------------------------------------------------- IMS reconciliation

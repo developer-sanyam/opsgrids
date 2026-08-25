@@ -31,13 +31,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import selectors, services
-from app.deps import get_ims_client, get_irp_client
+from app.deps import get_eway_client, get_ims_client, get_irp_client
+from app.eway.base import EwayClient
 from app.ims.base import ImsClient
 from app.irp.base import IrpClient
 from app.schemas import (
+    CancelEwayIn,
     CancelFilingIn,
     EInvoiceFilingOut,
+    EwayBillOut,
     FileInvoiceIn,
+    GenerateEwayIn,
     ImsSyncIn,
     ImsSyncOut,
 )
@@ -58,6 +62,7 @@ router = APIRouter(
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 IrpDep = Annotated[IrpClient, Depends(get_irp_client)]
 ImsDep = Annotated[ImsClient, Depends(get_ims_client)]
+EwayDep = Annotated[EwayClient, Depends(get_eway_client)]
 
 #: The scope context a service-to-service compliance write runs under. Defined in `app.services`
 #: rather than here because the event consumer needs the same one, and a consumer that imported a
@@ -128,6 +133,69 @@ async def cancel_filing(
         invoice_id=str(payload.invoice_id),
         organization_id=str(payload.organization_id),
         filing_status=result.status,
+        portal=client.name,
+    )
+    return result
+
+
+@router.post(
+    "/eway/bills",
+    response_model=EwayBillOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Raise an e-Way bill for one document's goods movement and record the attempt",
+)
+async def generate_eway_bill(
+    payload: GenerateEwayIn, session: SessionDep, request: Request, client: EwayDep
+) -> EwayBillOut:
+    """Raise a bill. **Always returns the appended row**, success or refusal alike.
+
+    Internal rather than principal-facing for the same reason filing is: the transport facts come
+    from a dispatch system watching for a finalized consignment, not from somebody retyping a
+    vehicle number into a finance screen. A portal rejection is a 201 carrying a `failed` row —
+    the attempt happened and is now part of the document's history. The 4xx responses are
+    reserved for the cases where nothing was attempted at all: an unknown document, a consignment
+    under the threshold, an impossible distance, no registration, a bill already standing.
+    """
+    async with session.begin():
+        await _bind(session, payload.organization_id, request)
+        ctx = _service_ctx(payload.organization_id)
+        bill = await services.generate_eway_bill(session, ctx, client, payload, request=request)
+        result = selectors.to_eway_bill_out(bill)
+    log.info(
+        "finance.eway.attempt",
+        invoice_id=str(payload.invoice_id),
+        organization_id=str(payload.organization_id),
+        eway_status=result.status,
+        eway_bill_no=result.eway_bill_no,
+        distance_km=result.distance_km,
+        valid_until=result.valid_until.isoformat() if result.valid_until else None,
+        error_code=result.error_code,
+        portal=client.name,
+    )
+    return result
+
+
+@router.post(
+    "/eway/bills:cancel",
+    response_model=EwayBillOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Withdraw a raised e-Way bill inside the portal's 24-hour window",
+)
+async def cancel_eway_bill(
+    payload: CancelEwayIn, session: SessionDep, request: Request, client: EwayDep
+) -> EwayBillOut:
+    """Cancel a bill. The withdrawal is a new row; the row that raised it is left exactly as it
+    was, so the history reads in order."""
+    async with session.begin():
+        await _bind(session, payload.organization_id, request)
+        ctx = _service_ctx(payload.organization_id)
+        bill = await services.cancel_eway_bill(session, ctx, client, payload, request=request)
+        result = selectors.to_eway_bill_out(bill)
+    log.info(
+        "finance.eway.cancelled",
+        invoice_id=str(payload.invoice_id),
+        organization_id=str(payload.organization_id),
+        eway_status=result.status,
         portal=client.name,
     )
     return result

@@ -23,6 +23,7 @@ from app.models import (
     SCHEMA,
     EInvoiceFiling,
     GstRegistration,
+    GstReturn,
     ImsDecision,
     ImsDocument,
     ImsReconciliation,
@@ -248,6 +249,66 @@ class TestCrossTenantIsolation:
                             gstin="27AABCA9012D1Z5",
                             state_code="27",
                             legal_name="Planted By Another Tenant",
+                        )
+                    )
+                    await s_b.flush()
+        finally:
+            await s_b.close()
+            await engine.dispose()
+
+    async def test_every_new_compliance_table_carries_a_forced_policy(self, session) -> None:
+        """A structural check rather than a per-table one, and it earns its place: the failure it
+        catches is a *new* table shipped without a policy, which no test written against the
+        tables that already exist would ever notice.
+
+        FORCE as well as ENABLE, because the tables are owned by the migration role and a plain
+        ENABLE leaves the owner exempt from its own policy.
+        """
+        async with session.begin():
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity"
+                        " FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+                        " WHERE n.nspname = 'finance' AND c.relkind = 'r'"
+                        "   AND c.relname IN ('gst_returns', 'gst_return_transitions',"
+                        "                     'eway_bills', 'invoice_withholdings')"
+                    )
+                )
+            ).all()
+        assert len(rows) == 4
+        for name, enabled, forced in rows:
+            assert enabled is True, name
+            assert forced is True, name
+
+    async def test_a_return_cannot_be_written_into_another_tenant(self, session, org_id) -> None:
+        """The same `WITH CHECK` claim as the filing above, on the newest tenant table. Planting a
+        return in somebody else's organization would put figures they never assembled in front of
+        an auditor as their own."""
+        org_b = uuid.uuid4()
+        engine, s_b = await _session_bound_to(org_b)
+        try:
+            async with session.begin():
+                registration = await services.set_gst_registration(
+                    session,
+                    admin_ctx(org_id),
+                    GstRegistrationUpsert(
+                        gstin="27AABCA9012D1Z5", legal_name="Atmora Industries Private Limited"
+                    ),
+                )
+                registration_id = registration.id
+
+            with pytest.raises(Exception, match="row-level security"):
+                async with s_b.begin():
+                    s_b.add(
+                        GstReturn(
+                            organization_id=org_id,  # not org B's own
+                            gst_registration_id=registration_id,
+                            gstin="27AABCA9012D1Z5",
+                            state_code="27",
+                            period="2026-08",
+                            return_type="gstr1",
+                            status="draft",
                         )
                     )
                     await s_b.flush()

@@ -37,18 +37,27 @@ from platform_core.auth import ScopeContext, get_principal
 from platform_core.db import TENANT_GUC, get_session
 from tests.helpers import FINANCE_PERMISSIONS, FakeRedis, admin_ctx, principal_for
 
-#: Every table here is tenant-scoped or global; all are safe to truncate before a test.
+#: Every table here is tenant-scoped; all are safe to truncate before a test.
 #:
-#: `einvoice_filings` and `ims_decisions` are append-only *for the application* — a trigger refuses
-#: UPDATE and DELETE. TRUNCATE is neither, and this runs as the admin role that owns the tables, so
-#: the fixture can still reset them between tests without the trigger being weakened for anybody
-#: else.
+#: `einvoice_filings`, `ims_decisions`, `eway_bills`, `gst_return_transitions` and
+#: `invoice_withholdings` are append-only *for the application* — a trigger refuses UPDATE and
+#: DELETE — and `gst_returns` freezes its snapshot the same way. TRUNCATE is neither an UPDATE nor
+#: a DELETE, and this runs as the admin role that owns the tables, so the fixture can still reset
+#: them between tests without the triggers being weakened for anybody else.
+#:
+#: `withholding_rates` and `tax_rates` are deliberately absent: they are global vocabulary seeded
+#: by a migration, not tenant data, and truncating them would leave the register with no schedule
+#: to resolve against — a fixture quietly deleting the law is not a clean slate.
 TENANT_TABLES = (
     "customers",
     "invoices",
     "invoice_lines",
     "einvoice_filings",
+    "eway_bills",
     "gst_registrations",
+    "gst_returns",
+    "gst_return_transitions",
+    "invoice_withholdings",
     "purchase_documents",
     "ims_documents",
     "ims_reconciliations",

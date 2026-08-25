@@ -129,6 +129,32 @@ FINANCE = PermissionCatalogue(
             "Accept, reject or park an inbound supplier document",
             is_dangerous=True,
         ),
+        # Returns. Three permissions rather than two, because assembling a period and *filing* it
+        # are different acts. Generating states what this platform believes about its own book
+        # and can be repeated; filing makes a claim to a government and is terminal — which is
+        # why only the second is dangerous, and why a finance analyst can reasonably hold the
+        # first without the second.
+        PermissionSpec("compliance", "returns", "read", "See generated and filed GST returns"),
+        PermissionSpec(
+            "compliance",
+            "returns",
+            "generate",
+            "Assemble a GST return from the invoices recorded for a period",
+        ),
+        PermissionSpec(
+            "compliance",
+            "returns",
+            "file",
+            "Mark a generated GST return as filed with the portal",
+            is_dangerous=True,
+        ),
+        # e-Way bills are read here and raised over the internal API by a dispatch system, so
+        # there is one permission rather than a read/write pair: what a person does with this is
+        # answer "may that lorry leave".
+        PermissionSpec("compliance", "eway", "read", "See e-Way bills and their validity"),
+        PermissionSpec(
+            "compliance", "withholding", "read", "See TDS deducted and TCS collected per document"
+        ),
     ],
 )
 
@@ -162,6 +188,12 @@ FINANCE_ROLE_TEMPLATES: list[RoleTemplate] = [
             # And they see the supplier queue — a reconciliation is worked by looking before it is
             # worked by deciding, and the two are separate seats on purpose.
             ("finance.compliance.ims.read", "ORG"),
+            # The compliance reads a viewer needs to answer the everyday questions: what was
+            # reported for August, is that lorry's bill still valid, and how much has already
+            # been deducted from what we are owed. None of the three changes anything.
+            ("finance.compliance.returns.read", "ORG"),
+            ("finance.compliance.eway.read", "ORG"),
+            ("finance.compliance.withholding.read", "ORG"),
         ),
     ),
 ]

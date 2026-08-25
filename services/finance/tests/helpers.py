@@ -21,14 +21,19 @@ FINANCE_READS = (
     "finance.compliance.einvoice.read",
     "finance.compliance.registration.read",
     "finance.compliance.ims.read",
+    "finance.compliance.returns.read",
+    "finance.compliance.eway.read",
+    "finance.compliance.withholding.read",
 )
 
 #: The writes on the public finance surface. Kept apart from the reads so a test can hand a caller
 #: the whole read book without also handing them the ability to change who the organization files
-#: as, or to accept a supplier's claim on it.
+#: as, to accept a supplier's claim on it, or to tell a government what a tax period contained.
 FINANCE_WRITES = (
     "finance.compliance.registration.write",
     "finance.compliance.ims.decide",
+    "finance.compliance.returns.generate",
+    "finance.compliance.returns.file",
 )
 
 FINANCE_PERMISSIONS = FINANCE_READS + FINANCE_WRITES

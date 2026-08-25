@@ -29,6 +29,67 @@
         "title": "AgingBucket",
         "type": "object"
       },
+      "B2csOut": {
+        "description": "One aggregated B2C-small figure: place of supply x rate x inter/intra-state.\n\nAggregated because that is what the return declares \u2014 B2CS is not invoice-wise. Credit notes\nto unregistered buyers below the B2CL threshold net in here with their sign, so the figure\ncan legitimately be negative in a heavy-returns month.",
+        "properties": {
+          "cgst_minor": {
+            "title": "Cgst Minor",
+            "type": "integer"
+          },
+          "document_count": {
+            "title": "Document Count",
+            "type": "integer"
+          },
+          "igst_minor": {
+            "title": "Igst Minor",
+            "type": "integer"
+          },
+          "inter_state": {
+            "title": "Inter State",
+            "type": "boolean"
+          },
+          "place_of_supply": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place Of Supply"
+          },
+          "rate_pct": {
+            "title": "Rate Pct",
+            "type": "number"
+          },
+          "sgst_minor": {
+            "title": "Sgst Minor",
+            "type": "integer"
+          },
+          "taxable_minor": {
+            "title": "Taxable Minor",
+            "type": "integer"
+          },
+          "total_minor": {
+            "title": "Total Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "place_of_supply",
+          "rate_pct",
+          "inter_state",
+          "taxable_minor",
+          "cgst_minor",
+          "sgst_minor",
+          "igst_minor",
+          "total_minor",
+          "document_count"
+        ],
+        "title": "B2csOut",
+        "type": "object"
+      },
       "CashflowPoint": {
         "properties": {
           "inflow_minor": {
@@ -148,6 +209,45 @@
           "standing"
         ],
         "title": "CustomerSummary",
+        "type": "object"
+      },
+      "DocumentSeriesOut": {
+        "description": "One declared document series \u2014 the numbers issued and how many were cancelled.\n\nThe one section a **void** belongs in: its figures are not a supply, but its number was\nconsumed, and a gap in a series is how an unreported invoice announces itself.",
+        "properties": {
+          "cancelled_count": {
+            "title": "Cancelled Count",
+            "type": "integer"
+          },
+          "document_type": {
+            "title": "Document Type",
+            "type": "string"
+          },
+          "from_number": {
+            "title": "From Number",
+            "type": "string"
+          },
+          "net_count": {
+            "title": "Net Count",
+            "type": "integer"
+          },
+          "to_number": {
+            "title": "To Number",
+            "type": "string"
+          },
+          "total_count": {
+            "title": "Total Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "document_type",
+          "from_number",
+          "to_number",
+          "total_count",
+          "cancelled_count",
+          "net_count"
+        ],
+        "title": "DocumentSeriesOut",
         "type": "object"
       },
       "EInvoiceFilingOut": {
@@ -376,6 +476,364 @@
         "title": "EInvoiceState",
         "type": "object"
       },
+      "EwayBillOut": {
+        "description": "One recorded attempt to raise an e-Way bill. Append-only: a retry is a further row.",
+        "properties": {
+          "attempted_at": {
+            "format": "date-time",
+            "title": "Attempted At",
+            "type": "string"
+          },
+          "consignment_value_minor": {
+            "title": "Consignment Value Minor",
+            "type": "integer"
+          },
+          "distance_km": {
+            "title": "Distance Km",
+            "type": "integer"
+          },
+          "effective_status": {
+            "title": "Effective Status",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "eway_bill_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eway Bill No"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "invoice_id": {
+            "format": "uuid",
+            "title": "Invoice Id",
+            "type": "string"
+          },
+          "over_dimensional": {
+            "title": "Over Dimensional",
+            "type": "boolean"
+          },
+          "remedy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remedy"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "transport_doc_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transport Doc Date"
+          },
+          "transport_doc_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transport Doc No"
+          },
+          "transport_mode": {
+            "title": "Transport Mode",
+            "type": "string"
+          },
+          "transporter_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transporter Id"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          },
+          "vehicle_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vehicle No"
+          }
+        },
+        "required": [
+          "id",
+          "invoice_id",
+          "status",
+          "effective_status",
+          "eway_bill_no",
+          "transport_mode",
+          "distance_km",
+          "vehicle_no",
+          "transporter_id",
+          "transport_doc_no",
+          "transport_doc_date",
+          "over_dimensional",
+          "consignment_value_minor",
+          "valid_from",
+          "valid_until",
+          "remedy",
+          "error_code",
+          "error",
+          "attempted_at"
+        ],
+        "title": "EwayBillOut",
+        "type": "object"
+      },
+      "EwayBillWithInvoice": {
+        "description": "One bill on a list page, with enough of its document to be recognisable.",
+        "properties": {
+          "bill": {
+            "$ref": "#/components/schemas/EwayBillOut"
+          },
+          "customer_name": {
+            "title": "Customer Name",
+            "type": "string"
+          },
+          "invoice_number": {
+            "title": "Invoice Number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bill",
+          "invoice_number",
+          "customer_name"
+        ],
+        "title": "EwayBillWithInvoice",
+        "type": "object"
+      },
+      "EwayState": {
+        "description": "A document's *current* e-Way position, derived from its newest attempt.\n\nNever null on a document that needs a bill: an unmet obligation must be **visible** rather\nthan absent, which is the same reason `EInvoiceState.required` exists.",
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "cancellable_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancellable Until"
+          },
+          "eway_bill_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eway Bill No"
+          },
+          "remedy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remedy"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "terminal": {
+            "title": "Terminal",
+            "type": "boolean"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          }
+        },
+        "required": [
+          "required",
+          "status",
+          "eway_bill_no",
+          "valid_from",
+          "valid_until",
+          "terminal",
+          "cancellable_until",
+          "remedy",
+          "attempts"
+        ],
+        "title": "EwayState",
+        "type": "object"
+      },
+      "FileReturnIn": {
+        "description": "Record that a generated return went to the portal, with the ARN it came back with.",
+        "properties": {
+          "arn": {
+            "title": "Arn",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "arn"
+        ],
+        "title": "FileReturnIn",
+        "type": "object"
+      },
+      "GenerateReturnIn": {
+        "description": "Assemble one period's return from the invoices already recorded.\n\nGenerating twice replaces the snapshot with what the book says *now* and appends a second\n`generated` transition, which is the honest answer before filing. After filing it is refused\n\u2014 a filed return is what was reported, and the remedy for a later correction is the diff.",
+        "properties": {
+          "gst_registration_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gst Registration Id"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "return_type": {
+            "default": "gstr1",
+            "title": "Return Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "period"
+        ],
+        "title": "GenerateReturnIn",
+        "type": "object"
+      },
       "GstRegistrationOut": {
         "description": "The organization's own GST registration \u2014 who this seller is, to the portal.",
         "properties": {
@@ -460,6 +918,302 @@
         "title": "GstRegistrationUpsert",
         "type": "object"
       },
+      "GstReturnDetail": {
+        "description": "The return with its sections and its whole status trail.\n\n`sections` is null on a `draft` \u2014 a period nobody has assembled has nothing to declare, and\nan empty return and an unassembled one are different answers.",
+        "properties": {
+          "ret": {
+            "$ref": "#/components/schemas/GstReturnOut"
+          },
+          "sections": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Gstr1Sections"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "transitions": {
+            "items": {
+              "$ref": "#/components/schemas/GstReturnTransitionOut"
+            },
+            "title": "Transitions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ret",
+          "sections",
+          "transitions"
+        ],
+        "title": "GstReturnDetail",
+        "type": "object"
+      },
+      "GstReturnOut": {
+        "description": "One period's return: the record, not the snapshot. What a list page renders.",
+        "properties": {
+          "arn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Arn"
+          },
+          "document_count": {
+            "title": "Document Count",
+            "type": "integer"
+          },
+          "filed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filed At"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "gst_registration_id": {
+            "format": "uuid",
+            "title": "Gst Registration Id",
+            "type": "string"
+          },
+          "gstin": {
+            "title": "Gstin",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "line_count": {
+            "title": "Line Count",
+            "type": "integer"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "return_type": {
+            "title": "Return Type",
+            "type": "string"
+          },
+          "state_code": {
+            "title": "State Code",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "total_cgst_minor": {
+            "title": "Total Cgst Minor",
+            "type": "integer"
+          },
+          "total_igst_minor": {
+            "title": "Total Igst Minor",
+            "type": "integer"
+          },
+          "total_sgst_minor": {
+            "title": "Total Sgst Minor",
+            "type": "integer"
+          },
+          "total_taxable_minor": {
+            "title": "Total Taxable Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "gst_registration_id",
+          "gstin",
+          "state_code",
+          "period",
+          "return_type",
+          "status",
+          "total_taxable_minor",
+          "total_cgst_minor",
+          "total_sgst_minor",
+          "total_igst_minor",
+          "document_count",
+          "line_count",
+          "generated_at",
+          "filed_at",
+          "arn"
+        ],
+        "title": "GstReturnOut",
+        "type": "object"
+      },
+      "GstReturnTransitionOut": {
+        "description": "One movement between statuses \u2014 a row of the append-only trail.",
+        "properties": {
+          "arn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Arn"
+          },
+          "from_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Status"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "to_status": {
+            "title": "To Status",
+            "type": "string"
+          },
+          "total_tax_minor": {
+            "title": "Total Tax Minor",
+            "type": "integer"
+          },
+          "total_taxable_minor": {
+            "title": "Total Taxable Minor",
+            "type": "integer"
+          },
+          "transitioned_at": {
+            "format": "date-time",
+            "title": "Transitioned At",
+            "type": "string"
+          },
+          "transitioned_by": {
+            "title": "Transitioned By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "from_status",
+          "to_status",
+          "arn",
+          "note",
+          "total_taxable_minor",
+          "total_tax_minor",
+          "transitioned_by",
+          "transitioned_at"
+        ],
+        "title": "GstReturnTransitionOut",
+        "type": "object"
+      },
+      "Gstr1Sections": {
+        "description": "Every section of one GSTR-1, and the shape the snapshot is stored in.\n\nThis *is* the persisted JSONB on `gst_returns.sections`, validated on the way in and on the\nway out, so a snapshot written by an older revision cannot be served back as something the\ncontract no longer describes.",
+        "properties": {
+          "b2b": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnInvoiceOut"
+            },
+            "title": "B2B",
+            "type": "array"
+          },
+          "b2cl": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnInvoiceOut"
+            },
+            "title": "B2Cl",
+            "type": "array"
+          },
+          "b2cs": {
+            "items": {
+              "$ref": "#/components/schemas/B2csOut"
+            },
+            "title": "B2Cs",
+            "type": "array"
+          },
+          "cdnr": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnInvoiceOut"
+            },
+            "title": "Cdnr",
+            "type": "array"
+          },
+          "cdnur": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnInvoiceOut"
+            },
+            "title": "Cdnur",
+            "type": "array"
+          },
+          "docs": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentSeriesOut"
+            },
+            "title": "Docs",
+            "type": "array"
+          },
+          "exp": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnInvoiceOut"
+            },
+            "title": "Exp",
+            "type": "array"
+          },
+          "hsn": {
+            "items": {
+              "$ref": "#/components/schemas/HsnSummaryOut"
+            },
+            "title": "Hsn",
+            "type": "array"
+          }
+        },
+        "required": [
+          "b2b",
+          "b2cl",
+          "b2cs",
+          "cdnr",
+          "cdnur",
+          "exp",
+          "hsn",
+          "docs"
+        ],
+        "title": "Gstr1Sections",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -471,6 +1225,62 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HsnSummaryOut": {
+        "description": "One row of the HSN summary. A line with no code groups under a null rather than vanishing:\na missing classification is a gap the return must show, not one it should quietly close.",
+        "properties": {
+          "cgst_minor": {
+            "title": "Cgst Minor",
+            "type": "integer"
+          },
+          "hsn_sac": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hsn Sac"
+          },
+          "igst_minor": {
+            "title": "Igst Minor",
+            "type": "integer"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "number"
+          },
+          "rate_pct": {
+            "title": "Rate Pct",
+            "type": "number"
+          },
+          "sgst_minor": {
+            "title": "Sgst Minor",
+            "type": "integer"
+          },
+          "taxable_minor": {
+            "title": "Taxable Minor",
+            "type": "integer"
+          },
+          "total_minor": {
+            "title": "Total Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "hsn_sac",
+          "rate_pct",
+          "quantity",
+          "taxable_minor",
+          "cgst_minor",
+          "sgst_minor",
+          "igst_minor",
+          "total_minor"
+        ],
+        "title": "HsnSummaryOut",
         "type": "object"
       },
       "ImsDecisionCreate": {
@@ -1033,6 +1843,111 @@
         "title": "InvoiceOut",
         "type": "object"
       },
+      "InvoiceWithholdingOut": {
+        "description": "One deduction or collection on one document \u2014 a row of the register.\n\n`rate_pct` and `threshold_minor` are **snapshots** of the version named by\n`withholding_rate_id`, not a live read of the schedule: a rate change must not restate a\nfigure somebody has already been paid net of.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "basis": {
+            "title": "Basis",
+            "type": "string"
+          },
+          "basis_minor": {
+            "title": "Basis Minor",
+            "type": "integer"
+          },
+          "cgst_minor": {
+            "title": "Cgst Minor",
+            "type": "integer"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "counterparty_gstin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counterparty Gstin"
+          },
+          "counterparty_name": {
+            "title": "Counterparty Name",
+            "type": "string"
+          },
+          "direction": {
+            "title": "Direction",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "igst_minor": {
+            "title": "Igst Minor",
+            "type": "integer"
+          },
+          "invoice_id": {
+            "format": "uuid",
+            "title": "Invoice Id",
+            "type": "string"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "rate_pct": {
+            "title": "Rate Pct",
+            "type": "number"
+          },
+          "resolved_on": {
+            "format": "date",
+            "title": "Resolved On",
+            "type": "string"
+          },
+          "sgst_minor": {
+            "title": "Sgst Minor",
+            "type": "integer"
+          },
+          "threshold_minor": {
+            "title": "Threshold Minor",
+            "type": "integer"
+          },
+          "withholding_rate_id": {
+            "format": "uuid",
+            "title": "Withholding Rate Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "invoice_id",
+          "code",
+          "direction",
+          "withholding_rate_id",
+          "rate_pct",
+          "threshold_minor",
+          "basis",
+          "basis_minor",
+          "amount_minor",
+          "cgst_minor",
+          "sgst_minor",
+          "igst_minor",
+          "counterparty_gstin",
+          "counterparty_name",
+          "resolved_on",
+          "period"
+        ],
+        "title": "InvoiceWithholdingOut",
+        "type": "object"
+      },
       "LedgerAccount": {
         "properties": {
           "code": {
@@ -1217,6 +2132,78 @@
         "title": "Page[CustomerSummary]",
         "type": "object"
       },
+      "Page_EwayBillWithInvoice_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EwayBillWithInvoice"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[EwayBillWithInvoice]",
+        "type": "object"
+      },
+      "Page_GstReturnOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/GstReturnOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[GstReturnOut]",
+        "type": "object"
+      },
       "Page_ImsDocumentOut_": {
         "properties": {
           "items": {
@@ -1323,6 +2310,42 @@
           "pages"
         ],
         "title": "Page[PaymentOut]",
+        "type": "object"
+      },
+      "Page_WithholdingWithInvoice_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WithholdingWithInvoice"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[WithholdingWithInvoice]",
         "type": "object"
       },
       "PaymentAllocationOut": {
@@ -1499,6 +2522,259 @@
         "title": "PurchaseDocumentOut",
         "type": "object"
       },
+      "RateGroupOut": {
+        "description": "One rate group inside a section \u2014 the grain GSTR-1 is actually declared at.",
+        "properties": {
+          "cgst_minor": {
+            "title": "Cgst Minor",
+            "type": "integer"
+          },
+          "igst_minor": {
+            "title": "Igst Minor",
+            "type": "integer"
+          },
+          "rate_pct": {
+            "title": "Rate Pct",
+            "type": "number"
+          },
+          "sgst_minor": {
+            "title": "Sgst Minor",
+            "type": "integer"
+          },
+          "taxable_minor": {
+            "title": "Taxable Minor",
+            "type": "integer"
+          },
+          "total_minor": {
+            "title": "Total Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rate_pct",
+          "taxable_minor",
+          "cgst_minor",
+          "sgst_minor",
+          "igst_minor",
+          "total_minor"
+        ],
+        "title": "RateGroupOut",
+        "type": "object"
+      },
+      "ReturnDiffOut": {
+        "description": "What has changed since the return was generated \u2014 never a rewrite of the return.\n\nThe whole reason a generated return is frozen. An invoice corrected after August was filed\ndoes not make August a different return; it makes a **difference**, which is what an\namendment in a later period declares. This endpoint is that difference, per section and in\ntotal, so the amendment is prepared from an answer rather than from a memory.",
+        "properties": {
+          "changed": {
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "computed_at": {
+            "format": "date-time",
+            "title": "Computed At",
+            "type": "string"
+          },
+          "current": {
+            "$ref": "#/components/schemas/ReturnTotalsOut"
+          },
+          "delta": {
+            "$ref": "#/components/schemas/ReturnTotalsOut"
+          },
+          "ret": {
+            "$ref": "#/components/schemas/GstReturnOut"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/SectionDeltaOut"
+            },
+            "title": "Sections",
+            "type": "array"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/ReturnTotalsOut"
+          }
+        },
+        "required": [
+          "ret",
+          "current",
+          "snapshot",
+          "delta",
+          "sections",
+          "changed",
+          "computed_at"
+        ],
+        "title": "ReturnDiffOut",
+        "type": "object"
+      },
+      "ReturnInvoiceOut": {
+        "description": "One document as B2B, B2CL, CDNR, CDNUR or EXP declares it: header plus rate groups.",
+        "properties": {
+          "corrects_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Corrects Number"
+          },
+          "counterparty_gstin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counterparty Gstin"
+          },
+          "counterparty_name": {
+            "title": "Counterparty Name",
+            "type": "string"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_type": {
+            "title": "Document Type",
+            "type": "string"
+          },
+          "invoice_value_minor": {
+            "title": "Invoice Value Minor",
+            "type": "integer"
+          },
+          "issued_date": {
+            "format": "date",
+            "title": "Issued Date",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RateGroupOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "place_of_supply": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place Of Supply"
+          },
+          "reverse_charge": {
+            "title": "Reverse Charge",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "document_id",
+          "number",
+          "document_type",
+          "issued_date",
+          "place_of_supply",
+          "counterparty_gstin",
+          "counterparty_name",
+          "reverse_charge",
+          "invoice_value_minor",
+          "corrects_number",
+          "items"
+        ],
+        "title": "ReturnInvoiceOut",
+        "type": "object"
+      },
+      "ReturnTotalsOut": {
+        "description": "The return's one-line declaration. Every section sums to exactly this.",
+        "properties": {
+          "cgst_minor": {
+            "title": "Cgst Minor",
+            "type": "integer"
+          },
+          "document_count": {
+            "title": "Document Count",
+            "type": "integer"
+          },
+          "igst_minor": {
+            "title": "Igst Minor",
+            "type": "integer"
+          },
+          "line_count": {
+            "title": "Line Count",
+            "type": "integer"
+          },
+          "sgst_minor": {
+            "title": "Sgst Minor",
+            "type": "integer"
+          },
+          "tax_minor": {
+            "title": "Tax Minor",
+            "type": "integer"
+          },
+          "taxable_minor": {
+            "title": "Taxable Minor",
+            "type": "integer"
+          },
+          "total_minor": {
+            "title": "Total Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "taxable_minor",
+          "cgst_minor",
+          "sgst_minor",
+          "igst_minor",
+          "tax_minor",
+          "total_minor",
+          "document_count",
+          "line_count"
+        ],
+        "title": "ReturnTotalsOut",
+        "type": "object"
+      },
+      "SectionDeltaOut": {
+        "description": "How one section moved between the snapshot and the book as it stands now.",
+        "properties": {
+          "changed": {
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "current": {
+            "$ref": "#/components/schemas/ReturnTotalsOut"
+          },
+          "delta": {
+            "$ref": "#/components/schemas/ReturnTotalsOut"
+          },
+          "section": {
+            "title": "Section",
+            "type": "string"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/ReturnTotalsOut"
+          }
+        },
+        "required": [
+          "section",
+          "snapshot",
+          "current",
+          "delta",
+          "changed"
+        ],
+        "title": "SectionDeltaOut",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -1555,6 +2831,231 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WithholdingDeductorRow": {
+        "description": "One counterparty's line in the GSTR-7-style summary.\n\nGSTR-7 is declared **per deductor**: the number they hold, the value they deducted against,\nand the three heads. Grouping the register that way is what makes the platform's figures\ncomparable to the return the deductor actually files \u2014 which is the reconciliation a supplier\ndoes, and the reason this summary exists on the receivable side at all.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "basis_minor": {
+            "title": "Basis Minor",
+            "type": "integer"
+          },
+          "cgst_minor": {
+            "title": "Cgst Minor",
+            "type": "integer"
+          },
+          "counterparty_gstin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counterparty Gstin"
+          },
+          "counterparty_name": {
+            "title": "Counterparty Name",
+            "type": "string"
+          },
+          "document_count": {
+            "title": "Document Count",
+            "type": "integer"
+          },
+          "igst_minor": {
+            "title": "Igst Minor",
+            "type": "integer"
+          },
+          "sgst_minor": {
+            "title": "Sgst Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "counterparty_gstin",
+          "counterparty_name",
+          "document_count",
+          "basis_minor",
+          "amount_minor",
+          "cgst_minor",
+          "sgst_minor",
+          "igst_minor"
+        ],
+        "title": "WithholdingDeductorRow",
+        "type": "object"
+      },
+      "WithholdingRateOut": {
+        "description": "One version of one withholding head. Global vocabulary, versioned by `effective_from`.",
+        "properties": {
+          "basis": {
+            "title": "Basis",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "effective_from": {
+            "format": "date",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "jurisdiction": {
+            "title": "Jurisdiction",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "rate_pct": {
+            "title": "Rate Pct",
+            "type": "number"
+          },
+          "threshold_minor": {
+            "title": "Threshold Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "rate_pct",
+          "threshold_minor",
+          "basis",
+          "jurisdiction",
+          "effective_from",
+          "effective_to"
+        ],
+        "title": "WithholdingRateOut",
+        "type": "object"
+      },
+      "WithholdingSummaryOut": {
+        "description": "One period's withholding, grouped the way the return declares it, and footed.\n\n`total_*` sums the rows exactly; a test asserts it, because a summary that does not foot to\nits own rows is worse than no summary.",
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "document_count": {
+            "title": "Document Count",
+            "type": "integer"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/WithholdingDeductorRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "total_amount_minor": {
+            "title": "Total Amount Minor",
+            "type": "integer"
+          },
+          "total_basis_minor": {
+            "title": "Total Basis Minor",
+            "type": "integer"
+          },
+          "total_cgst_minor": {
+            "title": "Total Cgst Minor",
+            "type": "integer"
+          },
+          "total_igst_minor": {
+            "title": "Total Igst Minor",
+            "type": "integer"
+          },
+          "total_sgst_minor": {
+            "title": "Total Sgst Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "period",
+          "code",
+          "direction",
+          "rows",
+          "document_count",
+          "total_basis_minor",
+          "total_amount_minor",
+          "total_cgst_minor",
+          "total_sgst_minor",
+          "total_igst_minor"
+        ],
+        "title": "WithholdingSummaryOut",
+        "type": "object"
+      },
+      "WithholdingWithInvoice": {
+        "description": "One register row on a list page, with enough of its document to be recognisable.",
+        "properties": {
+          "invoice_issued_date": {
+            "format": "date",
+            "title": "Invoice Issued Date",
+            "type": "string"
+          },
+          "invoice_number": {
+            "title": "Invoice Number",
+            "type": "string"
+          },
+          "invoice_total_minor": {
+            "title": "Invoice Total Minor",
+            "type": "integer"
+          },
+          "withholding": {
+            "$ref": "#/components/schemas/InvoiceWithholdingOut"
+          }
+        },
+        "required": [
+          "withholding",
+          "invoice_number",
+          "invoice_issued_date",
+          "invoice_total_minor"
+        ],
+        "title": "WithholdingWithInvoice",
         "type": "object"
       }
     }
@@ -1652,6 +3153,99 @@
         ]
       }
     },
+    "/api/v1/finance/eway-bills": {
+      "get": {
+        "operationId": "list_eway_bills_api_v1_finance_eway_bills_get",
+        "parameters": [
+          {
+            "description": "pending|generated|failed|cancelled \u2014 filters the **stored** status. An expired bill is stored as `generated`; read `effective_status` for those.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "pending|generated|failed|cancelled \u2014 filters the **stored** status. An expired bill is stored as `generated`; read `effective_status` for those.",
+              "title": "Status"
+            }
+          },
+          {
+            "description": "One document's attempts",
+            "in": "query",
+            "name": "invoice_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One document's attempts",
+              "title": "Invoice Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_EwayBillWithInvoice_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "e-Way bill attempts, newest first",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
     "/api/v1/finance/gst/registration": {
       "get": {
         "operationId": "read_gst_registration_api_v1_finance_gst_registration_get",
@@ -1708,6 +3302,511 @@
           }
         },
         "summary": "Set this organization's GST registration",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/gst/returns": {
+      "get": {
+        "description": "The list page: one row per (registration, period, type), which is the grain the obligation\nitself has. The snapshot is not here \u2014 it is opened, not scrolled past.",
+        "operationId": "list_returns_api_v1_finance_gst_returns_get",
+        "parameters": [
+          {
+            "description": "Tax period, YYYY-MM",
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tax period, YYYY-MM",
+              "title": "Period"
+            }
+          },
+          {
+            "description": "draft|generated|filed",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "draft|generated|filed",
+              "title": "Status"
+            }
+          },
+          {
+            "description": "gstr1|gstr7",
+            "in": "query",
+            "name": "return_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "gstr1|gstr7",
+              "title": "Return Type"
+            }
+          },
+          {
+            "description": "period_desc|period_asc",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "period_desc",
+              "description": "period_desc|period_asc",
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_GstReturnOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Returns generated and filed, newest period first",
+        "tags": [
+          "finance"
+        ]
+      },
+      "post": {
+        "description": "Generate the return and freeze the snapshot.\n\nA 201 whether or not the record already existed, because what is created either way is the\nsnapshot \u2014 the return record is only the box it lives in. Refused outright on a **filed**\nperiod: the snapshot is what was reported, and regenerating over it would erase the only\nrecord of what the filing actually said.",
+        "operationId": "generate_return_api_v1_finance_gst_returns_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateReturnIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GstReturnOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assemble one period's return from the invoices already recorded",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/gst/returns/{return_id}": {
+      "get": {
+        "description": "The return as it was assembled \u2014 the snapshot, not a re-derivation.\n\nServing the stored sections rather than re-assembling on read is the whole point of freezing\nthem: this is what was reported, and it must keep saying so after the book moves underneath\nit. What the book says *now* is a different question, answered by the diff endpoint.",
+        "operationId": "read_return_api_v1_finance_gst_returns__return_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "return_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Return Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GstReturnDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One return, with every section and its whole status trail",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/gst/returns/{return_id}/diff": {
+      "get": {
+        "description": "The difference, per section and in total, between the snapshot and the book as it stands.\n\nA credit note raised in September against an August invoice does not make August a different\nreturn; it makes a difference, and a difference is what an amendment in a later period\ndeclares. This is that difference, so the amendment is prepared from an answer rather than\nfrom somebody's memory of what August looked like.",
+        "operationId": "read_return_diff_api_v1_finance_gst_returns__return_id__diff_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "return_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Return Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReturnDiffOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "What has changed in the book since this return was generated",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/gst/returns/{return_id}/filing": {
+      "post": {
+        "description": "Mark the return filed. Behind its own dangerous permission, and terminal.\n\nA POST to a `filing` sub-collection rather than a PATCH of `status`, for the same reason IMS\ndecisions are a collection: this appends a row to a trail that is never rewritten, and the\nverb should say so.",
+        "operationId": "file_return_api_v1_finance_gst_returns__return_id__filing_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "return_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Return Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileReturnIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GstReturnOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record that a generated return went to the portal, with its ARN",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/gst/withholding-rates": {
+      "get": {
+        "description": "Global vocabulary rather than tenant data \u2014 a rate under GST s. 51 is the law of one\ncountry. Published beside the register because a figure is only explicable next to the\nversion of the rate that produced it.",
+        "operationId": "list_withholding_rates_api_v1_finance_gst_withholding_rates_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WithholdingRateOut"
+                  },
+                  "title": "Response List Withholding Rates Api V1 Finance Gst Withholding Rates Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The statutory withholding schedule, every version",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/gst/withholdings": {
+      "get": {
+        "operationId": "list_withholdings_api_v1_finance_gst_withholdings_get",
+        "parameters": [
+          {
+            "description": "Tax period, YYYY-MM",
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tax period, YYYY-MM",
+              "title": "Period"
+            }
+          },
+          {
+            "description": "gst_tds_51|itax_194q|itax_206c_1h",
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "gst_tds_51|itax_194q|itax_206c_1h",
+              "title": "Code"
+            }
+          },
+          {
+            "description": "One document's rows",
+            "in": "query",
+            "name": "invoice_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One document's rows",
+              "title": "Invoice Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_WithholdingWithInvoice_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The withholding register \u2014 TDS deducted and TCS collected, per document",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/gst/withholdings/summary": {
+      "get": {
+        "description": "Grouped per deductor, because that is how GSTR-7 is declared \u2014 which is what makes these\nfigures comparable to the return the deductor actually files, and therefore reconcilable.",
+        "operationId": "read_withholding_summary_api_v1_finance_gst_withholdings_summary_get",
+        "parameters": [
+          {
+            "description": "Tax period, YYYY-MM",
+            "in": "query",
+            "name": "period",
+            "required": true,
+            "schema": {
+              "description": "Tax period, YYYY-MM",
+              "title": "Period",
+              "type": "string"
+            }
+          },
+          {
+            "description": "gst_tds_51|itax_194q|itax_206c_1h",
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "gst_tds_51|itax_194q|itax_206c_1h",
+              "title": "Code"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WithholdingSummaryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One period's withholding grouped per counterparty \u2014 the GSTR-7 shape",
         "tags": [
           "finance"
         ]
@@ -2133,6 +4232,98 @@
           }
         },
         "summary": "One invoice",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/invoices/{invoice_id}/eway": {
+      "get": {
+        "description": "`required` is answered even when nothing has been attempted, which is the point: an\nobligation nobody has met must be visible rather than absent.",
+        "operationId": "read_eway_state_api_v1_finance_invoices__invoice_id__eway_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Invoice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EwayState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One document's current e-Way position",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/invoices/{invoice_id}/eway-bills": {
+      "get": {
+        "description": "The attempt history, which is a plain query because the table is append-only.\n\nBehind its own permission rather than the invoice one: seeing the receivable book and seeing\nwhich consignments are legally on the road are different questions.",
+        "operationId": "list_eway_bills_for_invoice_api_v1_finance_invoices__invoice_id__eway_bills_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Invoice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EwayBillOut"
+                  },
+                  "title": "Response List Eway Bills For Invoice Api V1 Finance Invoices  Invoice Id  Eway Bills Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Every e-Way bill attempt for one document, newest first",
         "tags": [
           "finance"
         ]

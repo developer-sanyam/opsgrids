@@ -48,6 +48,21 @@ ENDPOINTS = [
     ("/api/v1/finance/gst/registration", "finance.compliance.registration.read"),
     ("/api/v1/finance/ims/documents", "finance.compliance.ims.read"),
     (f"/api/v1/finance/ims/documents/{uuid.uuid4()}", "finance.compliance.ims.read"),
+    # Returns, e-Way and withholding are three more compliance questions with three more answers:
+    # what was reported for a period, which consignments may legally be on a road, and how much
+    # has already been deducted from what this organization is owed.
+    ("/api/v1/finance/gst/returns", "finance.compliance.returns.read"),
+    (f"/api/v1/finance/gst/returns/{uuid.uuid4()}", "finance.compliance.returns.read"),
+    (f"/api/v1/finance/gst/returns/{uuid.uuid4()}/diff", "finance.compliance.returns.read"),
+    ("/api/v1/finance/eway-bills", "finance.compliance.eway.read"),
+    (f"/api/v1/finance/invoices/{uuid.uuid4()}/eway-bills", "finance.compliance.eway.read"),
+    (f"/api/v1/finance/invoices/{uuid.uuid4()}/eway", "finance.compliance.eway.read"),
+    ("/api/v1/finance/gst/withholdings", "finance.compliance.withholding.read"),
+    (
+        "/api/v1/finance/gst/withholdings/summary?period=2026-08",
+        "finance.compliance.withholding.read",
+    ),
+    ("/api/v1/finance/gst/withholding-rates", "finance.compliance.withholding.read"),
 ]
 
 
@@ -207,6 +222,67 @@ class TestTheImsDecision:
         assert res.status_code == 402
 
 
+class TestTheReturnWrites:
+    """Two writes, two permissions, and the split is the point.
+
+    Generating a return states what this platform believes about its own book and can be repeated;
+    filing it makes a claim to a government and is terminal. A finance analyst can reasonably hold
+    the first without the second, so holding `generate` must not reach `file` — which is what the
+    middle tests here assert in both directions.
+    """
+
+    GENERATE = "/api/v1/finance/gst/returns"
+    FILE = f"/api/v1/finance/gst/returns/{uuid.uuid4()}/filing"
+    PERIOD: ClassVar[dict[str, str]] = {"period": "2026-08"}
+    ARN: ClassVar[dict[str, str]] = {"arn": "AA270826000001B"}
+
+    async def test_a_reader_cannot_generate(self, client, org_id) -> None:
+        principal = principal_for(org_id, perms=[f"{p}:ORG" for p in FINANCE_READS])
+        with as_principal(principal):
+            res = await client.post(self.GENERATE, json=self.PERIOD)
+        assert res.status_code == 403
+
+    async def test_a_reader_cannot_file(self, client, org_id) -> None:
+        principal = principal_for(org_id, perms=[f"{p}:ORG" for p in FINANCE_READS])
+        with as_principal(principal):
+            res = await client.post(self.FILE, json=self.ARN)
+        assert res.status_code == 403
+
+    async def test_generating_does_not_imply_filing(self, client, org_id) -> None:
+        principal = principal_for(org_id, perms=["finance.compliance.returns.generate:ORG"])
+        with as_principal(principal):
+            res = await client.post(self.FILE, json=self.ARN)
+        assert res.status_code == 403
+
+    async def test_filing_does_not_imply_generating(self, client, org_id) -> None:
+        principal = principal_for(org_id, perms=["finance.compliance.returns.file:ORG"])
+        with as_principal(principal):
+            res = await client.post(self.GENERATE, json=self.PERIOD)
+        assert res.status_code == 403
+
+    async def test_an_own_grant_is_below_the_org_floor(self, client, org_id) -> None:
+        principal = principal_for(org_id, perms=["finance.compliance.returns.generate:OWN"])
+        with as_principal(principal):
+            res = await client.post(self.GENERATE, json=self.PERIOD)
+        assert res.status_code == 403
+
+    async def test_the_file_grant_reaches_the_return_lookup(self, client, org_id) -> None:
+        """Granted, so the refusal is now about the *return* — a 404 for an id that names nothing
+        — rather than about the caller. Never a 403."""
+        principal = principal_for(org_id, perms=["finance.compliance.returns.file:ORG"])
+        with as_principal(principal):
+            res = await client.post(self.FILE, json=self.ARN)
+        assert res.status_code == 404
+
+    async def test_an_unentitled_organization_is_402(self, client, org_id) -> None:
+        principal = principal_for(
+            org_id, perms=["finance.compliance.returns.generate:ORG"], entitlements=[]
+        )
+        with as_principal(principal):
+            res = await client.post(self.GENERATE, json=self.PERIOD)
+        assert res.status_code == 402
+
+
 class TestTheInternalFilingApi:
     """Service-to-service, guarded by a short-lived token addressed to *this* service by name.
 
@@ -218,6 +294,8 @@ class TestTheInternalFilingApi:
         "/internal/v1/einvoice/filings",
         "/internal/v1/einvoice/filings:cancel",
         "/internal/v1/ims/sync",
+        "/internal/v1/eway/bills",
+        "/internal/v1/eway/bills:cancel",
     )
 
     @staticmethod
@@ -229,6 +307,8 @@ class TestTheInternalFilingApi:
             "invoice_id": str(uuid.uuid4()),
             "reason_code": "2",
             "period": "2026-08",
+            "distance_km": 100,
+            "vehicle_no": "MH12AB1234",
         }
 
     @pytest.mark.parametrize("path", PATHS)

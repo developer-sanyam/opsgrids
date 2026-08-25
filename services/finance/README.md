@@ -3,7 +3,8 @@
 The accounts-receivable module of the Atmora platform, and the home of its GST compliance engine.
 Owns the `finance` schema: customers, invoices and credit notes, invoice lines, payments and their
 allocations, the GST rate schedule, the organization's GST registration, the e-invoice filing
-ledger, the purchase book and the IMS reconciliation queue. Serves the `product-finance` SPA.
+ledger, the purchase book, the IMS reconciliation queue, the GSTR-1 return record, the e-Way bill
+ledger and the TDS/TCS withholding register. Serves the `product-finance` SPA.
 
 ```bash
 make run SERVICE=finance PORT=8171    # API
@@ -18,9 +19,11 @@ reads it renders. The invoice and payment write path
 (`services.create_customer/create_invoice/record_payment`) exists to finalize the append-only
 documents and to drive the demo seed through the real, RLS-bound path.
 
-Compliance is where the writes are. Two of them are automatic — filing an invoice and syncing a
-supplier ledger — and two need a person: setting the organization's GST registration, and deciding
-an inbound supplier document.
+Compliance is where the writes are. Three are automatic — filing an invoice, syncing a supplier
+ledger, and assessing what will be withheld on a document as it is finalized — one is
+service-to-service (raising an e-Way bill for a consignment a dispatch system is about to move),
+and three need a person: setting the organization's GST registration, deciding an inbound supplier
+document, and generating and filing a return.
 
 ## Owns
 
@@ -48,9 +51,22 @@ an inbound supplier document.
   opinion, deliberately **not** frozen.
 - **`ims_decisions`** — who accepted or rejected what, and when. **Append-only at the database**,
   by trigger, because this is the row that decides whether a credit is claimed.
-- **`tax_rates`** — the GST rate schedule, versioned by `effective_from`. **Global / UNPOLICIED**
-  (no `organization_id`): a rate band is platform vocabulary, the same for every tenant, not
-  tenant data. Left out of row-level security alongside `processed_events`.
+- **`gst_returns`** — one row per (registration, period, type). Carries the **snapshot** of what
+  was assembled, as JSONB, plus the one-line totals denormalised out of it. Frozen by a trigger
+  once **filed**; before that it may be re-assembled, because nothing has been reported yet.
+- **`gst_return_transitions`** — the append-only status trail the `status` column is only the head
+  of. Who moved a return to `filed`, when, with which ARN, and what the totals were at the time.
+- **`eway_bills`** — one row per attempt to license a goods movement. **Append-only at the
+  database**, by trigger, like `einvoice_filings`. Stores the distance and `valid_from` as well as
+  `valid_until`, so the deadline stays recomputable rather than merely remembered.
+- **`invoice_withholdings`** — TDS deducted and TCS collected, per document per head.
+  **Append-only at the database**, by trigger. The rate and threshold are snapshots beside the id
+  of the schedule version that produced them.
+- **`tax_rates`** and **`withholding_rates`** — the GST rate schedule and the statutory
+  withholding schedule, both versioned by `effective_from`. **Global / UNPOLICIED** (no
+  `organization_id`): a rate band and a 2 % deduction under s. 51 are platform vocabulary, the
+  same for every tenant in India, not tenant data. Left out of row-level security alongside
+  `processed_events`.
 
 Money is integer minor units (paise) throughout; there are no floats and no `Numeric(_, 2)`.
 
@@ -82,6 +98,80 @@ suggestion **with its reason** — `matched`, `amount_mismatch` (with the delta,
 `pending` until somebody records a decision, because accepting claims the input tax credit on
 somebody else's invoice.
 
+## How a return gets assembled, and why it is frozen
+
+`POST /finance/gst/returns` assembles one period's outward supplies from the invoices already
+recorded and stores the result as a **snapshot**.
+
+Nothing in that assembly computes tax. `domain.assemble_gstr1` sums the splits the invoices
+already carry, so the return foots to the documents it is made of *by construction* rather than by
+a reconciliation step somebody has to remember to run. Every reported document lands in exactly
+one section — EXP, then CDNR/CDNUR, then B2B, then B2CL, then B2CS — which is what makes the
+footing provable: a document that could fall into two sections would double a figure, and one that
+fell into none would lose it.
+
+The sections are the real ones. B2B and B2CL invoice-wise; **B2CS aggregated** by place of supply,
+rate and inter/intra-state, because that is what the return declares; CDNR/CDNUR carrying the
+number each note corrects; EXP; an **HSN summary** built in parallel from the same lines rather
+than from the section entries (two independent declarations of one book, so a test comparing them
+is a real cross-foot and not a tautology); and a **document series** — the one section a *void*
+belongs in, since its number was consumed even though its figures are not a supply.
+
+Once the return is **filed**, a trigger freezes the snapshot, the totals, the period and even
+`deleted_at`. A correction that arrives afterwards therefore shows up through
+`GET /finance/gst/returns/{id}/diff` as a **difference**, per section and in total — which is what
+an amendment in a later period declares — rather than by August quietly becoming a different
+return. Before filing it may be re-assembled, and every assembly appends its own transition row.
+
+## How an e-Way bill gets raised, and when it dies
+
+`POST /internal/v1/eway/bills` licenses a goods movement above ₹50,000. The transport facts — a
+distance, a vehicle, a transporter — come from the caller, because they are not on an invoice;
+everything else comes off the frozen document.
+
+**Validity is the platform's arithmetic, not the portal's.** `EwayAck` deliberately carries no
+deadline: one day of validity per 200 km *or part thereof*, each day expiring at midnight of the
+day immediately following generation — so a bill raised at 23:50 for 150 km is valid for ten
+minutes, not for a day. `domain.eway_valid_until` computes it from the `distance_km` and
+`valid_from` the row **stores**, so a screen and a roadside checkpoint are reading the same
+arithmetic over the same two values. A deadline only the portal knows is one nothing can explain
+and no test can check, and the cost of the two disagreeing falls on a driver.
+
+Because `eway_bills` is append-only, nothing can update a row when the clock passes it: `expired`
+is derived on read (`effective_status`) rather than written. A bill may be cancelled within 24
+hours of being raised, checked against the stored `valid_from`; past that, and once it has
+expired, there is no remedy at all — the movement has to be reported as it happened.
+
+## How tax gets withheld
+
+Three heads, two statutes, and they work differently in ways that get conflated:
+
+- **GST s. 51** — the recipient deducts **2 % of the taxable value** on notified supplies (metal
+  scrap is the case this vertical meets) above ₹2,50,000 under one contract. A **cliff**: below
+  the threshold nothing, above it the rate on the *whole* value. It splits across CGST/SGST/IGST
+  by reusing `domain.split_gst`, so a deduction cannot round differently from the levy beside it.
+- **Income tax s. 194Q** — the buyer deducts 0.1 % of purchases from one seller beyond ₹50 lakh in
+  a financial year. An **aggregate**: the rate bites only on the excess, so the invoice that
+  crosses the threshold is withheld on partially.
+- **Income tax s. 206C(1H)** — the seller collects the same 0.1 % beyond the same ₹50 lakh, and
+  **must not** where the buyer is already liable under 194Q. Mutually exclusive by statute.
+
+Assessment runs inline when a document is finalized — it is arithmetic over rows already in the
+transaction, unlike filing, which calls a government portal and therefore goes through the outbox.
+It is **gated on three flags on the customer**, all defaulting false, because whether a body is
+notified under s. 51 and whether a buyer is liable under 194Q are facts about somebody else's
+registration and somebody else's books. The platform cannot infer them, so it does not guess.
+
+`withholding_rates` is versioned by `effective_from` and resolution is against the **document's**
+date, with the resolved rate and threshold snapshotted onto the register row beside the id of the
+version they came from. Publishing tomorrow's rate today therefore changes nothing that was
+already computed — which is what "a rate change must not restate history" means, and there is a
+test that publishes one and re-derives an old invoice to prove it.
+
+`GET /finance/gst/withholdings/summary?period=` groups the register **per counterparty**, which is
+how GSTR-7 is declared — the shape that makes these figures comparable to the return a deductor
+actually files, and therefore reconcilable.
+
 ## Endpoints (`/api/v1/finance/...`)
 
 | Method & path | Returns | Permission |
@@ -94,6 +184,17 @@ somebody else's invoice.
 | `GET /finance/ims/documents?q=&status=&supplier_gstin=&period=&reason=&sort=` | `Page<ImsDocument>` | `finance.compliance.ims.read` |
 | `GET /finance/ims/documents/{id}` | `ImsDocumentDetail` | `finance.compliance.ims.read` |
 | `POST /finance/ims/documents/{id}/decisions` | `ImsDecision` | `finance.compliance.ims.decide` |
+| `GET /finance/gst/returns?period=&status=&return_type=&sort=` | `Page<GstReturn>` | `finance.compliance.returns.read` |
+| `GET /finance/gst/returns/{id}` | `GstReturnDetail` | `finance.compliance.returns.read` |
+| `GET /finance/gst/returns/{id}/diff` | `ReturnDiff` | `finance.compliance.returns.read` |
+| `POST /finance/gst/returns` | `GstReturn` | `finance.compliance.returns.generate` |
+| `POST /finance/gst/returns/{id}/filing` | `GstReturn` | `finance.compliance.returns.file` |
+| `GET /finance/eway-bills?status=&invoice_id=` | `Page<EwayBillWithInvoice>` | `finance.compliance.eway.read` |
+| `GET /finance/invoices/{id}/eway-bills` | `EwayBill[]` | `finance.compliance.eway.read` |
+| `GET /finance/invoices/{id}/eway` | `EwayState` | `finance.compliance.eway.read` |
+| `GET /finance/gst/withholdings?period=&code=&invoice_id=` | `Page<WithholdingWithInvoice>` | `finance.compliance.withholding.read` |
+| `GET /finance/gst/withholdings/summary?period=&code=` | `WithholdingSummary` | `finance.compliance.withholding.read` |
+| `GET /finance/gst/withholding-rates` | `WithholdingRate[]` | `finance.compliance.withholding.read` |
 | `GET /finance/payments` | `Page<Payment>` | `finance.billing.payment.read` |
 | `GET /finance/customers?q=&sort=` | `Page<CustomerSummary>` | `finance.billing.customer.read` |
 | `GET /finance/overview` | `OverviewSummary` | `finance.reports.summary.read` |
@@ -101,7 +202,8 @@ somebody else's invoice.
 
 Internal (service token, excluded from the published contract):
 `POST /internal/v1/einvoice/filings`, `POST /internal/v1/einvoice/filings:cancel`,
-`POST /internal/v1/ims/sync`.
+`POST /internal/v1/ims/sync`, `POST /internal/v1/eway/bills`,
+`POST /internal/v1/eway/bills:cancel`.
 
 `sort` for invoices: `issued_desc|issued_asc|amount_desc|amount_asc|due_asc`; for customers:
 `receivables_desc|overdue_desc|name_asc`; for the IMS queue:
@@ -119,21 +221,41 @@ so every permission defaults to ORG, tops out at ORG, and the routes floor at OR
 - `finance.billing.invoice.read`, `finance.billing.payment.read`, `finance.billing.customer.read`
 - `finance.reports.summary.read`, `finance.reports.ledger.read`
 - `finance.compliance.einvoice.read`, `finance.compliance.registration.read`,
-  `finance.compliance.ims.read`
-- `finance.compliance.registration.write` and `finance.compliance.ims.decide` — the two writes,
-  both marked **dangerous**, because each decides money: which identity every future invoice is
-  filed under, and whether the credit on a supplier's invoice is claimed.
+  `finance.compliance.ims.read`, `finance.compliance.returns.read`,
+  `finance.compliance.eway.read`, `finance.compliance.withholding.read`
+- `finance.compliance.registration.write`, `finance.compliance.ims.decide` and
+  `finance.compliance.returns.file` — the three **dangerous** writes, because each decides money
+  or speaks to a government: which identity every future invoice is filed under, whether the
+  credit on a supplier's invoice is claimed, and what a tax period is declared to have contained.
+- `finance.compliance.returns.generate` — a write, but deliberately *not* dangerous and
+  deliberately separate from `.file`. Generating states what this platform believes about its own
+  book and can be repeated; filing is terminal and leaves the building. A finance analyst can hold
+  the first without the second, and a test asserts neither implies the other.
 
 Role templates: **FINANCE_ADMIN** (the whole catalogue at ORG) and **FINANCE_VIEWER** (default;
-every read, including the supplier queue, and neither write).
+every read — the supplier queue, the returns, the e-Way ledger and the withholding register — and
+none of the writes).
 
-## The two stubbed portals
+## The three stubbed portals
 
-`IrpClient` and `ImsClient` are `Protocol`s; `StubIrpClient` and `StubImsClient` are the
-implementations this repository ships. Both are real everywhere except the wire — the IRN is the
-government's own hash, the refusals carry the portal's numbered codes, and every fixture's tax
-comes from `domain.split_gst` — and neither opens a socket or reads a credential, which a test
-asserts. Selecting a real NIC or GSP client is a wiring change in `app/deps.py`.
+`IrpClient`, `ImsClient` and `EwayClient` are `Protocol`s; `StubIrpClient`, `StubImsClient` and
+`StubEwayClient` are the implementations this repository ships. All three are real everywhere
+except the wire — the IRN is the government's own hash, the refusals carry the portals' numbered
+codes, and every fixture's tax comes from `domain.split_gst` — and none opens a socket or reads a
+credential, which a test asserts. Selecting a real NIC or GSP client is a wiring change in
+`app/deps.py`.
+
+Three clients rather than one, because they are three products with separate credentials and
+separate downtime: a business can be perfectly current on e-invoicing while its e-Way integration
+is unreachable, and a single client would make that one outage.
+
+The e-Way stub has one honest deviation, called out in its docstring rather than left to be
+discovered: the real portal issues bill numbers from a sequence, and this one derives a
+twelve-digit number from the document **and the moment it was raised**. Deterministic in its
+inputs, but deliberately not one number per document — a document legitimately carries several
+bills over its life (cancelled and re-raised, or expired in transit while the goods still have to
+arrive), and a number keyed on the document alone would collide on the unique index the second
+time and strand a lorry because a hash said so.
 
 ## Demo seed
 

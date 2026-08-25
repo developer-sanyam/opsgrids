@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import domain, selectors
+from app.eway.base import EwayClient, EwayLine, EwayPayload, EwayRejected, EwayUnavailable
 from app.ims.base import ImsClient, ImsSupplierDocument, ImsUnavailable
 from app.irp.base import (
     IrpAck,
@@ -48,26 +49,37 @@ from app.models import (
     AuditLog,
     Customer,
     EInvoiceFiling,
+    EwayBill,
     GstRegistration,
+    GstReturn,
+    GstReturnTransition,
     ImsDecision,
     ImsDocument,
     ImsReconciliation,
     Invoice,
     InvoiceLine,
+    InvoiceWithholding,
     OutboxEvent,
     Payment,
     PaymentAllocation,
     PurchaseDocument,
 )
 from app.schemas import (
+    CancelEwayIn,
     CancelFilingIn,
     CustomerCreate,
     FileInvoiceIn,
+    FileReturnIn,
+    GenerateEwayIn,
+    GenerateReturnIn,
+    Gstr1Sections,
     GstRegistrationUpsert,
     ImsDecisionCreate,
     InvoiceCreate,
     PaymentCreate,
     PurchaseDocumentCreate,
+    ReturnDiffOut,
+    SectionDeltaOut,
 )
 from platform_core.audit import record_audit
 from platform_core.auth import Principal, Scope, ScopeContext
@@ -101,6 +113,21 @@ EVT_GST_REGISTRATION_SET = "finance.compliance.gst_registration.set"
 #: what this business chose to do about it — the row that decides whether a credit is claimed.
 EVT_IMS_DOCUMENT_INGESTED = "finance.compliance.ims_document.ingested"
 EVT_IMS_DOCUMENT_DECIDED = "finance.compliance.ims_document.decided"
+#: The return events. `generated` announces a snapshot of a period; `filed` announces that the
+#: snapshot went to the portal. Two events rather than one because they are two claims — one
+#: about this platform's book, one to a government — and a consumer may reasonably care about
+#: only the second.
+EVT_RETURN_GENERATED = "finance.compliance.gst_return.generated"
+EVT_RETURN_FILED = "finance.compliance.gst_return.filed"
+#: The e-Way events. `failed` carries `retryable` for the same reason the filing one does: an
+#: outage is worth another attempt with the identical consignment and a refusal is not.
+EVT_EWAY_GENERATED = "finance.compliance.eway_bill.generated"
+EVT_EWAY_FAILED = "finance.compliance.eway_bill.failed"
+EVT_EWAY_CANCELLED = "finance.compliance.eway_bill.cancelled"
+#: A withholding assessed on a finalized document. Announced because the money it names never
+#: arrives: a downstream collections or cash-application consumer that expects the gross will
+#: chase a receivable that was settled net.
+EVT_WITHHOLDING_RECORDED = "finance.compliance.withholding.recorded"
 
 #: The permission an automated filing runs under. Named rather than omitted: the audit and outbox
 #: rows every filing writes need an actor and a scope, and a service acting on an organization's
@@ -199,6 +226,11 @@ async def create_customer(
         gstin=payload.gstin,
         city=payload.city,
         state=payload.state,
+        # Facts about the buyer that decide whether tax is withheld on what this organization
+        # bills them. All three default false, which is what keeps withholding opt-in.
+        is_tds_deductor=payload.is_tds_deductor,
+        deducts_tds_194q=payload.deducts_tds_194q,
+        tcs_applicable=payload.tcs_applicable,
     )
     session.add(customer)
     await session.flush()
@@ -423,6 +455,13 @@ async def create_invoice(
         status=invoice.status,
     ):
         request_filing(session, ctx, invoice, trigger="finalized")
+
+    # Withholding is assessed inline rather than on the outbox, and the difference from filing is
+    # the point: filing calls a government portal, so it must not run inside the request that
+    # raised the invoice, while this is pure arithmetic over rows already in this transaction. It
+    # belongs to the document — the figure a customer will pay *net of* is part of finalizing it,
+    # not something that arrives later and changes what was already sent.
+    await assess_withholdings(session, ctx, invoice, customer, request=request)
     return invoice
 
 
@@ -1788,3 +1827,982 @@ async def record_ims_decision(
         actor=_actor(ctx),
     )
     return decision
+
+
+# --------------------------------------------------------------------- GST returns
+# Assembling a return is a *read* of the book followed by one write: the snapshot. Nothing here
+# computes tax — `domain.assemble_gstr1` sums the splits the invoices already carry — so the
+# return foots to the documents it is made of by construction rather than by a reconciliation
+# step somebody has to remember to run.
+
+
+async def generate_return(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    payload: GenerateReturnIn,
+    *,
+    request: Request | None = None,
+    at: datetime | None = None,
+) -> GstReturn:
+    """Assemble one period's return and freeze it as the snapshot of what would be reported.
+
+    Two things this deliberately does **not** do.
+
+    It does not file. Generating is a statement about this platform's own book; filing is a claim
+    made to a government, and collapsing them would mean an operator could not look at the return
+    before it went.
+
+    And it does not touch a **filed** return. Once a period has been filed, the snapshot is what
+    was reported, and an invoice corrected afterwards is a *difference* — read through
+    `diff_return`, declared as an amendment in a later period, which is GST's own remedy and the
+    same shape as a credit note against a filed invoice. Regenerating over the top would erase
+    the only record of what the filing actually said.
+    """
+    at = at or _now()
+    if payload.return_type not in domain.GST_RETURN_TYPES:
+        types = ", ".join(sorted(domain.GST_RETURN_TYPES))
+        raise BusinessRuleProblem(f"Unknown return type {payload.return_type!r} (one of: {types})")
+    try:
+        domain.parse_period(payload.period)
+    except ValueError as exc:
+        raise BusinessRuleProblem(str(exc)) from exc
+
+    registration = await _registration_for(session, ctx, payload.gst_registration_id)
+    assembled = await assemble_return_for(
+        session, ctx, period=payload.period, gstin=registration.gstin
+    )
+    sections = selectors.to_sections(assembled)
+    totals = assembled.totals
+
+    existing = await selectors.find_return(
+        session,
+        ctx.organization_id,
+        registration_id=registration.id,
+        period=payload.period,
+        return_type=payload.return_type,
+    )
+    if existing is not None and existing.status == "filed":
+        raise ConflictProblem(
+            f"The {payload.return_type} for {payload.period} was filed on "
+            f"{existing.filed_at.isoformat() if existing.filed_at else 'an earlier date'} under "
+            f"ARN {existing.arn}; a later correction is an amendment in a later period, not a "
+            "regeneration — read the difference instead"
+        )
+
+    ret = existing
+    if ret is None:
+        ret = GstReturn(
+            organization_id=ctx.organization_id,
+            created_by=str(ctx.principal.sub),
+            gst_registration_id=registration.id,
+            gstin=registration.gstin,
+            state_code=registration.state_code,
+            period=payload.period,
+            return_type=payload.return_type,
+            status="draft",
+        )
+        session.add(ret)
+        await session.flush()
+
+    from_status = ret.status
+    if not domain.may_transition_return(from_status, "generated"):
+        raise BusinessRuleProblem(f"A {from_status} return cannot be generated")
+
+    # The snapshot. Written through the Pydantic contract rather than as a loose dict, so what is
+    # stored is exactly what will be served back, and a shape nothing describes cannot be
+    # persisted in the first place.
+    ret.sections = sections.model_dump(mode="json")
+    ret.gstin = registration.gstin
+    ret.state_code = registration.state_code
+    ret.total_taxable_minor = totals.taxable_minor
+    ret.total_cgst_minor = totals.cgst_minor
+    ret.total_sgst_minor = totals.sgst_minor
+    ret.total_igst_minor = totals.igst_minor
+    ret.document_count = totals.document_count
+    ret.line_count = totals.line_count
+    ret.generated_at = at
+    ret.status = "generated"
+    ret.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    _append_transition(
+        session,
+        ctx,
+        ret,
+        from_status=from_status,
+        to_status="generated",
+        at=at,
+        note=f"assembled from {totals.document_count} documents",
+    )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="gst_return.generated",
+        entity="gst_return",
+        entity_id=ret.id,
+        before={"status": from_status},
+        after={
+            "status": ret.status,
+            "period": ret.period,
+            "return_type": ret.return_type,
+            "total_taxable_minor": ret.total_taxable_minor,
+            "document_count": ret.document_count,
+        },
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_RETURN_GENERATED,
+        aggregate_type="gst_return",
+        aggregate_id=ret.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "gst_return_id": str(ret.id),
+            "gstin": ret.gstin,
+            "period": ret.period,
+            "return_type": ret.return_type,
+            "total_taxable_minor": ret.total_taxable_minor,
+            "total_tax_minor": (ret.total_cgst_minor + ret.total_sgst_minor + ret.total_igst_minor),
+            "document_count": ret.document_count,
+            "generated_at": at.isoformat(),
+        },
+        actor=_actor(ctx),
+    )
+    return ret
+
+
+async def file_return(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    return_id: uuid.UUID,
+    payload: FileReturnIn,
+    *,
+    request: Request | None = None,
+    at: datetime | None = None,
+) -> GstReturn:
+    """Record that a generated return went to the portal, with the ARN it came back with.
+
+    A separate, dangerous permission from generating, because it is a separate act: generating
+    says what this platform believes, filing says what was told to a tax authority. The
+    transition is appended to the trail with the totals as they stood, so the evidence row is
+    self-contained — reading it never depends on the header still saying the same thing.
+    """
+    at = at or _now()
+    ret = await selectors.get_return(session, ctx.organization_id, return_id)
+    if ret is None:
+        raise NotFoundProblem("That return is not part of this organization")
+    if not payload.arn.strip():
+        raise BusinessRuleProblem("Filing a return requires the portal's acknowledgement number")
+    if not domain.may_transition_return(ret.status, "filed"):
+        if ret.status == "filed":
+            raise ConflictProblem(
+                f"The {ret.return_type} for {ret.period} is already filed under ARN {ret.arn}"
+            )
+        raise BusinessRuleProblem(
+            f"A {ret.status} return cannot be filed; generate it first so there is a snapshot of "
+            "what was reported"
+        )
+
+    from_status = ret.status
+    ret.status = "filed"
+    ret.filed_at = at
+    ret.arn = payload.arn.strip()
+    ret.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    _append_transition(
+        session,
+        ctx,
+        ret,
+        from_status=from_status,
+        to_status="filed",
+        at=at,
+        arn=ret.arn,
+        note=payload.note,
+    )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="gst_return.filed",
+        entity="gst_return",
+        entity_id=ret.id,
+        before={"status": from_status},
+        after={"status": ret.status, "arn": ret.arn, "period": ret.period},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_RETURN_FILED,
+        aggregate_type="gst_return",
+        aggregate_id=ret.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "gst_return_id": str(ret.id),
+            "gstin": ret.gstin,
+            "period": ret.period,
+            "return_type": ret.return_type,
+            "arn": ret.arn,
+            "total_taxable_minor": ret.total_taxable_minor,
+            "filed_at": at.isoformat(),
+        },
+        actor=_actor(ctx),
+    )
+    return ret
+
+
+async def assemble_return_for(
+    session: AsyncSession, ctx: ScopeContext, *, period: str, gstin: str
+) -> domain.Gstr1Return:
+    """Assemble a period from the book as it stands **now**. A pure read — nothing is written.
+
+    Used twice, and that is the point: once by `generate_return` to make the snapshot, and again
+    by `diff_return` to compute what the book says today. Two callers, one assembly, so the
+    difference between a snapshot and the present can only ever be the *data*.
+    """
+    documents = await selectors.return_documents(session, ctx.organization_id, period)
+    return domain.assemble_gstr1(documents, period=period, gstin=gstin)
+
+
+async def diff_return(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    return_id: uuid.UUID,
+    *,
+    at: datetime | None = None,
+) -> ReturnDiffOut:
+    """What has changed since the return was generated, per section and in total.
+
+    The endpoint the frozen snapshot exists for. A credit note raised in September against an
+    August invoice does not make August a different return — it makes a difference, and a
+    difference is what an amendment declares. Computing it here means the amendment is prepared
+    from an answer rather than from somebody's memory of what August looked like.
+    """
+    at = at or _now()
+    ret = await selectors.get_return(session, ctx.organization_id, return_id)
+    if ret is None:
+        raise NotFoundProblem("That return is not part of this organization")
+    if ret.sections is None:
+        raise BusinessRuleProblem(
+            f"The {ret.return_type} for {ret.period} has not been generated, so there is no "
+            "snapshot to compare the book against"
+        )
+
+    snapshot = domain.ReturnTotals(
+        taxable_minor=ret.total_taxable_minor,
+        cgst_minor=ret.total_cgst_minor,
+        sgst_minor=ret.total_sgst_minor,
+        igst_minor=ret.total_igst_minor,
+        document_count=ret.document_count,
+        line_count=ret.line_count,
+    )
+    current_return = await assemble_return_for(session, ctx, period=ret.period, gstin=ret.gstin)
+    stored = Gstr1Sections.model_validate(ret.sections)
+
+    sections: list[SectionDeltaOut] = []
+    for name in domain.GSTR1_SECTIONS:
+        if name == "docs":
+            # A document series is a range of strings, not a set of figures; there is nothing to
+            # subtract. It shows up in the sections of both snapshots and is deliberately left
+            # out of the arithmetic rather than given a made-up delta.
+            continue
+        before = _snapshot_section_totals(name, stored)
+        after = domain.section_totals(name, current_return)
+        delta = domain.totals_delta(before, after)
+        sections.append(
+            SectionDeltaOut(
+                section=name,
+                snapshot=selectors.to_totals_out(before),
+                current=selectors.to_totals_out(after),
+                delta=selectors.to_totals_out(delta),
+                changed=_is_nonzero(delta),
+            )
+        )
+
+    total_delta = domain.totals_delta(snapshot, current_return.totals)
+    return ReturnDiffOut(
+        ret=selectors.to_return_out(ret),
+        current=selectors.to_totals_out(current_return.totals),
+        snapshot=selectors.to_totals_out(snapshot),
+        delta=selectors.to_totals_out(total_delta),
+        sections=sections,
+        changed=_is_nonzero(total_delta) or any(s.changed for s in sections),
+        computed_at=at,
+    )
+
+
+def _snapshot_section_totals(section: str, stored: Gstr1Sections) -> domain.ReturnTotals:
+    """One section's totals, read back off a stored snapshot.
+
+    Summed from the snapshot's own rows rather than from the header, so a diff compares like with
+    like: both sides of the subtraction are "add up the rows of this section", and a header that
+    had somehow drifted would show as a difference rather than hiding one.
+    """
+    rows: list[Any] = getattr(stored, section)
+    if section == "b2cs":
+        return domain.ReturnTotals(
+            taxable_minor=sum(r.taxable_minor for r in rows),
+            cgst_minor=sum(r.cgst_minor for r in rows),
+            sgst_minor=sum(r.sgst_minor for r in rows),
+            igst_minor=sum(r.igst_minor for r in rows),
+            document_count=sum(r.document_count for r in rows),
+            line_count=len(rows),
+        )
+    if section == "hsn":
+        return domain.ReturnTotals(
+            taxable_minor=sum(r.taxable_minor for r in rows),
+            cgst_minor=sum(r.cgst_minor for r in rows),
+            sgst_minor=sum(r.sgst_minor for r in rows),
+            igst_minor=sum(r.igst_minor for r in rows),
+            document_count=0,
+            line_count=len(rows),
+        )
+    return domain.ReturnTotals(
+        taxable_minor=sum(item.taxable_minor for r in rows for item in r.items),
+        cgst_minor=sum(item.cgst_minor for r in rows for item in r.items),
+        sgst_minor=sum(item.sgst_minor for r in rows for item in r.items),
+        igst_minor=sum(item.igst_minor for r in rows for item in r.items),
+        document_count=len(rows),
+        line_count=sum(len(r.items) for r in rows),
+    )
+
+
+def _is_nonzero(totals: domain.ReturnTotals) -> bool:
+    return any(
+        (
+            totals.taxable_minor,
+            totals.cgst_minor,
+            totals.sgst_minor,
+            totals.igst_minor,
+            totals.document_count,
+            totals.line_count,
+        )
+    )
+
+
+def _append_transition(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    ret: GstReturn,
+    *,
+    from_status: str | None,
+    to_status: str,
+    at: datetime,
+    arn: str | None = None,
+    note: str | None = None,
+) -> GstReturnTransition:
+    """Append one row of the status trail. The only writer of that table, and it only inserts."""
+    transition = GstReturnTransition(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        gst_return_id=ret.id,
+        from_status=from_status,
+        to_status=to_status,
+        arn=arn,
+        note=note,
+        total_taxable_minor=ret.total_taxable_minor,
+        total_tax_minor=(ret.total_cgst_minor + ret.total_sgst_minor + ret.total_igst_minor),
+        transitioned_by=str(ctx.principal.sub),
+        transitioned_at=at,
+    )
+    session.add(transition)
+    return transition
+
+
+async def _registration_for(
+    session: AsyncSession, ctx: ScopeContext, registration_id: uuid.UUID | None
+) -> GstRegistration:
+    """The registration a return is filed under — the named one, or the organization's primary."""
+    if registration_id is not None:
+        registrations = await selectors.all_gst_registrations(session, ctx.organization_id)
+        found = next((r for r in registrations if r.id == registration_id), None)
+        if found is None:
+            raise NotFoundProblem("That GST registration is not part of this organization")
+        return found
+    primary = await selectors.get_gst_registration(session, ctx.organization_id)
+    if primary is None:
+        raise BusinessRuleProblem(
+            "This organization has no GST registration configured, so it has nothing to file "
+            "a return under"
+        )
+    return primary
+
+
+# --------------------------------------------------------------------- e-Way bills
+# The third portal, and the same state machine shape as e-invoicing: every path ends in exactly
+# one appended row, because an attempt nobody recorded is an attempt nobody can prove was made.
+#
+# What differs is validity. The portal returns a bill number and the moment it was raised; the
+# **deadline is this platform's arithmetic** over the distance it stored and that timestamp. A
+# deadline only the portal knows is one a screen cannot explain and a test cannot check, and the
+# consequence of a screen and a checkpoint disagreeing falls on a driver.
+
+
+def build_eway_payload(
+    invoice: Invoice,
+    registration: GstRegistration,
+    payload: GenerateEwayIn,
+    *,
+    buyer_name: str,
+    at: datetime,
+) -> EwayPayload:
+    """Assemble the consignment the portal reasons about, from a frozen document plus the
+    transport facts, which are the caller's — a distance and a vehicle are not on an invoice."""
+    return EwayPayload(
+        document_type=domain.IRP_DOCUMENT_TYPES[invoice.document_type],
+        document_number=invoice.number,
+        document_date=invoice.issued_date,
+        seller_gstin=invoice.seller_gstin or registration.gstin,
+        seller_state_code=registration.state_code,
+        buyer_gstin=invoice.buyer_gstin,
+        buyer_name=buyer_name,
+        place_of_supply=invoice.place_of_supply or "",
+        transport_mode=payload.transport_mode,
+        distance_km=payload.distance_km,
+        vehicle_no=payload.vehicle_no,
+        transporter_id=payload.transporter_id,
+        transport_doc_no=payload.transport_doc_no,
+        transport_doc_date=payload.transport_doc_date,
+        over_dimensional=payload.over_dimensional,
+        consignment_value_minor=invoice.total_minor,
+        taxable_minor=invoice.subtotal_minor,
+        cgst_minor=invoice.cgst_minor,
+        sgst_minor=invoice.sgst_minor,
+        igst_minor=invoice.igst_minor,
+        generated_at=at,
+        lines=[
+            EwayLine(
+                serial_no=line.line_no,
+                description=line.description,
+                hsn_sac=line.hsn_sac,
+                quantity=line.quantity,
+                taxable_minor=line.amount_minor,
+                rate_pct=line.tax_rate_pct,
+                cgst_minor=line.cgst_minor,
+                sgst_minor=line.sgst_minor,
+                igst_minor=line.igst_minor,
+            )
+            for line in invoice.lines
+        ],
+    )
+
+
+def _append_eway(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    invoice: Invoice,
+    payload: GenerateEwayIn,
+    *,
+    status: str,
+    at: datetime,
+    eway_bill_no: str | None = None,
+    valid_from: datetime | None = None,
+    valid_until: datetime | None = None,
+    error_code: str | None = None,
+    error: str | None = None,
+) -> EwayBill:
+    """Append one attempt. The only writer of this table, and it only ever inserts."""
+    if status not in domain.EWAY_STATUSES:
+        raise BusinessRuleProblem(f"Unknown e-Way status {status!r}")
+    bill = EwayBill(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        invoice_id=invoice.id,
+        status=status,
+        eway_bill_no=eway_bill_no,
+        transport_mode=payload.transport_mode,
+        distance_km=payload.distance_km,
+        vehicle_no=payload.vehicle_no,
+        transporter_id=payload.transporter_id,
+        transport_doc_no=payload.transport_doc_no,
+        transport_doc_date=payload.transport_doc_date,
+        over_dimensional=payload.over_dimensional,
+        consignment_value_minor=invoice.total_minor,
+        valid_from=valid_from,
+        valid_until=valid_until,
+        error_code=error_code,
+        error=error,
+        attempted_at=at,
+    )
+    session.add(bill)
+    return bill
+
+
+async def generate_eway_bill(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    client: EwayClient,
+    payload: GenerateEwayIn,
+    *,
+    request: Request | None = None,
+    at: datetime | None = None,
+) -> EwayBill:
+    """Raise an e-Way bill for one document's goods movement, and append what came back.
+
+    The refusals that happen *before* the portal is called are errors, because the caller asked
+    for something impossible and deserves to be told: an unknown document, a consignment under
+    the threshold, no registration, a bill already standing. Everything from the call onward
+    becomes a row — a rejection is a `failed` attempt, an outage a `pending` one — because the
+    attempt happened and the ledger is what proves it.
+    """
+    at = at or _now()
+    invoice = await selectors.get_invoice(session, ctx.organization_id, payload.invoice_id)
+    if invoice is None:
+        raise NotFoundProblem("That invoice is not part of this organization")
+
+    if not domain.requires_eway_bill(
+        consignment_value_minor=invoice.total_minor,
+        document_type=invoice.document_type,
+        supply_type=invoice.supply_type,
+        status=invoice.status,
+    ):
+        raise BusinessRuleProblem(
+            f"{invoice.number} is a consignment of {invoice.total_minor} paise, at or below the "
+            f"{domain.EWAY_THRESHOLD_MINOR} paise threshold, so it needs no e-Way bill"
+        )
+    try:
+        domain.eway_validity_days(payload.distance_km, over_dimensional=payload.over_dimensional)
+    except ValueError as exc:
+        raise BusinessRuleProblem(str(exc)) from exc
+
+    registration = await selectors.get_gst_registration(session, ctx.organization_id)
+    if registration is None:
+        raise BusinessRuleProblem(
+            "This organization has no GST registration configured, so it cannot raise a bill"
+        )
+
+    bills = await selectors.eway_bills_for_invoice(session, ctx.organization_id, invoice.id)
+    live = selectors.live_eway_bill(bills, at=at)
+    if live is not None:
+        raise ConflictProblem(
+            f"{invoice.number} already has e-Way bill {live.eway_bill_no}, valid until "
+            f"{live.valid_until.isoformat() if live.valid_until else 'an unrecorded time'}; "
+            "cancel it within 24 hours or let it expire before raising another"
+        )
+
+    customer = await selectors.get_customer(session, ctx.organization_id, invoice.customer_id)
+    eway_payload = build_eway_payload(
+        invoice, registration, payload, buyer_name=customer.name if customer else "", at=at
+    )
+
+    try:
+        ack = client.generate(eway_payload)
+    except EwayRejected as rejected:
+        bill = _append_eway(
+            session,
+            ctx,
+            invoice,
+            payload,
+            status="failed",
+            at=at,
+            error_code=rejected.code,
+            error=rejected.message,
+        )
+        await session.flush()
+        _audit_eway(session, ctx, invoice, bill, action="eway.rejected", request=request)
+        _publish_eway_failed(session, ctx, invoice, bill, retryable=False, portal=client.name)
+        return bill
+    except EwayUnavailable as outage:
+        # The document is fine, the portal is not — and here the goods are already loaded, which
+        # is why the row is `pending` rather than `failed`: somebody is going to try again.
+        bill = _append_eway(
+            session,
+            ctx,
+            invoice,
+            payload,
+            status="pending",
+            at=at,
+            error_code=domain.ERR_PORTAL_UNAVAILABLE,
+            error=str(outage),
+        )
+        await session.flush()
+        _audit_eway(session, ctx, invoice, bill, action="eway.pending", request=request)
+        _publish_eway_failed(session, ctx, invoice, bill, retryable=True, portal=client.name)
+        return bill
+
+    # Validity is computed here, from the distance this platform is about to store and the
+    # moment the portal says the bill began — never taken from the portal's own answer, so the
+    # deadline a screen shows and the deadline a checkpoint enforces are the same arithmetic.
+    valid_until = domain.eway_valid_until(
+        ack.valid_from, payload.distance_km, over_dimensional=payload.over_dimensional
+    )
+    bill = _append_eway(
+        session,
+        ctx,
+        invoice,
+        payload,
+        status="generated",
+        at=at,
+        eway_bill_no=ack.eway_bill_no,
+        valid_from=ack.valid_from,
+        valid_until=valid_until,
+    )
+    await session.flush()
+    _audit_eway(session, ctx, invoice, bill, action="eway.generated", request=request)
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_EWAY_GENERATED,
+        aggregate_type="invoice",
+        aggregate_id=invoice.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "invoice_id": str(invoice.id),
+            "eway_bill_id": str(bill.id),
+            "number": invoice.number,
+            "eway_bill_no": bill.eway_bill_no,
+            "transport_mode": bill.transport_mode,
+            "distance_km": bill.distance_km,
+            "valid_from": ack.valid_from.isoformat(),
+            "valid_until": valid_until.isoformat(),
+            "portal": client.name,
+        },
+        actor=_actor(ctx),
+    )
+    return bill
+
+
+async def cancel_eway_bill(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    client: EwayClient,
+    payload: CancelEwayIn,
+    *,
+    request: Request | None = None,
+    at: datetime | None = None,
+) -> EwayBill:
+    """Withdraw a raised bill, and append the withdrawal as its own row.
+
+    The 24-hour window is checked against the **stored** `valid_from` — the moment the platform
+    recorded the bill as beginning — rather than left to the portal to refuse. Same reasoning as
+    the IRN's window: the answer is knowable locally, and knowing it is what lets a screen offer
+    "cancel" only when it will work.
+    """
+    at = at or _now()
+    invoice = await selectors.get_invoice(session, ctx.organization_id, payload.invoice_id)
+    if invoice is None:
+        raise NotFoundProblem("That invoice is not part of this organization")
+    if payload.reason_code not in domain.EWAY_CANCELLATION_REASONS:
+        reasons = ", ".join(f"{k} {v}" for k, v in domain.EWAY_CANCELLATION_REASONS.items())
+        raise BusinessRuleProblem(f"Cancellation reason must be one of: {reasons}")
+
+    bills = await selectors.eway_bills_for_invoice(session, ctx.organization_id, invoice.id)
+    live = selectors.live_eway_bill(bills, at=at)
+    if live is None or live.eway_bill_no is None:
+        raise BusinessRuleProblem(
+            f"{invoice.number} has no live e-Way bill to cancel; a bill that has expired is "
+            "spent rather than withdrawable"
+        )
+    if live.valid_from is not None and not domain.eway_cancellation_window_open(
+        live.valid_from, at
+    ):
+        deadline = domain.eway_cancellation_deadline(live.valid_from)
+        raise BusinessRuleProblem(
+            f"e-Way bill {live.eway_bill_no} was raised more than 24 hours ago (the window "
+            f"closed at {deadline.isoformat()}); the movement has to be reported as it happened"
+        )
+
+    attempt_payload = GenerateEwayIn(
+        organization_id=ctx.organization_id,
+        invoice_id=invoice.id,
+        distance_km=live.distance_km,
+        transport_mode=live.transport_mode,
+        vehicle_no=live.vehicle_no,
+        transporter_id=live.transporter_id,
+        transport_doc_no=live.transport_doc_no,
+        transport_doc_date=live.transport_doc_date,
+        over_dimensional=live.over_dimensional,
+    )
+
+    try:
+        ack = client.cancel(
+            eway_bill_no=live.eway_bill_no,
+            reason_code=payload.reason_code,
+            remark=payload.remark,
+            at=at,
+        )
+    except EwayRejected as rejected:
+        bill = _append_eway(
+            session,
+            ctx,
+            invoice,
+            attempt_payload,
+            status="failed",
+            at=at,
+            error_code=rejected.code,
+            error=rejected.message,
+        )
+        await session.flush()
+        _audit_eway(session, ctx, invoice, bill, action="eway.cancel_failed", request=request)
+        return bill
+
+    # The withdrawal is a **new** row and it does not carry the bill number: the partial unique
+    # index on (org, eway_bill_no) is what would refuse a second claim on it, and more to the
+    # point the generation row is left exactly as it was, so "raised, then withdrawn" reads off
+    # the history in order rather than being reconstructed.
+    bill = _append_eway(
+        session,
+        ctx,
+        invoice,
+        attempt_payload,
+        status="cancelled",
+        at=at,
+        eway_bill_no=None,
+        valid_from=live.valid_from,
+        valid_until=live.valid_until,
+        error_code=payload.reason_code,
+        error=payload.remark or domain.EWAY_CANCELLATION_REASONS[payload.reason_code],
+    )
+    await session.flush()
+    _audit_eway(session, ctx, invoice, bill, action="eway.cancelled", request=request)
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_EWAY_CANCELLED,
+        aggregate_type="invoice",
+        aggregate_id=invoice.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "invoice_id": str(invoice.id),
+            "eway_bill_id": str(bill.id),
+            "number": invoice.number,
+            "eway_bill_no": ack.eway_bill_no,
+            "reason_code": payload.reason_code,
+            "cancelled_at": ack.cancel_date.isoformat(),
+        },
+        actor=_actor(ctx),
+    )
+    return bill
+
+
+def _publish_eway_failed(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    invoice: Invoice,
+    bill: EwayBill,
+    *,
+    retryable: bool,
+    portal: str,
+) -> None:
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_EWAY_FAILED,
+        aggregate_type="invoice",
+        aggregate_id=invoice.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "invoice_id": str(invoice.id),
+            "eway_bill_id": str(bill.id),
+            "number": invoice.number,
+            "error_code": bill.error_code,
+            "error": bill.error,
+            #: A refusal stands until the consignment changes; an outage does not. The same
+            #: distinction the filing events carry, and for the same reason.
+            "retryable": retryable,
+            "portal": portal,
+        },
+        actor=_actor(ctx),
+    )
+
+
+def _audit_eway(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    invoice: Invoice,
+    bill: EwayBill,
+    *,
+    action: str,
+    request: Request | None,
+) -> None:
+    """Every attempt leaves an audit row as well as a ledger row: the ledger records what the
+    portal said, the audit records who asked and from where."""
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action=action,
+        entity="eway_bill",
+        entity_id=bill.id,
+        after={
+            "invoice_id": str(invoice.id),
+            "number": invoice.number,
+            "status": bill.status,
+            "eway_bill_no": bill.eway_bill_no,
+            "valid_until": bill.valid_until.isoformat() if bill.valid_until else None,
+            "error_code": bill.error_code,
+        },
+        request=request,
+    )
+
+
+# --------------------------------------------------------------------- withholding: TDS and TCS
+# Assessed when a document is finalized, from three facts about the buyer and the year's running
+# total with them. Every figure is a pure function in `app.domain` over integer minor units, and
+# the rate is resolved against the **document's** date so a later rate change cannot restate it.
+
+
+async def assess_withholdings(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    invoice: Invoice,
+    customer: Customer,
+    *,
+    request: Request | None = None,
+) -> list[InvoiceWithholding]:
+    """Work out what is withheld on one finalized document, and record it.
+
+    Gated on the customer's flags, and deliberately: whether a body is notified under GST s. 51,
+    and whether a buyer is liable to deduct under s. 194Q, are facts about **somebody else's**
+    registration and somebody else's turnover. The platform cannot infer them, so it does not
+    guess — an organization that has not told it about a counterparty gets no figures invented
+    for it, which is the failure direction that does not put a wrong number on an invoice.
+
+    A credit note is skipped. A withholding is a deduction from a payment, and a credit note is
+    not a payment; the correction to an over-deduction is made against the original document by
+    the deductor, not restated here.
+    """
+    if invoice.document_type != "invoice" or invoice.status in domain.UNREPORTED_STATUSES:
+        return []
+    if not (customer.is_tds_deductor or customer.deducts_tds_194q or customer.tcs_applicable):
+        return []
+
+    schedule = await selectors.withholding_schedule(session)
+    period = f"{invoice.issued_date.year:04d}-{invoice.issued_date.month:02d}"
+    recorded: list[InvoiceWithholding] = []
+
+    # --- GST s. 51: a cliff on this document's own taxable value, split across tax heads.
+    if customer.is_tds_deductor:
+        rate = domain.resolve_withholding_rate(schedule, "gst_tds_51", invoice.issued_date)
+        if rate is not None:
+            # Read off the frozen document's own split rather than re-deciding it from the state
+            # codes — the same rule the return assembly uses, and the same function, so a
+            # deduction can never land under a different head from the tax it sits beside.
+            intra_state = domain.intra_state_from_split(
+                domain.TaxSplit(invoice.cgst_minor, invoice.sgst_minor, invoice.igst_minor),
+                supply_type=invoice.supply_type,
+                seller_state_code=(invoice.seller_gstin or "")[:2],
+                place_of_supply=invoice.place_of_supply,
+            )
+            computed = domain.compute_gst_tds(
+                taxable_minor=invoice.subtotal_minor, rate=rate, intra_state=intra_state
+            )
+            if computed is not None:
+                recorded.append(
+                    _append_withholding(session, ctx, invoice, customer, computed, period=period)
+                )
+
+    # --- Income tax: 194Q and 206C(1H) are mutually exclusive, and the buyer's liability wins.
+    head = domain.income_tax_head(buyer_deducts_194q=customer.deducts_tds_194q)
+    wants_income_tax = customer.deducts_tds_194q or customer.tcs_applicable
+    if wants_income_tax and head is not None:
+        rate = domain.resolve_withholding_rate(schedule, head, invoice.issued_date)
+        if rate is not None:
+            prior = await selectors.financial_year_turnover(
+                session,
+                ctx.organization_id,
+                customer_id=customer.id,
+                on=invoice.issued_date,
+                before_invoice_id=invoice.id,
+            )
+            computed = domain.compute_income_tax_withholding(
+                prior_minor=prior, current_minor=invoice.total_minor, rate=rate
+            )
+            if computed is not None:
+                recorded.append(
+                    _append_withholding(session, ctx, invoice, customer, computed, period=period)
+                )
+
+    if not recorded:
+        return []
+
+    await session.flush()
+    for row in recorded:
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=ctx.organization_id,
+            actor_id=ctx.principal.sub,
+            action="withholding.assessed",
+            entity="invoice_withholding",
+            entity_id=row.id,
+            after={
+                "invoice_id": str(invoice.id),
+                "number": invoice.number,
+                "code": row.code,
+                "direction": row.direction,
+                "basis_minor": row.basis_minor,
+                "amount_minor": row.amount_minor,
+                "rate_pct": str(row.rate_pct),
+            },
+            request=request,
+        )
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=ctx.organization_id,
+            event_type=EVT_WITHHOLDING_RECORDED,
+            aggregate_type="invoice",
+            aggregate_id=invoice.id,
+            payload={
+                "organization_id": str(ctx.organization_id),
+                "invoice_id": str(invoice.id),
+                "withholding_id": str(row.id),
+                "number": invoice.number,
+                "code": row.code,
+                "direction": row.direction,
+                "basis_minor": row.basis_minor,
+                "amount_minor": row.amount_minor,
+                "period": row.period,
+                #: The version the figure came from, so a consumer can explain it without
+                #: re-resolving a schedule that may since have gained a later row.
+                "withholding_rate_id": str(row.withholding_rate_id),
+            },
+            actor=_actor(ctx),
+        )
+    return recorded
+
+
+def _append_withholding(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    invoice: Invoice,
+    customer: Customer,
+    computed: domain.Withholding,
+    *,
+    period: str,
+) -> InvoiceWithholding:
+    """Append one register row. The only writer of this table, and it only ever inserts."""
+    row = InvoiceWithholding(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        invoice_id=invoice.id,
+        code=computed.code,
+        direction=computed.direction,
+        withholding_rate_id=computed.rate_id,
+        rate_pct=computed.rate_pct,
+        threshold_minor=computed.threshold_minor,
+        basis=computed.basis,
+        basis_minor=computed.basis_minor,
+        amount_minor=computed.amount_minor,
+        cgst_minor=computed.cgst_minor,
+        sgst_minor=computed.sgst_minor,
+        igst_minor=computed.igst_minor,
+        counterparty_gstin=invoice.buyer_gstin or customer.gstin,
+        counterparty_name=customer.name,
+        resolved_on=invoice.issued_date,
+        period=period,
+    )
+    session.add(row)
+    return row
