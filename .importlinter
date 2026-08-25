@@ -10,7 +10,9 @@
 #
 #   main
 #   api | consumers | relay     independent of each other — a consumer that imports a
-#                               router has grown a second HTTP surface by accident
+#     | cron                    router has grown a second HTTP surface by accident, and a
+#                               scheduled sweep that imports one has grown the same thing
+#                               on a timer
 #   services                    writes; may read through selectors
 #   selectors                   reads
 #   schemas | config
@@ -40,7 +42,7 @@ name = the service anatomy, enforced: nothing imports upward, no cycles
 type = layers
 layers =
     (app.main)
-    (app.api) | (app.consumers) | (app.relay)
+    (app.api) | (app.consumers) | (app.relay) | (app.cron)
     (app.services)
     (app.selectors)
     (app.schemas) | (app.config)

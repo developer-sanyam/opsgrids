@@ -36,17 +36,24 @@ ids, state driven by injected webhook fixtures). A test asserts no keys or netwo
 
 ## Publishes
 
-- `commerce.payment.captured` — a charge was captured (money collected).
-- `commerce.payment.failed` — a charge failed. This is what **suspends a subscription** and, in
-  turn, de-entitles a product (ADR-0004 §5): the failure event carries `subscription_id`, the
-  subscription service consumes it and moves to `suspended`, product-service projects that to a
-  de-entitled `Activation`, and the gateway turns that into a **402**.
+- `commerce.payment.captured` — a charge was captured (money collected). Subscription consumes it
+  to close a dunning cycle and put a `past_due` or `suspended` subscription back to `active`.
+- `commerce.payment.failed` — a charge failed. This is what starts the **dunning ladder** and,
+  eventually, de-entitles a product (ADR-0004 §5, ADR-0005): the failure event carries
+  `subscription_id`, the subscription service consumes it and opens a grace window (`past_due`,
+  still entitling), and only when that window closes does it emit `suspended` — which
+  product-service projects to a de-entitled `Activation` and the gateway turns into a **402**.
 
 ## Consumes
 
 - `commerce.invoice.finalized` — billing finalized an invoice; raise a charge for it (idempotent on
   the invoice id). The internal `POST /internal/v1/charges` is the imperative equivalent, for when
   billing prefers to call rather than emit.
+- `commerce.subscription.payment_retry_due` — subscription's dunning sweep has reached the next rung
+  of its ladder (ADR-0005); raise the retry debit. subscription decides *when* to retry because it
+  owns the grace window; payment decides *how* because it owns the provider. The idempotency key is
+  per **attempt** (`dunning:{cycle_id}:{n}`), not per invoice — reusing the failed charge's key
+  would be deduplicated into the charge that already failed and debit nobody.
 
 ## Endpoints
 

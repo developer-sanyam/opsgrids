@@ -1,3 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec python -m app.relay
+# The dunning sweep (ADR-0005). The scaffold points bin/cron at the relay because no service had
+# scheduled work yet; this one does, and it is a distinct process from both the API and the
+# consumer — a poll loop must not share a pool with request traffic.
+exec python -m app.cron

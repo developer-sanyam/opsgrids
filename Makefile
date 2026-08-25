@@ -95,6 +95,13 @@ relay: ## Run one service's outbox relay: make relay SERVICE=account
 	@test -n "$(SERVICE)" || (echo "SERVICE= is required" && exit 1)
 	cd services/$(SERVICE) && uv run python -m app.relay
 
+# The third entrypoint. Only services with scheduled work have an `app/cron.py` —
+# subscription's dunning sweep (ADR-0005) is the first.
+.PHONY: cron
+cron: ## Run one service's scheduled sweep: make cron SERVICE=subscription
+	@test -n "$(SERVICE)" || (echo "SERVICE= is required" && exit 1)
+	cd services/$(SERVICE) && uv run python -m app.cron
+
 # Tests build the app in-process with its dependencies overridden. This is the one check
 # that runs the real entrypoint — uvicorn, the lifespan, the pool, Redis — and asks it
 # /health and /health/ready. Needs the infrastructure up, like the tests do.

@@ -22,13 +22,14 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import selectors, services
+from app import domain, selectors, services
 from app.catalog import PlanCatalog
 from app.config import settings
-from app.models import SCHEMA
+from app.models import SCHEMA, DunningCycle, Subscription
 from app.schemas import (
     CancelIn,
     ChangePlanIn,
+    DunningOut,
     ServiceInfo,
     SubscribeIn,
     SubscriptionOut,
@@ -57,6 +58,36 @@ def get_catalog(request: Request) -> PlanCatalog:
 
 
 CatalogDep = Annotated[PlanCatalog, Depends(get_catalog)]
+
+
+def _dunning_out(cycle: DunningCycle | None) -> DunningOut | None:
+    """The open grace window, or nothing. `max_attempts` comes from the policy rather than the
+    row: the ladder's length is a platform decision (ADR-0005), not a per-customer one."""
+    if cycle is None:
+        return None
+    return DunningOut(
+        cycle_id=cycle.id,
+        opened_at=cycle.opened_at,
+        grace_ends_at=cycle.grace_ends_at,
+        next_attempt_at=cycle.next_action_at,
+        attempts_made=cycle.attempts_made,
+        max_attempts=domain.POLICY.max_attempts,
+        amount_minor=cycle.amount_minor,
+        currency=cycle.currency,
+    )
+
+
+def _out(subscription: Subscription, cycle: DunningCycle | None = None) -> SubscriptionOut:
+    """One subscription with its grace window attached, if it has one.
+
+    Built here rather than through a relationship because a read must not be able to trigger a
+    lazy load — async SQLAlchemy forbids one, and the routes that write hold a subscription whose
+    collections were populated for exactly what they needed. Those return no window, correctly:
+    a subscribe or change-plan cannot have one, and a cancel has just closed whatever there was.
+    """
+    out = SubscriptionOut.model_validate(subscription)
+    out.dunning = _dunning_out(cycle)
+    return out
 
 
 @router.get("/subscription/info", response_model=ServiceInfo, summary="What this service is")
@@ -88,7 +119,8 @@ async def create_subscription(
 )
 async def list_subscriptions(session: SessionDep, ctx: ReadCtx) -> list[SubscriptionOut]:
     subscriptions = await selectors.list_subscriptions(session, ctx)
-    return [SubscriptionOut.model_validate(s) for s in subscriptions]
+    cycles = await selectors.open_cycles_by_subscription(session, [s.id for s in subscriptions])
+    return [_out(s, cycles.get(s.id)) for s in subscriptions]
 
 
 @router.get(
@@ -101,7 +133,7 @@ async def get_subscription(
 ) -> SubscriptionOut:
     subscription = await services.require_subscription(session, subscription_id)
     ctx.assert_can_touch(owner_id=None)
-    return SubscriptionOut.model_validate(subscription)
+    return _out(subscription, await selectors.get_open_cycle(session, subscription.id))
 
 
 @router.post(

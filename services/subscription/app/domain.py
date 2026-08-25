@@ -19,11 +19,19 @@ is where the transition row, the audit row and the outbox event are staged, all 
 transaction. The reason this layer knows about `plan_version_id` at all is that an upgrade and a
 downgrade are the same *state* (a subscription that stays active) distinguished only by whether
 the new pin costs more — a distinction the caller supplies as the `reason`.
+
+The **dunning ladder** (ADR-0005) lives here too, for the same reason: deciding *when* a
+past-due subscription is retried and *when* the grace window closes is arithmetic over stored
+timestamps, and arithmetic with no I/O in it is arithmetic a test can pin exactly. Nothing below
+reads a clock — `now` is always passed in, and every due moment is anchored to the cycle's
+**stored** `opened_at`, never to `now + interval`. That is what stops a sweep that ran three
+hours late from pushing the whole remaining ladder three hours out.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from app.models import (
     STATE_ACTIVE,
@@ -44,11 +52,23 @@ EVT_PAST_DUE = EVT_PREFIX + "past_due"
 EVT_SUSPENDED = EVT_PREFIX + "suspended"
 EVT_CANCELLED = EVT_PREFIX + "cancelled"
 
+#: The retry request the dunning sweep emits (ADR-0005). Not a lifecycle transition — the
+#: subscription stays `past_due` while it is in flight — so it is deliberately *not* in
+#: `_EVENT_BY_TARGET` and product-service does not bind it: nothing about entitlement changes
+#: when a retry is asked for. payment-service consumes it and raises the charge.
+EVT_PAYMENT_RETRY_DUE = EVT_PREFIX + "payment_retry_due"
+
 #: Reasons that override the target-state default event. An upgrade and a downgrade keep the
 #: subscription `active`, so the target alone cannot tell them apart or from a renewal.
 REASON_RENEW = "renew"
 REASON_UPGRADE = "upgrade"
 REASON_DOWNGRADE = "downgrade"
+
+#: Dunning reasons, recorded on the transition row so the ladder is readable from the stream
+#: alone: which failure opened it, which boundary closed it, and what ended it.
+REASON_PAYMENT_FAILED = "payment_failed"
+REASON_DUNNING_EXHAUSTED = "dunning_exhausted"
+REASON_DUNNING_RECOVERED = "dunning_recovered"
 
 #: The legal edges. A key of `None` is birth — a subscription that does not exist yet. `cancelled`
 #: is terminal: it maps to nothing, which is what makes `cancel -> active` refused. Self-edges on
@@ -126,3 +146,137 @@ def decide(*, from_state: str | None, to_state: str, reason: str | None = None) 
         event_type=event_for(to_state, reason=reason),
         reason=reason,
     )
+
+
+# --------------------------------------------------------------------------- dunning (ADR-0005)
+
+#: What the sweep should do with one open cycle at one moment. Three outcomes and no fourth:
+#: ask for the next debit, close the window, or come back later.
+ACTION_RETRY = "retry"
+ACTION_SUSPEND = "suspend"
+ACTION_WAIT = "wait"
+
+
+class InvalidPolicy(ValueError):
+    """A ladder that cannot be executed — caught at import, not in production."""
+
+
+@dataclass(frozen=True)
+class DunningPolicy:
+    """How many retries, when, and how long the grace window lasts (ADR-0005).
+
+    `retry_offsets` are measured **from the first failure**, not from each other, so the whole
+    ladder is a function of one stored instant. `grace` is measured from the same instant and is
+    the single boundary at which entitlement stops.
+    """
+
+    retry_offsets: tuple[timedelta, ...]
+    grace: timedelta
+
+    def __post_init__(self) -> None:
+        if not self.retry_offsets:
+            raise InvalidPolicy("a dunning policy with no retries is an immediate suspension")
+        if any(o <= timedelta(0) for o in self.retry_offsets):
+            raise InvalidPolicy("a retry offset must be after the failure that opened the cycle")
+        if list(self.retry_offsets) != sorted(self.retry_offsets):
+            raise InvalidPolicy("retry offsets must be strictly increasing")
+        if len(set(self.retry_offsets)) != len(self.retry_offsets):
+            raise InvalidPolicy("two retries at the same offset is one retry and one wasted debit")
+        if self.retry_offsets[-1] >= self.grace:
+            # A last attempt outside the window would suspend before its own outcome is known,
+            # which makes the final "access ends on <date>" notice a lie.
+            raise InvalidPolicy("the last retry must fall inside the grace window")
+
+    @property
+    def max_attempts(self) -> int:
+        return len(self.retry_offsets)
+
+
+#: The platform default, fixed by ADR-0005: three retries at T+3d, T+7d and T+12d from the first
+#: failure, and the window closes at T+14d.
+#:
+#: The spacing is set by the rails, not by taste. A UPI Autopay or eMandate debit needs a
+#: pre-debit notice a clear day ahead, a fresh eMandate is not debitable for days after it is
+#: created, and a debit over the UPI Autopay per-cycle ceiling needs the customer to
+#: authenticate by hand — so an hourly ladder is not "aggressive", it is a ladder of debits the
+#: rails will refuse and the sponsor bank will charge for. Days are the smallest honest unit.
+#: 14 days is half a monthly period: the most unbilled service a customer can accumulate is
+#: capped below one cycle, so two dunning cycles for the same subscription can never overlap.
+POLICY = DunningPolicy(
+    retry_offsets=(timedelta(days=3), timedelta(days=7), timedelta(days=12)),
+    grace=timedelta(days=14),
+)
+
+
+def grace_ends_at(opened_at: datetime, policy: DunningPolicy = POLICY) -> datetime:
+    """When entitlement stops if nothing is collected. Computed **once**, at open, and stored on
+    the cycle — so re-reading it later cannot be affected by a policy edit or a late sweep."""
+    return opened_at + policy.grace
+
+
+def attempt_due_at(
+    opened_at: datetime, attempt_no: int, policy: DunningPolicy = POLICY
+) -> datetime | None:
+    """When retry `attempt_no` (1-based) falls due, or None once the ladder is spent.
+
+    Anchored to `opened_at`. A sweep that is late does not move the ladder: attempt 2 is still
+    `opened_at + 7d` whether the sweep noticed at T+3d or T+3d+6h.
+    """
+    if attempt_no < 1 or attempt_no > policy.max_attempts:
+        return None
+    return opened_at + policy.retry_offsets[attempt_no - 1]
+
+
+def next_action_at(
+    opened_at: datetime,
+    attempts_made: int,
+    window_ends_at: datetime,
+    policy: DunningPolicy = POLICY,
+) -> datetime:
+    """The next moment the sweep needs to look at this cycle.
+
+    Either the next retry, or — once the ladder is spent — the close of the window, which is the
+    suspension. Never past the window: a retry that would land after entitlement stops is not a
+    retry anyone is waiting for.
+    """
+    due = attempt_due_at(opened_at, attempts_made + 1, policy)
+    if due is None or due >= window_ends_at:
+        return window_ends_at
+    return due
+
+
+def next_dunning_action(
+    *,
+    opened_at: datetime,
+    window_ends_at: datetime,
+    attempts_made: int,
+    now: datetime,
+    policy: DunningPolicy = POLICY,
+) -> str:
+    """What to do with one open cycle at `now`: retry, suspend, or wait.
+
+    The window dominates: once `now` is past `window_ends_at` the answer is `suspend` whatever
+    the ladder has left, because the window is the promise made to the customer and the ladder is
+    only how the promise is spent. The reverse does not hold — a spent ladder inside an open
+    window is `wait`, not an early suspension. That gap is deliberate (ADR-0005): the last
+    attempt is scheduled two days before the window closes precisely so its outcome is known
+    while there is still time to say "access ends on Thursday" and be telling the truth.
+    """
+    if now >= window_ends_at:
+        return ACTION_SUSPEND
+    due = attempt_due_at(opened_at, attempts_made + 1, policy)
+    if due is None:
+        return ACTION_WAIT
+    return ACTION_RETRY if now >= due else ACTION_WAIT
+
+
+def retry_idempotency_key(cycle_id: object, attempt_no: int) -> str:
+    """The platform-supplied key each retry debit is raised under.
+
+    Razorpay has no native idempotency key (ADR-0004 §6), so payment-service enforces one of
+    ours with a unique constraint. It follows that a retry must **not** reuse the failed charge's
+    key: re-sending it would collide with the charge that already failed and be deduplicated into
+    a no-op — a dunning ladder that silently never debits. One key per attempt, derived from the
+    cycle so it is stable under redelivery and reconstructable from the event stream.
+    """
+    return f"dunning:{cycle_id}:{attempt_no}"

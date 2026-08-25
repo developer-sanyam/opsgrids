@@ -1,14 +1,22 @@
 """Event consumers for payment. Runs as its own process.
 
-payment raises a charge when billing finalizes an invoice. The internal `POST /internal/v1/charges`
-is the imperative path (billing calls it directly); this consumer is the event-driven one —
-binding `commerce.invoice.finalized` and raising the charge from the event. Either is enough, and
-having both means billing can integrate whichever way suits it without payment changing.
+Two events raise a charge here, and they are the same act asked for by two different services:
+
+* **`commerce.invoice.finalized`** — billing has something to collect. The internal
+  `POST /internal/v1/charges` is the imperative path for the same thing; either is enough, and
+  having both means billing can integrate whichever way suits it without payment changing.
+* **`commerce.subscription.payment_retry_due`** — subscription's dunning sweep has reached the
+  next rung of its ladder (ADR-0005). subscription decides *when* to retry, because it owns the
+  lifecycle and the grace window; payment decides *how* to debit, because it owns the provider.
+  Neither reaches into the other's schema, and the only thing that crosses is the event.
 
 Every handler is idempotent: `already_processed` before acting, `mark_processed` in the same
 transaction as its side effects. The charge create is *also* idempotent at the database (unique
 platform key), so a redelivery is a no-op at two layers — belt and braces, because a duplicate
-charge is a duplicate debit.
+charge is a duplicate debit. The retry key is per *attempt* rather than per invoice, for the
+reason ADR-0004 §6 makes unavoidable: Razorpay has no idempotency key of its own, so ours is the
+only one, and reusing the failed charge's key would deduplicate the retry into the charge that
+already failed and debit nobody at all.
 """
 
 from __future__ import annotations
@@ -29,9 +37,10 @@ log = get_logger("payment.consumers")
 
 consumer = EventConsumer(amqp_url=settings().rabbitmq_url, queue_name="payment.events")
 
-#: The billing event that produces a charge. A contract string, named here rather than imported —
-#: one process may only ever hold one service's `app`.
+#: The events that produce a charge. Contract strings, named here rather than imported — one
+#: process may only ever hold one service's `app`.
 EVT_INVOICE_FINALIZED = "commerce.invoice.finalized"
+EVT_PAYMENT_RETRY_DUE = "commerce.subscription.payment_retry_due"
 
 
 @consumer.on(EVT_INVOICE_FINALIZED)
@@ -75,6 +84,67 @@ async def charge_on_invoice_finalized(envelope: dict[str, Any]) -> None:
         event_id=str(event_id),
         organization_id=str(organization_id),
         invoice_id=payload.get("invoice_id"),
+    )
+
+
+@consumer.on(EVT_PAYMENT_RETRY_DUE)
+async def charge_on_dunning_retry(envelope: dict[str, Any]) -> None:
+    """Raise the next dunning retry debit for a past-due subscription (ADR-0005).
+
+    subscription's sweep has decided this attempt is due; everything needed to debit rides on the
+    event — the invoice, the amount, the currency, and the platform idempotency key derived from
+    the cycle and the attempt number. payment does not read subscription's schema to find out what
+    to charge, and subscription does not read payment's to find out whether it worked: the answer
+    comes back as `commerce.payment.captured` or `.failed`, which is the same pair the original
+    charge produces, so the ladder's rungs and its first step are handled by one code path.
+
+    A retry with no amount is skipped rather than debited for nothing — a zero-value debit is a
+    provider call and a bank fee that collects nothing, and the failure that opened the cycle
+    always carries the amount it failed to collect.
+    """
+    event_id = uuid.UUID(envelope["event_id"])
+    payload = envelope["payload"]
+    organization_id = uuid.UUID(payload["organization_id"])
+    amount_minor = payload.get("amount_minor")
+    provider = get_provider()
+
+    async with session_scope(organization_id=organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("dunning.retry.duplicate", event_id=str(event_id))
+            return
+        from app import services
+
+        if amount_minor:
+            await services.create_charge(
+                session,
+                provider,
+                ChargeIn(
+                    organization_id=organization_id,
+                    invoice_id=uuid.UUID(payload["invoice_id"])
+                    if payload.get("invoice_id")
+                    else None,
+                    subscription_id=uuid.UUID(payload["subscription_id"]),
+                    product_key=payload.get("product_key"),
+                    amount_minor=int(amount_minor),
+                    currency=payload["currency"],
+                    # One key per attempt, supplied by subscription so the same rung of the ladder
+                    # redelivered twice is still exactly one debit.
+                    idempotency_key=payload["idempotency_key"],
+                ),
+            )
+        else:
+            log.warning(
+                "dunning.retry.no_amount",
+                event_id=str(event_id),
+                subscription_id=payload.get("subscription_id"),
+            )
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+    log.info(
+        "dunning.retry.charged",
+        event_id=str(event_id),
+        organization_id=str(organization_id),
+        subscription_id=payload.get("subscription_id"),
+        attempt_no=payload.get("attempt_no"),
     )
 
 

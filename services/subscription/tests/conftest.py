@@ -15,7 +15,9 @@ from __future__ import annotations
 import sys
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -37,6 +39,7 @@ TENANT_TABLES = (
     "subscriptions",
     "subscription_items",
     "subscription_transitions",
+    "dunning_cycles",
     "audit_logs",
     "outbox",
     "processed_events",
@@ -95,6 +98,54 @@ async def admin_session() -> AsyncIterator[AsyncSession]:
     async with maker() as s:
         yield s
     await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def sweep_engines(session: AsyncSession) -> AsyncIterator[tuple[Any, Any]]:
+    """The two engines the dunning sweep runs on, wired exactly as the process wires them.
+
+    Depends on `session` only for its truncation, so a sweep test starts from a clean schema.
+
+    * **discovery** connects on the real **outbox DSN** — the BYPASSRLS role the sweep discovers
+      due work with. Using it here rather than the admin role is deliberate: it proves the `GRANT
+      SELECT ON dunning_cycles` in `migrations/env.py` is actually applied. Without that grant the
+      sweep would raise; without BYPASSRLS it would quietly find nothing, which is the failure this
+      whole seam exists to prevent.
+    * **work** connects on the app role, with the tenant bound per transaction, which is what
+      `session_scope(organization_id=...)` does in the process.
+    """
+    cfg = settings()
+    discovery = create_async_engine(cfg.outbox_dsn, connect_args=_connect_args())
+    work = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
+    yield discovery, work
+    await discovery.dispose()
+    await work.dispose()
+
+
+@pytest_asyncio.fixture
+async def sweep(sweep_engines: tuple[Any, Any]) -> AsyncIterator[Any]:
+    """A `DunningSweep` over real PostgreSQL, drivable one `tick(now)` at a time.
+
+    `tick` takes the clock as an argument, so the whole fourteen-day ladder is exercised in
+    milliseconds against real rows, real locks and real policies — without sleeping, patching a
+    clock, or compressing the policy into something the production code does not run.
+    """
+    from app.cron import DunningSweep
+
+    discovery_engine, work_engine = sweep_engines
+    discovery = async_sessionmaker(discovery_engine, expire_on_commit=False)
+    work_maker = async_sessionmaker(work_engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def work_scope(organization_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
+        async with work_maker() as s, s.begin():
+            await s.execute(
+                text(f"SELECT set_config('{TENANT_GUC}', :org, true)"),
+                {"org": str(organization_id)},
+            )
+            yield s
+
+    yield DunningSweep(discovery_factory=discovery, work_scope=work_scope)
 
 
 @pytest_asyncio.fixture

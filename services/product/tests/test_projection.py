@@ -93,6 +93,57 @@ class TestProjection:
         assert activation.status == "trial"
         assert activation.entitles is True
 
+    async def test_past_due_still_entitles(self, session: AsyncSession, org_id: uuid.UUID) -> None:
+        """The grace window keeps the product working (ADR-0005 §2).
+
+        A dunning cycle opening emits `past_due`, and this is the half of the policy that lives in
+        product-service: if `past_due` de-entitled here, the whole retry ladder upstream would be
+        theatre — the customer would have lost the product on the first failed debit and the two
+        weeks of retries would be collecting for something already switched off. The 402 must land
+        at the *end* of the window, not at its start.
+        """
+        await project_subscription_event(
+            _envelope(org_id, event_type="commerce.subscription.activated", state="active")
+        )
+        await project_subscription_event(
+            _envelope(org_id, event_type="commerce.subscription.past_due", state="past_due")
+        )
+        async with session.begin():
+            activation = await selectors.get_activation(session, org_id, "hrms")
+            keys = await selectors.entitlements_for(session, org_id)
+        assert activation is not None
+        assert activation.status == "active", "past_due must project to an entitling activation"
+        assert activation.entitles is True
+        assert activation.deactivated_at is None
+        assert "hrms" in keys, "the gateway would 402 a customer inside their grace window"
+
+    async def test_the_whole_dunning_ladder_lands_the_402_only_at_the_end(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """past_due → past_due → suspended → activated, projected in order.
+
+        The subscription-service half of this ladder is proven in that service's
+        `tests/test_dunning.py`; this is the other end of the same chain — what the gateway would
+        actually do at each rung. Entitlement survives every retry and stops exactly once, when the
+        window closes, and comes back on the captured payment.
+        """
+        seen: list[bool] = []
+        for event_type, state in (
+            ("commerce.subscription.activated", "active"),
+            ("commerce.subscription.past_due", "past_due"),
+            ("commerce.subscription.past_due", "past_due"),
+            ("commerce.subscription.suspended", "suspended"),
+            ("commerce.subscription.activated", "active"),
+        ):
+            await project_subscription_event(_envelope(org_id, event_type=event_type, state=state))
+            async with session.begin():
+                keys = await selectors.entitlements_for(session, org_id)
+            seen.append("hrms" in keys)
+
+        assert seen == [True, True, True, False, True], (
+            "entitlement must survive the grace window, stop when it closes, and return on payment"
+        )
+
     async def test_suspended_de_entitles(self, session: AsyncSession, org_id: uuid.UUID) -> None:
         await project_subscription_event(
             _envelope(org_id, event_type="commerce.subscription.activated", state="active")

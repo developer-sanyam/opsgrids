@@ -218,9 +218,11 @@ version prices them.
 
 Recorded so they are not mistaken for settled:
 
-- **Dunning and the grace window** — how many retries, over how long, and whether a failed renewal
-  suspends immediately or after a grace period, is a subscription-state question this ADR does not
-  answer. The states exist (`suspended`); the *policy* for entering them does not.
+- ~~**Dunning and the grace window**~~ — **settled by [ADR-0005](0005-dunning-and-grace.md).**
+  Three retries at T+3d/T+7d/T+12d inside a 14-day grace window; `past_due` keeps entitling,
+  suspension happens when the window closes and not on a failure, a captured payment recovers from
+  either rung, and nothing is ever cancelled by a timer. What remains open there is narrower: a
+  per-plan grace window if one is ever sold, and immediate rather than eventual de-entitlement.
 - **Tax computation and jurisdiction** — ADR-0000 §9 fixes that statutory rates are versioned by
   `effective_from` and a re-run for March uses March's rates. *Which* rate applies to a given
   customer, and where GST/VAT logic lives (a `billing` concern or its own service), is unsettled.

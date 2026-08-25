@@ -10,6 +10,7 @@ themselves are the authority — this page exists so you can find the right one 
 | [0002](adr/0002-row-level-security.md) | Row-level security | **Accepted** 2026-08-22, not yet implemented |
 | [0003](adr/0003-surfaces-and-authorization-topology.md) | Surfaces and authorization topology | Accepted |
 | [0004](adr/0004-commercial-model.md) | Commercial model — plans, subscriptions, billing | **Accepted** 2026-08-24 (design), not yet implemented |
+| [0005](adr/0005-dunning-and-grace.md) | Dunning and the grace window | Accepted |
 
 ---
 
@@ -93,6 +94,28 @@ discounts and comp-access-with-expiry are **append-only credit-ledger entries** 
 floats. A trial is a subscription **state**, conversion is a transition, and every transition is
 an event the operator console reads for revenue, churn and usage. Commerce invents no new
 enforcement point: it drives the existing `product.activations` row → `ent` claim → gateway 402.
+
+## ADR-0005 — dunning and the grace window
+
+Answers the first thing ADR-0004 left Open, and replaces the MVP default it left in the code: a
+failed payment used to suspend **immediately**. It now opens a **14-day grace window** and a ladder
+of **three retries at T+3d, T+7d and T+12d**, all anchored to the stored instant the first failure
+arrived — never `now + interval`, so a sweep that runs late does not push the ladder out.
+
+The two loads-bearing meanings: **`past_due` keeps entitling** (a grace window that takes the
+product away is a suspension with a nicer name, and makes the retries theatre), and **suspension is
+a scheduled act at the window's close**, not a reaction to a failure. The last attempt sits two days
+*inside* the window on purpose, so "your access ends on Thursday" is a sentence the platform can
+send while it is still true. A captured payment recovers to `active` from either rung — `past_due`
+or `suspended` — and **nothing is ever cancelled by a timer**, because `cancelled` is terminal and a
+machine must not take an irreversible commercial act on a schedule.
+
+The spacing is set by the rails, not by taste: Razorpay mandate caps, a pre-debit notice a clear day
+ahead, multi-day eMandate activation, and **no native idempotency key** — which means a retry must
+carry a *new* platform key per attempt, or it is deduplicated into the charge that already failed
+and debits nobody. Scheduling is a **due-work table drained by a sweep** (`bin/cron`'s first real
+job), not the empty `scheduler` scaffold and not a broker delay: the schedule stays queryable,
+correctable and backed up with the money it defends.
 
 ---
 

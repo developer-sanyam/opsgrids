@@ -35,6 +35,77 @@
         "title": "ChangePlanIn",
         "type": "object"
       },
+      "DunningOut": {
+        "description": "The live grace window, as the customer's own app should render it (ADR-0005).\n\nPresent only while a cycle is open, which is exactly while the subscription is `past_due` or\n`suspended` for non-payment. It carries the two dates a banner has to be able to say out loud\n\u2014 when the next debit will be attempted, and when access stops \u2014 read from the stored\nschedule rather than recomputed, so the screen and the sweep can never disagree.",
+        "properties": {
+          "amount_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Minor"
+          },
+          "attempts_made": {
+            "title": "Attempts Made",
+            "type": "integer"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "cycle_id": {
+            "format": "uuid",
+            "title": "Cycle Id",
+            "type": "string"
+          },
+          "grace_ends_at": {
+            "format": "date-time",
+            "title": "Grace Ends At",
+            "type": "string"
+          },
+          "max_attempts": {
+            "title": "Max Attempts",
+            "type": "integer"
+          },
+          "next_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt At"
+          },
+          "opened_at": {
+            "format": "date-time",
+            "title": "Opened At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cycle_id",
+          "opened_at",
+          "grace_ends_at",
+          "attempts_made",
+          "max_attempts"
+        ],
+        "title": "DunningOut",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -167,6 +238,16 @@
               }
             ],
             "title": "Current Period Start"
+          },
+          "dunning": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DunningOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "format": "uuid",

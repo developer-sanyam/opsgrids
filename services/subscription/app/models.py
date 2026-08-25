@@ -6,7 +6,7 @@ pointer** into it — one customer's place in the life of what they bought. The 
 is exactly that split (ADR-0004 §1): a customer's life changes constantly, the version they are
 pinned to does not change under them.
 
-Three tables, and the discipline on each is load-bearing:
+Four tables, and the discipline on each is load-bearing:
 
 * **`subscriptions`** carries the pinned `plan_version_id` (ADR-0000 §9). Re-pointing it — a
   change-plan — never edits the catalog version and never loses the previous pin: the old value
@@ -16,6 +16,8 @@ Three tables, and the discipline on each is load-bearing:
 * **`subscription_transitions`** is **append-only** (ADR-0000 §9): every accepted move through the
   state machine writes one, and it is never updated or deleted. `REVOKE UPDATE, DELETE` at the DB
   is the net under that (see the append-only migration); the service layer never mutates one.
+* **`dunning_cycles`** is one collection failure and everything that followed it (ADR-0005) — the
+  open grace window, how far up the retry ladder it has climbed, and how it ended.
 
 Everything is tenant-scoped `TenantBase` with row-level security — unlike catalog's global
 definitional tables, a subscription belongs to exactly one organization.
@@ -28,6 +30,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -36,6 +39,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -57,6 +61,15 @@ STATE_SUSPENDED = "suspended"
 STATE_CANCELLED = "cancelled"
 
 STATES = (STATE_TRIAL, STATE_ACTIVE, STATE_PAST_DUE, STATE_SUSPENDED, STATE_CANCELLED)
+
+#: The states of one dunning cycle (ADR-0005). `open` is the live grace window; the other three
+#: are how it ended, and a closed cycle is never reopened — a later failure opens a new one.
+DUNNING_OPEN = "open"
+DUNNING_RECOVERED = "recovered"
+DUNNING_EXHAUSTED = "exhausted"
+DUNNING_ABANDONED = "abandoned"
+
+DUNNING_STATES = (DUNNING_OPEN, DUNNING_RECOVERED, DUNNING_EXHAUSTED, DUNNING_ABANDONED)
 
 
 class Base(_Base):
@@ -214,6 +227,110 @@ class SubscriptionTransition(Base, TenantBase):
             "organization_id",
             "subscription_id",
             "occurred_at",
+        ),
+    )
+
+
+class DunningCycle(Base, TenantBase):
+    """One failed collection and the grace window it opened (ADR-0005).
+
+    A cycle is born when the first `commerce.payment.failed` for a subscription arrives, and it
+    is the only place the platform keeps *when the next thing happens*. Two columns carry that,
+    and both are written once at open and never recomputed from a clock:
+
+    * **`opened_at`** is the anchor. Every rung of the ladder is `opened_at + offset`, so a sweep
+      that runs late lands on the schedule it would have had if it had run on time. Deriving the
+      next attempt as `now + interval` instead would let each late tick push the remaining ladder
+      out, and fourteen days of grace would quietly become twenty.
+    * **`grace_ends_at`** is the promise. It is stored rather than derived from the policy at read
+      time so that editing the policy — a perfectly reasonable thing to do — cannot move the
+      window under a customer who has already been told when their access ends.
+
+    `next_action_at` is the sweep's index into all of that: the earlier of the next retry and the
+    close of the window. It is denormalised (both are recoverable from `opened_at` and
+    `attempts_made`) so the cross-tenant discovery query is one indexed range scan rather than a
+    computation over every open cycle in the platform.
+
+    **Mutable, deliberately.** The append-only record of what happened to this subscription is
+    `subscription_transitions`, the audit log and the outbox — a cycle is the *live aggregate* the
+    same way `subscriptions.state` is, and no financial fact lives here: money is billing's, and
+    what was actually attempted is payment's. `amount_minor`/`currency`/`invoice_id` are a copy of
+    what the failure event carried, held only so a retry can be requested without this service
+    reaching into another schema (ADR-0000 §10).
+    """
+
+    __tablename__ = "dunning_cycles"
+
+    subscription_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(
+            f"{SCHEMA}.subscriptions.id",
+            ondelete="CASCADE",
+            name="fk_dunning_cycles_subscription_id",
+        ),
+        nullable=False,
+    )
+
+    #: What billing was collecting, by plain UUID — echoed back to payment on each retry so the
+    #: debit is raised against the same invoice. Nullable: a charge need not name an invoice.
+    invoice_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: The amount the failed charge was for. Integer minor units, BIGINT (ADR-0000 §8 — no floats
+    #: anywhere in billing, and that includes the copy dunning keeps of one).
+    amount_minor: Mapped[int | None] = mapped_column(BigInteger)
+    currency: Mapped[str | None] = mapped_column(String(3))
+
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default=DUNNING_OPEN)
+
+    #: The first failure. The anchor every due moment is computed from — never `now`.
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    #: When entitlement stops. Stored at open; a policy edit does not move an open window.
+    grace_ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: The next retry, or the close of the window once the ladder is spent. NULL once closed.
+    next_action_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    #: Retries *requested* so far — the rung of the ladder, not the number of failures.
+    attempts_made: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: Failures *observed* so far, including the one that opened the cycle. Differs from
+    #: `attempts_made` by exactly the original charge, and by more if a retry failed twice over.
+    failures_seen: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: `payment_captured`, `grace_expired`, `subscription_cancelled`, `operator_suspend`.
+    closed_reason: Mapped[str | None] = mapped_column(String(60))
+
+    subscription: Mapped[Subscription] = relationship()
+
+    __table_args__ = (
+        CheckConstraint("state in ('open', 'recovered', 'exhausted', 'abandoned')", name="state"),
+        CheckConstraint("attempts_made >= 0", name="attempts_non_negative"),
+        CheckConstraint("failures_seen >= 1", name="failures_seen_positive"),
+        CheckConstraint("amount_minor is null or amount_minor >= 0", name="amount_non_negative"),
+        CheckConstraint("currency is null or length(currency) = 3", name="currency_iso"),
+        CheckConstraint("grace_ends_at > opened_at", name="window_is_forward"),
+        # At most one live cycle per subscription. Two would race to suspend the same
+        # subscription on two different schedules, and the second failure of a cycle already
+        # running is not a new grace window — it is the same one, still open.
+        Index(
+            "uq_dunning_cycles_open_per_subscription",
+            "organization_id",
+            "subscription_id",
+            unique=True,
+            postgresql_where=text("state = 'open'"),
+        ),
+        # Leads with the tenant, like every other index here: the RLS qual is ANDed into every
+        # tenant-bound query.
+        Index("ix_dunning_cycles_org_subscription", "organization_id", "subscription_id"),
+        # The one index that deliberately does **not** lead with `organization_id`. The sweep's
+        # discovery query is cross-tenant by construction — it exists to find *which* tenants have
+        # work due, so there is no organization to bind while asking (the same shape as the outbox
+        # relay's drain query, and it runs on the same BYPASSRLS role). An org-leading index would
+        # not serve it.
+        Index(
+            "ix_dunning_cycles_due",
+            "next_action_at",
+            postgresql_where=text("state = 'open'"),
         ),
     )
 
