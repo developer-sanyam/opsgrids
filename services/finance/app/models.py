@@ -20,9 +20,13 @@ left UNPOLICIED. A GST rate schedule is platform vocabulary — the same 5/12/18
 every tenant in India — not tenant data, so RLS on it would be meaningless (see the RLS
 migration, which lists it as exempt alongside `processed_events`).
 
-`einvoice_filings` is append-only at the *database*, not merely by convention: a trigger refuses
-UPDATE and DELETE. A privilege REVOKE would not survive `apply_schema_grants`, which re-grants
-DML on every table at the end of every migration run — see the migration for the whole reasoning.
+`einvoice_filings` and `ims_decisions` are append-only at the *database*, not merely by
+convention: a trigger refuses UPDATE and DELETE. A privilege REVOKE would not survive
+`apply_schema_grants`, which re-grants DML on every table at the end of every migration run — see
+the migrations for the whole reasoning. Both hold **evidence**: what the tax portal was told, and
+what a person decided about somebody else's claim on this business. `ims_reconciliations` is
+pointedly not among them — a suggestion is recomputed opinion, and freezing an opinion buys an
+auditor nothing.
 """
 
 from __future__ import annotations
@@ -400,6 +404,228 @@ class EInvoiceFiling(Base, TenantBase):
             unique=True,
             postgresql_where=text("irn IS NOT NULL"),
         ),
+    )
+
+
+class PurchaseDocument(Base, TenantBase):
+    """A recorded purchase or expense document — the local counterpart of a supplier's filing.
+
+    The inbound half of the book, and the only reason an IMS document can be reconciled against
+    anything rather than merely listed. Deliberately thin: this slice needs the facts a match is
+    made on — whose document, which number, which date, and what money — not an accounts-payable
+    lifecycle, which is a product of its own.
+
+    The tax split is **computed by `domain.split_gst` at write time**, exactly as an invoice's is,
+    rather than accepted from the caller. A purchase document whose heads were entered by hand
+    would be a second, quieter implementation of the one calculation on this platform that has to
+    foot exactly, and the two would disagree eventually.
+
+    There is no update path, for the same reason invoices have none: a document is a record of
+    what a supplier billed, and correcting it is recording the credit or debit note they issue.
+    """
+
+    __tablename__ = "purchase_documents"
+
+    #: NOT NULL, unlike `customers.gstin`: this table exists to be joined to a supplier's filings,
+    #: and a purchase from an unregistered supplier can never appear in IMS at all.
+    supplier_gstin: Mapped[str] = mapped_column(String(15), nullable=False)
+    supplier_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    number: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: invoice | credit_note | debit_note — `domain.IMS_DOCUMENT_TYPES`.
+    document_type: Mapped[str] = mapped_column(String(20), nullable=False, default="invoice")
+    document_date: Mapped[date] = mapped_column(Date, nullable=False)
+    #: The GST state code this supply was taxed in — the *recipient's*, which is this org.
+    place_of_supply: Mapped[str | None] = mapped_column(String(2))
+
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
+    #: The assessable value. GST is computed on this, never on the gross.
+    taxable_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tax_rate_pct: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False, default=0)
+    cgst_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    sgst_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    igst_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    total_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    notes: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (
+        # A document number is unique per supplier, per kind — not globally: two suppliers
+        # numbering their invoices `INV-1` is the ordinary case, not a collision.
+        UniqueConstraint(
+            "organization_id",
+            "supplier_gstin",
+            "document_type",
+            "number",
+            name="uq_purchase_documents_org_supplier_number",
+        ),
+        Index("ix_purchase_documents_org_supplier", "organization_id", "supplier_gstin"),
+        Index("ix_purchase_documents_org_date", "organization_id", "document_date"),
+    )
+
+
+class ImsDocument(Base, TenantBase):
+    """One document a supplier filed against this organization, as the IMS portal shows it.
+
+    Inbound, not outbound: this is what somebody else reported *about* this business, and what the
+    business does with it decides how much input tax credit it may claim. It is therefore a queue
+    with a decision attached, not a report.
+
+    `source_ref` is the portal's own row reference and the **ingest idempotency key**: a unique
+    index on `(organization_id, source_ref)` means re-syncing a period cannot double a document,
+    while two genuinely distinct portal rows describing the same supplier document remain
+    representable — which they must be, because *that* is the duplicate the reconciliation exists
+    to flag. A unique constraint on the supplier's document number would have made the duplicate
+    reason unreachable by making duplicates unwritable.
+    """
+
+    __tablename__ = "ims_documents"
+
+    #: The portal's reference for this row. Unique per organization; the ingest's dedupe key.
+    source_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: Which portal or feed this arrived through. One today; carried so a second is additive.
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="ims")
+
+    supplier_gstin: Mapped[str] = mapped_column(String(15), nullable=False)
+    supplier_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    document_number: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: invoice | credit_note | debit_note — `domain.IMS_DOCUMENT_TYPES`.
+    document_type: Mapped[str] = mapped_column(String(20), nullable=False, default="invoice")
+    document_date: Mapped[date] = mapped_column(Date, nullable=False)
+    #: The return period this document lands in, `YYYY-MM`. The queue is worked a period at a
+    #: time, so this is a filter before it is a fact.
+    period: Mapped[str] = mapped_column(String(7), nullable=False)
+
+    taxable_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    cgst_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    sgst_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    igst_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    total_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    #: The supplier's own IRN, when they e-invoiced the document. Not this platform's to verify.
+    irn: Mapped[str | None] = mapped_column(String(64))
+
+    #: pending | accepted | rejected | pending_action — `domain.IMS_STATUSES`.
+    #:
+    #: A projection of the newest `ims_decisions` row, maintained in the same transaction as the
+    #: decision that changes it, and written **nowhere else**. `einvoice_filings` deliberately has
+    #: no such column on `invoices`; the difference is the access path. This queue's whole purpose
+    #: is "show me every pending document for August", and deriving that from a newest-decision
+    #: lateral join on every list page is the query that cannot be indexed. A test asserts the
+    #: projection agrees with the decision history, which is what keeps the shortcut honest.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+
+    #: When this document was pulled from the portal. Decides which of two identical arrivals is
+    #: the original — see `domain.InboundDocument.first_seen`.
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "source_ref", name="uq_ims_documents_org_source_ref"),
+        # "This org's queue, filtered by where each document stands" — the list endpoint's path.
+        Index("ix_ims_documents_org_status", "organization_id", "status"),
+        Index("ix_ims_documents_org_period", "organization_id", "period"),
+        Index("ix_ims_documents_org_supplier", "organization_id", "supplier_gstin"),
+    )
+
+
+class ImsReconciliation(Base, TenantBase):
+    """One computed suggestion for one inbound document — derived data, not evidence.
+
+    A run appends a row per document and the newest is the current suggestion, so "why did this
+    row's advice change when the purchase book did" reads off the history. Deliberately **not**
+    trigger-protected, unlike `einvoice_filings` and `ims_decisions`: nothing here is a fact about
+    the world, it is an opinion recomputed from facts that are stored elsewhere, and freezing an
+    opinion buys nothing an auditor can use.
+
+    What it must never do is act. `suggested_action` is what a screen pre-selects; the document's
+    status does not move until a person records a decision.
+    """
+
+    __tablename__ = "ims_reconciliations"
+
+    ims_document_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("finance.ims_documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: Groups every row one reconciliation pass produced, so a run can be read back whole.
+    run_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+
+    #: accept | reject | pending_action — `domain.IMS_ACTIONS`.
+    suggested_action: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: Why — `domain.IMS_REASONS`. The half of the suggestion an operator actually reads.
+    reason: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: The reason as a sentence, naming the counterpart document and the delta.
+    detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: Signed minor units: the supplier's total less the recorded document's. Zero unless the
+    #: reason is `amount_mismatch`.
+    delta_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    matched_purchase_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("finance.purchase_documents.id", ondelete="SET NULL")
+    )
+    #: On a `duplicate`, the earlier arrival this one duplicates. Same-table self-reference.
+    duplicate_of_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("finance.ims_documents.id", ondelete="SET NULL")
+    )
+
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_ims_reconciliations_org_document", "organization_id", "ims_document_id"),
+        Index("ix_ims_reconciliations_org_computed", "organization_id", "computed_at"),
+        Index("ix_ims_reconciliations_org_run", "organization_id", "run_id"),
+    )
+
+
+class ImsDecision(Base, TenantBase):
+    """One operator's decision on one inbound document — append-only, and evidence.
+
+    This is the row that decides money: accepting a document claims the input tax credit on it,
+    rejecting it declines the credit and sends the document back to the supplier. Which means the
+    question asked about it later is never "what does it say now" but "who decided this, when, and
+    what were they shown at the time" — so the suggestion the platform made is recorded *beside*
+    the decision, and a mistake stays visible with its correction after it.
+
+    Append-only is enforced by a trigger, not a `REVOKE`: `apply_schema_grants` re-grants DML on
+    every table at the end of every migration run, so a revoke written in a migration is undone
+    minutes later in the same `alembic upgrade`. See the migration.
+    """
+
+    __tablename__ = "ims_decisions"
+
+    ims_document_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("finance.ims_documents.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: accept | reject | pending_action — `domain.IMS_ACTIONS`.
+    action: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: The operator's own note. Free text on purpose: the portal takes no reason code for an IMS
+    #: action, and a dropdown would only invite an untrue answer.
+    note: Mapped[str | None] = mapped_column(Text)
+
+    #: What the platform suggested when this decision was made, and why. Snapshotted rather than
+    #: joined, so "did the operator follow the machine" stays answerable after a re-run changes
+    #: the current suggestion.
+    suggested_action: Mapped[str | None] = mapped_column(String(20))
+    suggestion_reason: Mapped[str | None] = mapped_column(String(40))
+    reconciliation_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+    #: Who. The principal's subject id, as a string, like every `created_by` on the platform —
+    #: stated explicitly here rather than left to the mixin because it is the point of the row.
+    decided_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: When the decision was taken, which is not always when the row was written.
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_ims_decisions_org_document", "organization_id", "ims_document_id"),
+        Index("ix_ims_decisions_org_decided", "organization_id", "decided_at"),
     )
 
 

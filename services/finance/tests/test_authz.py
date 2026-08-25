@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import uuid
 from collections.abc import Iterator
+from typing import ClassVar
 
 import pytest
 
@@ -39,11 +40,14 @@ ENDPOINTS = [
     ("/api/v1/finance/customers", "finance.billing.customer.read"),
     ("/api/v1/finance/overview", "finance.reports.summary.read"),
     ("/api/v1/finance/ledger", "finance.reports.ledger.read"),
-    # Compliance. Deliberately behind their own permissions: seeing the receivable book and
-    # seeing what was reported to the tax authority are different questions, and an organization
-    # may reasonably answer them for different people.
+    # Compliance. Deliberately behind their own permissions: seeing the receivable book, seeing
+    # what was reported to the tax authority, and seeing what suppliers have claimed against this
+    # business are three different questions, and an organization may reasonably answer them for
+    # three different people.
     (f"/api/v1/finance/invoices/{uuid.uuid4()}/filings", "finance.compliance.einvoice.read"),
     ("/api/v1/finance/gst/registration", "finance.compliance.registration.read"),
+    ("/api/v1/finance/ims/documents", "finance.compliance.ims.read"),
+    (f"/api/v1/finance/ims/documents/{uuid.uuid4()}", "finance.compliance.ims.read"),
 ]
 
 
@@ -93,12 +97,27 @@ class TestEntitlement:
         assert res.status_code == 402
 
 
+def _names_a_random_id(path: str) -> bool:
+    """Whether a listed path addresses one record by a uuid this suite made up.
+
+    Those resolve to 404 rather than 200, which is the *right* answer — they name nothing — so the
+    positive sweep below skips them and the negative sweeps above keep them, where a 403 must beat
+    a 404 or the API is confirming which ids exist.
+    """
+    for segment in path.split("/"):
+        try:
+            uuid.UUID(segment)
+        except ValueError:
+            continue
+        return True
+    return False
+
+
 class TestFullyGranted:
     async def test_a_fully_granted_caller_reads(self, client, org_id, book) -> None:
         principal = principal_for(org_id, perms=[f"{p}:ORG" for p in FINANCE_READS])
         for path, _ in ENDPOINTS:
-            # The two per-invoice paths name a random uuid, so they resolve to 404, not 200.
-            if "invoices/" in path:
+            if _names_a_random_id(path):
                 continue
             with as_principal(principal):
                 res = await client.get(path)
@@ -110,9 +129,9 @@ REGISTRATION = {"gstin": "27AABCA9012D1Z5", "legal_name": "Atmora Industries Pri
 
 
 class TestTheComplianceWrite:
-    """The one write on the public finance surface, and the only permission in the catalogue
-    marked dangerous. Reading the registration must not imply being able to change it: it decides
-    which identity every future invoice is filed under."""
+    """The registration write — one of the two permissions in the catalogue marked dangerous.
+    Reading the registration must not imply being able to change it: it decides which identity
+    every future invoice is filed under."""
 
     async def test_a_reader_cannot_set_the_registration(self, client, org_id) -> None:
         principal = principal_for(org_id, perms=[f"{p}:ORG" for p in FINANCE_READS])
@@ -142,6 +161,52 @@ class TestTheComplianceWrite:
         assert res.status_code == 402
 
 
+class TestTheImsDecision:
+    """Accepting a supplier's document claims the input tax credit on it; rejecting one declines
+    the credit and sends the document back. Money either way, which is why deciding is a separate
+    permission from reading the queue and is likewise marked dangerous."""
+
+    #: Any uuid will do: authorization is refused before the document is ever looked up, which is
+    #: what a 403-beats-404 ordering means — otherwise the API confirms which ids exist.
+    PATH = f"/api/v1/finance/ims/documents/{uuid.uuid4()}/decisions"
+    DECISION: ClassVar[dict[str, str]] = {"action": "accept"}
+
+    async def test_a_reader_cannot_decide(self, client, org_id) -> None:
+        principal = principal_for(org_id, perms=[f"{p}:ORG" for p in FINANCE_READS])
+        with as_principal(principal):
+            res = await client.post(self.PATH, json=self.DECISION)
+        assert res.status_code == 403
+
+    async def test_the_queue_read_grant_alone_cannot_decide(self, client, org_id) -> None:
+        """The narrowest version of the same point: seeing the queue is not deciding it."""
+        principal = principal_for(org_id, perms=["finance.compliance.ims.read:ORG"])
+        with as_principal(principal):
+            res = await client.post(self.PATH, json=self.DECISION)
+        assert res.status_code == 403
+
+    async def test_an_own_grant_is_below_the_org_floor(self, client, org_id) -> None:
+        principal = principal_for(org_id, perms=["finance.compliance.ims.decide:OWN"])
+        with as_principal(principal):
+            res = await client.post(self.PATH, json=self.DECISION)
+        assert res.status_code == 403
+
+    async def test_the_decide_grant_reaches_the_document_lookup(self, client, org_id) -> None:
+        """Granted, so the refusal is now about the *document* — a 404 for an id that names
+        nothing — rather than about the caller. Never a 403."""
+        principal = principal_for(org_id, perms=["finance.compliance.ims.decide:ORG"])
+        with as_principal(principal):
+            res = await client.post(self.PATH, json=self.DECISION)
+        assert res.status_code == 404
+
+    async def test_an_unentitled_organization_is_402(self, client, org_id) -> None:
+        principal = principal_for(
+            org_id, perms=["finance.compliance.ims.decide:ORG"], entitlements=[]
+        )
+        with as_principal(principal):
+            res = await client.post(self.PATH, json=self.DECISION)
+        assert res.status_code == 402
+
+
 class TestTheInternalFilingApi:
     """Service-to-service, guarded by a short-lived token addressed to *this* service by name.
 
@@ -152,16 +217,23 @@ class TestTheInternalFilingApi:
     PATHS = (
         "/internal/v1/einvoice/filings",
         "/internal/v1/einvoice/filings:cancel",
+        "/internal/v1/ims/sync",
     )
 
-    @pytest.mark.parametrize("path", PATHS)
-    async def test_no_token_is_refused(self, client, org_id, path) -> None:
-        body = {
+    @staticmethod
+    def _body(org_id) -> dict:
+        """One body that satisfies all three routes' schemas, so a refusal is unambiguously about
+        the credential rather than about a missing field."""
+        return {
             "organization_id": str(org_id),
             "invoice_id": str(uuid.uuid4()),
             "reason_code": "2",
+            "period": "2026-08",
         }
-        res = await client.post(path, json=body)
+
+    @pytest.mark.parametrize("path", PATHS)
+    async def test_no_token_is_refused(self, client, org_id, path) -> None:
+        res = await client.post(path, json=self._body(org_id))
         assert res.status_code in (401, 403)
 
     @pytest.mark.parametrize("path", PATHS)
@@ -170,12 +242,9 @@ class TestTheInternalFilingApi:
         for billing must not open finance's internal API."""
         from tests.helpers import service_token_headers
 
-        body = {
-            "organization_id": str(org_id),
-            "invoice_id": str(uuid.uuid4()),
-            "reason_code": "2",
-        }
-        res = await client.post(path, headers=service_token_headers(audience="billing"), json=body)
+        res = await client.post(
+            path, headers=service_token_headers(audience="billing"), json=self._body(org_id)
+        )
         assert res.status_code in (401, 403)
 
     @pytest.mark.parametrize("path", PATHS)
@@ -185,13 +254,8 @@ class TestTheInternalFilingApi:
         """Holding every finance permission does not open the internal API — it is a different
         channel with a different credential, not a wider grant."""
         principal = principal_for(org_id, perms=[f"{p}:ORG" for p in FINANCE_READS])
-        body = {
-            "organization_id": str(org_id),
-            "invoice_id": str(uuid.uuid4()),
-            "reason_code": "2",
-        }
         with as_principal(principal):
-            res = await client.post(path, json=body)
+            res = await client.post(path, json=self._body(org_id))
         assert res.status_code in (401, 403)
 
     async def test_the_internal_api_is_absent_from_the_published_contract(self) -> None:

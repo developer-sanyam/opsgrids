@@ -39,15 +39,20 @@ from tests.helpers import FINANCE_PERMISSIONS, FakeRedis, admin_ctx, principal_f
 
 #: Every table here is tenant-scoped or global; all are safe to truncate before a test.
 #:
-#: `einvoice_filings` is append-only *for the application* — a trigger refuses UPDATE and DELETE.
-#: TRUNCATE is neither, and this runs as the admin role that owns the table, so the fixture can
-#: still reset it between tests without the trigger being weakened for anybody else.
+#: `einvoice_filings` and `ims_decisions` are append-only *for the application* — a trigger refuses
+#: UPDATE and DELETE. TRUNCATE is neither, and this runs as the admin role that owns the tables, so
+#: the fixture can still reset them between tests without the trigger being weakened for anybody
+#: else.
 TENANT_TABLES = (
     "customers",
     "invoices",
     "invoice_lines",
     "einvoice_filings",
     "gst_registrations",
+    "purchase_documents",
+    "ims_documents",
+    "ims_reconciliations",
+    "ims_decisions",
     "payments",
     "payment_allocations",
     "audit_logs",
@@ -109,6 +114,22 @@ async def admin_session() -> AsyncIterator[AsyncSession]:
 
     Use this only where a second organization's data has to exist for an isolation test."""
     engine = create_async_engine(settings().admin_dsn, connect_args=_connect_args())
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as s:
+        yield s
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def unbound_app_session() -> AsyncIterator[AsyncSession]:
+    """The application role with **no** tenant GUC bound.
+
+    What a consumer would run on if somebody dropped `session_scope(organization_id=...)`. Under
+    the forced policies on the compliance tables `current_org()` is NULL here, so a write is
+    refused outright — which is the RLS net, and the only way to prove the per-message binding is
+    load-bearing rather than decorative is to omit it and watch the insert fail.
+    """
+    engine = create_async_engine(settings().app_dsn, connect_args=_connect_args())
     maker = async_sessionmaker(engine, expire_on_commit=False)
     async with maker() as s:
         yield s

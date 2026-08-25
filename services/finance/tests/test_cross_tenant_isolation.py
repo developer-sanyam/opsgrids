@@ -9,6 +9,7 @@ passing silently under a bypassing connection.
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
 import pytest
 from sqlalchemy import event, func, select, text
@@ -16,9 +17,24 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app import selectors, services
 from app.config import settings
+from app.ims.stub import StubImsClient
 from app.irp.stub import StubIrpClient
-from app.models import SCHEMA, EInvoiceFiling, GstRegistration, Invoice
-from app.schemas import FileInvoiceIn
+from app.models import (
+    SCHEMA,
+    EInvoiceFiling,
+    GstRegistration,
+    ImsDecision,
+    ImsDocument,
+    ImsReconciliation,
+    Invoice,
+    PurchaseDocument,
+)
+from app.schemas import (
+    FileInvoiceIn,
+    GstRegistrationUpsert,
+    ImsDecisionCreate,
+    PurchaseDocumentCreate,
+)
 from platform_core.db import TENANT_GUC
 from tests.helpers import admin_ctx
 
@@ -144,6 +160,76 @@ class TestCrossTenantIsolation:
                 assert (
                     await s_b.execute(select(EInvoiceFiling).where(EInvoiceFiling.irn == a_irn))
                 ).scalar_one_or_none() is None
+        finally:
+            await s_b.close()
+            await engine.dispose()
+
+    async def test_org_b_cannot_see_org_a_supplier_queue(self, session, org_id) -> None:
+        """The IMS tables under the same policy as the rest of the book.
+
+        A supplier queue is arguably the most sensitive thing in this schema: it names who a
+        business buys from, at what price, and what it decided to claim credit on. Org A syncs a
+        period and decides one document; org B is then asked for all four tables — by list, by
+        primary key, and through the two rollups the queue's read models use.
+        """
+        org_a = org_id
+        org_b = uuid.uuid4()
+        ctx_a = admin_ctx(org_a)
+
+        async with session.begin():
+            await services.set_gst_registration(
+                session,
+                ctx_a,
+                GstRegistrationUpsert(
+                    gstin="27AABCA9012D1Z5", legal_name="Atmora Industries Private Limited"
+                ),
+            )
+            await services.record_purchase_document(
+                session,
+                ctx_a,
+                PurchaseDocumentCreate(
+                    supplier_gstin="24AABCM1234F1Z3",
+                    number="MT-4471",
+                    document_date=date(2026, 8, 1),
+                    taxable_minor=4_50_000,
+                    tax_rate_pct=18,
+                    supplier_name="Meridian Textiles",
+                ),
+            )
+            await services.ingest_ims_documents(session, ctx_a, StubImsClient(), period="2026-08")
+            await services.reconcile_ims_documents(session, ctx_a, period="2026-08")
+
+        async with session.begin():
+            documents = await selectors.all_ims_documents(session, org_a)
+            a_document_id = documents[0].id
+            decision = await services.record_ims_decision(
+                session, ctx_a, a_document_id, ImsDecisionCreate(action="accept")
+            )
+            a_decision_id = decision.id
+            a_purchase = (await selectors.all_purchase_documents(session, org_a))[0].id
+        assert len(documents) == 5
+
+        engine, s_b = await _session_bound_to(org_b)
+        try:
+            async with s_b.begin():
+                # 1) Nothing in any of the four tables is visible to org B.
+                for model in (ImsDocument, ImsReconciliation, ImsDecision, PurchaseDocument):
+                    count = (
+                        await s_b.execute(select(func.count()).select_from(model))
+                    ).scalar_one()
+                    assert count == 0, model.__tablename__
+
+                # 2) Naming org A's rows by primary key resolves to nothing.
+                assert await selectors.get_ims_document(s_b, org_b, a_document_id) is None
+                assert await selectors.get_purchase_document(s_b, org_b, a_purchase) is None
+                assert (
+                    await s_b.execute(select(ImsDecision).where(ImsDecision.id == a_decision_id))
+                ).scalar_one_or_none() is None
+
+                # 3) And through the rollups the list and detail read models both use.
+                assert await selectors.latest_reconciliations(s_b, org_b, [a_document_id]) == {}
+                assert await selectors.latest_decisions(s_b, org_b, [a_document_id]) == {}
+                assert await selectors.decisions_for_document(s_b, org_b, a_document_id) == []
         finally:
             await s_b.close()
             await engine.dispose()

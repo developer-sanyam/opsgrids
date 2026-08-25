@@ -20,7 +20,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -32,6 +32,10 @@ from app.schemas import (
     EInvoiceFilingOut,
     GstRegistrationOut,
     GstRegistrationUpsert,
+    ImsDecisionCreate,
+    ImsDecisionOut,
+    ImsDocumentDetail,
+    ImsDocumentOut,
     InvoiceOut,
     LedgerReport,
     OverviewSummary,
@@ -80,6 +84,15 @@ RegistrationRead = Annotated[
 ]
 RegistrationWrite = Annotated[
     ScopeContext, Depends(require("finance.compliance.registration.write", minimum=Scope.ORG))
+]
+ImsRead = Annotated[
+    ScopeContext, Depends(require("finance.compliance.ims.read", minimum=Scope.ORG))
+]
+#: Deciding is not reading. Accepting a supplier's document claims the input tax credit on it and
+#: rejecting one declines the credit and sends the document back — money either way, which is why
+#: this is a separate, dangerous permission rather than a wider read.
+ImsDecide = Annotated[
+    ScopeContext, Depends(require("finance.compliance.ims.decide", minimum=Scope.ORG))
 ]
 
 
@@ -174,15 +187,126 @@ async def read_gst_registration(session: SessionDep, ctx: RegistrationRead) -> G
 async def set_gst_registration(
     payload: GstRegistrationUpsert, session: SessionDep, ctx: RegistrationWrite, request: Request
 ) -> GstRegistrationOut:
-    """The one write on the public finance surface, and the only one this slice adds.
+    """Configuration, not a document — the one write here that overwrites rather than appends.
 
-    It is not a document: a registration is configuration, so it is idempotent on the GSTIN and
+    A registration is configuration, so it is idempotent on the GSTIN and
     updates in place. What it must never do is rewrite history — an invoice already filed keeps
     the `seller_gstin` it was filed under, because that column is a snapshot on the invoice and
     not a join to here.
     """
     registration = await services.set_gst_registration(session, ctx, payload, request=request)
     return selectors.to_gst_registration_out(registration)
+
+
+# --------------------------------------------------------------------- IMS reconciliation
+
+
+@router.get(
+    "/finance/ims/documents",
+    response_model=Page[ImsDocumentOut],
+    summary="The IMS reconciliation queue — documents suppliers filed against this organization",
+    dependencies=[Entitled],
+)
+async def list_ims_documents(
+    session: SessionDep,
+    ctx: ImsRead,
+    params: PageQuery,
+    q: Annotated[str | None, Query(description="Supplier name, GSTIN or document number")] = None,
+    status_filter: Annotated[
+        str | None,
+        Query(alias="status", description="pending|accepted|rejected|pending_action"),
+    ] = None,
+    supplier_gstin: Annotated[str | None, Query(description="One supplier's documents")] = None,
+    period: Annotated[str | None, Query(description="Return period, YYYY-MM")] = None,
+    reason: Annotated[
+        str | None,
+        Query(
+            description=(
+                "matched|amount_mismatch|supplier_unknown|no_purchase_record|duplicate — "
+                "filters on the newest suggestion"
+            )
+        ),
+    ] = None,
+    sort: Annotated[
+        str, Query(description="date_asc|date_desc|amount_desc|amount_asc")
+    ] = "date_asc",
+) -> Page[ImsDocumentOut]:
+    """The queue, filtered the way it is actually worked.
+
+    Every filter answers a question somebody asks out loud — "what is still undecided", "August",
+    "everything from this supplier", "show me only the mismatches" — and `reason` is the one that
+    makes the queue tractable: it filters on the newest suggestion, so an operator can take the
+    exact matches in one pass and give the disagreements the attention they need.
+
+    Oldest first by default, because a queue is worked forward: the document closest to its return
+    deadline matters more than the one that arrived most recently.
+    """
+    items, total = await selectors.list_ims_documents(
+        session,
+        ctx,
+        params,
+        q=q,
+        status=status_filter,
+        supplier_gstin=supplier_gstin,
+        period=period,
+        reason=reason,
+        sort=sort,
+    )
+    return Page.build(items, total=total, params=params)
+
+
+@router.get(
+    "/finance/ims/documents/{document_id}",
+    response_model=ImsDocumentDetail,
+    summary="One inbound supplier document, with the evidence behind its suggestion",
+    dependencies=[Entitled],
+)
+async def read_ims_document(
+    document_id: uuid.UUID, session: SessionDep, ctx: ImsRead
+) -> ImsDocumentDetail:
+    """The document, its newest suggestion, what that suggestion was based on, and every decision
+    recorded against it.
+
+    The evidence is the whole point of the detail view. An operator asked to accept or reject
+    somebody else's claim on this business needs to see the purchase document it was matched to,
+    or the earlier copy it duplicates, or the absence of both — a verdict on its own is something
+    they can only take on trust, and trust is not what a compliance queue is for.
+    """
+    document = await selectors.get_ims_document(session, ctx.organization_id, document_id)
+    if document is None:
+        raise NotFoundProblem("That supplier document is not part of this organization")
+    return await selectors.ims_document_detail(session, ctx.organization_id, document)
+
+
+@router.post(
+    "/finance/ims/documents/{document_id}/decisions",
+    response_model=ImsDecisionOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Accept, reject or park one inbound supplier document",
+    dependencies=[Entitled],
+)
+async def decide_ims_document(
+    document_id: uuid.UUID,
+    payload: ImsDecisionCreate,
+    session: SessionDep,
+    ctx: ImsDecide,
+    request: Request,
+) -> ImsDecisionOut:
+    """Record what a person decided — append-only, with who and when.
+
+    A POST rather than a PUT, and a `decisions` collection rather than a `status` field, because
+    that is what this is: a decision is appended to a history, never written over the last one. A
+    change of mind is a further row, and the row that was superseded stays visible with the
+    correction after it — which is the same shape invoices and filings already have, and the
+    reason GST's own model fits this platform without adaptation.
+
+    Behind its own permission, marked dangerous: accepting claims the input tax credit on the
+    document and rejecting declines it. Reading the queue and deciding it are different jobs.
+    """
+    decision = await services.record_ims_decision(
+        session, ctx, document_id, payload, request=request
+    )
+    return selectors.to_ims_decision_out(decision)
 
 
 # --------------------------------------------------------------------- payments

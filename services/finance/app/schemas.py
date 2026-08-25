@@ -43,6 +43,9 @@ PaymentMethod = str  # bank_transfer | upi | card | cheque | cash
 CustomerStanding = str  # overdue | open | clear
 SupplyType = str  # b2b | b2c | export | sez
 FilingStatus = str  # pending | filed | failed | cancelled
+ImsStatus = str  # pending | accepted | rejected | pending_action
+ImsAction = str  # accept | reject | pending_action
+ImsReason = str  # matched | amount_mismatch | supplier_unknown | no_purchase_record | duplicate
 
 
 # --------------------------------------------------------------------- customers
@@ -141,6 +144,22 @@ class EInvoiceState(BaseModel):
     attempted_at: datetime | None = None
     #: How many attempts have been recorded for this document.
     attempts: int = 0
+
+    # ---------------------------------------------------------------- what happens next
+    # Filing is automatic, so a screen's job is no longer "offer a button" but "say where this
+    # document stands and what a person still has to do". These three answer that, and each is
+    # derived from stored facts rather than from a clock read at render time.
+
+    #: True once the platform has stopped trying on its own and a person has to act. A `failed`
+    #: attempt is terminal: either the portal refused the document, or the retry budget ran out.
+    terminal: bool = False
+    #: The instant this document's IRN stops being cancellable — its acknowledgement plus 24
+    #: hours. Null unless a registration currently stands.
+    cancellable_until: datetime | None = None
+    #: `cancel` while the window is open, `credit_note` once it has closed, null when there is
+    #: nothing to correct. Exactly one of the two is ever available, and offering both is how a
+    #: user discovers which by having the other fail.
+    remedy: str | None = None
 
 
 class InvoiceOut(BaseModel):
@@ -382,3 +401,183 @@ class PaymentCreate(BaseModel):
     method: PaymentMethod
     allocations: list[PaymentAllocationCreate] = Field(min_length=1)
     note: str | None = None
+
+
+# --------------------------------------------------------------------- purchases
+# The inbound half of the book: what suppliers billed *this* organization. Thin on purpose — this
+# slice needs the facts a reconciliation matches on, not an accounts-payable lifecycle.
+
+
+class PurchaseDocumentOut(BaseModel):
+    """A recorded purchase or expense document — the local counterpart of a supplier's filing."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    supplier_gstin: str
+    supplier_name: str
+    number: str
+    document_type: DocumentType
+    document_date: date
+    currency: str
+    taxable_minor: int
+    tax_rate_pct: float
+    cgst_minor: int
+    sgst_minor: int
+    igst_minor: int
+    total_minor: int
+    notes: str | None = None
+
+
+class PurchaseDocumentCreate(BaseModel):
+    """Record what a supplier billed. The tax split is **computed**, never supplied: the service
+    derives CGST/SGST/IGST from the taxable value and the rate with the same `domain.split_gst`
+    an invoice uses, so the purchase book and the sales book cannot disagree about arithmetic."""
+
+    supplier_gstin: str
+    number: str
+    document_date: date
+    taxable_minor: int
+    tax_rate_pct: float
+    supplier_name: str = ""
+    document_type: DocumentType = "invoice"
+    currency: str = "INR"
+    notes: str | None = None
+
+
+# --------------------------------------------------------------------- IMS reconciliation
+# What suppliers reported *about* this business. Every row is a decision waiting for a person:
+# accepting claims the input tax credit on a document, rejecting declines it and sends the
+# document back. The platform suggests, with its reason; it never decides.
+
+
+class ImsSuggestion(BaseModel):
+    """What the platform proposes for one inbound document, and why.
+
+    `reason` is the field a queue is worked by: "matched exactly" and "the supplier declares 500
+    paise more than the purchase order" need entirely different attention, and a queue showing
+    only an action makes the operator re-derive the reason for every row.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    suggested_action: ImsAction
+    reason: ImsReason
+    #: The reason as a sentence, naming the counterpart document and the difference.
+    detail: str
+    #: Signed minor units: the supplier's total less the recorded document's. Zero unless the
+    #: reason is `amount_mismatch`.
+    delta_minor: int
+    matched_purchase_id: uuid.UUID | None = None
+    #: On a `duplicate`, the earlier arrival this one duplicates.
+    duplicate_of_id: uuid.UUID | None = None
+    computed_at: datetime
+
+
+class ImsDecisionOut(BaseModel):
+    """One operator's decision on one inbound document — a row of history, never a status.
+
+    Carries what the platform suggested *at the time*, so "did the operator follow the machine"
+    stays answerable after a later run changes the current suggestion.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    action: ImsAction
+    note: str | None
+    suggested_action: ImsAction | None
+    suggestion_reason: ImsReason | None
+    #: The subject id of whoever decided.
+    decided_by: str
+    decided_at: datetime
+
+
+class ImsDocumentOut(BaseModel):
+    """One row of the reconciliation queue.
+
+    `status` is where the document stands — `pending` until somebody decides. `suggestion` is the
+    newest advice and is null only before the first reconciliation run has seen the document;
+    `decision` is the newest decision, and null is what "nobody has decided yet" looks like.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    #: The portal's own reference for this row — not the identity of the supplier's document.
+    source_ref: str
+    source: str
+    supplier_gstin: str
+    supplier_name: str
+    document_number: str
+    document_type: DocumentType
+    document_date: date
+    #: The return period this document lands in, `YYYY-MM`.
+    period: str
+    taxable_minor: int
+    cgst_minor: int
+    sgst_minor: int
+    igst_minor: int
+    total_minor: int
+    #: The supplier's own IRN where they e-invoiced. Carried verbatim, not verified here.
+    irn: str | None
+    status: ImsStatus
+    fetched_at: datetime
+    suggestion: ImsSuggestion | None = None
+    decision: ImsDecisionOut | None = None
+
+
+class ImsDocumentDetail(BaseModel):
+    """One inbound document with the evidence behind its suggestion.
+
+    The evidence is the point of the detail view: an operator asked to accept or reject somebody
+    else's claim needs to see the document it was matched to, or the earlier copy it duplicates,
+    or the absence of either — not a verdict.
+    """
+
+    document: ImsDocumentOut
+    #: The purchase document the suggestion matched against, where there is one.
+    matched_purchase: PurchaseDocumentOut | None = None
+    #: The earlier arrival this document duplicates, where it does.
+    duplicate_of: ImsDocumentOut | None = None
+    #: Every decision recorded against this document, newest first. Append-only, so this is the
+    #: whole history and not a reconstruction.
+    decisions: list[ImsDecisionOut] = Field(default_factory=list)
+
+
+class ImsDecisionCreate(BaseModel):
+    """Record a decision on one inbound document. Append-only: a change of mind is a further row,
+    never an edit, because the question asked later is what was decided *and when*."""
+
+    #: accept | reject | pending_action.
+    action: ImsAction
+    #: The operator's own note. Free text: the portal takes no reason code for an IMS action, and
+    #: a dropdown would only invite an untrue answer.
+    note: str | None = None
+
+
+class ImsSyncIn(BaseModel):
+    """Pull one return period's supplier documents from the portal and reconcile them.
+
+    Service-to-service, so `organization_id` travels in the body — there is no principal to read
+    it from, and the internal route binds the transaction to it as its first statement.
+    """
+
+    organization_id: uuid.UUID
+    #: The return period to fetch, `YYYY-MM`.
+    period: str
+
+
+class ImsSyncOut(BaseModel):
+    """What one sync did. `fetched` counts what the portal returned, `created` what was new —
+    the two differ on a re-sync, which is how the ingest's idempotency shows up as a number."""
+
+    period: str
+    portal: str
+    fetched: int
+    created: int
+    #: How many documents the reconciliation pass produced a suggestion for.
+    reconciled: int
+    #: Groups every suggestion this pass produced, so a run can be read back whole.
+    run_id: uuid.UUID

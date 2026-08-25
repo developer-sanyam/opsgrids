@@ -22,6 +22,8 @@ render identically live, and are the obvious seam a real GL integration replaces
 from __future__ import annotations
 
 import re
+import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -84,6 +86,100 @@ IRN_CANCELLATION_REASONS: dict[str, str] = {
 #: How long after registration an IRN may be withdrawn. Past it, the only correction is a credit
 #: note — which is the platform's native shape anyway, so nothing is lost by the window closing.
 IRN_CANCELLATION_WINDOW: timedelta = timedelta(hours=24)
+
+#: The two remedies for a document that was filed wrongly, and they are mutually exclusive in
+#: time: `cancel` while the portal's window is open, `credit_note` once it has closed. Named as a
+#: vocabulary because a screen must offer exactly one of them, and offering both is how a user
+#: learns which is right by having the other fail.
+FILING_REMEDIES: frozenset[str] = frozenset({"cancel", "credit_note"})
+
+
+# --------------------------------------------------------------------- the retry policy
+# Filing is automatic, so the retry policy is a rule rather than an operator's judgement, and it
+# has to distinguish two failures that look alike and are opposite:
+#
+#   the portal refused the document  — final until the document changes. Retrying identical bytes
+#                                      is how an integration goes quiet and a deadline passes.
+#   the portal did not answer        — retryable with the identical document, and *must* be
+#                                      retried, because the reporting window is days not weeks.
+#
+# Both are bounded. An unbounded retry on an outage is indistinguishable from an outage nobody
+# noticed: the queue drains forever, the invoice is never filed, and no human is ever told.
+
+#: How many times the platform files one document on its own before it stops and asks a person.
+#: Five attempts across the backoff below spans a little over two hours — long enough to ride out
+#: an ordinary portal outage, short enough that a genuinely stuck document surfaces the same day.
+MAX_FILING_ATTEMPTS: int = 5
+
+#: The first retry waits this long; each subsequent one doubles, to the ceiling.
+FILING_RETRY_BASE: timedelta = timedelta(minutes=2)
+FILING_RETRY_CEILING: timedelta = timedelta(hours=1)
+
+#: Error codes this *platform* writes, as opposed to the numbered ones the portal returns. Kept
+#: distinct from the portal's namespace (which is numeric) so "who said this" is never ambiguous
+#: in a support conversation: `2227` came from NIC, `retry_exhausted` came from us.
+ERR_PORTAL_UNAVAILABLE: str = "unavailable"
+ERR_RETRY_EXHAUSTED: str = "retry_exhausted"
+ERR_NO_REGISTRATION: str = "no_registration"
+
+PLATFORM_ERROR_CODES: frozenset[str] = frozenset(
+    {ERR_PORTAL_UNAVAILABLE, ERR_RETRY_EXHAUSTED, ERR_NO_REGISTRATION}
+)
+
+
+def may_retry_filing(attempt: int) -> bool:
+    """Whether an outage on attempt `attempt` gets another try.
+
+    `attempt` is 1-based: the first automatic attempt is 1. The comparison is `<` rather than
+    `<=` because the question is "is there a *next* attempt", and off-by-one here is the
+    difference between the documented budget and one more than it.
+    """
+    return attempt < MAX_FILING_ATTEMPTS
+
+
+def filing_retry_delay(attempt: int) -> timedelta:
+    """How long to wait before attempt `attempt + 1`. Exponential, capped.
+
+    Capped rather than unbounded because the obligation has a deadline: a backoff that grows past
+    the reporting window has stopped being patience and started being failure.
+    """
+    if attempt < 1:
+        raise ValueError("filing attempts are 1-based")
+    delay: timedelta = FILING_RETRY_BASE * (2 ** (attempt - 1))
+    return min(delay, FILING_RETRY_CEILING)
+
+
+def is_terminal_filing(status: str) -> bool:
+    """Whether the platform has stopped trying and a person has to act.
+
+    `failed` is the terminal state and the only one: `pending` is an attempt awaiting a retry,
+    `filed` is done, `cancelled` is a withdrawal that leaves the document needing a new one.
+    Reading this off the newest filing row is what turns "the automation gave up" from something
+    an operator infers into something a screen can say.
+    """
+    return status == "failed"
+
+
+def cancellation_deadline(ack_date: datetime) -> datetime:
+    """The instant after which an IRN can no longer be withdrawn.
+
+    Derived from the acknowledgement the portal returned and stored on the filing row, so the
+    deadline a screen shows and the deadline the service enforces are the same arithmetic over
+    the same timestamp — not two readings of a clock that can disagree.
+    """
+    return ack_date + IRN_CANCELLATION_WINDOW
+
+
+def remedy_for(*, status: str | None, ack_date: datetime | None, at: datetime) -> str | None:
+    """Which correction is available for a document's current filing position at `at`.
+
+    `cancel` only while a live registration is still inside the window; `credit_note` once it has
+    closed. None when there is nothing to correct — an unfiled or already-withdrawn document has
+    no registration standing against it.
+    """
+    if status != "filed" or ack_date is None:
+        return None
+    return "cancel" if cancellation_window_open(ack_date, at) else "credit_note"
 
 
 # --------------------------------------------------------------------- GST identity
@@ -290,6 +386,26 @@ def state_code_for_name(name: str | None) -> str | None:
     return _STATE_CODE_BY_NAME.get(key)
 
 
+def parse_period(period: str) -> tuple[int, int]:
+    """A GST return period, `YYYY-MM`, as a year and a month — or a `ValueError` saying why not.
+
+    A return period is not a free-text label: it decides which documents a taxpayer is answering
+    for. A malformed one that quietly resolved to "no documents" would look exactly like a clean
+    period with nothing in it, which is the difference between "August is done" and "August was
+    never fetched". Parsed here so a sync can refuse it before it writes anything.
+    """
+    parts = period.split("-")
+    if len(parts) != 2 or len(parts[0]) != 4 or len(parts[1]) != 2:
+        raise ValueError(f"{period!r} is not a return period (YYYY-MM)")
+    try:
+        year, month = int(parts[0]), int(parts[1])
+    except ValueError as exc:
+        raise ValueError(f"{period!r} is not a return period (YYYY-MM)") from exc
+    if not 1 <= month <= 12:
+        raise ValueError(f"{period!r} names month {month}, which does not exist")
+    return year, month
+
+
 def financial_year(on: date) -> str:
     """India's financial year for a date, as the IRP writes it: April to March, `2026-27`.
 
@@ -387,6 +503,29 @@ def requires_einvoice(*, supply_type: str, document_type: str) -> bool:
     return supply_type in EINVOICE_SUPPLY_TYPES and document_type in IRP_DOCUMENT_TYPES
 
 
+#: Lifecycle states that are not a *reported* document. A draft has not been issued to anybody and
+#: a void has been withdrawn; neither is a supply the tax authority should be told about, and
+#: reporting one is not a harmless extra — an IRN is a hash of the document number and financial
+#: year, so a draft filed by mistake burns the number the real document will need.
+UNREPORTED_STATUSES: frozenset[str] = frozenset({"draft", "void"})
+
+
+def should_auto_file(*, supply_type: str, document_type: str, status: str) -> bool:
+    """Whether finalizing this document should queue a filing attempt of its own.
+
+    Stricter than `requires_einvoice`, and deliberately so. That answers the statutory question —
+    is this *kind* of supply reportable — while this one adds the lifecycle: an automatic filing
+    must never register a draft or a void, because nobody asked it to and the mistake costs the
+    document number.
+
+    The manual route (`services.file_invoice`) is not held to this. Someone naming one document
+    explicitly is making a decision; the automation is not, and the two deserve different defaults.
+    """
+    return status not in UNREPORTED_STATUSES and requires_einvoice(
+        supply_type=supply_type, document_type=document_type
+    )
+
+
 def cancellation_window_open(ack_date: datetime, at: datetime) -> bool:
     """Whether a registered IRN may still be withdrawn at `at`.
 
@@ -412,6 +551,258 @@ def normalise_hsn(raw: str | None) -> str | None:
     if not code.isdigit() or len(code) not in (4, 6, 8):
         raise ValueError(f"{raw!r} is not an HSN/SAC code (4, 6 or 8 digits)")
     return code
+
+
+# --------------------------------------------------------------------- IMS reconciliation
+# The other side of the ledger. E-invoicing is what this business reports *outward*; the Invoice
+# Management System is what its suppliers report *about* it — every document they file against
+# this GSTIN lands in a queue, and what the recipient does with it decides how much input tax
+# credit they may claim. Accepting an invoice for goods that never arrived is a credit claimed
+# wrongly; rejecting a real one is a supplier relationship and a credit lost. Both are decisions,
+# and both are made by a person.
+#
+# So this module suggests and never decides. Every function here returns a *suggestion carrying
+# its reason*, and the reason is the point: "matched exactly" and "the supplier declares 500 paise
+# more than the purchase order" ask for entirely different attention, and a queue that shows only
+# an action leaves the operator to re-derive the reason for every row.
+
+#: The document kinds a supplier can file against a recipient. The portal's own three.
+IMS_DOCUMENT_TYPES: frozenset[str] = frozenset({"invoice", "credit_note", "debit_note"})
+
+#: A document's position in the queue.
+#:
+#:   pending        — seen, not yet decided. Every document starts here.
+#:   accepted       — the credit will be claimed.
+#:   rejected       — refused; it goes back to the supplier to correct.
+#:   pending_action — deliberately parked: real, but not this period's, or not yet agreed.
+IMS_STATUSES: frozenset[str] = frozenset({"pending", "accepted", "rejected", "pending_action"})
+
+#: What an operator may decide. One-to-one with the three settled statuses above; `pending` is not
+#: a decision, it is the absence of one.
+IMS_ACTIONS: frozenset[str] = frozenset({"accept", "reject", "pending_action"})
+
+#: `action` → the status the document takes once that action is recorded.
+IMS_ACTION_STATUS: dict[str, str] = {
+    "accept": "accepted",
+    "reject": "rejected",
+    "pending_action": "pending_action",
+}
+
+# The reason classes. Deliberately few and deliberately disjoint: a reason an operator has to
+# interpret is a reason that will be ignored.
+#: The supplier's document and a recorded purchase agree, down to the paisa.
+REASON_MATCHED: str = "matched"
+#: Same document, different money. The delta is carried alongside, signed and in minor units.
+REASON_AMOUNT_MISMATCH: str = "amount_mismatch"
+#: Nothing has ever been bought from this GSTIN. The classic mis-addressed or fraudulent filing.
+REASON_SUPPLIER_UNKNOWN: str = "supplier_unknown"
+#: A known supplier, but no purchase document with this number. Usually a timing difference.
+REASON_NO_PURCHASE_RECORD: str = "no_purchase_record"
+#: The same supplier document has arrived twice. The later arrival is the duplicate.
+REASON_DUPLICATE: str = "duplicate"
+
+IMS_REASONS: frozenset[str] = frozenset(
+    {
+        REASON_MATCHED,
+        REASON_AMOUNT_MISMATCH,
+        REASON_SUPPLIER_UNKNOWN,
+        REASON_NO_PURCHASE_RECORD,
+        REASON_DUPLICATE,
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class InboundDocument:
+    """One supplier document as it arrived from the portal — the facts a match is made on.
+
+    `first_seen` and `source_ref` are load-bearing rather than decorative: when the same document
+    arrives twice, they are what decide which arrival is the original and which is the duplicate.
+    Without them the two are symmetrical and the answer depends on row order, which is to say on
+    nothing — and "which of these is the duplicate" would come out differently on every run.
+
+    `source_ref` breaks the tie because two copies fetched in the same sync share a `first_seen` to
+    the microsecond. It is the portal's own reference and the portal's own ordering, which is a
+    real statement about which it listed first; a row id would be a random number pretending to be
+    one.
+    """
+
+    id: uuid.UUID
+    source_ref: str
+    supplier_gstin: str
+    document_type: str
+    document_number: str
+    document_date: date
+    taxable_minor: int
+    total_minor: int
+    first_seen: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PurchaseRecord:
+    """One recorded purchase or expense document — the local counterpart a match is made against."""
+
+    id: uuid.UUID
+    supplier_gstin: str
+    document_type: str
+    document_number: str
+    document_date: date
+    taxable_minor: int
+    total_minor: int
+
+
+@dataclass(frozen=True, slots=True)
+class Suggestion:
+    """What the platform proposes for one inbound document, and why.
+
+    Never applied on its own: `action` is what a screen pre-selects, `reason` and `detail` are what
+    let the operator disagree with it in one glance. An auto-accept would be a credit claimed by a
+    program, which is exactly the decision a person is accountable for.
+    """
+
+    action: str
+    reason: str
+    detail: str
+    #: Signed, minor units: the supplier's total less the recorded document's. Positive means the
+    #: supplier is claiming more than was recorded. Zero on every reason but `amount_mismatch`.
+    delta_minor: int = 0
+    matched_purchase_id: uuid.UUID | None = None
+    duplicate_of_id: uuid.UUID | None = None
+
+
+def document_key(
+    *, supplier_gstin: str, document_type: str, document_number: str, on: date
+) -> tuple[str, str, str, str]:
+    """The identity a supplier document has under GST: whose, what kind, which number, which year.
+
+    The financial year rather than the date, because that is the granularity the statute gives a
+    document number: numbers restart each April and are unique within the year, so two documents
+    numbered `INV-1` eleven months apart are the same document and two numbered `INV-1` in
+    successive financial years are not. Matching on the exact date instead would call a supplier's
+    corrected date a different document, which is the single most common false mismatch.
+    """
+    return (
+        normalise_gstin(supplier_gstin),
+        document_type,
+        re.sub(r"\s", "", document_number).upper(),
+        financial_year(on),
+    )
+
+
+def _key_of(doc: InboundDocument | PurchaseRecord) -> tuple[str, str, str, str]:
+    return document_key(
+        supplier_gstin=doc.supplier_gstin,
+        document_type=doc.document_type,
+        document_number=doc.document_number,
+        on=doc.document_date,
+    )
+
+
+def _arrival(doc: InboundDocument) -> tuple[datetime, str]:
+    """A total order over arrivals.
+
+    The portal's reference breaks the tie, so two copies fetched in the same sync still have a
+    stable original and a stable duplicate — and the same one every time the pass is re-run, which
+    a random row id would not give.
+    """
+    return (doc.first_seen, doc.source_ref)
+
+
+def suggest_action(
+    document: InboundDocument,
+    *,
+    purchases: Sequence[PurchaseRecord],
+    siblings: Sequence[InboundDocument],
+) -> Suggestion:
+    """The suggested action for one inbound document, with the reason it is suggested.
+
+    `siblings` is every other inbound document for the same organization — the duplicate check
+    needs them, and it runs **first**: a second copy of a document that already matched a purchase
+    order still matches it, so a match-first ordering would suggest accepting the same credit
+    twice. Duplicate beats match, always.
+
+    Then, in the order the answers get less certain: an exactly matching purchase document, one
+    matching by identity but not by money, a known supplier with nothing on file, and a supplier
+    nothing has ever been bought from.
+    """
+    key = _key_of(document)
+
+    original = min(
+        (s for s in siblings if s.id != document.id and _key_of(s) == key),
+        key=_arrival,
+        default=None,
+    )
+    if original is not None and _arrival(original) < _arrival(document):
+        return Suggestion(
+            action="reject",
+            reason=REASON_DUPLICATE,
+            detail=(
+                f"{document.document_number} from {document.supplier_gstin} has already been "
+                "received; this is a second copy of the same document"
+            ),
+            duplicate_of_id=original.id,
+        )
+
+    from_supplier = [
+        p
+        for p in purchases
+        if normalise_gstin(p.supplier_gstin) == normalise_gstin(document.supplier_gstin)
+    ]
+    if not from_supplier:
+        return Suggestion(
+            action="reject",
+            reason=REASON_SUPPLIER_UNKNOWN,
+            detail=(
+                f"nothing has been purchased from {document.supplier_gstin}; no document from "
+                "this supplier is on file"
+            ),
+        )
+
+    same_document = [p for p in from_supplier if _key_of(p) == key]
+    if not same_document:
+        return Suggestion(
+            action="pending_action",
+            reason=REASON_NO_PURCHASE_RECORD,
+            detail=(
+                f"{document.supplier_gstin} is a known supplier, but no purchase document "
+                f"numbered {document.document_number} is recorded for this financial year"
+            ),
+        )
+
+    exact = next(
+        (
+            p
+            for p in same_document
+            if p.total_minor == document.total_minor and p.taxable_minor == document.taxable_minor
+        ),
+        None,
+    )
+    if exact is not None:
+        return Suggestion(
+            action="accept",
+            reason=REASON_MATCHED,
+            detail=(
+                f"matches purchase document {exact.document_number} exactly, taxable value and "
+                "total alike"
+            ),
+            matched_purchase_id=exact.id,
+        )
+
+    # Identity agrees, money does not. Pick the nearest recorded document so the delta the
+    # operator is shown is the smallest one they have to explain.
+    nearest = min(same_document, key=lambda p: abs(document.total_minor - p.total_minor))
+    delta = document.total_minor - nearest.total_minor
+    direction = "more" if delta > 0 else "less"
+    return Suggestion(
+        action="pending_action",
+        reason=REASON_AMOUNT_MISMATCH,
+        detail=(
+            f"the supplier declares {abs(delta)} paise {direction} than purchase document "
+            f"{nearest.document_number} ({document.total_minor} against {nearest.total_minor})"
+        ),
+        delta_minor=delta,
+        matched_purchase_id=nearest.id,
+    )
 
 
 # --------------------------------------------------------------------- invoice facts

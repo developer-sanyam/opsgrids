@@ -448,6 +448,10 @@ class TestFiling:
             )
 
         before = await client.get(f"/api/v1/finance/invoices/{invoice.id}")
+        # Asserted whole rather than field by field: an unfiled obligation must be *visible*, and
+        # the exact shape is the contract the SPA is generated from. `terminal` is false because
+        # the platform has not given up, and there is no remedy because there is nothing yet to
+        # correct — both are answers, not absences.
         assert before.json()["einvoice"] == {
             "required": True,
             "status": None,
@@ -458,6 +462,9 @@ class TestFiling:
             "error": None,
             "attempted_at": None,
             "attempts": 0,
+            "terminal": False,
+            "cancellable_until": None,
+            "remedy": None,
         }
 
         await client.post(
@@ -852,6 +859,192 @@ class TestCancellation:
                     CancelFilingIn(organization_id=org_id, invoice_id=invoice.id, reason_code="2"),
                     at=filed_at + timedelta(hours=25),
                 )
+
+
+class TestTheCancellationBoundary:
+    """The 24-hour window, at the second, computed from the stored acknowledgement.
+
+    Statute gives exactly one instant, and both sides of it matter: a cancellation refused an hour
+    early costs a correction that should have been free, and one allowed an hour late is a request
+    the portal refuses after this platform told a user it would work. So the boundary is arithmetic
+    over `einvoice_filings.ack_date` — a value the portal returned and this service wrote down —
+    rather than anything read from a clock at request time, and the deadline a screen shows is the
+    same expression the service enforces.
+    """
+
+    async def _filed_at(self, session, org_id, number: str, when: datetime):
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _register(session, ctx)
+            customer = await _customer(session, ctx, gstin=BUYER_SAME_STATE)
+            invoice = await services.create_invoice(
+                session, ctx, _invoice_payload(customer.id, number)
+            )
+            filing = await services.file_invoice(
+                session,
+                ctx,
+                StubIrpClient(),
+                FileInvoiceIn(organization_id=org_id, invoice_id=invoice.id),
+                at=when,
+            )
+        assert filing.status == "filed"
+        return invoice
+
+    async def test_the_window_is_open_at_exactly_twenty_four_hours(self, session, org_id) -> None:
+        """The boundary itself is inside. `<=`, not `<` — the statute grants twenty-four hours,
+        and a cancellation refused on the last second of them is a correction denied by an
+        off-by-one."""
+        ctx = admin_ctx(org_id)
+        filed_at = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+        invoice = await self._filed_at(session, org_id, "INV-EDGE-1", filed_at)
+        async with session.begin():
+            cancelled = await services.cancel_filing(
+                session,
+                ctx,
+                StubIrpClient(),
+                CancelFilingIn(organization_id=org_id, invoice_id=invoice.id, reason_code="2"),
+                at=filed_at + timedelta(hours=24),
+            )
+        assert cancelled.status == "cancelled"
+
+    async def test_one_second_past_the_window_is_refused(self, session, org_id) -> None:
+        ctx = admin_ctx(org_id)
+        filed_at = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+        invoice = await self._filed_at(session, org_id, "INV-EDGE-2", filed_at)
+        async with session.begin():
+            with pytest.raises(BusinessRuleProblem, match="credit note, not a cancellation"):
+                await services.cancel_filing(
+                    session,
+                    ctx,
+                    StubIrpClient(),
+                    CancelFilingIn(organization_id=org_id, invoice_id=invoice.id, reason_code="2"),
+                    at=filed_at + timedelta(hours=24, seconds=1),
+                )
+
+    async def test_the_refusal_names_the_deadline_it_computed(self, session, org_id) -> None:
+        """Not a generic "too late": the message carries the instant the window closed, so a user
+        can tell the difference between a rule they misunderstood and a clock they disagree with."""
+        ctx = admin_ctx(org_id)
+        filed_at = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+        invoice = await self._filed_at(session, org_id, "INV-EDGE-3", filed_at)
+        expected = domain.cancellation_deadline(filed_at)
+        async with session.begin():
+            with pytest.raises(BusinessRuleProblem) as raised:
+                await services.cancel_filing(
+                    session,
+                    ctx,
+                    StubIrpClient(),
+                    CancelFilingIn(organization_id=org_id, invoice_id=invoice.id, reason_code="2"),
+                    at=filed_at + timedelta(days=3),
+                )
+        assert expected.isoformat() in str(raised.value)
+
+    async def test_the_read_model_offers_exactly_one_remedy(self, session, org_id) -> None:
+        """A screen must offer `cancel` or `credit_note`, never both — offering both is how a user
+        finds out which is right by having the other fail. The read model answers with one."""
+        filed_at = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+        invoice = await self._filed_at(session, org_id, "INV-EDGE-4", filed_at)
+        async with session.begin():
+            row = await selectors.get_invoice(session, org_id, invoice.id)
+            latest, counts = await selectors.latest_filings(session, org_id, [invoice.id])
+        assert row is not None
+
+        inside = selectors.to_einvoice_state(
+            row, latest[invoice.id], counts[invoice.id], at=filed_at + timedelta(hours=1)
+        )
+        outside = selectors.to_einvoice_state(
+            row, latest[invoice.id], counts[invoice.id], at=filed_at + timedelta(hours=25)
+        )
+        assert inside.cancellable_until == domain.cancellation_deadline(filed_at)
+        assert inside.remedy == "cancel"
+        # The deadline is still shown once it has passed: "you had until" is more useful than a
+        # field that empties itself.
+        assert outside.cancellable_until == domain.cancellation_deadline(filed_at)
+        assert outside.remedy == "credit_note"
+
+    async def test_a_withdrawn_registration_leaves_no_remedy_to_offer(
+        self, client, session, org_id
+    ) -> None:
+        """Once the IRN is withdrawn there is nothing standing to correct. The document is back to
+        needing a filing — and because an IRN is a hash of the document number and the financial
+        year, that means a new document rather than a re-file of this one."""
+        ctx = admin_ctx(org_id)
+        filed_at = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+        invoice = await self._filed_at(session, org_id, "INV-EDGE-5", filed_at)
+        async with session.begin():
+            await services.cancel_filing(
+                session,
+                ctx,
+                StubIrpClient(),
+                CancelFilingIn(organization_id=org_id, invoice_id=invoice.id, reason_code="3"),
+                at=filed_at + timedelta(hours=2),
+            )
+        state = (await client.get(f"/api/v1/finance/invoices/{invoice.id}")).json()["einvoice"]
+        assert state["status"] == "cancelled"
+        assert state["remedy"] is None
+        assert state["cancellable_until"] is None
+        assert state["terminal"] is False
+
+    async def test_past_the_window_the_credit_note_path_is_actually_available(
+        self, session, org_id
+    ) -> None:
+        """The refusal points somewhere, so the somewhere has to exist. A credit note against the
+        filed invoice is raised, reported in its own right, and carries its own IRN — which is why
+        the window closing costs nothing this platform did not already do."""
+        ctx = admin_ctx(org_id)
+        filed_at = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+        invoice = await self._filed_at(session, org_id, "INV-EDGE-6", filed_at)
+        async with session.begin():
+            credit = await services.create_invoice(
+                session,
+                ctx,
+                _invoice_payload(
+                    invoice.customer_id,
+                    "CN-EDGE-6",
+                    document_type="credit_note",
+                    corrects_invoice_id=invoice.id,
+                    lines=[
+                        InvoiceLineCreate(
+                            description="Return",
+                            quantity=-100,
+                            unit_price_minor=25_000,
+                            hsn_sac="520512",
+                        )
+                    ],
+                ),
+            )
+            filing = await services.file_invoice(
+                session,
+                ctx,
+                StubIrpClient(),
+                FileInvoiceIn(organization_id=org_id, invoice_id=credit.id),
+                at=filed_at + timedelta(days=3),
+            )
+        assert credit.corrects_invoice_id == invoice.id
+        assert credit.total_minor < 0
+        assert filing.status == "filed"
+        assert filing.irn == compute_irn(
+            seller_gstin=SELLER,
+            document_type="CRN",
+            document_number="CN-EDGE-6",
+            financial_year="2026-27",
+        )
+
+    async def test_the_window_predicate_is_pure_arithmetic_over_the_stored_timestamp(self) -> None:
+        """No session, no clock, no portal — which is what makes the answer the same on a screen,
+        in the service, and in an audit three years later."""
+        ack = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+        assert domain.cancellation_deadline(ack) == ack + domain.IRN_CANCELLATION_WINDOW
+        assert domain.cancellation_window_open(ack, ack + timedelta(hours=24)) is True
+        assert domain.cancellation_window_open(ack, ack + timedelta(hours=24, seconds=1)) is False
+        assert domain.remedy_for(status="filed", ack_date=ack, at=ack) == "cancel"
+        assert (
+            domain.remedy_for(status="filed", ack_date=ack, at=ack + timedelta(days=2))
+            == "credit_note"
+        )
+        # Nothing standing means nothing to correct, whatever the clock says.
+        assert domain.remedy_for(status="cancelled", ack_date=ack, at=ack) is None
+        assert domain.remedy_for(status="failed", ack_date=None, at=ack) is None
 
 
 # --------------------------------------------------------------------- events

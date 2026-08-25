@@ -20,12 +20,16 @@ FINANCE_READS = (
     "finance.reports.ledger.read",
     "finance.compliance.einvoice.read",
     "finance.compliance.registration.read",
+    "finance.compliance.ims.read",
 )
 
-#: The one write on the public finance surface. Kept apart from the reads so a test can hand a
-#: caller the whole read book without also handing them the ability to change who the
-#: organization files as.
-FINANCE_WRITES = ("finance.compliance.registration.write",)
+#: The writes on the public finance surface. Kept apart from the reads so a test can hand a caller
+#: the whole read book without also handing them the ability to change who the organization files
+#: as, or to accept a supplier's claim on it.
+FINANCE_WRITES = (
+    "finance.compliance.registration.write",
+    "finance.compliance.ims.decide",
+)
 
 FINANCE_PERMISSIONS = FINANCE_READS + FINANCE_WRITES
 

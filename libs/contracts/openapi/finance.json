@@ -292,6 +292,18 @@
             "title": "Attempts",
             "type": "integer"
           },
+          "cancellable_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancellable Until"
+          },
           "error": {
             "anyOf": [
               {
@@ -325,6 +337,17 @@
             ],
             "title": "Irn"
           },
+          "remedy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remedy"
+          },
           "required": {
             "title": "Required",
             "type": "boolean"
@@ -339,6 +362,11 @@
               }
             ],
             "title": "Status"
+          },
+          "terminal": {
+            "default": false,
+            "title": "Terminal",
+            "type": "boolean"
           }
         },
         "required": [
@@ -443,6 +471,327 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ImsDecisionCreate": {
+        "description": "Record a decision on one inbound document. Append-only: a change of mind is a further row,\nnever an edit, because the question asked later is what was decided *and when*.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "ImsDecisionCreate",
+        "type": "object"
+      },
+      "ImsDecisionOut": {
+        "description": "One operator's decision on one inbound document \u2014 a row of history, never a status.\n\nCarries what the platform suggested *at the time*, so \"did the operator follow the machine\"\nstays answerable after a later run changes the current suggestion.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "decided_at": {
+            "format": "date-time",
+            "title": "Decided At",
+            "type": "string"
+          },
+          "decided_by": {
+            "title": "Decided By",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "suggested_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Action"
+          },
+          "suggestion_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggestion Reason"
+          }
+        },
+        "required": [
+          "id",
+          "action",
+          "note",
+          "suggested_action",
+          "suggestion_reason",
+          "decided_by",
+          "decided_at"
+        ],
+        "title": "ImsDecisionOut",
+        "type": "object"
+      },
+      "ImsDocumentDetail": {
+        "description": "One inbound document with the evidence behind its suggestion.\n\nThe evidence is the point of the detail view: an operator asked to accept or reject somebody\nelse's claim needs to see the document it was matched to, or the earlier copy it duplicates,\nor the absence of either \u2014 not a verdict.",
+        "properties": {
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/ImsDecisionOut"
+            },
+            "title": "Decisions",
+            "type": "array"
+          },
+          "document": {
+            "$ref": "#/components/schemas/ImsDocumentOut"
+          },
+          "duplicate_of": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImsDocumentOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "matched_purchase": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PurchaseDocumentOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "document"
+        ],
+        "title": "ImsDocumentDetail",
+        "type": "object"
+      },
+      "ImsDocumentOut": {
+        "description": "One row of the reconciliation queue.\n\n`status` is where the document stands \u2014 `pending` until somebody decides. `suggestion` is the\nnewest advice and is null only before the first reconciliation run has seen the document;\n`decision` is the newest decision, and null is what \"nobody has decided yet\" looks like.",
+        "properties": {
+          "cgst_minor": {
+            "title": "Cgst Minor",
+            "type": "integer"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImsDecisionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "document_date": {
+            "format": "date",
+            "title": "Document Date",
+            "type": "string"
+          },
+          "document_number": {
+            "title": "Document Number",
+            "type": "string"
+          },
+          "document_type": {
+            "title": "Document Type",
+            "type": "string"
+          },
+          "fetched_at": {
+            "format": "date-time",
+            "title": "Fetched At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "igst_minor": {
+            "title": "Igst Minor",
+            "type": "integer"
+          },
+          "irn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Irn"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "sgst_minor": {
+            "title": "Sgst Minor",
+            "type": "integer"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "source_ref": {
+            "title": "Source Ref",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "suggestion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImsSuggestion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "supplier_gstin": {
+            "title": "Supplier Gstin",
+            "type": "string"
+          },
+          "supplier_name": {
+            "title": "Supplier Name",
+            "type": "string"
+          },
+          "taxable_minor": {
+            "title": "Taxable Minor",
+            "type": "integer"
+          },
+          "total_minor": {
+            "title": "Total Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "source_ref",
+          "source",
+          "supplier_gstin",
+          "supplier_name",
+          "document_number",
+          "document_type",
+          "document_date",
+          "period",
+          "taxable_minor",
+          "cgst_minor",
+          "sgst_minor",
+          "igst_minor",
+          "total_minor",
+          "irn",
+          "status",
+          "fetched_at"
+        ],
+        "title": "ImsDocumentOut",
+        "type": "object"
+      },
+      "ImsSuggestion": {
+        "description": "What the platform proposes for one inbound document, and why.\n\n`reason` is the field a queue is worked by: \"matched exactly\" and \"the supplier declares 500\npaise more than the purchase order\" need entirely different attention, and a queue showing\nonly an action makes the operator re-derive the reason for every row.",
+        "properties": {
+          "computed_at": {
+            "format": "date-time",
+            "title": "Computed At",
+            "type": "string"
+          },
+          "delta_minor": {
+            "title": "Delta Minor",
+            "type": "integer"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "duplicate_of_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duplicate Of Id"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "matched_purchase_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Purchase Id"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "suggested_action": {
+            "title": "Suggested Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "suggested_action",
+          "reason",
+          "detail",
+          "delta_minor",
+          "computed_at"
+        ],
+        "title": "ImsSuggestion",
         "type": "object"
       },
       "InvoiceLineOut": {
@@ -868,6 +1217,42 @@
         "title": "Page[CustomerSummary]",
         "type": "object"
       },
+      "Page_ImsDocumentOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImsDocumentOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ImsDocumentOut]",
+        "type": "object"
+      },
       "Page_InvoiceOut_": {
         "properties": {
           "items": {
@@ -1025,6 +1410,93 @@
           "note"
         ],
         "title": "PaymentOut",
+        "type": "object"
+      },
+      "PurchaseDocumentOut": {
+        "description": "A recorded purchase or expense document \u2014 the local counterpart of a supplier's filing.",
+        "properties": {
+          "cgst_minor": {
+            "title": "Cgst Minor",
+            "type": "integer"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "document_date": {
+            "format": "date",
+            "title": "Document Date",
+            "type": "string"
+          },
+          "document_type": {
+            "title": "Document Type",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "igst_minor": {
+            "title": "Igst Minor",
+            "type": "integer"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "sgst_minor": {
+            "title": "Sgst Minor",
+            "type": "integer"
+          },
+          "supplier_gstin": {
+            "title": "Supplier Gstin",
+            "type": "string"
+          },
+          "supplier_name": {
+            "title": "Supplier Name",
+            "type": "string"
+          },
+          "tax_rate_pct": {
+            "title": "Tax Rate Pct",
+            "type": "number"
+          },
+          "taxable_minor": {
+            "title": "Taxable Minor",
+            "type": "integer"
+          },
+          "total_minor": {
+            "title": "Total Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "supplier_gstin",
+          "supplier_name",
+          "number",
+          "document_type",
+          "document_date",
+          "currency",
+          "taxable_minor",
+          "tax_rate_pct",
+          "cgst_minor",
+          "sgst_minor",
+          "igst_minor",
+          "total_minor"
+        ],
+        "title": "PurchaseDocumentOut",
         "type": "object"
       },
       "ServiceInfo": {
@@ -1201,7 +1673,7 @@
         ]
       },
       "put": {
-        "description": "The one write on the public finance surface, and the only one this slice adds.\n\nIt is not a document: a registration is configuration, so it is idempotent on the GSTIN and\nupdates in place. What it must never do is rewrite history \u2014 an invoice already filed keeps\nthe `seller_gstin` it was filed under, because that column is a snapshot on the invoice and\nnot a join to here.",
+        "description": "Configuration, not a document \u2014 the one write here that overwrites rather than appends.\n\nA registration is configuration, so it is idempotent on the GSTIN and\nupdates in place. What it must never do is rewrite history \u2014 an invoice already filed keeps\nthe `seller_gstin` it was filed under, because that column is a snapshot on the invoice and\nnot a join to here.",
         "operationId": "set_gst_registration_api_v1_finance_gst_registration_put",
         "requestBody": {
           "content": {
@@ -1236,6 +1708,263 @@
           }
         },
         "summary": "Set this organization's GST registration",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/ims/documents": {
+      "get": {
+        "description": "The queue, filtered the way it is actually worked.\n\nEvery filter answers a question somebody asks out loud \u2014 \"what is still undecided\", \"August\",\n\"everything from this supplier\", \"show me only the mismatches\" \u2014 and `reason` is the one that\nmakes the queue tractable: it filters on the newest suggestion, so an operator can take the\nexact matches in one pass and give the disagreements the attention they need.\n\nOldest first by default, because a queue is worked forward: the document closest to its return\ndeadline matters more than the one that arrived most recently.",
+        "operationId": "list_ims_documents_api_v1_finance_ims_documents_get",
+        "parameters": [
+          {
+            "description": "Supplier name, GSTIN or document number",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Supplier name, GSTIN or document number",
+              "title": "Q"
+            }
+          },
+          {
+            "description": "pending|accepted|rejected|pending_action",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "pending|accepted|rejected|pending_action",
+              "title": "Status"
+            }
+          },
+          {
+            "description": "One supplier's documents",
+            "in": "query",
+            "name": "supplier_gstin",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One supplier's documents",
+              "title": "Supplier Gstin"
+            }
+          },
+          {
+            "description": "Return period, YYYY-MM",
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Return period, YYYY-MM",
+              "title": "Period"
+            }
+          },
+          {
+            "description": "matched|amount_mismatch|supplier_unknown|no_purchase_record|duplicate \u2014 filters on the newest suggestion",
+            "in": "query",
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "matched|amount_mismatch|supplier_unknown|no_purchase_record|duplicate \u2014 filters on the newest suggestion",
+              "title": "Reason"
+            }
+          },
+          {
+            "description": "date_asc|date_desc|amount_desc|amount_asc",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "date_asc",
+              "description": "date_asc|date_desc|amount_desc|amount_asc",
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ImsDocumentOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The IMS reconciliation queue \u2014 documents suppliers filed against this organization",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/ims/documents/{document_id}": {
+      "get": {
+        "description": "The document, its newest suggestion, what that suggestion was based on, and every decision\nrecorded against it.\n\nThe evidence is the whole point of the detail view. An operator asked to accept or reject\nsomebody else's claim on this business needs to see the purchase document it was matched to,\nor the earlier copy it duplicates, or the absence of both \u2014 a verdict on its own is something\nthey can only take on trust, and trust is not what a compliance queue is for.",
+        "operationId": "read_ims_document_api_v1_finance_ims_documents__document_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImsDocumentDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One inbound supplier document, with the evidence behind its suggestion",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/ims/documents/{document_id}/decisions": {
+      "post": {
+        "description": "Record what a person decided \u2014 append-only, with who and when.\n\nA POST rather than a PUT, and a `decisions` collection rather than a `status` field, because\nthat is what this is: a decision is appended to a history, never written over the last one. A\nchange of mind is a further row, and the row that was superseded stays visible with the\ncorrection after it \u2014 which is the same shape invoices and filings already have, and the\nreason GST's own model fits this platform without adaptation.\n\nBehind its own permission, marked dangerous: accepting claims the input tax credit on the\ndocument and rejecting declines it. Reading the queue and deciding it are different jobs.",
+        "operationId": "decide_ims_document_api_v1_finance_ims_documents__document_id__decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImsDecisionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImsDecisionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Accept, reject or park one inbound supplier document",
         "tags": [
           "finance"
         ]

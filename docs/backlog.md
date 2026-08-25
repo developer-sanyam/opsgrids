@@ -60,7 +60,7 @@ the moment the policies landed, since each connected as the app role with no ten
 
 ## Next
 
-### GST compliance engine — foundation landed; the integrations remain
+### GST compliance engine — filing is automatic and IMS has landed; the credentials remain
 
 **Why this is first.** India's e-invoicing mandate reaches every business above ₹5 crore
 aggregate annual turnover from April 2026, and the window for reporting an invoice to the Invoice
@@ -117,22 +117,89 @@ has to trust.
 - The demo book is GST-complete: a Maharashtra seller registration, checksum-valid customer
   GSTINs, HSN/SAC on every line, and both split shapes exercised on real data.
 
+**Slice two — autopilot, and the queue that comes back: DONE.**
+
+- **Filing no longer waits for a button.** Finalizing a reportable document stages
+  `finance.compliance.invoice.filing_requested` on the outbox — in the same transaction as the
+  invoice, so the attempt is sent only once the document is durable and never inside the request
+  that raised it. Tying a customer's ability to bill to a government portal's uptime is the
+  failure this shape exists to prevent. A consumer picks the request up and files it through
+  `IrpClient`, persisting the IRN, the acknowledgement number and date, and the signed QR verbatim.
+  `domain.should_auto_file` adds the lifecycle the statutory test does not carry: a draft has not
+  been issued and a void has been withdrawn, and since an IRN is a hash of the document number and
+  financial year, filing either burns the number the real document will need. The internal route
+  remains for a document somebody names deliberately, and is not held to that second test.
+- **A document already carrying an IRN is never filed twice.** Idempotency at the event id is not
+  enough — a retry that crossed with a manual filing, or a second finalize, is a *different* event
+  naming the same document — so `services.live_registration` is consulted **before** the client is
+  touched. The portal answers a duplicate registration with `2150`, and discovering a fact you
+  already had by being refused is how an integration files every invoice twice under load. Both
+  the manual route and the consumer go through the same guard, and the test asserts on the portal
+  *call count* rather than on rows.
+- **Failure is bounded and it surfaces.** A rejection is terminal at the first attempt: the same
+  bytes will be refused again. An outage is retried on an exponential, capped backoff up to
+  `domain.MAX_FILING_ATTEMPTS`, and when the budget is spent the outage becomes a terminal `failed`
+  row carrying `retry_exhausted` — the platform's own error namespace, kept distinct from the
+  portal's numeric one so a support conversation is never ambiguous about who refused what. The
+  read model carries `terminal`, so "the automation gave up" is something a screen says rather than
+  something an operator infers.
+- **The cancellation window is modelled from both ends.** Inside 24 hours a withdrawal is a
+  `cancelled` filing row; outside it the service refuses and names the instant the window closed,
+  pointing at the credit note — which the append-only invoice model already supports, so nothing is
+  lost when the window shuts. The deadline is arithmetic over the stored `ack_date`, and the read
+  model exposes it as `cancellable_until` plus a single `remedy` (`cancel` or `credit_note`, never
+  both) so a screen offers the one that will work.
+- **IMS reconciliation, the recurring half.** `ims_documents` holds what suppliers filed against
+  this organization, keyed on the **portal's** row reference rather than the supplier's document
+  number — which is what lets a re-sync create nothing while leaving a genuine duplicate
+  representable. `purchase_documents` is the local counterpart a match is made against, thin on
+  purpose, with its tax split computed by the same `domain.split_gst` an invoice uses.
+- **The reconciler suggests and never decides.** Per document it produces an action *with its
+  reason*: matched exactly, an amount mismatch with the delta signed and named in paise, a supplier
+  nothing has been bought from, a known supplier with no such number, or a duplicate of an earlier
+  arrival. Duplicate is evaluated first — a second copy of a document that already matched a
+  purchase order still matches it, so a match-first ordering would suggest claiming the same credit
+  twice. Nothing moves a document's status; even the exact match stays `pending` until a person
+  confirms, because accepting claims the input tax credit on somebody else's invoice.
+- **`ims_decisions` is append-only at the database.** Who decided, when, what the platform had
+  suggested at the time, and whether they followed it. A change of mind is a further row. Enforced
+  by trigger for the same reason `einvoice_filings` is — that is now twice the platform has walked
+  into `apply_schema_grants` undoing a `REVOKE`. `ims_reconciliations` is pointedly *not* frozen:
+  a suggestion is recomputed opinion, and freezing an opinion buys an auditor nothing.
+- **Endpoints.** `GET /finance/ims/documents` (filters: status, supplier, period, suggestion
+  reason, free text), `GET /finance/ims/documents/{id}` returning the evidence behind the
+  suggestion — the matched purchase document, the earlier copy a duplicate duplicates, the decision
+  history — and `POST /finance/ims/documents/{id}/decisions`. Internal `POST /internal/v1/ims/sync`
+  ingests a period and re-runs the reconciliation. New permissions
+  `finance.compliance.ims.read` and `finance.compliance.ims.decide`, the second marked dangerous.
+- **Events.** `finance.compliance.invoice.filing_requested` (the trigger, and the retry),
+  `finance.compliance.ims_document.ingested` and `.decided` — the last carrying
+  `followed_suggestion`, because a suggestion nobody follows is one that should be changed and that
+  is only knowable if the disagreement is written down.
+- **The second portal is stubbed like the first.** `ImsClient` speaks documents; `StubImsClient`
+  computes five fixture documents whose tax comes from `domain.split_gst` against the *recipient's*
+  state, so the same fixture is CGST+SGST for a Maharashtra buyer and IGST for a Gujarat one. No
+  network, no credentials, asserted by a test that forbids opening a socket.
+
 **Still open, in the order the market forces it:**
 
 | Next | Why it is next |
 |---|---|
-| **IRP / GSP integration** | The one stubbed seam. `IrpClient` is the whole change surface; NIC direct vs a GSP is a credentials-and-envelope decision, not an architecture one. |
-| **The auto-filing agent** | What makes it "autopilot" rather than a button. Consumes `finance.billing.invoice.issued`, files inside the reporting window, retries only what is retryable. Needs the scheduler and a backoff policy. |
-| **IMS reconciliation** | GSTN's Invoice Management System turns a supplier's filings into a recurring accept/reject queue on the buyer's side. This is a *recurring* workflow, which makes it stickier than filing — and it is the natural second product surface. |
-| **GSTR-1 preparation** | Falls out of the data this slice now stores: the HSN summary groups by `hsn_sac` and rate, and the B2B/B2C/export tables by `supply_type`. Mostly reporting, once the filings are trustworthy. |
-| **e-Way bills** | A different portal with a different obligation (movement of goods above ₹50,000) and its own 24-hour-ish cancellation rules. Shares the seller registration and the document, not the client. |
-| **GST-TDS: 194Q / 206C(1H)** | Withholding at source on purchases and collection at source on sales, with the buyer/seller threshold interplay that decides which applies. Touches the payment ledger, not the filing ledger. |
-| **B2C dynamic QR** | The obligation B2C carries instead of an IRN. Deliberately out of this slice: `requires_einvoice` already answers `false` for it, so it is additive. |
+| **IRP / GSP credentials and the wire** | The remaining seam on the filing side, and now the *only* one: the state machine, the retry policy, the idempotency guard and the persistence are all real and exercised. `IrpClient` is the whole change surface; NIC direct vs a GSP is a credentials-and-envelope decision, not an architecture one. |
+| **IMS credentials, and pushing actions back** | Reading a supplier ledger and recording a decision about it are done; telling GSTN what was decided is a second integration with its own filing window. `ImsClient` deliberately has no `submit()` — inventing a method nothing implements would read as finished. |
+| **A scheduler that honours the backoff** | `filing_requested` already carries `attempt` and `not_before`, so the retry knows its own delay; what does not exist yet is something that waits for it rather than redelivering at once. A delivery change, not a redesign. |
+| **GSTR-1 generation** | Falls out of the data now stored: the HSN summary groups by `hsn_sac` and rate, the B2B/B2C/export tables by `supply_type`, and the inward side by the IMS decisions. Mostly reporting, once the filings are trustworthy. |
+| **e-Way bills** | A different portal with a different obligation (movement of goods above ₹50,000) and its own cancellation rules. Shares the seller registration and the document, not the client. |
+| **GST-TDS: 194Q / 206C(1H)** | Withholding at source on purchases and collection at source on sales, with the buyer/seller threshold interplay that decides which applies. Touches the payment ledger, not the filing ledger — and now also the purchase book, which is where the ₹50 lakh threshold is measured. |
+| **B2C dynamic QR** | The obligation B2C carries instead of an IRN. Deliberately out: `requires_einvoice` already answers `false` for it, so it is additive. |
 
-Two things this slice deliberately did **not** do. Historical documents were not back-split into
+Four things these slices deliberately did **not** do. Historical documents were not back-split into
 tax heads: which head a supply was taxed under depends on a seller state that no column recorded
 when those documents were frozen, and deriving it now would be inventing a legal fact rather than
-recording one. And UIN/OIDAR registrations are refused rather than half-supported.
+recording one. UIN/OIDAR registrations are refused rather than half-supported. `purchase_documents`
+is a reconciliation counterpart, not an accounts-payable lifecycle — there is no approval, no
+three-way match, no payment run. And nothing auto-accepts an IMS document, however exact the match,
+because the credit that follows is a person's to answer for.
 
 ### HRMS employee-service — slice 1 landed; follow-ups
 

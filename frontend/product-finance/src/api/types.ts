@@ -78,7 +78,23 @@ export interface EInvoiceState {
   error?: string | null;
   attempted_at?: string | null;
   attempts: number;
+  /**
+   * True once the platform has stopped filing this document on its own and a person has to act:
+   * either the portal refused it, or the retry budget ran out.
+   */
+  terminal?: boolean;
+  /** When this document's IRN stops being cancellable — its acknowledgement plus 24 hours. */
+  cancellable_until?: string | null;
+  /**
+   * Which correction is still available, and it is never both: `cancel` while the portal's window
+   * is open, `credit_note` once it has closed, `null` when there is nothing standing to correct.
+   * Offering both is how a user finds out which is right by having the other fail.
+   */
+  remedy?: FilingRemedy | null;
 }
+
+/** The two corrections for a filed document. Mutually exclusive in time. */
+export type FilingRemedy = "cancel" | "credit_note";
 
 /** One row of a document's filing history. Append-only server-side: a retry is a further row. */
 export interface EInvoiceFiling {

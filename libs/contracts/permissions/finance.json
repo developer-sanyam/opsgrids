@@ -38,6 +38,24 @@
       "resource": "einvoice"
     },
     {
+      "action": "decide",
+      "default_scope": "ORG",
+      "description": "Accept, reject or park an inbound supplier document",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "compliance",
+      "resource": "ims"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See the IMS reconciliation queue and its suggestions",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "compliance",
+      "resource": "ims"
+    },
+    {
       "action": "read",
       "default_scope": "ORG",
       "description": "See the organization's GST registration",
@@ -98,6 +116,14 @@
           "scope": "ORG"
         },
         {
+          "code": "finance.compliance.ims.decide",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.compliance.ims.read",
+          "scope": "ORG"
+        },
+        {
           "code": "finance.compliance.registration.read",
           "scope": "ORG"
         },
@@ -137,6 +163,10 @@
         },
         {
           "code": "finance.compliance.einvoice.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.compliance.ims.read",
           "scope": "ORG"
         },
         {

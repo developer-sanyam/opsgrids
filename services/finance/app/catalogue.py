@@ -103,9 +103,11 @@ FINANCE = PermissionCatalogue(
         PermissionSpec("billing", "customer", "read", "See customers and their receivables"),
         PermissionSpec("reports", "summary", "read", "See the finance overview / KPIs"),
         PermissionSpec("reports", "ledger", "read", "See the ledger / trial balance"),
-        # Compliance. Reading a filing history is an ordinary finance read; *changing* the
-        # organization's GST registration is not — it decides which identity every invoice is
-        # filed under, so it is the one write in this catalogue and it is marked dangerous.
+        # Compliance. Reading a filing history or a supplier's claim is an ordinary finance read.
+        # The two writes are not, and both are marked dangerous for the same reason: each one
+        # decides money. Changing the GST registration decides which identity every future invoice
+        # is filed under; deciding an IMS document decides whether the input tax credit on
+        # somebody else's invoice is claimed.
         PermissionSpec("compliance", "einvoice", "read", "See e-invoice filing status and history"),
         PermissionSpec(
             "compliance", "registration", "read", "See the organization's GST registration"
@@ -115,6 +117,16 @@ FINANCE = PermissionCatalogue(
             "registration",
             "write",
             "Set the organization's GST registration",
+            is_dangerous=True,
+        ),
+        PermissionSpec(
+            "compliance", "ims", "read", "See the IMS reconciliation queue and its suggestions"
+        ),
+        PermissionSpec(
+            "compliance",
+            "ims",
+            "decide",
+            "Accept, reject or park an inbound supplier document",
             is_dangerous=True,
         ),
     ],
@@ -147,6 +159,9 @@ FINANCE_ROLE_TEMPLATES: list[RoleTemplate] = [
             # A viewer sees whether a document is filed; they cannot change who it is filed as.
             ("finance.compliance.einvoice.read", "ORG"),
             ("finance.compliance.registration.read", "ORG"),
+            # And they see the supplier queue — a reconciliation is worked by looking before it is
+            # worked by deciding, and the two are separate seats on purpose.
+            ("finance.compliance.ims.read", "ORG"),
         ),
     ),
 ]

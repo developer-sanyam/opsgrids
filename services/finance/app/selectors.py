@@ -19,6 +19,7 @@ position, the overview rollups — are reads, computed from the same `app.domain
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import Select, func, or_, select
@@ -30,9 +31,13 @@ from app.models import (
     Customer,
     EInvoiceFiling,
     GstRegistration,
+    ImsDecision,
+    ImsDocument,
+    ImsReconciliation,
     Invoice,
     Payment,
     PaymentAllocation,
+    PurchaseDocument,
 )
 from app.schemas import (
     AgingBucket,
@@ -42,6 +47,10 @@ from app.schemas import (
     EInvoiceFilingOut,
     EInvoiceState,
     GstRegistrationOut,
+    ImsDecisionOut,
+    ImsDocumentDetail,
+    ImsDocumentOut,
+    ImsSuggestion,
     InvoiceLineOut,
     InvoiceOut,
     LedgerAccount,
@@ -50,6 +59,7 @@ from app.schemas import (
     OverviewSummary,
     PaymentAllocationOut,
     PaymentOut,
+    PurchaseDocumentOut,
 )
 from platform_core.auth import ScopeContext
 from platform_core.pagination import PageParams
@@ -126,13 +136,23 @@ async def paid_by_invoice(
 
 
 def to_einvoice_state(
-    invoice: Invoice, latest: EInvoiceFiling | None, attempts: int = 0
+    invoice: Invoice,
+    latest: EInvoiceFiling | None,
+    attempts: int = 0,
+    *,
+    at: datetime | None = None,
 ) -> EInvoiceState:
     """An invoice's current e-invoice position, from its newest filing attempt.
 
     `required` is answered from the document itself, not from the filings, so a document that has
     never been attempted still reports the obligation. A status of `None` alongside
-    `required=True` is precisely the queue an auto-filing agent drains.
+    `required=True` is precisely the queue the auto-filing consumer drains.
+
+    Since filing became automatic the interesting question moved: not "is there a button" but
+    "has the platform given up, and if a correction is needed which one is still legal". Both are
+    answered here, from the stored acknowledgement rather than from a clock read on the client —
+    `cancellable_until` is arithmetic over `ack_date`, and `remedy` is that deadline compared to
+    `at` exactly as `services.cancel_filing` compares it.
     """
     required = domain.requires_einvoice(
         supply_type=invoice.supply_type, document_type=invoice.document_type
@@ -149,7 +169,18 @@ def to_einvoice_state(
         error=latest.error,
         attempted_at=latest.attempted_at,
         attempts=attempts,
+        terminal=domain.is_terminal_filing(latest.status),
+        cancellable_until=(
+            domain.cancellation_deadline(latest.ack_date)
+            if latest.status == "filed" and latest.ack_date is not None
+            else None
+        ),
+        remedy=domain.remedy_for(status=latest.status, ack_date=latest.ack_date, at=at or _now()),
     )
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
 
 
 def to_invoice_out(
@@ -157,6 +188,8 @@ def to_invoice_out(
     paid_minor: int,
     latest_filing: EInvoiceFiling | None = None,
     attempts: int = 0,
+    *,
+    at: datetime | None = None,
 ) -> InvoiceOut:
     """Serialise one invoice with its derived paid-so-far figure and filing position attached."""
     return InvoiceOut(
@@ -184,7 +217,7 @@ def to_invoice_out(
         cgst_minor=invoice.cgst_minor,
         sgst_minor=invoice.sgst_minor,
         igst_minor=invoice.igst_minor,
-        einvoice=to_einvoice_state(invoice, latest_filing, attempts),
+        einvoice=to_einvoice_state(invoice, latest_filing, attempts, at=at),
     )
 
 
@@ -386,6 +419,361 @@ def to_gst_registration_out(registration: GstRegistration) -> GstRegistrationOut
         trade_name=registration.trade_name,
         registration_type=registration.registration_type,
         is_primary=registration.is_primary,
+    )
+
+
+# --------------------------------------------------------------------- purchases
+
+
+async def all_purchase_documents(
+    session: AsyncSession, org_id: uuid.UUID
+) -> list[PurchaseDocument]:
+    """Every live purchase document for the org — the book a reconciliation matches against.
+
+    Read whole rather than per supplier: a reconciliation pass compares every inbound document
+    against every recorded one, and doing that with a query per row is the shape that works on a
+    demo and stops working on a real book.
+    """
+    stmt = (
+        select(PurchaseDocument)
+        .where(PurchaseDocument.organization_id == org_id, PurchaseDocument.deleted_at.is_(None))
+        .order_by(PurchaseDocument.document_date.desc(), PurchaseDocument.number)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def get_purchase_document(
+    session: AsyncSession, org_id: uuid.UUID, purchase_id: uuid.UUID
+) -> PurchaseDocument | None:
+    """Org-scoped fetch by id. None on a tenant mismatch or a soft-deleted row."""
+    stmt = select(PurchaseDocument).where(
+        PurchaseDocument.id == purchase_id,
+        PurchaseDocument.organization_id == org_id,
+        PurchaseDocument.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def purchase_exists(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    *,
+    supplier_gstin: str,
+    document_type: str,
+    number: str,
+) -> bool:
+    stmt = select(PurchaseDocument.id).where(
+        PurchaseDocument.organization_id == org_id,
+        PurchaseDocument.supplier_gstin == supplier_gstin,
+        PurchaseDocument.document_type == document_type,
+        PurchaseDocument.number == number,
+    )
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
+def to_purchase_out(purchase: PurchaseDocument) -> PurchaseDocumentOut:
+    return PurchaseDocumentOut(
+        id=purchase.id,
+        supplier_gstin=purchase.supplier_gstin,
+        supplier_name=purchase.supplier_name,
+        number=purchase.number,
+        document_type=purchase.document_type,
+        document_date=purchase.document_date,
+        currency=purchase.currency,
+        taxable_minor=purchase.taxable_minor,
+        tax_rate_pct=float(purchase.tax_rate_pct),
+        cgst_minor=purchase.cgst_minor,
+        sgst_minor=purchase.sgst_minor,
+        igst_minor=purchase.igst_minor,
+        total_minor=purchase.total_minor,
+        notes=purchase.notes,
+    )
+
+
+# --------------------------------------------------------------------- IMS reconciliation
+
+_IMS_SORTS: dict[str, tuple[Any, ...]] = {
+    # Oldest first is the default because a queue is worked forward: the document closest to its
+    # return deadline is the one that matters, not the one that arrived most recently.
+    "date_asc": (ImsDocument.document_date.asc(), ImsDocument.source_ref.asc()),
+    "date_desc": (ImsDocument.document_date.desc(), ImsDocument.source_ref.desc()),
+    "amount_desc": (ImsDocument.total_minor.desc(), ImsDocument.source_ref.asc()),
+    "amount_asc": (ImsDocument.total_minor.asc(), ImsDocument.source_ref.asc()),
+}
+
+
+def _newest_suggestion_subquery(org_id: uuid.UUID) -> Any:
+    """One row per document: its newest suggestion. `DISTINCT ON`, so filtering the queue by
+    reason stays a single query rather than a suggestion lookup per row."""
+    return (
+        select(ImsReconciliation.ims_document_id.label("document_id"), ImsReconciliation.reason)
+        .where(
+            ImsReconciliation.organization_id == org_id,
+            ImsReconciliation.deleted_at.is_(None),
+        )
+        .distinct(ImsReconciliation.ims_document_id)
+        .order_by(
+            ImsReconciliation.ims_document_id,
+            ImsReconciliation.computed_at.desc(),
+            ImsReconciliation.created_at.desc(),
+        )
+        .subquery()
+    )
+
+
+def ims_documents_stmt(
+    ctx: ScopeContext,
+    *,
+    status: str | None = None,
+    supplier_gstin: str | None = None,
+    period: str | None = None,
+    reason: str | None = None,
+    q: str | None = None,
+    sort: str = "date_asc",
+) -> Select[Any]:
+    """The reconciliation queue, filtered the way it is actually worked.
+
+    Every filter here answers a question somebody has out loud: "what is still undecided",
+    "everything from this supplier", "August", "show me only the mismatches". `ctx.apply` is the
+    enforcement point, and the explicit `organization_id` predicate stays beside it — RLS is the
+    net under the tightrope, not permission to walk without one.
+    """
+    stmt = select(ImsDocument).where(
+        ImsDocument.organization_id == ctx.organization_id,
+        ImsDocument.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=ImsDocument.id)
+
+    if status:
+        stmt = stmt.where(ImsDocument.status == status)
+    if supplier_gstin:
+        stmt = stmt.where(ImsDocument.supplier_gstin == domain.normalise_gstin(supplier_gstin))
+    if period:
+        stmt = stmt.where(ImsDocument.period == period)
+    if reason:
+        newest = _newest_suggestion_subquery(ctx.organization_id)
+        stmt = stmt.where(
+            ImsDocument.id.in_(select(newest.c.document_id).where(newest.c.reason == reason))
+        )
+    if q:
+        needle = f"%{q.lower()}%"
+        stmt = stmt.where(
+            or_(
+                func.lower(ImsDocument.supplier_name).like(needle),
+                func.lower(ImsDocument.document_number).like(needle),
+                func.lower(ImsDocument.supplier_gstin).like(needle),
+            )
+        )
+
+    return stmt.order_by(*_IMS_SORTS.get(sort, _IMS_SORTS["date_asc"]))
+
+
+async def get_ims_document(
+    session: AsyncSession, org_id: uuid.UUID, document_id: uuid.UUID
+) -> ImsDocument | None:
+    """Org-scoped fetch by id. None on a tenant mismatch or a soft-deleted row — confirming an id
+    exists in *some* organization is itself a disclosure."""
+    stmt = select(ImsDocument).where(
+        ImsDocument.id == document_id,
+        ImsDocument.organization_id == org_id,
+        ImsDocument.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def all_ims_documents(
+    session: AsyncSession, org_id: uuid.UUID, *, period: str | None = None
+) -> list[ImsDocument]:
+    """Every live inbound document for the org, oldest arrival first.
+
+    The reconciliation pass reads them all whatever `period` it was asked for, because the
+    duplicate check spans periods: a supplier re-filing December's invoice in January is exactly
+    the case a period-limited read would call two distinct documents.
+    """
+    stmt = (
+        select(ImsDocument)
+        .where(ImsDocument.organization_id == org_id, ImsDocument.deleted_at.is_(None))
+        .order_by(ImsDocument.fetched_at.asc(), ImsDocument.source_ref.asc())
+    )
+    if period:
+        stmt = stmt.where(ImsDocument.period == period)
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def ims_documents_by_source_ref(
+    session: AsyncSession, org_id: uuid.UUID, source_refs: list[str]
+) -> dict[str, ImsDocument]:
+    """The documents already held for these portal references — the ingest's idempotency read.
+
+    One round trip for a whole fetch, so re-syncing a period is a single lookup rather than one
+    per document.
+    """
+    if not source_refs:
+        return {}
+    stmt = select(ImsDocument).where(
+        ImsDocument.organization_id == org_id,
+        ImsDocument.source_ref.in_(source_refs),
+    )
+    return {row.source_ref: row for row in (await session.execute(stmt)).scalars().all()}
+
+
+async def latest_reconciliations(
+    session: AsyncSession, org_id: uuid.UUID, document_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, ImsReconciliation]:
+    """The newest suggestion per document. `DISTINCT ON`, never a query per row."""
+    if not document_ids:
+        return {}
+    stmt = (
+        select(ImsReconciliation)
+        .where(
+            ImsReconciliation.organization_id == org_id,
+            ImsReconciliation.ims_document_id.in_(document_ids),
+            ImsReconciliation.deleted_at.is_(None),
+        )
+        .distinct(ImsReconciliation.ims_document_id)
+        .order_by(
+            ImsReconciliation.ims_document_id,
+            ImsReconciliation.computed_at.desc(),
+            ImsReconciliation.created_at.desc(),
+        )
+    )
+    return {row.ims_document_id: row for row in (await session.execute(stmt)).scalars().all()}
+
+
+async def latest_decisions(
+    session: AsyncSession, org_id: uuid.UUID, document_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, ImsDecision]:
+    """The newest decision per document, which is the one the status projects."""
+    if not document_ids:
+        return {}
+    stmt = (
+        select(ImsDecision)
+        .where(
+            ImsDecision.organization_id == org_id,
+            ImsDecision.ims_document_id.in_(document_ids),
+            ImsDecision.deleted_at.is_(None),
+        )
+        .distinct(ImsDecision.ims_document_id)
+        .order_by(
+            ImsDecision.ims_document_id,
+            ImsDecision.decided_at.desc(),
+            ImsDecision.created_at.desc(),
+        )
+    )
+    return {row.ims_document_id: row for row in (await session.execute(stmt)).scalars().all()}
+
+
+async def decisions_for_document(
+    session: AsyncSession, org_id: uuid.UUID, document_id: uuid.UUID
+) -> list[ImsDecision]:
+    """Every decision recorded against one document, newest first.
+
+    A plain query, which is the point of the table being append-only: nothing has to be
+    reconstructed, because nothing was overwritten.
+    """
+    stmt = (
+        select(ImsDecision)
+        .where(
+            ImsDecision.organization_id == org_id,
+            ImsDecision.ims_document_id == document_id,
+            ImsDecision.deleted_at.is_(None),
+        )
+        .order_by(ImsDecision.decided_at.desc(), ImsDecision.created_at.desc())
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+def to_suggestion(row: ImsReconciliation) -> ImsSuggestion:
+    return ImsSuggestion.model_validate(row)
+
+
+def to_ims_decision_out(row: ImsDecision) -> ImsDecisionOut:
+    return ImsDecisionOut.model_validate(row)
+
+
+def to_ims_document_out(
+    document: ImsDocument,
+    suggestion: ImsReconciliation | None = None,
+    decision: ImsDecision | None = None,
+) -> ImsDocumentOut:
+    """Serialise one queue row with its newest suggestion and newest decision attached."""
+    return ImsDocumentOut(
+        id=document.id,
+        source_ref=document.source_ref,
+        source=document.source,
+        supplier_gstin=document.supplier_gstin,
+        supplier_name=document.supplier_name,
+        document_number=document.document_number,
+        document_type=document.document_type,
+        document_date=document.document_date,
+        period=document.period,
+        taxable_minor=document.taxable_minor,
+        cgst_minor=document.cgst_minor,
+        sgst_minor=document.sgst_minor,
+        igst_minor=document.igst_minor,
+        total_minor=document.total_minor,
+        irn=document.irn,
+        status=document.status,
+        fetched_at=document.fetched_at,
+        suggestion=to_suggestion(suggestion) if suggestion is not None else None,
+        decision=to_ims_decision_out(decision) if decision is not None else None,
+    )
+
+
+async def ims_documents_with_context(
+    session: AsyncSession, org_id: uuid.UUID, documents: list[ImsDocument]
+) -> list[ImsDocumentOut]:
+    """Serialise a page of the queue. Two round trips for the whole page, never one per row."""
+    ids = [d.id for d in documents]
+    suggestions = await latest_reconciliations(session, org_id, ids)
+    decisions = await latest_decisions(session, org_id, ids)
+    return [to_ims_document_out(d, suggestions.get(d.id), decisions.get(d.id)) for d in documents]
+
+
+async def list_ims_documents(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    params: PageParams,
+    **filters: Any,
+) -> tuple[list[ImsDocumentOut], int]:
+    """One page of the reconciliation queue, with each row's suggestion and decision."""
+    stmt = ims_documents_stmt(ctx, **filters)
+    total = (
+        await session.execute(select(func.count()).select_from(stmt.order_by(None).subquery()))
+    ).scalar_one()
+    rows = list(
+        (await session.execute(stmt.offset(params.offset).limit(params.size))).scalars().all()
+    )
+    items = await ims_documents_with_context(session, ctx.organization_id, rows)
+    return items, int(total)
+
+
+async def ims_document_detail(
+    session: AsyncSession, org_id: uuid.UUID, document: ImsDocument
+) -> ImsDocumentDetail:
+    """One inbound document with the evidence behind its suggestion.
+
+    The evidence is the point: an operator asked to accept or reject somebody else's claim on this
+    business needs to see the purchase document it was matched to, or the earlier copy it
+    duplicates, or the absence of both — not a verdict they have to take on trust.
+    """
+    suggestions = await latest_reconciliations(session, org_id, [document.id])
+    suggestion = suggestions.get(document.id)
+    decisions = await decisions_for_document(session, org_id, document.id)
+
+    matched: PurchaseDocument | None = None
+    duplicate: ImsDocument | None = None
+    if suggestion is not None:
+        if suggestion.matched_purchase_id is not None:
+            matched = await get_purchase_document(session, org_id, suggestion.matched_purchase_id)
+        if suggestion.duplicate_of_id is not None:
+            duplicate = await get_ims_document(session, org_id, suggestion.duplicate_of_id)
+
+    return ImsDocumentDetail(
+        document=to_ims_document_out(document, suggestion, decisions[0] if decisions else None),
+        matched_purchase=to_purchase_out(matched) if matched is not None else None,
+        duplicate_of=to_ims_document_out(duplicate) if duplicate is not None else None,
+        decisions=[to_ims_decision_out(row) for row in decisions],
     )
 
 
