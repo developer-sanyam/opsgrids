@@ -18,6 +18,7 @@ import {
   Button,
   Card,
   CashflowChart,
+  ComplianceCard,
   ErrorState,
   KpiCard,
   SectionHeader,
@@ -203,7 +204,12 @@ export function OverviewPage() {
         </Card>
       </section>
 
-      {/* Row 3 — needs attention */}
+      {/* Row 3 — GST compliance */}
+      <section aria-label="GST compliance">
+        <ComplianceCard customerById={customerById} />
+      </section>
+
+      {/* Row 4 — needs attention */}
       <section aria-label="Needs attention">
         <Card className="flex flex-col gap-3 p-6">
           <SectionHeader

@@ -5,18 +5,41 @@
  * hand-typed, so an invoice always foots exactly. Swapped out by `USE_FIXTURES` in `client.ts`.
  */
 
+import { FIXTURE_CUSTOMERS } from "@/data/customers";
 import type {
   CashflowPoint,
+  EInvoiceFiling,
+  EInvoiceState,
+  FilingStatus,
+  ImsAction,
+  ImsDecision,
+  ImsDocument,
+  ImsDocumentDetail,
+  ImsReason,
   Invoice,
   InvoiceLine,
   InvoiceStatus,
   LedgerAccount,
   Payment,
   PaymentAllocation,
+  PurchaseDocument,
+  SupplyType,
 } from "./types";
 
 /** Today, in the fixture world. Used to age invoices into sent / overdue. */
 export const TODAY = "2026-08-24";
+
+/**
+ * The instant the fixture world is frozen at. Only the e-invoice cancellation window reads it:
+ * `remedy` is a deadline compared to a clock, and comparing to the *browser's* clock would make a
+ * fixture screen say something the live one never does — live, the service answers that question
+ * from stored facts and the UI only renders the answer.
+ */
+const NOW = "2026-08-24T11:20:00Z";
+
+/** This organization's own GSTIN. Maharashtra, matching the demo seed's registration. */
+export const SELLER_GSTIN = "27AABCA9012D1Z5";
+const SELLER_STATE_CODE = "27";
 
 /** Rupees → paise. All seed figures below are written in rupees for legibility. */
 const paise = (rupees: number): number => Math.round(rupees * 100);
@@ -122,6 +145,11 @@ const INVOICE_SEEDS: InvoiceSeed[] = [
     ],
   },
   {
+    number: "INV-2026-0168", customer_id: "cust-13", issued_date: "2026-08-04", due_date: "2026-09-03", tax_rate_pct: 5,
+    notes: "Unregistered buyer — a B2C supply, which carries no e-invoice obligation.",
+    lines: [{ description: "Bulk catering — staff canteen (per plate)", quantity: 1200, rate: 180 }],
+  },
+  {
     number: "INV-2026-0169", customer_id: "cust-08", issued_date: "2026-08-05", due_date: "2026-09-04", tax_rate_pct: 18,
     notes: "Credit note CN-2026-0012 issued for 40 damaged sheets.",
     lines: [
@@ -206,19 +234,259 @@ const PAYMENT_SEEDS: PaymentSeed[] = [
   { reference: "PMT-2026-0364", customer_id: "cust-11", received_date: "2026-08-23", method: "cash", note: "Cash · receipt 0364", allocations: [{ number: "INV-2026-0178", amount: 200000 }] },
 ];
 
+/* ------------------------------ GST & e-invoicing --------------------------- *
+ * The compliance half of every document, kept in one block rather than threaded through the
+ * seeds above. HSN codes sit in a per-invoice list because they are per *line* and positional,
+ * and interleaving them into the commercial seeds would bury the thing those seeds are for.  */
+
+/** HSN (goods) / SAC (services) per line, in line order. */
+const HSN_BY_INVOICE: Record<string, string[]> = {
+  "INV-2026-0120": ["72085190"],
+  "INV-2026-0122": ["44039922"],
+  "INV-2026-0130": ["52051110"],
+  "INV-2026-0137": ["996511"],
+  "INV-2026-0142": ["52051210", "998821"],
+  "INV-2026-0145": ["84145110"],
+  "INV-2026-0148": ["09109929", "996729"],
+  "INV-2026-0151": ["996511", "996511"],
+  "INV-2026-0155": ["94054090", "995461"],
+  "INV-2026-0158": ["15079010"],
+  "INV-2026-0160": ["998315", "998313"],
+  "INV-2026-0163": ["72142090", "998873"],
+  "INV-2026-0166": ["29242930", "998346"],
+  "INV-2026-0168": ["996334"],
+  "INV-2026-0169": ["44121000", "996511"],
+  "INV-2026-0170": ["94033000"],
+  "INV-2026-0172": ["94033000", "995466"],
+  "INV-2026-0175": ["996334", "003"],
+  "INV-2026-0178": ["84248210", "998619"],
+  "INV-2026-0181": ["87083000", "996511"],
+  "CN-2026-0008": ["94054090"],
+  "CN-2026-0012": ["44121000"],
+};
+
+/**
+ * One recorded attempt at registering a document, newest last. A retry is a further entry: the
+ * filing table is append-only, so this is a history and never a status to overwrite.
+ */
+interface FilingSeed {
+  status: FilingStatus;
+  /** When the attempt was made. */
+  at: string;
+  /** The portal's numbered code, or one of the platform's named ones. */
+  error_code?: string;
+  error?: string;
+}
+
+/**
+ * Filing history per document. Everything the compliance screens have to distinguish appears at
+ * least once: a clean registration, a retried one, a portal refusal, a run of outages that spends
+ * the retry budget, a withdrawal, an attempt still in flight, and documents nobody has filed yet.
+ */
+const FILING_SEEDS: Record<string, FilingSeed[]> = {
+  "INV-2026-0120": [{ status: "filed", at: "2026-03-10T09:12:44Z" }],
+  "INV-2026-0122": [{ status: "filed", at: "2026-05-01T10:04:18Z" }],
+  "INV-2026-0130": [{ status: "filed", at: "2026-04-15T08:55:02Z" }],
+  "INV-2026-0137": [{ status: "filed", at: "2026-04-28T12:31:57Z" }],
+  "INV-2026-0142": [{ status: "filed", at: "2026-05-02T09:47:11Z" }],
+  "INV-2026-0145": [{ status: "filed", at: "2026-05-20T11:02:39Z" }],
+  "INV-2026-0148": [{ status: "filed", at: "2026-06-10T07:41:20Z" }],
+  // An outage, then a clean registration on the retry — the ordinary happy path with a wobble.
+  "INV-2026-0151": [
+    { status: "failed", at: "2026-06-18T06:15:03Z", error_code: "unavailable", error: "The Invoice Registration Portal did not respond" },
+    { status: "filed", at: "2026-06-18T06:17:11Z" },
+  ],
+  "INV-2026-0155": [{ status: "filed", at: "2026-07-01T09:20:44Z" }],
+  "INV-2026-0158": [{ status: "filed", at: "2026-07-14T10:11:08Z" }],
+  "INV-2026-0160": [{ status: "filed", at: "2026-07-20T08:33:26Z" }],
+  // The portal refused it outright. Terminal on the first attempt: retrying identical bytes is
+  // how an integration goes quiet and a deadline passes.
+  "INV-2026-0163": [
+    {
+      status: "failed",
+      at: "2026-07-28T09:05:12Z",
+      error_code: "2189",
+      error: "HSN code 998873 is not valid for the supply type declared",
+    },
+  ],
+  "INV-2026-0166": [{ status: "filed", at: "2026-08-02T11:26:05Z" }],
+  "INV-2026-0169": [{ status: "filed", at: "2026-08-05T10:48:52Z" }],
+  // Registered, then withdrawn inside the window after the spec changed.
+  "INV-2026-0170": [
+    { status: "filed", at: "2026-08-06T09:14:30Z" },
+    { status: "cancelled", at: "2026-08-06T16:52:07Z" },
+  ],
+  // Five outages, budget spent. The platform has stopped and is saying so.
+  "INV-2026-0172": [
+    { status: "failed", at: "2026-08-08T07:02:00Z", error_code: "unavailable", error: "The Invoice Registration Portal did not respond" },
+    { status: "failed", at: "2026-08-08T07:04:00Z", error_code: "unavailable", error: "The Invoice Registration Portal did not respond" },
+    { status: "failed", at: "2026-08-08T07:08:00Z", error_code: "unavailable", error: "The Invoice Registration Portal did not respond" },
+    { status: "failed", at: "2026-08-08T07:16:00Z", error_code: "unavailable", error: "The Invoice Registration Portal did not respond" },
+    { status: "failed", at: "2026-08-08T07:32:00Z", error_code: "retry_exhausted", error: "Five attempts made; the platform has stopped retrying" },
+  ],
+  // Filed late yesterday, so the portal's 24-hour cancellation window is still open.
+  "INV-2026-0181": [{ status: "filed", at: "2026-08-24T06:40:00Z" }],
+  // In flight right now: attempted once, awaiting the retry.
+  "INV-2026-0178": [
+    { status: "pending", at: "2026-08-24T10:58:00Z" },
+  ],
+  "CN-2026-0008": [{ status: "filed", at: "2026-07-22T13:05:41Z" }],
+  "CN-2026-0012": [{ status: "filed", at: "2026-08-14T09:58:19Z" }],
+  // INV-2026-0175 is a draft and INV-2026-0168 is B2C — neither has an attempt, for opposite
+  // reasons, which is exactly the pair a filing column has to tell apart.
+};
+
+/** A deterministic hex string of `length` characters, seeded by `key`. FNV-1a, expanded. */
+function hexFrom(key: string, length: number): string {
+  let hash = 0x811c9dc5;
+  let out = "";
+  let round = 0;
+  while (out.length < length) {
+    for (const ch of `${key}#${round}`) {
+      hash ^= ch.codePointAt(0) ?? 0;
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    out += hash.toString(16).padStart(8, "0");
+    round += 1;
+  }
+  return out.slice(0, length);
+}
+
+/** Base64url without padding — the alphabet every segment of a signed QR is written in. */
+function b64url(text: string): string {
+  return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/**
+ * A signed QR the exact shape the portal returns: three base64url segments, the middle one
+ * carrying the fields the printed code shows in the portal's own key names.
+ *
+ * The signature is derived, not computed — nothing in a browser holds NIC's key, and the header
+ * says `stub` so a fixture code can never be mistaken for a registered one by whatever reads it.
+ */
+function qrPayload(invoice: { number: string; total_minor: number; lines: InvoiceLine[] }, irn: string, buyerGstin: string | null, at: string): string {
+  const header = b64url(JSON.stringify({ alg: "HS256", typ: "JWT", stub: true, portal: "nic-einvoice-stub" }));
+  const body = b64url(
+    JSON.stringify({
+      SellerGstin: SELLER_GSTIN,
+      BuyerGstin: buyerGstin ?? "URP",
+      DocNo: invoice.number,
+      DocTyp: invoice.number.startsWith("CN-") ? "credit_note" : "invoice",
+      DocDt: at.slice(8, 10) + "/" + at.slice(5, 7) + "/" + at.slice(0, 4),
+      TotInvVal: (invoice.total_minor / 100).toFixed(2),
+      ItemCnt: invoice.lines.length,
+      MainHsnCode: invoice.lines[0]?.hsn_sac ?? null,
+      Irn: irn,
+      IrnDt: `${at.slice(0, 10)} ${at.slice(11, 19)}`,
+    }),
+  );
+  return `${header}.${body}.${hexFrom(`${invoice.number}:sig`, 43)}`;
+}
+
+/** The portal's 24-hour cancellation window, as an ISO instant. */
+function cancellationDeadline(ackDate: string): string {
+  return new Date(Date.parse(ackDate) + 24 * 60 * 60 * 1000).toISOString();
+}
+
 /* -------------------------------- assembly -------------------------------- */
 
-function buildLines(number: string, seeds: LineSeed[]): InvoiceLine[] {
+function buildLines(
+  number: string,
+  seeds: LineSeed[],
+  ratePct: number,
+  intraState: boolean,
+): InvoiceLine[] {
+  const codes = HSN_BY_INVOICE[number] ?? [];
   return seeds.map((line, i) => {
     const unit = paise(line.rate);
+    const amount = unit * line.quantity;
+    const tax = Math.round((amount * ratePct) / 100);
+    // The halves are not each rounded: the total is computed once and divided, odd paisa to SGST,
+    // so `cgst + sgst` equals the line's tax for every input rather than for the even ones.
+    const half = Math.trunc(Math.abs(tax) / 2);
+    const cgst = tax < 0 ? -half : half;
     return {
       id: `${number}-L${i + 1}`,
       description: line.description,
       quantity: line.quantity,
       unit_price_minor: unit,
-      amount_minor: unit * line.quantity,
+      amount_minor: amount,
+      hsn_sac: codes[i] ?? null,
+      tax_rate_pct: ratePct,
+      cgst_minor: intraState ? cgst : 0,
+      sgst_minor: intraState ? tax - cgst : 0,
+      igst_minor: intraState ? 0 : tax,
     };
   });
+}
+
+/** The state a supply is taxed in: the buyer's GSTIN state, or their own state when unregistered. */
+function placeOfSupplyFor(customerId: string): string {
+  const gstin = FIXTURE_CUSTOMERS.get(customerId)?.gstin ?? null;
+  // The one unregistered buyer is in Maharashtra, the seller's own state.
+  return gstin === null ? SELLER_STATE_CODE : gstin.slice(0, 2);
+}
+
+/**
+ * Every recorded attempt for one document, newest first — the order the API returns them in.
+ * The signed QR is attached once the invoices exist, since it quotes the document's own totals.
+ */
+const FILING_ROWS: ReadonlyMap<string, EInvoiceFiling[]> = new Map(
+  Object.entries(FILING_SEEDS).map(([number, seeds]) => [
+    number,
+    seeds
+      .map((seed, i): EInvoiceFiling => {
+        const registered = seed.status === "filed" || seed.status === "cancelled";
+        return {
+          id: `fil-${number}-${i + 1}`,
+          status: seed.status,
+          irn: registered ? hexFrom(`${number}:irn`, 64) : null,
+          ack_no: registered ? hexFrom(`${number}:ack`, 24).replace(/\D/g, "").padEnd(16, "4").slice(0, 16) : null,
+          ack_date: registered ? seed.at : null,
+          qr_payload: null,
+          error_code: seed.error_code ?? null,
+          error: seed.error ?? null,
+          attempted_at: seed.at,
+        };
+      })
+      .reverse(),
+  ]),
+);
+
+/** The current e-invoice position, derived from the newest attempt exactly as the service does. */
+function einvoiceState(number: string, supplyType: SupplyType): EInvoiceState {
+  // B2C is the one classification that carries no obligation; everything else does, credit notes
+  // included — a correction is reported to the portal as its own document.
+  const required = supplyType !== "b2c";
+  const history = FILING_ROWS.get(number) ?? [];
+  const latest = history[0];
+  if (latest === undefined) return { required, status: null, attempts: 0 };
+
+  const cancellableUntil =
+    latest.status === "filed" && latest.ack_date !== null
+      ? cancellationDeadline(latest.ack_date)
+      : null;
+  const remedy =
+    cancellableUntil === null
+      ? null
+      : Date.parse(cancellableUntil) > Date.parse(NOW)
+        ? ("cancel" as const)
+        : ("credit_note" as const);
+
+  return {
+    required,
+    status: latest.status,
+    irn: latest.irn,
+    ack_no: latest.ack_no,
+    ack_date: latest.ack_date,
+    error_code: latest.error_code,
+    error: latest.error,
+    attempted_at: latest.attempted_at,
+    attempts: history.length,
+    terminal: latest.status === "failed",
+    cancellable_until: cancellableUntil,
+    remedy,
+  };
 }
 
 /** Paid-so-far per invoice number, summed from every payment allocation. */
@@ -238,9 +506,19 @@ function deriveStatus(seed: InvoiceSeed, total: number, paid: number): InvoiceSt
 }
 
 export const INVOICES: Invoice[] = INVOICE_SEEDS.map((seed) => {
-  const lines = buildLines(seed.number, seed.lines);
+  const buyerGstin = FIXTURE_CUSTOMERS.get(seed.customer_id)?.gstin ?? null;
+  const supplyType: SupplyType = buyerGstin === null ? "b2c" : "b2b";
+  const placeOfSupply = placeOfSupplyFor(seed.customer_id);
+  const intraState = placeOfSupply === SELLER_STATE_CODE;
+
+  const lines = buildLines(seed.number, seed.lines, seed.tax_rate_pct, intraState);
   const subtotal = lines.reduce((sum, l) => sum + l.amount_minor, 0);
-  const tax = Math.round((subtotal * seed.tax_rate_pct) / 100);
+  // The document's tax is the sum of its lines', head by head — never a second computation over
+  // the subtotal, which is how a document ends up a paisa out from itself.
+  const cgst = lines.reduce((sum, l) => sum + (l.cgst_minor ?? 0), 0);
+  const sgst = lines.reduce((sum, l) => sum + (l.sgst_minor ?? 0), 0);
+  const igst = lines.reduce((sum, l) => sum + (l.igst_minor ?? 0), 0);
+  const tax = cgst + sgst + igst;
   const total = subtotal + tax;
   const paid = PAID_BY_NUMBER.get(seed.number) ?? 0;
   return {
@@ -260,10 +538,37 @@ export const INVOICES: Invoice[] = INVOICE_SEEDS.map((seed) => {
     amount_paid_minor: paid,
     notes: seed.notes ?? null,
     corrects_invoice_id: seed.corrects ? `inv-${seed.corrects}` : null,
+    place_of_supply: placeOfSupply,
+    supply_type: supplyType,
+    reverse_charge: false,
+    seller_gstin: SELLER_GSTIN,
+    buyer_gstin: buyerGstin,
+    cgst_minor: cgst,
+    sgst_minor: sgst,
+    igst_minor: igst,
+    einvoice: einvoiceState(seed.number, supplyType),
   };
 });
 
 const INVOICE_BY_NUMBER = new Map(INVOICES.map((inv) => [inv.number, inv]));
+
+/**
+ * The filing history the API serves, keyed by invoice id, with each registered attempt carrying
+ * the signed QR that attempt produced.
+ */
+export const FILINGS_BY_INVOICE: ReadonlyMap<string, EInvoiceFiling[]> = new Map(
+  [...FILING_ROWS].map(([number, rows]) => {
+    const invoice = INVOICE_BY_NUMBER.get(number);
+    return [
+      `inv-${number}`,
+      rows.map((row) =>
+        row.irn !== null && row.ack_date !== null && invoice !== undefined
+          ? { ...row, qr_payload: qrPayload(invoice, row.irn, invoice.buyer_gstin ?? null, row.ack_date) }
+          : row,
+      ),
+    ];
+  }),
+);
 
 export const PAYMENTS: Payment[] = PAYMENT_SEEDS.map((seed) => {
   const allocations: PaymentAllocation[] = seed.allocations.map((a) => ({
@@ -310,6 +615,270 @@ export const KPI_TRENDS = {
   overdue: { series: [12, 9, 14, 11, 16, 19, 21], deltaPct: 12.7 },
   cash: { series: [141, 152, 149, 168, 172, 179, 186], deltaPct: 3.9 },
 } as const;
+
+/* ------------------------- IMS reconciliation queue ------------------------ *
+ * The inbound half of the book: what suppliers filed against this organization, what the platform
+ * suggests for each, and the evidence behind the suggestion. Every reason class appears at least
+ * once, and so does every shape of decision — one that followed the suggestion, one that overruled
+ * it, one parked. A queue where the machine is always right teaches nothing about the screen.  */
+
+interface SupplierSeed {
+  gstin: string;
+  name: string;
+}
+
+const SUPPLIERS: Record<string, SupplierSeed> = {
+  sahyadri: { gstin: "27AACCS4413K1ZP", name: "Sahyadri Alloys Pvt Ltd" },
+  prakash: { gstin: "24AABCP7719L1ZB", name: "Prakash Packaging LLP" },
+  nandi: { gstin: "29AAECN5521M1ZQ", name: "Nandi Freight Services" },
+  maratha: { gstin: "27AAGCM8802R1ZT", name: "Maratha Fabricators" },
+  vertex: { gstin: "06AAJCV1130H1ZK", name: "Vertex Toolworks" },
+  southern: { gstin: "33AAKCS9042D1ZM", name: "Southern Bearings Co" },
+};
+
+function supplier(key: string): SupplierSeed {
+  return SUPPLIERS[key] ?? { gstin: "00UNKNOWN0000Z0", name: "Unknown supplier" };
+}
+
+/** The tax split for an inbound document, on the same rule the sales book uses. */
+function inboundSplit(taxableMinor: number, ratePct: number, gstin: string) {
+  const tax = Math.round((taxableMinor * ratePct) / 100);
+  const intraState = gstin.slice(0, 2) === SELLER_STATE_CODE;
+  const half = Math.trunc(Math.abs(tax) / 2);
+  const cgst = tax < 0 ? -half : half;
+  return {
+    cgst_minor: intraState ? cgst : 0,
+    sgst_minor: intraState ? tax - cgst : 0,
+    igst_minor: intraState ? 0 : tax,
+    total_minor: taxableMinor + tax,
+  };
+}
+
+interface PurchaseSeed {
+  supplier: string;
+  number: string;
+  date: string;
+  /** Taxable value in rupees. */
+  taxable: number;
+  rate: number;
+  notes?: string;
+}
+
+/** What this organization recorded buying — the local counterpart a filing is matched against. */
+const PURCHASE_SEEDS: PurchaseSeed[] = [
+  { supplier: "sahyadri", number: "INV/SA/2026/1188", date: "2026-08-03", taxable: 480_000, rate: 18, notes: "Billet stock against PO-2026-0451." },
+  { supplier: "prakash", number: "PP-2026-0442", date: "2026-08-05", taxable: 126_000, rate: 12 },
+  { supplier: "nandi", number: "NF/AUG/0091", date: "2026-08-08", taxable: 214_000, rate: 18, notes: "Line-haul, 11 trips. Detention charges disputed." },
+  { supplier: "maratha", number: "MF-2026-0310", date: "2026-08-11", taxable: 97_500, rate: 18 },
+  { supplier: "maratha", number: "MF-2026-0288", date: "2026-08-19", taxable: 205_000, rate: 18 },
+  { supplier: "vertex", number: "VT-2026-0701", date: "2026-07-09", taxable: 118_000, rate: 18 },
+  { supplier: "prakash", number: "PP-2026-0398", date: "2026-07-28", taxable: 88_000, rate: 12 },
+  { supplier: "nandi", number: "NF/JUL/0088", date: "2026-07-22", taxable: 152_000, rate: 18 },
+];
+
+export const PURCHASES: PurchaseDocument[] = PURCHASE_SEEDS.map((seed) => {
+  const party = supplier(seed.supplier);
+  const taxable = paise(seed.taxable);
+  const split = inboundSplit(taxable, seed.rate, party.gstin);
+  return {
+    id: `pur-${seed.number}`,
+    supplier_gstin: party.gstin,
+    supplier_name: party.name,
+    number: seed.number,
+    document_type: "invoice",
+    document_date: seed.date,
+    currency: "INR",
+    taxable_minor: taxable,
+    tax_rate_pct: seed.rate,
+    notes: seed.notes ?? null,
+    ...split,
+  };
+});
+
+const PURCHASE_BY_NUMBER = new Map(PURCHASES.map((p) => [p.number, p]));
+
+interface ImsSeed {
+  ref: string;
+  supplier: string;
+  number: string;
+  date: string;
+  /** Taxable value in rupees, as the *supplier* declared it. */
+  taxable: number;
+  rate: number;
+  documentType?: ImsDocument["document_type"];
+  reason: ImsReason;
+  action: ImsAction;
+  /** The purchase document number the reconciler matched against, where there is one. */
+  matches?: string;
+  /** The `ref` of the earlier arrival this one duplicates. */
+  duplicateOf?: string;
+  /** A decision already on file. Its absence is what "nobody has decided yet" looks like. */
+  decision?: { action: ImsAction; note: string | null; by: string; at: string };
+  fetchedAt: string;
+}
+
+const IMS_SEEDS: ImsSeed[] = [
+  { ref: "IMS-2608-0001", supplier: "sahyadri", number: "INV/SA/2026/1188", date: "2026-08-03", taxable: 480_000, rate: 18, reason: "matched", action: "accept", matches: "INV/SA/2026/1188", fetchedAt: "2026-08-21T04:30:00Z" },
+  { ref: "IMS-2608-0002", supplier: "prakash", number: "PP-2026-0442", date: "2026-08-05", taxable: 126_000, rate: 12, reason: "matched", action: "accept", matches: "PP-2026-0442", fetchedAt: "2026-08-21T04:30:00Z", decision: { action: "accept", note: null, by: "Priya Nair", at: "2026-08-21T09:12:00Z" } },
+  { ref: "IMS-2608-0003", supplier: "nandi", number: "NF/AUG/0091", date: "2026-08-08", taxable: 215_000, rate: 18, reason: "amount_mismatch", action: "pending_action", matches: "NF/AUG/0091", fetchedAt: "2026-08-21T04:30:00Z" },
+  { ref: "IMS-2608-0004", supplier: "maratha", number: "MF-2026-0310", date: "2026-08-11", taxable: 96_000, rate: 18, reason: "amount_mismatch", action: "pending_action", matches: "MF-2026-0310", fetchedAt: "2026-08-21T04:30:00Z", decision: { action: "pending_action", note: "Short-billed by one fabrication lot. Held pending the supplier's revised invoice.", by: "Priya Nair", at: "2026-08-21T09:26:00Z" } },
+  { ref: "IMS-2608-0005", supplier: "vertex", number: "VT-2026-0777", date: "2026-08-14", taxable: 340_000, rate: 18, reason: "no_purchase_record", action: "pending_action", fetchedAt: "2026-08-21T04:30:00Z" },
+  { ref: "IMS-2608-0006", supplier: "southern", number: "SB/2026/0021", date: "2026-08-16", taxable: 560_000, rate: 18, reason: "supplier_unknown", action: "reject", fetchedAt: "2026-08-21T04:30:00Z" },
+  { ref: "IMS-2608-0007", supplier: "sahyadri", number: "INV/SA/2026/1188", date: "2026-08-03", taxable: 480_000, rate: 18, reason: "duplicate", action: "reject", duplicateOf: "IMS-2608-0001", fetchedAt: "2026-08-21T04:30:00Z" },
+  { ref: "IMS-2608-0008", supplier: "maratha", number: "MF-2026-0288", date: "2026-08-19", taxable: 205_000, rate: 18, documentType: "credit_note", reason: "matched", action: "accept", matches: "MF-2026-0288", fetchedAt: "2026-08-21T04:30:00Z" },
+  { ref: "IMS-2607-0011", supplier: "prakash", number: "PP-2026-0398", date: "2026-07-28", taxable: 88_000, rate: 12, reason: "matched", action: "accept", matches: "PP-2026-0398", fetchedAt: "2026-07-31T04:30:00Z", decision: { action: "reject", note: "Whole consignment returned on 30 Jul. Supplier to raise a credit note; the credit is not ours to claim.", by: "Devang Mehta", at: "2026-08-01T11:40:00Z" } },
+  { ref: "IMS-2607-0012", supplier: "nandi", number: "NF/JUL/0088", date: "2026-07-22", taxable: 152_000, rate: 18, reason: "matched", action: "accept", matches: "NF/JUL/0088", fetchedAt: "2026-07-31T04:30:00Z", decision: { action: "accept", note: null, by: "Devang Mehta", at: "2026-08-01T11:31:00Z" } },
+];
+
+/** `action` → the status a document takes once that action is recorded. */
+const ACTION_STATUS: Record<ImsAction, ImsDocument["status"]> = {
+  accept: "accepted",
+  reject: "rejected",
+  pending_action: "pending_action",
+};
+
+/**
+ * The reconciler's own sentence, in the shape the service writes it — raw paise and all.
+ *
+ * Deliberately not the sentence the UI shows. Keeping the fixture prose exactly as unhelpful as
+ * the service's is what proves the screens do their own translating rather than leaning on
+ * whatever the backend happened to phrase nicely.
+ */
+function suggestionDetail(seed: ImsSeed, deltaMinor: number, gstin: string): string {
+  switch (seed.reason) {
+    case "matched":
+      return `matches purchase document ${seed.matches ?? ""} exactly, taxable value and total alike`;
+    case "amount_mismatch":
+      return `the supplier declares ${Math.abs(deltaMinor)} paise ${deltaMinor > 0 ? "more" : "less"} than purchase document ${seed.matches ?? ""}`;
+    case "supplier_unknown":
+      return `nothing has been purchased from ${gstin}; no document from this supplier is on file`;
+    case "no_purchase_record":
+      return `${gstin} is a known supplier, but no purchase document numbered ${seed.number} is recorded for this financial year`;
+    case "duplicate":
+      return `${seed.number} from ${gstin} has already been received; this is a second copy of the same document`;
+  }
+}
+
+const IMS_BASE: ImsDocument[] = IMS_SEEDS.map((seed) => {
+  const party = supplier(seed.supplier);
+  const taxable = paise(seed.taxable);
+  const split = inboundSplit(taxable, seed.rate, party.gstin);
+  const matched = seed.matches !== undefined ? PURCHASE_BY_NUMBER.get(seed.matches) : undefined;
+  // Signed, minor units: the supplier's total less the recorded document's.
+  const delta =
+    seed.reason === "amount_mismatch" && matched !== undefined
+      ? split.total_minor - matched.total_minor
+      : 0;
+
+  return {
+    id: `ims-${seed.ref}`,
+    source_ref: seed.ref,
+    source: "gstn-ims",
+    supplier_gstin: party.gstin,
+    supplier_name: party.name,
+    document_number: seed.number,
+    document_type: seed.documentType ?? "invoice",
+    document_date: seed.date,
+    period: seed.date.slice(0, 7),
+    taxable_minor: taxable,
+    irn: hexFrom(`${seed.ref}:irn`, 64),
+    status: seed.decision ? ACTION_STATUS[seed.decision.action] : "pending",
+    fetched_at: seed.fetchedAt,
+    suggestion: {
+      id: `sug-${seed.ref}`,
+      suggested_action: seed.action,
+      reason: seed.reason,
+      detail: suggestionDetail(seed, delta, party.gstin),
+      delta_minor: delta,
+      matched_purchase_id: matched?.id ?? null,
+      duplicate_of_id: seed.duplicateOf !== undefined ? `ims-${seed.duplicateOf}` : null,
+      computed_at: seed.fetchedAt,
+    },
+    decision: seed.decision
+      ? {
+          id: `dec-${seed.ref}-1`,
+          action: seed.decision.action,
+          note: seed.decision.note,
+          suggested_action: seed.action,
+          suggestion_reason: seed.reason,
+          decided_by: seed.decision.by,
+          decided_at: seed.decision.at,
+        }
+      : null,
+    ...split,
+  };
+});
+
+/**
+ * Decisions taken in this session, newest first per document.
+ *
+ * Append-only, like the table it stands in for: a change of mind is a further entry and the one
+ * it superseded stays visible underneath it. Fixture mode is the only writer.
+ */
+const SESSION_DECISIONS = new Map<string, ImsDecision[]>();
+
+function decisionsFor(document: ImsDocument): ImsDecision[] {
+  const session = SESSION_DECISIONS.get(document.id) ?? [];
+  const seeded = document.decision ? [document.decision] : [];
+  return [...session, ...seeded];
+}
+
+/** The queue as it currently stands, with any decision taken in this session applied. */
+export function fixtureImsDocuments(): ImsDocument[] {
+  return IMS_BASE.map((document) => {
+    const decisions = decisionsFor(document);
+    const newest = decisions[0];
+    if (newest === undefined) return document;
+    return { ...document, status: ACTION_STATUS[newest.action], decision: newest };
+  });
+}
+
+/** One inbound document with the evidence behind its suggestion and its whole decision history. */
+export function fixtureImsDetail(id: string): ImsDocumentDetail | null {
+  // The history is read off the *seed* row, not the overlaid one: the overlay has already folded
+  // the newest decision into `decision`, and asking it for its history again would count that
+  // decision twice.
+  const base = IMS_BASE.find((d) => d.id === id);
+  const document = fixtureImsDocuments().find((d) => d.id === id);
+  if (base === undefined || document === undefined) return null;
+  const suggestion = document.suggestion ?? null;
+  const matched =
+    suggestion?.matched_purchase_id != null
+      ? (PURCHASES.find((p) => p.id === suggestion.matched_purchase_id) ?? null)
+      : null;
+  const duplicate =
+    suggestion?.duplicate_of_id != null
+      ? (IMS_BASE.find((d) => d.id === suggestion.duplicate_of_id) ?? null)
+      : null;
+  return {
+    document,
+    matched_purchase: matched,
+    duplicate_of: duplicate,
+    decisions: decisionsFor(base),
+  };
+}
+
+/** Record one decision against one document. Appends; never overwrites the last one. */
+export function recordFixtureDecision(
+  documentId: string,
+  action: ImsAction,
+  note: string | null,
+  decidedBy: string,
+): ImsDecision {
+  const document = IMS_BASE.find((d) => d.id === documentId);
+  const suggestion = document?.suggestion ?? null;
+  const decision: ImsDecision = {
+    id: `dec-${documentId}-${(SESSION_DECISIONS.get(documentId)?.length ?? 0) + 2}`,
+    action,
+    note,
+    suggested_action: suggestion?.suggested_action ?? null,
+    suggestion_reason: suggestion?.reason ?? null,
+    decided_by: decidedBy,
+    decided_at: new Date().toISOString(),
+  };
+  SESSION_DECISIONS.set(documentId, [decision, ...(SESSION_DECISIONS.get(documentId) ?? [])]);
+  return decision;
+}
 
 /** P&L / trial-balance accounts, FY-to-date. Debits and credits are booked figures. */
 export const LEDGER_ACCOUNTS: LedgerAccount[] = [

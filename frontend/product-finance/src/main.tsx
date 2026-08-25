@@ -11,6 +11,8 @@ import { RequireAuth } from "./auth/RequireAuth";
 import { OverviewPage } from "./routes/Overview";
 import { InvoicesPage } from "./routes/Invoices";
 import { InvoiceDetailPage } from "./routes/InvoiceDetail";
+import { ImsPage } from "./routes/Ims";
+import { ImsDetailPage } from "./routes/ImsDetail";
 import { PaymentsPage } from "./routes/Payments";
 import { LedgerPage } from "./routes/Ledger";
 import { CustomersPage } from "./routes/Customers";
@@ -39,6 +41,8 @@ const router = createBrowserRouter([
           { path: "invoices", element: <InvoicesPage /> },
           { path: "invoices/:id", element: <InvoiceDetailPage /> },
           { path: "payments", element: <PaymentsPage /> },
+          { path: "compliance/ims", element: <ImsPage /> },
+          { path: "compliance/ims/:id", element: <ImsDetailPage /> },
           { path: "ledger", element: <LedgerPage /> },
           { path: "customers", element: <CustomersPage /> },
           {

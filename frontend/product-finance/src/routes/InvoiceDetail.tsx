@@ -13,6 +13,7 @@ import {
   Avatar,
   Button,
   Card,
+  CompliancePanel,
   ErrorState,
   InvoiceStatusPill,
   Skeleton,
@@ -332,6 +333,11 @@ function InvoiceBody({ invoice }: { invoice: Invoice }) {
           </>
         )}
       </Card>
+
+      {/* Compliance sits below the document rather than beside it: the IRN, the signed QR and the
+          attempt history are what a person opens this screen for when something has gone wrong,
+          and none of them fit in a sidebar column. */}
+      <CompliancePanel invoice={invoice} />
     </div>
   );
 }

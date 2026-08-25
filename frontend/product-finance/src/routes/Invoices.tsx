@@ -15,6 +15,7 @@ import {
   DataTable,
   EmptyState,
   ErrorState,
+  FilingStatusPill,
   InvoiceStatusPill,
   PageHeader,
   Pill,
@@ -153,6 +154,14 @@ export function InvoicesPage() {
       align: "right",
       cellClassName: "whitespace-nowrap",
       render: (inv) => <AmountCell invoice={inv} />,
+    },
+    {
+      key: "filing",
+      header: "E-invoice",
+      align: "right",
+      cellClassName: "whitespace-nowrap hidden md:table-cell",
+      headerClassName: "hidden md:table-cell",
+      render: (inv) => <FilingStatusPill state={inv.einvoice} />,
     },
     {
       key: "status",

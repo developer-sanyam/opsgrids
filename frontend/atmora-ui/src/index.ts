@@ -22,6 +22,7 @@ export { KpiCard } from "./components/KpiCard";
 export type { KpiTone } from "./components/KpiCard";
 export { PageHeader } from "./components/PageHeader";
 export { Pill } from "./components/Pill";
+export { QrCode } from "./components/QrCode";
 export { SampleChip } from "./components/SampleChip";
 export { SearchInput } from "./components/SearchInput";
 export { Sidebar } from "./components/Sidebar";
@@ -34,6 +35,8 @@ export { ThemeToggle } from "./components/ThemeToggle";
 
 export { cn } from "./lib/cn";
 export { formatDelta, initials } from "./lib/format";
+export { encodeQr, qrPathData } from "./lib/qr";
+export type { EncodeOptions, QrLevel, QrMatrix } from "./lib/qr";
 export { useTheme } from "./lib/theme";
 export type { Theme, ThemeControls } from "./lib/theme";
 

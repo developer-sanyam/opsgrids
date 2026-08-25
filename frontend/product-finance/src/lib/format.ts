@@ -26,6 +26,32 @@ export function formatDateShort(iso: string | null): string {
   });
 }
 
+/**
+ * An ISO instant -> "24 Aug 2026, 11:20". Rendered in UTC, deliberately.
+ *
+ * A filing acknowledgement and its cancellation deadline are facts the portal stated in one zone;
+ * re-rendering them in whichever zone the reader's laptop is set to would let two people in one
+ * company read different deadlines off the same document. The suffix says which zone it is.
+ */
+export function formatDateTime(iso: string | null): string {
+  if (!iso) return "—";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "—";
+  const date = at.toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+  const time = at.toLocaleTimeString("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "UTC",
+  });
+  return `${date}, ${time} UTC`;
+}
+
 /** Whole days between two ISO dates (b − a). Negative when `b` is before `a`. */
 export function daysBetween(aIso: string, bIso: string): number {
   const a = Date.parse(`${aIso}T00:00:00Z`);

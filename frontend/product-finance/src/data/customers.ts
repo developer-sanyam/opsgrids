@@ -24,6 +24,9 @@ export const CUSTOMERS: Customer[] = [
   { id: "cust-10", name: "Lotus Hospitality Group", contact_name: "Rajat Chauhan", email: "ap@lotushospitality.in", gstin: "08AALCL8901Q1ZP", city: "Jaipur", state: "Rajasthan" },
   { id: "cust-11", name: "Deccan AgriTech", contact_name: "Vaishnavi Kulkarni", email: "finance@deccanagritech.in", gstin: "27AAMCD2345R1Z0", city: "Nagpur", state: "Maharashtra" },
   { id: "cust-12", name: "Apex Motors", contact_name: "Iqbal Ahmed", email: "accounts@apexmotors.in", gstin: "07AANCA6789S1ZE", city: "New Delhi", state: "Delhi" },
+  // Unregistered: a buyer with no GSTIN. Their supplies are B2C, which is the one classification
+  // that needs no IRN — the case a compliance screen has to distinguish from "not filed yet".
+  { id: "cust-13", name: "Rajwada Banquets", contact_name: "Meera Deshpande", email: "accounts@rajwadabanquets.in", gstin: null, city: "Pune", state: "Maharashtra" },
 ];
 
 /** The fixture directory as a map — the offline stand-in for the live customers ledger. */

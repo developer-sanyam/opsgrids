@@ -482,6 +482,14 @@ export const MessageSquareIcon = (p: IconProps) => (
   </Base>
 );
 
+/** Not applicable — a state with nothing to do, as distinct from one that is merely not done. */
+export const MinusCircleIcon = (p: IconProps) => (
+  <Base {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M8 12h8" />
+  </Base>
+);
+
 export const MonitorIcon = (p: IconProps) => (
   <Base {...p}>
     <rect x="3" y="4" width="18" height="12" rx="2" />

@@ -163,6 +163,124 @@ export interface Invoice {
   einvoice?: EInvoiceState;
 }
 
+/* --------------------------------------------------------------------- IMS reconciliation
+ * What suppliers reported *about* this business. Every row is a decision waiting for a person:
+ * accepting claims the input tax credit on a document, rejecting declines it and sends the
+ * document back. The platform suggests, with its reason; it never decides. */
+
+/** Where an inbound document stands. `pending` until somebody decides. */
+export type ImsStatus = "pending" | "accepted" | "rejected" | "pending_action";
+
+/** What an operator may decide. `pending` is not a decision — it is the absence of one. */
+export type ImsAction = "accept" | "reject" | "pending_action";
+
+/**
+ * Why the platform suggests what it suggests. This is the field a queue is actually worked by:
+ * "matched exactly" and "the supplier declares more than the purchase order" need entirely
+ * different attention, so a row that shows only an action makes the operator re-derive the reason.
+ */
+export type ImsReason =
+  | "matched"
+  | "amount_mismatch"
+  | "supplier_unknown"
+  | "no_purchase_record"
+  | "duplicate";
+
+/** A supplier may file an invoice, a credit note or a debit note against a recipient. */
+export type ImsDocumentType = "invoice" | "credit_note" | "debit_note";
+
+/** What the platform proposes for one inbound document, and why. Never applied on its own. */
+export interface ImsSuggestion {
+  id: string;
+  suggested_action: ImsAction;
+  reason: ImsReason;
+  /** The reason as a sentence from the reconciler, naming the counterpart document. */
+  detail: string;
+  /** Signed minor units: the supplier's total less the recorded document's. Zero unless mismatch. */
+  delta_minor: Minor;
+  matched_purchase_id?: string | null;
+  /** On a `duplicate`, the earlier arrival this one duplicates. */
+  duplicate_of_id?: string | null;
+  computed_at: string;
+}
+
+/**
+ * One operator's decision on one inbound document — a row of history, never a status. Carries
+ * what the platform suggested *at the time*, so "did the operator follow the machine" stays
+ * answerable after a later run changes the current suggestion.
+ */
+export interface ImsDecision {
+  id: string;
+  action: ImsAction;
+  note: string | null;
+  suggested_action: ImsAction | null;
+  suggestion_reason: ImsReason | null;
+  /** The subject id of whoever decided. */
+  decided_by: string;
+  decided_at: string;
+}
+
+/** One row of the reconciliation queue: a document a supplier filed against this organization. */
+export interface ImsDocument {
+  id: string;
+  /** The portal's own reference for this row — not the identity of the supplier's document. */
+  source_ref: string;
+  source: string;
+  supplier_gstin: string;
+  supplier_name: string;
+  document_number: string;
+  document_type: ImsDocumentType;
+  document_date: string; // YYYY-MM-DD
+  /** The return period this document lands in, `YYYY-MM`. */
+  period: string;
+  taxable_minor: Minor;
+  cgst_minor: Minor;
+  sgst_minor: Minor;
+  igst_minor: Minor;
+  total_minor: Minor;
+  /** The supplier's own IRN where they e-invoiced. Carried verbatim, not verified. */
+  irn: string | null;
+  status: ImsStatus;
+  fetched_at: string;
+  /** The newest advice; null only before the first reconciliation run has seen the document. */
+  suggestion?: ImsSuggestion | null;
+  /** The newest decision. Null is what "nobody has decided yet" looks like. */
+  decision?: ImsDecision | null;
+}
+
+/** A recorded purchase document — the local counterpart a supplier's filing is matched against. */
+export interface PurchaseDocument {
+  id: string;
+  supplier_gstin: string;
+  supplier_name: string;
+  number: string;
+  document_type: DocumentType;
+  document_date: string;
+  currency: string;
+  taxable_minor: Minor;
+  tax_rate_pct: number;
+  cgst_minor: Minor;
+  sgst_minor: Minor;
+  igst_minor: Minor;
+  total_minor: Minor;
+  notes?: string | null;
+}
+
+/**
+ * One inbound document with the evidence behind its suggestion.
+ *
+ * The evidence is the point of the detail view: an operator asked to accept or reject somebody
+ * else's claim on this business needs to see the document it was matched to, or the earlier copy
+ * it duplicates, or the absence of either — not a verdict.
+ */
+export interface ImsDocumentDetail {
+  document: ImsDocument;
+  matched_purchase?: PurchaseDocument | null;
+  duplicate_of?: ImsDocument | null;
+  /** Every decision recorded against this document, newest first. Append-only. */
+  decisions: ImsDecision[];
+}
+
 export type PaymentMethod = "bank_transfer" | "upi" | "card" | "cheque" | "cash";
 
 /** How much of a received payment was applied to one invoice. */

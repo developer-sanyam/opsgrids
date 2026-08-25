@@ -1,6 +1,7 @@
 import { useAuth } from "@atmora/client";
 import {
   CreditCardIcon,
+  InboxIcon,
   LayoutIcon,
   LifeBuoyIcon,
   PlugIcon,
@@ -27,6 +28,12 @@ const GROUPS: NavGroup[] = [
     items: [
       { to: "/ledger", label: "Ledger & Reports", icon: ScaleIcon },
       { to: "/customers", label: "Customers", icon: UsersIcon },
+    ],
+  },
+  {
+    title: "Compliance",
+    items: [
+      { to: "/compliance/ims", label: "Supplier reconciliation", icon: InboxIcon },
     ],
   },
   {

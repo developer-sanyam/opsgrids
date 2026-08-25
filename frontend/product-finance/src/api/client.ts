@@ -17,19 +17,32 @@ import {
   totalOutstanding,
   totalOverdue,
 } from "@/data/derive";
+import { complianceSummary, isOutstanding, latestPeriod } from "@/data/compliance";
+import type { ComplianceSummary } from "@/data/compliance";
 import { apiRequest } from "@atmora/client";
 import {
   CASHFLOW,
   CASH_BALANCE_MINOR,
+  FILINGS_BY_INVOICE,
   INVOICES,
   KPI_TRENDS,
   LEDGER_ACCOUNTS,
   PAYMENTS,
   TODAY,
+  fixtureImsDetail,
+  fixtureImsDocuments,
+  recordFixtureDecision,
 } from "./fixtures";
 import type {
   CustomerStanding,
   CustomerSummary,
+  EInvoiceFiling,
+  ImsAction,
+  ImsDecision,
+  ImsDocument,
+  ImsDocumentDetail,
+  ImsReason,
+  ImsStatus,
   Invoice,
   InvoiceStatus,
   LedgerReport,
@@ -109,6 +122,146 @@ export async function getInvoice(id: string): Promise<Invoice> {
     return settle(inv);
   }
   return apiRequest<Invoice>(`/finance/invoices/${encodeURIComponent(id)}`);
+}
+
+/* --------------------------------------------------------------- GST compliance */
+
+/**
+ * Every recorded attempt at registering one document, newest first.
+ *
+ * Behind its own permission server-side (`finance.compliance.einvoice.read`): seeing the
+ * receivable book and seeing what was reported to the tax authority are different questions, and
+ * an organization may reasonably answer them for different people. A 403 here is therefore an
+ * ordinary outcome, not a bug — the caller renders the error and the rest of the invoice stands.
+ */
+export async function listFilings(invoiceId: string): Promise<EInvoiceFiling[]> {
+  if (USE_FIXTURES) return settle(FILINGS_BY_INVOICE.get(invoiceId) ?? []);
+  return apiRequest<EInvoiceFiling[]>(
+    `/finance/invoices/${encodeURIComponent(invoiceId)}/filings`,
+  );
+}
+
+export type ImsStatusFilter = ImsStatus | "all";
+export type ImsReasonFilter = ImsReason | "all";
+export type ImsSort = "date_asc" | "date_desc" | "amount_desc" | "amount_asc";
+
+export interface ListImsParams {
+  search?: string;
+  status?: ImsStatusFilter;
+  reason?: ImsReasonFilter;
+  sort?: ImsSort;
+}
+
+function sortIms(rows: ImsDocument[], sort: ImsSort): ImsDocument[] {
+  const by = [...rows];
+  switch (sort) {
+    case "date_desc":
+      return by.sort((a, b) => (a.document_date < b.document_date ? 1 : -1));
+    case "amount_desc":
+      return by.sort((a, b) => b.total_minor - a.total_minor);
+    case "amount_asc":
+      return by.sort((a, b) => a.total_minor - b.total_minor);
+    case "date_asc":
+    default:
+      // Oldest first: a queue is worked forward, and the document closest to its return deadline
+      // matters more than the one that arrived most recently.
+      return by.sort((a, b) => (a.document_date < b.document_date ? -1 : 1));
+  }
+}
+
+/** The reconciliation queue — documents suppliers filed against this organization. */
+export async function listImsDocuments(params: ListImsParams = {}): Promise<Page<ImsDocument>> {
+  const { search = "", status = "all", reason = "all", sort = "date_asc" } = params;
+  if (USE_FIXTURES) {
+    const q = search.trim().toLowerCase();
+    const filtered = fixtureImsDocuments().filter((doc) => {
+      const matchesStatus = status === "all" || doc.status === status;
+      const matchesReason = reason === "all" || doc.suggestion?.reason === reason;
+      const matchesQuery =
+        q === "" ||
+        doc.supplier_name.toLowerCase().includes(q) ||
+        doc.supplier_gstin.toLowerCase().includes(q) ||
+        doc.document_number.toLowerCase().includes(q);
+      return matchesStatus && matchesReason && matchesQuery;
+    });
+    return settle({ items: sortIms(filtered, sort), total: filtered.length });
+  }
+
+  const query = new URLSearchParams({ sort, size: String(FULL_PAGE) });
+  if (search.trim()) query.set("q", search.trim());
+  if (status !== "all") query.set("status", status);
+  if (reason !== "all") query.set("reason", reason);
+  return apiRequest<Page<ImsDocument>>(`/finance/ims/documents?${query.toString()}`);
+}
+
+/** One inbound document with the evidence behind its suggestion and its whole decision history. */
+export async function getImsDocument(id: string): Promise<ImsDocumentDetail> {
+  if (USE_FIXTURES) {
+    const detail = fixtureImsDetail(id);
+    if (!detail) throw new Error(`Supplier document ${id} was not found.`);
+    return settle(detail);
+  }
+  return apiRequest<ImsDocumentDetail>(`/finance/ims/documents/${encodeURIComponent(id)}`);
+}
+
+export interface DecideImsParams {
+  action: ImsAction;
+  note: string | null;
+  /**
+   * Who decided. Live, the service takes this from the bearer token and ignores anything a client
+   * says — it travels here only so fixture mode can write a history row that names a real person
+   * instead of inventing one.
+   */
+  decidedBy: string;
+}
+
+/**
+ * Record what a person decided about one inbound document.
+ *
+ * A POST to a `decisions` collection rather than a PATCH of a status, because that is what this
+ * is: a decision is appended to a history, never written over the last one. Behind its own
+ * permission and marked dangerous server-side — accepting claims the input tax credit on the
+ * document and rejecting declines it. Money either way, which is why nothing here is automatic.
+ */
+export async function decideImsDocument(
+  documentId: string,
+  { action, note, decidedBy }: DecideImsParams,
+): Promise<ImsDecision> {
+  if (USE_FIXTURES) {
+    return settle(recordFixtureDecision(documentId, action, note, decidedBy), 320);
+  }
+  return apiRequest<ImsDecision>(
+    `/finance/ims/documents/${encodeURIComponent(documentId)}/decisions`,
+    { method: "POST", body: { action, note } },
+  );
+}
+
+/** The compliance position the overview shows: filing for the period, plus the inbound backlog. */
+export interface CompliancePosition {
+  summary: ComplianceSummary;
+  /**
+   * Inbound documents still awaiting a decision, or `null` when the queue could not be read —
+   * a missing count degrades to "unavailable" rather than taking the whole card down with it.
+   */
+  imsOutstanding: number | null;
+}
+
+export async function getCompliancePosition(): Promise<CompliancePosition> {
+  const invoices = await listInvoices({ sort: "issued_desc" });
+  // The period the book is actually working, read off the documents rather than off a clock.
+  const period = latestPeriod(invoices.items) ?? new Date().toISOString().slice(0, 7);
+  const summary = complianceSummary(invoices.items, period);
+
+  let imsOutstanding: number | null = null;
+  try {
+    const queue = await listImsDocuments();
+    imsOutstanding = queue.items.filter((doc) => isOutstanding(doc.status)).length;
+  } catch {
+    // A 403, an org with no IMS data, or a service that predates the queue. Not retried — an
+    // authorization failure does not fix itself — and not fatal to the filing half of the card.
+    imsOutstanding = null;
+  }
+  return { summary, imsOutstanding };
 }
 
 export async function listPayments(): Promise<Page<Payment>> {
