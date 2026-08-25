@@ -44,6 +44,17 @@ BARE_SESSION_ROUTES = {
     "/api/v1/auth/logout": (
         "Logout presents a cookie, not a principal, and must work for a stale one."
     ),
+    "/api/v1/auth/sso/start": (
+        "Starting single sign-on has no principal — there is no token yet. It does not stay "
+        "unbound, though: it resolves the organization from a DNS-verified domain through "
+        "account-service and binds the transaction to it before reading `org_idp_configs`, "
+        "which is the one table here under a policy (ADR-0002, path 4: bypass then narrow)."
+    ),
+    "/api/v1/auth/sso/callback": (
+        "The provider redirects a browser here with no token of ours. The organization comes "
+        "from the server-side state this service issued, and the transaction is bound to it "
+        "before the configuration is read."
+    ),
     "/api/v1/auth/password/forgot": f"A reset request is anonymous and {PRE_ORGANIZATION}.",
     "/api/v1/auth/password/reset": f"A reset confirmation is anonymous and {PRE_ORGANIZATION}.",
     "/api/v1/auth/operator/login": (

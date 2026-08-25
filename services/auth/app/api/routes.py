@@ -14,14 +14,14 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import services
 from app.config import Settings, settings
-from app.deps import DirectoryDep, EntitlementsDep, KeyDep
+from app.deps import DirectoryDep, EntitlementsDep, IdpDep, KeyDep, SsoStateDep
 from app.keys import jwks as build_jwks
-from app.models import SCHEMA
+from app.models import SCHEMA, OrgIdpConfig
 from app.schemas import (
     LoginIn,
     LoginResult,
@@ -40,12 +40,15 @@ from app.schemas import (
     PasswordResetIn,
     SelectOrgIn,
     ServiceInfo,
+    SsoConfigIn,
+    SsoConfigOut,
+    SsoStartOut,
     SwitchOrgIn,
     TokenOut,
 )
-from platform_core.auth import CurrentPrincipal
+from platform_core.auth import CurrentPrincipal, Scope, ScopeContext, require
 from platform_core.db import get_session, get_tenant_session
-from platform_core.errors import UnauthorizedProblem
+from platform_core.errors import NotFoundProblem, UnauthorizedProblem, ValidationProblem
 
 router = APIRouter(tags=["auth"])
 wellknown = APIRouter(tags=["discovery"])
@@ -333,6 +336,166 @@ async def mfa_confirm(
     )
     # Shown once. Stored hashed, and never retrievable again.
     return MfaEnrolled(recovery_codes=codes)
+
+
+# --------------------------------------------------------------------- single sign-on
+#
+# Two public routes and two administrative ones. The public pair takes a bare session for the
+# same reason sign-in does — there is no token yet, so there is no principal to bind a tenant
+# from — but unlike sign-in they do bind one: `services.sso_start` resolves the organization
+# from the DNS-verified domain and binds the transaction to it before reading
+# `org_idp_configs`, which is under row-level security. Bypass-then-narrow, from a verified
+# fact rather than from the request (ADR-0002, path 4).
+
+SsoRead = Annotated[ScopeContext, Depends(require("core.identity.sso.read", minimum=Scope.ORG))]
+SsoWrite = Annotated[ScopeContext, Depends(require("core.identity.sso.write", minimum=Scope.ORG))]
+
+
+def _sso_config_out(row: OrgIdpConfig) -> SsoConfigOut:
+    """Shape a configuration for the console. The secret is not in the output type at all."""
+    return SsoConfigOut(
+        id=row.id,
+        protocol=row.protocol,
+        display_name=row.display_name,
+        enabled=row.enabled,
+        issuer=row.issuer,
+        client_id=row.client_id,
+        client_secret_set=row.client_secret_enc is not None,
+        discovery_url=row.discovery_url,
+        authorization_endpoint=row.authorization_endpoint,
+        token_endpoint=row.token_endpoint,
+        jwks_uri=row.jwks_uri,
+        scopes=list(row.scopes or []),
+        allowed_domains=list(row.allowed_domains or []),
+        enforce_sso=row.enforce_sso,
+        jit_provisioning=row.jit_provisioning,
+    )
+
+
+@router.get(
+    "/auth/sso/start",
+    response_model=SsoStartOut,
+    summary="Begin single sign-on for an email domain",
+)
+async def sso_start(
+    session: SessionDep,
+    directory: DirectoryDep,
+    store: SsoStateDep,
+    email: Annotated[str | None, Query(max_length=320)] = None,
+    domain: Annotated[str | None, Query(max_length=253)] = None,
+) -> SsoStartOut:
+    """Resolve the identity provider for a domain and hand back its authorization URL.
+
+    The domain is what selects a *provider*, and only a domain the organization proved it
+    owns (ADR-0000 §1). Every way this can fail answers the same 404 with the same message,
+    so it cannot be used to enumerate which domains, organizations or configurations exist.
+    """
+    if not email and not domain:
+        raise ValidationProblem("Provide either an email address or a domain")
+    redirect = await services.sso_start(
+        session, cfg=settings(), directory=directory, store=store, email=email, domain=domain
+    )
+    return SsoStartOut(
+        authorization_url=redirect.authorization_url,
+        state=redirect.state,
+        expires_in=redirect.expires_in,
+        organization_slug=redirect.organization_slug,
+        provider_name=redirect.provider_name,
+    )
+
+
+@router.get("/auth/sso/callback", response_model=TokenOut, summary="Finish single sign-on")
+async def sso_callback(
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    directory: DirectoryDep,
+    entitlements: EntitlementsDep,
+    idp: IdpDep,
+    store: SsoStateDep,
+    pair: KeyDep,
+    code: Annotated[str, Query(min_length=1, max_length=2048)],
+    state: Annotated[str, Query(min_length=1, max_length=512)],
+) -> TokenOut:
+    """Where the identity provider sends the browser back.
+
+    Returns exactly what `POST /auth/login` returns on success — the same `TokenOut`, the
+    same httpOnly refresh cookie, a token minted by the same `issue_for`. That is deliberate:
+    a client should not be able to tell how somebody signed in from the shape of what it got,
+    because anything that branched on it would be a second code path to keep correct.
+
+    The redirect URI registered with the provider is this path, and it comes from
+    configuration (`sso_redirect_uri`) rather than from anything in the request — a redirect
+    target a caller can influence is how an authorization code ends up somewhere else.
+    """
+    cfg = settings()
+    issued = await services.sso_callback(
+        session,
+        cfg=cfg,
+        pair=pair,
+        directory=directory,
+        entitlements=entitlements,
+        idp=idp,
+        store=store,
+        code=code,
+        state=state,
+        request=request,
+    )
+    _set_refresh_cookie(response, cfg, issued.refresh_token)
+    return _token_out(issued)
+
+
+@router.get(
+    "/auth/sso/config",
+    response_model=SsoConfigOut,
+    summary="This organization's identity provider",
+)
+async def sso_config(session: TenantSessionDep, ctx: SsoRead) -> SsoConfigOut:
+    row = await services.get_sso_config(session, ctx.organization_id)
+    if row is None:
+        raise NotFoundProblem("No identity provider is configured for this organization")
+    return _sso_config_out(row)
+
+
+@router.put(
+    "/auth/sso/config",
+    response_model=SsoConfigOut,
+    summary="Configure the identity provider",
+)
+async def save_sso_config(
+    payload: SsoConfigIn,
+    request: Request,
+    session: TenantSessionDep,
+    idp: IdpDep,
+    ctx: SsoWrite,
+) -> SsoConfigOut:
+    """Create or replace the OIDC configuration.
+
+    Whoever holds `core.identity.sso.write` decides which external issuer may assert who
+    their colleagues are, and can turn password sign-in off for everyone — which is why it is
+    ORG-scoped and, in the catalogue, marked dangerous.
+    """
+    row = await services.save_sso_config(
+        session,
+        cfg=settings(),
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        display_name=payload.display_name,
+        issuer=payload.issuer,
+        client_id=payload.client_id,
+        client_secret=payload.client_secret,
+        discovery_url=payload.discovery_url,
+        authorization_endpoint=payload.authorization_endpoint,
+        token_endpoint=payload.token_endpoint,
+        jwks_uri=payload.jwks_uri,
+        scopes=payload.scopes,
+        allowed_domains=payload.allowed_domains,
+        enabled=payload.enabled,
+        enforce_sso=payload.enforce_sso,
+        idp=idp,
+        request=request,
+    )
+    return _sso_config_out(row)
 
 
 # --------------------------------------------------------------------- passwords

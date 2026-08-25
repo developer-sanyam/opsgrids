@@ -280,6 +280,17 @@ class OrgIdpConfig(Base):
 
     `enforce_sso` turning on means password login stops working for that organization —
     which is the point, and also why it is per-organization rather than global.
+
+    **The only table in this schema under row-level security.** Everything else here is
+    keyed by a person or by the platform; this is keyed by an organization, and it holds the
+    most dangerous tenant-owned rows auth has — an encrypted client secret and the switch
+    that turns password login off. Reaching it therefore needs a bound tenant, and the SSO
+    flows bind one from the *verified domain* before they read (`services.sso_start`),
+    never from anything the person signing in typed.
+
+    `client_secret_enc` is the platform PII envelope (`platform_core.pii.seal`), the same
+    AES-256-GCM envelope employee identifiers use. It is never returned by an API, never
+    logged, and opened only inside the token exchange.
     """
 
     __tablename__ = "org_idp_configs"
@@ -300,10 +311,38 @@ class OrgIdpConfig(Base):
     client_secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
     scopes: Mapped[list[str] | None] = mapped_column(ARRAY(String(40)))
 
+    #: The three OIDC endpoints, stored rather than discovered per request. A provider's
+    #: discovery document is fetched once, when the configuration is saved, and pinned here:
+    #: a network round trip on the way *into* a sign-in is one more thing between a customer
+    #: and their login, and a discovery document that changes under us silently repoints the
+    #: flow at a different issuer. `discovery_url` is kept so a re-fetch is a deliberate
+    #: administrative act with a diff, not an implicit one on every request.
+    authorization_endpoint: Mapped[str | None] = mapped_column(String(500))
+    token_endpoint: Mapped[str | None] = mapped_column(String(500))
+    jwks_uri: Mapped[str | None] = mapped_column(String(500))
+
+    #: Which verified domains route to this provider. Empty means *every* domain the
+    #: organization has verified — the ordinary single-tenant-IdP case. It is an
+    #: intersection, never a widening: a domain listed here that the organization has not
+    #: verified with account-service still refuses, because verification is the property
+    #: that makes domain routing safe (ADR-0000 §1) and a column in this table is not proof
+    #: of anything.
+    allowed_domains: Mapped[list[str]] = mapped_column(
+        ARRAY(String(253)), nullable=False, default=list
+    )
+
     idp_entity_id: Mapped[str | None] = mapped_column(String(255))
     idp_sso_url: Mapped[str | None] = mapped_column(String(500))
     idp_x509_cert: Mapped[str | None] = mapped_column(Text)
 
+    #: **Inert today, and deliberately so.** Provisioning a user means creating a directory
+    #: row, a membership and role grants, which is account-service's job and reaches this
+    #: platform's directory through exactly one door: an invitation
+    #: (`POST /api/v1/invitations/accept`). Letting an external issuer open a second door —
+    #: one where the person's roles come from a column in this table rather than from
+    #: somebody in the organization deciding — is a bigger change than a sign-in flow, so an
+    #: unknown email is refused and this flag is honoured only in the log line that says it
+    #: was asked for. See docs/backlog.md.
     jit_provisioning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     default_role_codes: Mapped[list[str]] = mapped_column(
         ARRAY(String(60)), nullable=False, default=list

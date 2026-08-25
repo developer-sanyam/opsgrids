@@ -49,6 +49,24 @@
     {
       "action": "read",
       "default_scope": "ORG",
+      "description": "See the single sign-on setup",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "identity",
+      "resource": "sso"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Configure the identity provider users sign in through",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "identity",
+      "resource": "sso"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
       "description": "See sites",
       "is_dangerous": false,
       "max_scope": "ORG",
@@ -171,6 +189,14 @@
         },
         {
           "code": "core.identity.role.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.identity.sso.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.identity.sso.write",
           "scope": "ORG"
         },
         {

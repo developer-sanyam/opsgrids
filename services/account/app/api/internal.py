@@ -5,16 +5,19 @@ request admission; both need to ask this service questions that no user token ca
 
 - auth, at sign-in, needs the user and every organization they belong to — **before** an
   organization has been chosen, so before any tenant scope exists.
+- auth, when somebody starts single sign-on, needs the organization behind an email domain,
+  which is the same shape of question: it is asked *in order to* discover which tenant this
+  is, so there is no tenant to bind while asking.
 - the gateways, on every authenticated request, need the caller's grants, because tokens
   deliberately carry no permission list.
 
-These three read across tenants, which is why they live in their own module behind
+These four read across tenants, which is why they live in their own module behind
 `require_service_token` rather than beside the user-facing routes where the tenant guard is
 the default.
 
 They are **not** the only cross-tenant paths in the platform, and an earlier version of this
-docstring wrongly said they were. `POST /api/v1/invitations/accept` is a fourth: it is public
-by design — the invitee holds a token, not yet an account — and unlike these three it
+docstring wrongly said they were. `POST /api/v1/invitations/accept` is another: it is public
+by design — the invitee holds a token, not yet an account — and unlike these four it
 **writes**, creating a user, a membership and role grants. It does not run entirely without a
 tenant, though: it uses *bypass-then-narrow* (ADR-0002, path 4) — the invitation is read on the
 bypass session only to learn its organization, then every write happens under a tenant-scoped
@@ -37,7 +40,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Membership, MembershipRole, Organization, Role, User
+from app.models import Membership, MembershipRole, Organization, OrgDomain, Role, User
 from platform_core.auth import require_service_token
 from platform_core.cache import current_permission_version
 from platform_core.db import get_directory_session
@@ -144,6 +147,46 @@ async def user_by_id(session: SessionDep, request: Request, user_id: uuid.UUID) 
         raise NotFoundProblem("No such user")
     _trace_directory_read(request, user, "by-id")
     return await _serialise(session, user)
+
+
+@router.get("/domains/{domain}", summary="Which organization owns an email domain")
+async def organization_by_domain(session: SessionDep, domain: str) -> dict[str, Any]:
+    """The verified-domain lookup single sign-on starts from (ADR-0000 §1).
+
+    Returns the owning organization **and whether the domain has been verified**, rather than
+    hiding an unverified row behind a 404. The caller needs the difference: "nobody has claimed
+    this domain" and "somebody claimed it and never proved it" are the same answer to the person
+    signing in and two very different lines in an operator's log. auth-service refuses both with
+    one message and logs which it was.
+
+    `verified` is what makes this safe to consult at all. A domain routes a sign-in to an
+    identity provider, so honouring an unverified one would let anybody who can add a domain
+    row intercept sign-ins for it — the account-takeover primitive `OrgDomain.verified_at`
+    exists to prevent. This endpoint reports; auth-service decides, and refuses when it is
+    false.
+
+    Note what it does **not** decide: which organization the person is signed into. A verified
+    domain selects an identity *provider*; the organization comes from the provider config that
+    provider belongs to, and the sign-in still fails unless the person holds an active
+    membership there.
+    """
+    row = (
+        await session.execute(
+            select(OrgDomain, Organization)
+            .join(Organization, Organization.id == OrgDomain.organization_id)
+            .where(OrgDomain.domain == domain, Organization.deleted_at.is_(None))
+        )
+    ).first()
+    if row is None:
+        raise NotFoundProblem("No such domain")
+    org_domain, organization = row
+    return {
+        "domain": str(org_domain.domain),
+        "organization_id": str(organization.id),
+        "organization_slug": organization.slug,
+        "organization_status": organization.status,
+        "verified": org_domain.verified_at is not None,
+    }
 
 
 @router.get(

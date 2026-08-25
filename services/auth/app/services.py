@@ -36,7 +36,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import security
+from app import oidc, security
 from app import tokens as tk
 from app.config import Settings
 from app.directory import Directory, DirectoryMembership, DirectoryUser
@@ -45,20 +45,25 @@ from app.keys import KeyPair
 from app.models import (
     AuditLog,
     Credential,
+    ExternalIdentity,
     MfaFactor,
     MfaRecoveryCode,
+    OrgIdpConfig,
     OutboxEvent,
     PasswordResetToken,
     RefreshToken,
     Session,
     StaffAccount,
 )
+from platform_core import pii
 from platform_core.audit import record_audit
+from platform_core.db import set_tenant
 from platform_core.errors import (
     BusinessRuleProblem,
     ForbiddenProblem,
     NotFoundProblem,
     UnauthorizedProblem,
+    UpstreamUnavailableProblem,
 )
 from platform_core.events import publish_event
 from platform_core.logging import get_logger
@@ -1137,3 +1142,562 @@ async def operator_rotate_refresh(
     )
     await session.commit()
     return issued
+
+
+# --------------------------------------------------------------------- single sign-on
+#
+# The OIDC authorization-code flow with PKCE, for tenant sign-in. Two halves — one that
+# starts an authorization request, one that finishes it — and a small administrative surface
+# for the per-organization configuration they read.
+#
+# Three properties are load-bearing, and each is here because the obvious shortcut is a
+# documented break:
+#
+# **The verified domain selects the identity provider, never the organization.** ADR-0000 §1
+# is explicit: "Email domain never silently selects an organization; it may only select an
+# identity provider, and only from a domain that has been DNS-verified." So the address
+# somebody types is used for exactly one thing — asking account-service which organization
+# proved ownership of that domain — and the *organization* comes from the provider
+# configuration that organization created. The sign-in still fails unless the person the
+# provider vouched for holds an active membership there.
+#
+# **The tenant is bound before `org_idp_configs` is read.** That table is the one table in
+# this schema under row-level security (ADR-0002 §6), and these flows carry no principal —
+# there is no token yet. So they use bypass-then-narrow the same way invitation acceptance
+# does: resolve the organization through the cross-tenant directory lookup, then bind the
+# transaction to it and read under the policy. The bind derives from a DNS-verified fact, not
+# from the request.
+#
+# **Tokens are minted through `issue_for`, like every other path.** There is no second
+# minting route: same audience handling, same `pv`, same entitlement resolution, same session
+# and refresh family. A federated sign-in differs from a password sign-in in exactly two
+# visible ways — `amr` says `sso` instead of `pwd`, and the session records which provider
+# vouched — and in nothing else.
+
+EVT_SSO_SIGNED_IN = "core.session.sso_signed_in"
+
+#: The protocol discriminator in `org_idp_configs.protocol`. SAML is the deferred sibling
+#: (docs/backlog.md); rows carrying it are ignored by everything here rather than
+#: half-handled.
+OIDC = "oidc"
+
+#: What the `amr` claim says after a federated sign-in. Deliberately **not** `pwd`: a step-up
+#: gate that demands a second factor (`require(..., amr={"otp"})`) must not be satisfiable by
+#: an assertion from an external issuer, and a claim that lied about how somebody
+#: authenticated would make every such gate a decoration.
+SSO_AMR = "sso"
+
+
+@dataclass(frozen=True, slots=True)
+class SsoRedirect:
+    """Where to send the browser, and how long the request stays open."""
+
+    authorization_url: str
+    state: str
+    expires_in: int
+    organization_slug: str
+    provider_name: str
+
+
+def domain_of(email: str) -> str:
+    """The domain half of an address, lowercased. Empty when there is no `@`."""
+    _, sep, domain = email.strip().lower().rpartition("@")
+    return domain if sep else ""
+
+
+async def _config_for_domain(
+    session: AsyncSession, organization_id: uuid.UUID, domain: str
+) -> OrgIdpConfig | None:
+    """The organization's enabled OIDC configuration covering `domain`, if any.
+
+    Read **after** the transaction is bound to `organization_id`, so row-level security is
+    doing its job rather than being trusted to be irrelevant.
+
+    An explicit `allowed_domains` entry wins over a catch-all. That ordering matters for the
+    organization running two providers — one for staff, one for a subsidiary's domain — where
+    the catch-all would otherwise swallow the more specific one depending on insertion order.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(OrgIdpConfig).where(
+                    OrgIdpConfig.organization_id == organization_id,
+                    OrgIdpConfig.protocol == OIDC,
+                    OrgIdpConfig.enabled.is_(True),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    catch_all: OrgIdpConfig | None = None
+    for row in rows:
+        allowed = [d.lower() for d in (row.allowed_domains or [])]
+        if domain in allowed:
+            return row
+        if not allowed and catch_all is None:
+            catch_all = row
+    return catch_all
+
+
+def _usable_for_oidc(config: OrgIdpConfig) -> bool:
+    """Every field the flow will need, checked once, before the browser leaves.
+
+    A half-configured provider that fails at the callback strands somebody at the identity
+    provider with no way back and no message. Failing at `start` at least says so.
+    """
+    return all(
+        (
+            config.issuer,
+            config.client_id,
+            config.client_secret_enc,
+            config.authorization_endpoint,
+            config.token_endpoint,
+            config.jwks_uri,
+        )
+    )
+
+
+async def sso_start(
+    session: AsyncSession,
+    *,
+    cfg: Settings,
+    directory: Directory,
+    store: oidc.StateStore,
+    email: str | None = None,
+    domain: str | None = None,
+) -> SsoRedirect:
+    """Begin an authorization-code flow for whoever owns this email domain.
+
+    Either an address or a bare domain: the address is only ever reduced to its domain here
+    and passed to the provider as a `login_hint`, so the two entry points differ by
+    convenience and not by trust.
+
+    Every refusal is the same `SsoNotConfiguredProblem` with the same message — unknown
+    domain, unverified domain, suspended organization, no configuration, disabled
+    configuration, incomplete configuration. The cause is logged, not returned: an unverified
+    domain answering differently from an unknown one turns this endpoint into a map of which
+    customers exist and which are mid-onboarding.
+    """
+    target = (domain or (domain_of(email) if email else "")).strip().lower()
+    refuse = oidc.SsoNotConfiguredProblem("Single sign-on is not set up for that address")
+    if not target:
+        raise refuse
+
+    resolved = await directory.resolve_domain(target)
+    if resolved is None:
+        log.info("sso.start_refused", reason="unknown_domain", domain=target)
+        raise refuse
+    if not resolved.verified:
+        # The refusal ADR-0000 §1 exists for. A domain row anybody could add would otherwise
+        # let them route another organization's sign-ins to a provider they control.
+        log.warning("sso.start_refused", reason="unverified_domain", domain=target)
+        raise refuse
+    if not resolved.is_usable:
+        log.info("sso.start_refused", reason="organization_suspended", domain=target)
+        raise refuse
+
+    # Bypass-then-narrow: the organization came from the cross-tenant domain lookup, and from
+    # here on this transaction is that organization's. `org_idp_configs` is unreadable
+    # otherwise — the policy is FORCEd and this connection has no BYPASSRLS.
+    await set_tenant(session, resolved.organization_id)
+
+    config = await _config_for_domain(session, resolved.organization_id, target)
+    if config is None:
+        log.info("sso.start_refused", reason="no_configuration", domain=target)
+        raise refuse
+    if not _usable_for_oidc(config):
+        log.warning(
+            "sso.start_refused",
+            reason="incomplete_configuration",
+            domain=target,
+            config_id=str(config.id),
+        )
+        raise refuse
+
+    verifier = oidc.new_verifier()
+    nonce = secrets.token_urlsafe(24)
+    state = await store.issue(
+        oidc.AuthorizationRequest(
+            organization_id=str(resolved.organization_id),
+            config_id=str(config.id),
+            nonce=nonce,
+            code_verifier=verifier,
+            domain=target,
+            created_at=oidc.now_iso(),
+        ),
+        ttl_seconds=cfg.sso_state_ttl_seconds,
+    )
+
+    log.info(
+        "sso.started",
+        domain=target,
+        organization_id=str(resolved.organization_id),
+        config_id=str(config.id),
+    )
+    return SsoRedirect(
+        authorization_url=oidc.authorization_url(
+            authorization_endpoint=str(config.authorization_endpoint),
+            client_id=str(config.client_id),
+            redirect_uri=cfg.sso_redirect_uri,
+            scopes=list(config.scopes or oidc.DEFAULT_SCOPES),
+            state=state,
+            nonce=nonce,
+            code_challenge=oidc.challenge_for(verifier),
+            login_hint=email,
+        ),
+        state=state,
+        expires_in=cfg.sso_state_ttl_seconds,
+        organization_slug=resolved.organization_slug,
+        provider_name=config.display_name,
+    )
+
+
+async def sso_callback(
+    session: AsyncSession,
+    *,
+    cfg: Settings,
+    pair: KeyPair,
+    directory: Directory,
+    entitlements: Entitlements,
+    idp: oidc.IdpClient,
+    store: oidc.StateStore,
+    code: str,
+    state: str,
+    audience: str = "app",
+    request: Request | None = None,
+) -> Issued:
+    """Finish the flow: validate, exchange, verify, map to a member, mint.
+
+    In order, and the order is the point — nothing that costs a network call happens before
+    the cheap check that this callback belongs to a request we started:
+
+    1. **Consume the state.** Single-use and atomic, so a replayed callback dies here.
+    2. **Re-bind the tenant** from the state's organization and re-read the configuration.
+       The state is opaque and server-side, so this is our own earlier decision read back,
+       not the caller's claim about which organization they want.
+    3. **Exchange the code** with the PKCE verifier that never left this service.
+    4. **Verify the ID token** — signature against the provider's JWKS, issuer, audience,
+       expiry, nonce, and a *verified* email.
+    5. **Map to a member.** An address the directory does not know, or knows without an
+       active membership in this organization, is refused with one message either way.
+    6. **Mint through `issue_for`**, the same call sign-in, org selection, org switching and
+       refresh all use.
+    """
+    pending = await store.consume(state)
+    organization_id = uuid.UUID(pending.organization_id)
+    await set_tenant(session, organization_id)
+
+    # Named by id *and* by organization. The id came from our own server-side state so it is
+    # not caller input, but writing the tenant predicate out is the house rule (RLS is the
+    # net, not the filter) — and a `session.get` would answer from the identity map, which is
+    # a read the policy never sees.
+    config = (
+        await session.execute(
+            select(OrgIdpConfig).where(
+                OrgIdpConfig.id == uuid.UUID(pending.config_id),
+                OrgIdpConfig.organization_id == organization_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if config is None or not config.enabled or not _usable_for_oidc(config):
+        # The configuration was disabled or torn down between the redirect and the callback.
+        # Honouring the in-flight request would let a revoked provider still mint sessions.
+        log.warning(
+            "sso.callback_refused", reason="configuration_gone", state_domain=pending.domain
+        )
+        raise oidc.SsoExchangeProblem("That sign-in could not be completed. Please start again.")
+
+    try:
+        client_secret = pii.open_sealed(config.client_secret_enc or b"", settings=cfg)
+    except pii.PiiError as exc:
+        # An operational fault, not a rejection: the row is there and no configured key opens
+        # it, which means a rotation dropped a key. 503, so it reads as "us", not "you".
+        log.error("sso.client_secret_unopenable", config_id=str(config.id))
+        raise UpstreamUnavailableProblem(
+            "Single sign-on is temporarily unavailable. Please try again."
+        ) from exc
+
+    tokens = await idp.exchange_code(
+        str(config.token_endpoint),
+        code=code,
+        # Verbatim from configuration — the provider compares it against the value sent to
+        # `authorize`, and it is also why nothing may take it from the request.
+        redirect_uri=cfg.sso_redirect_uri,
+        client_id=str(config.client_id),
+        client_secret=client_secret,
+        code_verifier=pending.code_verifier,
+    )
+    jwks = await idp.fetch_jwks(str(config.jwks_uri))
+    identity = oidc.verify_id_token(
+        tokens.id_token,
+        jwks=jwks,
+        issuer=str(config.issuer),
+        audience=str(config.client_id),
+        nonce=pending.nonce,
+        leeway_seconds=cfg.sso_clock_skew_seconds,
+    )
+
+    no_access = oidc.SsoNoAccessProblem(
+        "That account cannot sign in to this organization. Ask an administrator to invite it."
+    )
+    user = await directory.find_by_email(identity.email)
+    if user is None or not user.is_active:
+        # Unknown, or deactivated — one answer. `jit_provisioning` is recorded as asked-for
+        # and not acted on: creating a directory user, a membership and role grants is
+        # account-service's job and reaches it through an invitation, deliberately.
+        log.warning(
+            "sso.callback_refused",
+            reason="no_directory_user",
+            organization_id=str(organization_id),
+            jit_requested=bool(config.jit_provisioning),
+        )
+        raise no_access
+
+    membership = user.membership_for(organization_id)
+    if membership is None:
+        log.warning(
+            "sso.callback_refused",
+            reason="not_a_member",
+            organization_id=str(organization_id),
+            user_id=str(user.user_id),
+        )
+        raise no_access
+
+    provider = f"{OIDC}:{organization_id}"
+    await _link_external_identity(
+        session, provider=provider, subject=identity.subject, user=user, email=identity.email
+    )
+
+    auth_session = await start_session(
+        session, user_id=user.user_id, cfg=cfg, amr=[SSO_AMR], idp=provider, request=request
+    )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=user.user_id,
+        action="auth.sso_signed_in",
+        entity="session",
+        entity_id=auth_session.id,
+        request=request,
+    )
+    issued = await issue_for(
+        session,
+        pair=pair,
+        cfg=cfg,
+        auth_session=auth_session,
+        membership=membership,
+        entitlements=entitlements,
+        audience=audience,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=organization_id,
+        event_type=EVT_SSO_SIGNED_IN,
+        aggregate_type="session",
+        aggregate_id=auth_session.id,
+        payload={
+            "user_id": str(user.user_id),
+            "session_id": str(auth_session.id),
+            "organization_id": str(organization_id),
+            "idp": provider,
+            "amr": [SSO_AMR],
+        },
+    )
+    await session.commit()
+    log.info(
+        "sso.signed_in",
+        organization_id=str(organization_id),
+        user_id=str(user.user_id),
+        session_id=str(auth_session.id),
+    )
+    return issued
+
+
+async def _link_external_identity(
+    session: AsyncSession,
+    *,
+    provider: str,
+    subject: str,
+    user: DirectoryUser,
+    email: str,
+) -> None:
+    """Bind the provider's subject to this account, or check the binding that exists.
+
+    The provider's `sub` is stable where an email address is not, so the link is the stronger
+    of the two identifiers and worth keeping even though the *lookup* is by address. Two
+    mismatches are refused rather than repaired:
+
+    * the same subject already pointing at a **different** user — one person's provider
+      account cannot be walked onto another's platform account;
+    * this user already linked to a **different** subject — the address was reassigned at the
+      provider, and the new holder must not inherit the old account. This is the takeover
+      `ExternalIdentity` was written to prevent.
+
+    Both need an administrator to unlink deliberately, which is a decision rather than a side
+    effect of somebody signing in.
+    """
+    conflict = oidc.SsoIdentityConflictProblem(
+        "That provider account is linked to a different user. Ask an administrator to unlink it."
+    )
+
+    by_subject = (
+        await session.execute(
+            select(ExternalIdentity).where(
+                ExternalIdentity.provider == provider, ExternalIdentity.subject == subject
+            )
+        )
+    ).scalar_one_or_none()
+    if by_subject is not None:
+        if by_subject.user_id != user.user_id:
+            log.warning(
+                "sso.identity_conflict", reason="subject_bound_elsewhere", provider=provider
+            )
+            raise conflict
+        return
+
+    by_user = (
+        await session.execute(
+            select(ExternalIdentity).where(
+                ExternalIdentity.provider == provider, ExternalIdentity.user_id == user.user_id
+            )
+        )
+    ).scalar_one_or_none()
+    if by_user is not None:
+        log.warning("sso.identity_conflict", reason="subject_changed", provider=provider)
+        raise conflict
+
+    session.add(
+        ExternalIdentity(
+            user_id=user.user_id, provider=provider, subject=subject, email_at_link=email
+        )
+    )
+
+
+# --------------------------------------------------------------------- SSO administration
+
+
+async def get_sso_config(session: AsyncSession, organization_id: uuid.UUID) -> OrgIdpConfig | None:
+    """This organization's OIDC configuration, or None.
+
+    Called from a route that already holds a principal, so the transaction is bound by the
+    chokepoint and the policy filters this. The `organization_id` predicate is still written
+    out: RLS is the net, not the filter (CLAUDE.md).
+    """
+    return (
+        await session.execute(
+            select(OrgIdpConfig).where(
+                OrgIdpConfig.organization_id == organization_id, OrgIdpConfig.protocol == OIDC
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def save_sso_config(
+    session: AsyncSession,
+    *,
+    cfg: Settings,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    display_name: str,
+    issuer: str,
+    client_id: str,
+    client_secret: str | None,
+    discovery_url: str | None,
+    authorization_endpoint: str | None,
+    token_endpoint: str | None,
+    jwks_uri: str | None,
+    scopes: list[str] | None,
+    allowed_domains: list[str],
+    enabled: bool,
+    enforce_sso: bool,
+    idp: oidc.IdpClient | None = None,
+    request: Request | None = None,
+) -> OrgIdpConfig:
+    """Create or update the organization's OIDC provider.
+
+    One row per organization for this protocol, upserted rather than versioned: an IdP
+    configuration is current state rather than a ledger, and the audit row records who
+    changed it.
+
+    **The client secret is write-only.** It is sealed with the platform PII envelope
+    (`platform_core.pii.seal`, AES-256-GCM under a rotatable key) before it touches a column,
+    it is never returned by any endpoint, and passing `None` here leaves whatever is stored
+    untouched — so editing the display name does not require re-typing a credential, and does
+    not tempt an administrator into pasting it somewhere it can be logged.
+
+    Discovery is resolved **here**, once, and the endpoints are pinned into the row rather
+    than fetched on every sign-in. When the document names a different issuer than the one
+    configured that is refused rather than silently preferred: the issuer is what every ID
+    token is validated against, and adopting whatever a URL returned would make the check
+    circular.
+    """
+    if discovery_url and idp is not None:
+        document = await idp.discover(discovery_url)
+        found = str(document.get("issuer", "")).rstrip("/")
+        if found and issuer and found != issuer.rstrip("/"):
+            raise BusinessRuleProblem(
+                f"That discovery document belongs to a different issuer ({found}). "
+                "Check the URL, or correct the issuer."
+            )
+        authorization_endpoint = authorization_endpoint or document.get("authorization_endpoint")
+        token_endpoint = token_endpoint or document.get("token_endpoint")
+        jwks_uri = jwks_uri or document.get("jwks_uri")
+
+    row = await get_sso_config(session, organization_id)
+    created = row is None
+    if row is None:
+        row = OrgIdpConfig(organization_id=organization_id, protocol=OIDC)
+        session.add(row)
+
+    row.display_name = display_name
+    row.issuer = issuer
+    row.client_id = client_id
+    row.discovery_url = discovery_url
+    row.authorization_endpoint = authorization_endpoint
+    row.token_endpoint = token_endpoint
+    row.jwks_uri = jwks_uri
+    row.scopes = scopes or list(oidc.DEFAULT_SCOPES)
+    row.allowed_domains = [d.strip().lower() for d in allowed_domains if d.strip()]
+    row.enforce_sso = enforce_sso
+
+    if client_secret:
+        # `seal` returns (ciphertext, mask); the mask is discarded deliberately. A hint of a
+        # client secret is a hint of a secret, and nothing in the product displays one.
+        sealed, _ = pii.seal(client_secret, kind="generic", settings=cfg)
+        row.client_secret_enc = sealed
+
+    if enabled and not _usable_for_oidc(row):
+        # Refused at save rather than at sign-in. An organization that switches this on and
+        # finds out at 9am that half the fields are blank was failed by the absence of this
+        # check, not helped by it.
+        raise BusinessRuleProblem(
+            "Single sign-on cannot be enabled until the issuer, client id, client secret, "
+            "authorization endpoint, token endpoint and JWKS URI are all set."
+        )
+    row.enabled = enabled
+
+    await session.flush()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=actor_id,
+        action="auth.sso_config_created" if created else "auth.sso_config_updated",
+        entity="org_idp_config",
+        entity_id=row.id,
+        request=request,
+        # Never the secret, and never the ciphertext either. What changed is enough for an
+        # audit reader; the value is what the envelope exists to keep out of reach.
+        after={
+            "issuer": issuer,
+            "client_id": client_id,
+            "enabled": enabled,
+            "enforce_sso": enforce_sso,
+            "allowed_domains": row.allowed_domains,
+            "client_secret_rotated": bool(client_secret),
+        },
+    )
+    return row

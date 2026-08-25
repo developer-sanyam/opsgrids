@@ -13,6 +13,7 @@ checked `pv` on every request, `set_member_roles` said in its own docstring that
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from httpx import AsyncClient
@@ -21,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import services
 from app.config import settings
-from app.models import Membership, Organization
+from app.models import Membership, Organization, OrgDomain
 from app.schemas import GrantIn, MemberPatch
 from platform_core.auth import Scope, ScopeContext
 from platform_core.cache import permission_version_key
@@ -403,6 +404,62 @@ class TestPermissionVersionBump:
             )
 
         assert permission_version_key(str(org.id)) not in redis.store
+
+
+class TestDomainLookup:
+    """The verified-domain lookup single sign-on starts from.
+
+    auth-service asks this to find out *which organization* proved ownership of an email
+    domain. What it must never do is answer as though an unproven claim were a proven one:
+    domain routing without proof of ownership is an account-takeover primitive, which is why
+    `verified` travels with the answer instead of being assumed by the caller.
+    """
+
+    async def test_it_answers_with_the_organization_and_the_verification_state(
+        self, client: AsyncClient, session: AsyncSession, org: Organization
+    ) -> None:
+        async with session.begin():
+            session.add(
+                OrgDomain(
+                    organization_id=org.id,
+                    domain="acme.example",
+                    verification_token="token",  # pragma: allowlist secret
+                    verified_at=datetime.now(UTC),
+                )
+            )
+
+        response = await client.get("/internal/v1/domains/acme.example", headers=internal())
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["organization_id"] == str(org.id)
+        assert body["organization_slug"] == "acme"
+        assert body["verified"] is True
+
+    async def test_an_unverified_domain_reports_itself_as_unverified(
+        self, client: AsyncClient, session: AsyncSession, org: Organization
+    ) -> None:
+        """Reported, not hidden: the caller refuses it, and the distinction stays in the log."""
+        async with session.begin():
+            session.add(
+                OrgDomain(
+                    organization_id=org.id,
+                    domain="unproven.example",
+                    verification_token="token",  # pragma: allowlist secret
+                )
+            )
+
+        response = await client.get("/internal/v1/domains/unproven.example", headers=internal())
+        assert response.status_code == 200, response.text
+        assert response.json()["verified"] is False
+
+    async def test_a_domain_nobody_claimed_is_a_404(self, client: AsyncClient) -> None:
+        response = await client.get("/internal/v1/domains/nobody.example", headers=internal())
+        assert response.status_code == 404
+
+    async def test_it_needs_a_service_token_like_every_other_internal_route(
+        self, client: AsyncClient
+    ) -> None:
+        assert (await client.get("/internal/v1/domains/acme.example")).status_code == 401
 
 
 def _role(code: str, permission: str, scope: str):

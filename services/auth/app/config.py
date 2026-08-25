@@ -30,6 +30,23 @@ class Settings(ServiceSettings):
     # --- resets -------------------------------------------------------------------
     password_reset_ttl_minutes: int = 30
 
+    # --- single sign-on -----------------------------------------------------------
+    #: Where the identity provider sends the browser back. **Configuration, never a
+    #: parameter.** Taking a redirect target from the request — even one that "looks like
+    #: ours" — is how an authorization code ends up posted to somebody else's host, and it
+    #: is also the value the token exchange must repeat verbatim, so there is exactly one
+    #: place it may come from.
+    sso_redirect_uri: str = "http://localhost:8100/api/v1/auth/sso/callback"
+    #: How long an authorization request stays open. Long enough for a person to type a
+    #: password and answer an MFA prompt at the provider, short enough that a state value
+    #: captured from a browser's history is already dead. The state is single-use as well —
+    #: this is the ceiling, not the defence.
+    sso_state_ttl_seconds: int = 600
+    #: Tolerance for clock skew when validating an ID token's `exp`/`iat`. Small: the
+    #: provider and this service are both NTP-disciplined, and a generous window is a
+    #: replay window.
+    sso_clock_skew_seconds: int = 60
+
     # --- sessions -----------------------------------------------------------------
     session_ttl_days: int = 30
     #: Carries the refresh token: httpOnly, path-scoped to the auth routes, and Secure

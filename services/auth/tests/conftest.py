@@ -31,10 +31,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app import services
 from app.config import Settings, settings
 from app.deps import get_directory, get_key
-from app.directory import DirectoryMembership, DirectoryUser
+from app.directory import DirectoryDomain, DirectoryMembership, DirectoryUser
 from app.keys import KeyPair, generate_keypair
 from app.main import app
 from app.models import SCHEMA, Base
+from platform_core import cache
 from platform_core.db import get_session
 
 ORG_A = uuid.uuid4()
@@ -49,14 +50,20 @@ PASSWORD = "correct-horse-7"  # pragma: allowlist secret
 class FakeDirectory:
     """An in-memory stand-in for account-service, matching the `Directory` protocol."""
 
-    def __init__(self, users: list[DirectoryUser]) -> None:
+    def __init__(
+        self, users: list[DirectoryUser], domains: list[DirectoryDomain] | None = None
+    ) -> None:
         self.users = users
+        self.domains = domains or []
 
     async def find_by_email(self, email: str) -> DirectoryUser | None:
         return next((u for u in self.users if u.email.lower() == email.lower()), None)
 
     async def get(self, user_id: uuid.UUID) -> DirectoryUser | None:
         return next((u for u in self.users if u.user_id == user_id), None)
+
+    async def resolve_domain(self, domain: str) -> DirectoryDomain | None:
+        return next((d for d in self.domains if d.domain.lower() == domain.lower()), None)
 
 
 def membership(
@@ -169,9 +176,61 @@ async def registered(session: AsyncSession, cfg: Settings) -> None:
         await services.set_password(session, USER, PASSWORD, cfg=cfg)
 
 
+class FakeRedis:
+    """Enough Redis for the single-sign-on state store, and no more.
+
+    Faithful where it has to be. `set(nx=True)` really refuses an existing key and `getdel`
+    really deletes before returning — those two are the replay defence, and a stand-in that
+    quietly allowed either would make the replay test pass while the property was gone.
+    Expiry is *not* simulated: the TTL is a ceiling on an already single-use value, and a
+    clock in a fake is a source of flaky tests rather than of confidence.
+    """
+
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+
+    async def set(
+        self, key: str, value: str, ex: int | None = None, nx: bool = False
+    ) -> bool | None:
+        if nx and key in self.store:
+            return None
+        self.store[key] = value
+        return True
+
+    async def getdel(self, key: str) -> str | None:
+        return self.store.pop(key, None)
+
+    async def get(self, key: str) -> str | None:
+        return self.store.get(key)
+
+    async def delete(self, *keys: str) -> None:
+        for key in keys:
+            self.store.pop(key, None)
+
+    async def ping(self) -> bool:
+        return True
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest_asyncio.fixture
+async def redis() -> AsyncIterator[FakeRedis]:
+    """Installed process-wide, the way the real client is.
+
+    `StateStore` resolves the client through `platform_core.cache.get_redis()` rather than
+    holding one, so the seam is the module global — the same one account-service's tests
+    replace.
+    """
+    fake = FakeRedis()
+    cache._redis = fake  # type: ignore[assignment]
+    yield fake
+    cache._redis = None
+
+
 @pytest_asyncio.fixture
 async def client(
-    session: AsyncSession, directory: FakeDirectory, pair: KeyPair
+    session: AsyncSession, directory: FakeDirectory, pair: KeyPair, redis: FakeRedis
 ) -> AsyncIterator[AsyncClient]:
     async def _session_override() -> AsyncIterator[AsyncSession]:
         yield session

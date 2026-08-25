@@ -183,6 +183,14 @@ DEFAULT_PUBLIC_PATHS = frozenset(
         "/api/v1/auth/logout",
         "/api/v1/auth/select-org",
         "/api/v1/auth/mfa/verify",
+        # Single sign-on. Public for the same reason `login` is — they are the routes that
+        # *produce* a token, so requiring one is a circular definition. The callback is
+        # public by necessity as well: an identity provider redirects a browser to it with
+        # nothing of ours attached but the `state` this service issued, which is exactly what
+        # it validates. The configuration routes beside them are **not** here, because they
+        # are ordinary permission-guarded tenant endpoints.
+        "/api/v1/auth/sso/start",
+        "/api/v1/auth/sso/callback",
         "/api/v1/auth/password/forgot",
         "/api/v1/auth/password/reset",
         "/api/v1/invitations/accept",

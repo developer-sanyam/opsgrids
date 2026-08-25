@@ -65,12 +65,35 @@ class DirectoryUser:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class DirectoryDomain:
+    """An email domain and the organization that claimed it.
+
+    `verified` is the whole point of carrying this across the boundary. ADR-0000 §1 permits a
+    domain to select an identity *provider*, and only a DNS-verified one — so the flag has to
+    travel with the answer rather than being assumed by whoever asked.
+    """
+
+    domain: str
+    organization_id: uuid.UUID
+    organization_slug: str
+    organization_status: str
+    verified: bool
+
+    @property
+    def is_usable(self) -> bool:
+        """Verified, and owned by an organization that is not suspended."""
+        return self.verified and self.organization_status != "suspended"
+
+
 class Directory(Protocol):
     """What authentication needs to know about people. Nothing more."""
 
     async def find_by_email(self, email: str) -> DirectoryUser | None: ...
 
     async def get(self, user_id: uuid.UUID) -> DirectoryUser | None: ...
+
+    async def resolve_domain(self, domain: str) -> DirectoryDomain | None: ...
 
 
 class HttpDirectory:
@@ -139,3 +162,21 @@ class HttpDirectory:
     async def get(self, user_id: uuid.UUID) -> DirectoryUser | None:
         body = await self._fetch(f"/internal/v1/users/{user_id}")
         return self._parse(body) if body else None
+
+    async def resolve_domain(self, domain: str) -> DirectoryDomain | None:
+        """Which organization owns an email domain, and whether it proved it.
+
+        `None` means nobody has claimed it. A claimed-but-unverified domain comes back with
+        `verified=False` rather than as `None`, because the caller refuses both with one
+        message and logs which it was — see `services.sso_start`.
+        """
+        body = await self._fetch(f"/internal/v1/domains/{domain}")
+        if not body:
+            return None
+        return DirectoryDomain(
+            domain=body["domain"],
+            organization_id=uuid.UUID(body["organization_id"]),
+            organization_slug=body["organization_slug"],
+            organization_status=body["organization_status"],
+            verified=bool(body["verified"]),
+        )

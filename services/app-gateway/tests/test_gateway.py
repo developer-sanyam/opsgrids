@@ -296,6 +296,33 @@ class TestPublicPaths:
         assert response.status_code == 200
         assert upstream.last["path"] == "/api/v1/auth/login"
 
+    async def test_single_sign_on_is_reachable_without_a_token(
+        self, client: AsyncClient, upstream: EchoUpstream
+    ) -> None:
+        """Both halves, for the same reason `login` is public: they produce a token.
+
+        The callback especially — an identity provider redirects a browser to it carrying
+        nothing of ours but the `state` auth-service issued, so demanding a bearer token
+        there would make the flow unfinishable.
+        """
+        started = await client.get("/api/v1/auth/sso/start", params={"email": "a@example.com"})
+        assert started.status_code == 200
+        assert upstream.last["path"] == "/api/v1/auth/sso/start"
+
+        finished = await client.get(
+            "/api/v1/auth/sso/callback", params={"code": "abc", "state": "xyz"}
+        )
+        assert finished.status_code == 200
+        assert upstream.last["path"] == "/api/v1/auth/sso/callback"
+
+    async def test_the_sso_configuration_routes_are_not_public(
+        self, client: AsyncClient, upstream: EchoUpstream
+    ) -> None:
+        """Deciding which external issuer may vouch for your colleagues is an ordinary
+        permission-guarded tenant operation, and it sits under the same path prefix as two
+        routes that are public — so it is worth pinning that the prefix does not leak."""
+        assert (await client.get("/api/v1/auth/sso/config")).status_code == 401
+
     async def test_the_organization_slug_is_taken_from_the_host(
         self, client: AsyncClient, upstream: EchoUpstream
     ) -> None:

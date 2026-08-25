@@ -102,6 +102,11 @@ def apply_schema_grants(
             "role_permissions",
             "permissions",
             "organizations",
+            # `GET /internal/v1/domains/{domain}` — the verified-domain lookup single sign-on
+            # starts from. Cross-tenant for the same reason the user lookups are: it is asked
+            # in order to *discover* the tenant, so there is none to bind while asking. SELECT
+            # only; the verification write stays on the tenant-bound application role.
+            "org_domains",
             # The public `POST /api/v1/invitations/accept` path resolves an invitation's
             # organization on the bypass session before any tenant is bound, then does every
             # write under a tenant-scoped transaction. This is the one row of the one table

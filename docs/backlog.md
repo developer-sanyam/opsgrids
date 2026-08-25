@@ -169,7 +169,21 @@ ten call sites.
   there, since the read predates any organization and the caller is a service, not an actor.
 - **No outbox-lag probe.** A stalled relay is silent. Worth adding before RLS lands, so there is
   a baseline to compare against.
-- **SSO is modelled but has no flow** — `org_idp_configs` exists; no OIDC or SAML implementation.
+- **SAML is not implemented, and neither is just-in-time provisioning.** OIDC now flows end to
+  end (see below), and `org_idp_configs` carries the SAML columns it always did —
+  `idp_entity_id`, `idp_sso_url`, `idp_x509_cert` — with nothing reading them. Deferred on
+  purpose rather than half-built: SAML is a different trust model (signed XML assertions, XML
+  canonicalisation and signature-wrapping attacks, IdP-initiated flows with no request to bind
+  a response to) and shares almost nothing with the OIDC path but the configuration row. It is
+  worth doing when a customer's IdP cannot speak OIDC; Google Workspace and Entra — which is
+  most of the Indian mid-market — can.
+
+  `jit_provisioning` on the same table is likewise inert and documented as such in the model. An
+  unknown address is refused, because creating a user, a membership and role grants is
+  account-service's job and this platform has exactly one door into the directory: an
+  invitation. Opening a second one where an external issuer decides who joins and a column
+  decides their roles is a bigger decision than a sign-in flow, and it should be made on its
+  own.
 - **10 of the 18 quality-gate rows have no tooling** — production build, E2E, schema drift,
   visual regression, automated accessibility, performance budget, query plans, SAST and licence,
   dependency boundaries, token lint.
@@ -203,7 +217,28 @@ this session's call to make.
 | auth-service — credentials, sessions, refresh rotation, MFA, SSO config, keys | `a6e3548` |
 | Gateways — `app-gateway` and `admin-gateway` | `ca58de3` |
 | Internal API + permission-version bump | `15d6ec0` |
+| Single sign-on — OIDC authorization code with PKCE, tenant login | `<pending>` |
 
 Two of those closed defects that would have been outages in production: the gateways shipped
 with a **duplicated correlation header** and an **unenforced per-route `staff_only`** flag, and
 account-service was **serving none of the internal endpoints** that auth and both gateways call.
+
+### Single sign-on, in one paragraph
+
+`GET /api/v1/auth/sso/start?email=` reduces the address to its domain, asks account-service
+which organization **DNS-verified** that domain (`GET /internal/v1/domains/{domain}`), binds the
+transaction to that organization, and reads its OIDC configuration — which is the one auth
+table under row-level security, so the binding is what makes it readable at all. It returns the
+provider's authorization URL carrying `state`, a `nonce` and an S256 PKCE challenge; the state,
+nonce and code verifier live in Redis for ten minutes, single-use.
+`GET /api/v1/auth/sso/callback` consumes the state atomically (a replay finds nothing and never
+reaches the provider), exchanges the code with the verifier, verifies the ID token's signature
+against the provider's JWKS along with issuer, audience, expiry, nonce and `email_verified`,
+maps the address to a member of that organization, and mints through the **same** `issue_for`
+every other sign-in uses — same audience, same `pv`, same claim shape, `amr: ["sso"]` instead of
+`["pwd"]`. Per ADR-0000 §1 the domain selects a *provider*, never an organization: the
+organization comes from the configuration that provider belongs to, and membership is still
+required. The client secret is sealed with the platform PII envelope, never returned by any
+endpoint and never logged. Unknown addresses are refused — see the note above on JIT
+provisioning. Configuration is `GET`/`PUT /api/v1/auth/sso/config`, behind
+`core.identity.sso.read` / `core.identity.sso.write` at ORG scope.

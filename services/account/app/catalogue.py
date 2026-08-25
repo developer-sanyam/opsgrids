@@ -134,6 +134,23 @@ CORE = PermissionCatalogue(
             is_dangerous=True,
         ),
         PermissionSpec("identity", "audit", "read", "Read the audit trail", "ORG", "ORG"),
+        # Single sign-on. The rows these guard live in auth-service (`auth.org_idp_configs`),
+        # not here — auth holds every credential, and an IdP client secret is a credential.
+        # The *vocabulary* still belongs to `core`, which this service declares, and a
+        # permission code must have exactly one owner (`tools/export_permissions.py` refuses
+        # a code declared by two services). So the code is minted here and enforced there.
+        PermissionSpec("identity", "sso", "read", "See the single sign-on setup", "ORG", "ORG"),
+        PermissionSpec(
+            "identity",
+            "sso",
+            "write",
+            "Configure the identity provider users sign in through",
+            "ORG",
+            "ORG",
+            # Whoever holds this decides which external issuer may assert who a person is,
+            # and `enforce_sso` turns password login off for the whole organization.
+            is_dangerous=True,
+        ),
         # The marketplace and what the organization has turned on. These live in `core`
         # rather than in a `product` product, because browsing and activating is a platform
         # capability every customer has whatever they bought — the same reason
