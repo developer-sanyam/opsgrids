@@ -10,6 +10,7 @@ sealed under a string in the repository. These tests pin the closed hole.
 from __future__ import annotations
 
 import pytest
+from pydantic_settings import SettingsConfigDict
 
 from platform_core.config import ServiceSettings
 
@@ -20,6 +21,12 @@ STRONG = "0" * 48
 class _Settings(ServiceSettings):
     service_name: str = "probe"
     db_schema: str = "public"
+
+    # Hermetic: `ServiceSettings` reads the repository `.env` so a developer's local values
+    # reach every service, which is right in a process and wrong in a test. `.env.example`
+    # ships `DEBUG=true`, so a developer who followed the documented setup saw this file fail
+    # on a production guard their change never touched. The probe reads only what it is given.
+    model_config = SettingsConfigDict(env_file=None, extra="ignore")
 
 
 def _production(**overrides: str) -> ServiceSettings:
