@@ -168,9 +168,14 @@ def merge(dumps: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             templates = {t["code"]: t for t in manifest["role_templates"]}
             for template in reg["role_templates"]:
                 if template["code"] in templates:
-                    _merge_template(templates[template["code"]], template, product)
+                    merged = templates[template["code"]]
+                    _merge_template(merged, template, product)
+                    # Which services contributed a template decides which ones it can be the
+                    # administrator for; dropped again before the manifest is written.
+                    merged["_services"].append(dump["service"])
                 else:
                     template["grants"] = sorted(template["grants"], key=lambda g: str(g["code"]))
+                    template["_services"] = [dump["service"]]
                     manifest["role_templates"].append(template)
 
     for manifest in manifests.values():
@@ -183,21 +188,31 @@ def merge(dumps: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 
 def _flag_admin(manifest: dict[str, Any]) -> None:
-    """Mark the admin-most template: the widest coverage of the product's own catalogue.
+    """Mark the admin-most template **per contributing service**: the widest coverage of that
+    service's slice of the product's catalogue.
 
     Mirrors how the core catalogue works — `ORG_OWNER` is the template granting all of core —
     without needing every service to declare a flag. Ties go to the first declared template,
     which is where every catalogue in the platform puts its administrator.
+
+    Per service, not per product, because a product is not a service. CRM spans customer and
+    deal, each shipping the administrator for its own half; marking one left the organization's
+    owners able to read contacts and not deals. A template several services share (HRMS's
+    `HR_ADMIN` across employee and attendance) is one merged template and is marked once.
     """
-    admin: dict[str, Any] | None = None
+    admins: dict[str, dict[str, Any]] = {}
     for template in manifest["role_templates"]:
         template["is_admin"] = False
         if template["cross_product"]:
             continue
-        if admin is None or len(template["grants"]) > len(admin["grants"]):
-            admin = template
-    if admin is not None:
-        admin["is_admin"] = True
+        for service in template.get("_services", []):
+            current = admins.get(service)
+            if current is None or len(template["grants"]) > len(current["grants"]):
+                admins[service] = template
+    for template in admins.values():
+        template["is_admin"] = True
+    for template in manifest["role_templates"]:
+        template.pop("_services", None)
 
 
 def regenerate(into: Path) -> dict[str, Path]:

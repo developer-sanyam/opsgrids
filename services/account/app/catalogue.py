@@ -278,11 +278,20 @@ class ProductManifest:
 
     product: str
     registration: ProductRegistration
-    #: The template the exporter marked admin-most — the one granting the widest slice of
-    #: the product's own catalogue. Installed like any other template, and additionally
-    #: granted to the organization's owners on activation so a newly activated product has
-    #: an administrator from the first minute.
-    admin_role_code: str | None
+    #: Every template the exporter marked admin-most — one per service the product spans,
+    #: each granting the widest slice of that service's catalogue. Installed like any other
+    #: template, and additionally granted to the organization's owners on activation so a
+    #: newly activated product has an administrator from the first minute.
+    #:
+    #: A list rather than one code because a product is not a service: CRM spans customer
+    #: and deal, and granting only the last-parsed admin role left its owners able to read
+    #: contacts and not deals.
+    admin_role_codes: tuple[str, ...]
+
+    @property
+    def admin_role_code(self) -> str | None:
+        """The first admin template, for callers that want a single representative code."""
+        return self.admin_role_codes[0] if self.admin_role_codes else None
 
 
 def registration_from_manifest(data: dict[str, Any]) -> ProductManifest:
@@ -318,7 +327,7 @@ def registration_from_manifest(data: dict[str, Any]) -> ProductManifest:
 
     own_codes = set(catalogue.codes())
     templates: list[RoleTemplate] = []
-    admin_role_code: str | None = None
+    admin_role_codes: list[str] = []
     for raw in data["role_templates"]:
         template = RoleTemplate(
             code=raw["code"],
@@ -338,13 +347,15 @@ def registration_from_manifest(data: dict[str, Any]) -> ProductManifest:
                 )
         templates.append(template)
         if raw.get("is_admin"):
-            admin_role_code = template.code
+            admin_role_codes.append(template.code)
 
     registration = ProductRegistration(
         product=product, catalogue=catalogue, role_templates=templates
     )
     return ProductManifest(
-        product=product, registration=registration, admin_role_code=admin_role_code
+        product=product,
+        registration=registration,
+        admin_role_codes=tuple(admin_role_codes),
     )
 
 

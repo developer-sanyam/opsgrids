@@ -150,7 +150,7 @@
           "scope": "ORG"
         }
       ],
-      "is_admin": false,
+      "is_admin": true,
       "is_default": false,
       "name": "CRM administrator (pipeline)"
     },

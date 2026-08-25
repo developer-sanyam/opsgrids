@@ -962,17 +962,26 @@ async def install_product_registration(
     await install_registration(session, org_id, registration)
 
     granted: list[uuid.UUID] = []
-    if grant_admin_to_owners and manifest.admin_role_code:
-        role = await selectors.get_role_by_code(session, org_id, manifest.admin_role_code)
-        if role is not None:
-            for owner in await selectors.list_owner_memberships(session, org_id):
+    granted_roles: list[str] = []
+    if grant_admin_to_owners and manifest.admin_role_codes:
+        owners = await selectors.list_owner_memberships(session, org_id)
+        # Every admin template, not just one: a product spans as many services as it needs,
+        # and each ships the admin role for its own slice. Granting one left CRM's owners
+        # able to read contacts and not deals.
+        for code in manifest.admin_role_codes:
+            role = await selectors.get_role_by_code(session, org_id, code)
+            if role is None:
+                continue
+            granted_roles.append(code)
+            for owner in owners:
                 if any(link.role_id == role.id for link in owner.roles):
                     continue
                 session.add(
                     MembershipRole(membership_id=owner.id, role_id=role.id, granted_by=None)
                 )
-                granted.append(owner.id)
-            await session.flush()
+                if owner.id not in granted:
+                    granted.append(owner.id)
+        await session.flush()
 
     record_audit(
         session,
@@ -987,7 +996,7 @@ async def install_product_registration(
             "product": registration.product,
             "permissions": registration.catalogue.codes(),
             "role_templates": [t.code for t in registration.role_templates],
-            "admin_role": manifest.admin_role_code,
+            "admin_roles": list(manifest.admin_role_codes),
             "admin_role_granted_to": [str(m) for m in granted],
         },
     )
@@ -1002,7 +1011,7 @@ async def install_product_registration(
             payload={
                 "organization_id": str(org_id),
                 "membership_id": str(membership_id),
-                "granted_role": manifest.admin_role_code,
+                "granted_roles": granted_roles,
             },
         )
     if granted:
@@ -1014,6 +1023,6 @@ async def install_product_registration(
         "product": registration.product,
         "permissions": len(registration.catalogue.specs),
         "role_templates": [t.code for t in registration.role_templates],
-        "admin_role": manifest.admin_role_code,
+        "admin_roles": granted_roles,
         "owners_granted": len(granted),
     }

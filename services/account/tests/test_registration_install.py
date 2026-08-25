@@ -281,7 +281,7 @@ class TestManifestLoader:
         manifest = load_product_manifest("support")
         assert manifest is not None
         assert manifest.product == "support"
-        assert manifest.admin_role_code == "SUPPORT_ADMIN"
+        assert manifest.admin_role_codes == ("SUPPORT_ADMIN",)
         assert "support.desk.ticket.read" in manifest.registration.catalogue.codes()
 
     def test_an_unknown_product_has_no_manifest(self) -> None:
