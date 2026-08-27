@@ -172,6 +172,13 @@ e2e: ## Boot the real services and drive one ordered journey over HTTP
 .PHONY: check
 check: lint typecheck test ## lint + typecheck + test — the fast path
 
+# The frontend's equivalent of `check`, and exactly what the CI frontend job runs. `-r` walks
+# the pnpm workspace, so a new product app is covered the day it is added rather than when
+# somebody remembers to list it here. Needs `pnpm install` in frontend/ once.
+.PHONY: frontend
+frontend: ## Frontend: typecheck + lint + test + build, every app and package
+	cd frontend && pnpm -r typecheck && pnpm -r lint && pnpm -r test && pnpm -r build
+
 # ---------------------------------------------------------------- the rest of the gate
 # Each of these is one row of the quality gate that used to be reported "N/A — no tooling".
 # They are separate targets, and separate CI steps, so a failure names the row that failed.

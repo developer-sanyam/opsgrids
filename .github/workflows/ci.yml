@@ -141,3 +141,41 @@ jobs:
         # A publisher whose payload does not match its declared schema fails here rather
         # than at 3am in a consumer that cannot parse it.
         run: uv run pytest libs/contracts -q || echo "no contract tests yet"
+
+  frontend:
+    name: Frontend — types, lint, tests, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      # Every app and package, in dependency order. `-r` walks the workspace, so a new
+      # product app is covered the day it is added — no edit here.
+      - name: Type check
+        run: pnpm -r typecheck
+
+      - name: Lint
+        run: pnpm -r lint
+
+      # @atmora/client and @atmora/config declare no test script; -r skips what it does not find.
+      - name: Tests
+        run: pnpm -r test
+
+      # The one check that compiles for production. A type error tsc tolerates in dev and
+      # Vite refuses at build time is found here rather than at deploy.
+      - name: Build
+        run: pnpm -r build

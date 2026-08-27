@@ -7,6 +7,7 @@ Start here.
 | If you want to… | Read |
 |---|---|
 | Get it running on your machine | [getting-started.md](getting-started.md) |
+| Join the team and pick up your first task | [onboarding/](onboarding/README.md) |
 | Understand how the system fits together | [architecture.md](architecture.md) |
 | See the whole system on one page | [architecture.html](architecture.html) |
 | Know what exists and how far it is trusted | [what-was-built.md](what-was-built.md) |
