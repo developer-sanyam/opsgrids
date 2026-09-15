@@ -38,7 +38,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 SCHEMA = "catalog"
-APP_ROLE = "atmora_catalog"
+APP_ROLE = "opsgrids_catalog"
 
 #: Tenant-scoped — the two platform tables that carry an organization column.
 TENANT_TABLES = ("audit_logs", "outbox")

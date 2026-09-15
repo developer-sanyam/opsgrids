@@ -52,7 +52,7 @@ ADR-0002 lists (`audit_logs` first — its five single-column indexes no longer 
 tenant column now that the policy qual is ANDed into every query). Neither blocks correctness;
 the second is a performance cliff waiting for volume.
 
-The relay and the stall probe now run on `atmora_outbox` (BYPASSRLS, SELECT and UPDATE on
+The relay and the stall probe now run on `opsgrids_outbox` (BYPASSRLS, SELECT and UPDATE on
 `outbox` only), so neither is blind to the rows the app role can no longer see — which both were
 the moment the policies landed, since each connected as the app role with no tenant bound.
 
@@ -70,7 +70,7 @@ platform's chosen primary differentiator — "Compliance Autopilot" — and this
 else in it stands on.
 
 **Why it is a structural advantage rather than an integration.** Anyone can call the IRP. What is
-hard to copy is that Atmora's invoices were already append-only with corrections as credit notes
+hard to copy is that OpsGrids's invoices were already append-only with corrections as credit notes
 (ADR-0000 §9), which is *exactly* GST's own legal model: a filed document is never edited, and a
 correction is a new document that references it. The two models line up with nothing left over, so
 every filing action can be a provable, reversible ledger row instead of a status column somebody
@@ -473,7 +473,7 @@ ten call sites.
 - **10 of the 18 quality-gate rows have no tooling** — production build, E2E, schema drift,
   visual regression, automated accessibility, performance budget, query plans, SAST and licence,
   dependency boundaries, token lint.
-- **`atmora-internal` is not on the shared packages yet.** `atmora-ui` and `atmora-client` now
+- **`opsgrids-internal` is not on the shared packages yet.** `opsgrids-ui` and `opsgrids-client` now
   hold the design system and the auth/HTTP layer, and all nine `product-*` apps consume them;
   the staff console still carries its own copies. It is a real fork rather than an oversight —
   its palette is a different token family (lifecycle statuses, a monospaced control-panel face)

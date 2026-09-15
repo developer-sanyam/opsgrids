@@ -7,7 +7,7 @@ so on the application role — which sets no GUC at that moment — the organiza
 activation is invisible and the endpoint returns only the platform catalogue. Every product's
 routes then 402 at the gateway.
 
-The fix reads on `atmora_product_directory`: BYPASSRLS so it resolves the activation with no
+The fix reads on `opsgrids_product_directory`: BYPASSRLS so it resolves the activation with no
 tenant set, SELECT-only on `product.activations` and `product.products` so a bug in that path
 cannot write. These are the regression — the activated product must come back with no GUC bound —
 and the guardrails that keep the bypass narrow (ADR-0002, "the cross-tenant reader").
@@ -66,7 +66,7 @@ class TestTheReaderIsWhatWeThink:
                 text("SELECT current_user, rolbypassrls FROM pg_roles WHERE rolname = current_user")
             )
         ).one()
-        assert row.current_user == "atmora_product_directory"
+        assert row.current_user == "opsgrids_product_directory"
         assert row.rolbypassrls is True, (
             "the entitlements reader must bypass RLS, or it resolves nothing before a tenant "
             "is bound — the 402 blocker this exists to fix"

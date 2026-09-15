@@ -918,7 +918,7 @@
     }
   },
   "info": {
-    "description": "The HRMS Employee Master \u2014 part of the Atmora platform.",
+    "description": "The HRMS Employee Master \u2014 part of the OpsGrids platform.",
     "title": "Employee service",
     "version": "0.1.0"
   },

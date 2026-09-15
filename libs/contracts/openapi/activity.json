@@ -22,7 +22,7 @@
     }
   },
   "info": {
-    "description": "Activity service \u2014 part of the Atmora platform.",
+    "description": "Activity service \u2014 part of the OpsGrids platform.",
     "title": "Activity service",
     "version": "0.1.0"
   },

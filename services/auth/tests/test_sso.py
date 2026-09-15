@@ -685,7 +685,7 @@ class TestTheHttpClient:
         result = await client.exchange_code(
             TOKEN,
             code="code",
-            redirect_uri="https://atmora.test/callback",
+            redirect_uri="https://opsgrids.test/callback",
             client_id=CLIENT_ID,
             client_secret=CLIENT_SECRET,
             code_verifier="verifier",
@@ -709,7 +709,7 @@ class TestTheHttpClient:
             await client.exchange_code(
                 TOKEN,
                 code="spent",
-                redirect_uri="https://atmora.test/callback",
+                redirect_uri="https://opsgrids.test/callback",
                 client_id=CLIENT_ID,
                 client_secret=CLIENT_SECRET,
                 code_verifier="verifier",
@@ -740,7 +740,7 @@ class TestTheHttpClient:
             await client.exchange_code(
                 TOKEN,
                 code="code",
-                redirect_uri="https://atmora.test/callback",
+                redirect_uri="https://opsgrids.test/callback",
                 client_id=CLIENT_ID,
                 client_secret=CLIENT_SECRET,
                 code_verifier="verifier",

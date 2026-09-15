@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { getPeople, getProjects, getTasks, getTimesheets, WEEK_DATES, TODAY } from "@/api/client";
 import type { Person, Project, Task, TimesheetRow } from "@/api/types";
-import { useAuth } from "@atmora/client";
+import { useAuth } from "@opsgrids/client";
 import { PEOPLE } from "@/data/people";
 import {
   activeProjects,
@@ -17,7 +17,7 @@ import {
 } from "@/data/derive";
 import { BILLABLE_THIS_MONTH, KPI_TREND, UTILIZATION_TREND } from "@/data/samples";
 import { formatHours, formatMoneyCompact } from "@/lib/format";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Button,
   Card,
@@ -41,7 +41,7 @@ import {
   PlusIcon,
   SearchIcon,
   UsersIcon,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 
 interface OverviewData {
   projects: Project[];
@@ -174,7 +174,7 @@ export function OverviewPage() {
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
     user?.organizations[0]?.name ??
-    "Atmora Studio";
+    "OpsGrids Studio";
 
   const kpis = useMemo(
     () => (state.status === "success" ? buildKpis(state.data) : []),

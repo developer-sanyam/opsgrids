@@ -1,6 +1,6 @@
 # Operator console service
 
-Part of the Atmora platform. Owns the `console` schema. Port **8170**.
+Part of the OpsGrids platform. Owns the `console` schema. Port **8170**.
 
 The operator console's read model of commerce. It folds the commerce transition-event stream into
 cross-tenant projections and serves the staff read API on the **admin gateway** — MRR,
@@ -17,7 +17,7 @@ make relay SERVICE=console            # outbox relay (console publishes nothing 
 
 Three **projections**, all tenant-scoped and RLS-policied, written by the consumer one organization
 at a time (tenant GUC per message) and read cross-tenant on the SELECT-only BYPASSRLS
-`atmora_console_directory` role:
+`opsgrids_console_directory` role:
 
 - **`org_commercial_state`** — per-org snapshot: `mrr_minor`, `currency`, `active_products`,
   `subscription_states`, `trial_ends_at`, `locked`. MRR is the running sum of *active*

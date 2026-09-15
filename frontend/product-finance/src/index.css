@@ -1,10 +1,10 @@
 @import "tailwindcss";
-@import "@atmora/ui/styles.css";
+@import "@opsgrids/ui/styles.css";
 
 /* The Console design language — tokens, base layer, focus ring and motion — lives in
-   `@atmora/ui`. Tailwind's source detection stops at node_modules, so point the scanner at the
+   `@opsgrids/ui`. Tailwind's source detection stops at node_modules, so point the scanner at the
    design system's components explicitly; without this their classes are never generated. */
-@source "../../atmora-ui/src";
+@source "../../opsgrids-ui/src";
 
 /* Finance runs its figures in Spline Sans Mono, so amounts line up to the paisa. The `.money`
    rule itself is shared — only the face is this product's. */

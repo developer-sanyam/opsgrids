@@ -54,7 +54,7 @@ DEFAULT_TTL_SECONDS = 60
 #: prefixes to ports, not to service identities. Deliberately distinct from any
 #: `service_name`, so a captured forwarding token can never open an `/internal/v1` endpoint —
 #: `verify_service_token` checks `aud == settings.service_name` and this value never matches.
-GATEWAY_AUDIENCE = "atmora-gateway-forward"
+GATEWAY_AUDIENCE = "opsgrids-gateway-forward"
 
 
 def mint_service_token(

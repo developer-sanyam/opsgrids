@@ -10,7 +10,7 @@ from platform_core.app import create_app
 app = create_app(
     settings(),
     title="Support service",
-    description="The support desk — part of the Atmora platform.",
+    description="The support desk — part of the OpsGrids platform.",
     routers=[router],
     # A stalled relay is silent. `/health/outbox` is what makes it visible, and it counts
     # through the outbox engine so it is not blind to the rows the app role cannot see.

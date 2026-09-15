@@ -54,7 +54,7 @@ async def _register(session, ctx, gstin: str = SELLER) -> None:
     await services.set_gst_registration(
         session,
         ctx,
-        GstRegistrationUpsert(gstin=gstin, legal_name="Atmora Industries Private Limited"),
+        GstRegistrationUpsert(gstin=gstin, legal_name="OpsGrids Industries Private Limited"),
     )
 
 

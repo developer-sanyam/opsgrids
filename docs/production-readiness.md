@@ -70,7 +70,7 @@ The blockers are gone; these are not blockers but they are not nothing:
 | Gap | Consequence |
 |---|---|
 | **Readiness does not check Redis** | A service reports ready, then fails every permission-changing write and refuses all gateway traffic |
-| **Outbox-lag monitoring is a probe, not an alert** | `GET /health/outbox` counts every tenant's unpublished rows through `atmora_outbox`, so a stalled relay is visible — but nothing scrapes it yet, and a probe nobody alerts on is a stall nobody notices |
+| **Outbox-lag monitoring is a probe, not an alert** | `GET /health/outbox` counts every tenant's unpublished rows through `opsgrids_outbox`, so a stalled relay is visible — but nothing scrapes it yet, and a probe nobody alerts on is a stall nobody notices |
 | **No DLQ alerting** | Consumers ship in product, subscription, payment and console; failures retry once then park in `{queue}.dlq`. `tools/dlq.py` inspects and replays, but nothing alerts on depth yet |
 | **No metrics, tracing or error tracking** | Correlation ids are propagated and nothing collects them |
 | **Cross-tenant reads are not audited** | Closed: employee PII unmasks write `entity.sensitive_read` rows, and the account directory reads log `directory.cross_tenant_read` |
@@ -115,7 +115,7 @@ Roughly in order. This is not the full backlog — it is the subset that changes
 5. Replace the internal static token with signed service tokens — done, on both the
    `/internal/v1` and gateway-forwarding channels; making `/internal/v1` unreachable from
    ingress (network policy) is still open.
-6. Add the outbox-lag probe and Redis readiness check. Done; the probe and the relay run as `atmora_outbox`, which is what makes the count cross-tenant under row-level security.
+6. Add the outbox-lag probe and Redis readiness check. Done; the probe and the relay run as `opsgrids_outbox`, which is what makes the count cross-tenant under row-level security.
 7. Write the end-to-end journey suite.
 
 Items 1–4 are one coherent piece of work and should be sequenced together. Items 5 and 6 are

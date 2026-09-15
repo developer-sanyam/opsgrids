@@ -9,7 +9,7 @@ Two of payment's tables are the financial and reconciliation record, and both ar
   A row is inserted once (idempotently, on `provider_event_id`) and never touched again.
 
 **Why a trigger and not a `REVOKE`.** The tidy expression would be `REVOKE UPDATE, DELETE ... FROM
-atmora_payment`. It does not hold on its own: `migrations/env.py` runs `apply_schema_grants` at the
+opsgrids_payment`. It does not hold on its own: `migrations/env.py` runs `apply_schema_grants` at the
 end of every migration run, which `GRANT`s UPDATE/DELETE on *all* tables and only re-revokes
 `audit_logs`. A revoke in a migration is therefore undone moments later, in the same `alembic
 upgrade`. A `BEFORE UPDATE OR DELETE` trigger is independent of privileges: it fires whatever the

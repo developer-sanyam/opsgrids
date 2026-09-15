@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { getAllTickets, listAgents, TRENDS_ARE_SAMPLE } from "@/api/client";
 import type { Agent, Ticket } from "@/api/types";
-import { useAuth } from "@atmora/client";
+import { useAuth } from "@opsgrids/client";
 import {
   agentById,
   breachingCount,
@@ -17,7 +17,7 @@ import {
 } from "@/data/derive";
 import { KPI_DELTA, KPI_TREND, TICKET_VOLUME } from "@/data/samples";
 import { formatMinutes } from "@/lib/format";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Avatar,
   Button,
@@ -42,7 +42,7 @@ import {
   InboxIcon,
   PlusIcon,
   SearchIcon,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 import { SAMPLE_DATA, SAMPLE_TREND } from "@/ui/sampleCopy";
 
 /** A stable empty reference so derived-data memos don't churn while loading. */
@@ -216,7 +216,7 @@ export function OverviewPage() {
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
     user?.organizations[0]?.name ??
-    "Atmora";
+    "OpsGrids";
 
   const tickets = useMemo(
     () => (ticketsState.status === "success" ? ticketsState.data.items : EMPTY_TICKETS),

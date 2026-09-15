@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { getAllAssets, getAllIncidents, getAllRequests, TRENDS_ARE_SAMPLE } from "@/api/client";
 import type { Asset, Incident, ServiceRequest } from "@/api/types";
-import { useAuth } from "@atmora/client";
+import { useAuth } from "@opsgrids/client";
 import {
   assetsUnderManagement,
   breakdownByCategory,
@@ -15,7 +15,7 @@ import {
   slaCompliancePct,
 } from "@/data/derive";
 import { KPI_SAMPLE } from "@/data/samples";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Button,
   Card,
@@ -39,7 +39,7 @@ import {
   SearchIcon,
   ShieldCheckIcon,
   TicketIcon,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 import { SAMPLE_TREND } from "@/ui/sampleCopy";
 
 interface OverviewData {
@@ -223,7 +223,7 @@ export function OverviewPage() {
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
     user?.organizations[0]?.name ??
-    "Atmora";
+    "OpsGrids";
 
   const kpis = useMemo(
     () => (state.status === "success" ? buildKpis(state.data) : []),

@@ -1,8 +1,8 @@
-# @atmora/product-projects
+# @opsgrids/product-projects
 
-Atmora Projects — plans, boards and workflows without the rest of the suite.
+OpsGrids Projects — plans, boards and workflows without the rest of the suite.
 
-A standalone Vite + React + TypeScript SPA in the Atmora product family. It shares the suite's
+A standalone Vite + React + TypeScript SPA in the OpsGrids product family. It shares the suite's
 violet "Console" design language (Manrope, a single violet accent, light + dark) with the other
 product apps; only the navigation, screens and delivery-domain content differ.
 

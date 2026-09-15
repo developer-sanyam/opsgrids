@@ -9,7 +9,7 @@ forever unless somebody puts them back in play. This is that somebody:
     python tools/outbox.py --service product              # report pending / exhausted counts
     python tools/outbox.py --service product --reset      # re-arm exhausted rows
 
-Connects as `atmora_outbox` by default — the role whose whole grant is SELECT and UPDATE on
+Connects as `opsgrids_outbox` by default — the role whose whole grant is SELECT and UPDATE on
 `outbox`, so this tool cannot touch anything else. **Reset after fixing the cause**: the
 relay will simply burn the fresh budget against the same broker if nothing changed.
 """
@@ -71,7 +71,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--service", required=True, help="service name, e.g. product")
     parser.add_argument("--schema", help="schema name (defaults to the service name)")
-    parser.add_argument("--role", default="atmora_outbox", help="database role to connect as")
+    parser.add_argument("--role", default="opsgrids_outbox", help="database role to connect as")
     parser.add_argument(
         "--exhausted-at",
         type=int,

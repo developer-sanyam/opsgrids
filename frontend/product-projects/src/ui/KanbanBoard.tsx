@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { NOW } from "@/api/fixtures";
 import type { TaskOut, TaskStage } from "@/api/types";
 import { STAGE_LABEL } from "@/data/labels";
-import { Avatar, ChevronRight, ClockIcon, cn } from "@atmora/ui";
+import { Avatar, ChevronRight, ClockIcon, cn } from "@opsgrids/ui";
 import { daysBetween, formatDateShort } from "@/lib/format";
 import { PriorityPill } from "./ProjectPills";
 

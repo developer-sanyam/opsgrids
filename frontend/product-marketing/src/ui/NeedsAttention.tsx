@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 
 import type { AttentionItem } from "@/data/derive";
 import { formatMoneyCompact } from "@/lib/format";
-import { AlertTriangleIcon, ArrowRightIcon, EmptyState } from "@atmora/ui";
+import { AlertTriangleIcon, ArrowRightIcon, EmptyState } from "@opsgrids/ui";
 import { ChannelBadge } from "./ChannelBadge";
 
 /**

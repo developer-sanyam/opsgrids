@@ -4,7 +4,7 @@ Tenant isolation stops being a convention every query has to remember and become
 database enforces, exactly as it is on the other product schemas (ADR-0002).
 
 Three things have to be true before this does anything, and all three are in place platform-wide:
-policies exist (this file); the API connects as a **NOBYPASSRLS** role (`atmora_projects`), so it
+policies exist (this file); the API connects as a **NOBYPASSRLS** role (`opsgrids_projects`), so it
 cannot bypass row security the way a superuser would; and something sets the tenant GUC —
 `get_tenant_session` binds every request transaction to the caller's organization as its first
 statement.
@@ -29,7 +29,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "projects"
-APP_ROLE = "atmora_projects"
+APP_ROLE = "opsgrids_projects"
 
 #: Tenant-scoped: every one carries `organization_id`.
 TENANT_TABLES = (

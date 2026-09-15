@@ -1,6 +1,6 @@
 # Operations service
 
-Part of the Atmora platform. Owns the `operations` schema.
+Part of the OpsGrids platform. Owns the `operations` schema.
 
 ```bash
 make run SERVICE=operations PORT=8110    # API

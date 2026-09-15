@@ -1,7 +1,7 @@
 import { useId, useMemo, useState } from "react";
 
 import type { TrendPoint } from "@/api/types";
-import { DeltaPill } from "@atmora/ui";
+import { DeltaPill } from "@opsgrids/ui";
 
 const W = 640;
 const H = 200;

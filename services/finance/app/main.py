@@ -11,7 +11,7 @@ from platform_core.app import create_app
 app = create_app(
     settings(),
     title="Finance service",
-    description="Finance service — part of the Atmora platform.",
+    description="Finance service — part of the OpsGrids platform.",
     routers=[router],
     # A stalled relay is silent, and a stalled relay here means an auto-filing agent never hears
     # that an invoice was issued. `/health/outbox` counts through the outbox engine so it is not

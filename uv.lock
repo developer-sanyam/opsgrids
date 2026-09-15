@@ -9,7 +9,7 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "atmora",
+    "opsgrids",
     "platform-core",
 ]
 
@@ -244,7 +244,7 @@ wheels = [
 ]
 
 [[package]]
-name = "atmora"
+name = "opsgrids"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

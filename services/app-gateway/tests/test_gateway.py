@@ -331,7 +331,7 @@ class TestPublicPaths:
         await client.post(
             "/api/v1/auth/login",
             json={"email": "a@example.com", "password": "x"},
-            headers={"Host": "acme.atmora.com"},
+            headers={"Host": "acme.opsgrids.com"},
         )
         assert upstream.header("x-org-slug") == "acme"
 
@@ -341,7 +341,7 @@ class TestPublicPaths:
         await client.post(
             "/api/v1/auth/login",
             json={"email": "a@example.com", "password": "x"},
-            headers={"Host": "app.atmora.com"},
+            headers={"Host": "app.opsgrids.com"},
         )
         assert upstream.header("x-org-slug") is None
 

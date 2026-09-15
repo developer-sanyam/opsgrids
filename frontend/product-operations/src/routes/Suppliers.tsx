@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { listSuppliers } from "@/api/client";
 import type { Category, SupplierOut } from "@/api/types";
 import { CATEGORY_LABEL } from "@/data/derive";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import { formatMoney } from "@/lib/format";
 import {
   Avatar,
@@ -19,7 +19,7 @@ import {
   SupplierStatusPill,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { FactoryIcon } from "@atmora/ui";
+import { FactoryIcon } from "@opsgrids/ui";
 
 const CATEGORY_FILTERS: { value: Category | "all"; label: string }[] = [
   { value: "all", label: "All" },

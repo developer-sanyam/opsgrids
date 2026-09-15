@@ -1,7 +1,7 @@
 [project]
 name = "platform-core"
 version = "0.1.0"
-description = "Shared platform for every Atmora service"
+description = "Shared platform for every OpsGrids service"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",

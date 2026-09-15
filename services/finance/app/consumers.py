@@ -10,7 +10,7 @@ compliance deadline that was never at risk.
 
 Four properties are load-bearing, and each has a test:
 
-* **The GUC is set per message.** This process runs as `atmora_finance` (NOBYPASSRLS) and every
+* **The GUC is set per message.** This process runs as `opsgrids_finance` (NOBYPASSRLS) and every
   table it writes is under a forced tenant policy. `session_scope(organization_id=...)` binds the
   tenant for the transaction, so the filing row passes the policy's `WITH CHECK`. Without it the
   write is refused — the RLS net, and the reason a consumer must never be started on the admin or

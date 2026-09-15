@@ -2,7 +2,7 @@
  * Realistic fixture data, shaped exactly like the real API responses so the whole UI renders
  * without a live login. Swapped out by the `USE_FIXTURES` flag in `client.ts`.
  *
- * One coherent delivery studio, "Atmora Studio": twelve people, fourteen client engagements, a
+ * One coherent delivery studio, "OpsGrids Studio": twelve people, fourteen client engagements, a
  * task board, the current week's timesheets and today's standups. Money is integer minor units
  * (US-cents) throughout.
  */
@@ -28,7 +28,7 @@ export const PROJECTS: Project[] = [
   { id: "PB-01", code: "PB-01", name: "Helios Web Platform", client: "Helios Retail", status: "on_track", progress_pct: 62, budget_minor: 24_000_000, spent_minor: 15_000_000, currency: USD, owner_id: "p07", start_date: "2026-05-04", due_date: "2026-10-15", billable: true, open_tasks: 14 },
   { id: "PB-02", code: "PB-02", name: "Aurora Mobile App", client: "Aurora Health", status: "at_risk", progress_pct: 45, budget_minor: 18_000_000, spent_minor: 11_000_000, currency: USD, owner_id: "p02", start_date: "2026-06-01", due_date: "2026-09-30", billable: true, open_tasks: 21 },
   { id: "PB-03", code: "PB-03", name: "Meridian Data Warehouse", client: "Meridian Bank", status: "blocked", progress_pct: 30, budget_minor: 32_000_000, spent_minor: 14_000_000, currency: USD, owner_id: "p11", start_date: "2026-04-20", due_date: "2026-11-20", billable: true, open_tasks: 9 },
-  { id: "PB-04", code: "PB-04", name: "Nimbus Design System", client: "Atmora Studio", status: "on_track", progress_pct: 78, budget_minor: 9_000_000, spent_minor: 6_400_000, currency: USD, owner_id: "p03", start_date: "2026-05-18", due_date: "2026-09-12", billable: false, open_tasks: 6 },
+  { id: "PB-04", code: "PB-04", name: "Nimbus Design System", client: "OpsGrids Studio", status: "on_track", progress_pct: 78, budget_minor: 9_000_000, spent_minor: 6_400_000, currency: USD, owner_id: "p03", start_date: "2026-05-18", due_date: "2026-09-12", billable: false, open_tasks: 6 },
   { id: "PB-05", code: "PB-05", name: "Coastal Commerce Replatform", client: "Coastal Group", status: "on_track", progress_pct: 54, budget_minor: 41_000_000, spent_minor: 20_500_000, currency: USD, owner_id: "p04", start_date: "2026-03-30", due_date: "2026-12-05", billable: true, open_tasks: 27 },
   { id: "PB-06", code: "PB-06", name: "Vertex Analytics Portal", client: "Vertex Labs", status: "at_risk", progress_pct: 40, budget_minor: 15_000_000, spent_minor: 9_600_000, currency: USD, owner_id: "p07", start_date: "2026-05-11", due_date: "2026-08-20", billable: true, open_tasks: 17 },
   { id: "PB-07", code: "PB-07", name: "Lumen Marketing Site", client: "Lumen Media", status: "done", progress_pct: 100, budget_minor: 4_800_000, spent_minor: 4_650_000, currency: USD, owner_id: "p05", start_date: "2026-04-06", due_date: "2026-08-01", billable: true, open_tasks: 0 },
@@ -38,7 +38,7 @@ export const PROJECTS: Project[] = [
   { id: "PB-11", code: "PB-11", name: "Cobalt Insights Dashboard", client: "Cobalt Retail", status: "at_risk", progress_pct: 48, budget_minor: 13_000_000, spent_minor: 14_100_000, currency: USD, owner_id: "p11", start_date: "2026-06-08", due_date: "2026-09-18", billable: true, open_tasks: 10 },
   { id: "PB-12", code: "PB-12", name: "Pine UX Research Sprint", client: "Pine Living", status: "done", progress_pct: 100, budget_minor: 3_600_000, spent_minor: 3_520_000, currency: USD, owner_id: "p10", start_date: "2026-06-29", due_date: "2026-07-25", billable: true, open_tasks: 0 },
   { id: "PB-13", code: "PB-13", name: "Atlas Checkout Redesign", client: "Atlas Sports", status: "on_track", progress_pct: 71, budget_minor: 17_500_000, spent_minor: 11_900_000, currency: USD, owner_id: "p03", start_date: "2026-04-27", due_date: "2026-09-27", billable: true, open_tasks: 12 },
-  { id: "PB-14", code: "PB-14", name: "Zephyr Internal Tooling", client: "Atmora Studio", status: "on_track", progress_pct: 35, budget_minor: 6_000_000, spent_minor: 1_900_000, currency: USD, owner_id: "p02", start_date: "2026-07-06", due_date: "2026-12-18", billable: false, open_tasks: 7 },
+  { id: "PB-14", code: "PB-14", name: "Zephyr Internal Tooling", client: "OpsGrids Studio", status: "on_track", progress_pct: 35, budget_minor: 6_000_000, spent_minor: 1_900_000, currency: USD, owner_id: "p02", start_date: "2026-07-06", due_date: "2026-12-18", billable: false, open_tasks: 7 },
 ];
 
 /* -------------------------------------- tasks -------------------------------------- */

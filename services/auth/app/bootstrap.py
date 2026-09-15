@@ -5,7 +5,7 @@ sign-up for operators — they are provisioned. This gives local development exa
 idempotently, so `make infra && make migrate && bin/seed-staff` lands a working operator.
 
 **No real credential is committed.** The default password here is an obviously-fake dev
-placeholder; override it with `ATMORA_DEV_OPERATOR_PASSWORD` for anything shared. The seed
+placeholder; override it with `OPSGRIDS_DEV_OPERATOR_PASSWORD` for anything shared. The seed
 refuses to run outside development, so it can never create a known-password account in a
 real environment — an operator with a default password is a back door, and the safest
 place for that mistake to fail is at the seed, loudly.
@@ -29,7 +29,7 @@ log = get_logger("auth.bootstrap")
 
 #: The dev operator's handle and roles. `owner` is the widest operator role; the console
 #: will treat it as holding every operator capability.
-DEV_OWNER_EMAIL = "owner@atmora.local"
+DEV_OWNER_EMAIL = "owner@opsgrids.local"
 DEV_OWNER_ROLES = ["owner", "billing_ops", "support"]
 
 #: Obviously fake, and never a real password. Overridable for a shared dev box. Refused in
@@ -76,7 +76,7 @@ async def seed_dev_owner(cfg: Settings) -> None:
             "provisioned there, not seeded with a default credential"
         )
 
-    password = os.environ.get("ATMORA_DEV_OPERATOR_PASSWORD", DEV_OWNER_PASSWORD)
+    password = os.environ.get("OPSGRIDS_DEV_OPERATOR_PASSWORD", DEV_OWNER_PASSWORD)
 
     init_engine(cfg)
     try:
@@ -85,7 +85,7 @@ async def seed_dev_owner(cfg: Settings) -> None:
                 session,
                 email=DEV_OWNER_EMAIL,
                 password=password,
-                display_name="Atmora Owner (dev)",
+                display_name="OpsGrids Owner (dev)",
                 roles=DEV_OWNER_ROLES,
             )
         log.info(

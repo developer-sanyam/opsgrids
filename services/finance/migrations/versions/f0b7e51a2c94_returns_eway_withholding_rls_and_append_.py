@@ -14,7 +14,7 @@ bill belonging to somebody else: invisible to them, fully visible to the victim.
 the law of one country, not one tenant's data, and a policy over a statute would be meaningless.
 
 **Append-only on `gst_return_transitions`, `eway_bills` and `invoice_withholdings`**, by trigger.
-The tidy expression would be `REVOKE UPDATE, DELETE ... FROM atmora_finance`, and it does not
+The tidy expression would be `REVOKE UPDATE, DELETE ... FROM opsgrids_finance`, and it does not
 hold: `migrations/env.py` runs `apply_schema_grants` at the end of every migration run, which
 GRANTs UPDATE and DELETE on *all* tables in the schema and only re-revokes `audit_logs`. A revoke
 written here is undone moments later, in the same `alembic upgrade`. The platform has now walked
@@ -63,7 +63,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "finance"
-APP_ROLE = "atmora_finance"
+APP_ROLE = "opsgrids_finance"
 
 #: Tenant-scoped, so policied. `withholding_rates` is absent on purpose — see the docstring.
 TENANT_TABLES = (

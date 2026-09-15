@@ -6,7 +6,7 @@ A design proposal for filtering the product catalogue. **Nothing here is built.*
 
 ## Today
 
-`frontend/atmora-website/src/content/products.ts` is the single source of truth for the marketing
+`frontend/opsgrids-website/src/content/products.ts` is the single source of truth for the marketing
 site — the index, every product page, the pricing table and the sitemap are all generated from
 it. Adding a product is an entry in that file, not a new page.
 

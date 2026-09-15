@@ -1,5 +1,5 @@
 /**
- * Wire types for the ITSM product — the service desk for Atmora IT.
+ * Wire types for the ITSM product — the service desk for OpsGrids IT.
  *
  * These mirror the shape the incident / request / asset services will return
  * (`services/<name>/app/schemas.py`) so a generated client can drop in later without the UI changing.

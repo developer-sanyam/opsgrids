@@ -7,14 +7,14 @@
  * from `fixtures.ts` with no login — handy for offline design work.
  */
 
-import { apiRequest } from "@atmora/client";
+import { apiRequest } from "@opsgrids/client";
 import {
   AUDIENCES,
   CAMPAIGNS,
   CAMPAIGN_WEEK_SHAPE,
   REVENUE_SPEND_SERIES,
 } from "./fixtures";
-import { ApiError } from "@atmora/client";
+import { ApiError } from "@opsgrids/client";
 import type { Audience, Campaign, Page, RevenueSpendPoint } from "./types";
 
 /** Default source. Live unless `VITE_USE_FIXTURES=true` pins the app to fixtures.

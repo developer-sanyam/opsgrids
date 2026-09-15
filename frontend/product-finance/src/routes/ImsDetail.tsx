@@ -14,7 +14,7 @@ import {
 import { readErrorMessage } from "@/lib/errors";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { formatAmount, formatMoney } from "@/lib/money";
-import { useAsync, useAuth } from "@atmora/client";
+import { useAsync, useAuth } from "@opsgrids/client";
 import {
   Avatar,
   Button,
@@ -27,7 +27,7 @@ import {
   SuggestedAction,
   Tag,
 } from "@/ui";
-import { ArrowLeftIcon, CheckCircleIcon, cn } from "@atmora/ui";
+import { ArrowLeftIcon, CheckCircleIcon, cn } from "@opsgrids/ui";
 import type { Minor } from "@/lib/money";
 
 const DECISIONS: ImsAction[] = ["accept", "reject", "pending_action"];

@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { listInventory } from "@/api/client";
 import type { InventoryItemOut } from "@/api/types";
 import { CATEGORY_LABEL, inventoryValueMinor, isLowStock, isOutOfStock } from "@/data/derive";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import { formatMoney, formatMoneyCompact, formatNumber } from "@/lib/format";
 import {
   Card,
@@ -18,7 +18,7 @@ import {
   Tag,
 } from "@/ui";
 import type { Column, StockLevel } from "@/ui";
-import { LayersIcon } from "@atmora/ui";
+import { LayersIcon } from "@opsgrids/ui";
 
 type Filter = "all" | "low" | "out";
 

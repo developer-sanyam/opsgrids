@@ -5,7 +5,7 @@ database enforces, exactly as it is on the `account`, `product` and `employee` s
 (ADR-0002).
 
 Three things have to be true for this to do anything, and all three hold platform-wide: policies
-exist (this file); the API connects as a **NOBYPASSRLS** role (`atmora_support`), so it cannot
+exist (this file); the API connects as a **NOBYPASSRLS** role (`opsgrids_support`), so it cannot
 bypass row security the way a superuser would; and something sets the tenant GUC —
 `get_tenant_session` binds every request transaction to the caller's organization as its first
 statement.
@@ -32,7 +32,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "support"
-APP_ROLE = "atmora_support"
+APP_ROLE = "opsgrids_support"
 
 #: Tenant-scoped. Every one carries `organization_id`: the four domain tables plus the two
 #: platform tables every service has.
@@ -91,7 +91,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """The deliberate undo. For an incident there are faster levers: `ALTER ROLE atmora_support
+    """The deliberate undo. For an incident there are faster levers: `ALTER ROLE opsgrids_support
     BYPASSRLS` restores service in one statement and leaves the policies intact for diagnosis,
     and pointing the DSN at the admin role needs no database change at all. This one takes a
     brief ACCESS EXCLUSIVE lock per table and touches no rows."""

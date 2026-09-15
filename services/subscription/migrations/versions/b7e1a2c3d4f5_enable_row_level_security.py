@@ -33,7 +33,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 SCHEMA = "subscription"
-APP_ROLE = "atmora_subscription"
+APP_ROLE = "opsgrids_subscription"
 
 #: Tenant-scoped. Every one carries `organization_id`: the three business tables plus the two
 #: platform tables that record this service's own changes and events.

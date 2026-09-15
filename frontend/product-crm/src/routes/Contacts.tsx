@@ -4,9 +4,9 @@ import { Link } from "react-router-dom";
 import { listContacts } from "@/api/client";
 import type { Contact, ContactStatus } from "@/api/types";
 import { companyName, ownerName } from "@/data/lookups";
-import { ArrowRightIcon, ChevronDown, MailIcon, PhoneIcon, UsersIcon, cn } from "@atmora/ui";
+import { ArrowRightIcon, ChevronDown, MailIcon, PhoneIcon, UsersIcon, cn } from "@opsgrids/ui";
 import { formatDate, formatRelative } from "@/lib/format";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Avatar,
   Card,

@@ -5,7 +5,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { getAllProjects, listMilestones, TRENDS_ARE_SAMPLE } from "@/api/client";
 import { NOW, RESOURCE_UTILIZATION } from "@/api/fixtures";
 import type { MilestoneOut, ProjectOut } from "@/api/types";
-import { useAuth } from "@atmora/client";
+import { useAuth } from "@opsgrids/client";
 import {
   activeProjects,
   averageProgress,
@@ -17,7 +17,7 @@ import {
   totalSpentMinor,
 } from "@/data/derive";
 import { formatMoney, formatPct } from "@/lib/format";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Burndown,
   Button,
@@ -42,7 +42,7 @@ import {
   PlusIcon,
   SearchIcon,
   TargetIcon,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 import { SAMPLE_DATA } from "@/ui/sampleCopy";
 
 /** A stable empty reference so the derived-data memos don't churn while loading. */
@@ -250,7 +250,7 @@ export function OverviewPage() {
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
     user?.organizations[0]?.name ??
-    "Atmora";
+    "OpsGrids";
 
   const projects = useMemo(
     () => (projectsState.status === "success" ? projectsState.data.items : EMPTY_PROJECTS),

@@ -1,6 +1,6 @@
 # Projects service
 
-Part of the Atmora platform. Owns the `projects` schema.
+Part of the OpsGrids platform. Owns the `projects` schema.
 
 ```bash
 make run SERVICE=projects PORT=8110    # API

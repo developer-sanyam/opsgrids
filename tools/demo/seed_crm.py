@@ -8,7 +8,7 @@ inside that service's directory exactly as the other seeders do.
 
 The rows cross-link across the schema boundary by **deterministic ids**: every fixture key
 ("own-1", "comp-3", "con-7", "deal-12") maps to `uuid5(NAMESPACE_URL,
-"atmora-demo-crm:<org>:<key>")`, so the deal child derives the same company / contact /
+"opsgrids-demo-crm:<org>:<key>")`, so the deal child derives the same company / contact /
 owner UUIDs the customer child inserted — a plain UUID reference, never a cross-schema
 foreign key (ADR-0000 §10).
 
@@ -51,7 +51,7 @@ if TYPE_CHECKING:
 def demo_id(org_id: uuid.UUID, key: str) -> uuid.UUID:
     """The deterministic id for a fixture key — the same on both sides of the schema
     boundary, so the pipeline's plain-UUID references land on the book's rows."""
-    return uuid.uuid5(uuid.NAMESPACE_URL, f"atmora-demo-crm:{org_id}:{key}")
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"opsgrids-demo-crm:{org_id}:{key}")
 
 
 def _dt(s: str) -> datetime:
@@ -69,12 +69,12 @@ def rupees(n: int) -> int:
 
 # ------------------------------------------------------------------ owners (id, name, email, role)
 OWNERS: list[tuple[str, str, str, str]] = [
-    ("own-1", "Sofia Marchetti", "sofia.marchetti@atmora.example.com", "Regional Sales Head"),
-    ("own-2", "Vikram Singh", "vikram.singh@atmora.example.com", "Account Executive"),
-    ("own-3", "Grace Adeyemi", "grace.adeyemi@atmora.example.com", "Sales Development Rep"),
-    ("own-4", "Kabir Malhotra", "kabir.malhotra@atmora.example.com", "Enterprise AE"),
-    ("own-5", "Emily Carter", "emily.carter@atmora.example.com", "Solutions Consultant"),
-    ("own-6", "Rahul Deshpande", "rahul.deshpande@atmora.example.com", "Account Manager"),
+    ("own-1", "Sofia Marchetti", "sofia.marchetti@opsgrids.example.com", "Regional Sales Head"),
+    ("own-2", "Vikram Singh", "vikram.singh@opsgrids.example.com", "Account Executive"),
+    ("own-3", "Grace Adeyemi", "grace.adeyemi@opsgrids.example.com", "Sales Development Rep"),
+    ("own-4", "Kabir Malhotra", "kabir.malhotra@opsgrids.example.com", "Enterprise AE"),
+    ("own-5", "Emily Carter", "emily.carter@opsgrids.example.com", "Solutions Consultant"),
+    ("own-6", "Rahul Deshpande", "rahul.deshpande@opsgrids.example.com", "Account Manager"),
 ]
 
 # --------------------------------------------- companies

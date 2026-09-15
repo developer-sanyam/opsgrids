@@ -22,7 +22,7 @@
     }
   },
   "info": {
-    "description": "Eventbridge service \u2014 part of the Atmora platform.",
+    "description": "Eventbridge service \u2014 part of the OpsGrids platform.",
     "title": "Eventbridge service",
     "version": "0.1.0"
   },

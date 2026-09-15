@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 
 import type { Activity, ActivityType } from "@/api/types";
 import { companyName, contactName, ownerName } from "@/data/lookups";
-import { CalendarIcon, CheckSquareIcon, MailIcon, NoteIcon, PhoneIcon, cn } from "@atmora/ui";
+import { CalendarIcon, CheckSquareIcon, MailIcon, NoteIcon, PhoneIcon, cn } from "@opsgrids/ui";
 import { formatRelative } from "@/lib/format";
 
 const TYPE_META: Record<

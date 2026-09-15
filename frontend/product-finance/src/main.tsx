@@ -2,8 +2,8 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
-import { configureSession } from "@atmora/client";
-import { LifeBuoyIcon, PlugIcon, SettingsIcon, ThemeProvider } from "@atmora/ui";
+import { configureSession } from "@opsgrids/client";
+import { LifeBuoyIcon, PlugIcon, SettingsIcon, ThemeProvider } from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
@@ -90,16 +90,16 @@ const router = createBrowserRouter([
   },
 ]);
 
-// Name this app's session slot before anything can read a token, so two Atmora apps open
+// Name this app's session slot before anything can read a token, so two OpsGrids apps open
 // in one browser never share a session.
-configureSession("atmora.finance.access_token");
+configureSession("opsgrids.finance.access_token");
 
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("Root element #root not found");
 
 createRoot(rootEl).render(
   <StrictMode>
-    <ThemeProvider storageKey="atmora.finance.theme">
+    <ThemeProvider storageKey="opsgrids.finance.theme">
       <RouterProvider router={router} />
     </ThemeProvider>
   </StrictMode>,

@@ -330,7 +330,7 @@
     }
   },
   "info": {
-    "description": "PulseBoard's weekly time grid \u2014 timesheet weeks, entries and utilization, part of the Atmora platform.",
+    "description": "PulseBoard's weekly time grid \u2014 timesheet weeks, entries and utilization, part of the OpsGrids platform.",
     "title": "Timesheet service",
     "version": "0.1.0"
   },

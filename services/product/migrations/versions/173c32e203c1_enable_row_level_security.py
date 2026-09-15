@@ -32,7 +32,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 SCHEMA = "product"
-APP_ROLE = "atmora_product"
+APP_ROLE = "opsgrids_product"
 
 #: Tenant-scoped. `activations` is the row the gateway's 402 depends on.
 TENANT_TABLES = ("activations", "audit_logs", "outbox")

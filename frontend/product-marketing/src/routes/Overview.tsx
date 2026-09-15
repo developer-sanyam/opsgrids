@@ -4,9 +4,9 @@ import { useNavigate } from "react-router-dom";
 
 import { getCampaigns, getRevenueSpendSeries, TRENDS_ARE_SAMPLE } from "@/api/client";
 import type { Campaign } from "@/api/types";
-import { useAuth } from "@atmora/client";
+import { useAuth } from "@opsgrids/client";
 import { channelPerformance, needsAttention, overviewTotals } from "@/data/derive";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   AlertTriangleIcon,
   FunnelIcon,
@@ -15,7 +15,7 @@ import {
   TargetIcon,
   TrendingUpIcon,
   cn,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 import { formatMoney, formatMoneyCompact, formatRoas } from "@/lib/format";
 import {
   Button,
@@ -160,7 +160,7 @@ export function OverviewPage() {
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
     user?.organizations[0]?.name ??
-    "Atmora";
+    "OpsGrids";
 
   const items = useMemo(
     () => (campaigns.status === "success" ? campaigns.data.items : NO_CAMPAIGNS),

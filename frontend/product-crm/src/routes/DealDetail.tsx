@@ -10,7 +10,7 @@ import {
   ownerById,
 } from "@/data/lookups";
 import { formatDate, formatMoney, formatRelative } from "@/lib/format";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   ActivityTimeline,
   Avatar,
@@ -22,7 +22,7 @@ import {
   Skeleton,
   StagePill,
 } from "@/ui";
-import { ActivityIcon, ArrowLeftIcon, BuildingIcon, MailIcon, PhoneIcon } from "@atmora/ui";
+import { ActivityIcon, ArrowLeftIcon, BuildingIcon, MailIcon, PhoneIcon } from "@opsgrids/ui";
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (

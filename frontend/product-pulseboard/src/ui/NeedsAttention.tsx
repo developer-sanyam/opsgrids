@@ -8,7 +8,7 @@ import {
   CoinsIcon,
   OctagonIcon,
   cn,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 
 const SEVERITY: Record<
   AttentionItem["severity"],

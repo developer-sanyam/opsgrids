@@ -13,11 +13,11 @@ FROM python:3.12-slim-bookworm AS runtime
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH"
-RUN groupadd -r atmora && useradd -r -g atmora atmora
+RUN groupadd -r opsgrids && useradd -r -g opsgrids opsgrids
 WORKDIR /app
 COPY --from=builder /build/.venv /app/.venv
-COPY --chown=atmora:atmora services/account/ /app/
-USER atmora
+COPY --chown=opsgrids:opsgrids services/account/ /app/
+USER opsgrids
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
   CMD python -c "import urllib.request as u,sys; \

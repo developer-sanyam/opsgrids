@@ -4,8 +4,8 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { getCampaigns } from "@/api/client";
 import type { Campaign, CampaignStatus, Channel } from "@/api/types";
 import { roas } from "@/data/derive";
-import { useAsync } from "@atmora/client";
-import { ArrowRightIcon, ChevronDown, MegaphoneIcon, PlusIcon, cn } from "@atmora/ui";
+import { useAsync } from "@opsgrids/client";
+import { ArrowRightIcon, ChevronDown, MegaphoneIcon, PlusIcon, cn } from "@opsgrids/ui";
 import {
   campaignStatusLabel,
   channelLabel,

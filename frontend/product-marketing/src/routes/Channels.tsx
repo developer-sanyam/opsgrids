@@ -3,8 +3,8 @@ import { useMemo } from "react";
 import { getCampaigns } from "@/api/client";
 import type { Campaign, ChannelPerformance } from "@/api/types";
 import { channelPerformance, overviewTotals } from "@/data/derive";
-import { useAsync } from "@atmora/client";
-import { cn } from "@atmora/ui";
+import { useAsync } from "@opsgrids/client";
+import { cn } from "@opsgrids/ui";
 import { formatMoney, formatMoneyCompact, formatNumber, formatRoas } from "@/lib/format";
 import {
   Card,

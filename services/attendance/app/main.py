@@ -15,7 +15,7 @@ register_scope()
 app = create_app(
     settings(),
     title="Attendance service",
-    description="HRMS attendance, shifts and field geo-fencing — part of the Atmora platform.",
+    description="HRMS attendance, shifts and field geo-fencing — part of the OpsGrids platform.",
     routers=[router],
     # Redis on, to match the rest of the platform: the app factory opens and readiness-checks
     # exactly the dependencies a service declares. This service does not bump a permission

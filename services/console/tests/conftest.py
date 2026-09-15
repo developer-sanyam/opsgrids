@@ -84,7 +84,7 @@ async def engine_ready() -> AsyncIterator[None]:
     """Initialise the process-wide app engine so `session_scope` works in fold tests.
 
     The consumer folds through `session_scope(organization_id=…)`, which reaches the app engine as
-    the NOBYPASSRLS `atmora_console` role — so the writes are RLS-real here, exactly as in
+    the NOBYPASSRLS `opsgrids_console` role — so the writes are RLS-real here, exactly as in
     production. Disposed after each test so state never leaks between them.
     """
     init_engine(settings())

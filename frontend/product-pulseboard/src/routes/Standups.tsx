@@ -2,9 +2,9 @@ import { useCallback, useMemo } from "react";
 
 import { getStandups, TODAY } from "@/api/client";
 import { formatDate } from "@/lib/format";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import { Card, EmptyState, ErrorState, PageHeader, Skeleton, StandupList } from "@/ui";
-import { AlertTriangleIcon, CheckCircleIcon, MessageSquareIcon } from "@atmora/ui";
+import { AlertTriangleIcon, CheckCircleIcon, MessageSquareIcon } from "@opsgrids/ui";
 
 export function StandupsPage() {
   const standups = useAsync(useCallback(() => getStandups(TODAY), []), []);

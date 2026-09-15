@@ -13,7 +13,7 @@ import {
   SortIcon,
   UsersIcon,
   cn,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 import { EmployeeStatusPill } from "./StatusPill";
 
 /** Build a CSV of the given rows and hand it to the browser as a download. */

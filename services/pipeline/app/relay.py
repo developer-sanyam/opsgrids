@@ -1,6 +1,6 @@
 """Outbox relay for pipeline. Runs as its own process.
 
-Runs as `atmora_outbox`: BYPASSRLS, because it drains every organization's events in one
+Runs as `opsgrids_outbox`: BYPASSRLS, because it drains every organization's events in one
 loop and under row-level security the app role would silently see nothing; privileged to read
 and mark rows in `outbox` and nothing else, because the admin role owns the whole schema and a
 bug here must not be able to write anything but the rows it marks as sent.

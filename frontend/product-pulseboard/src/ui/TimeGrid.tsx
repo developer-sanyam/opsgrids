@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 
 import type { Person, TimesheetRow, TimesheetStatus } from "@/api/types";
-import { Avatar, CheckCircleIcon, cn } from "@atmora/ui";
+import { Avatar, CheckCircleIcon, cn } from "@opsgrids/ui";
 import { formatDayMonth, formatHours } from "@/lib/format";
 
 const STATUS_META: Record<TimesheetStatus, { label: string; tone: string }> = {

@@ -1,6 +1,6 @@
 # Payment service
 
-Part of the Atmora platform. Owns the `payment` schema — the provider-facing edge of commerce
+Part of the OpsGrids platform. Owns the `payment` schema — the provider-facing edge of commerce
 (ADR-0004 §1, §6). It carries the provider-specific truth (*what was actually collected*, and the
 messy reality behind it) and keeps it isolated, so no other service knows which processor took the
 money — only that a charge was captured or failed.

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from platform_core.config import ServiceSettings
 
-DSN = "postgresql+asyncpg://atmora:secret@db.internal:5432/atmora"
+DSN = "postgresql+asyncpg://opsgrids:secret@db.internal:5432/opsgrids"
 
 
 class _Settings(ServiceSettings):
@@ -29,23 +29,25 @@ class TestDsnAs:
         assert cfg.admin_dsn == DSN
 
     def test_only_the_username_changes(self) -> None:
-        cfg = _Settings(database_url=DSN, db_app_role="atmora_account")
-        assert cfg.app_dsn == "postgresql+asyncpg://atmora_account:secret@db.internal:5432/atmora"
+        cfg = _Settings(database_url=DSN, db_app_role="opsgrids_account")
+        assert (
+            cfg.app_dsn == "postgresql+asyncpg://opsgrids_account:secret@db.internal:5432/opsgrids"
+        )
 
     def test_each_role_gets_its_own_dsn(self) -> None:
         """Four roles, four connections, one file — the split the policies depend on."""
         cfg = _Settings(
             database_url=DSN,
-            db_app_role="atmora_account",
-            db_admin_role="atmora_admin",
-            db_directory_role="atmora_directory",
-            db_outbox_role="atmora_outbox",
+            db_app_role="opsgrids_account",
+            db_admin_role="opsgrids_admin",
+            db_directory_role="opsgrids_directory",
+            db_outbox_role="opsgrids_outbox",
         )
-        assert cfg.app_dsn.startswith("postgresql+asyncpg://atmora_account:")
-        assert cfg.admin_dsn.startswith("postgresql+asyncpg://atmora_admin:")
-        assert cfg.directory_dsn.startswith("postgresql+asyncpg://atmora_directory:")
-        assert cfg.outbox_dsn.startswith("postgresql+asyncpg://atmora_outbox:")
-        assert cfg.outbox_dsn == cfg.dsn_as("atmora_outbox")
+        assert cfg.app_dsn.startswith("postgresql+asyncpg://opsgrids_account:")
+        assert cfg.admin_dsn.startswith("postgresql+asyncpg://opsgrids_admin:")
+        assert cfg.directory_dsn.startswith("postgresql+asyncpg://opsgrids_directory:")
+        assert cfg.outbox_dsn.startswith("postgresql+asyncpg://opsgrids_outbox:")
+        assert cfg.outbox_dsn == cfg.dsn_as("opsgrids_outbox")
 
     def test_the_outbox_role_is_unset_by_default(self) -> None:
         """A service that does not opt in gets the app engine — the logged-about fallback."""

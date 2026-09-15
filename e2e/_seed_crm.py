@@ -41,7 +41,7 @@ FIXTURES = {
 
 def seed_id(org_id: uuid.UUID, key: str) -> uuid.UUID:
     """The deterministic id for a fixture key — the same on both sides of the boundary."""
-    return uuid.uuid5(uuid.NAMESPACE_URL, f"atmora-e2e-crm:{org_id}:{key}")
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"opsgrids-e2e-crm:{org_id}:{key}")
 
 
 async def _child(

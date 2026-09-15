@@ -17,7 +17,7 @@ Usage, from the repository root:
     uv run python tools/wire_product.py <org_id> <product_key> [--no-grant-owners]
 
 Point `DATABASE_URL` at the intended database before running — in a worktree that is
-`atmora_wt`, never the shared `atmora`. Redis must be reachable when a grant lands, because
+`opsgrids_wt`, never the shared `opsgrids`. Redis must be reachable when a grant lands, because
 the permission-version bump refuses to be lost.
 """
 

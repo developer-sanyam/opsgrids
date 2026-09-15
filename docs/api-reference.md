@@ -28,7 +28,7 @@ as `x-perms`. Do not add a permission list to a token; five products of forty pe
 **Errors** are RFC 7807 problem documents, `application/problem+json`:
 
 ```json
-{ "type": "https://atmora.tech/problems/product-not-entitled",
+{ "type": "https://opsgrids.tech/problems/product-not-entitled",
   "title": "Payment required", "status": 402,
   "detail": "crm is not active for this organization" }
 ```

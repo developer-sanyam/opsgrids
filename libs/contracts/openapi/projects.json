@@ -1055,7 +1055,7 @@
     }
   },
   "info": {
-    "description": "The delivery portfolio \u2014 projects, milestones and the workflow board, part of the Atmora platform.",
+    "description": "The delivery portfolio \u2014 projects, milestones and the workflow board, part of the OpsGrids platform.",
     "title": "Projects service",
     "version": "0.1.0"
   },

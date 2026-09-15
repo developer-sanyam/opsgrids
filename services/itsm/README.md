@@ -1,6 +1,6 @@
 # Itsm service
 
-Part of the Atmora platform. Owns the `itsm` schema.
+Part of the OpsGrids platform. Owns the `itsm` schema.
 
 ```bash
 make run SERVICE=itsm PORT=8110    # API

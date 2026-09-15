@@ -10,7 +10,7 @@ import {
   PHASE_LABEL,
   PRIORITY_LABEL,
 } from "@/data/labels";
-import { cn } from "@atmora/ui";
+import { cn } from "@opsgrids/ui";
 import { healthColor } from "./healthColor";
 
 const PILL_BASE =

@@ -12,7 +12,7 @@ concurrency:
 env:
   # Tests run against the production database engine — never SQLite. The domain leans on
   # PostGIS, SKIP LOCKED, ON CONFLICT and row-level security, none of which SQLite has.
-  DATABASE_URL: postgresql+asyncpg://atmora:atmora@localhost:5432/atmora
+  DATABASE_URL: postgresql+asyncpg://opsgrids:opsgrids@localhost:5432/opsgrids
   REDIS_URL: redis://localhost:6379/0
   ENVIRONMENT: ci
   INTERNAL_SERVICE_TOKEN: ci-only-internal-token
@@ -27,12 +27,12 @@ jobs:
       postgres:
         image: postgis/postgis:16-3.4
         env:
-          POSTGRES_USER: atmora
-          POSTGRES_PASSWORD: atmora
-          POSTGRES_DB: atmora
+          POSTGRES_USER: opsgrids
+          POSTGRES_PASSWORD: opsgrids
+          POSTGRES_DB: opsgrids
         ports: ['5432:5432']
         options: >-
-          --health-cmd "pg_isready -U atmora -d atmora"
+          --health-cmd "pg_isready -U opsgrids -d opsgrids"
           --health-interval 5s --health-timeout 3s --health-retries 20
       redis:
         image: redis:7-alpine
@@ -53,7 +53,7 @@ jobs:
 
       - name: Bootstrap extensions and roles
         run: |
-          PGPASSWORD=atmora psql -h localhost -U atmora -d atmora \
+          PGPASSWORD=opsgrids psql -h localhost -U opsgrids -d opsgrids \
             -f tools/dev-bootstrap/init-db.sql
 
       - name: Lint
@@ -171,7 +171,7 @@ jobs:
       - name: Lint
         run: pnpm -r lint
 
-      # @atmora/client and @atmora/config declare no test script; -r skips what it does not find.
+      # @opsgrids/client and @opsgrids/config declare no test script; -r skips what it does not find.
       - name: Tests
         run: pnpm -r test
 

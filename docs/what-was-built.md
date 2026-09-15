@@ -81,10 +81,10 @@ organizations that have bought nothing.
 
 | Package | State |
 |---|---|
-| `atmora-website` | **Built** — Next.js 16 marketing site, 9-product catalogue, runs on `:4300` |
-| `atmora-config` | **Built** — shared strict TypeScript config |
-| `atmora-ui` | **Absent** — declared workspace package, `src/` is empty |
-| `atmora-client` | **Absent** — declared workspace package, `src/` is empty |
+| `opsgrids-website` | **Built** — Next.js 16 marketing site, 9-product catalogue, runs on `:4300` |
+| `opsgrids-config` | **Built** — shared strict TypeScript config |
+| `opsgrids-ui` | **Absent** — declared workspace package, `src/` is empty |
+| `opsgrids-client` | **Absent** — declared workspace package, `src/` is empty |
 
 There is **no product UI**. No dashboard, no signed-in shell, nothing that consumes the API.
 

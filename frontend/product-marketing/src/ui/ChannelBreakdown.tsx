@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 
 import type { ChannelPerformance } from "@/api/types";
 import { channelLabel, formatMoneyCompact, formatNumber, formatRoas } from "@/lib/format";
-import { ArrowRightIcon } from "@atmora/ui";
+import { ArrowRightIcon } from "@opsgrids/ui";
 import { CHANNEL_COLOR, CHANNEL_ICON } from "./channelMeta";
 
 interface ChannelBreakdownProps {

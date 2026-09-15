@@ -535,7 +535,7 @@ async def change_password(
 @router.post(
     "/auth/operator/login",
     response_model=OperatorTokenOut,
-    summary="Operator (Atmora staff) sign in",
+    summary="Operator (OpsGrids staff) sign in",
 )
 async def operator_login(
     payload: OperatorLoginIn,

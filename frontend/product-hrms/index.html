@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="light dark" />
     <meta
       name="description"
-      content="Atmora HR — employee directory, attendance and an HR assistant."
+      content="OpsGrids HR — employee directory, attendance and an HR assistant."
     />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -18,13 +18,13 @@
     <script>
       // Apply the stored theme before first paint so there is no flash of the wrong palette.
       try {
-        var t = localStorage.getItem("atmora.hrms.theme");
+        var t = localStorage.getItem("opsgrids.hrms.theme");
         document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
       } catch (e) {
         document.documentElement.setAttribute("data-theme", "light");
       }
     </script>
-    <title>Atmora HR</title>
+    <title>OpsGrids HR</title>
   </head>
   <body>
     <div id="root"></div>

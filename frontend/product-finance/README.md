@@ -1,8 +1,8 @@
 # product-finance
 
-**Atmora Finance** — invoices, payments and books that reconcile themselves.
+**OpsGrids Finance** — invoices, payments and books that reconcile themselves.
 
-A standalone Vite + React + TypeScript SPA for the Atmora suite. It reuses the shared violet
+A standalone Vite + React + TypeScript SPA for the OpsGrids suite. It reuses the shared violet
 "Console" design system (Manrope, one violet accent, light/dark via `data-theme`) so it feels like
 one product with the rest of the suite; only the screens and content are finance-specific.
 

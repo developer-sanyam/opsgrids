@@ -1,4 +1,4 @@
-# CLAUDE.md — Atmora frontend
+# CLAUDE.md — OpsGrids frontend
 
 Read [`../docs/adr/0001-frontend-topology.md`](../docs/adr/0001-frontend-topology.md) before
 adding an app or moving code between them.
@@ -10,18 +10,18 @@ a prototype.
 ## Layout
 
 ```
-atmora-website      Marketing — public, SEO-critical, mostly static   Next.js
-atmora-dashboard    The ecosystem home after sign-in                  Vite · React
-atmora-admin        Customer administration                           Vite · React
-atmora-internal     Atmora staff console                              Vite · React
+opsgrids-website      Marketing — public, SEO-critical, mostly static   Next.js
+opsgrids-dashboard    The ecosystem home after sign-in                  Vite · React
+opsgrids-admin        Customer administration                           Vite · React
+opsgrids-internal     OpsGrids staff console                              Vite · React
 product-*           One standalone app per product                    Vite · React
-atmora-ui           Design system — the components every app imports
-atmora-client       Auth + API SDK, entitlement and permission hooks
-atmora-config       Shared tsconfig / eslint / vite presets
+opsgrids-ui           Design system — the components every app imports
+opsgrids-client       Auth + API SDK, entitlement and permission hooks
+opsgrids-config       Shared tsconfig / eslint / vite presets
 ```
 
 **An app may not fork a component into itself.** If a product needs a variant, it goes into
-`atmora-ui` as a variant. Nine apps growing nine date pickers is the failure this rule
+`opsgrids-ui` as a variant. Nine apps growing nine date pickers is the failure this rule
 exists to prevent.
 
 ## Design rules

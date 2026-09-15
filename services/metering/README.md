@@ -1,6 +1,6 @@
 # Metering service
 
-Part of the Atmora platform. Owns the `metering` schema — the **append-only usage sink** of
+Part of the OpsGrids platform. Owns the `metering` schema — the **append-only usage sink** of
 commerce (ADR-0004 §7). Product services record consumption here from the moment they exist, with
 `is_billable=false`; billing starts reading a meter only once a plan version in `catalog` prices
 it. A meter reading not taken is gone, so recording begins on day one and billing is a later,

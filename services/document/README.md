@@ -1,6 +1,6 @@
 # Document service
 
-Part of the Atmora platform. Owns the `document` schema.
+Part of the OpsGrids platform. Owns the `document` schema.
 
 ```bash
 make run SERVICE=document PORT=8110    # API

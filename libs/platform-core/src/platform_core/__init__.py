@@ -1,4 +1,4 @@
-"""platform-core — the shared platform every Atmora service is built on.
+"""platform-core — the shared platform every OpsGrids service is built on.
 
 Import from here, not from submodules, for everything on this surface. Anything not
 listed lives in its submodule on purpose: `events`, `audit`, `testing` and `locks` are

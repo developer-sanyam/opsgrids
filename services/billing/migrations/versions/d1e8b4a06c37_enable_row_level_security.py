@@ -2,7 +2,7 @@
 
 Tenant isolation stops being a convention every query has to remember and becomes something the
 database enforces, exactly as on the `account`, `product`, `employee` and `catalog` schemas
-(ADR-0002). The API connects as `atmora_billing` (NOBYPASSRLS), the migrations as the admin
+(ADR-0002). The API connects as `opsgrids_billing` (NOBYPASSRLS), the migrations as the admin
 role, and `get_tenant_session` / the internal API bind the tenant GUC as the first statement of
 every request transaction.
 
@@ -40,7 +40,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "billing"
-APP_ROLE = "atmora_billing"
+APP_ROLE = "opsgrids_billing"
 
 #: Tenant-scoped. Every one carries `organization_id` — the two platform tables every service
 #: has, plus billing's three financial tables.

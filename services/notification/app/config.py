@@ -10,9 +10,9 @@ class Settings(ServiceSettings):
     db_schema: str = "notification"
     #: Its own NOBYPASSRLS role, granted DML on the `notification` schema and nothing else — so
     #: this service cannot read another product's tables, the whole point of the split.
-    db_app_role: str | None = "atmora_notification"
-    db_admin_role: str | None = "atmora_admin"
-    db_outbox_role: str | None = "atmora_outbox"
+    db_app_role: str | None = "opsgrids_notification"
+    db_admin_role: str | None = "opsgrids_admin"
+    db_outbox_role: str | None = "opsgrids_outbox"
 
 
 def settings() -> Settings:

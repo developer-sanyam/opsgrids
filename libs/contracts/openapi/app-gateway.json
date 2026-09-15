@@ -1,6 +1,6 @@
 {
   "info": {
-    "description": "The public entry point for Atmora's product interfaces. Verifies once, resolves the organization, and refuses anything the customer has not activated.",
+    "description": "The public entry point for OpsGrids's product interfaces. Verifies once, resolves the organization, and refuses anything the customer has not activated.",
     "title": "Product gateway",
     "version": "0.1.0"
   },

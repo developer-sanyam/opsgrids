@@ -9,7 +9,7 @@ How four developers work on this platform without holding it in their heads.
 | [`cards-dev-a-lead.md`](cards-dev-a-lead.md) | Dev A — `services/lead` |
 | [`cards-dev-b-pipeline.md`](cards-dev-b-pipeline.md) | Dev B — `services/pipeline` |
 | [`cards-dev-c-hrms.md`](cards-dev-c-hrms.md) | Dev C — `frontend/product-hrms` |
-| [`cards-dev-d-crm.md`](cards-dev-d-crm.md) | Dev D — `frontend/product-crm`, `frontend/atmora-ui` |
+| [`cards-dev-d-crm.md`](cards-dev-d-crm.md) | Dev D — `frontend/product-crm`, `frontend/opsgrids-ui` |
 
 ---
 
@@ -49,8 +49,8 @@ Each developer owns a disjoint set of files. No two open cards ever touch the sa
 |---|---|---|
 | A | `services/lead/**` | any other service |
 | B | `services/pipeline/**` | any other service |
-| C | `frontend/product-hrms/**` | other apps, `atmora-ui` |
-| D | `frontend/product-crm/**`, `frontend/atmora-ui/**` | other apps |
+| C | `frontend/product-hrms/**` | other apps, `opsgrids-ui` |
+| D | `frontend/product-crm/**`, `frontend/opsgrids-ui/**` | other apps |
 
 A and B are building the two halves of the **Sales CRM** product, which is currently broken:
 the gateway gates `/api/v1/leads`, `/api/v1/pipelines` and `/api/v1/activities` on a product
@@ -58,7 +58,7 @@ that has no permission manifest behind it. They run the same five cards against 
 services, from the same reference, so by the end of the fortnight either can read the other's
 code.
 
-`atmora-ui` is shared by every app, so **only one open card may touch it at a time** — Dev D's.
+`opsgrids-ui` is shared by every app, so **only one open card may touch it at a time** — Dev D's.
 
 ## Before day one
 
@@ -66,7 +66,7 @@ Setup is not a card. Each developer follows the environment guide until `make ch
 on their machine, and only then picks up card 1.
 
 > `docs/getting-started.md` is out of date — it names Python 3.13, claims no event consumers are
-> registered, and says `atmora-ui` and `atmora-client` have empty `src/` directories. All three
+> registered, and says `opsgrids-ui` and `opsgrids-client` have empty `src/` directories. All three
 > are false. Use the current setup guide instead, and treat `README.md` and `CLAUDE.md` as
 > authoritative.
 
@@ -82,7 +82,7 @@ code works.
 4. Does every new endpoint have its negative-authz tests — 401, 403 without permission, 402
    without entitlement, 403 out-of-scope write?
 5. Did they invent anything the card did not specify?
-6. Frontend only: all four states present, and `atmora-ui` un-forked?
+6. Frontend only: all four states present, and `opsgrids-ui` un-forked?
 
 Squash-merge into `development`. Promote `development` → `main` when a slice is coherent.
 

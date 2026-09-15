@@ -65,7 +65,7 @@ app = create_app(
     cfg,
     title="Product gateway",
     description=(
-        "The public entry point for Atmora's product interfaces. Verifies once, resolves "
+        "The public entry point for OpsGrids's product interfaces. Verifies once, resolves "
         "the organization, and refuses anything the customer has not activated."
     ),
     on_startup=_startup,

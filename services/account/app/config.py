@@ -8,10 +8,10 @@ from platform_core.config import ServiceSettings, settings_for
 class Settings(ServiceSettings):
     service_name: str = "account"
     db_schema: str = "account"
-    db_app_role: str | None = "atmora_account"
-    db_admin_role: str | None = "atmora_admin"
-    db_outbox_role: str | None = "atmora_outbox"
-    db_directory_role: str | None = "atmora_directory"
+    db_app_role: str | None = "opsgrids_account"
+    db_admin_role: str | None = "opsgrids_admin"
+    db_outbox_role: str | None = "opsgrids_outbox"
+    db_directory_role: str | None = "opsgrids_directory"
 
     #: Where the product permission manifests live (`<product>.json`, written by
     #: `tools/export_permissions.py`). Unset means "walk up to the repository's

@@ -1,6 +1,6 @@
 # Attendance service
 
-Part of the Atmora platform. Owns the `attendance` schema. A process in the `hrms` product,
+Part of the OpsGrids platform. Owns the `attendance` schema. A process in the `hrms` product,
 alongside employee-service. Runs on `:8121` (see `services/app-gateway/routes.json`).
 
 ```bash

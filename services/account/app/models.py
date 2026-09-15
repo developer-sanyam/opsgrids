@@ -69,7 +69,7 @@ class Organization(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    #: URL segment and login hint — `acme` in `acme.atmora.com`.
+    #: URL segment and login hint — `acme` in `acme.opsgrids.com`.
     slug: Mapped[str] = mapped_column(CITEXT, nullable=False, unique=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     legal_name: Mapped[str | None] = mapped_column(String(240))
@@ -228,7 +228,7 @@ class User(Base):
     locale: Mapped[str | None] = mapped_column(String(16))
 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    #: Atmora staff. Never grants access to a customer's data on its own — the operator
+    #: OpsGrids staff. Never grants access to a customer's data on its own — the operator
     #: console checks this *and* audits every action taken through it.
     is_staff: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

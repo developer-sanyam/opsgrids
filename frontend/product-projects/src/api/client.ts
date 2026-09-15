@@ -8,7 +8,7 @@
  * offline design work.
  */
 
-import { apiRequest } from "@atmora/client";
+import { apiRequest } from "@opsgrids/client";
 import { MILESTONES, PROJECTS, TASKS } from "./fixtures";
 import type {
   MilestoneOut,

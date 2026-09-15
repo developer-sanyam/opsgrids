@@ -18,17 +18,17 @@ class Settings(ServiceSettings):
     #: Its own NOBYPASSRLS role, granted DML on the `console` schema and nothing else. The
     #: consumer writes the projections as this role, one tenant at a time (GUC per message), so
     #: the RLS `WITH CHECK` on each projection binds exactly as it does for a customer write.
-    db_app_role: str | None = "atmora_console"
-    db_admin_role: str | None = "atmora_admin"
+    db_app_role: str | None = "opsgrids_console"
+    db_admin_role: str | None = "opsgrids_admin"
     #: BYPASSRLS but SELECT-only, on the projection tables. The staff read API resolves every
     #: organization's commercial state at once — there is no single tenant to bind — so it cannot
     #: run on the application role, which reads nothing without a tenant GUC. Its own role rather
     #: than the admin one keeps a bug in that read path from writing anything (ADR-0002 §2).
-    db_directory_role: str | None = "atmora_console_directory"
+    db_directory_role: str | None = "opsgrids_console_directory"
     #: The outbox relay's role: BYPASSRLS, SELECT+UPDATE on `outbox` only. Kept from the scaffold
     #: so the standard `/health/outbox` probe is honest even though console currently publishes
     #: nothing — it is a pure projection consumer.
-    db_outbox_role: str | None = "atmora_outbox"
+    db_outbox_role: str | None = "opsgrids_outbox"
 
     #: Where the owning services expose the internal endpoints an operator override delegates to.
     #: Console never writes another service's schema (ADR-0003 §2): a suspend calls subscription's

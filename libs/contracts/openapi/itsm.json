@@ -942,7 +942,7 @@
     }
   },
   "info": {
-    "description": "The IT service desk and CMDB \u2014 incidents, service requests and assets, part of the Atmora platform.",
+    "description": "The IT service desk and CMDB \u2014 incidents, service requests and assets, part of the OpsGrids platform.",
     "title": "ITSM service",
     "version": "0.1.0"
   },

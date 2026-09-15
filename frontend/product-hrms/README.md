@@ -8,10 +8,10 @@ switcher and ⌘K search, and a full light/dark theme (toggle in the sidebar).
 ## Run it
 
 ```bash
-pnpm --filter @atmora/product-hrms dev        # http://localhost:4310
-pnpm --filter @atmora/product-hrms build
-pnpm --filter @atmora/product-hrms typecheck
-pnpm --filter @atmora/product-hrms lint
+pnpm --filter @opsgrids/product-hrms dev        # http://localhost:4310
+pnpm --filter @opsgrids/product-hrms build
+pnpm --filter @opsgrids/product-hrms typecheck
+pnpm --filter @opsgrids/product-hrms lint
 ```
 
 Dev serves on **:4310** (`--strictPort`), clear of the marketing site on 4300. In dev, Vite
@@ -79,7 +79,7 @@ A local set under [`src/ui/`](src/ui): `Button`, `Pill`, `Card`, `StatCard`, `St
 `Skeleton` / `EmptyState` / `ErrorState` / `SectionHeader`. Charts are hand-rolled inline SVG —
 no charting dependency.
 
-> **Follow-up:** these should **graduate to the shared `atmora-ui` package** — ADR-0001 forbids
+> **Follow-up:** these should **graduate to the shared `opsgrids-ui` package** — ADR-0001 forbids
 > an app forking shared components long-term. They live here only for this first product slice.
 
 ## Deferred (next slices)
@@ -88,5 +88,5 @@ no charting dependency.
   "Sample data" chip.
 - **Department resolution** — resolve `department_id` against account-service instead of leaning
   on `job_title` for the team label.
-- **`atmora-ui` graduation** — move `src/ui/*` into the shared design-system package.
+- **`opsgrids-ui` graduation** — move `src/ui/*` into the shared design-system package.
 - **Leave & Payroll** — currently routed placeholders.

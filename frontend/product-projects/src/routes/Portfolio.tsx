@@ -11,7 +11,7 @@ import type {
 } from "@/api/types";
 import { HEALTH_LABEL, PHASE_LABEL } from "@/data/labels";
 import { formatDate, formatMoney, relativeDue } from "@/lib/format";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Avatar,
   Card,
@@ -28,7 +28,7 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { BriefcaseIcon } from "@atmora/ui";
+import { BriefcaseIcon } from "@opsgrids/ui";
 
 const NO_PROJECTS: ProjectOut[] = [];
 const NO_MILESTONES: MilestoneOut[] = [];

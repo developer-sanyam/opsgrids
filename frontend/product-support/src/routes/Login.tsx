@@ -1,17 +1,17 @@
 import { useId, useState } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 
-import { ApiError } from "@atmora/client";
-import { useAuth } from "@atmora/client";
-import type { OrganizationChoice } from "@atmora/client";
+import { ApiError } from "@opsgrids/client";
+import { useAuth } from "@opsgrids/client";
+import type { OrganizationChoice } from "@opsgrids/client";
 import { Button } from "@/ui";
-import { EyeIcon, EyeOffIcon } from "@atmora/ui";
+import { EyeIcon, EyeOffIcon } from "@opsgrids/ui";
 import { LogoMark } from "@/ui/LogoMark";
 
 /** Dev-build only: Vite replaces `import.meta.env.DEV` with a literal, so production
  *  bundles carry neither the credential strings nor the button below. */
 const DEMO_CREDENTIALS = import.meta.env.DEV
-  ? { email: "admin@atmora-demo.example.com", password: "Demo-atmora-2026" } // pragma: allowlist secret — seeded dev-demo credential, not a real secret
+  ? { email: "admin@opsgrids-demo.example.com", password: "Demo-opsgrids-2026" } // pragma: allowlist secret — seeded dev-demo credential, not a real secret
   : null;
 
 /** Never leak which half was wrong — one message covers a bad email, bad password, or a 4xx. */
@@ -123,7 +123,7 @@ export function LoginPage() {
           {/* Brand */}
           <div className="mb-6 flex items-center justify-center gap-2.5">
             <LogoMark className="size-9" />
-            <span className="text-[1.15rem] font-extrabold tracking-tight">Atmora Support</span>
+            <span className="text-[1.15rem] font-extrabold tracking-tight">OpsGrids Support</span>
           </div>
 
           <div
@@ -140,7 +140,7 @@ export function LoginPage() {
             ) : (
               <>
                 <header className="mb-6 flex flex-col gap-1.5">
-                  <h1 className="display text-2xl font-extrabold">Sign in to Atmora Support</h1>
+                  <h1 className="display text-2xl font-extrabold">Sign in to OpsGrids Support</h1>
                   <p className="text-sm text-muted">
                     One queue for customers and staff, with SLAs that mean something.
                   </p>
@@ -230,7 +230,7 @@ export function LoginPage() {
           </div>
 
           <p className="mt-6 text-center text-xs text-faint">
-            Atmora Support · secured by your organization's single sign-on
+            OpsGrids Support · secured by your organization's single sign-on
           </p>
         </div>
       </main>

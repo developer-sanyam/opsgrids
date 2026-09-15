@@ -80,8 +80,8 @@ async def _seed_two_tenants(admin_session: AsyncSession) -> set[uuid.UUID]:
 class TestTheProductRelayRoleWiring:
     def test_config_names_the_outbox_role(self) -> None:
         """The leg whose absence made `get_outbox_sessionmaker` fall back to the stall."""
-        assert settings().db_outbox_role == "atmora_outbox"
-        assert "atmora_outbox" in settings().outbox_dsn
+        assert settings().db_outbox_role == "opsgrids_outbox"
+        assert "opsgrids_outbox" in settings().outbox_dsn
 
     async def test_the_relay_drains_every_tenant_as_the_outbox_role(
         self, admin_session: AsyncSession

@@ -1,6 +1,6 @@
 import type { Channel } from "@/api/types";
 import { channelLabel } from "@/lib/format";
-import { cn } from "@atmora/ui";
+import { cn } from "@opsgrids/ui";
 import { CHANNEL_ICON, CHANNEL_TONE } from "./channelMeta";
 
 /** An icon + label chip identifying a campaign's channel. */

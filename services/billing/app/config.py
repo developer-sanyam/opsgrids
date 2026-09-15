@@ -13,11 +13,11 @@ class Settings(ServiceSettings):
     #: `outbox` all carry a tenant policy — so the API must connect as a role row-level security
     #: can bind (ADR-0002 finding 2). Append-only and freeze are enforced *below* this role with
     #: table privileges and a trigger, not by trusting the application to behave.
-    db_app_role: str | None = "atmora_billing"
-    db_admin_role: str | None = "atmora_admin"
+    db_app_role: str | None = "opsgrids_billing"
+    db_admin_role: str | None = "opsgrids_admin"
     #: The outbox relay's role: BYPASSRLS, SELECT+UPDATE on `outbox` only. Kept from the
     #: scaffold — billing emits `commerce.invoice.*` and `commerce.credit.*`.
-    db_outbox_role: str | None = "atmora_outbox"
+    db_outbox_role: str | None = "opsgrids_outbox"
 
 
 def settings() -> Settings:
