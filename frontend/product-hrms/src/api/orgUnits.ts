@@ -10,7 +10,7 @@
  * forward-looking source of truth once org-units are populated.
  */
 
-import { apiRequest } from "@atmora/client";
+import { apiRequest } from "@opsgrids/client";
 import { USE_FIXTURES } from "./client";
 
 /** Mirrors account-service `OrgUnitNode`: a unit plus its nested children, one call for the tree. */

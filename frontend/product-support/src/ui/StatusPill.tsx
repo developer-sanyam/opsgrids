@@ -1,5 +1,5 @@
 import type { Priority, TicketStatus } from "@/api/types";
-import { cn } from "@atmora/ui";
+import { cn } from "@opsgrids/ui";
 import { priorityLabel, statusLabel } from "@/lib/format";
 
 const PILL_BASE =

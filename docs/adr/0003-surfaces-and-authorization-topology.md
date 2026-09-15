@@ -13,7 +13,7 @@ Refines [ADR-0001](0001-frontend-topology.md) (one app per surface) and builds o
 The platform has three kinds of viewer, and they are routinely confused for one another because
 two of them can look similar on screen:
 
-1. **The operator** — Atmora staff. Sees *across* organizations: every customer, their
+1. **The operator** — OpsGrids staff. Sees *across* organizations: every customer, their
    activations, their billing, and the override controls that support and revenue need. This is
    the vendor looking at its tenants.
 2. **The organization admin** — the customer's own leader. Sees *everything inside their own
@@ -58,8 +58,8 @@ audiences, separate gateway. The second is **not an application boundary at all*
 
 ### 2. Operator is a separate app on a separate audience — and staff routes 404, not 403
 
-The operator console is its own frontend (`atmora-internal` in ADR-0001), served from its own
-origin (`internal.atmora.com`), and it talks only to `admin-gateway`. `admin-gateway` and
+The operator console is its own frontend (`opsgrids-internal` in ADR-0001), served from its own
+origin (`internal.opsgrids.com`), and it talks only to `admin-gateway`. `admin-gateway` and
 `app-gateway` are the same `build_gateway` code with different `GatewayPolicy` — crucially a
 different `audience` (`gateway.py`, `GatewayPolicy.audience`). A token minted for a product carries
 that product's `aud` and is **rejected at signature-verification time** on the operator gateway,
@@ -79,7 +79,7 @@ gateway-wide flag alone would leave the per-route intent in `routes.json` unenfo
 gateways actually shipped with once, recorded in the backlog.
 
 The operator's cross-tenant reads do not go through RLS as a tenant would. They run on the
-`atmora_directory` role (BYPASSRLS, SELECT-only on a named subset of tables) that
+`opsgrids_directory` role (BYPASSRLS, SELECT-only on a named subset of tables) that
 [ADR-0002](0002-row-level-security.md) §2 created for exactly this — a *named, auditable* bypass
 surface, not a superuser. Operator writes that reach into a tenant follow the "bypass for the
 lookup only, then narrow" pattern ADR-0002 established: resolve the organization on the bypass
@@ -122,11 +122,11 @@ test** proving that a caller outside scope is refused. The UI mirrors the server
 never *is* the decision. RLS (ADR-0002) sits underneath as the net: even a query that forgot to
 filter cannot cross the organization boundary, because the tenant is pinned in the transaction.
 
-### 4. `atmora-admin` is a task surface, not a third authorization tier
+### 4. `opsgrids-admin` is a task surface, not a third authorization tier
 
-ADR-0001 lists `atmora-admin` (customer administration — users, teams, roles, billing) as a
+ADR-0001 lists `opsgrids-admin` (customer administration — users, teams, roles, billing) as a
 distinct app from the product SPAs. That split is about **ergonomics and ownership**, not
-security: `atmora-admin` is where a customer configures things that span products, so it does not
+security: `opsgrids-admin` is where a customer configures things that span products, so it does not
 belong inside any one product. It is still a **customer** surface on the **product audience**
 through `app-gateway`, and reaching it grants nothing on its own — every action it offers is
 guarded by the same server-side scope check as everywhere else. The authorization boundary between
@@ -142,22 +142,22 @@ This refines ADR-0001 by naming the axis each split is on:
   The frontend boundary matches the *product*, which is also the `key` that is one string across
   the gateway route, the permission prefix, the `ent` claim and the marketplace slug
   (`services/product/app/models.py`, `Product.key`).
-- **Shared packages, not a shared shell:** `atmora-ui` (the design system — the mint/Manrope
-  "PlanIQ" language), `atmora-client` (auth, gateway wiring, entitlement and permission hooks),
-  `atmora-config` (build presets). A product app inherits auth, entitlements, permissions, the
+- **Shared packages, not a shared shell:** `opsgrids-ui` (the design system — the mint/Manrope
+  "PlanIQ" language), `opsgrids-client` (auth, gateway wiring, entitlement and permission hooks),
+  `opsgrids-config` (build presets). A product app inherits auth, entitlements, permissions, the
   design system and typed errors; it re-implements none of them (ADR-0001).
-- **A signed-in shell that authenticates once:** `atmora-dashboard` is where a user lands after
+- **A signed-in shell that authenticates once:** `opsgrids-dashboard` is where a user lands after
   login. It shows only the products the organization has **activated** — entitlement-driven, from
   the same `ent` claim the gateway gates on — and hands off to each product SPA, which is
   independently deployable so a CRM release cannot break HRMS.
-- **The operator console (`atmora-internal`) is its own app on its own audience** through
-  `admin-gateway`, per §2. It is not `atmora-dashboard` with extra tabs and not `atmora-admin`
+- **The operator console (`opsgrids-internal`) is its own app on its own audience** through
+  `admin-gateway`, per §2. It is not `opsgrids-dashboard` with extra tabs and not `opsgrids-admin`
   with a staff flag.
 
 ### 6. Mobile is another client, not another backend
 
 A mobile app is one more client on the **mobile audience**, talking to the same `app-gateway`
-routes and reusing the `atmora-client` request/response shapes and the same entitlements. Per
+routes and reusing the `opsgrids-client` request/response shapes and the same entitlements. Per
 ADR-0000 §3 the token names the mobile audience in `aud`; everything downstream — scope resolution,
 RLS, the 402 gate — is identical, because none of it knows or cares what rendered the request. A
 new client platform is **no service change**: it is a new audience the auth-service will mint for
@@ -194,7 +194,7 @@ and the gateway will accept, and one more consumer of the same APIs.
   fix. The cost is vigilance at exactly one point: `apply()` for lists and `assert_can_touch()` for
   objects, guarded by the per-endpoint negative-authz test. That test is not optional polish; it is
   what keeps the shared code path honest.
-- The operator's `atmora_directory` bypass is a real, if narrow, cross-tenant surface. It inherits
+- The operator's `opsgrids_directory` bypass is a real, if narrow, cross-tenant surface. It inherits
   ADR-0002's obligations: the route-blast-radius test, and `record_sensitive_read` audit on the
   cross-tenant reads — which the backlog notes still exists and is not yet called. That gap is
   inherited here, not closed by it.

@@ -4,7 +4,7 @@ import { getLedger } from "@/api/client";
 import type { LedgerAccount, LedgerReport } from "@/api/types";
 import { formatDate } from "@/lib/format";
 import { formatAmount, formatMoney } from "@/lib/money";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Button,
   Card,
@@ -13,7 +13,7 @@ import {
   SectionHeader,
   Skeleton,
 } from "@/ui";
-import { DownloadIcon } from "@atmora/ui";
+import { DownloadIcon } from "@opsgrids/ui";
 
 /** Revenue less contra-revenue; expenses; and the profit that falls out of the two. */
 function summarise(accounts: LedgerAccount[]) {
@@ -49,7 +49,7 @@ function exportCsv(report: LedgerReport): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `atmora-finance-trial-balance-${report.as_of}.csv`;
+  a.download = `opsgrids-finance-trial-balance-${report.as_of}.csv`;
   document.body.appendChild(a);
   a.click();
   a.remove();

@@ -145,7 +145,7 @@ class TestPublicPaths:
         self, client: AsyncClient, upstream: EchoUpstream
     ) -> None:
         response = await client.post(
-            "/api/v1/auth/login", json={"email": "staff@atmora.tech", "password": "x"}
+            "/api/v1/auth/login", json={"email": "staff@opsgrids.tech", "password": "x"}
         )
         assert response.status_code == 200
 

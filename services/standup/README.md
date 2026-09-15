@@ -1,6 +1,6 @@
 # Standup service
 
-Part of the Atmora platform. Owns the `standup` schema — PulseBoard's daily check-ins,
+Part of the OpsGrids platform. Owns the `standup` schema — PulseBoard's daily check-ins,
 behind the gateway's `/api/v1/standups` prefix.
 
 ```bash

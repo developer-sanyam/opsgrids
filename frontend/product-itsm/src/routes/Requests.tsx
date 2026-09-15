@@ -4,7 +4,7 @@ import type { ComponentType, SVGProps } from "react";
 import { listCatalog, listRequests } from "@/api/client";
 import type { CatalogCategory, CatalogItem, RequestStatus, ServiceRequest } from "@/api/types";
 import { catalogCategoryLabel, relativeTime } from "@/lib/format";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Avatar,
   Card,
@@ -27,7 +27,7 @@ import {
   LogOutIcon,
   TicketIcon,
   UserPlusIcon,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 
 type IconType = ComponentType<SVGProps<SVGSVGElement>>;
 

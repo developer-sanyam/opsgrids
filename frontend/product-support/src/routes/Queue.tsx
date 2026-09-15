@@ -7,7 +7,7 @@ import type { Agent, Priority, Ticket, TicketStatus } from "@/api/types";
 import { agentById } from "@/data/derive";
 import { relativeTime } from "@/lib/format";
 import { NOW, slaInfo } from "@/lib/sla";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Avatar,
   Card,
@@ -22,7 +22,7 @@ import {
   TicketStatusPill,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { InboxIcon } from "@atmora/ui";
+import { InboxIcon } from "@opsgrids/ui";
 
 type StatusFilter = TicketStatus | "all";
 type PriorityFilter = Priority | "all";

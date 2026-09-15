@@ -1,7 +1,7 @@
 import type { ComponentType, SVGProps } from "react";
 
 import type { Ticket } from "@/api/types";
-import { AlertTriangleIcon, CheckCircleIcon, ClockIcon, PauseCircleIcon, cn } from "@atmora/ui";
+import { AlertTriangleIcon, CheckCircleIcon, ClockIcon, PauseCircleIcon, cn } from "@opsgrids/ui";
 import { slaInfo } from "@/lib/sla";
 import type { SlaState } from "@/lib/sla";
 

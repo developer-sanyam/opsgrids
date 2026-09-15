@@ -2,7 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
-import { configureSession } from "@atmora/client";
+import { configureSession } from "@opsgrids/client";
 import {
   FileTextIcon,
   LifeBuoyIcon,
@@ -11,7 +11,7 @@ import {
   ThemeProvider,
   UserPlusIcon,
   UsersIcon,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
@@ -122,16 +122,16 @@ const router = createBrowserRouter([
   },
 ]);
 
-// Name this app's session slot before anything can read a token, so two Atmora apps open
+// Name this app's session slot before anything can read a token, so two OpsGrids apps open
 // in one browser never share a session.
-configureSession("atmora.pulseboard.access_token");
+configureSession("opsgrids.pulseboard.access_token");
 
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("Root element #root not found");
 
 createRoot(rootEl).render(
   <StrictMode>
-    <ThemeProvider storageKey="atmora.pulseboard.theme">
+    <ThemeProvider storageKey="opsgrids.pulseboard.theme">
       <RouterProvider router={router} />
     </ThemeProvider>
   </StrictMode>,

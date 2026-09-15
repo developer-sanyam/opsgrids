@@ -1,6 +1,6 @@
 # Pipeline service
 
-Part of the Atmora platform. Owns the `pipeline` schema.
+Part of the OpsGrids platform. Owns the `pipeline` schema.
 
 ```bash
 make run SERVICE=pipeline PORT=8110    # API

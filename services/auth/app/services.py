@@ -912,7 +912,7 @@ async def _accept_second_factor(session: AsyncSession, user_id: uuid.UUID, code:
 #
 # A wholly separate identity from everything above. The tenant flows authenticate a
 # `DirectoryUser` from account-service and mint a token for one of that person's
-# organizations. Operators are Atmora staff (ADR-0003 §2): they live in this service's own
+# organizations. Operators are OpsGrids staff (ADR-0003 §2): they live in this service's own
 # `staff_accounts` table, belong to no organization, and are minted a token on the
 # `operator` audience carrying `stf=true`. The two never cross — a tenant email is not in
 # `staff_accounts`, and a staff account is not in the directory.

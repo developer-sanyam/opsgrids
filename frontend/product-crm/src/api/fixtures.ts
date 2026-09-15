@@ -1,5 +1,5 @@
 /**
- * Realistic fixture data for Atmora Revenue, shaped exactly like the planned API responses so the
+ * Realistic fixture data for OpsGrids Revenue, shaped exactly like the planned API responses so the
  * whole UI renders without a live backend. Swapped in by the `USE_FIXTURES` flag in `client.ts`.
  *
  * All money is integer **minor units** (paise) of the row's currency — `rupees()` converts a
@@ -20,12 +20,12 @@ const rupees = (n: number): number => n * 100;
 /* -------------------------------- owners -------------------------------- */
 
 export const OWNERS: Owner[] = [
-  { id: "own-1", full_name: "Sofia Marchetti", email: "sofia.marchetti@atmora.example.com", role: "Regional Sales Head" },
-  { id: "own-2", full_name: "Vikram Singh", email: "vikram.singh@atmora.example.com", role: "Account Executive" },
-  { id: "own-3", full_name: "Grace Adeyemi", email: "grace.adeyemi@atmora.example.com", role: "Sales Development Rep" },
-  { id: "own-4", full_name: "Kabir Malhotra", email: "kabir.malhotra@atmora.example.com", role: "Enterprise AE" },
-  { id: "own-5", full_name: "Emily Carter", email: "emily.carter@atmora.example.com", role: "Solutions Consultant" },
-  { id: "own-6", full_name: "Rahul Deshpande", email: "rahul.deshpande@atmora.example.com", role: "Account Manager" },
+  { id: "own-1", full_name: "Sofia Marchetti", email: "sofia.marchetti@opsgrids.example.com", role: "Regional Sales Head" },
+  { id: "own-2", full_name: "Vikram Singh", email: "vikram.singh@opsgrids.example.com", role: "Account Executive" },
+  { id: "own-3", full_name: "Grace Adeyemi", email: "grace.adeyemi@opsgrids.example.com", role: "Sales Development Rep" },
+  { id: "own-4", full_name: "Kabir Malhotra", email: "kabir.malhotra@opsgrids.example.com", role: "Enterprise AE" },
+  { id: "own-5", full_name: "Emily Carter", email: "emily.carter@opsgrids.example.com", role: "Solutions Consultant" },
+  { id: "own-6", full_name: "Rahul Deshpande", email: "rahul.deshpande@opsgrids.example.com", role: "Account Manager" },
 ];
 
 /* ------------------------------- companies ------------------------------- */

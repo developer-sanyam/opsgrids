@@ -12,11 +12,11 @@ class Settings(ServiceSettings):
     #: service cannot read another product's tables, the whole point of the split. It is also the
     #: role the append-only REVOKE targets: `usage_events` has UPDATE/DELETE taken away from it at
     #: the database, so no code path this role can reach may rewrite a recorded meter reading.
-    db_app_role: str | None = "atmora_metering"
-    db_admin_role: str | None = "atmora_admin"
+    db_app_role: str | None = "opsgrids_metering"
+    db_admin_role: str | None = "opsgrids_admin"
     #: The outbox relay's role: BYPASSRLS, SELECT+UPDATE on `outbox` only. Kept from the scaffold —
     #: metering emits `commerce.usage.recorded`.
-    db_outbox_role: str | None = "atmora_outbox"
+    db_outbox_role: str | None = "opsgrids_outbox"
 
 
 def settings() -> Settings:

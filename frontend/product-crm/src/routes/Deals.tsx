@@ -6,9 +6,9 @@ import type { Deal, DealStage, Owner } from "@/api/types";
 import { dealsByStage } from "@/data/derive";
 import { companyName } from "@/data/lookups";
 import { STAGES } from "@/data/stages";
-import { HandshakeIcon, KanbanIcon, LayoutIcon, PlusIcon, cn } from "@atmora/ui";
+import { HandshakeIcon, KanbanIcon, LayoutIcon, PlusIcon, cn } from "@opsgrids/ui";
 import { formatDate, formatMoney } from "@/lib/format";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Button,
   Card,

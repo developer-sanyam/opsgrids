@@ -19,7 +19,7 @@ import {
 } from "@/data/derive";
 import { complianceSummary, isOutstanding, latestPeriod } from "@/data/compliance";
 import type { ComplianceSummary } from "@/data/compliance";
-import { apiRequest } from "@atmora/client";
+import { apiRequest } from "@opsgrids/client";
 import {
   CASHFLOW,
   CASH_BALANCE_MINOR,

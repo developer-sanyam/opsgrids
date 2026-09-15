@@ -2,9 +2,9 @@ import { useMemo } from "react";
 
 import { getSlaPolicy, listAgents } from "@/api/client";
 import type { Agent, Priority } from "@/api/types";
-import { GaugeIcon, cn } from "@atmora/ui";
+import { GaugeIcon, cn } from "@opsgrids/ui";
 import { formatMinutes, priorityLabel } from "@/lib/format";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Avatar,
   Card,

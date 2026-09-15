@@ -8,9 +8,9 @@ from platform_core.config import ServiceSettings, settings_for
 class Settings(ServiceSettings):
     service_name: str = "auth"
     db_schema: str = "auth"
-    db_app_role: str | None = "atmora_auth"
-    db_admin_role: str | None = "atmora_admin"
-    db_outbox_role: str | None = "atmora_outbox"
+    db_app_role: str | None = "opsgrids_auth"
+    db_admin_role: str | None = "opsgrids_admin"
+    db_outbox_role: str | None = "opsgrids_outbox"
 
     #: Where account-service lives. This service holds credentials; the directory — who
     #: exists and which organizations they belong to — is asked for over the internal API
@@ -51,7 +51,7 @@ class Settings(ServiceSettings):
     session_ttl_days: int = 30
     #: Carries the refresh token: httpOnly, path-scoped to the auth routes, and Secure
     #: outside development. Never readable by JavaScript, which is the whole point.
-    refresh_cookie_name: str = "atmora_refresh"
+    refresh_cookie_name: str = "opsgrids_refresh"
     refresh_cookie_domain: str | None = None
 
 

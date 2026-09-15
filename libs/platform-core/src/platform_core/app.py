@@ -166,7 +166,7 @@ def create_app(
             await assert_app_role(engine, environment=settings.environment)
             init_directory_engine(settings)
             # Exempt from the guard too, and for the same reason again: the outbox engine
-            # connects as `atmora_outbox`, BYPASSRLS so `/health/outbox` can count every
+            # connects as `opsgrids_outbox`, BYPASSRLS so `/health/outbox` can count every
             # tenant's unpublished rows. Opened only by a service that owns an outbox.
             if outbox_model is not None:
                 init_outbox_engine(settings)

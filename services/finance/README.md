@@ -1,6 +1,6 @@
 # Finance service
 
-The accounts-receivable module of the Atmora platform, and the home of its GST compliance engine.
+The accounts-receivable module of the OpsGrids platform, and the home of its GST compliance engine.
 Owns the `finance` schema: customers, invoices and credit notes, invoice lines, payments and their
 allocations, the GST rate schedule, the organization's GST registration, the e-invoice filing
 ledger, the purchase book, the IMS reconciliation queue, the GSTR-1 return record, the e-Way bill
@@ -260,5 +260,5 @@ time and strand a lorry because a hash said so.
 ## Demo seed
 
 `tools/demo/seed_finance.py` mirrors the SPA fixtures exactly (12 customers, 21 documents, 9
-payments) into the "Atmora Demo" org via the real write path, so the live screens match the
-approved fixtures. Idempotent. `DATABASE_URL` must point at `atmora_wt`.
+payments) into the "OpsGrids Demo" org via the real write path, so the live screens match the
+approved fixtures. Idempotent. `DATABASE_URL` must point at `opsgrids_wt`.

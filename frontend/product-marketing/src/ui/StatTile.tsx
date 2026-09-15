@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { cn } from "@atmora/ui";
+import { cn } from "@opsgrids/ui";
 
 interface StatTileProps {
   label: string;

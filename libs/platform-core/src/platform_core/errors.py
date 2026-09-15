@@ -18,7 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 CONTENT_TYPE = "application/problem+json"
 
 #: Overridden per deployment so the `type` URI resolves to real documentation.
-PROBLEM_BASE = "https://errors.atmora.dev"
+PROBLEM_BASE = "https://errors.opsgrids.dev"
 
 
 class ProblemError(Exception):

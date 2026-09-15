@@ -8,7 +8,7 @@ import { customerName } from "@/data/customers";
 import { readErrorMessage } from "@/lib/errors";
 import { formatDate } from "@/lib/format";
 import { formatMoney } from "@/lib/money";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   AlertOctagonIcon,
   Card,
@@ -18,7 +18,7 @@ import {
   ShieldCheckIcon,
   Skeleton,
   cn,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 import { FilingStatusPill, SampleDataChip } from "./ComplianceStatus";
 
 /** One headline figure. The qualifier under it is what makes the number mean something. */

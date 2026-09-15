@@ -1,5 +1,5 @@
 {
-  "name": "@atmora/product-crm",
+  "name": "@opsgrids/product-crm",
   "version": "0.1.0",
   "private": true,
   "description": "Standalone CRM product app — pipeline, deals, companies, contacts and activities.",
@@ -14,14 +14,14 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@atmora/client": "workspace:*",
-    "@atmora/ui": "workspace:*",
+    "@opsgrids/client": "workspace:*",
+    "@opsgrids/ui": "workspace:*",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.1.0"
   },
   "devDependencies": {
-    "@atmora/config": "workspace:*",
+    "@opsgrids/config": "workspace:*",
     "@eslint/js": "^9.17.0",
     "@tailwindcss/vite": "^4.0.0",
     "@types/node": "^22.0.0",

@@ -5,7 +5,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { listInventory, listPurchaseOrders, listSuppliers, TRENDS_ARE_SAMPLE } from "@/api/client";
 import { TODAY, ON_TIME_SAMPLE } from "@/api/fixtures";
 import type { InventoryItemOut, PurchaseOrderOut, SupplierOut } from "@/api/types";
-import { useAuth } from "@atmora/client";
+import { useAuth } from "@opsgrids/client";
 import {
   attentionItems,
   inventoryValueMinor,
@@ -16,7 +16,7 @@ import {
   spendByCategory,
   weightedOnTimePct,
 } from "@/data/derive";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import { formatMoneyCompact, formatNumber } from "@/lib/format";
 import {
   Button,
@@ -43,7 +43,7 @@ import {
   PlusIcon,
   SearchIcon,
   TruckIcon,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 import { SAMPLE_DATA, SAMPLE_TREND } from "@/ui/sampleCopy";
 
 type Period = "weekly" | "monthly" | "quarterly";
@@ -244,7 +244,7 @@ export function OverviewPage() {
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
     user?.organizations[0]?.name ??
-    "Atmora";
+    "OpsGrids";
 
   const pos = posState.status === "success" ? posState.data.items : EMPTY_POS;
   const inventory =

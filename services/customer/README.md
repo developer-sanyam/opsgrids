@@ -1,6 +1,6 @@
 # Customer service
 
-The account-book half of the **CRM** product ("Atmora Revenue"). Owns the `customer`
+The account-book half of the **CRM** product ("OpsGrids Revenue"). Owns the `customer`
 schema: the rep directory (owners), companies and contacts. Serves the `product-crm` SPA
 together with deal-service, which owns the pipeline and points at these rows by plain
 UUID — never a cross-schema foreign key.
@@ -80,5 +80,5 @@ is the consumer's write path when it lands.
 
 `tools/demo/seed_crm.py` seeds **both** CRM services and mirrors the SPA fixtures exactly
 (6 owners, 15 companies, 18 contacts — plus the pipeline in deal-service) into the
-"Atmora Demo" org via the real write paths, cross-linked by deterministic UUIDs.
-Idempotent. `DATABASE_URL` must point at `atmora_wt`.
+"OpsGrids Demo" org via the real write paths, cross-linked by deterministic UUIDs.
+Idempotent. `DATABASE_URL` must point at `opsgrids_wt`.

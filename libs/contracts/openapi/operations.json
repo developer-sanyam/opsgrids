@@ -820,7 +820,7 @@
     }
   },
   "info": {
-    "description": "Operations service \u2014 part of the Atmora platform.",
+    "description": "Operations service \u2014 part of the OpsGrids platform.",
     "title": "Operations service",
     "version": "0.1.0"
   },

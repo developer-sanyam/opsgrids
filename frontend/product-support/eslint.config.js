@@ -4,7 +4,7 @@ import reactHooks from "eslint-plugin-react-hooks";
 import reactRefresh from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
 
-// Self-contained flat config. atmora-config is meant to ship a shared eslint preset
+// Self-contained flat config. opsgrids-config is meant to ship a shared eslint preset
 // (ADR-0001); until that lands, this app carries its own and graduates later.
 export default tseslint.config(
   { ignores: ["dist", "node_modules"] },

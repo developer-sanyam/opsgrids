@@ -7,9 +7,9 @@ is merged.
 
 ## What you are building, in plain language
 
-Atmora sells several products. One of them is **Sales CRM** (`salescrm`), and it is currently
+OpsGrids sells several products. One of them is **Sales CRM** (`salescrm`), and it is currently
 broken: the gateway already knows how to route `/api/v1/leads` to a service, and the database
-already has a login role waiting called `atmora_lead` — but the service itself is an empty
+already has a login role waiting called `opsgrids_lead` — but the service itself is an empty
 shell that the code generator produced and nobody filled in. Your five cards fill it in.
 
 **Your reference for every single card is `services/standup/`.** It is the smallest complete
@@ -103,7 +103,7 @@ uv run ruff check services/lead && uv run ruff format --check services/lead
 
 ### DO NOT TOUCH
 
-`tools/dev-bootstrap/init-db.sql` — the `atmora_lead` role is already there. Any other
+`tools/dev-bootstrap/init-db.sql` — the `opsgrids_lead` role is already there. Any other
 service. Anything under `libs/`.
 
 ### IF YOU GET STUCK
@@ -138,8 +138,8 @@ In `app/config.py`, add these two lines to the `Settings` class, keeping the com
 the reference:
 
 ```python
-db_app_role: str | None = "atmora_lead"
-db_admin_role: str | None = "atmora_admin"
+db_app_role: str | None = "opsgrids_lead"
+db_admin_role: str | None = "opsgrids_admin"
 ```
 
 `db_outbox_role` is already there. Do not change `service_name` or `db_schema`.

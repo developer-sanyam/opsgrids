@@ -1,0 +1,148 @@
+/**
+ * The operator audit log (ADR-0003 §2 obligations): every override an operator drives, plus the
+ * cross-tenant sensitive reads that must be recorded. Includes a failed action and a sensitive-read
+ * row so the screen exercises more than the happy path. Newest first.
+ */
+
+import type { AuditEntry } from "@/api/types";
+
+const PRIYA = { actor: "Priya Venkatesan", actor_email: "priya.venkatesan@opsgrids.com" };
+const RAHUL = { actor: "Rahul Menon", actor_email: "rahul.menon@opsgrids.com" };
+const DEVANSH = { actor: "Devansh Rao", actor_email: "devansh.rao@opsgrids.com" };
+
+export const AUDIT_LOG: AuditEntry[] = [
+  {
+    audit_id: "aud_0031",
+    occurred_at: "2026-08-20T13:48:00Z",
+    ...PRIYA,
+    action: "directory.read.sensitive",
+    organization_id: "org_e5b440",
+    organization_name: "Deccan Commodities",
+    summary: "Unmasked billing contact for support case #4821",
+    result: "success",
+    target_ref: "contact:farhan.qureshi",
+  },
+  {
+    audit_id: "aud_0030",
+    occurred_at: "2026-08-19T09:22:00Z",
+    ...PRIYA,
+    action: "override.credit.reversed",
+    organization_id: "org_3af995",
+    organization_name: "Pioneer Alloys",
+    summary: "Reversed ₹20,000 goodwill grant — customer's payment recovered",
+    result: "success",
+    target_ref: "le_pioneer_reversal_01",
+  },
+  {
+    audit_id: "aud_0029",
+    occurred_at: "2026-08-12T10:05:00Z",
+    ...RAHUL,
+    action: "override.suspend",
+    organization_id: "org_905ffb",
+    organization_name: "Everest Bearings",
+    summary: "Suspend rejected — active enterprise contract guard in billing-service",
+    result: "failed",
+    target_ref: "sub_905ffb_1",
+  },
+  {
+    audit_id: "aud_0028",
+    occurred_at: "2026-08-06T09:40:00Z",
+    ...RAHUL,
+    action: "override.comp_grant",
+    organization_id: "org_07c662",
+    organization_name: "BlueOak Retail",
+    summary: "Trial-linked comp access ₹45,000, expires 5 Sep 2026",
+    result: "success",
+    target_ref: "le_blueoak_comp_01",
+  },
+  {
+    audit_id: "aud_0027",
+    occurred_at: "2026-08-04T16:38:00Z",
+    ...RAHUL,
+    action: "override.suspend",
+    organization_id: "org_5c1bb7",
+    organization_name: "Sahara Scrap Co",
+    summary: "Suspended Procure — payment mandate revoked by customer's bank",
+    result: "success",
+    target_ref: "sub_5c1bb7_1",
+  },
+  {
+    audit_id: "aud_0026",
+    occurred_at: "2026-07-30T10:04:00Z",
+    ...PRIYA,
+    action: "override.suspend",
+    organization_id: "org_4b0aa6",
+    organization_name: "Vertex Mining",
+    summary: "Suspended Auctions — non-payment after dunning window closed",
+    result: "success",
+    target_ref: "sub_4b0aa6_1",
+  },
+  {
+    audit_id: "aud_0025",
+    occurred_at: "2026-07-29T11:12:00Z",
+    ...PRIYA,
+    action: "override.comp_grant",
+    organization_id: "org_7e3dd9",
+    organization_name: "Lotus Manufacturing",
+    summary: "Granted 3-month comp access on Scale (₹3,60,000), expires 31 Oct 2026",
+    result: "success",
+    target_ref: "le_lotus_comp_01",
+  },
+  {
+    audit_id: "aud_0024",
+    occurred_at: "2026-06-25T14:32:00Z",
+    ...DEVANSH,
+    action: "catalog.bespoke_price.created",
+    organization_id: "org_e5b440",
+    organization_name: "Deccan Commodities",
+    summary: "Created bespoke Enterprise price ₹2,80,000/mo (pv_trading_bespoke_deccan_v1)",
+    result: "success",
+    target_ref: "pv_trading_bespoke_deccan_v1",
+  },
+  {
+    audit_id: "aud_0023",
+    occurred_at: "2026-06-25T14:35:00Z",
+    ...DEVANSH,
+    action: "override.plan_migration",
+    organization_id: "org_e5b440",
+    organization_name: "Deccan Commodities",
+    summary: "Migrated Trading subscription onto the bespoke Enterprise version",
+    result: "success",
+    target_ref: "sub_e5b440_1",
+  },
+  {
+    audit_id: "aud_0022",
+    occurred_at: "2026-06-02T10:18:00Z",
+    ...PRIYA,
+    action: "override.comp_grant",
+    organization_id: "org_a1f09c",
+    organization_name: "Northwind Metals",
+    summary: "Applied ₹50,000 SLA credit (no expiry) for Q1 settlement-desk downtime",
+    result: "success",
+    target_ref: "le_northwind_credit_01",
+  },
+  {
+    audit_id: "aud_0021",
+    occurred_at: "2026-03-20T08:00:00Z",
+    ...DEVANSH,
+    action: "catalog.plan_version.published",
+    organization_id: null,
+    organization_name: null,
+    summary: "Published HRMS Growth v3 (₹45,000/mo flat + ₹400/seat)",
+    result: "success",
+    target_ref: "pv_hrms_growth_v3",
+  },
+  {
+    audit_id: "aud_0020",
+    occurred_at: "2025-12-09T12:15:00Z",
+    ...PRIYA,
+    action: "catalog.bespoke_price.created",
+    organization_id: "org_a1f09c",
+    organization_name: "Northwind Metals",
+    summary: "Created bespoke Enterprise price ₹4,20,000/mo (pv_trading_bespoke_northwind_v1)",
+    result: "success",
+    target_ref: "pv_trading_bespoke_northwind_v1",
+  },
+];
+
+export const AUDIT_ACTIONS: string[] = [...new Set(AUDIT_LOG.map((a) => a.action))].sort();

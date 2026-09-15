@@ -182,7 +182,7 @@ class TestCrossTenantIsolation:
                 session,
                 ctx_a,
                 GstRegistrationUpsert(
-                    gstin="27AABCA9012D1Z5", legal_name="Atmora Industries Private Limited"
+                    gstin="27AABCA9012D1Z5", legal_name="OpsGrids Industries Private Limited"
                 ),
             )
             await services.record_purchase_document(
@@ -293,7 +293,7 @@ class TestCrossTenantIsolation:
                     session,
                     admin_ctx(org_id),
                     GstRegistrationUpsert(
-                        gstin="27AABCA9012D1Z5", legal_name="Atmora Industries Private Limited"
+                        gstin="27AABCA9012D1Z5", legal_name="OpsGrids Industries Private Limited"
                     ),
                 )
                 registration_id = registration.id

@@ -1,6 +1,6 @@
 # Eventbridge service
 
-Part of the Atmora platform. Owns the `eventbridge` schema.
+Part of the OpsGrids platform. Owns the `eventbridge` schema.
 
 ```bash
 make run SERVICE=eventbridge PORT=8110    # API

@@ -30,8 +30,8 @@ from platform_core.logging import correlation_id_ctx, get_logger
 
 log = get_logger("events")
 
-EXCHANGE: Final[str] = "atmora.events"
-DLX: Final[str] = "atmora.events.dlx"
+EXCHANGE: Final[str] = "opsgrids.events"
+DLX: Final[str] = "opsgrids.events.dlx"
 ENVELOPE_VERSION: Final[int] = 1
 
 
@@ -114,7 +114,7 @@ def build_envelope(row: Any, *, producer: str) -> dict[str, Any]:
         "correlation_id": row.correlation_id,
         "causation_id": str(row.causation_id) if row.causation_id else None,
         "actor": row.actor,
-        "schema_uri": f"atmora://contracts/{row.event_type}/v{row.event_version}",
+        "schema_uri": f"opsgrids://contracts/{row.event_type}/v{row.event_version}",
         "payload": row.payload,
     }
 
@@ -126,7 +126,7 @@ class OutboxRelay:
     ``FOR UPDATE SKIP LOCKED``, so several replicas can drain the same table safely.
 
     **This process must not be subject to row-level security** — it deliberately handles
-    every organization's events in one loop. Run it as `atmora_outbox` (BYPASSRLS, SELECT and
+    every organization's events in one loop. Run it as `opsgrids_outbox` (BYPASSRLS, SELECT and
     UPDATE on `outbox` only), through `get_outbox_sessionmaker`; as the app role it selects
     nothing, logs nothing and loops while the outbox fills.
     """

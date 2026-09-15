@@ -46,7 +46,7 @@ for review and will be sent back unread.
 ### Frontend PRs only
 
 - [ ] Every list has all four states: loading, error, empty, full.
-- [ ] I did not copy a component out of `@atmora/ui` into this app.
+- [ ] I did not copy a component out of `@opsgrids/ui` into this app.
 - [ ] No `any`, and no `!` used to silence the compiler.
 
 ## Anything I was unsure about

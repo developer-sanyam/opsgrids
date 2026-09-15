@@ -1,6 +1,6 @@
 # Notification service
 
-Part of the Atmora platform. Owns the `notification` schema.
+Part of the OpsGrids platform. Owns the `notification` schema.
 
 ```bash
 make run SERVICE=notification PORT=8110    # API

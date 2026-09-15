@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { RequireAuth as BaseRequireAuth } from "@atmora/client";
+import { RequireAuth as BaseRequireAuth } from "@opsgrids/client";
 
 import { LogoMark } from "@/ui/LogoMark";
 

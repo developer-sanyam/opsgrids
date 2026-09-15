@@ -1,5 +1,5 @@
 /**
- * Typed CRM API client for Atmora Revenue.
+ * Typed CRM API client for OpsGrids Revenue.
  *
  * **Fixtures by default.** The CRM service is a skeleton on this branch, so the whole app renders
  * from `fixtures.ts` with no gateway and no login. Set `VITE_USE_FIXTURES=false` once the service
@@ -8,7 +8,7 @@
  * are wired here already, so going live is a flag flip.
  */
 
-import { apiRequest } from "@atmora/client";
+import { apiRequest } from "@opsgrids/client";
 import { ACTIVITIES, COMPANIES, CONTACTS, DEALS, OWNERS } from "./fixtures";
 import type {
   Activity,

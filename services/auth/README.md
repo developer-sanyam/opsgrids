@@ -1,6 +1,6 @@
 # Auth service
 
-Part of the Atmora platform. Owns the `auth` schema.
+Part of the OpsGrids platform. Owns the `auth` schema.
 
 ```bash
 make run SERVICE=auth PORT=8110    # API

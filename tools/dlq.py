@@ -31,7 +31,7 @@ import aio_pika
 
 from platform_core.events import EXCHANGE
 
-DEFAULT_AMQP = "amqp://atmora:atmora@localhost:5673/"
+DEFAULT_AMQP = "amqp://opsgrids:opsgrids@localhost:5673/"
 
 
 def _summary(envelope: dict[str, Any]) -> str:

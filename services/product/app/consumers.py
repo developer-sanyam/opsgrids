@@ -8,7 +8,7 @@ step with the lifecycle is all that entitlement needs.
 
 Three properties are load-bearing, and each has a test:
 
-* **The GUC is set per message.** This process runs as `atmora_product` (NOBYPASSRLS), and
+* **The GUC is set per message.** This process runs as `opsgrids_product` (NOBYPASSRLS), and
   `activations` is under a forced tenant policy. `session_scope(organization_id=...)` binds the
   tenant for the transaction, so the upsert passes the policy's `WITH CHECK`. Without it the write
   is refused — the RLS net, proven by a test that omits the binding and asserts the failure.

@@ -11,7 +11,7 @@ import {
 import { readErrorMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
 import { formatMoney } from "@/lib/money";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   AlertOctagonIcon,
   Button,
@@ -26,7 +26,7 @@ import {
   Skeleton,
   Tag,
   cn,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 import { FilingStatusPill, SampleDataChip } from "./ComplianceStatus";
 
 const SUPPLY_TYPE_LABEL: Record<string, string> = {

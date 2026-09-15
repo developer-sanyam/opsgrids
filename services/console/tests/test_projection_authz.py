@@ -105,7 +105,7 @@ class TestTheReaderStaysNarrow:
                 text("SELECT current_user, rolbypassrls FROM pg_roles WHERE rolname = current_user")
             )
         ).one()
-        assert row.current_user == "atmora_console_directory"
+        assert row.current_user == "opsgrids_console_directory"
         assert row.rolbypassrls is True, (
             "the operator reader must bypass RLS to read across tenants"
         )

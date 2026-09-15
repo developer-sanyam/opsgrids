@@ -17,13 +17,13 @@ product and employee record their classifications:
   Authentication runs before an organization is chosen (ADR-0000 §1); these rows belong to
   a person, carry no `organization_id`, and a tenant policy is unexpressable on them.
 - `signing_keys` — platform-global by design (ADR-0000 §2). No tenant dimension exists.
-- `staff_accounts` — Atmora operators, who belong to no organization.
+- `staff_accounts` — OpsGrids operators, who belong to no organization.
 - `processed_events` — no organization column; a policy here silently defeats consumer
   idempotency (the same exemption every other service records).
 - `outbox`, `audit_logs` — these *do* carry `organization_id`, but auth stages both from
   pre-organization flows (password reset, registration) under the nil-UUID platform
   sentinel on a bare, unbound session. A forced policy's WITH CHECK would refuse exactly
-  those writes. The relay reads `outbox` as BYPASSRLS `atmora_outbox` regardless, and
+  those writes. The relay reads `outbox` as BYPASSRLS `opsgrids_outbox` regardless, and
   `audit_logs` is already append-only by privilege (`apply_schema_grants` revokes
   UPDATE/DELETE).
 
@@ -44,7 +44,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "auth"
-APP_ROLE = "atmora_auth"
+APP_ROLE = "opsgrids_auth"
 
 #: Tenant-scoped: the only table in this schema owned by an organization rather than by a
 #: person, the platform, or a pre-organization flow.

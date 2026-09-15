@@ -9,14 +9,14 @@
 import type { Agent, SlaPolicy, Ticket } from "./types";
 
 export const AGENTS: Agent[] = [
-  { id: "ag-01", name: "Priya Nair", email: "priya.nair@atmora.example.com", role: "team_lead", team: "Tier 1", open_load: 7, avg_first_response_min: 18, csat_pct: 96, solved_7d: 41, online: true },
-  { id: "ag-02", name: "Daniel Okafor", email: "daniel.okafor@atmora.example.com", role: "senior_agent", team: "Billing", open_load: 9, avg_first_response_min: 24, csat_pct: 93, solved_7d: 37, online: true },
-  { id: "ag-03", name: "Sofia Marchetti", email: "sofia.marchetti@atmora.example.com", role: "agent", team: "Tier 1", open_load: 12, avg_first_response_min: 41, csat_pct: 87, solved_7d: 29, online: true },
-  { id: "ag-04", name: "Kabir Malhotra", email: "kabir.malhotra@atmora.example.com", role: "senior_agent", team: "Technical", open_load: 6, avg_first_response_min: 22, csat_pct: 94, solved_7d: 33, online: true },
-  { id: "ag-05", name: "Grace Adeyemi", email: "grace.adeyemi@atmora.example.com", role: "agent", team: "Onboarding", open_load: 10, avg_first_response_min: 33, csat_pct: 90, solved_7d: 26, online: false },
-  { id: "ag-06", name: "Tobias Berg", email: "tobias.berg@atmora.example.com", role: "agent", team: "Technical", open_load: 8, avg_first_response_min: 29, csat_pct: 91, solved_7d: 31, online: true },
-  { id: "ag-07", name: "Meera Krishnan", email: "meera.krishnan@atmora.example.com", role: "agent", team: "Billing", open_load: 5, avg_first_response_min: 26, csat_pct: 92, solved_7d: 22, online: false },
-  { id: "ag-08", name: "Lena Novak", email: "lena.novak@atmora.example.com", role: "senior_agent", team: "Tier 1", open_load: 11, avg_first_response_min: 19, csat_pct: 95, solved_7d: 39, online: true },
+  { id: "ag-01", name: "Priya Nair", email: "priya.nair@opsgrids.example.com", role: "team_lead", team: "Tier 1", open_load: 7, avg_first_response_min: 18, csat_pct: 96, solved_7d: 41, online: true },
+  { id: "ag-02", name: "Daniel Okafor", email: "daniel.okafor@opsgrids.example.com", role: "senior_agent", team: "Billing", open_load: 9, avg_first_response_min: 24, csat_pct: 93, solved_7d: 37, online: true },
+  { id: "ag-03", name: "Sofia Marchetti", email: "sofia.marchetti@opsgrids.example.com", role: "agent", team: "Tier 1", open_load: 12, avg_first_response_min: 41, csat_pct: 87, solved_7d: 29, online: true },
+  { id: "ag-04", name: "Kabir Malhotra", email: "kabir.malhotra@opsgrids.example.com", role: "senior_agent", team: "Technical", open_load: 6, avg_first_response_min: 22, csat_pct: 94, solved_7d: 33, online: true },
+  { id: "ag-05", name: "Grace Adeyemi", email: "grace.adeyemi@opsgrids.example.com", role: "agent", team: "Onboarding", open_load: 10, avg_first_response_min: 33, csat_pct: 90, solved_7d: 26, online: false },
+  { id: "ag-06", name: "Tobias Berg", email: "tobias.berg@opsgrids.example.com", role: "agent", team: "Technical", open_load: 8, avg_first_response_min: 29, csat_pct: 91, solved_7d: 31, online: true },
+  { id: "ag-07", name: "Meera Krishnan", email: "meera.krishnan@opsgrids.example.com", role: "agent", team: "Billing", open_load: 5, avg_first_response_min: 26, csat_pct: 92, solved_7d: 22, online: false },
+  { id: "ag-08", name: "Lena Novak", email: "lena.novak@opsgrids.example.com", role: "senior_agent", team: "Tier 1", open_load: 11, avg_first_response_min: 19, csat_pct: 95, solved_7d: 39, online: true },
 ];
 
 export const TICKETS: Ticket[] = [
@@ -347,7 +347,7 @@ export const TICKETS: Ticket[] = [
   {
     id: "TK-4017",
     subject: "Staff laptop can't reach the internal admin console",
-    requester: { name: "Aditya Rao", email: "aditya.rao@atmora.example.com", company: "Atmora (internal)", kind: "staff" },
+    requester: { name: "Aditya Rao", email: "aditya.rao@opsgrids.example.com", company: "OpsGrids (internal)", kind: "staff" },
     priority: "normal",
     status: "solved",
     channel: "web",

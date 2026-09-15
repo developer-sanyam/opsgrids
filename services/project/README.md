@@ -1,6 +1,6 @@
 # Project service
 
-Part of the Atmora platform. Owns the `project` schema — PulseBoard's engagements and board,
+Part of the OpsGrids platform. Owns the `project` schema — PulseBoard's engagements and board,
 behind the gateway's `/api/v1/projects` prefix.
 
 ```bash

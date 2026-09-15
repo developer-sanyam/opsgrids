@@ -10,7 +10,7 @@ from platform_core.app import create_app
 app = create_app(
     settings(),
     title="Employee service",
-    description="The HRMS Employee Master — part of the Atmora platform.",
+    description="The HRMS Employee Master — part of the OpsGrids platform.",
     routers=[router],
     # Redis on, to match account and the rest of the platform: the app factory opens and
     # readiness-checks exactly the dependencies a service declares. This service does not bump

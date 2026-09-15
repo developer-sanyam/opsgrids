@@ -11,7 +11,7 @@ So all four business tables are policied, alongside the two platform tables that
 has no organization column, so any policy would make every idempotency lookup return nothing and a
 redelivered event would be handled twice in silence.
 
-This is the net the whole service leans on: payment connects as `atmora_payment` (NOBYPASSRLS), so
+This is the net the whole service leans on: payment connects as `opsgrids_payment` (NOBYPASSRLS), so
 a write only lands when the transaction is bound to its tenant — on the internal charge route
 (organization from the body) and on the webhook (organization from the provider's signed `notes`).
 
@@ -32,7 +32,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "payment"
-APP_ROLE = "atmora_payment"
+APP_ROLE = "opsgrids_payment"
 
 #: Tenant-scoped. Every one carries `organization_id`: the four business tables plus the two
 #: platform tables that record this service's own changes and events.

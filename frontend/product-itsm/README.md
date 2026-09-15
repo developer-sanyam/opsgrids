@@ -1,8 +1,8 @@
-# product-itsm — Atmora IT
+# product-itsm — OpsGrids IT
 
 The standalone **ITSM** product app: an IT service desk covering incidents, service requests
 (the joiners-movers-leavers flows) and the asset CMDB. Vite · React 19 · TypeScript (strict) ·
-Tailwind v4, on the shared Atmora violet "Console" design system.
+Tailwind v4, on the shared OpsGrids violet "Console" design system.
 
 ## Screens
 

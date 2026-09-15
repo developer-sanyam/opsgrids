@@ -9,7 +9,7 @@ import { customerName } from "@/data/customers";
 import { outstandingMinor } from "@/data/derive";
 import { formatDate } from "@/lib/format";
 import { formatAmount } from "@/lib/money";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Card,
   DataTable,
@@ -24,7 +24,7 @@ import {
   Tag,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { ReceiptIcon } from "@atmora/ui";
+import { ReceiptIcon } from "@opsgrids/ui";
 
 const STATUS_FILTERS: { value: InvoiceStatusFilter; label: string }[] = [
   { value: "all", label: "All" },

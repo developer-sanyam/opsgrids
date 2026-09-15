@@ -8,7 +8,7 @@ import {
   getCampaignWeekly,
 } from "@/api/client";
 import { cac, campaignsForAudience, costPerLead, roas } from "@/data/derive";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   channelLabel,
   formatDate,
@@ -28,7 +28,7 @@ import {
   Skeleton,
   StatTile,
 } from "@/ui";
-import { ArrowRightIcon, TargetIcon, UsersIcon } from "@atmora/ui";
+import { ArrowRightIcon, TargetIcon, UsersIcon } from "@opsgrids/ui";
 
 export function CampaignDetailPage() {
   const { id = "" } = useParams();

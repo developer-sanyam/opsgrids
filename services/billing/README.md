@@ -1,6 +1,6 @@
 # Billing service
 
-Part of the Atmora platform. Owns the `billing` schema — the **financial record of truth**
+Part of the OpsGrids platform. Owns the `billing` schema — the **financial record of truth**
 (ADR-0004 §1, §3).
 
 ```bash

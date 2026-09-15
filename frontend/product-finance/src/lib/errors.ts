@@ -15,7 +15,7 @@
  * that blurs the two sends somebody looking for missing documents that were never there.
  */
 
-import { ApiError } from "@atmora/client";
+import { ApiError } from "@opsgrids/client";
 
 /** The permission each compliance surface needs, for the sentence a 403 gets. */
 const PERMISSION: Record<string, string> = {

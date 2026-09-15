@@ -100,7 +100,7 @@ async def _register(session, ctx, gstin: str = SELLER) -> None:
     await services.set_gst_registration(
         session,
         ctx,
-        GstRegistrationUpsert(gstin=gstin, legal_name="Atmora Industries Private Limited"),
+        GstRegistrationUpsert(gstin=gstin, legal_name="OpsGrids Industries Private Limited"),
     )
 
 
@@ -764,7 +764,7 @@ class TestTheGucIsLoadBearing:
     async def test_the_filing_write_fails_without_the_tenant_guc(
         self, unbound_app_session, org_id
     ) -> None:
-        """The consumer runs as `atmora_finance` (NOBYPASSRLS) and `einvoice_filings` is under a
+        """The consumer runs as `opsgrids_finance` (NOBYPASSRLS) and `einvoice_filings` is under a
         forced policy whose `WITH CHECK` is false with no tenant bound. This is exactly what the
         per-message `session_scope(organization_id=...)` prevents — proven by omitting it."""
         with pytest.raises(Exception, match="row-level security"):

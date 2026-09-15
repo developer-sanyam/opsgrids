@@ -1,6 +1,6 @@
 # Subscription service
 
-Part of the Atmora platform. Owns the `subscription` schema.
+Part of the OpsGrids platform. Owns the `subscription` schema.
 
 ```bash
 make run SERVICE=subscription PORT=8110    # API

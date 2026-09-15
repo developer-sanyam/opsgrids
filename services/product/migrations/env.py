@@ -34,7 +34,7 @@ def grant_directory_reader(connection: Connection) -> None:
     """Cross-tenant SELECT for the entitlements read, on the two tables it touches.
 
     `apply_schema_grants` also grants the directory reader, but its list is account-service's
-    identity tables and its role is `atmora_directory`; product's reader is its own role on its
+    identity tables and its role is `opsgrids_directory`; product's reader is its own role on its
     own tables, so it is granted here explicitly. `internal.entitlements` calls
     `selectors.entitlements_for`, which reads `activations` (the row a 402 depends on) and
     `products` (for the `is_platform` catalogue). SELECT only — no INSERT, UPDATE or DELETE ever
@@ -45,7 +45,7 @@ def grant_directory_reader(connection: Connection) -> None:
     a step somebody must remember is a step somebody eventually forgets. Each grant is guarded by
     `to_regclass`, so a downgrade that has dropped the tables is a no-op rather than an error.
     """
-    reader = "atmora_product_directory"
+    reader = "opsgrids_product_directory"
     if not connection.execute(
         text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": reader}
     ).scalar():

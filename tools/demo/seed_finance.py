@@ -19,7 +19,7 @@ Idempotent: a GST registration, customer name, invoice number or payment referen
 exists in the org is reused/skipped, so re-running does not duplicate.
 
 Usage: seed_finance.py <finance_service_dir> <org_id> <admin_user_id> <admin_membership_id>
-       DATABASE_URL must point at atmora_wt (never the shared atmora).
+       DATABASE_URL must point at opsgrids_wt (never the shared opsgrids).
 """
 
 from __future__ import annotations
@@ -46,8 +46,8 @@ REFERENCE_TODAY = date(2026, 8, 24)  # the fixtures' "today" — statuses are fr
 #: before storing it, so an invented number fails the seed rather than sitting in the demo data
 #: looking real. They were computed with `domain.gstin_check_digit`.
 SELLER_GSTIN = "27AABCA9012D1Z5"
-SELLER_LEGAL_NAME = "Atmora Industries Private Limited"
-SELLER_TRADE_NAME = "Atmora"
+SELLER_LEGAL_NAME = "OpsGrids Industries Private Limited"
+SELLER_TRADE_NAME = "OpsGrids"
 
 
 @dataclass(frozen=True)

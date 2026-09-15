@@ -213,7 +213,7 @@ class SsoConfigOut(BaseModel):
 
 
 class OperatorLoginIn(BaseModel):
-    """An Atmora operator signing in. No organization: staff belong to none."""
+    """An OpsGrids operator signing in. No organization: staff belong to none."""
 
     email: EmailStr
     password: Password

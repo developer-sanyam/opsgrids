@@ -39,7 +39,7 @@ depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "subscription"
 TABLE = "dunning_cycles"
-APP_ROLE = "atmora_subscription"
+APP_ROLE = "opsgrids_subscription"
 
 
 def upgrade() -> None:

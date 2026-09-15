@@ -45,7 +45,7 @@ impossible later.
 
 Each product and each console is a standalone frontend rather than one monolithic SPA with
 routes. Next.js where SEO and static rendering matter (marketing), Vite + React for signed-in
-apps. Shared code lives in `atmora-ui`, `atmora-client` and `atmora-config`.
+apps. Shared code lives in `opsgrids-ui`, `opsgrids-client` and `opsgrids-config`.
 
 The cost is real — more build config, a risk of visual drift — and the mitigation is the shared
 packages. Both are recorded in the ADR.
@@ -67,7 +67,7 @@ land the prerequisites as a slice containing no policies at all.
 
 ## ADR-0003 — surfaces and authorization topology
 
-There are three viewers — operator (Atmora staff, cross-tenant), organization admin (their own
+There are three viewers — operator (OpsGrids staff, cross-tenant), organization admin (their own
 org), employee (their own data) — and they are separated by **two different mechanisms**, which
 this ADR refuses to conflate. Operator-vs-customer is an **audience + gateway** boundary: the
 operator console is its own app on `admin-gateway` with a separate token `aud`, and staff routes
@@ -76,8 +76,8 @@ Org-admin-vs-employee is **not a separate app** — it is the permission **scope
 (`OWN/TEAM/LOCATION/ORG`) from the grammar, enforced server-side (RLS + `ScopeContext` + a
 negative-authz test per endpoint); the same product SPA renders an admin's whole org and an
 employee's own record from identical code. A UI gate hides a control; it does not protect data.
-Refines ADR-0001: one SPA per **product** (not per service), shared `atmora-ui`/`atmora-client`/
-`atmora-config`, an entitlement-driven shell (`atmora-dashboard`), and mobile as one more client
+Refines ADR-0001: one SPA per **product** (not per service), shared `opsgrids-ui`/`opsgrids-client`/
+`opsgrids-config`, an entitlement-driven shell (`opsgrids-dashboard`), and mobile as one more client
 on the mobile audience over the same APIs.
 
 ## ADR-0004 — commercial model (accepted design, not implemented)

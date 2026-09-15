@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Task, TaskStatus } from "@/api/types";
 import { personName } from "@/data/people";
 import { PROJECTS } from "@/api/fixtures";
-import { Avatar, GripIcon, MoreHorizontalIcon, Tag, cn } from "@atmora/ui";
+import { Avatar, GripIcon, MoreHorizontalIcon, Tag, cn } from "@opsgrids/ui";
 import { formatHours } from "@/lib/format";
 import { PriorityPill } from "./StatusPill";
 import { TASK_STATUS_META } from "./statusMeta";

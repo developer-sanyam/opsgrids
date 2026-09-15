@@ -35,7 +35,7 @@ _COMMON = frozenset(
         "letmein123",
         "welcome123",
         "admin@123",
-        "atmora123",
+        "opsgrids123",
         "changeme123",
     }
 )
@@ -122,7 +122,7 @@ def generate_totp_secret() -> str:
     return base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
 
 
-def totp_uri(secret: str, *, account: str, issuer: str = "Atmora") -> str:
+def totp_uri(secret: str, *, account: str, issuer: str = "OpsGrids") -> str:
     """The `otpauth://` URI behind the QR code."""
     from urllib.parse import quote
 

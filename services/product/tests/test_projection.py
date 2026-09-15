@@ -353,7 +353,7 @@ class TestTheGucIsLoadBearing:
     async def test_the_projected_write_fails_without_the_tenant_guc(
         self, unbound_app_session: AsyncSession, org_id: uuid.UUID
     ) -> None:
-        """The RLS net. The consumer runs as `atmora_product` (NOBYPASSRLS); without a tenant
+        """The RLS net. The consumer runs as `opsgrids_product` (NOBYPASSRLS); without a tenant
         bound, `activations` is under a forced policy whose `WITH CHECK` is false, so the insert is
         refused. This is exactly what the per-message `session_scope(organization_id=...)` prevents
         — proven by omitting it."""

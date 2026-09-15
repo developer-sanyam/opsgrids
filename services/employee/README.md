@@ -1,6 +1,6 @@
 # Employee service
 
-The first HRMS module and the Employee Master of the Atmora platform. Owns the `employee`
+The first HRMS module and the Employee Master of the OpsGrids platform. Owns the `employee`
 schema. This is the canonical record of who works for an organization; account-service's
 `membership.employee_id` points at an `employees.id` here, by plain UUID with no cross-schema
 foreign key.
@@ -52,6 +52,6 @@ _None yet._
 
 ## Tenancy
 
-Connects as `atmora_employee` (NOBYPASSRLS). Row-level security is live on `employees`,
+Connects as `opsgrids_employee` (NOBYPASSRLS). Row-level security is live on `employees`,
 `audit_logs` and `outbox`; `processed_events` is exempt (no organization column). Every request
 runs through the tenant chokepoint, which binds the transaction to the caller's organization.

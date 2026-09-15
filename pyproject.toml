@@ -1,7 +1,7 @@
 [project]
-name = "atmora"
+name = "opsgrids"
 version = "0.1.0"
-description = "Atmora Platform — one ecosystem, many products"
+description = "OpsGrids Platform — one ecosystem, many products"
 requires-python = ">=3.12"
 dependencies = [
     "platform-core",

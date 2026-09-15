@@ -10,7 +10,7 @@ from platform_core.app import create_app
 app = create_app(
     settings(),
     title="Marketing service",
-    description="Marketing analytics — campaigns, audiences and attribution — part of Atmora.",
+    description="Marketing analytics — campaigns, audiences and attribution — part of OpsGrids.",
     routers=[router],
     # Redis on, to match the rest of the platform: the app factory opens and readiness-checks
     # exactly the dependencies a service declares. This service does not bump a permission version

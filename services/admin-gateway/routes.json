@@ -1,6 +1,6 @@
 {
   "$comment": [
-    "The operator surface. Deliberately narrow: Atmora staff acting across customers,",
+    "The operator surface. Deliberately narrow: OpsGrids staff acting across customers,",
     "and the partner webhook endpoint. Nothing else.",
     "",
     "`/api/v1/auth/operator` is the pre-auth staff sign-in (auth-service): it is NOT",

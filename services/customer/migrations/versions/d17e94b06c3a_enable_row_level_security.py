@@ -5,7 +5,7 @@ something the database enforces, exactly as it is on the other product schemas (
 
 Three things have to be true before this does anything, and all three are in place
 platform-wide: policies exist (this file); the API connects as a **NOBYPASSRLS** role
-(`atmora_customer`), so it cannot bypass row security the way a superuser would; and
+(`opsgrids_customer`), so it cannot bypass row security the way a superuser would; and
 something sets the tenant GUC — `get_tenant_session` binds every request transaction to
 the caller's organization as its first statement.
 
@@ -30,7 +30,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "customer"
-APP_ROLE = "atmora_customer"
+APP_ROLE = "opsgrids_customer"
 
 #: Tenant-scoped: every one carries `organization_id`.
 TENANT_TABLES = (

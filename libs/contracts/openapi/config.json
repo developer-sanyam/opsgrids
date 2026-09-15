@@ -22,7 +22,7 @@
     }
   },
   "info": {
-    "description": "Config service \u2014 part of the Atmora platform.",
+    "description": "Config service \u2014 part of the OpsGrids platform.",
     "title": "Config service",
     "version": "0.1.0"
   },

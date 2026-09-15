@@ -9,7 +9,7 @@ import {
   ClockIcon,
   EmptyState,
   cn,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 import { formatMoneyCompact } from "@/lib/format";
 import { OwnerBadge } from "./OwnerBadge";
 

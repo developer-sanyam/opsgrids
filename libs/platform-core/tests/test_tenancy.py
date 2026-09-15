@@ -38,7 +38,7 @@ class _Settings(ServiceSettings):
 @pytest_asyncio.fixture
 async def admin_engine() -> AsyncIterator[AsyncEngine]:
     """The migration role. BYPASSRLS — exactly what the guard must refuse."""
-    engine = create_async_engine(_Settings(db_admin_role="atmora_admin").admin_dsn)
+    engine = create_async_engine(_Settings(db_admin_role="opsgrids_admin").admin_dsn)
     yield engine
     await engine.dispose()
 

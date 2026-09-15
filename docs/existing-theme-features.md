@@ -3,8 +3,8 @@
 An inventory of what the visual system actually provides today. For the rules on using and
 extending it, see [theme-guide.md](theme-guide.md).
 
-**Where it lives:** one file — `frontend/atmora-website/src/app/globals.css`, 258 lines. There is
-no shared design-system package; `atmora-ui` is a declared workspace package with an empty
+**Where it lives:** one file — `frontend/opsgrids-website/src/app/globals.css`, 258 lines. There is
+no shared design-system package; `opsgrids-ui` is a declared workspace package with an empty
 `src/`. So the honest description is *the marketing site has a theme*, not *the platform has a
 design system*.
 

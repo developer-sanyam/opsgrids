@@ -1,4 +1,4 @@
-# Atmora Platform — developer entry points.
+# OpsGrids Platform — developer entry points.
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
 
@@ -202,14 +202,14 @@ licenses: ## Every dependency's licence is on the allow-list in tools/licenses.t
 #
 #   dev-only- / ci-only-       the development and CI placeholders (.env.example, the
 #                              ServiceSettings defaults, ci.yml); production refuses them
-#   atmora:atmora@             the bootstrap superuser DSN for the local stack
-#   *_PASSWORD: atmora         compose and CI wiring for that same local stack
+#   opsgrids:opsgrids@             the bootstrap superuser DSN for the local stack
+#   *_PASSWORD: opsgrids         compose and CI wiring for that same local stack
 #   driver://user:pass@        Alembic's own placeholder URL; env.py overwrites it at runtime
 #   frontend/pnpm-lock.yaml    integrity hashes look like secrets and are not
 #
 # Anything else that is a false positive — an event name containing "password", a test's
 # fixture password — carries `# pragma: allowlist secret` on the line itself.
-SECRETS_EXCLUDE_LINES := dev-only-|ci-only-|atmora:atmora@|(POSTGRES|MINIO_ROOT)_PASSWORD: "?atmora|PGPASSWORD=atmora|driver://user:pass@
+SECRETS_EXCLUDE_LINES := dev-only-|ci-only-|opsgrids:opsgrids@|(POSTGRES|MINIO_ROOT)_PASSWORD: "?opsgrids|PGPASSWORD=opsgrids|driver://user:pass@
 SECRETS_EXCLUDE_FILES := frontend/pnpm-lock\.yaml$$
 
 .PHONY: secrets

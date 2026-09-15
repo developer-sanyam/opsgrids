@@ -1,6 +1,6 @@
 # Activity service
 
-Part of the Atmora platform. Owns the `activity` schema.
+Part of the OpsGrids platform. Owns the `activity` schema.
 
 ```bash
 make run SERVICE=activity PORT=8110    # API

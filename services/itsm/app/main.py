@@ -11,7 +11,7 @@ app = create_app(
     settings(),
     title="ITSM service",
     description="The IT service desk and CMDB — incidents, service requests and assets, "
-    "part of the Atmora platform.",
+    "part of the OpsGrids platform.",
     routers=[router],
     # A stalled relay is silent; `/health/outbox` makes it visible, counting through the
     # outbox engine so it is not blind to the rows the app role cannot see.

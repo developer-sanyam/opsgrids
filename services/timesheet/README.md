@@ -1,6 +1,6 @@
 # Timesheet service
 
-Part of the Atmora platform. Owns the `timesheet` schema — PulseBoard's weekly time grid,
+Part of the OpsGrids platform. Owns the `timesheet` schema — PulseBoard's weekly time grid,
 behind the gateway's `/api/v1/timesheets` prefix.
 
 ```bash

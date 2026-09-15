@@ -140,7 +140,7 @@ class TestFullyGranted:
 
 
 #: A valid registration payload — the write these tests try to make without the grant for it.
-REGISTRATION = {"gstin": "27AABCA9012D1Z5", "legal_name": "Atmora Industries Private Limited"}
+REGISTRATION = {"gstin": "27AABCA9012D1Z5", "legal_name": "OpsGrids Industries Private Limited"}
 
 
 class TestTheComplianceWrite:

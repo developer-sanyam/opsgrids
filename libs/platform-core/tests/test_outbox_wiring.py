@@ -61,7 +61,7 @@ class TestRelayLegs:
             pytest.skip("no migrations")
         text = env.read_text()
         assert "outbox_role=cfg.db_outbox_role" in text, (
-            f"{service.name}: apply_schema_grants without outbox_role= means atmora_outbox "
+            f"{service.name}: apply_schema_grants without outbox_role= means opsgrids_outbox "
             "holds no grant on this schema's outbox — the relay dies with permission denied"
         )
 
@@ -86,4 +86,4 @@ class TestTheScaffolderIsBornCorrect:
         assert "get_outbox_sessionmaker" in generator
         assert "assert_outbox_role" in generator
         assert "assert_app_role" in generator
-        assert 'db_outbox_role: str | None = "atmora_outbox"' in generator
+        assert 'db_outbox_role: str | None = "opsgrids_outbox"' in generator

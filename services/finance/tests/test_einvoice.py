@@ -56,7 +56,7 @@ async def _register(session, ctx, gstin: str = SELLER) -> None:
     await services.set_gst_registration(
         session,
         ctx,
-        GstRegistrationUpsert(gstin=gstin, legal_name="Atmora Industries Private Limited"),
+        GstRegistrationUpsert(gstin=gstin, legal_name="OpsGrids Industries Private Limited"),
     )
 
 
@@ -108,7 +108,9 @@ class TestGstRegistration:
             registration = await services.set_gst_registration(
                 session,
                 ctx,
-                GstRegistrationUpsert(gstin=SELLER, legal_name="Atmora Industries Private Limited"),
+                GstRegistrationUpsert(
+                    gstin=SELLER, legal_name="OpsGrids Industries Private Limited"
+                ),
             )
         assert registration.gstin == SELLER
         assert registration.state_code == "27"
@@ -139,7 +141,7 @@ class TestGstRegistration:
                 ctx,
                 GstRegistrationUpsert(
                     gstin=BUYER_OTHER_STATE,  # a Gujarat branch registration
-                    legal_name="Atmora Industries Private Limited",
+                    legal_name="OpsGrids Industries Private Limited",
                 ),
             )
         async with session.begin():
@@ -164,7 +166,7 @@ class TestGstRegistration:
             await services.set_gst_registration(
                 session,
                 ctx,
-                GstRegistrationUpsert(gstin=SELLER, legal_name="Atmora Industries Pvt Ltd"),
+                GstRegistrationUpsert(gstin=SELLER, legal_name="OpsGrids Industries Pvt Ltd"),
             )
             refreshed = await selectors.get_invoice(session, org_id, invoice.id)
         assert refreshed is not None
@@ -1203,7 +1205,9 @@ class TestFilingsAreAppendOnlyAtTheDatabase:
             registration = await services.set_gst_registration(
                 session,
                 ctx,
-                GstRegistrationUpsert(gstin=SELLER, legal_name="Atmora Industries Private Limited"),
+                GstRegistrationUpsert(
+                    gstin=SELLER, legal_name="OpsGrids Industries Private Limited"
+                ),
             )
             registration_id = registration.id
         async with session.begin():
@@ -1211,11 +1215,11 @@ class TestFilingsAreAppendOnlyAtTheDatabase:
                 session,
                 ctx,
                 GstRegistrationUpsert(
-                    gstin=SELLER, legal_name="Atmora Industries Pvt Ltd", trade_name="Atmora"
+                    gstin=SELLER, legal_name="OpsGrids Industries Pvt Ltd", trade_name="OpsGrids"
                 ),
             )
         assert updated.id == registration_id
-        assert updated.legal_name == "Atmora Industries Pvt Ltd"
+        assert updated.legal_name == "OpsGrids Industries Pvt Ltd"
 
 
 # --------------------------------------------------------------------- a stub payload
@@ -1232,7 +1236,7 @@ def _stub_payload() -> IrpInvoicePayload:
         supply_type="b2b",
         reverse_charge=False,
         seller_gstin=SELLER,
-        seller_legal_name="Atmora Industries Private Limited",
+        seller_legal_name="OpsGrids Industries Private Limited",
         seller_state_code="27",
         buyer_gstin=BUYER_SAME_STATE,
         buyer_legal_name="Orbit Logistics",

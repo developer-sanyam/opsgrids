@@ -2,7 +2,7 @@ import { useId, useMemo, useState } from "react";
 
 import type { TrendPoint, TrendRange } from "@/api/types";
 import { HEADCOUNT_TREND, TREND_DELTA } from "@/data/samples";
-import { DeltaPill, SampleChip, cn } from "@atmora/ui";
+import { DeltaPill, SampleChip, cn } from "@opsgrids/ui";
 import { SAMPLE_DATA } from "./sampleCopy";
 
 const RANGES: { value: TrendRange; label: string }[] = [

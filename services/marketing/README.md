@@ -1,6 +1,6 @@
 # Marketing service
 
-Part of the Atmora platform. Owns the `marketing` schema — campaigns, audiences and the
+Part of the OpsGrids platform. Owns the `marketing` schema — campaigns, audiences and the
 attribution rollups behind the Marketing product's Overview, Campaigns, Channels and Audiences
 screens.
 

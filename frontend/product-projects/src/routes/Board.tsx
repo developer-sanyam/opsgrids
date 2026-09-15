@@ -1,7 +1,7 @@
 import { getAllProjects, listTasks } from "@/api/client";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import { Card, ErrorState, KanbanBoard, PageHeader, Skeleton } from "@/ui";
-import { BoardIcon } from "@atmora/ui";
+import { BoardIcon } from "@opsgrids/ui";
 
 export function BoardPage() {
   const tasksState = useAsync(listTasks, []);

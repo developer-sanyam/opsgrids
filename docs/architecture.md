@@ -8,7 +8,7 @@ missing, see [backlog.md](backlog.md) and [production-readiness.md](production-r
 
 ---
 
-## 1. What Atmora is
+## 1. What OpsGrids is
 
 One organization → one account → one user directory → many products.
 
@@ -66,7 +66,7 @@ each exposes a top-level `app`, so exactly one can live in a process.
 | Package manager | **pnpm** workspace |
 
 **No UI dependency beyond React.** No component library, no chart library, no icon package.
-`DataTable`, `Sparkline`, `QrCode` and the icon set are all written in `atmora-ui`.
+`DataTable`, `Sparkline`, `QrCode` and the icon set are all written in `opsgrids-ui`.
 
 ### Data and infrastructure
 
@@ -205,18 +205,18 @@ listener so no route can forget it.
 
 **3. Per-service Postgres roles.** One shared application role would let `account` run
 `SELECT * FROM auth.credentials`. Instead every service connects as its own `NOBYPASSRLS` login
-role — `atmora_account`, `atmora_auth`, `atmora_lead` … — granted usage on its own schema and
+role — `opsgrids_account`, `opsgrids_auth`, `opsgrids_lead` … — granted usage on its own schema and
 nothing else. A missing tenant filter therefore returns *nothing*, not *everything*.
 
 Four roles deliberately hold `BYPASSRLS`, each confined to named tables:
 
 | Role | May read | Why it must bypass |
 |---|---|---|
-| `atmora_admin` | everything | Runs migrations and backfills, which legitimately span organizations |
-| `atmora_directory` | a handful of `account` tables, SELECT only | Sign-in resolves a person *before* an organization is known |
-| `atmora_product_directory` | `product.activations`, `product.products`, SELECT only | auth-service resolves entitlements while minting the token that would establish tenancy |
-| `atmora_console_directory` | console's projection tables, SELECT only | The operator console reads across every tenant by definition |
-| `atmora_outbox` | `outbox`, SELECT and UPDATE only | The relay's query exists to *discover* which organizations have work, so it can bind no tenant |
+| `opsgrids_admin` | everything | Runs migrations and backfills, which legitimately span organizations |
+| `opsgrids_directory` | a handful of `account` tables, SELECT only | Sign-in resolves a person *before* an organization is known |
+| `opsgrids_product_directory` | `product.activations`, `product.products`, SELECT only | auth-service resolves entitlements while minting the token that would establish tenancy |
+| `opsgrids_console_directory` | console's projection tables, SELECT only | The operator console reads across every tenant by definition |
+| `opsgrids_outbox` | `outbox`, SELECT and UPDATE only | The relay's query exists to *discover* which organizations have work, so it can bind no tenant |
 
 Getting that last one wrong is the failure mode with no error message: as a `NOBYPASSRLS` role the
 relay's drain query matches zero rows, so it publishes nothing, logs nothing, and loops while the
@@ -397,7 +397,7 @@ The wire envelope, additive-only within a major version:
   "aggregate_type": "…",   "aggregate_id": "…",
   "occurred_at": "…",      "producer": "standup",
   "correlation_id": "…",   "causation_id": "…",
-  "actor": {…},            "schema_uri": "atmora://contracts/<type>/v<n>",
+  "actor": {…},            "schema_uri": "opsgrids://contracts/<type>/v<n>",
   "payload": {…}
 }
 ```
@@ -480,12 +480,12 @@ auto-accepts an IMS document.
 One standalone app per surface (ADR-0001). A customer who bought only CRM downloads only CRM.
 
 ```
-atmora-website     marketing — public, SEO-critical      Next.js 16
-atmora-internal    operator console (staff, cross-tenant) Vite · React
+opsgrids-website     marketing — public, SEO-critical      Next.js 16
+opsgrids-internal    operator console (staff, cross-tenant) Vite · React
 product-*          nine product apps                      Vite · React
-atmora-ui          the design system every app imports
-atmora-client      auth session, gateway HTTP, problem+json parsing
-atmora-config      shared tsconfig / eslint / vite presets
+opsgrids-ui          the design system every app imports
+opsgrids-client      auth session, gateway HTTP, problem+json parsing
+opsgrids-config      shared tsconfig / eslint / vite presets
 ```
 
 **An app may not fork a component into itself.** A product variant becomes a prop on the shared
@@ -501,9 +501,9 @@ JavaScript never sees. Errors arrive as **RFC 7807 `problem+json`** and are pars
 errors, with field-level detail mapped onto the control that caused it. A 4xx is never retried.
 
 **Current wiring:** six product apps default to live data; `product-crm`, `product-pulseboard` and
-`atmora-internal` still default to fixtures. Several live apps carry named sample islands — an
+`opsgrids-internal` still default to fixtures. Several live apps carry named sample islands — an
 Overview trend chart, a sparkline — flagged in the UI with a "Sample data" chip rather than passed
-off as real. `atmora-internal` is a deliberate fork off the shared packages, because its palette is
+off as real. `opsgrids-internal` is a deliberate fork off the shared packages, because its palette is
 a different token family and its auth is the staff registry, which has no organization selection.
 
 ---

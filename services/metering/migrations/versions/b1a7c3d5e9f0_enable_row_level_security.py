@@ -43,7 +43,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "metering"
-APP_ROLE = "atmora_metering"
+APP_ROLE = "opsgrids_metering"
 
 #: Tenant-scoped. The append-only sink, its rebuildable aggregate, and the two platform tables.
 TENANT_TABLES = ("audit_logs", "outbox", "usage_events", "usage_rollups")

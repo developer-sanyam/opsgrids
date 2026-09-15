@@ -1,4 +1,4 @@
-import { useAuth } from "@atmora/client";
+import { useAuth } from "@opsgrids/client";
 import {
   ClockIcon,
   ColumnsIcon,
@@ -12,8 +12,8 @@ import {
   Sidebar as SidebarShell,
   UserPlusIcon,
   UsersIcon,
-} from "@atmora/ui";
-import type { NavEntry, NavGroup } from "@atmora/ui";
+} from "@opsgrids/ui";
+import type { NavEntry, NavGroup } from "@opsgrids/ui";
 import { LogoMark } from "./LogoMark";
 
 const GROUPS: NavGroup[] = [
@@ -50,7 +50,7 @@ const PINNED: NavEntry[] = [
 
 /**
  * This product's navigation. The shell — account switcher, ⌘K search, active pill, workspace card
- * and theme toggle — is `@atmora/ui`'s `Sidebar`. Everything below is the part that is genuinely
+ * and theme toggle — is `@opsgrids/ui`'s `Sidebar`. Everything below is the part that is genuinely
  * this product's: its groups, its mark and its wording.
  */
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {

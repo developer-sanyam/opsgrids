@@ -1,6 +1,6 @@
 # Support service
 
-Part of the Atmora platform. Owns the `support` schema — the shared support desk behind the
+Part of the OpsGrids platform. Owns the `support` schema — the shared support desk behind the
 `support` product (`frontend/product-support`).
 
 ```bash

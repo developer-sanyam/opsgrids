@@ -21,7 +21,7 @@ pytestmark = pytest.mark.integration
 class TestTheSuiteRunsUnprivileged:
     async def test_the_session_is_the_app_role(self, session: AsyncSession) -> None:
         who = (await session.execute(text("SELECT current_user"))).scalar_one()
-        assert who == "atmora_attendance", (
+        assert who == "opsgrids_attendance", (
             f"tests are connected as {who!r}. They must run as the application role, or the "
             "privilege split and row-level security are invisible here."
         )

@@ -1,6 +1,6 @@
 # Config service
 
-Part of the Atmora platform. Owns the `config` schema.
+Part of the OpsGrids platform. Owns the `config` schema.
 
 ```bash
 make run SERVICE=config PORT=8110    # API

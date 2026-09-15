@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import type { Deal, DealStage } from "@/api/types";
 import { companyName, ownerName } from "@/data/lookups";
 import { STAGES } from "@/data/stages";
-import { Avatar, CalendarIcon, GripIcon, cn } from "@atmora/ui";
+import { Avatar, CalendarIcon, GripIcon, cn } from "@opsgrids/ui";
 import { formatDate, formatMoneyCompact } from "@/lib/format";
 
 interface DealCardProps {
