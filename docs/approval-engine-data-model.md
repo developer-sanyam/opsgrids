@@ -1,0 +1,1428 @@
+# Approval engine — persistence design
+
+Companion to [ADR-0006](adr/0006-approval-engine.md). This document is the schema contract for
+three services: the new `approval` schema, one additive change to `employee`, and one new table in
+`attendance`. It specifies tables, constraints, indexes, roles and migration order. **No migration
+or model code is written yet** — this is the design the migrations must implement.
+
+**Aligned 2026-09-16 with the amended ADR-0006** (its §14 lists the consequential edits it expects
+here) and with the new [ADR-0007](adr/0007-permission-rollout-to-live-tenants.md). Everything the
+amendment changed — the hierarchy copy's columns, the SLA floor, the `summary`/`request_note` split,
+the write-once application trio and the extended guard trigger, the sweep's new batch shape, and the
+two endpoints that landed on this schema — was re-verified against the running database rather than
+transcribed. Where a statement in the ADR is not implementable as written, this document says so and
+gives the implementable form; those are called out inline and listed at the end of §3.3 and §7.
+
+Every plan and behaviour claim below was executed against the dev PostgreSQL 16.4 (`localhost:5434`)
+inside a transaction that was rolled back: a scratch schema, seeded to volume (300k–1M requests,
+375k–1.25M steps, 300 organizations with a skewed size distribution), with row-level security
+enabled and the queries run as `opsgrids_app` (NOBYPASSRLS) and `opsgrids_outbox` (BYPASSRLS). The
+numbers are cold-cache on a laptop container; treat them as ratios, not SLOs.
+
+One exception to the rolled-back rule: the liveness-probe measurements in §2.2. An index-only scan
+needs the visibility map, only `VACUUM` sets it, and `VACUUM` cannot run inside a transaction — so
+that run used a **committed** scratch schema (375,003 steps, `VACUUM ANALYZE`d), dropped afterwards
+and verified gone. Its `Heap Fetches: 0` lines are real rather than an artefact of an unvacuumed
+table.
+
+Conventions inherited and not restated per table: `TIMESTAMPTZ` in UTC everywhere; UUID keys;
+`organization_id NOT NULL` on every table and leading every index; no cross-schema foreign keys;
+`created_at`/`updated_at`/`created_by`/`updated_by` from the platform mixins; no floating point
+(no money appears in this slice at all).
+
+---
+
+## 1. Schema `approval`
+
+### 1.0 Mixin deviations, stated once
+
+- `OrgScopedMixin` declares `organization_id` with `index=True`, which emits a single-column
+  `ix_approval_<table>_organization_id`. **Every table here overrides it to `index=False`**, because
+  each one already has a composite index or constraint leading with `organization_id`. A duplicate
+  leading-column index costs write throughput on the highest-write table in the service and serves
+  no query. This is a deliberate departure from the copy-paste shape of the older services.
+- `hierarchy_nodes` and `approval_policies` use a **natural composite primary key**, so they compose
+  `OrgScopedMixin` + `TimestampMixin` rather than `TenantBase` (no surrogate `id`).
+- `SoftDeleteMixin` (`deleted_at`) is carried only where `TenantBase` is used, and is **never
+  written**. The guard triggers treat it as immutable. Nothing in this domain is soft-deleted:
+  requests and steps are history, delegations are revoked.
+
+### 1.0.1 Constraint and index naming — declare it the way the convention will produce it
+
+`libs/platform-core/src/platform_core/models.py` fixes the convention for the whole estate:
+
+```python
+NAMING_CONVENTION = {
+    "ix": "ix_%(column_0_label)s",
+    "uq": "uq_%(table_name)s_%(column_0_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s",
+}
+```
+
+`make migration-check` (`alembic check` per service, CI gate `.github/workflows/ci.yml`) compares the
+name in the model against the name in the database, so a name the migration wrote and a name
+SQLAlchemy generates must agree exactly. The rules below were verified by building these tables
+against SQLAlchemy 2.0.52 with this convention and printing what came out — not inferred from the
+format strings.
+
+1. **PRIMARY KEY — leave unnamed.** Produces `pk_<table>`. Every `pk_…` in this document is that.
+2. **CHECK — declare a bare suffix.** `CheckConstraint("status in (…)", name="status")` on
+   `approval_requests` produces `ck_approval_requests_status`. Two observed failure modes: an
+   *unnamed* `CheckConstraint` raises `InvalidRequestError: Naming convention including
+   %(constraint_name)s token requires that constraint is explicitly named` at import; and a name
+   that already carries the prefix is prefixed **again** —
+   `name="ck_approval_requests_status"` produced
+   `ck_approval_requests_ck_approval_requests_status`. **Every `ck_…` name printed in this document
+   is the produced name; what you declare is everything after `ck_<table>_`.** This matches
+   `services/billing` and `services/subscription`, which declare `name="state"`, `name="currency_iso"`.
+3. **UNIQUE — always declare explicitly.** The convention keys on the *first column only*, so the
+   two composite uniques on `approval_requests`, both leading with `organization_id`, are **both**
+   auto-named `uq_approval_requests_organization_id` — verified, SQLAlchemy emitted that identical
+   name twice, and Postgres cannot create the second. The `uq` template has no `%(constraint_name)s`
+   token, so an explicit name is used verbatim.
+4. **FOREIGN KEY — declare explicitly, and name it after the *pointer* column, not the tenant
+   column.** Unnamed, `%(column_0_name)s` is the constraint's first column, which on every composite
+   FK in this design is `organization_id`: `FOREIGN KEY (organization_id, dotted_line_manager_id)`
+   auto-names `fk_employees_organization_id_employees`, and a future second tenant-leading self-FK
+   (`reporting_manager_id`) would collide with it.
+5. **Index — declare explicitly.** Unnamed, `%(column_0_label)s` is schema-qualified and names only
+   the leading column: `Index(None, "organization_id", "request_id")` on `approval.approval_steps`
+   produced `ix_approval_approval_steps_organization_id`, which collides with every other unnamed
+   org-leading index — and with the one `OrgScopedMixin` would emit (§1.0).
+6. **EXCLUDE — always name it.** The convention has **no key for `ExcludeConstraint`** at all;
+   verified that an unnamed one keeps `name=None`, leaving Postgres to invent a name that no model
+   will ever match.
+
+One correction to the review that raised this: an explicit name that is *not* convention-shaped does
+not fail the gate. `alembic check` passes today on `account`, which carries `uq_org_units_org_code`
+and `uq_memberships_user_org` (verified by running it: "No new upgrade operations detected").
+What breaks the gate is an **unnamed** object whose generated name the migration did not use, a
+**duplicate** generated name, and the `ck` doubling in rule 2.
+
+7. **Check the length.** Postgres truncates identifiers at 63 bytes and a truncated name matches
+   nothing, so a long generated name fails the gate silently. The longest name in this design is
+   `fk_regularization_requests_attendance_id_attendance_records`, at 59.
+
+### 1.1 `hierarchy_nodes` — the read-only copy of the reporting lines
+
+| Column | Type | Null | Default | Notes |
+|---|---|---|---|---|
+| `organization_id` | uuid | no | — | PK part 1 |
+| `employee_id` | uuid | no | — | PK part 2. `employee.employees.id`, plain UUID |
+| `reporting_manager_id` | uuid | yes | — | Plain UUID. **Not a foreign key even within this schema** |
+| `dotted_line_manager_id` | uuid | yes | — | Stored, never routed (ADR-0006 §2) |
+| `status` | varchar(20) | no | — | `probation\|active\|on_notice\|exited` |
+| `display_name` | varchar(200) | no | — | `employees.full_name`. **Not** a sealed field (ADR-0006 §2) |
+| `employee_no` | varchar(40) | no | — | `employees.employee_no`. Rendered beside the name to disambiguate |
+| `location_code` | varchar(40) | yes | — | `account.locations.code`. Kept: the SPA resolves it to a timezone |
+| `source_version` | bigint | no | — | The employee row's `hierarchy_version` this state came from |
+| `source_occurred_at` | timestamptz | no | — | Display and debugging only. **Never compared** |
+| `created_at`, `updated_at` | timestamptz | no | `now()` | |
+
+```
+CONSTRAINT pk_hierarchy_nodes PRIMARY KEY (organization_id, employee_id)
+CHECK (status IN ('probation','active','on_notice','exited'))      ck_hierarchy_nodes_status
+CHECK (source_version >= 0)                                        ck_hierarchy_nodes_source_version_non_negative
+CHECK (reporting_manager_id IS NULL OR reporting_manager_id <> employee_id)    ck_hierarchy_nodes_manager_not_self
+CHECK (dotted_line_manager_id IS NULL OR dotted_line_manager_id <> employee_id) ck_hierarchy_nodes_dotted_not_self
+CHECK (length(btrim(display_name)) > 0)                            ck_hierarchy_nodes_display_name_present
+CHECK (length(btrim(employee_no)) > 0)                             ck_hierarchy_nodes_employee_no_present
+```
+
+**Which columns the copy carries, and why** (ADR-0006 §2, amended). `display_name` and
+`employee_no` are here because approval stores people as UUIDs and an ordinary approver holds
+`hrms.people.employee.read:OWN` — they can resolve nobody but themselves, so without a local name
+every approval screen renders raw ids. Both are fed by the same full-state events, so they cost one
+field each on an event that is already being changed. `display_name` is `employees.full_name`, which
+is deliberately outside employee's PII envelope (that covers date of birth, personal contact, PAN,
+Aadhaar, UAN, ESI and bank details), so copying it moves no ciphertext and needs no unmask
+permission. `location_code` is kept because it now has a named consumer: it is a *code*, resolved by
+the SPA against `GET /api/v1/locations` to render every instant in the requester's timezone.
+`department_id` is **dropped** — it had no consumer, and rendering it would have required a second
+denormalised name fed by a third service's events.
+
+Both new columns are `NOT NULL`, which is safe precisely because of the version gate below: an event
+from an un-upgraded employee pod carries no `hierarchy_version` and is ignored wholesale, so no
+half-populated row can be written. Every row that exists came from full state.
+
+**No `UNIQUE (organization_id, employee_no)` on the copy**, even though the source enforces exactly
+that (`uq_employees_org_employee_no`). The copy is eventually consistent and events for two
+employees arrive independently: if a number is ever reassigned between two people, the two upserts
+can transiently collide, and a unique constraint would reject the second and dead-letter it. This is
+the same argument as the missing foreign key on `reporting_manager_id` — the copy must accept any
+state the source can pass through, because it sees those states one row at a time.
+
+**Why `reporting_manager_id` has no foreign key even though the target is in the same schema.**
+Events arrive in any order. A report's `onboarded` can be consumed before their manager's, so a
+foreign key would reject a legitimate row and dead-letter it. The manager pointer is allowed to
+dangle; the chain walk simply ends when it cannot find the next node, which ADR-0006 §4 already
+routes to an unassigned step.
+
+**Ordering rule.** Apply an event or backfill row only when its version is strictly greater:
+
+```sql
+INSERT INTO approval.hierarchy_nodes AS h (organization_id, employee_id, reporting_manager_id,
+       dotted_line_manager_id, status, display_name, employee_no, location_code,
+       source_version, source_occurred_at)
+VALUES (...)
+ON CONFLICT (organization_id, employee_id) DO UPDATE
+   SET reporting_manager_id   = EXCLUDED.reporting_manager_id,
+       dotted_line_manager_id = EXCLUDED.dotted_line_manager_id,
+       status                 = EXCLUDED.status,
+       display_name           = EXCLUDED.display_name,
+       employee_no            = EXCLUDED.employee_no,
+       location_code          = EXCLUDED.location_code,
+       source_version         = EXCLUDED.source_version,
+       source_occurred_at     = EXCLUDED.source_occurred_at,
+       updated_at             = now()
+ WHERE h.source_version < EXCLUDED.source_version;
+```
+
+Verified: the plan shows `Conflict Resolution: UPDATE` with `Conflict Filter: (h.source_version <
+excluded.source_version)`; a replayed or reordered event updates zero rows and the consumer treats
+that as success (it must not raise — a dropped stale event is the desired outcome).
+
+> **Naming note.** ADR-0006 §2 names this column `source_version`; the hand-off brief called it
+> `hierarchy_version`. This document follows the ADR, and reserves `hierarchy_version` for the
+> *employee* column that feeds it. They hold the same value, and the asymmetry is deliberate: on
+> `employees` it is the row's own version, on the copy it is the version of the source it came from.
+
+### 1.2 `approval_policies` — SLA only
+
+| Column | Type | Null | Default | Notes |
+|---|---|---|---|---|
+| `organization_id` | uuid | no | — | PK part 1 |
+| `request_type` | varchar(120) | no | — | PK part 2 |
+| `sla_minutes` | integer | no | `1440` | |
+| `enabled` | boolean | no | `true` | `false` disables **escalation only** |
+| `created_at`, `updated_at`, `created_by`, `updated_by` | | | | |
+
+```
+CONSTRAINT pk_approval_policies PRIMARY KEY (organization_id, request_type)
+CHECK (sla_minutes BETWEEN 15 AND 525600)           ck_approval_policies_sla_minutes_range
+CHECK (request_type ~ '^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$')  ck_approval_policies_request_type_shape
+```
+
+**The floor of 15 minutes is a constraint, not an API rule** (ADR-0006 §8, §10). A tenant that could
+set `sla_minutes = 1` would manufacture overdue steps faster than any tick could drain them; the
+per-organization sweep cap then merely slows that tenant down, while the floor makes the
+pathological case unconfigurable in the first place. It is enforced here rather than in the API so
+that no path — a `PUT`, a fixture, a future bulk import, a `psql` session — can write below it.
+Verified: `14` and `1` are rejected with `23514`, `15` and the `1440` default are accepted, and the
+`525600` ceiling is unchanged.
+
+A missing row means the defaults (`enabled = true`, `sla_minutes = 1440`); the row is created on
+first `PUT`. **No seeding per organization is required or wanted** — a provisioning hook that writes
+a policy row per organization per request type is a second source of truth for a default that
+already lives in code.
+
+**`request_type` is validated by shape, not by an enumerated list.** This is the one place this
+design deliberately departs from "a CHECK constraint for every enum". ADR-0006's stated consequence
+is that a second request type "adds no table, no endpoint and no routing code"; an `IN (...)` list
+would make every new request type a migration on two tables, one of which is the largest table in
+the service. The vocabulary is closed *in code* (the per-type mapping in `consumers.py`), and the
+database enforces the `<product>.<module>.<thing>` grammar from ADR-0006 §12. Verified: `'Regularization'`
+is rejected with `23514`.
+
+### 1.3 `approval_requests` — the routing aggregate
+
+| Column | Type | Null | Default | Notes |
+|---|---|---|---|---|
+| `id` | uuid | no | `uuid4` | PK |
+| `organization_id` | uuid | no | — | |
+| `request_type` | varchar(120) | no | — | |
+| `source_ref` | uuid | no | — | The product row's id (regularisation request id) |
+| `requester_employee_id` | uuid | no | — | The product's statement of whose request it is |
+| `summary` | jsonb | no | — | **Structured facts only** — dates and closed vocabularies, no free text |
+| `request_note` | varchar(500) | yes | — | The requester's free text. Classified customer content (below) |
+| `status` | varchar(20) | no | `'pending'` | `pending\|approved\|rejected` |
+| `opened_at` | timestamptz | no | — | Approval's own clock, not the producer's |
+| `decided_by_employee_id` | uuid | yes | — | NOT NULL once decided, by CHECK |
+| `acting_for_employee_id` | uuid | yes | — | Set only when eligibility came via a delegated step |
+| `decided_at` | timestamptz | yes | — | |
+| `comment` | text | yes | — | The decider's comment. Optional for **both** outcomes (ADR-0006 §7) |
+| `application_state` | varchar(20) | yes | — | `applied\|failed`. NULL until the product reports back |
+| `application_failure_reason` | varchar(500) | yes | — | Set **iff** `failed` |
+| `applied_at` | timestamptz | yes | — | When the product reported, on the database clock |
+| timestamps + `deleted_at` | | | | from `TenantBase` |
+
+```
+CONSTRAINT uq_approval_requests_org_type_source UNIQUE (organization_id, request_type, source_ref)
+CONSTRAINT uq_approval_requests_org_id          UNIQUE (organization_id, id)
+CHECK ((status = 'pending') = (decided_at IS NULL)
+   AND (status = 'pending') = (decided_by_employee_id IS NULL))   ck_approval_requests_decided_iff_not_pending
+CHECK (acting_for_employee_id IS NULL OR decided_by_employee_id IS NOT NULL) ck_approval_requests_acting_for_needs_decider
+CHECK (decided_by_employee_id IS NULL OR decided_by_employee_id <> requester_employee_id) ck_approval_requests_decider_not_requester
+CHECK (decided_at IS NULL OR decided_at >= opened_at)             ck_approval_requests_decided_after_open
+CHECK (status IN ('pending','approved','rejected'))               ck_approval_requests_status
+CHECK (jsonb_typeof(summary) = 'object')                          ck_approval_requests_summary_is_object
+CHECK (NOT jsonb_exists(summary, 'reason'))                       ck_approval_requests_summary_no_free_text
+CHECK (request_note IS NULL OR length(btrim(request_note)) > 0)   ck_approval_requests_request_note_present
+CHECK (request_type ~ '...')                                      ck_approval_requests_request_type_shape
+CHECK (application_state IN ('applied','failed'))                 ck_approval_requests_application_state
+CHECK ((application_state IS NULL) = (applied_at IS NULL))        ck_approval_requests_applied_at_iff_application_state
+CHECK ((application_failure_reason IS NOT NULL)
+        = (coalesce(application_state,'') = 'failed'))            ck_approval_requests_application_failure_reason_iff_failed
+CHECK (application_state IS NULL OR status <> 'pending')          ck_approval_requests_application_needs_decision
+CHECK (applied_at IS NULL OR applied_at >= decided_at)            ck_approval_requests_applied_after_decided
+```
+
+**`summary` and `request_note`: the snapshot, split by classification** (ADR-0006 §3, amended).
+The earlier rule — `summary` carries the requester's `reason` and "must never contain PII" — was a
+promise, not a constraint. The split makes it structural:
+
+- **`summary`** holds only structured, enumerable facts from the requesting event: for
+  regularisation `date`, `from`, `to`. Every value is a date or a member of a closed vocabulary, so
+  "no free text" is true by construction rather than by discipline.
+  `ck_approval_requests_summary_no_free_text` is the cheap guard against the one regression that is
+  actually likely — copying `reason` back into the JSONB, which is exactly where it used to live.
+  Verified: a summary carrying a `reason` key is rejected with `23514`.
+- **`request_note`** holds the requester's free text (regularisation's `reason`, ≤500 characters).
+
+**Its classification: customer content authored by the requester about their own working day.** It
+is *not* a PII field and is deliberately **not sealed**. Sealing it would protect nothing — the same
+text is already stored in plaintext in `attendance.regularization_requests.reason` (§5) — while
+costing a great deal: `platform_core.pii` writes one audit row per unmask, and this text is read by
+every approver on every inbox render, which would mean an audit row per page view drowning the trail
+that PII auditing exists to make readable. A control that must be bypassed to render a list is not a
+control.
+
+**Who may read it, and the four rules that are actually enforceable:**
+
+1. It never appears in a **published event payload** — not `opened`, `escalated` or `decided`.
+   Events cross services and land in a broker.
+2. It never appears in an **audit `before`/`after` blob** or a log line, the same rule employee
+   applies to sealed fields, which record field *names* only.
+3. It is returned **only** to a principal who is the requester, is currently eligible (ADR-0006 §6),
+   or holds `read:ORG` — never on an unauthenticated or cross-tenant surface.
+4. The cross-tenant discovery session **cannot read it at all**, by grant rather than by convention
+   (§3.3). This is the only one of the four the database itself enforces; rules 1–3 are review rules,
+   and they are stated as such rather than dressed up as guarantees.
+
+**The application trio is write-once and cannot precede a decision.** `ck_…_application_needs_decision`
+makes "applied while pending" unrepresentable, `ck_…_applied_at_iff_application_state` keeps the
+timestamp and the state together, and `ck_…_application_failure_reason_iff_failed` is written over
+`coalesce(application_state,'')` deliberately: the natural form
+`(failure_reason IS NOT NULL) = (application_state = 'failed')` evaluates to NULL — and therefore
+*passes* — when `application_state` is NULL, which would let a failure reason be attached to a
+request that never reported. Verified on the insert path: `applied_at` with no state, a state on a
+pending row, a failure reason with no state, and `applied_at` earlier than `decided_at` are all
+rejected with `23514`; a decided-and-applied row is accepted. On the *update* path the guard trigger
+(§1.4) refuses most of these one layer earlier with `23001` — both layers exist, and the CHECKs are
+what hold for an `INSERT`, which no trigger guards.
+
+`ck_approval_requests_decided_iff_not_pending` is the coordinator's delta 4 in its strongest form:
+a decided request **cannot** exist without a decider, and a pending one cannot carry one.
+`ck_approval_requests_decider_not_requester` makes "the requester is never eligible" a database fact
+rather than only a service check — the single rule in ADR-0006 §6 that overrides every other route
+to eligibility, including `decide:ORG`. Both verified (`23514`).
+
+**Both uniques are declared explicitly, and must be** (§1.0.1 rule 3). They both lead with
+`organization_id`, so left to the convention both would be named `uq_approval_requests_organization_id`
+and the table would not create.
+
+`uq_approval_requests_org_id` exists to be the target of the composite foreign key from
+`approval_steps`. It is an integrity index, not a query index, and it is worth its write cost:
+without it, a step row can name a request in another tenant and no constraint objects.
+
+### 1.4 `approval_steps` — append-only routing history
+
+| Column | Type | Null | Default | Notes |
+|---|---|---|---|---|
+| `id` | uuid | no | `uuid4` | PK |
+| `organization_id` | uuid | no | — | |
+| `request_id` | uuid | no | — | |
+| `level` | smallint | no | — | 1..33 (32 rungs + the unassigned terminus) |
+| `approver_employee_id` | uuid | yes | — | NULL = unassigned |
+| `acting_for_employee_id` | uuid | yes | — | The represented original approver |
+| `delegation_id` | uuid | yes | — | The delegation that produced this step |
+| `reason` | varchar(20) | no | — | `assigned\|delegated\|escalated\|unassigned` |
+| `opened_at` | timestamptz | no | — | |
+| `due_at` | timestamptz | yes | — | NULL = never escalates |
+| `closed_at` | timestamptz | yes | — | Set exactly when the step leaves `open` |
+| `outcome` | varchar(20) | no | `'open'` | `open\|delegated\|escalated\|approved\|rejected` |
+| timestamps + `deleted_at` | | | | from `TenantBase` |
+
+```
+FOREIGN KEY (organization_id, request_id)    REFERENCES approval_requests (organization_id, id)
+                                                   fk_approval_steps_request_id_approval_requests
+FOREIGN KEY (organization_id, delegation_id) REFERENCES delegations       (organization_id, id)
+                                                   fk_approval_steps_delegation_id_delegations
+CHECK (level BETWEEN 1 AND 33)                                            ck_approval_steps_level_range
+CHECK (outcome IN ('open','delegated','escalated','approved','rejected')) ck_approval_steps_outcome
+CHECK (reason  IN ('assigned','delegated','escalated','unassigned'))      ck_approval_steps_reason
+CHECK ((approver_employee_id IS NULL) = (reason = 'unassigned'))          ck_approval_steps_unassigned_iff_no_approver
+CHECK (approver_employee_id IS NOT NULL OR due_at IS NULL)                ck_approval_steps_unassigned_has_no_due
+CHECK ((reason = 'delegated') = (delegation_id IS NOT NULL))              ck_approval_steps_delegated_iff_delegation
+CHECK ((delegation_id IS NULL) = (acting_for_employee_id IS NULL))        ck_approval_steps_acting_for_iff_delegation
+CHECK (acting_for_employee_id IS NULL OR acting_for_employee_id <> approver_employee_id) ck_approval_steps_acting_for_not_approver
+CHECK ((outcome = 'open') = (closed_at IS NULL))                          ck_approval_steps_closed_iff_not_open
+CHECK (closed_at IS NULL OR closed_at >= opened_at)                       ck_approval_steps_closed_after_open
+CHECK (approver_employee_id IS NOT NULL OR outcome IN ('open','approved','rejected')) ck_approval_steps_unassigned_outcomes
+```
+
+Both foreign keys are named after the **pointer** column rather than `organization_id`, which is
+their actual first column — see §1.0.1 rule 4. Left unnamed they would be
+`fk_approval_steps_organization_id_approval_requests` and
+`fk_approval_steps_organization_id_delegations`: legal, distinct, and useless to read.
+
+Four of these encode rules that would otherwise live only in `services.py`:
+
+- an unassigned step has no approver, **no due date and never escalates** — the last CHECK makes
+  `outcome = 'escalated'` on an unassigned step unrepresentable, so ADR-0006 §8's "the ladder
+  terminates by construction" is true in the database, not just in the sweep;
+- `due_at IS NULL` with an approver present is **legal**, and that is what `enabled = false`
+  produces (ADR-0006 §10). This is why the constraint is an implication rather than the tighter
+  `(approver IS NULL) = (due_at IS NULL)` — verified with a passing insert;
+- `delegated` reason, `delegation_id` and `acting_for_employee_id` stand or fall together, so a
+  delegated step whose delegation cannot be checked for revocation cannot exist (ADR-0006 §5 makes
+  eligibility depend on that delegation still being active);
+- the composite FK on `(organization_id, delegation_id)` makes a **cross-tenant delegation reference
+  unrepresentable**. Verified: `23503`.
+
+#### Invariant: a pending request has exactly one open step
+
+```sql
+CREATE UNIQUE INDEX uq_approval_steps_open_per_request
+    ON approval.approval_steps (organization_id, request_id) WHERE outcome = 'open';
+```
+
+This is the concurrency control for the whole service. Two sweep replicas escalating the same step,
+or an escalation racing a delegation re-point, cannot both insert a successor: the second gets
+`23505`. Verified. It also serves the decision path's "give me the open step" lookup directly
+(0.07 ms).
+
+#### Append-only enforcement
+
+`REVOKE` alone does not hold: `migrations/env.py` runs `apply_schema_grants` after **every**
+migration run, which re-grants `UPDATE`/`DELETE` on all tables and only re-revokes `audit_logs`.
+This is the trap the metering append-only migration documents. So, exactly as
+`subscription_transitions` does it, the durable enforcement is a trigger, with the revoke as a
+second layer applied in this service's `env.py`:
+
+```sql
+CREATE OR REPLACE FUNCTION approval.guard_approval_step_change() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'approval_steps is append-only; step % cannot be deleted', OLD.id
+      USING ERRCODE = 'restrict_violation';
+  END IF;
+  IF OLD.outcome <> 'open' THEN
+    RAISE EXCEPTION 'approval step % is % and immutable', OLD.id, OLD.outcome
+      USING ERRCODE = 'restrict_violation';
+  END IF;
+  IF NEW.outcome = 'open'
+     OR (NEW.id, NEW.organization_id, NEW.request_id, NEW.level, NEW.approver_employee_id,
+         NEW.acting_for_employee_id, NEW.delegation_id, NEW.reason, NEW.opened_at, NEW.due_at,
+         NEW.created_at, NEW.created_by, NEW.deleted_at)
+        IS DISTINCT FROM
+        (OLD.id, OLD.organization_id, OLD.request_id, OLD.level, OLD.approver_employee_id,
+         OLD.acting_for_employee_id, OLD.delegation_id, OLD.reason, OLD.opened_at, OLD.due_at,
+         OLD.created_at, OLD.created_by, OLD.deleted_at)
+  THEN
+    RAISE EXCEPTION 'approval step %: the only permitted change is closing an open step (outcome, closed_at)',
+      OLD.id USING ERRCODE = 'restrict_violation';
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER trg_approval_steps_append_only
+    BEFORE UPDATE OR DELETE ON approval.approval_steps
+    FOR EACH ROW EXECUTE FUNCTION approval.guard_approval_step_change();
+```
+
+`updated_at` and `updated_by` are intentionally absent from the comparison list, because the ORM
+bumps them on any flush. Everything else is frozen. Verified behaviour: closing an open step
+succeeds; closing it while also moving `due_at` fails; re-pointing an approver in place fails;
+touching an already-terminal step fails; `DELETE` fails.
+
+**Two sibling guards, same shape** (both verified):
+
+- `trg_delegations_revoke_only` on `delegations` — refuses `DELETE`, allows only
+  `revoked_at`/`revoked_by_employee_id` to be set, once. An extend-the-window update and an un-revoke
+  both fail.
+- `trg_approval_requests_decide_once` on `approval_requests` — refuses `DELETE`, freezes
+  identity/`summary`/`request_note`/`opened_at` while pending, and **permits exactly one change to a
+  decided request: the write-once application trio** (ADR-0006 §12). It is no longer "refuse any
+  update to a non-pending request", because the product must be able to report back that the
+  decision did or did not land — but the decision itself stays frozen.
+
+```sql
+CREATE OR REPLACE FUNCTION approval.guard_approval_request_change() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'approval_requests is not deletable; request %', OLD.id
+      USING ERRCODE = 'restrict_violation';
+  END IF;
+
+  IF OLD.status = 'pending' THEN
+    IF (NEW.id, NEW.organization_id, NEW.request_type, NEW.source_ref, NEW.requester_employee_id,
+        NEW.summary, NEW.request_note, NEW.opened_at, NEW.created_at, NEW.created_by, NEW.deleted_at)
+       IS DISTINCT FROM
+       (OLD.id, OLD.organization_id, OLD.request_type, OLD.source_ref, OLD.requester_employee_id,
+        OLD.summary, OLD.request_note, OLD.opened_at, OLD.created_at, OLD.created_by, OLD.deleted_at)
+    THEN
+      RAISE EXCEPTION 'approval request %: identity, summary, request_note and opened_at are frozen', OLD.id
+        USING ERRCODE = 'restrict_violation';
+    END IF;
+    IF NEW.application_state IS NOT NULL THEN
+      RAISE EXCEPTION 'approval request %: application cannot be reported before a decision', OLD.id
+        USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  -- OLD is decided: the only permitted change is the write-once application trio.
+  IF OLD.application_state IS NOT NULL THEN
+    RAISE EXCEPTION 'approval request %: application already reported as %', OLD.id, OLD.application_state
+      USING ERRCODE = 'restrict_violation';
+  END IF;
+  IF NEW.application_state IS NULL THEN
+    RAISE EXCEPTION 'approval request % is decided and immutable', OLD.id
+      USING ERRCODE = 'restrict_violation';
+  END IF;
+  IF (NEW.id, NEW.organization_id, NEW.request_type, NEW.source_ref, NEW.requester_employee_id,
+      NEW.summary, NEW.request_note, NEW.status, NEW.opened_at, NEW.decided_by_employee_id,
+      NEW.acting_for_employee_id, NEW.decided_at, NEW.comment,
+      NEW.created_at, NEW.created_by, NEW.deleted_at)
+     IS DISTINCT FROM
+     (OLD.id, OLD.organization_id, OLD.request_type, OLD.source_ref, OLD.requester_employee_id,
+      OLD.summary, OLD.request_note, OLD.status, OLD.opened_at, OLD.decided_by_employee_id,
+      OLD.acting_for_employee_id, OLD.decided_at, OLD.comment,
+      OLD.created_at, OLD.created_by, OLD.deleted_at)
+  THEN
+    RAISE EXCEPTION 'approval request %: only application_state, application_failure_reason and applied_at may be set after a decision', OLD.id
+      USING ERRCODE = 'restrict_violation';
+  END IF;
+  RETURN NEW;
+END $$;
+```
+
+As in the step guard, `updated_at`/`updated_by` are absent from both comparison lists because the ORM
+bumps them on any flush. Verified behaviour (`23001` unless stated): reporting the application on a
+*pending* request fails; deciding a pending request succeeds; setting the trio once on a decided
+request succeeds; setting it a **second** time fails; setting the trio while also editing `comment`,
+flipping `status`, re-pointing `decided_by_employee_id` or rewriting `request_note` all fail;
+re-deciding a decided request fails; editing `request_note` while pending fails; `DELETE` fails.
+
+The "first decision wins" property is unchanged — it is now enforced by the third branch rather than
+by a blanket refusal, and the decision columns are listed explicitly in the frozen tuple, so a future
+column added to this table is frozen only if somebody adds it to that list. That is the one
+maintenance cost of the change and it is why the list is spelled out rather than computed.
+
+### 1.5 `delegations`
+
+| Column | Type | Null | Notes |
+|---|---|---|---|
+| `id` | uuid | no | PK |
+| `organization_id` | uuid | no | |
+| `delegator_employee_id` | uuid | no | |
+| `delegate_employee_id` | uuid | no | |
+| `starts_at`, `ends_at` | timestamptz | no | Half-open `[starts_at, ends_at)` |
+| `created_by_employee_id` | uuid | no | The employee who created it (HR may create for others) |
+| `revoked_at`, `revoked_by_employee_id` | timestamptz / uuid | yes | Set together, once |
+| timestamps + `deleted_at` | | | |
+
+```
+CONSTRAINT uq_delegations_org_id UNIQUE (organization_id, id)      -- target of the step FK
+CHECK (delegate_employee_id <> delegator_employee_id)              ck_delegations_not_self
+CHECK (ends_at > starts_at)                                        ck_delegations_window_forward
+CHECK ((revoked_at IS NULL) = (revoked_by_employee_id IS NULL))    ck_delegations_revoked_pair
+CONSTRAINT ex_delegations_no_overlap EXCLUDE USING gist (
+    organization_id       WITH =,
+    delegator_employee_id WITH =,
+    tstzrange(starts_at, ends_at, '[)') WITH &&
+) WHERE (revoked_at IS NULL)
+```
+
+`ex_delegations_no_overlap` **must** carry that explicit name: the convention has no key for
+`EXCLUDE` at all, so an unnamed one is named by Postgres and matches nothing in the model
+(§1.0.1 rule 6). `uq_delegations_org_id` is explicit for the same reason as the pair on
+`approval_requests`.
+
+**`btree_gist` is available — this is a database constraint, not a service-layer check.**
+`tools/dev-bootstrap/init-db.sql` already runs `CREATE EXTENSION IF NOT EXISTS btree_gist` (line 5,
+with the comment "exclusion constraints on overlapping ranges"), and the dev cluster reports
+`btree_gist 1.7` on PostgreSQL 16.4. No bootstrap change is needed, and **no advisory lock or
+`SELECT ... FOR UPDATE` dance is needed in `services.py`** — the constraint is atomic under
+concurrency, which a read-then-insert check is not.
+
+Verified: an overlapping non-revoked row for the same delegator is rejected (`23P01`); the same
+delegator id in another organization is accepted (the tenant column is part of the constraint);
+a window that starts exactly when another ends is accepted (half-open `[)` is the right choice —
+with `[]` a one-day delegation could not be followed by another starting that day); after revoking,
+an overlapping row is accepted.
+
+`ends_at` is `NOT NULL`: an open-ended delegation is a governance smell and, more practically, an
+unbounded range makes every future delegation for that delegator a constraint violation until
+someone revokes it.
+
+### 1.6 Platform tables
+
+`outbox`, `processed_events`, `audit_logs` from the platform mixins, unchanged. `outbox` and
+`audit_logs` are tenant-policied; **`processed_events` is deliberately un-policied** — it has no
+`organization_id`, and any policy on it makes every idempotency lookup return nothing, silently
+reprocessing every redelivered event (ADR-0002 §5).
+
+---
+
+## 2. Access patterns and the indexes that serve them
+
+This table is the contract between the schema and `selectors.py`. Read frequency is per approver or
+per request; "verified" is the measured plan from the seeded scratch schema under RLS.
+
+| # | Pattern | Filter / sort | Index | Verified |
+|---|---|---|---|---|
+| 1 | Inbox | pending requests where I am `approver` (delegation still active) or `acting_for` on any step | `ix_approval_steps_org_approver`, `ix_approval_steps_org_acting_for`, `ix_approval_requests_org_pending` | 14.7 ms hot / 0.56 ms normal |
+| 2 | Unassigned queue (ORG) | `outcome='open' AND approver IS NULL`, by `opened_at` | `ix_approval_steps_unassigned_open` | 2.2 ms |
+| 3 | SLA sweep discovery | `outcome='open' AND approver IS NOT NULL AND due_at <= now()`, by `due_at`, cross-tenant, **slice of 500** | `ix_approval_steps_sla_due` | index-only, **7 buffers, 0.11 ms/500 rows**, `Heap Fetches: 0` |
+| 3b | Sweep per-org cap | the 500-row slice, `row_number()` per org, keep 20, act on 100 | (none — a window over rows already in hand) | 13 buffers, 2.9 ms |
+| 4 | Request by source | `(organization_id, request_type, source_ref)` | `uq_approval_requests_org_type_source` | 3 buffers, 0.19 ms |
+| 5 | My requests | `(organization_id, requester)`, by `opened_at DESC` | `ix_approval_requests_org_requester_opened` | 0.21 ms |
+| 6 | ORG request list | `(organization_id)`, by `opened_at DESC` | `ix_approval_requests_org_opened` | 0.06 ms |
+| 7 | Request detail | `(organization_id, request_id)`, by `opened_at` | `ix_approval_steps_org_request` | 0.09 ms |
+| 8 | The open step | `(organization_id, request_id) WHERE outcome='open'` | `uq_approval_steps_open_per_request` | 0.07 ms |
+| 9 | Delegation re-point | my open, undelegated steps | `uq_approval_steps_open_per_request` | 47 ms @ 2,986 org pending |
+| 10 | Active delegation | delegator + instant | `ex_delegations_no_overlap` (GiST) | 0.10–0.40 ms |
+| 11 | My delegations | delegator **or** delegate, by `starts_at DESC` | two btree indexes, BitmapOr | 0.26 ms |
+| 12 | Chain walk | recursive, upward, carrying `display_name` | `pk_hierarchy_nodes` | 10 rungs, 1.9 ms, one index scan per rung |
+| 13 | Hierarchy upsert | `ON CONFLICT` + version gate | `pk_hierarchy_nodes` | 1.0 ms |
+| 14 | **Stuck-request alarm (primary)** | `outcome='open' AND due_at IS NULL AND approver IS NULL`, by `opened_at`, `LIMIT 1`, cross-tenant | `ix_approval_steps_stuck_open` | index-only, 3 buffers, 0.015 ms |
+| 15 | Escalation-disabled backlog | `outcome='open' AND due_at IS NULL AND approver IS NOT NULL`, by `opened_at`, `LIMIT 1`, cross-tenant | `ix_approval_steps_stuck_open` | index-only, 3 buffers, 0.014 ms |
+| 16 | **`GET /delegate-candidates`** | `(organization_id)`, non-exited, `display_name`/`employee_no` prefix, cap 20 | `ix_hierarchy_nodes_org_display_name`, `ix_hierarchy_nodes_org_employee_no` | 3.4 ms / 853 buffers at 50k nodes (37 ms unindexed); **0.16 ms when the prefix matches nothing** |
+| 17 | **Inbox "abandoned" arm** (§6 c) | org's open steps whose approver's node is `exited`, by `opened_at DESC` | `uq_approval_steps_open_per_request` + `ix_hierarchy_nodes_org_exited` | 1.98 ms / 222 buffers at 3,200 open (6.3 ms / 13,203 without the exited index) |
+| 18 | **Decided-but-never-applied alarm** (§12) | `status<>'pending' AND application_state IS NULL AND decided_at < now()-n`, cross-tenant | `ix_approval_requests_unapplied` | index-only, **1 buffer, 0.017 ms** (7.7 ms seq scan without it) |
+
+### 2.1 The inbox is the pattern that decides the step indexes
+
+Because `delegated` and `escalated` are terminal (coordinator delta 2), eligibility can no longer be
+expressed as "steps that are still open". It is "steps of a *pending request*", and a step's own
+columns cannot tell you that. Two query shapes were measured against an approver with **29,906
+history steps** in an organization with 2,986 pending requests (1M-request seed):
+
+| Shape | Plan | Time |
+|---|---|---|
+| Drive from requests, `EXISTS` over steps | nested loop, 29,906 index probes into `approval_requests` | **312.8 ms** |
+| Drive from steps, hash join to pending requests | hash join, one pass over each side | **27.1 ms** |
+
+The steps-first shape wins by an order of magnitude, and the reason is structural rather than
+incidental: the pending set is bounded by throughput × decision latency (thousands), while an
+approver's history grows without bound. `selectors.py` must therefore write the inbox as a
+**`UNION` of the three eligibility routes joined to the pending set**, not as an `EXISTS` subquery,
+and `ix_approval_requests_org_pending` (partial, `WHERE status = 'pending'`) is what makes the
+pending side cheap. Splitting the delegation-active check into its own `UNION` branch keeps the
+common branch (`delegation_id IS NULL`) free of the join entirely.
+
+This is the one place where the obvious query is 10× slower than the right one, so it is worth a
+comment in `selectors.py` pointing back here.
+
+### 2.2 The two cross-tenant discovery indexes, and why neither leads with `organization_id`
+
+Every other index here leads with the tenant column because the RLS qual is ANDed into every
+tenant-bound query. These two are the exception, exactly as `ix_dunning_cycles_due` is in
+subscription: their queries exist to discover *which* tenants have work, so there is no tenant to
+bind while asking. Both run on the sweep's `opsgrids_outbox` session (§3.3), and both `INCLUDE`
+exactly the columns their caller needs so the answer never touches the heap.
+
+```sql
+CREATE INDEX ix_approval_steps_sla_due
+    ON approval.approval_steps (due_at)
+    INCLUDE (organization_id, request_id, id)
+    WHERE outcome = 'open' AND approver_employee_id IS NOT NULL AND due_at IS NOT NULL;
+
+CREATE INDEX ix_approval_steps_stuck_open
+    ON approval.approval_steps (opened_at)
+    INCLUDE (organization_id, request_id, id, approver_employee_id)
+    WHERE outcome = 'open' AND due_at IS NULL;
+```
+
+**The two predicates are exact complements over open steps, and that is the point.**
+`ix_approval_steps_sla_due` holds the open steps that *will* escalate. `ix_approval_steps_stuck_open`
+holds the open steps that *never* will: the unassigned ones (no approver, and therefore no `due_at`,
+by `ck_approval_steps_unassigned_has_no_due`) and the assigned ones whose policy has
+`enabled = false`. The fourth combination — open, no approver, but a due date — is unrepresentable
+because of that same CHECK. Verified on the seeded scratch: **zero open steps are in neither index**.
+That coverage claim is load-bearing and it depends on the CHECK; relax the CHECK and a step can
+become invisible to both alarms.
+
+This matters because the population `ix_approval_steps_sla_due` omits is precisely the population
+that gets stuck. An overdue assigned step has a named human and an escalation ladder behind it. An
+unassigned step has neither, and nothing in the service will ever move it. Alarming only on the
+overdue queue — as this document previously proposed in §7 — is an alarm pointed away from the
+failure.
+
+**Measurement basis.** 375,003 steps over 300 organizations, skewed: 360,129 closed, 13,122
+open + assigned + due, 888 open + assigned with no due date (`enabled = false`), 864 open +
+unassigned. Committed scratch schema, `VACUUM ANALYZE`d, plans taken as `opsgrids_outbox`, warm
+figures from the second run. Heap 62 MB; `ix_approval_steps_sla_due` 1000 kB;
+`ix_approval_steps_stuck_open` 176 kB.
+
+**Probe A — unassigned-backlog age. This is the primary stuck-request signal.**
+
+```sql
+SELECT s.organization_id, s.request_id, s.id, s.opened_at
+  FROM approval.approval_steps s
+ WHERE s.outcome = 'open' AND s.due_at IS NULL AND s.approver_employee_id IS NULL
+ ORDER BY s.opened_at
+ LIMIT 1;
+```
+
+Before, with only the org-leading queue index available:
+
+```
+Limit  (actual time=2.345..2.384 rows=1)  Buffers: shared hit=823
+  ->  Sort  (Sort Key: opened_at, top-N heapsort)
+        ->  Bitmap Heap Scan on approval_steps  (actual rows=864)  Heap Blocks: exact=814
+              Recheck Cond: outcome = 'open' AND approver_employee_id IS NULL
+              Filter: (due_at IS NULL)
+              ->  Bitmap Index Scan on ix_approval_steps_unassigned_open  (rows=864)
+Execution Time: 2.879 ms   (0.573 ms warm)
+```
+
+After:
+
+```
+Limit  (actual time=0.005..0.006 rows=1)  Buffers: shared hit=3
+  ->  Index Only Scan using ix_approval_steps_stuck_open  (actual time=0.005..0.005 rows=1)
+        Filter: (approver_employee_id IS NULL)
+        Heap Fetches: 0
+Execution Time: 0.015 ms   (0.292 ms cold)
+```
+
+823 buffers and a sort of the entire backlog become 3 buffers and no sort. The important property is
+not the microseconds, it is that the cost no longer grows with the backlog — the old shape got more
+expensive exactly when the alarm was most likely to fire.
+
+**The 3-buffer figure is the slice-4 steady state, and slices 2–3 are not that state.** ADR-0006 §10
+opens every step with `due_at = NULL` until slice 4, which means `ix_approval_steps_stuck_open` holds
+*every open step in the service* rather than the small stuck population. Re-measured at 15,710 open
+steps with no due date against 60 unassigned ones (the index grows to 2,136 kB): the planner
+**abandons this index** and serves probe A from `ix_approval_steps_unassigned_open` instead, reading
+its 60 entries and top-N sorting them — 31 buffers, 0.045 ms warm. That is still cheap, and it is
+worth knowing why: the probe does not degrade, it changes plan, because the tenant-leading unassigned
+index becomes the more selective of the two. Both plans are acceptable; neither claim should be
+quoted without its population. The index sizing in this section (176 kB, 1000 kB) likewise describes
+slice 4 onward.
+
+**Probe B — oldest overdue assigned step. Secondary.** Unchanged query, restated with its plan:
+
+```sql
+SELECT s.organization_id, s.request_id, s.id, s.due_at
+  FROM approval.approval_steps s
+ WHERE s.outcome = 'open' AND s.approver_employee_id IS NOT NULL
+   AND s.due_at IS NOT NULL AND s.due_at <= now()
+ ORDER BY s.due_at
+ LIMIT 1;
+```
+
+```
+Limit  (actual time=0.006..0.007 rows=1)  Buffers: shared hit=3
+  ->  Index Only Scan using ix_approval_steps_sla_due  (actual time=0.006..0.006 rows=1)
+        Index Cond: (due_at <= now())
+        Heap Fetches: 0
+Execution Time: 0.015 ms   (0.171 ms cold)
+```
+
+**Probe C — escalation-disabled backlog**, the same query with the approver test inverted, served by
+the same index at no extra write cost. Before the index this was a **parallel sequential scan of the
+whole table** — 8,047 buffers, 32.6 ms, 374,115 rows discarded by the filter — because no index
+covered assigned-with-no-due-date at all. After: `Index Only Scan`, 3 buffers, `Heap Fetches: 0`,
+0.014 ms.
+
+**Why the key is `opened_at` alone and not `(approver_employee_id, opened_at)`.** Both were built
+and measured. The composite makes `approver_employee_id IS NULL` an index *condition*, which looks
+better and is worse: `IS NULL` is a `NullTest`, not an equality operator, so the planner cannot treat
+the leading column as constant and cannot inherit the index ordering. It read all 864 entries and
+top-N sorted them (12 buffers, 0.260 ms). Keying on `opened_at` and leaving the approver test as a
+filter over an `INCLUDE`d column returns the first match and stops (3 buffers, 0.015 ms), and serves
+probe C the same way. Identical 176 kB either way.
+
+**Both probes must spell out `due_at IS NULL`.** Writing probe A as the logically equivalent
+`outcome = 'open' AND approver_employee_id IS NULL` — equivalent only because of the CHECK — loses
+the index entirely: Postgres proves partial-index applicability from the query's own quals and never
+from a table CHECK constraint. Measured: it falls back to the bitmap scan plus sort, 820 buffers,
+1.045 ms.
+
+**`ix_approval_steps_unassigned_open` stays** and is not redundant with this. It leads with
+`organization_id` and serves the tenant-scoped unassigned queue (pattern 2), which the probe index
+cannot: the probe index is deliberately tenant-blind. At 56 kB it is the cheapest index in the
+service.
+
+### 2.2a The three indexes the amendment adds
+
+```sql
+-- pattern 17: the inbox's "abandoned" arm, and the eligibility check's exited test
+CREATE INDEX ix_hierarchy_nodes_org_exited
+    ON approval.hierarchy_nodes (organization_id, employee_id) WHERE status = 'exited';
+
+-- pattern 16: the delegation picker
+CREATE INDEX ix_hierarchy_nodes_org_display_name
+    ON approval.hierarchy_nodes (organization_id, lower(display_name) varchar_pattern_ops, employee_id)
+    WHERE status <> 'exited';
+CREATE INDEX ix_hierarchy_nodes_org_employee_no
+    ON approval.hierarchy_nodes (organization_id, lower(employee_no) varchar_pattern_ops, employee_id)
+    WHERE status <> 'exited';
+
+-- pattern 18: decisions that never reached the product
+CREATE INDEX ix_approval_requests_unapplied
+    ON approval.approval_requests (decided_at)
+    INCLUDE (organization_id, id, request_type)
+    WHERE status <> 'pending' AND application_state IS NULL;
+```
+
+**`ix_hierarchy_nodes_org_exited` is the one that earns its place most clearly.** ADR-0006 §6 widens
+route (c) to cover a step whose approver has exited, and estimates the cost as "one join to
+`hierarchy_nodes`". Measured, that join is the dominant cost of the arm: without this index the
+planner probes `pk_hierarchy_nodes` once per open step — 3,196 loops, 12,784 of the query's 13,203
+buffers, 6.3 ms warm to return 9 rows. With it, the exited set is read index-only and hashed against
+the open steps: 222 buffers, 1.98 ms, for 696 kB on a table that is written only by the hierarchy
+consumer. The nested loop's cost grows with the organization's open-step count, which is exactly the
+number that grows; the hash form's cost grows with the exited population, which is bounded by
+headcount.
+
+**The picker's two indexes need `varchar_pattern_ops`** because the database collation is
+`en_US.utf8` (verified) — a default-collation btree cannot serve `LIKE 'pri%'`. Note what they do
+*not* buy: an early stop. The `ORDER BY` is on `display_name`, and `pattern_ops` sorts in C
+collation, so the ordering cannot be inherited and a matching prefix still top-N sorts its matches
+(measured both ways — adding `COLLATE "C"` to the sort does not help). The cost is therefore
+proportional to the number of *matches*, not to the organization: 3.4 ms for a prefix matching 2,143
+of 50,000 nodes, and 0.16 ms when nothing matches. The seeded name pool holds only 400 distinct
+names in a 50,000-person organization, so a 3-character prefix matching 4.3% is a deliberately
+pessimistic reading of a real tenant. Write the query as the plain `OR` form: the planner turns it
+into a `BitmapOr` of the two indexes (853 buffers), which beat the hand-written `UNION` of two
+limited branches (2,189 buffers) — the opposite of the inbox's lesson in §2.1, and the reason each
+of these is measured rather than reasoned about.
+
+`ix_hierarchy_nodes_org_employee_no` is the removable one. It exists only if `q` is matched against
+the staff number as well as the name; the endpoint returns `employee_no` in its payload, which is
+what makes searching it reasonable. If the API ships name-only search, **delete this index** rather
+than keeping it as a margin.
+
+**`ix_approval_requests_unapplied` is 8 kB and replaces a full sequential scan** of the largest
+non-step table (3,127 buffers, 7.7 ms at 75,000 requests). It is a partial index over a population
+that is supposed to be empty: a row enters it when a decision is recorded and leaves it when the
+product reports back. **The watch item is a product that never reports back** — `application_state`
+then stays NULL forever, and this index grows with every decided request of that type instead of
+staying near-empty. Today attendance reports back and it is the only consumer; a second request type
+whose product does not publish `.applied` turns this from an 8 kB alarm index into a second copy of
+the table's decided population, and the alarm it feeds would be permanently firing anyway.
+
+### 2.3 Indexes deliberately **not** created
+
+- **No `(organization_id, reporting_manager_id)` on `hierarchy_nodes`.** Nothing walks downward. If
+  a "my direct reports" screen appears, add it then.
+- **No index for pattern 9.** Delegation creation is rare (tens per month per 1,000 employees) and
+  costs 47 ms at 2,986 pending; an index to serve it would be paid for on every step insert.
+- **No single-column `organization_id` index anywhere** (see §1.0).
+- **No trigram index for the delegation picker.** `pg_trgm` is installed (1.6, verified), so a GIN
+  trigram index would give substring rather than prefix matching. It is rejected for now on two
+  grounds: a tenant-leading GIN index needs `btree_gin`, which is **not** installed, so the index
+  would have to be tenant-blind — the one thing §2.2 reserves for cross-tenant discovery — and
+  ADR-0006 §11 specifies neither substring matching nor a ranking rule. Prefix matching at 3.4 ms is
+  the cheaper answer to the question actually asked. Revisit if users report that searching a
+  surname fails.
+- **No index on `application_state` alone.** Pattern 18 is served by the partial index above; a
+  general index on a column that is NULL on every pending row and one of two values afterwards would
+  serve no query in this slice.
+
+---
+
+## 3. Roles, RLS and grants
+
+### 3.1 `init-db.sql` — the only changes needed
+
+1. Add `'opsgrids_approval'` to the per-service role array (it is created `LOGIN ... NOBYPASSRLS`
+   by the existing loop, which also issues `GRANT CONNECT`).
+2. Add `opsgrids_approval` to the `GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology` list —
+   without it `alembic check` fails with "permission denied for schema tiger", an error that has
+   nothing to do with this service's tables.
+
+Nothing else. Table grants are not in that file by design: `apply_schema_grants` applies them from
+`migrations/env.py` after every run, so a new service cannot forget them.
+
+> **Operational trap.** `init-db.sql` is mounted at `/docker-entrypoint-initdb.d/10-init.sql`, which
+> Postgres runs **only on an empty data directory**. Every developer and every environment with an
+> existing volume will not get `opsgrids_approval` from this edit, and approval's first
+> `alembic upgrade` will fail at `GRANT ... TO "opsgrids_approval"` with "role does not exist".
+> The migration note must say so and give the one-liner (`CREATE ROLE opsgrids_approval LOGIN
+> PASSWORD '…' NOBYPASSRLS; GRANT CONNECT ON DATABASE opsgrids TO opsgrids_approval;`).
+
+### 3.2 Policies
+
+`approval.current_org()` and a `tenant_isolation` policy per table, `FOR ALL TO opsgrids_approval`,
+with **both** `USING` and `WITH CHECK` — the ADR-0002 §3 shape, including the `nullif(…, '')` that
+turns a post-transaction empty-string GUC into a false predicate rather than a cast error.
+
+- Policied: `hierarchy_nodes`, `approval_policies`, `approval_requests`, `approval_steps`,
+  `delegations`, `audit_logs`, `outbox`.
+- Not policied, deliberately: `processed_events`.
+
+Verified as `opsgrids_app` with the GUC bound to one organization: an insert naming another
+organization is rejected with `42501` (`new row violates row-level security policy`), and the other
+organization's rows are invisible.
+
+### 3.3 The outbox role
+
+`opsgrids_outbox` needs what `apply_schema_grants` already gives it (`USAGE` on the schema,
+`SELECT, UPDATE` on `outbox`) **plus** the sweep's discovery read. Following subscription's
+`grant_sweep_reader` precedent in `migrations/env.py`, but narrower — column-level:
+
+```sql
+GRANT SELECT (organization_id, request_id, id, outcome, approver_employee_id, due_at, opened_at)
+    ON approval.approval_steps TO opsgrids_outbox;
+```
+
+`opened_at` is in the list because of the stuck-request probes (§2.2): an unassigned step has no
+`due_at`, so `opened_at` is the only clock it has. Verified: with the six-column grant this document
+previously specified, probe A is refused with `42501` — the alarm would have failed closed on a
+permission error rather than reported a backlog.
+
+Column privileges, not table privileges, because the sweep needs seven columns of this table and
+nothing else, and because a future `SELECT *` added to that module then **fails loudly** instead of
+quietly widening a BYPASSRLS surface. Verified: reading `level` as `opsgrids_outbox` raises `42501`.
+
+**Two corrections to ADR-0006's text, both verified rather than argued.**
+
+1. **The grant on `approval_steps` is seven columns, not six.** ADR-0006 §3 (rule 4) and §8 both say
+   six. Re-verified this round: under the six-column grant the sweep's own discovery query still
+   works, but the stuck-request probe — the *primary* liveness alarm — is refused with `42501`,
+   because `opened_at` is the only clock an unassigned step has. Six columns would leave the alarm
+   failing closed on a permission error, which is the worst of the available outcomes: it looks like
+   silence, and silence is what it is supposed to detect. The seventh column is `opened_at`.
+2. **`approval_requests` can no longer be refused entirely.** ADR-0006 §3 rule 4 says the discovery
+   session holds "no grant on `approval_requests`", and that was right until §12 added the
+   decided-but-never-applied alarm (pattern 18), which reads exactly that table across tenants.
+   Verified: as `opsgrids_outbox` the table is refused outright, so the alarm cannot run as written.
+   The implementable form keeps the rule's *intent* — a cross-tenant session holds no request
+   content — by granting six columns and no content column:
+
+```sql
+GRANT SELECT (organization_id, id, request_type, status, decided_at, application_state)
+    ON approval.approval_requests TO opsgrids_outbox;
+```
+
+   Verified after this grant: `summary` and `request_note` are still refused with `42501`. So the
+   sentence "the outbox role holds no grant on `approval_requests`" should become "the outbox role
+   cannot read any request *content*" — which is the property rule 4 was actually defending, and the
+   one the grant enforces.
+
+The bypass buys **discovery only**. Every write, every decision and the request lock all happen back
+on `opsgrids_approval` inside `session_scope(organization_id=…)`, which is also why the sweep needs
+no `UPDATE` grant here.
+
+---
+
+## 4. `employee` schema change
+
+### 4.1 Columns
+
+```sql
+ALTER TABLE employee.employees ADD COLUMN dotted_line_manager_id uuid;
+ALTER TABLE employee.employees ADD COLUMN hierarchy_version bigint NOT NULL DEFAULT 0;
+```
+
+Both are metadata-only on PostgreSQL 16 (a `NOT NULL DEFAULT <constant>` does not rewrite the
+table). Then:
+
+```sql
+ALTER TABLE employee.employees ADD CONSTRAINT ck_employees_hierarchy_version_non_negative CHECK (hierarchy_version >= 0);
+ALTER TABLE employee.employees ADD CONSTRAINT ck_employees_dotted_line_not_self
+    CHECK (dotted_line_manager_id IS NULL OR dotted_line_manager_id <> id);
+ALTER TABLE employee.employees ADD CONSTRAINT uq_employees_org_id UNIQUE (organization_id, id);
+ALTER TABLE employee.employees ADD CONSTRAINT fk_employees_dotted_line_manager_id_employees
+    FOREIGN KEY (organization_id, dotted_line_manager_id)
+    REFERENCES employee.employees (organization_id, id)
+    ON DELETE SET NULL (dotted_line_manager_id) NOT VALID;
+ALTER TABLE employee.employees VALIDATE CONSTRAINT fk_employees_dotted_line_manager_id_employees;
+```
+
+**The foreign key is composite on purpose.** A plain `FOREIGN KEY (dotted_line_manager_id)
+REFERENCES employees (id)` would happily accept a manager from another tenant. The composite form
+makes cross-tenant unrepresentable (verified: `23503`), and `ON DELETE SET NULL
+(dotted_line_manager_id)` — the PG15+ column-list form — nulls only the pointer, never
+`organization_id` (verified: pointer null, tenant intact). `NOT VALID` then `VALIDATE` keeps the
+lock short; the column is all-NULL at this point so validation is instant.
+
+Its name is declared, not generated. The convention would produce
+`fk_employees_organization_id_employees` — named after the tenant column, because that is the
+constraint's first column — and a later composite self-FK on `reporting_manager_id` would generate
+exactly the same name (§1.0.1 rule 4). `uq_employees_org_id` is likewise explicit; the two CHECKs are
+declared as the bare suffixes `hierarchy_version_non_negative` and `dotted_line_not_self`, which is
+what produces the `ck_employees_…` names above.
+
+`uq_employees_org_id` earns its keep twice: it is the FK target, and it is the index that serves the
+backfill's keyset pagination (`WHERE organization_id = :org AND id > :cursor ORDER BY id LIMIT n` —
+verified, 0.44 ms/500 rows).
+
+**Asymmetry worth stating:** `reporting_manager_id` still has no foreign key. Adding one is a
+separate expand→backfill→contract exercise that needs an orphan audit first, and it is out of scope
+here. This document does not quietly change it.
+
+### 4.2 `hierarchy_version` is bumped by a trigger, not by the service
+
+**ADR-0006 §2 now specifies the trigger** (amended). It originally said the version is incremented
+"in the same `UPDATE`"; the finding below is why that changed, and it is recorded here because the
+reasoning is what makes the trigger non-negotiable rather than stylistic:
+
+`update_employee` and `transition_status` mutate ORM attributes on a row loaded by a prior `SELECT`,
+and there is **no `with_for_update` anywhere in `services/employee/app`**. A Python-side
+`employee.hierarchy_version += 1` therefore computes from a stale read: two concurrent edits both
+read 5 and both write 6. Approval's gate is `>`, so the second state is dropped **permanently** —
+the copy stays stale until some later, unrelated edit bumps the version again. That is precisely the
+silent divergence the version was introduced to prevent.
+
+```sql
+CREATE OR REPLACE FUNCTION employee.bump_hierarchy_version() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (NEW.reporting_manager_id, NEW.dotted_line_manager_id, NEW.status,
+      NEW.full_name, NEW.employee_no, NEW.location_code)
+     IS DISTINCT FROM
+     (OLD.reporting_manager_id, OLD.dotted_line_manager_id, OLD.status,
+      OLD.full_name, OLD.employee_no, OLD.location_code)
+  THEN NEW.hierarchy_version := OLD.hierarchy_version + 1;
+  ELSE NEW.hierarchy_version := OLD.hierarchy_version;
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER trg_employees_hierarchy_version
+    BEFORE UPDATE ON employee.employees
+    FOR EACH ROW EXECUTE FUNCTION employee.bump_hierarchy_version();
+```
+
+The row lock the `UPDATE` itself takes serialises the increment, so it is monotonic per employee
+with no application discipline required — including for a future bulk-import path, a backfill
+script, or a psql session, none of which would remember. It also makes the column **non-writable
+from outside**: a client-supplied value is ignored.
+
+**The compared tuple follows the copy, and the copy changed.** `department_id` leaves it and
+`full_name`/`employee_no` join it, because ADR-0006 §2 (amended) drops `department_id` from
+`hierarchy_nodes` and adds the other two. This matters more than it looks: the copy is updated
+**only** when the version advances, so a column that travels on the copy but is missing from this
+tuple would change in employee and never reach approval — every approval screen would keep rendering
+a stale name indefinitely. Conversely `department_id` must leave, or every departmental reorg bumps
+the version and republishes state that no consumer reads.
+
+Re-verified against the amended tuple: a `full_name` change bumps 0→1; an `employee_no` change bumps
+→2; a **`department_id`-only change does not bump** (stays 2); a combined `location_code` + `status`
+change bumps once (→3); and an explicit `SET hierarchy_version = 99` is ignored (stays 3). The
+RI-driven `SET NULL` from deleting a dotted-line manager also fires the trigger and bumps, which is
+correct — the hierarchy state really did change.
+
+The service must read the value back (`RETURNING` / refresh) to put it on the event.
+
+### 4.3 The cycle check is a service-layer recursive walk
+
+One statement, run inside the same transaction as the change, for a proposed
+`reporting_manager_id` **or** `dotted_line_manager_id`. It walks the *reporting* edges upward from
+the proposed manager and refuses if it reaches the employee being edited.
+
+```sql
+-- Serialise hierarchy edits per organization first. Two concurrent edits on disjoint rows can each
+-- walk a chain that is acyclic at read time and still compose a cycle on commit; row locks on the
+-- two rows involved do not prevent it (A.mgr=B and C.mgr=D can close a loop through B..C).
+SELECT pg_advisory_xact_lock(hashtextextended('employee.hierarchy:' || :organization_id::text, 0));
+
+WITH RECURSIVE up (id, manager_id, depth) AS (
+        SELECT e.id, e.reporting_manager_id, 1
+          FROM employee.employees e
+         WHERE e.organization_id = :organization_id
+           AND e.id = :proposed_manager_id
+    UNION ALL
+        SELECT e.id, e.reporting_manager_id, up.depth + 1
+          FROM up
+          JOIN employee.employees e
+            ON e.organization_id = :organization_id
+           AND e.id = up.manager_id
+         WHERE up.depth < 32
+           AND up.id <> :employee_id
+) CYCLE id SET is_cycle USING path
+SELECT coalesce(bool_or(id = :employee_id), false) AS reaches_employee,
+       coalesce(bool_or(is_cycle), false)          AS existing_cycle,
+       coalesce(max(depth), 0) >= 32               AS too_deep
+  FROM up;
+```
+
+Refuse with a business-rule problem when `reaches_employee` or `too_deep`. `existing_cycle` means
+the data was already cyclic (possible: no check has ever existed) — log it, and refuse, because
+writing into a cycle makes it worse.
+
+Three properties, all verified against a 75k-row seeded table: it reaches the employee through a
+4-rung chain (`true`); it returns `false` for an unrelated branch; and with a deliberately planted
+`e5 ⇄ e6` cycle it **terminates** via the SQL-standard `CYCLE` clause instead of looping
+(`existing_cycle = true`). The plan is a nested loop of index scans on `uq_employees_org_id`,
+0.89 ms for 5 rungs. The depth cap is 32, matching approval's walk — an employee whose chain is
+already 32 deep is unroutable anyway.
+
+`pg_advisory_xact_lock` **is now in ADR-0006 §2** (amended), with this document's reasoning: without
+it the check is best-effort, because two concurrent edits on disjoint rows can each walk a chain that
+is acyclic at read time and still compose a cycle on commit, and row locks on the two rows involved
+never overlap. Without it the check is best-effort.
+
+---
+
+## 5. `attendance` schema change
+
+```sql
+CREATE TABLE attendance.regularization_requests (
+    id                 uuid        PRIMARY KEY,
+    organization_id    uuid        NOT NULL,
+    attendance_id      uuid        NOT NULL REFERENCES attendance.attendance_records (id),
+    employee_id        uuid        NOT NULL,
+    requested_status   varchar(20) NOT NULL,
+    reason             varchar(500) NOT NULL,
+    status             varchar(20) NOT NULL DEFAULT 'pending',
+    approval_request_id uuid,
+    decided_at         timestamptz,
+    failure_reason     varchar(500),
+    created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+    created_by varchar(64), updated_by varchar(64), deleted_at timestamptz,
+    CONSTRAINT ck_regularization_requests_requested_status
+        CHECK (requested_status IN ('present','half_day','absent','regularized')),
+    CONSTRAINT ck_regularization_requests_status
+        CHECK (status IN ('pending','approved','rejected','failed')),
+    CONSTRAINT ck_regularization_requests_reason_present CHECK (length(btrim(reason)) > 0),
+    CONSTRAINT ck_regularization_requests_decided_iff_not_pending
+        CHECK ((status = 'pending') = (decided_at IS NULL)),
+    CONSTRAINT ck_regularization_requests_failure_reason_iff_failed
+        CHECK ((status = 'failed') = (failure_reason IS NOT NULL))
+);
+
+CREATE UNIQUE INDEX uq_regularization_requests_pending_per_attendance
+    ON attendance.regularization_requests (organization_id, attendance_id) WHERE status = 'pending';
+CREATE INDEX ix_regularization_requests_org_employee_created
+    ON attendance.regularization_requests (organization_id, employee_id, created_at DESC);
+```
+
+**One pending request per attendance record**, enforced by the partial unique index — a second
+pending insert gets `23505`, and a new request is allowed once the first is rejected, approved or
+failed. Verified, along with the blank-reason and failed-without-reason rejections.
+
+`attendance_id` is the one foreign key in this slice that can safely be left to the naming
+convention, precisely because it is single-column: it generates
+`fk_regularization_requests_attendance_id_attendance_records`, which names the pointer column and is
+59 bytes, inside the 63-byte limit. The five CHECKs above are declared as bare suffixes
+(`requested_status`, `status`, `reason_present`, `decided_iff_not_pending`,
+`failure_reason_iff_failed`) — see §1.0.1 rule 2.
+
+`attendance_id` is a **plain single-column FK within the schema** (the ADR-permitted case), not a
+composite. `attendance_records` is the hot table here (~22k rows per 1,000 employees per month) and
+a composite FK would need a new unique index on `(organization_id, id)` to reference — write cost on
+the hottest table in the service to protect against a mismatch the insert path cannot produce, since
+it reads the attendance record under RLS in the same transaction.
+
+**`approval_request_id` is a plain `uuid` with no foreign key** — it points across a schema boundary
+into `approval.approval_requests.id`, and ADR-0000 §10 forbids the constraint. It is **nullable and
+populated late**: approval's `core.approval.request.opened` (or `.decided`) carries it back.
+The authoritative join in the other direction is `(organization_id, request_type, source_ref)`,
+where `source_ref` is this row's `id`; the column is a convenience for rendering and support, not
+the link. Nothing should block on it being set.
+
+RLS: add `regularization_requests` to the schema's `TENANT_TABLES` with the same `tenant_isolation`
+policy (`USING` + `WITH CHECK`) as `attendance_records`, in the same migration that creates it —
+the `dunning_cycles` precedent.
+
+No guard trigger here. The row is a small mutable product fact, and the consumer's conditional
+`UPDATE ... WHERE status = 'pending'` plus `processed_events` gives the idempotency; the CHECK
+constraints already make the illegal shapes (`failed` with no reason, decided with no timestamp)
+unrepresentable.
+
+**This table closes the loop, and that is new** (ADR-0006 §12, amended). Whichever branch the
+consumer takes — the transition applied, or it has become illegal and the row goes to `failed` with
+a `failure_reason` — attendance publishes `hrms.time.regularization.applied` **from the same
+transaction**, through the outbox, never inline. Approval consumes it and writes the write-once
+application trio (§1.3). No schema change is needed here for that: `status`, `failure_reason` and
+`decided_at` already carry everything the event needs, and the event is built from this row.
+
+`reason` stays a plaintext `varchar(500)` on this table. That is deliberate and it is the load-bearing
+premise of the decision *not* to seal `request_note` in approval (§1.3): the same text already sits
+in the clear here, so sealing the copy downstream would protect nothing while costing an audit row
+per inbox render. If this column is ever sealed, that argument expires and `request_note` must be
+revisited in the same change — the two are one decision, recorded in two schemas.
+
+---
+
+## 6. Migration order and rollback
+
+Three services, five migrations. All are additive; **none is backward-incompatible**.
+
+| # | Service | Revision (down_revision) | Contents |
+|---|---|---|---|
+| 1 | `employee` | after `6b37df855f2f` | `dotted_line_manager_id`, `hierarchy_version`, two CHECKs, `uq_employees_org_id`, composite FK (NOT VALID → VALIDATE), version trigger |
+| 2 | `approval` | initial (`down_revision = None`) | `CREATE SCHEMA`; all six tables, constraints, indexes |
+| 3 | `approval` | after #2 | `current_org()`, RLS enable + force + policies |
+| 4 | `approval` | after #3 | the three guard triggers |
+| 5 | `attendance` | after `a1b2c3d4e5f6` | `regularization_requests` + its indexes + RLS policy |
+
+**Deploy order is tighter than migration order**, and this is the part that can lose data silently:
+
+1. Migration 1, then **employee's code** (events carrying the five hierarchy fields +
+   `hierarchy_version`, the internal backfill endpoint, the cycle check).
+2. Migrations 2–4, then **approval's worker**, so its queue is declared and bound. A topic exchange
+   drops unroutable messages: any `hrms.people.employee.*` published before the binding exists is
+   gone, not queued.
+3. **Then** the per-organization backfill. Starting it before employee's code is fully rolled out
+   means an old pod can still write a hierarchy change with no version bump and no event — a change
+   the backfill has already passed and the stream will never carry.
+4. Migration 5, then **attendance's code**. The new endpoint must not go live before approval's
+   consumer exists, or requests sit `pending` with no approval ever opened.
+
+**Rollback, per migration.** Each `downgrade()` is exact and was executed in the scratch schema in
+dependency order:
+
+- **1** — drop trigger, function, FK, unique, both CHECKs, then the two columns. Clean on an empty
+  database. On a seeded one it is **destructive of `dotted_line_manager_id` values** entered since
+  deploy (and of the version counters, which means approval would treat the next events as
+  version 0 and drop them until versions climb past the stored ones). That is the one
+  call-it-out-loud consequence in this set: prefer rolling forward. Nothing else is lost.
+- **2** — drops the tables and the schema. Destructive by definition; acceptable only because at
+  that point the service is new and the data is its own.
+- **3** — drop policies, `NO FORCE`, `DISABLE`, drop `current_org()`. Touches no rows. Drop order
+  matters: the function must go **after** the policies that call it.
+- **4** — drop triggers then functions. Touches no rows.
+- **5** — drop the policy, the two indexes, then the table. Destroys pending regularisation
+  requests; the attendance records themselves are untouched.
+
+**The ADR-0006 amendment adds no sixth migration and no new rollback risk**, which is worth stating
+because it is the kind of claim that is usually assumed. Everything it changed lands inside
+migrations 1–4, all of which create objects that do not yet exist anywhere: the hierarchy copy's
+column set and the request table's `request_note` and application trio are columns of tables created
+by migration 2; the four new indexes (§2.2a) are built in migration 2 with their tables; the extended
+`trg_approval_requests_decide_once` is created by migration 4 exactly as before, only with a longer
+body; and the widened outbox grants live in `env.py` beside the existing ones. Nothing is added to a
+table that already holds data, so **no expand → backfill → contract sequence is required** and the
+downgrade of each migration is unchanged from the list above — new columns and indexes disappear with
+the tables they belong to. The one pre-existing destructive downgrade is still migration 1's, for the
+same reason as before.
+
+The faster incident levers from ADR-0002 still apply and should be preferred to a downgrade:
+`ALTER ROLE opsgrids_approval BYPASSRLS` (one statement, no lock, policies intact for diagnosis), or
+pointing the DSN at `opsgrids_admin`.
+
+**Seed and factory data** (deliverable, for the migration's companion fixtures): an empty
+organization; a populated one with a 4-deep chain, an exited manager mid-chain, an active
+delegation, a revoked delegation, an escalated request and an unassigned request; a **second
+organization with the same employee ids reused** to prove isolation (the exclusion constraint and
+every unique constraint must accept it); and one fixture per role — `MEMBER` (`decide:OWN`),
+`APPROVAL_ADMIN`/`ORG_ADMIN` (`decide:ORG`), plus a membership with **no** `employee_id`, which must
+be unable to decide anything.
+
+The amendment adds five fixtures to that list, because each one is now a state the code must handle
+and none of them is reachable from the others: a request **with** a `request_note` and one without
+(a type that has no free text); a decided request whose `application_state` is still **NULL** (the
+normal fresh decision, and the population pattern 18 alarms on); one **`applied`**; one **`failed`**
+carrying an `application_failure_reason`; and an open step whose approver's node is **`exited`** —
+the §6 route (c) case, which must be answerable by a `decide:ORG` holder and by nobody else. The
+second organization should reuse the same employee ids *and* the same `employee_no` values, since
+the copy deliberately carries no unique constraint on the latter (§1.1).
+
+---
+
+## 7. Growth, retention and partitioning
+
+Per **1,000 employees per month**, assuming 0.5 regularisation requests per employee per month
+(missed punches are the common case) and the measured row widths (~0.4 KB heap per row including
+the mixin columns):
+
+| Table | Rows / 1,000 employees / month | Driver |
+|---|---|---|
+| `approval_requests` | ~500 | one per product request |
+| `approval_steps` | ~650 | 1 + ~25% escalated + ~5% delegated |
+| `audit_logs` | ~1,500 | opened, escalated/delegated, decided |
+| `outbox` | ~1,100 | `opened` + `decided` (+ `escalated`) |
+| `delegations` | ~30 | a few per manager per year |
+| `hierarchy_nodes` | 1,000 rows total, not per month | one per employee, updated in place |
+
+For the largest realistic tenant (50,000 employees): ~25k requests, ~32k steps and ~75k audit rows
+per month — **~390k steps and ~900k audit rows per year**, roughly 150 MB and 350 MB of heap
+respectively, plus indexes. Platform-wide at 1.25M steps the measured footprint was 208 MB heap and
+~250 MB of indexes.
+
+**No partitioning now, and that is a decision rather than an omission.** The two partition-shaped
+candidates are `approval_steps` and `audit_logs`, and neither qualifies yet: the hot queries are all
+tenant- or approver-scoped through partial and composite indexes that stay small regardless of table
+size (the SLA index is 1.4 MB against a 208 MB table, because it indexes only *open* steps), and
+partitioning by `created_at` would force every one of those indexes to become local, buying nothing
+until the table is in the tens of millions of rows — years away at the projected rate.
+
+What is needed now instead:
+
+- **The inbox's cost is proportional to an approver's step history**, not to the table. That is the
+  growth curve to watch (§2.1). If a single approver passes ~100k history steps, revisit with a
+  partial index on "steps of pending requests" — which requires a denormalised flag and is not worth
+  it today.
+- **Retention.** `approval_requests` and `approval_steps` are the evidence for an employment-record
+  decision and should be retained with the attendance data they justify (years, not months). Nothing
+  here deletes them. `outbox` and `processed_events` grow unbounded under whatever platform-wide
+  retention exists for them; this service adds no new answer and inherits the platform's.
+- **Liveness, not size, is the operational risk** (ADR-0006's own consequence list), and the alarm
+  has to watch the population that actually gets stuck — which is not the overdue queue.
+  - **Primary: unassigned-backlog age.** The age of the oldest open step with no approver (probe A,
+    §2.2), which `ix_approval_steps_stuck_open` answers in one index-only read of 3 buffers. These
+    requests are the ones that wait forever: nobody is assigned, and nothing escalates them, because
+    an unassigned step has no `due_at` by construction. Page on this. A sensible first threshold is
+    a small multiple of the default SLA (`sla_minutes` 1440), since an unassigned step has no SLA of
+    its own to breach.
+  - **Secondary: oldest overdue open step** (probe B), via `ix_approval_steps_sla_due`. This is a
+    symptom of approvers being slow, or of the sweep having stopped — not of routing being broken.
+  - **Third, a dashboard rather than a page: the escalation-disabled backlog** (probe C) — assigned
+    open steps with `due_at IS NULL`, under a policy with `enabled = false`. They never escalate
+    either, but that is somebody's deliberate configuration, so it is worth reporting and not worth
+    waking anyone. Free from the same index as probe A.
+
+  Between them the three probes cover every open step in the service (§2.2), so no request can be
+  waiting in a state that no alarm looks at.
+
+  - **Fourth, and it watches a different population: decisions that never reached the product**
+    (pattern 18) — `status <> 'pending' AND application_state IS NULL` older than a few minutes,
+    served index-only in 1 buffer by `ix_approval_requests_unapplied`. The three probes above cover
+    open *steps*; this one covers *decided requests*, which no step-based alarm can see because the
+    request has no open step left. Without it, "approved in approval, failed in attendance" is
+    invisible to every surface in the system — the requester sees Approved and an uncorrected day,
+    and nothing anywhere can enumerate that population (ADR-0006 §12). `application_state = 'failed'`
+    is a separate, smaller list that a human should read rather than be paged on.
+
+  **Timing: the first two alarms are armed in slice 4, not before.** ADR-0006 §10 opens every step
+  with `due_at = NULL` through slices 2–3, so the overdue queue is empty by construction and probe A
+  runs against an index holding the entire open backlog (§2.2). Arming the overdue alarm earlier
+  would make it fire continuously and correctly, and the only available response would be to ignore
+  it — which is how a team learns to ignore an alarm permanently. Probe D above is the exception: it
+  is meaningful from the moment the first decision is taken, so it is armed with slice 2.
+
+---
+
+## ERD
+
+```mermaid
+erDiagram
+    approval_requests ||--o{ approval_steps : "(organization_id, request_id)"
+    delegations       ||--o{ approval_steps : "(organization_id, delegation_id)"
+    approval_policies }o..o{ approval_requests : "request_type, no FK"
+    hierarchy_nodes   }o..o{ approval_steps : "routing input, no FK"
+    employees         }o..o| hierarchy_nodes : "copied by event, no FK"
+    attendance_records ||--o{ regularization_requests : "attendance_id (same schema)"
+    regularization_requests }o..o| approval_requests : "source_ref, no FK (cross-schema)"
+
+    approval_requests {
+        uuid id PK
+        uuid organization_id
+        varchar request_type
+        uuid source_ref
+        uuid requester_employee_id
+        jsonb summary
+        varchar request_note
+        varchar status
+        timestamptz opened_at
+        uuid decided_by_employee_id
+        uuid acting_for_employee_id
+        timestamptz decided_at
+        varchar application_state
+        varchar application_failure_reason
+        timestamptz applied_at
+    }
+    approval_steps {
+        uuid id PK
+        uuid organization_id
+        uuid request_id FK
+        smallint level
+        uuid approver_employee_id
+        uuid acting_for_employee_id
+        uuid delegation_id FK
+        varchar reason
+        timestamptz due_at
+        timestamptz closed_at
+        varchar outcome
+    }
+    delegations {
+        uuid id PK
+        uuid organization_id
+        uuid delegator_employee_id
+        uuid delegate_employee_id
+        timestamptz starts_at
+        timestamptz ends_at
+        timestamptz revoked_at
+    }
+    hierarchy_nodes {
+        uuid organization_id PK
+        uuid employee_id PK
+        uuid reporting_manager_id
+        uuid dotted_line_manager_id
+        varchar status
+        varchar display_name
+        varchar employee_no
+        varchar location_code
+        bigint source_version
+    }
+    approval_policies {
+        uuid organization_id PK
+        varchar request_type PK
+        int sla_minutes
+        bool enabled
+    }
+    regularization_requests {
+        uuid id PK
+        uuid organization_id
+        uuid attendance_id FK
+        uuid employee_id
+        varchar requested_status
+        varchar status
+        uuid approval_request_id
+    }
+```
+
+---
+
+## What the backend engineer must know to query safely
+
+1. **Write the inbox as a `UNION` driven from steps**, joined to the pending set — not as an
+   `EXISTS` over requests. 10× at realistic volume (§2.1).
+2. **Lock order is always request, then steps** — in the decision path, the sweep and the delegation
+   re-point alike. When re-pointing several requests, lock them in a deterministic order (by id) or
+   two concurrent delegation creations can deadlock.
+3. **A step is closed by exactly one `UPDATE`** setting `outcome` *and* `closed_at` together.
+   Anything else raises `restrict_violation` (23001) from the guard trigger, including a second
+   change to an already-terminal step.
+4. **Never `UPDATE` a decided request or a delegation's window.** Same trigger family, same error.
+5. **The sweep's discovery session may read seven columns of `approval_steps`** —
+   `organization_id`, `request_id`, `id`, `outcome`, `approver_employee_id`, `due_at`, `opened_at` —
+   **and six of `approval_requests`**: `organization_id`, `id`, `request_type`, `status`,
+   `decided_at`, `application_state`. A `SELECT *` on either fails with `42501`, and so does any
+   content column (`summary`, `request_note`, `comment`). It must never write. `opened_at` is in the
+   first list only because the stuck-request probe needs it; with the six-column grant on
+   `approval_steps` that probe is refused (verified, `42501`). The `approval_requests` grant exists
+   only for the decided-but-never-applied alarm (pattern 18) and is the narrowest grant that lets it
+   run — see §3.3, which also records where this departs from ADR-0006 §3's wording.
+6. **`due_at IS NULL` is a legal assigned step** (`enabled = false`). Do not assume an approver
+   implies a due date.
+7. **The hierarchy copy can be transiently cyclic** even though the source refuses cycles. Every
+   walk needs the visited set and the depth cap; the SQL above uses the `CYCLE` clause so the
+   database terminates even if the application forgets.
+8. **The upsert gate is `>` on `source_version`.** Equal is a duplicate and must be dropped without
+   error; an event with no `hierarchy_version` (from an un-upgraded employee pod) must be ignored
+   rather than treated as version 0.
+9. **`approval_request_id` on the attendance row may be NULL** long after the request exists. Join
+   on `(organization_id, request_type, source_ref)` when you need certainty.
+10. **The liveness probes must spell out `due_at IS NULL`**, even though the CHECK makes it
+    redundant for the unassigned case. Postgres matches a partial index against the query's own
+    quals only; dropping the predicate costs the index and turns a 3-buffer probe into an
+    820-buffer one (§2.2).
+11. **Declare constraint names the way §1.0.1 says**, or `make migration-check` stays red. The two
+    traps are a `CheckConstraint` given its full `ck_<table>_…` name (it gets prefixed twice) and any
+    second `UNIQUE`, `FOREIGN KEY` or `Index` on a table that also leads with `organization_id` (the
+    convention names it after the leading column only, so the two collide).
+12. **Free text goes in `request_note`, never in `summary`.** `summary` is structured facts only and
+    a `reason` key in it is rejected by CHECK. `request_note` must not appear in any published event
+    payload, any audit `before`/`after` blob, or any log line, and it is returned only to the
+    requester, a currently-eligible principal, or a `read:ORG` holder (§1.3).
+13. **The application trio is written exactly once, by the product's return event** — `UPDATE … SET
+    application_state, applied_at[, application_failure_reason] WHERE id = …` on an already-decided
+    request. Any other column in the same statement raises `23001`, as does a second report. It does
+    **not** change `status`: a decided request stays decided, and "applied" is a fact about the
+    decision rather than a revision of it.
+14. **`application_state IS NULL` is the normal state of a fresh decision**, not an error. It means
+    the product has not reported yet. Only its *age* is interesting (pattern 18).
+15. **`display_name` on the copy can be stale but never absent.** It is `NOT NULL`, fed only by
+    version-gated full-state events; a *missing node* yields a `null` name in the API response,
+    which is a different thing from a null column. Render the id's fallback, keep the row operable.

@@ -17,9 +17,10 @@ The scope columns for an employee are:
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Employee, EmployeePii
@@ -126,3 +127,127 @@ async def direct_reports(
         .order_by(Employee.full_name)
     )
     return list((await session.execute(stmt)).scalars().all())
+
+
+def hierarchy_stmt(org_id: uuid.UUID, *, cursor: uuid.UUID | None, limit: int) -> Select[Any]:
+    """Keyset page of every employee of one organization, in `id` order.
+
+    Backs the internal backfill endpoint (ADR-0006 §2.1): `WHERE organization_id = :org AND
+    id > :cursor ORDER BY id LIMIT n`, served by `uq_employees_org_id` — the same composite
+    index the dotted-line FK needs, so pagination costs nothing extra. Offset pagination is
+    deliberately not used here: a row inserted mid-run would shift every later page and
+    silently skip an employee, which `platform_core.pagination` cannot protect against.
+    """
+    stmt = select(Employee).where(
+        Employee.organization_id == org_id,
+        Employee.deleted_at.is_(None),
+    )
+    if cursor is not None:
+        stmt = stmt.where(Employee.id > cursor)
+    return stmt.order_by(Employee.id).limit(limit)
+
+
+#: Same value as approval's own `MAX_CHAIN_DEPTH` (`services/approval/app/domain.py`): a chain
+#: 32 rungs deep is still routable, one deeper is not (ADR-0006 §5). Approval's walk starts
+#: counting *at the employee* (depth 1, the requester's own row, not an approver rung) and can
+#: render up to 32 rungs above that before it has to report `depth_exceeded` — 33 rows total.
+#: This walk starts one row higher, at the *proposed* manager rather than the employee, so it
+#: accounts for the employee's own row itself: accepting a proposed-manager chain up to
+#: `MAX_MANAGER_CHAIN_DEPTH` long makes the resulting employee-inclusive chain at most
+#: `MAX_MANAGER_CHAIN_DEPTH + 1` rows, matching approval's 33-row ceiling exactly.
+MAX_MANAGER_CHAIN_DEPTH = 32
+
+
+@dataclass(frozen=True, slots=True)
+class ChainWalk:
+    """The result of walking the *reporting* chain upward from a proposed manager
+    (data model §4.3). `too_deep` and `existing_cycle` are defensive: the depth cap and the
+    SQL-standard `CYCLE` clause are what terminate a walk that would otherwise loop forever,
+    rather than an application-side visited set the next author could forget.
+
+    The three reasons are distinct and mutually reportable — `reaches_employee` is a cycle this
+    edit itself would create, `too_deep` is a chain this edit would make unroutable without
+    looping, and `existing_cycle` is a cycle this walk found that already existed somewhere else
+    in the data, before this edit. Callers should not collapse them into one message: only the
+    first is actually "a reporting cycle".
+    """
+
+    reaches_employee: bool
+    existing_cycle: bool
+    too_deep: bool
+
+    @property
+    def refused(self) -> bool:
+        return self.reaches_employee or self.existing_cycle or self.too_deep
+
+
+#: One statement, run inside the same transaction as the change (data model §4.3). Walks the
+#: *reporting* edges upward from the proposed manager and reports whether that walk reaches the
+#: employee being edited, whether it found a cycle that already existed, or whether it ran past
+#: `MAX_MANAGER_CHAIN_DEPTH` rungs — the depth boundary approval's own chain walk agrees with
+#: (see `MAX_MANAGER_CHAIN_DEPTH`'s docstring for the off-by-one between where the two walks
+#: start counting).
+_CYCLE_CHECK_SQL = text(
+    """
+    WITH RECURSIVE up (id, manager_id, depth) AS (
+            SELECT e.id, e.reporting_manager_id, 1
+              FROM employee.employees e
+             WHERE e.organization_id = :org_id
+               AND e.id = :proposed_manager_id
+        UNION ALL
+            SELECT e.id, e.reporting_manager_id, up.depth + 1
+              FROM up
+              JOIN employee.employees e
+                ON e.organization_id = :org_id
+               AND e.id = up.manager_id
+             WHERE up.depth <= :max_depth
+               AND up.id <> :employee_id
+    ) CYCLE id SET is_cycle USING path
+    SELECT coalesce(bool_or(id = :employee_id), false) AS reaches_employee,
+           coalesce(bool_or(is_cycle), false)          AS existing_cycle,
+           coalesce(max(depth), 0) > :max_depth        AS too_deep
+      FROM up
+    """
+)
+
+
+async def walk_manager_chain(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    proposed_manager_id: uuid.UUID,
+) -> ChainWalk:
+    """Whether making `proposed_manager_id` a manager of `employee_id` would close a cycle, push
+    the chain past `MAX_MANAGER_CHAIN_DEPTH`, or would write into a cycle that already exists
+    elsewhere in the data — see `ChainWalk` for why these stay three separate booleans.
+
+    Takes `pg_advisory_xact_lock` keyed on the organization first (ADR-0006 §2, data model
+    §4.3): two concurrent edits on *disjoint* rows can each walk a chain that is acyclic at
+    read time and still compose a cycle on commit (`A.mgr = B` and `C.mgr = D` closing a loop
+    through `B..C`) — row locks on the two edited rows never overlap, so they do not prevent
+    it. The lock is transaction-scoped, releases automatically at commit or rollback, and
+    serialises hierarchy edits within this one organization only.
+    """
+    # Bound as a string, not cast in SQL (`:org_id::text` immediately after a bind parameter
+    # is misparsed by asyncpg's prepared-statement path — verified against a live connection):
+    # `||` needs both sides to already be text, and the parameter already is one.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended('employee.hierarchy:' || :org_id, 0))"),
+        {"org_id": str(org_id)},
+    )
+    row = (
+        await session.execute(
+            _CYCLE_CHECK_SQL,
+            {
+                "org_id": org_id,
+                "proposed_manager_id": proposed_manager_id,
+                "employee_id": employee_id,
+                "max_depth": MAX_MANAGER_CHAIN_DEPTH,
+            },
+        )
+    ).one()
+    return ChainWalk(
+        reaches_employee=bool(row.reaches_employee),
+        existing_cycle=bool(row.existing_cycle),
+        too_deep=bool(row.too_deep),
+    )

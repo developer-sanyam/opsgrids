@@ -83,6 +83,10 @@ class EmployeeIn(BaseModel):
     work_mode: WorkMode = "office"
     date_of_joining: date | None = None
     reporting_manager_id: uuid.UUID | None = None
+    #: A second, informational reporting line — stored but not routed on (ADR-0006 §2). Refused
+    #: at write time if it would close a reporting cycle or push the chain past the depth cap,
+    #: exactly like `reporting_manager_id` (`app/services.py::_assert_no_cycle`).
+    dotted_line_manager_id: uuid.UUID | None = None
     membership_id: uuid.UUID | None = None
     #: Optional sensitive PII, sealed on write. Absent means the person has no PII row yet.
     pii: EmployeePiiIn | None = None
@@ -101,6 +105,7 @@ class EmployeePatch(BaseModel):
     work_mode: WorkMode | None = None
     date_of_joining: date | None = None
     reporting_manager_id: uuid.UUID | None = None
+    dotted_line_manager_id: uuid.UUID | None = None
     #: Present to seal new sensitive values; only the fields set on it are touched.
     pii: EmployeePiiIn | None = None
 
@@ -146,9 +151,14 @@ class EmployeeOut(BaseModel):
     work_mode: str
     date_of_joining: date | None
     reporting_manager_id: uuid.UUID | None
+    dotted_line_manager_id: uuid.UUID | None
     status: str
     date_of_exit: date | None
     created_at: datetime
+    #: Bumped by the database trigger whenever a hierarchy field changes (ADR-0006 §2). Read-only
+    #: here — nothing accepts it on write, and the trigger ignores a client-supplied value even
+    #: on a raw `UPDATE`.
+    hierarchy_version: int
     #: Masked PII, when the caller loaded it. Never plaintext, never ciphertext. Null where the
     #: employee has no PII row, and on the list projection which does not join it.
     pii: EmployeePiiMasked | None = None
@@ -173,3 +183,28 @@ class EmployeePiiUnmasked(BaseModel):
     uan: str | None = None
     esi: str | None = None
     bank_account: str | None = None
+
+
+class HierarchyNodeOut(BaseModel):
+    """The full hierarchy state of one employee — the same shape the events carry (ADR-0006 §2),
+    served by the internal backfill endpoint so approval's copy can start from any single row
+    without decoding history. `employee_id` and `display_name` are deliberate renames of `id`
+    and `full_name`: they are the names approval's own copy uses on the wire."""
+
+    employee_id: uuid.UUID
+    reporting_manager_id: uuid.UUID | None
+    dotted_line_manager_id: uuid.UUID | None
+    status: str
+    location_code: str | None
+    display_name: str
+    employee_no: str
+    hierarchy_version: int
+
+
+class HierarchyPage(BaseModel):
+    """A keyset page of `HierarchyNodeOut`, ordered on `id`. `next_cursor` is `null` once there
+    is nothing left to page through — the caller keeps requesting with `cursor=next_cursor`
+    until it sees `null`, rather than inferring the end from the page size (ADR-0006 §2.1)."""
+
+    items: list[HierarchyNodeOut]
+    next_cursor: uuid.UUID | None

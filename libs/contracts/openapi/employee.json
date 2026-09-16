@@ -40,6 +40,18 @@
             ],
             "title": "Designation"
           },
+          "dotted_line_manager_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dotted Line Manager Id"
+          },
           "employee_no": {
             "maxLength": 40,
             "minLength": 1,
@@ -195,6 +207,18 @@
             ],
             "title": "Designation"
           },
+          "dotted_line_manager_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dotted Line Manager Id"
+          },
           "employee_no": {
             "title": "Employee No",
             "type": "string"
@@ -206,6 +230,10 @@
           "full_name": {
             "title": "Full Name",
             "type": "string"
+          },
+          "hierarchy_version": {
+            "title": "Hierarchy Version",
+            "type": "integer"
           },
           "id": {
             "format": "uuid",
@@ -290,9 +318,11 @@
           "work_mode",
           "date_of_joining",
           "reporting_manager_id",
+          "dotted_line_manager_id",
           "status",
           "date_of_exit",
-          "created_at"
+          "created_at",
+          "hierarchy_version"
         ],
         "title": "EmployeeOut",
         "type": "object"
@@ -335,6 +365,18 @@
               }
             ],
             "title": "Designation"
+          },
+          "dotted_line_manager_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dotted Line Manager Id"
           },
           "employment_type": {
             "anyOf": [

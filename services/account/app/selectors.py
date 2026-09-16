@@ -157,6 +157,38 @@ async def list_owner_memberships(session: AsyncSession, org_id: uuid.UUID) -> li
     return list((await session.execute(stmt)).scalars())
 
 
+async def count_memberships_missing_grants(
+    session: AsyncSession, org_id: uuid.UUID, permission_codes: list[str]
+) -> int:
+    """Active memberships holding **none** of `permission_codes`, through any role.
+
+    What ADR-0007 §4 calls `memberships_without`: a reconcile widens system roles only, so
+    a membership whose sole role is customer-authored (or holds no role at all) gains
+    nothing from it. This is the number an operator can act on, computed in one query
+    rather than a loop per membership — a reconcile can touch every membership in the
+    tenant, and a per-membership round trip here would be exactly the N+1 CLAUDE.md rules
+    out.
+    """
+    if not permission_codes:
+        return 0
+    holds_one = (
+        select(MembershipRole.membership_id)
+        .join(RolePermission, RolePermission.role_id == MembershipRole.role_id)
+        .join(Permission, Permission.id == RolePermission.permission_id)
+        .where(Permission.code.in_(permission_codes))
+    )
+    stmt = (
+        select(func.count())
+        .select_from(Membership)
+        .where(
+            Membership.organization_id == org_id,
+            Membership.status == "active",
+            Membership.id.notin_(holds_one),
+        )
+    )
+    return int((await session.execute(stmt)).scalar_one())
+
+
 async def get_membership_for_user(
     session: AsyncSession, org_id: uuid.UUID, user_id: uuid.UUID
 ) -> Membership | None:

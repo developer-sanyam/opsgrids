@@ -18,7 +18,18 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from sqlalchemy import Date, ForeignKey, Index, LargeBinary, String, UniqueConstraint, text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    Date,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    LargeBinary,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -92,6 +103,22 @@ class Employee(Base, TenantBase):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="probation")
     date_of_exit: Mapped[date | None] = mapped_column(Date)
 
+    #: A second, informational reporting line — another employee in the *same* organization.
+    #: Stored so the approval engine's chain endpoint can show it and a later matrix-approval
+    #: rule has the data without a second backfill; nothing in this slice routes on it
+    #: (ADR-0006 §2). Composite FK to keep a cross-tenant manager unrepresentable, exactly like
+    #: `reporting_manager_id`'s own check does for self-reference — see the constraints below.
+    dotted_line_manager_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+    #: Bumped by the database, never by the ORM (`app/models.py` trigger
+    #: `trg_employees_hierarchy_version`, data model §4.2). A Python-side `+= 1` would compute
+    #: from a stale read — there is no `with_for_update` anywhere in this service — and silently
+    #: drop a concurrent edit forever under approval's strictly-greater version gate. The service
+    #: only ever reads this column back after a write; it never sets it.
+    hierarchy_version: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
+
     __table_args__ = (
         # Every index leads with `organization_id`: under row-level security the policy qual is
         # ANDed into every query, so an index that did not lead with the tenant column would
@@ -109,6 +136,27 @@ class Employee(Base, TenantBase):
             "membership_id",
             unique=True,
             postgresql_where=text("membership_id IS NOT NULL"),
+        ),
+        CheckConstraint("hierarchy_version >= 0", name="hierarchy_version_non_negative"),
+        CheckConstraint(
+            "dotted_line_manager_id IS NULL OR dotted_line_manager_id <> id",
+            name="dotted_line_not_self",
+        ),
+        # Explicit, not generated: the convention keys an unnamed unique on its first column
+        # only, and a future composite self-FK on `reporting_manager_id` would collide with this
+        # one (data model §1.0.1 rule 4, §4.1). It earns its keep twice over — it is also the FK
+        # target below, and the index the backfill's keyset pagination is served by.
+        UniqueConstraint("organization_id", "id", name="uq_employees_org_id"),
+        # Composite on purpose: a plain `FOREIGN KEY (dotted_line_manager_id) REFERENCES
+        # employees (id)` would happily accept a manager from another tenant. Named after the
+        # *pointer* column rather than the convention's default (which keys on the first column,
+        # `organization_id`, and would collide with any other composite self-FK leading with the
+        # tenant column).
+        ForeignKeyConstraint(
+            ["organization_id", "dotted_line_manager_id"],
+            ["employee.employees.organization_id", "employee.employees.id"],
+            name="fk_employees_dotted_line_manager_id_employees",
+            ondelete="SET NULL (dotted_line_manager_id)",
         ),
     )
 

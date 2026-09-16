@@ -54,6 +54,7 @@
 
     { "prefix": "/api/v1/documents", "upstream": "http://localhost:8150" },
     { "prefix": "/api/v1/notifications", "upstream": "http://localhost:8151" },
+    { "prefix": "/api/v1/approvals", "upstream": "http://localhost:8152" },
 
     { "prefix": "/api/v1/billing", "upstream": "http://localhost:8160" },
     { "prefix": "/api/v1/subscriptions", "upstream": "http://localhost:8161" },

@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -22,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import selectors
-from app.catalogue import CORE_REGISTRATION, ProductManifest, ProductRegistration
+from app.catalogue import CORE_REGISTRATION, ProductManifest, ProductRegistration, min_scope
 from app.models import (
     AuditLog,
     Invitation,
@@ -64,6 +65,11 @@ EVT_MEMBERSHIP_CREATED = "core.membership.created"
 EVT_MEMBERSHIP_UPDATED = "core.membership.updated"
 EVT_MEMBERSHIP_REVOKED = "core.membership.revoked"
 EVT_GRANTS_CHANGED = "core.grants.changed"
+
+#: The scope ladder, shared by every place that has to decide whether one grant is wider
+#: than another: replacing a role's grants (`_replace_grants`) and reconciling a role
+#: template against a live tenant (`install_registration`, ADR-0007 §1).
+_SCOPE_RANK = {"OWN": 0, "TEAM": 1, "LOCATION": 2, "ORG": 3}
 
 
 def _actor(ctx: ScopeContext) -> dict[str, Any]:
@@ -163,8 +169,8 @@ async def update_organization(
 ) -> Organization:
     before = org.as_dict(exclude={"security_policy"})
     changes = payload.model_dump(exclude_unset=True, exclude_none=True)
-    for field, value in changes.items():
-        setattr(org, field, value)
+    for attr, value in changes.items():
+        setattr(org, attr, value)
     org.updated_by = str(ctx.principal.sub)
 
     record_audit(
@@ -481,8 +487,8 @@ async def update_member(
     if "location_codes" in changes and changes["location_codes"] is not None:
         membership.location_codes = ",".join(changes.pop("location_codes"))
     changes.pop("location_codes", None)
-    for field, value in changes.items():
-        setattr(membership, field, value)
+    for attr, value in changes.items():
+        setattr(membership, attr, value)
 
     record_audit(
         session,
@@ -736,7 +742,6 @@ async def _replace_grants(session: AsyncSession, role: Role, grants: list[GrantI
     `max_scope` is the reason a role editor cannot quietly turn a self-service permission
     into an organization-wide one.
     """
-    rank = {"OWN": 0, "TEAM": 1, "LOCATION": 2, "ORG": 3}
     # An explicit DELETE rather than mutating the collection: touching `role.grants` on a
     # freshly flushed object triggers a lazy load, which raises MissingGreenlet under
     # asyncio. It is also one statement instead of N.
@@ -746,7 +751,7 @@ async def _replace_grants(session: AsyncSession, role: Role, grants: list[GrantI
         permission = await selectors.get_permission_by_code(session, grant.permission_code)
         if permission is None:
             raise NotFoundProblem(f"No permission named {grant.permission_code!r}")
-        if rank[grant.scope] > rank[permission.max_scope]:
+        if _SCOPE_RANK[grant.scope] > _SCOPE_RANK[permission.max_scope]:
             raise BusinessRuleProblem(
                 f"{permission.code} cannot be granted at {grant.scope}; "
                 f"the widest it supports is {permission.max_scope}"
@@ -883,13 +888,77 @@ async def revoke_invitation(
 # --------------------------------------------------------------------- registration
 
 
+@dataclass(slots=True)
+class RegistrationDiff:
+    """What `install_registration` did to reconcile a registration against one
+    organization's roles (ADR-0007 §1).
+
+    Roles created from scratch are unchanged first-write behaviour and are not "changed"
+    in the sense this diff cares about — nobody's capabilities moved, because nobody held
+    the role a moment ago. `grants_added` and `scopes_widened` are the two ways an
+    *existing* system role's grant set can grow, and are what decide whether the `pv`
+    bump fires (ADR-0007 §5) and what `memberships_without` is computed against (§4).
+    """
+
+    roles_created: list[str] = field(default_factory=list)
+    #: `(role_code, permission_code, scope)` — a permission the role did not hold at all.
+    grants_added: list[tuple[str, str, str]] = field(default_factory=list)
+    #: `(role_code, permission_code, old_scope, new_scope)` — a permission the role held
+    #: at a narrower scope than the template now names.
+    scopes_widened: list[tuple[str, str, str, str]] = field(default_factory=list)
+    #: Role codes the registration names that exist in this organization but are
+    #: customer-authored (`is_system = False`) — left untouched, per ADR-0007 §4.
+    skipped_customer_roles: list[str] = field(default_factory=list)
+    #: `role_code -> sorted "code:scope"` grant list, before and after — only for roles
+    #: that were actually widened, in the shape `role.grants_changed` already audits with.
+    role_grants_before: dict[str, list[str]] = field(default_factory=dict)
+    role_grants_after: dict[str, list[str]] = field(default_factory=dict)
+
+    @property
+    def changed(self) -> bool:
+        """Whether anybody's *capabilities* moved.
+
+        Creating a role nobody holds yet, or installing a permission row, changes what
+        *exists* in the catalogue, not what anybody *may do* — so it must not drive the
+        `pv` bump. This is the same rule `install_product_registration` already applied to
+        the admin-role grant, extended to cover widening (ADR-0007 §5).
+        """
+        return bool(self.grants_added or self.scopes_widened)
+
+    def permission_codes(self) -> list[str]:
+        """Every permission code touched by a widen, for the `pv` bump's audience and the
+        `memberships_without` count."""
+        codes = {code for _, code, _ in self.grants_added}
+        codes.update(code for _, code, _, _ in self.scopes_widened)
+        return sorted(codes)
+
+    def role_codes(self) -> list[str]:
+        """Every role code that was actually widened."""
+        codes = {code for code, _, _ in self.grants_added}
+        codes.update(code for code, _, _, _ in self.scopes_widened)
+        return sorted(codes)
+
+
 async def install_registration(
     session: AsyncSession, org_id: uuid.UUID, registration: ProductRegistration
-) -> None:
-    """Install a product's permissions and instantiate its role templates for an org.
+) -> RegistrationDiff:
+    """Install a product's permissions and reconcile its role templates for an org.
 
-    Idempotent: called on organization creation and again whenever a product is activated,
-    so it upserts rather than assuming a clean slate.
+    Idempotent, and a **reconcile** rather than a first-write (ADR-0007 §1): called on
+    organization creation, on every product activation, and by
+    `tools/reconcile_permissions.py` for a tenant that already exists. For each role
+    template:
+
+    - **missing** → created with its grants, exactly as before.
+    - **present and system** (`is_system = True`) → **widened**: every `(permission,
+      scope)` the template names and the role lacks is added, and an existing grant whose
+      scope is narrower than the template's is raised. Nothing is ever removed or
+      narrowed — union, not synchronisation, so this can never revoke.
+    - **present and customer-authored** (`is_system = False`) → left alone entirely, and
+      named in the returned diff so the caller can report the gap rather than close it
+      (ADR-0007 §4) — automatically granting a capability to a role a customer built
+      themselves is the "HR admin holds every permission" failure ADR-0000 §5's corollary
+      exists to prevent.
     """
     for spec in registration.catalogue.specs:
         code = spec.code(registration.product)
@@ -909,27 +978,162 @@ async def install_registration(
             session.add(permission)
     await session.flush()
 
+    diff = RegistrationDiff()
+
     for template in registration.role_templates:
-        if await selectors.get_role_by_code(session, org_id, template.code):
+        role = await selectors.get_role_by_code(session, org_id, template.code)
+
+        if role is None:
+            role = Role(
+                organization_id=org_id,
+                product=template.product,
+                code=template.code,
+                name=template.name,
+                description=template.description,
+                is_default=template.is_default,
+                is_system=True,
+            )
+            session.add(role)
+            await session.flush()
+            for grant in template.grants:
+                permission = await selectors.get_permission_by_code(session, grant.code)
+                if permission is None:
+                    continue
+                session.add(
+                    RolePermission(role_id=role.id, permission_id=permission.id, scope=grant.scope)
+                )
+            diff.roles_created.append(template.code)
             continue
-        role = Role(
-            organization_id=org_id,
-            product=template.product,
-            code=template.code,
-            name=template.name,
-            description=template.description,
-            is_default=template.is_default,
-            is_system=True,
-        )
-        session.add(role)
-        await session.flush()
+
+        if not role.is_system:
+            diff.skipped_customer_roles.append(template.code)
+            continue
+
+        # Widen: a set union over (permission_code, scope). `role.grants` is loaded
+        # (`lazy="selectin"`) as part of the query above, so this reads what is already
+        # in memory rather than issuing another round trip.
+        before_snapshot = sorted(f"{g.permission.code}:{g.scope}" for g in role.grants)
+        existing = {g.permission.code: g for g in role.grants}
+        role_changed = False
         for grant in template.grants:
             permission = await selectors.get_permission_by_code(session, grant.code)
             if permission is None:
                 continue
-            session.add(
-                RolePermission(role_id=role.id, permission_id=permission.id, scope=grant.scope)
+            # Defence in depth: the template was already built against the permission's
+            # ceiling (`PermissionCatalogue.all`/`.pick`), but a reconcile is exactly the
+            # place a stale template could otherwise smuggle a wider grant through.
+            target_scope = min_scope(grant.scope, permission.max_scope)
+            current = existing.get(grant.code)
+            if current is None:
+                # `role=role, permission=permission` rather than the `*_id` columns used
+                # above: the back-populated relationship appends to `role.grants` in
+                # memory immediately, so the `after` snapshot below sees it without a
+                # second query.
+                session.add(RolePermission(role=role, permission=permission, scope=target_scope))
+                diff.grants_added.append((template.code, grant.code, target_scope))
+                role_changed = True
+            elif _SCOPE_RANK[target_scope] > _SCOPE_RANK[current.scope]:
+                old_scope = current.scope
+                current.scope = target_scope
+                diff.scopes_widened.append((template.code, grant.code, old_scope, target_scope))
+                role_changed = True
+
+        if role_changed:
+            diff.role_grants_before[template.code] = before_snapshot
+            diff.role_grants_after[template.code] = sorted(
+                f"{g.permission.code}:{g.scope}" for g in role.grants
             )
+
+    return diff
+
+
+@dataclass(slots=True)
+class ReconcileSummary:
+    """The per-organization report line ADR-0007 §4 names:
+    `{org_id, roles_created, grants_added, scopes_widened, memberships_without}`."""
+
+    organization_id: uuid.UUID
+    roles_created: list[str]
+    grants_added: int
+    scopes_widened: int
+    skipped_customer_roles: list[str]
+    memberships_without: int
+    changed: bool
+
+
+async def reconcile_registration(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    registration: ProductRegistration,
+    *,
+    acting_as: str,
+    dry_run: bool = False,
+) -> ReconcileSummary:
+    """Reconcile one organization against `registration` — what
+    `tools/reconcile_permissions.py` drives, one call per organization, inside that
+    organization's own transaction (ADR-0007 §3).
+
+    An empty diff writes nothing: no audit row ("nothing happened" is not an event —
+    ADR-0007 §6), no outbox event, and no `pv` bump. A non-empty diff writes exactly one
+    audit row and publishes exactly one `core.grants.changed` event for the whole
+    organization — never per membership, because a widening touches every membership in
+    the tenant and that fan-out has no consumer today (ADR-0007 §5) — and only then bumps
+    `pv`, inside this same transaction: if the transaction rolls back, the version has
+    still moved, which costs one round of token refreshes and grants nobody anything, the
+    safe direction to be wrong in.
+
+    `dry_run` runs the identical reconcile — the same diff, computed the same way — but
+    skips the audit row, the event and the bump. The caller (the CLI) is the one that
+    decides not to commit; this function's only job is to not pretend anything happened
+    when nothing was meant to.
+    """
+    diff = await install_registration(session, org_id, registration)
+
+    memberships_without = 0
+    if diff.changed:
+        memberships_without = await selectors.count_memberships_missing_grants(
+            session, org_id, diff.permission_codes()
+        )
+        if not dry_run:
+            record_audit(
+                session,
+                AuditLog,
+                organization_id=org_id,
+                actor_id=None,
+                acting_as=acting_as,
+                action="permissions.reconciled",
+                entity="organization",
+                entity_id=org_id,
+                before={"roles": diff.role_grants_before},
+                after={"roles": diff.role_grants_after},
+            )
+            publish_event(
+                session,
+                OutboxEvent,
+                organization_id=org_id,
+                event_type=EVT_GRANTS_CHANGED,
+                aggregate_type="organization",
+                aggregate_id=org_id,
+                payload={
+                    "organization_id": str(org_id),
+                    "role_codes": diff.role_codes(),
+                    "permission_codes": diff.permission_codes(),
+                },
+            )
+            # Fail-loud, inside this organization's transaction: `bump_permission_version`
+            # raises when Redis is unreachable, which rolls this org's writes back and
+            # leaves it to be picked up by the next run — never reported as reconciled.
+            await _invalidate_grants(org_id)
+
+    return ReconcileSummary(
+        organization_id=org_id,
+        roles_created=diff.roles_created,
+        grants_added=len(diff.grants_added),
+        scopes_widened=len(diff.scopes_widened),
+        skipped_customer_roles=diff.skipped_customer_roles,
+        memberships_without=memberships_without,
+        changed=diff.changed,
+    )
 
 
 async def install_product_registration(
@@ -956,10 +1160,13 @@ async def install_product_registration(
 
     The permission-version bump happens only when a grant was actually added: installing
     permissions and instantiating roles changes what *exists*, not what anybody may do, so a
-    pure re-install must not invalidate every token in the organization.
+    pure re-install must not invalidate every token in the organization. As of ADR-0007,
+    that now also covers a role that already existed being *widened* — a product whose
+    catalogue grew since an organization first activated it picks up the new grants on the
+    next activation-time install, not only through the separate fleet reconciler.
     """
     registration = manifest.registration
-    await install_registration(session, org_id, registration)
+    diff = await install_registration(session, org_id, registration)
 
     granted: list[uuid.UUID] = []
     granted_roles: list[str] = []
@@ -998,6 +1205,7 @@ async def install_product_registration(
             "role_templates": [t.code for t in registration.role_templates],
             "admin_roles": list(manifest.admin_role_codes),
             "admin_role_granted_to": [str(m) for m in granted],
+            "widened_roles": diff.role_codes(),
         },
     )
     for membership_id in granted:
@@ -1014,9 +1222,10 @@ async def install_product_registration(
                 "granted_roles": granted_roles,
             },
         )
-    if granted:
-        # A grant landed, so tokens minted before it are stale — same rule as every other
-        # write that changes what somebody may do.
+    if granted or diff.changed:
+        # A grant landed — either an owner picked up the admin role, or an existing
+        # system role was widened (ADR-0007 §1, §5) — so tokens minted before it are
+        # stale, same rule as every other write that changes what somebody may do.
         await _invalidate_grants(org_id)
 
     return {
@@ -1025,4 +1234,6 @@ async def install_product_registration(
         "role_templates": [t.code for t in registration.role_templates],
         "admin_roles": granted_roles,
         "owners_granted": len(granted),
+        "grants_added": len(diff.grants_added),
+        "scopes_widened": len(diff.scopes_widened),
     }

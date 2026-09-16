@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# ADR-0006 §14's per-process connection budget: one consumer loop, one message at a time, so
+# `bin/api`'s default app-engine pool (10 + 5) is far more than this process ever needs — 4 + 2 is
+# what the ADR's table budgets for `bin/worker`. Set here, not in `app/config.py`, because
+# `Settings` is shared by every one of this service's processes and `bin/api` must keep the full
+# pool; only respected if unset, so an operator who wants to tune it still can.
+: "${DB_POOL_SIZE:=4}"
+: "${DB_MAX_OVERFLOW:=2}"
+export DB_POOL_SIZE DB_MAX_OVERFLOW
+exec python -m app.consumers

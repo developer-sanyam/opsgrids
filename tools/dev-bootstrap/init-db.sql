@@ -45,7 +45,11 @@ CREATE EXTENSION IF NOT EXISTS citext;       -- email is case-insensitive and gl
 -- `opsgrids_projects`, `opsgrids_finance`, `opsgrids_operations` and `opsgrids_itsm` are the newest
 -- product-line services: gate-green skeletons for now (outbox, audit_logs, processed_events
 -- only), each a NOBYPASSRLS role confined to its own schema like every other product service.
+-- `opsgrids_approval` owns the routing engine (ADR-0006): a platform service, not a product, but
+-- NOBYPASSRLS like every other service — every table it owns, including the read-only
+-- `hierarchy_nodes` copy this slice adds, carries `organization_id` and a tenant policy.
 --
+
 -- Running a relay as a NOBYPASSRLS role without setting the tenant GUC per message is the
 -- failure that stops event processing with no error at all: the outbox simply fills.
 -- ---------------------------------------------------------------------------
@@ -97,7 +101,7 @@ BEGIN
     'opsgrids_lead', 'opsgrids_pipeline', 'opsgrids_activity',
     -- Platform (shared)
     'opsgrids_document', 'opsgrids_notification', 'opsgrids_scheduler',
-    'opsgrids_eventbridge', 'opsgrids_config',
+    'opsgrids_eventbridge', 'opsgrids_config', 'opsgrids_approval',
     -- Commerce
     'opsgrids_catalog', 'opsgrids_billing', 'opsgrids_metering', 'opsgrids_subscription', 'opsgrids_console', 'opsgrids_payment',
     -- Product lines (skeletons)
@@ -122,7 +126,7 @@ GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
      opsgrids_lead, opsgrids_pipeline, opsgrids_activity,
      opsgrids_document, opsgrids_notification, opsgrids_scheduler,
      opsgrids_eventbridge, opsgrids_config, opsgrids_catalog, opsgrids_billing, opsgrids_metering, opsgrids_subscription,
-     opsgrids_console, opsgrids_payment,
+     opsgrids_console, opsgrids_payment, opsgrids_approval,
      opsgrids_projects, opsgrids_finance, opsgrids_operations, opsgrids_itsm;
 
 -- The directory reader (ADR-0002, "the cross-tenant reader").

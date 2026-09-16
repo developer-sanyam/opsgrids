@@ -120,7 +120,7 @@ EDGE        ┌─────────────────────�
                                   activity :8137  operations:8172
                                                   itsm      :8173
                                      │
- PLATFORM   document :8150 · notification :8151 · eventbridge :8163 (admin only)
+ PLATFORM   document :8150 · notification :8151 · approval :8152 · eventbridge :8163 (admin only)
             config · scheduler — no gateway prefix, service-to-service only
  OPERATOR   console :8170, behind admin-gateway
                                      │

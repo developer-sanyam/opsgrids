@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.api.internal import router as internal_router
 from app.api.routes import router
 from app.config import settings
 from app.models import OutboxEvent
@@ -21,3 +22,7 @@ app = create_app(
     # through the outbox engine so it is not blind to the rows the app role cannot see.
     outbox_model=OutboxEvent,
 )
+
+# Mounted at the root rather than under `/api/v1`: service-to-service only, excluded from the
+# public schema, and reachable solely with the internal token (ADR-0006 §2.1).
+app.include_router(internal_router)

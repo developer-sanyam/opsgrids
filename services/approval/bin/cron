@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# The scaffold points bin/cron at the relay because no service had scheduled work yet. Approval
+# is the same today: the SLA sweep (ADR-0006 §8) does not exist until slice 4, and the one-time
+# hierarchy backfill (§2.1) is a one-shot operator command, not a schedule — it has its own
+# entrypoint, bin/backfill-hierarchy, deliberately not this one (see that script's header).
+# Update this once app/cron.py's sweep lands.
+#
+# ADR-0006 §14's connection budget gives `bin/cron` an app-engine share of 4 + 2, smaller than
+# `bin/api`'s default 10 + 5. `app/relay.py` itself now skips the app engine entirely once
+# `DB_OUTBOX_ROLE` is configured, so this only matters for a deployment that has not split the
+# outbox role yet — and it is set here, ahead of that day, so the sweep this script eventually
+# runs inherits the right budget without anyone remembering to add it then.
+: "${DB_POOL_SIZE:=4}"
+: "${DB_MAX_OVERFLOW:=2}"
+export DB_POOL_SIZE DB_MAX_OVERFLOW
+exec python -m app.relay
