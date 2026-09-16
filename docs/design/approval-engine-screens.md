@@ -1,6 +1,7 @@
 # Approval engine — screen specifications for `frontend/product-hrms`
 
-**Status: design, 2026-09-16. Revised twice on 2026-09-16, against both ADR-0006 amendments.**
+**Status: design, 2026-09-16. Revised three times on 2026-09-16, against all three ADR-0006
+amendments** (design review, response shapes, slice-2 review).
 Specifies the HRMS surfaces for [ADR-0006](../adr/0006-approval-engine.md). Design only — no
 component code.
 
@@ -21,6 +22,16 @@ is listed in §9 as a contract dependency rather than quietly designed around.
 > (§4.A and §9.2). It was amended **twice** before merge: the first pass granted the five contract
 > dependencies this spec raised and settled three of its open questions; the second answered the six
 > response-shape questions §9.2 then raised. Both are reflected below.
+>
+> **Third amendment (slice 2 review) — what moved:**
+>
+> | Change | Where |
+> |---|---|
+> | **The read surface honours TEAM and LOCATION**, not just OWN/ORG. The subject of the scope is always the **requester** | §2.12, §4.B, §4.D, §4.F, §5 rows 3, 6, 17 |
+> | `request_note`'s audience follows the same ladder — "reaches the requester", not `read:ORG` | §2.9 |
+> | `decide` and `delegation.write` **collapse to OWN below ORG** — so a TEAM reader can see a request they cannot act on | §2.12, §4.B |
+> | The inbox's unassigned/abandoned queue needs ORG **and** a caller whose own node is not `exited` | §4.A, §5 row 1 |
+> | Two things this spec already said are now ADR-backed: the server's filtering is the gate (**empty page, not 403**), and an exited approver cannot decide by any route | §2.4, §4.A |
 >
 > **Second amendment — what moved:**
 >
@@ -320,6 +331,13 @@ cannot decide through any route** (ADR-0006 §6, §9). That last one is invisibl
 exited approver holds a valid membership and token, sees the control, and is refused at the server.
 The 403 state's copy must therefore not imply the caller did something wrong (§2.5).
 
+**Two rules this spec wrote ahead of the ADR are now ADR-backed**, and should be kept exactly as
+they are: the server's own filtering is the gate, so a caller who may act on nothing gets an **empty
+page, not a 403** (rule 1 above, and ADR-0006 §6 for the exited caller); and an exited approver
+cannot decide **through any route**, including `decide:ORG` on the unassigned queue.
+
+**The read scope ladder is separate from all of this — see §2.12.**
+
 **None of these grants exist in a live tenant until the ADR-0007 reconcile has run — see §2.8.**
 
 ### 2.5 Error mapping — problem+json to screen
@@ -447,10 +465,13 @@ to render a list is not a control.*
 - **Render it as ordinary text.** No mask, no blur, no "Reveal" control, no unmask affordance
   anywhere. Inventing one would advertise a control that does not exist and would imply an audit
   trail that is not written.
-- **Who the server gives it to** (ADR-0006 §3, rule 3, as widened): the requester, **anyone who
-  appears on a step of the request — any outcome, so anyone currently eligible *and* anyone who was
-  asked earlier** — or a holder of `read:ORG`. Nobody else, on any surface. The client does not
-  filter it: **if the field is present, the caller is allowed to see it.**
+- **Who the server gives it to** (ADR-0006 §3, rule 3, as widened twice): the requester; **anyone who
+  appears on a step of the request** — any outcome, so anyone currently eligible *and* anyone who was
+  asked earlier; or **anyone whose `read` scope reaches the requester** — TEAM, LOCATION or ORG
+  (§2.12). Nobody else, on any surface. *Changed:* this bullet said `read:ORG`, which was written when
+  the read surface recognised only two rungs. The rule names **the scope reaching the requester**, not
+  one rung of the ladder. The client does not filter it: **if the field is present, the caller is
+  allowed to see it.**
 - **Which endpoints carry it (C7, resolved):** the **inbox list** and the **request detail**, and
   nothing else. It is deliberately **not** on `GET /requests` — the requester's own list, where
   nothing renders it (they wrote it). Triage is the inbox's whole purpose, and an approver who must
@@ -568,6 +589,52 @@ last — and an inbox in the weeks after slice 4 legitimately shows a mix.
 **The inbox is fully usable without any of this**, which is why the staging works: its default sort
 is **oldest waiting first**, computed from how long the request has been waiting, not from a
 deadline. That sort is unchanged across all four slices.
+
+### 2.12 Who can read what, and why a reader is not a decider
+
+**Changed by the slice-2 amendment.** The read surface now honours the full scope ladder, and the
+**subject of the scope is always the requester** — never the current approver, because scoping on the
+approver would make a request appear and disappear depending on how far it had escalated.
+
+| Rung | Reaches | What a screen shows |
+|---|---|---|
+| `read:OWN` | requests I raised — **plus, on the detail, any request I appear on a step of** | "My requests" is mine; the inbox is what I can act on |
+| `read:TEAM` | requests whose requester **reports to me** (one level) | Detail and chain open for my direct reports |
+| `read:LOCATION` | requests whose requester's `location_code` is one of mine | Detail and chain open for my sites |
+| `read:ORG` | every request, and any employee's chain | Everything |
+
+**A requester the copy has never seen fails TEAM and LOCATION closed**, and stays visible at OWN and
+ORG. This is the `requester_not_in_hierarchy` population (§2.2) — a lagging `onboarded` event or an
+un-run backfill. The practical consequence for a TEAM-scoped manager: a brand-new report's request may
+not open for them for a few seconds after it is raised, and the correct rendering is the ordinary 404
+state, not a special "not synced yet" message the user can do nothing with.
+
+**`decide` and `delegation.write` do not gain these rungs — below ORG they collapse to OWN.**
+Authority comes from the chain, not from scope: a `decide:TEAM` meaning "decide my team's requests"
+would be a second authority running beside the chain, which is precisely what eligibility exists to
+prevent. Only ORG unlocks the unassigned and abandoned queue.
+
+**So "can see" and "can act" are now genuinely different sets, and the screens must say so rather
+than hide it.** A `read:TEAM` manager without a chain position can open a report's request, read the
+reason and the whole history, and *cannot decide it*. This is not an error state and must never be
+rendered as one:
+
+- **Never disable the Approve/Reject buttons for them.** The decision panel is **absent**, and a
+  muted line says who *can* decide (§4.B). A disabled control with no explanation is worse than an
+  absent one — and here there is a true explanation to give.
+- **Never hide the request from them**, and never render it as a 404 they could have reached a moment
+  earlier. They are allowed to see it; the read grant is the point.
+- **The collapse is never a 403.** A caller holding `decide:TEAM` is treated as OWN, not refused —
+  the ADR is explicit that a grant-time mistake must not become a runtime failure. So a TEAM decider
+  sees exactly the inbox an OWN decider sees, with no message about their scope, because nothing
+  about their experience is degraded.
+
+**No screen in these slices is designed for TEAM or LOCATION *browsing*.** The ADR grants the rungs
+because the ladder makes them representable, not because a customer asked for a team queue — and it
+says so. There is no "my team's requests" list, no location filter, and no nav entry for either. Such
+a grant widens what the **existing** screens open (a detail, a chain); it does not imply a screen
+nobody has designed. When a customer does ask, that is a new screen with its own spec, not a filter
+bolted onto "My requests" (§4.D).
 
 ---
 
@@ -807,6 +874,8 @@ no deadline never displaces one that has one). Sort is server-side; `DataTable` 
 | **Loaded, large (slices 2–3)** | 300+ rows: 25 per page, count chip reads `312 waiting`, **no overdue banner and no Due column**, "Load more · 287 left". The oldest-waiting-first sort is what makes 312 rows triageable without deadlines. Search and filters are server-side; sort never re-sorts only the loaded window |
 | **Loaded, large (slice 4)** | As above, plus the overdue banner leading and the Due column. An inbox in the weeks after slice 4 legitimately shows a **mix** of rows with and without a due time — steps opened before slice 4 keep `No due time` forever (§2.11). That mix is expected and needs no explanatory copy |
 | **Nothing routed yet** | Rows exist in "My requests" but not here because the approval worker is stopped (§3.1, **O6**). The inbox shows its ordinary empty state — it is not the inbox's job to report a worker outage, and it has no signal to do so |
+| **Exited caller** | **The ordinary empty state, not a 403** — the server's filtering is the gate (§2.4). A caller whose own hierarchy node is `exited` can decide nothing by any route, including the unassigned queue under `decide:ORG`, so both ORG arms return nothing. The screen does not detect this and must not try: there is no signal for it on the response, and an empty inbox is a true statement of what is waiting on them |
+| **`decide:TEAM` / `decide:LOCATION` caller** | Identical to an OWN decider — those scopes collapse to OWN (§2.12). No message about scope, because nothing is degraded |
 
 #### Copy (final)
 
@@ -969,7 +1038,9 @@ The action keeps its name through the flow: the button says **Approve**, the dia
 | **Error** | Whole-screen `ErrorState` with `problem.detail` and "Try again" |
 | **No permission (read)** | 404 → **"That request isn't available to you"** / "It may have been removed, or it may belong to someone else's chain." + `Button` "Back to approvals". Deliberately indistinguishable from a wrong id (ADR-0006 §11). **It no longer applies to anyone who was part of the request** — see the row below |
 | **Past participant** (decided it, was delegated it, was escalated past, or stood in) | **Full detail, read-only.** The read rule admits anyone appearing on a step of the request, **any outcome** (ADR-0006 §11, O8 resolved), so this is a first-class state, not an edge case. They see the requester's reason, the whole history, the decision and — the reason this matters — **the applied/failed outcome of the decision they made**. No decision panel (the request is not pending, or they are no longer eligible), and no explanatory line about why they can still see it: they were part of it, which is self-evident from the history they are reading |
-| **No permission (decide)** | The request renders; the decision panel is **absent**, replaced by a muted line: `Only Priya Nair can decide this.` For an ORG reader looking at an assigned request, add: `To correct the day directly, use the attendance record.` For the requester's own request: `You can't decide your own request.` |
+| **No permission (decide)** | The request renders; the decision panel is **absent** — never disabled — replaced by a muted line: `Only Priya Nair can decide this.` For an ORG reader looking at an assigned request, add: `To correct the day directly, use the attendance record.` For the requester's own request: `You can't decide your own request.` |
+| **Readable but not actionable** (a `read:TEAM` or `read:LOCATION` caller with no chain position) | **A first-class state, not an error** (§2.12). The full detail renders — reason, history, outcome — with no decision panel and the same muted line naming who can decide. No banner about scope, no "you don't have permission" framing: they have exactly the permission they were granted, and it is a reading permission. This is the state a manager reaches by opening a report's request out of interest |
+| **Exited caller** | The detail still renders everything their `read` grant allows — reading is not eligibility, and an exit never withdraws a read grant. The decision panel is absent by the same rule as above. Their inbox, separately, is empty rather than an error (§4.A) |
 | **Plan-gated** | Not applicable (platform route) |
 | **Offline** | The dialog's confirm is blocked with an inline `You're offline. Reconnect to send this decision.`; the comment is preserved |
 | **Stale / conflict (409)** | The dialog closes, the detail refetches into its decided state, and an inline message sits where the decision panel was: **"Already decided — Priya Nair approved this on 15 Sep, 6:40 pm IST."** Announced politely. Focus moves to that message. The comment the caller typed is discarded *after* being shown in the message body as `Your comment wasn't saved.` when it was non-empty |
@@ -1028,14 +1099,32 @@ This screen already exists. The changes are additive.
    - `Tag` **"Couldn't be applied"** — with `failure_reason`. This is the attendance-side view of
      §2.10's `application_state = 'failed'`: the request still reads **Approved**, and the day did
      not move.
-   - Nothing, for everyone else's rows.
+   - On **other people's** rows: the **action** never renders (it is own-record-only), but the status
+     markers above do, for any caller whose `hrms.time.attendance.read` scope reaches that record —
+     an HR admin triaging a day needs to see which rows have a correction pending.
 
-   **The requester's own reason is not shown on this row.** The granted `regularization` object is
-   `{status, approval_request_id, requested_status, waiting_on_name, decided_at, comment,
-   failure_reason}` — the ADR's §11 list does **not** include `reason`, which this spec had
-   originally proposed. That is the right call and no workaround is needed: the note belongs to the
-   request, the row already links to it, and the employee who typed it is the person looking at the
-   row. Do not add a second copy of it here.
+   **The requester's own reason *is* shown on their own row. Corrected — the earlier rule here had
+   the data flow backwards.** The employee types the reason into **attendance's** own endpoint
+   (`POST /api/v1/attendance/{id}/regularization-requests`, body `{requested_status, reason}`) and
+   attendance stores it on its own `regularization_requests` row. Approval receives it in the
+   `.requested` event and keeps it as `request_note`. **Attendance holds the original; approval holds
+   the copy** — so the previous instruction ("do not add a second copy of it here") pointed at the
+   wrong document and would have stripped the requester's own words from their own record while
+   leaving the duplicate in place elsewhere. Verified in code: `RegularizationRequestOut.reason` is a
+   required `str` on the shape `AttendanceOut.regularization` already returns
+   (`services/attendance/app/schemas.py`); nothing needs to be added to make this renderable.
+
+   **How it renders:** on the caller's **own** row, the reason appears beneath the status marker,
+   truncated to one line with the full text in `title` and in full on the request detail. It is the
+   requester's own sentence and is never rewritten or summarised (§2.9).
+
+   **On other people's rows it is not rendered inline, and that is a density decision, not an access
+   one** — stated explicitly so it is not mistaken for a rule about who may see it. Anyone whose
+   attendance read scope reaches the record may read the reason through the API; attendance's own
+   scope governs it, exactly as it governs the rest of the row. The table simply does not put free
+   text on 4,000 rows that are not yours, because it is unreadable at that volume and the request
+   detail is one activation away. §2.9's audience rule governs **approval's** onward copy
+   (`request_note`), whose readers are decided by the scope reaching the requester — not this field.
 3. Below `md`, the column collapses into a line under the status pill so it survives at 360px.
 
 #### The correction dialog
@@ -1049,7 +1138,9 @@ This screen already exists. The changes are additive.
 - Field 2 — **Reason** (required): multiline, label `Why does this need changing?`, helper
   `Your approver sees this. For example: "Worked from the Pune office, forgot to punch in."`
   Counter appears at 400 characters. **Validation mirrors the server exactly: non-blank, at most 500
-  characters** — attendance stores it as `varchar(500)` with a non-blank CHECK, and it becomes
+  characters** — `RegularizationRequestIn.reason` is `min_length=1, max_length=500`. **This field is
+  the origin of the text**: attendance stores it on its own `regularization_requests` row, returns it
+  as `RegularizationRequestOut.reason`, and publishes it onward, where approval keeps it as
   `request_note` (§2.9).
   *Changed:* this spec previously imposed a **10-character minimum**. That is dropped. It was a
   client-only rule the server does not enforce, and ADR-0006 §7 rejects exactly that pattern for the
@@ -1132,6 +1223,7 @@ the attendance row never changed, which is the failure mode the return event exi
 | **Partial** | Decider name unresolved → PersonRef fallback; status still accurate |
 | **Error** | `ErrorState` + `problem.detail` + "Try again" |
 | **No permission** | Every member holds `read:OWN`, so this is a server failure, not a design case: render the §2.5 403 state |
+| **Caller with a wider read scope** | **The list must still show only what the caller raised.** `GET /requests` is scope-filtered, so a TEAM, LOCATION or ORG reader would otherwise receive other people's requests on a screen titled "My requests" — for an HR admin with `read:ORG`, every request in the organization. The screen requests its own rows explicitly (**C10**) and never relies on the caller happening to hold OWN. Filtering client-side is not an option: it would break paging and the `total` count |
 | **Plan-gated** | Not applicable |
 | **Offline** | "You're offline" `ErrorState` |
 | **Stale** | A request decided since the page loaded shows its old status until refetch; the screen refetches on window focus, so a returning user sees the truth without a reload. No polling |
@@ -1170,7 +1262,7 @@ returns to the originating row on back-navigation.
 
 | Field | Control | Rules |
 |---|---|---|
-| Delegating for | **ORG mode only** — employee picker, defaults to me | Hidden entirely without `delegation.write:ORG` (§2.4). Label `Set this up for` |
+| Delegating for | **ORG mode only** — employee picker, defaults to me | Hidden entirely without `delegation.write:**ORG**` (§2.4). **ORG is the only scope that reaches it**: TEAM and LOCATION grants collapse to OWN (§2.12), so such a caller sees the ordinary personal form with no field and no message — nothing about their experience is degraded. Label `Set this up for` |
 | Delegate | employee picker (gap **G5**) over **`GET /api/v1/approvals/delegate-candidates?q=`** | Required. `q` is **required and at least 2 characters**; results are **capped at 20**. The endpoint already excludes the caller and every exited employee, so the picker filters nothing client-side |
 | Starts | zone-aware datetime (gap **G10**) | Required. Defaults to the next hour boundary |
 | Ends | zone-aware datetime | Required. Must be after Starts and in the future |
@@ -1336,7 +1428,8 @@ designation, and a status `Tag` where relevant:
 | **Partial** | A rung whose employee record didn't resolve renders the PersonRef fallback and keeps its level number — the chain's shape is still true |
 | **Error** | `ErrorState` inside the card, "Try again". The rest of the employee page is unaffected |
 | **Chain couldn't be resolved** (cycle or depth cap, ADR-0006 §5) | Warning-toned inline alert: **"This chain couldn't be worked out — the reporting line loops back on itself. Requests from Ananya go to HR until it's fixed."** Plus, for a caller who can edit employees: **"Check the reporting manager on the people involved."** |
-| **No permission** | A caller with `read:OWN` viewing someone else gets 404 on the employee page itself, so the section never renders alone. On the caller's own page the section always renders |
+| **No permission** | The chain honours the full read ladder (§2.12): **OWN** reaches only the caller's own chain, **TEAM** a direct report's, **LOCATION** an employee at one of the caller's locations, **ORG** anyone's. Out of scope → 404, and in practice the employee page itself 404s first, so the section rarely renders alone. On the caller's own page it always renders. *This is what slice 1 already shipped; the ADR generalised it rather than changing it* |
+| **Subject not in the copy** | TEAM and LOCATION **fail closed** when the hierarchy copy has not seen the subject — a lagging `onboarded` event or an un-run backfill. The caller gets the ordinary 404, not a bespoke "not synced" message: it resolves itself in seconds and there is nothing the user can do in the meantime |
 | **Plan-gated** | 402 on the employee call → whole-screen `HR isn't on this plan` |
 | **Offline** | `ErrorState` "You're offline" inside the card |
 | **Stale** | The chain is eventually consistent (ADR-0006 §2). No staleness indicator is shown — a few seconds' lag is not a state a user can act on. The page refetches on focus |
@@ -1404,7 +1497,7 @@ admin set a time limit that nothing enforces.
 | **Empty** | Not applicable — a missing policy row means defaults (1 day, escalation on), and the form shows those with a muted note: **"Using the default settings."** |
 | **Partial** | Policies load but one request type fails → that card shows its own error; others save normally |
 | **Error (save)** | Inline above the actions, `problem.detail`. Values are preserved; nothing reverts |
-| **No permission** | Nav entry hidden (§2.4). If reached by URL: whole-screen **"You can't change approval settings"** / **"Only an approvals administrator can change these. You can still see the current settings below."** followed by the **read-only** rendering — `GET /policies` is readable by anyone with `request.read`, so showing the values is both permitted and useful |
+| **No permission** | Nav entry hidden (§2.4). If reached by URL: whole-screen **"You can't change approval settings"** / **"Only an approvals administrator can change these. You can still see the current settings below."** followed by the **read-only** rendering — `GET /policies` is readable by anyone with `request.read` **at any scope** (the one read endpoint that does not consult scope at all), so showing the values is both permitted and useful |
 | **Read-only rendering** | Values as text, not disabled inputs: `Time to decide: 1 day` · `Requests move up when nobody answers: Yes` |
 | **Plan-gated** | Not applicable (platform route) |
 | **Offline** | Save blocked with inline `You're offline. Reconnect to save.`; values preserved |
@@ -1433,23 +1526,23 @@ changes in the brief. **Engineers must not infer a permission from what the UI r
 
 | # | Screen · action | Method · endpoint | Permission (guard) | Object rule the server applies |
 |---|---|---|---|---|
-| 1 | Inbox · load | `GET /api/v1/approvals/inbox` | `core.approval.request.decide` (any scope) | Pending requests where §6 holds for the caller; unassigned only with `:ORG`; the caller's own requests excluded |
+| 1 | Inbox · load | `GET /api/v1/approvals/inbox` | `core.approval.request.decide` (any scope) | Pending requests where §6 holds for the caller. **Unassigned *and* abandoned rows require `:ORG` and a caller whose own node is not `exited`** — both ORG arms carry the same test, so the queue an exited holder may not act on is not the queue they are shown. Below ORG reads as OWN. The caller's own requests are excluded |
 | 2 | Inbox · filter/sort/page | same, query params | same | — |
-| 3 | Detail · load | `GET /api/v1/approvals/requests/{id}` | `core.approval.request.read` | OWN: requester, **or anyone who appears on a step of this request** (`approver_employee_id` or `acting_for_employee_id`, **any outcome**), else **404**; ORG: any. Past participants keep access to what they decided |
+| 3 | Detail · load | `GET /api/v1/approvals/requests/{id}` | `core.approval.request.read` | **OWN**: requester, or anyone who appears on a step of this request (`approver_employee_id` or `acting_for_employee_id`, **any outcome**) — past participants keep access to what they decided. **TEAM**: additionally any request whose requester reports to the caller. **LOCATION**: additionally any request whose requester is at one of the caller's locations. **ORG**: any. Anything else is **404, at every scope** |
 | 4 | Detail · Approve | `POST /api/v1/approvals/requests/{id}/decision` `{outcome:"approve",comment?}` | `core.approval.request.decide` | §6 re-checked under the row lock. **403** not eligible · **409** already decided |
 | 5 | Detail · Reject | same, `{outcome:"reject",comment?}` | `core.approval.request.decide` | as above |
-| 6 | My requests · load | `GET /api/v1/approvals/requests` | `core.approval.request.read` | OWN = `requester_employee_id = sref` via `ctx.apply()`; ORG = all |
+| 6 | My requests · load | `GET /api/v1/approvals/requests` | `core.approval.request.read` | **OWN** = `requester_employee_id = sref`; **TEAM** = the requester reports to `sref`; **LOCATION** = the requester's `location_code` is one of the caller's; **ORG** = all. All four via `ctx.apply()`. **The screen needs "mine only" regardless of scope — see C10** |
 | 7 | Attendance · Request a correction | `POST /api/v1/attendance/{id}/regularization-requests` | `hrms.time.attendance.request` at OWN — **now declared** in ADR-0006 §11, `max_scope = OWN` (**O7 resolved**) | The caller's own record only; one pending per record. `max_scope` is OWN by design: "request a correction for everyone" is unrepresentable, not merely ungranted |
 | 8 | Attendance · read records | `GET /api/v1/attendance`, `GET /api/v1/attendance/{id}` | `hrms.time.attendance.read` | `ctx.apply()` on the list; `assert_can_touch` on the detail |
 | 9 | Attendance · HR direct override | `POST /api/v1/attendance/{id}/regularize` | `hrms.time.attendance.write`, **minimum ORG** | Existing endpoint; the escape hatch of ADR-0006 §6, not an approvals action |
-| 10 | Delegations · load | `GET /api/v1/approvals/delegations` | `core.approval.delegation.write` | OWN: delegator or delegate is `sref`; ORG: all |
-| 11 | Delegations · create (mine) | `POST /api/v1/approvals/delegations` | `core.approval.delegation.write` | OWN: `delegator_employee_id` omitted → `sref` |
-| 12 | Delegations · create for another | same, with `delegator_employee_id` | `core.approval.delegation.write` at **ORG** | Any delegator |
-| 13 | Delegations · revoke | `POST /api/v1/approvals/delegations/{id}/revoke` | `core.approval.delegation.write` | OWN: only the delegator; ORG: any |
+| 10 | Delegations · load | `GET /api/v1/approvals/delegations` | `core.approval.delegation.write` | **Below ORG (read as OWN)**: delegator or delegate is `sref`. **ORG**: all |
+| 11 | Delegations · create (mine) | `POST /api/v1/approvals/delegations` | `core.approval.delegation.write` | **Below ORG (read as OWN)**: `delegator_employee_id` must be `sref` (omitted → `sref`) |
+| 12 | Delegations · create for another | same, with `delegator_employee_id` | `core.approval.delegation.write` at **ORG** | Any delegator. **ORG is the only scope that reaches this** — a TEAM or LOCATION grant collapses to OWN and cannot set another delegator (§2.12) |
+| 13 | Delegations · revoke | `POST /api/v1/approvals/delegations/{id}/revoke` | `core.approval.delegation.write` | **Below ORG (read as OWN)**: only if the caller is the delegator. **ORG**: any |
 | 14 | Delegations · delegate picker | **`GET /api/v1/approvals/delegate-candidates?q=`** | `core.approval.delegation.write` (any scope) | **New endpoint, O3 resolved.** Non-exited `hierarchy_nodes` in the caller's organization, excluding the caller. `q` required, ≥2 characters, capped at 20. Returns `{employee_id, display_name, employee_no}` only |
-| 15 | Settings · load | `GET /api/v1/approvals/policies` | `core.approval.request.read` (any scope) | Read-only, org-wide |
+| 15 | Settings · load | `GET /api/v1/approvals/policies` | `core.approval.request.read` (any scope) | Read-only, org-wide. **The one read endpoint whose scope is not consulted at all** — an SLA policy is organization configuration, not anybody's row, so OWN sees exactly what ORG sees. Do not add a scope filter here |
 | 16 | Settings · save | `PUT /api/v1/approvals/policies/{request_type}` | `core.approval.policy.write`, **minimum ORG** | — |
-| 17 | Employee page · approval chain | `GET /api/v1/approvals/chain/{employee_id}` | `core.approval.request.read` | OWN: only `employee_id = sref`; ORG: any |
+| 17 | Employee page · approval chain | `GET /api/v1/approvals/chain/{employee_id}` | `core.approval.request.read` | **OWN**: only `employee_id = sref`. **TEAM**: a direct report. **LOCATION**: an employee at one of the caller's locations. **ORG**: any. Via `assert_can_touch` against the **subject's** node, failing TEAM and LOCATION closed when the copy has not seen the subject. *This row previously said OWN/ORG only, which slice 1's shipped endpoint already contradicted — the ADR generalises slice 1's behaviour rather than changing it* |
 | 18 | Employee page · profile | `GET /api/v1/employees/{id}` | `hrms.people.employee.read` | `assert_can_touch` |
 | 19 | Any screen · timezone resolution | `GET /api/v1/locations`, `GET /api/v1/organization` | platform routes, no product entitlement | Org-scoped reads; cached per session |
 
@@ -1550,7 +1643,7 @@ different shape than asked:
 |---|---|---|
 | **C1** | Names on every approval response | **Granted in full.** `display_name` and `employee_no` on `hierarchy_nodes`, fed by the same full-state employee events; `requester_name`, `approver_name`, `acting_for_name`, `decided_by_name`, `delegator_name`, `delegate_name` on responses; an unresolvable name is `null`, not absent, and the client renders its own fallback (ADR-0006 §2, §11). `department_id` was **dropped** in the same amendment — see the delta below |
 | **C2** | Why a request is in my inbox | **Granted in full.** `inbox_reason` per item with the six values, plus `from_name` (ADR-0006 §11). The ADR's reasoning matches this spec's: deriving it client-side means re-implementing §6 in the browser |
-| **C3** | Correction state on the attendance record | **Granted, minus one field.** `AttendanceOut.regularization {status, approval_request_id, requested_status, waiting_on_name, decided_at, comment, failure_reason}` plus `allowed_transitions[]` — **`reason` is not included.** §4.C is updated to not show it there; the note belongs to the request, which the row links to |
+| **C3** | Correction state on the attendance record | **Granted.** `AttendanceOut.regularization` plus `allowed_transitions[]`. **Including `reason`** — an earlier revision of this spec read the ADR's abbreviated field list as excluding it and told §4.C not to render it. That was wrong: attendance is where the employee *types* the reason and where it is stored, so it is the source, not a copy, and `RegularizationRequestOut.reason` is a required `str` on the shipped schema. §4.C now shows it on the requester's own row |
 | **C4** | `open_request_count` per delegation and `repointed_count` on create | **Half granted, deliberately.** `repointed_count` is free (already computed in that transaction) and is now specified copy in §4.E. `open_request_count` is **refused** with a measured cost — 47 ms per row at 2,986 pending, to render one line. The line is deleted, not deferred |
 | **C5** | `subject_ref` on `MeOut` | **Granted**, named in ADR-0006 §11 as auth's contract dependency |
 | **O1** | Is a rejection comment required? | **Settled as a server rule** in ADR-0006 §7: optional for both outcomes, for both this spec's reason and the ADR's own. The UI nudges; it does not require |
@@ -1577,6 +1670,7 @@ outside approval's ownership, and three questions the ADR deliberately leaves to
 
 | # | Question | How this spec proceeds |
 |---|---|---|
+| **C10** | **"My requests" needs a "mine only" filter that `GET /requests` does not document.** The endpoint is scope-filtered (OWN/TEAM/LOCATION/ORG), and `/approvals/mine` is titled "My requests" with the eyebrow "Raised by you". For a caller with `read:TEAM` or wider, the same call returns other people's requests — for an HR admin with `read:ORG`, the entire organization's | The screen must ask for its own rows explicitly: a `requester=me` (or equivalent) parameter on `GET /requests`, so the list is the caller's regardless of how wide their grant is. **Client-side filtering is not a fallback** — it breaks paging and the server `total` the count line reads from. Until the parameter exists, "My requests" is correct only for OWN-scoped callers, which is most people and not all of them. This is small and server-side; it was created by the scope amendment rather than missed earlier |
 | **C9** | **Which timezone does an attendance record render in?** Approval's responses now carry a location code for every instant they own (**O4**), but the **attendance** contract does not: the granted `AttendanceOut.regularization` object (**C3**) has no location code, and neither does `AttendanceOut` itself | §2.1 says the **record's** location governs a day and its punches, and that is unchanged — but nothing on the response names it, so §4.C currently renders dates (`12 Sep 2026`) rather than instants and sidesteps the question. **It has to be answered before attendance shows a punch time on the same screen as a correction**, or that screen will mix a record-zone date with an approval-zone timestamp. Smallest fix, matching what approval already does: a `location_code` on `AttendanceOut`, resolved by the same cached `/locations` lookup. Belongs to attendance's surface, not this document |
 | **O2** | **Can HR see, but not decide, an assigned request?** Left to the interface | Render read-only with **"Only Priya Nair can decide this. To correct the day directly, use the attendance record."** The amendment adds one real exception: §6 widens `decide:ORG` to cover a step whose approver has **exited**, so the decision panel *does* appear in exactly that case |
 | **O5** | **What does a requester see between a decision and the record changing?** | **Answered by §2.10 for every combination.** What stays a UI choice is the null window: no "applying…" state is invented for it, because `NULL` also means "this product does not report back yet" and the ADR is explicit that null never means something went wrong on its own |

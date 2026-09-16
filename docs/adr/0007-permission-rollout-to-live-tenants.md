@@ -65,6 +65,19 @@ writes it. Scope comparison uses the existing `_RANK` ladder (`OWN < TEAM < LOCA
 permission's own `max_scope` ceiling, so a reconcile can never grant wider than the catalogue allows
 — the same guard `PermissionCatalogue.all()` applies at declaration time.
 
+**Amended 2026-09-16, after ADR-0006's slice 2 review — what the ceiling can and cannot express.**
+`max_scope` is a **ladder ceiling, not an allowed-set**: account validates a grant with the single
+comparison `_SCOPE_RANK[grant.scope] > _SCOPE_RANK[permission.max_scope]`, so a permission whose
+ceiling is ORG makes **every rung below ORG grantable** — by this reconciler, by the roles API, and
+by a customer authoring their own role. A service therefore cannot use the catalogue to say "this
+permission is meaningful at OWN and ORG only"; it can only say how wide a grant may be. ADR-0006 §11
+hit this first — its `core.approval.request.read` was specified as "OWN, ORG" while the manifest
+made TEAM and LOCATION grantable — and resolved it on its own surface, by giving every representable
+rung a meaning the server enforces. It is recorded here because this reconciler is the *other*
+writer of grants: **a service's defence against a rung it does not want is to define that rung, not
+to hope nobody grants it.** If an allowed-set ever replaces the ceiling, §1's widen and its scope
+comparison change with it, and so does the subset pin in §2.
+
 **Why union rather than exact synchronisation.** An exact sync would also *remove* grants a template
 no longer names, which is the operation that can silently revoke access across every tenant in one
 command, with no per-tenant review and no undo. Union can only ever grant. The trade is stated
@@ -273,3 +286,8 @@ no audit row: "nothing happened" is not an event.
   role (`follows_template`), and it changes §4. It needs a real customer asking, not an imagined one.
 - **A second mechanism starts writing grants** (an entitlement system, a marketplace add-on). Then
   "who may write a grant" needs one owner, and it is this path plus the roles API today.
+- **A permission genuinely needs a non-contiguous scope set** ("OWN or ORG, never TEAM"). That means
+  replacing the `max_scope` ceiling with an allowed-set in `PermissionSpec`, `account.permissions`,
+  the manifest schema, the roles API's validation and §1's widen — a change to ADR-0000 §5's grammar
+  and §6's ladder, and a migration over grants that already exist. It needs more than one service
+  wanting it; ADR-0006 §11 wanted it and was cheaper to satisfy by defining the rungs.

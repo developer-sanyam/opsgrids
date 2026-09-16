@@ -592,8 +592,10 @@ per request; "verified" is the measured plan from the seeded scratch schema unde
 | 14 | **Stuck-request alarm (primary)** | `outcome='open' AND due_at IS NULL AND approver IS NULL`, by `opened_at`, `LIMIT 1`, cross-tenant | `ix_approval_steps_stuck_open` | index-only, 3 buffers, 0.015 ms |
 | 15 | Escalation-disabled backlog | `outcome='open' AND due_at IS NULL AND approver IS NOT NULL`, by `opened_at`, `LIMIT 1`, cross-tenant | `ix_approval_steps_stuck_open` | index-only, 3 buffers, 0.014 ms |
 | 16 | **`GET /delegate-candidates`** | `(organization_id)`, non-exited, `display_name`/`employee_no` prefix, cap 20 | `ix_hierarchy_nodes_org_display_name`, `ix_hierarchy_nodes_org_employee_no` | 3.4 ms / 853 buffers at 50k nodes (37 ms unindexed); **0.16 ms when the prefix matches nothing** |
-| 17 | **Inbox "abandoned" arm** (§6 c) | org's open steps whose approver's node is `exited`, by `opened_at DESC` | `uq_approval_steps_open_per_request` + `ix_hierarchy_nodes_org_exited` | 1.98 ms / 222 buffers at 3,200 open (6.3 ms / 13,203 without the exited index) |
+| 17 | **Inbox "abandoned" arm** (§6 c) | org's open steps whose approver's node is `exited`, by `opened_at DESC`; plus the caller-active bind (§2.1) | `uq_approval_steps_open_per_request` + `ix_hierarchy_nodes_org_exited` | as shipped (`EXISTS`): **1.97 ms / 1,473 buffers**, vs 4.16 ms / 1,921 without the index, at 20k nodes / 3,200 open |
 | 18 | **Decided-but-never-applied alarm** (§12) | `status<>'pending' AND application_state IS NULL AND decided_at < now()-n`, cross-tenant | `ix_approval_requests_unapplied` | index-only, **1 buffer, 0.017 ms** (7.7 ms seq scan without it) |
+| 19 | **`GET /requests` at TEAM** (§11) | requests LEFT JOIN requester's node, `h.reporting_manager_id = sref`, by `opened_at DESC` | `ix_hierarchy_nodes_org_manager` feeding `ix_approval_requests_org_requester_opened` | index-only both sides, **0.081 ms / 89 buffers** (2.87 ms / 550 unindexed) |
+| 20 | **`GET /requests` at LOCATION** (§11) | same join, `h.location_code = ANY(:loc)`, by `opened_at DESC` | hash join, **no dedicated index** — measured and rejected (§2.3) | 11.3 ms / 945 buffers at 40% selectivity; the rejected index gives 8.4 ms / 540 |
 
 ### 2.1 The inbox is the pattern that decides the step indexes
 
@@ -617,6 +619,20 @@ common branch (`delegation_id IS NULL`) free of the join entirely.
 
 This is the one place where the obvious query is 10× slower than the right one, so it is worth a
 comment in `selectors.py` pointing back here.
+
+**Both ORG arms carry the caller-active test** (ADR-0006 §6 condition 4, amended at slice 2 review).
+The unassigned arm and the abandoned-approver arm each additionally require that **the caller's own**
+node is not `exited` — the test is on the decider, not on the route, so it applies to a `decide:ORG`
+holder exactly as it applies to a chain-assigned approver. The predicate belongs in the query rather
+than only in the decision path: otherwise an exited `decide:ORG` holder is *shown* a queue they will
+be refused on, which is a 403 discovered by clicking, and the inbox is the surface that returns
+`request_note` (§1.3 rule 3).
+
+**It does not change any plan measured here.** The caller's own status is resolved once per request
+and enters the statement as a **bind parameter**, not as a third join to `hierarchy_nodes` — so the
+arms keep the shapes measured above, and an exited caller's inbox is an empty result rather than an
+error. Resolve it once and reuse it; re-joining the copy per arm would add a lookup per branch to
+answer a question about a single employee.
 
 ### 2.2 The two cross-tenant discovery indexes, and why neither leads with `organization_id`
 
@@ -750,12 +766,16 @@ from a table CHECK constraint. Measured: it falls back to the bitmap scan plus s
 cannot: the probe index is deliberately tenant-blind. At 56 kB it is the cheapest index in the
 service.
 
-### 2.2a The three indexes the amendment adds
+### 2.2a The five indexes the amendments add
 
 ```sql
 -- pattern 17: the inbox's "abandoned" arm, and the eligibility check's exited test
 CREATE INDEX ix_hierarchy_nodes_org_exited
     ON approval.hierarchy_nodes (organization_id, employee_id) WHERE status = 'exited';
+
+-- pattern 19: GET /requests at TEAM scope — "requests whose requester reports to me"
+CREATE INDEX ix_hierarchy_nodes_org_manager
+    ON approval.hierarchy_nodes (organization_id, reporting_manager_id, employee_id);
 
 -- pattern 16: the delegation picker
 CREATE INDEX ix_hierarchy_nodes_org_display_name
@@ -772,15 +792,51 @@ CREATE INDEX ix_approval_requests_unapplied
     WHERE status <> 'pending' AND application_state IS NULL;
 ```
 
-**`ix_hierarchy_nodes_org_exited` is the one that earns its place most clearly.** ADR-0006 §6 widens
-route (c) to cover a step whose approver has exited, and estimates the cost as "one join to
-`hierarchy_nodes`". Measured, that join is the dominant cost of the arm: without this index the
-planner probes `pk_hierarchy_nodes` once per open step — 3,196 loops, 12,784 of the query's 13,203
-buffers, 6.3 ms warm to return 9 rows. With it, the exited set is read index-only and hashed against
-the open steps: 222 buffers, 1.98 ms, for 696 kB on a table that is written only by the hierarchy
-consumer. The nested loop's cost grows with the organization's open-step count, which is exactly the
-number that grows; the hash form's cost grows with the exited population, which is bounded by
-headcount.
+**`ix_hierarchy_nodes_org_exited` is the one that earns its place most clearly, and it ships in
+slice 2.** ADR-0006 §6 widens route (c) to cover a step whose approver has exited, and estimates the
+cost as "one join to `hierarchy_nodes`". That arm runs for **every `decide:ORG` caller on every inbox
+render**, and on the eligibility check under the decision lock — so it is a hot query, and it shipped
+with slice 2's routing engine. The index was originally scheduled with slice 4 purely because it was
+specified in the same amendment as the escalation work; ADR-0006 §15 corrects that to the general
+rule **an index ships with the query that needs it, not with the feature it was designed for**. It
+lands as its own revision (`cde7b9237543`) because `hierarchy_nodes` belongs to a migration that has
+already run (§6).
+
+**The plan shape follows how the arm is written, and that reconciles two different measurements of
+it.** Re-measured on the shipped shape — 20,000 nodes, 2,857 of them exited, 3,200 open steps, 22,400
+requests in one organization:
+
+| Arm written as | Plan without the index | With the index |
+|---|---|---|
+| `EXISTS (…)` — **what slice 2 ships** | hash **semi-join**; the exited side is built by reading *all 20,000* of the organization's nodes and discarding 17,143 — 1,921 buffers, 4.16 ms | `Index Only Scan` over the 2,857 exited nodes, `Heap Fetches: 0` — 1,473 buffers, **1.97 ms** |
+| inner `JOIN` to `hierarchy_nodes` | nested loop, one `pk_hierarchy_nodes` probe per open step (3,196 loops, 12,784 of 13,203 buffers), 6.3 ms | hashed index-only scan, 222 buffers, 1.98 ms |
+
+Both forms are ~2–3× faster with the index and neither is wrong; the earlier figure in this document
+was measured on the `JOIN` form, and ADR-0006 §15's on the `EXISTS` form. **The mechanism is the part
+worth remembering, because the obvious explanation is the wrong one:** without the index the planner
+does *not* make thousands of per-row primary-key probes from the `EXISTS` — it reads the
+organization's entire node set once to build the semi-join's inner side, which is genuinely the
+cheaper of the two plans available to it. The partial index gives it a third option: read only the
+`exited` subset. So the gap **widens with headcount**, since the unindexed side is proportional to
+*everyone* while the index is proportional to the exited population. At 160 kB in this fixture (696 kB
+at 50,000 employees) on a table written only by the hierarchy consumer and the backfill, it is cheap
+insurance against a plan that degrades in exactly the tenants large enough to notice.
+
+**`ix_hierarchy_nodes_org_manager` is the downward lookup this document used to say nobody needed.**
+ADR-0006 §11 (slice 2 review) now has the read surface honour TEAM, and the subject of that rung is
+the **requester**: "requests whose requester's node has `reporting_manager_id = sref`". That is a
+walk *down* one level, which §2.3 previously rejected on the grounds that nothing walks downward.
+That is no longer true, so the index ships with the change that honours TEAM (ADR-0006 §15).
+
+Measured at 20,000 nodes and 22,400 requests in one organization, for a manager with 20 direct
+reports: without it the planner reads **every node in the organization** and discards the 19,980 that
+do not report to the caller — 550 buffers, 2.87 ms. With it the report set is an `Index Only Scan`
+(`Heap Fetches: 0`) that feeds `ix_approval_requests_org_requester_opened` directly: **89 buffers,
+0.081 ms warm**. The structural point rather than the microseconds: unindexed, a TEAM read costs
+*organization headcount*; indexed, it costs *the caller's own report count*. A team lead's inbox
+should not get slower because the company hired people in another department. `employee_id` is the
+third column so the scan is index-only — without it every matching node needs a heap fetch to supply
+the join key. 1,912 kB at 20,000 nodes.
 
 **The picker's two indexes need `varchar_pattern_ops`** because the database collation is
 `en_US.utf8` (verified) — a default-collation btree cannot serve `LIKE 'pri%'`. Note what they do
@@ -811,8 +867,23 @@ the table's decided population, and the alarm it feeds would be permanently firi
 
 ### 2.3 Indexes deliberately **not** created
 
-- **No `(organization_id, reporting_manager_id)` on `hierarchy_nodes`.** Nothing walks downward. If
-  a "my direct reports" screen appears, add it then.
+- ~~**No `(organization_id, reporting_manager_id)` on `hierarchy_nodes`** — nothing walks
+  downward.~~ **No longer true, and the index now exists** (§2.2a). ADR-0006 §11's TEAM read filters
+  requests by the *requester's* manager, which is exactly a downward lookup. The original reasoning
+  was sound when written and stopped being sound the moment the TEAM rung acquired a query.
+- **No `(organization_id, location_code)` on `hierarchy_nodes`** — the LOCATION rung's index, built
+  and **measured and rejected**, which is a different claim from "not considered". At 20,000 nodes and
+  22,400 requests with a caller holding 2 of 5 locations (40% of the organization): the shipped plan
+  is a hash join at **945 buffers / 11.3 ms**, and adding the index makes the node side an index-only
+  scan for **540 buffers / 8.4 ms** — a constant factor, for 1,736 kB of write cost on the hierarchy
+  copy, on a rung no customer has asked for. It does not touch the dominant cost, which is scanning
+  the organization's requests and joining 8,960 rows before the `LIMIT`. I also checked the plan I
+  expected to be better and was not: forcing the nested loop (`enable_hashjoin = off`) so it could
+  walk `opened_at DESC` and stop early costs **33,043 buffers / 20.8 ms**, because `ORDER BY
+  opened_at DESC` requires every matching row before the top-N sort — **no join strategy can stop
+  early here**, so the planner's hash join is already the right choice. Revisit if a tenant grants
+  LOCATION against a *selective* site (a handful of people, where the join's output is small), or if
+  this list moves to keyset pagination — either changes the arithmetic, and neither is true today.
 - **No index for pattern 9.** Delegation creation is rare (tens per month per 1,000 employees) and
   costs 47 ms at 2,986 pending; an index to serve it would be paid for on every step insert.
 - **No single-column `organization_id` index anywhere** (see §1.0).
@@ -1185,17 +1256,46 @@ dependency order:
 - **5** — drop the policy, the two indexes, then the table. Destroys pending regularisation
   requests; the attendance records themselves are untouched.
 
-**The ADR-0006 amendment adds no sixth migration and no new rollback risk**, which is worth stating
-because it is the kind of claim that is usually assumed. Everything it changed lands inside
-migrations 1–4, all of which create objects that do not yet exist anywhere: the hierarchy copy's
-column set and the request table's `request_note` and application trio are columns of tables created
-by migration 2; the four new indexes (§2.2a) are built in migration 2 with their tables; the extended
-`trg_approval_requests_decide_once` is created by migration 4 exactly as before, only with a longer
-body; and the widened outbox grants live in `env.py` beside the existing ones. Nothing is added to a
-table that already holds data, so **no expand → backfill → contract sequence is required** and the
-downgrade of each migration is unchanged from the list above — new columns and indexes disappear with
-the tables they belong to. The one pre-existing destructive downgrade is still migration 1's, for the
-same reason as before.
+**Where each index actually lands, corrected against the shipped revisions.** The earlier claim here
+— "the four new indexes (§2.2a) are built in migration 2 with their tables" — is true of exactly one
+of them, and the reason matters: `hierarchy_nodes` is created by the **initial** approval migration
+(slice 1), not by the routing migration, so every index on it is an index **added to a table that
+already exists and already holds rows**. It needs its own `op.create_index`, and it cannot be
+smuggled into a migration that has already run. The shipped chain, read from
+`services/approval/migrations/versions/`:
+
+| Revision | Down revision | Relevant contents |
+|---|---|---|
+| `3d96b212cc73` | `None` | initial schema — creates **`hierarchy_nodes`** *including* `display_name` and `employee_no` (both `NOT NULL`, with `ck_hierarchy_nodes_display_name_present` / `…_employee_no_present`), plus `audit_logs`, `outbox`, `processed_events` |
+| `6f3f94f4916a` | `3d96b212cc73` | RLS on the slice-1 tables |
+| `0a7f41108309` | `6f3f94f4916a` | routing tables — `approval_policies`, `approval_requests`, `delegations`, `approval_steps`, and **`ix_approval_requests_unapplied` with its table** |
+| `b1c4d7e29f3a` | `0a7f41108309` | RLS on the routing tables |
+| `c8d3e6f4a1b2` | `b1c4d7e29f3a` | the guard triggers |
+| `cde7b9237543` | `c8d3e6f4a1b2` | **`ix_hierarchy_nodes_org_exited`**, its own revision on an existing table |
+
+So: `ix_approval_requests_unapplied` is built with its table; `ix_hierarchy_nodes_org_exited` is a
+standalone revision in **slice 2** (§2.2a explains why it cannot wait for slice 4); and the picker's
+`ix_hierarchy_nodes_org_display_name` / `…_org_employee_no` are **not in any migration yet** — those
+two *indexes* are scheduled with the delegation surface in slice 3, which is where their query
+appears (ADR-0006 §15). The TEAM index in §2.3 is the fourth case and ships with the change that
+honours TEAM.
+
+**The columns and their indexes are on different schedules, and the two must not be conflated.**
+`display_name` and `employee_no` are **columns of `hierarchy_nodes` since the initial migration**
+(`3d96b212cc73`, above): both `NOT NULL`, both carrying a presence CHECK, and both present in the
+live table — verified against `information_schema.columns` for `approval.hierarchy_nodes`. Slice 1's
+`GET /chain` already returns them, and its tests pass. What slice 3 defers is only the **two partial
+prefix indexes** those columns will need once `GET /delegate-candidates` exists (pattern 16) —
+confirmed against the live database, where `approval.hierarchy_nodes` carries exactly
+`pk_hierarchy_nodes` and `ix_hierarchy_nodes_org_exited` and nothing else. Read as "the columns are
+missing", this sends a reader looking for a bug that is not there.
+
+**No expand → backfill → contract sequence is required** for any of them: an index is not a column,
+`CREATE INDEX` adds no row state, and every downgrade is the matching `op.drop_index`. The only
+caution is the ordinary one for a populated table — build the hierarchy indexes
+`CONCURRENTLY` (outside a transaction) if the copy is already large in the target environment, since
+a plain `CREATE INDEX` takes a write lock the hierarchy consumer will queue behind. The one
+pre-existing destructive downgrade is still the employee migration's, for the same reason as before.
 
 The faster incident levers from ADR-0002 still apply and should be preferred to a downgrade:
 `ALTER ROLE opsgrids_approval BYPASSRLS` (one statement, no lock, policies intact for diagnosis), or
@@ -1423,6 +1523,12 @@ erDiagram
     decision rather than a revision of it.
 14. **`application_state IS NULL` is the normal state of a fresh decision**, not an error. It means
     the product has not reported yet. Only its *age* is interesting (pattern 18).
-15. **`display_name` on the copy can be stale but never absent.** It is `NOT NULL`, fed only by
+15. **TEAM and LOCATION reads join `hierarchy_nodes` on the *requester*, never on the approver**
+    (ADR-0006 §11), and the join is added **only** for those two scopes — OWN and ORG must not pay
+    for it. Use a `LEFT OUTER` join: a requester the copy has not seen yet has no node, and an inner
+    join would drop those requests from *every* scope rather than only from the two that compare
+    against a node. TEAM and LOCATION then fail closed on that requester, which is intended; OWN and
+    ORG keep seeing them.
+16. **`display_name` on the copy can be stale but never absent.** It is `NOT NULL`, fed only by
     version-gated full-state events; a *missing node* yields a `null` name in the API response,
     which is a different thing from a null column. Render the id's fallback, keep the row operable.

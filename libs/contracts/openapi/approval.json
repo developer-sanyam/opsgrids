@@ -118,6 +118,37 @@
         "title": "ChainRungOut",
         "type": "object"
       },
+      "DecisionIn": {
+        "additionalProperties": false,
+        "description": "`POST /requests/{id}/decision` (ADR-0006 \u00a77). `comment` is optional for **both**\noutcomes \u2014 a server rule, not a UI choice (\u00a77 amended): a mandatory field the server does not\nenforce drifts the moment a second client exists.",
+        "properties": {
+          "comment": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "outcome": {
+            "enum": [
+              "approve",
+              "reject"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "title": "DecisionIn",
+        "type": "object"
+      },
       "DottedLineManagerOut": {
         "description": "Shown, never routed (ADR-0006 \u00a72). Absent from the response when there is none.",
         "properties": {
@@ -170,6 +201,637 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "InboxItemOut": {
+        "description": "One `GET /inbox` row (ADR-0006 \u00a711, screens \u00a74.A). `request_note` and the requester's\n`employee_no` both travel here \u2014 the inbox is where triage happens and where confusing two\npeople has consequences (screens \u00a72.2, \u00a72.9).",
+        "properties": {
+          "from_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Name"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "inbox_reason": {
+            "title": "Inbox Reason",
+            "type": "string"
+          },
+          "opened_at": {
+            "format": "date-time",
+            "title": "Opened At",
+            "type": "string"
+          },
+          "request_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Note"
+          },
+          "request_type": {
+            "title": "Request Type",
+            "type": "string"
+          },
+          "requester_employee_id": {
+            "format": "uuid",
+            "title": "Requester Employee Id",
+            "type": "string"
+          },
+          "requester_employee_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requester Employee No"
+          },
+          "requester_location_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requester Location Code"
+          },
+          "requester_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requester Name"
+          },
+          "source_ref": {
+            "format": "uuid",
+            "title": "Source Ref",
+            "type": "string"
+          },
+          "summary": {
+            "additionalProperties": true,
+            "title": "Summary",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "request_type",
+          "source_ref",
+          "summary",
+          "request_note",
+          "opened_at",
+          "requester_employee_id",
+          "requester_name",
+          "requester_employee_no",
+          "requester_location_code",
+          "inbox_reason",
+          "from_name"
+        ],
+        "title": "InboxItemOut",
+        "type": "object"
+      },
+      "Page_InboxItemOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InboxItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[InboxItemOut]",
+        "type": "object"
+      },
+      "Page_RequestListItemOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RequestListItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[RequestListItemOut]",
+        "type": "object"
+      },
+      "RequestDetailOut": {
+        "description": "`GET /requests/{id}` and the response of `POST .../decision` (ADR-0006 \u00a711). The OWN-scope\nread widens to anyone who ever appeared on a step, any outcome \u2014 a past decider keeps the\nsame shape a currently-eligible caller gets, minus the ability to act.",
+        "properties": {
+          "acting_for_employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acting For Employee Id"
+          },
+          "acting_for_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acting For Name"
+          },
+          "application_failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Failure Reason"
+          },
+          "application_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application State"
+          },
+          "applied_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied At"
+          },
+          "approver_employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Employee Id"
+          },
+          "approver_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Name"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by_employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By Employee Id"
+          },
+          "decided_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By Name"
+          },
+          "from_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Name"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "inbox_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inbox Reason"
+          },
+          "opened_at": {
+            "format": "date-time",
+            "title": "Opened At",
+            "type": "string"
+          },
+          "request_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Note"
+          },
+          "request_type": {
+            "title": "Request Type",
+            "type": "string"
+          },
+          "requester_employee_id": {
+            "format": "uuid",
+            "title": "Requester Employee Id",
+            "type": "string"
+          },
+          "requester_employee_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requester Employee No"
+          },
+          "requester_location_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requester Location Code"
+          },
+          "requester_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requester Name"
+          },
+          "source_ref": {
+            "format": "uuid",
+            "title": "Source Ref",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/StepOut"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "summary": {
+            "additionalProperties": true,
+            "title": "Summary",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "request_type",
+          "source_ref",
+          "summary",
+          "request_note",
+          "status",
+          "opened_at",
+          "requester_employee_id",
+          "requester_name",
+          "requester_employee_no",
+          "requester_location_code",
+          "approver_employee_id",
+          "approver_name",
+          "acting_for_employee_id",
+          "acting_for_name",
+          "inbox_reason",
+          "from_name",
+          "decided_by_employee_id",
+          "decided_by_name",
+          "decided_at",
+          "comment",
+          "application_state",
+          "application_failure_reason",
+          "applied_at",
+          "steps"
+        ],
+        "title": "RequestDetailOut",
+        "type": "object"
+      },
+      "RequestListItemOut": {
+        "description": "One `GET /requests` row (ADR-0006 \u00a711, screens \u00a74.D). No `request_note` \u2014 deliberately\n(screens \u00a72.9: the requester wrote it, nothing renders it back to them).",
+        "properties": {
+          "application_failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Failure Reason"
+          },
+          "application_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application State"
+          },
+          "approver_employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Employee Id"
+          },
+          "approver_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Name"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by_employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By Employee Id"
+          },
+          "decided_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By Name"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "opened_at": {
+            "format": "date-time",
+            "title": "Opened At",
+            "type": "string"
+          },
+          "request_type": {
+            "title": "Request Type",
+            "type": "string"
+          },
+          "requester_employee_id": {
+            "format": "uuid",
+            "title": "Requester Employee Id",
+            "type": "string"
+          },
+          "requester_employee_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requester Employee No"
+          },
+          "requester_location_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requester Location Code"
+          },
+          "requester_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requester Name"
+          },
+          "source_ref": {
+            "format": "uuid",
+            "title": "Source Ref",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "summary": {
+            "additionalProperties": true,
+            "title": "Summary",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "request_type",
+          "source_ref",
+          "summary",
+          "status",
+          "opened_at",
+          "requester_employee_id",
+          "requester_name",
+          "requester_employee_no",
+          "requester_location_code",
+          "approver_employee_id",
+          "approver_name",
+          "decided_by_employee_id",
+          "decided_by_name",
+          "decided_at",
+          "comment",
+          "application_state",
+          "application_failure_reason"
+        ],
+        "title": "RequestListItemOut",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -186,6 +848,112 @@
           "schema_name"
         ],
         "title": "ServiceInfo",
+        "type": "object"
+      },
+      "StepOut": {
+        "description": "One row of a request's history (ADR-0006 \u00a73, \u00a711) \u2014 append-only, so this is the whole\nstory of how the request got to where it is now.",
+        "properties": {
+          "acting_for_employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acting For Employee Id"
+          },
+          "acting_for_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acting For Name"
+          },
+          "approver_employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Employee Id"
+          },
+          "approver_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Name"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "level": {
+            "title": "Level",
+            "type": "integer"
+          },
+          "opened_at": {
+            "format": "date-time",
+            "title": "Opened At",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "level",
+          "reason",
+          "outcome",
+          "approver_employee_id",
+          "approver_name",
+          "acting_for_employee_id",
+          "acting_for_name",
+          "opened_at",
+          "closed_at",
+          "due_at"
+        ],
+        "title": "StepOut",
         "type": "object"
       },
       "ValidationError": {
@@ -231,7 +999,7 @@
     }
   },
   "info": {
-    "description": "The platform's routing engine for who may say yes, who says it when they do not, and how the answer gets back to the product that asked (ADR-0006). Slice 1: the read-only copy of the reporting line (`hierarchy_nodes`) and the resolved chain endpoint. Requests, steps, delegations and SLA policy land in slice 2.",
+    "description": "The platform's routing engine for who may say yes, who says it when they do not, and how the answer gets back to the product that asked (ADR-0006). Slice 1: the read-only copy of the reporting line (`hierarchy_nodes`) and the resolved chain endpoint. Slice 2: opening and deciding a `hrms.time.regularization` request \u2014 routing, delegation applied at open, the inbox, and the product's application-state return leg. No SLA clock yet: every step opens with `due_at = NULL` until slice 4.",
     "title": "Approval service",
     "version": "0.1.0"
   },
@@ -281,6 +1049,63 @@
         ]
       }
     },
+    "/api/v1/approvals/inbox": {
+      "get": {
+        "description": "`GET /inbox` (ADR-0006 \u00a711): pending requests where ADR-0006 \u00a76 makes the caller eligible\n\u2014 unassigned rows only for a `decide:ORG` holder \u2014 excluding the caller's own requests.\n\nA caller with no `subject_ref` is eligible for nothing (\u00a76 rule 2: \"a membership with no\nemployee link can decide nothing, including unassigned steps\") \u2014 an empty page, not a 403,\nthe same \"let the server's own filtering be the gate\" pattern screens \u00a72.4 specifies for this\nendpoint.",
+        "operationId": "get_inbox_api_v1_approvals_inbox_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_InboxItemOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pending requests the caller may decide",
+        "tags": [
+          "approval"
+        ]
+      }
+    },
     "/api/v1/approvals/info": {
       "get": {
         "operationId": "info_api_v1_approvals_info_get",
@@ -297,6 +1122,178 @@
           }
         },
         "summary": "What this service is",
+        "tags": [
+          "approval"
+        ]
+      }
+    },
+    "/api/v1/approvals/requests": {
+      "get": {
+        "description": "`GET /requests` (ADR-0006 \u00a711): OWN = `requester_employee_id = sref`; TEAM = raised by a\ndirect report; LOCATION = raised by anyone at one of the caller's locations; ORG = every\nrequest \u2014 all via `ctx.apply()` in `selectors.requests_stmt`. No `request_note` (screens\n\u00a72.9 \u2014 nothing renders the requester's own text back to them); `application_state` travels\nhere, deliberately (C8).\n\n`?requester=me` is the \"My requests\" screen's own filter, layered on top of scope rather than\na replacement for it: scope answers \"may this caller see this row\", not \"is this caller's\nown\" \u2014 a TEAM, LOCATION or ORG reader legitimately sees other people's requests through this\nsame endpoint (the HR/ORG \"all requests\" view screens also describe), so without this filter\nan ORG-scoped caller asking for \"my requests\" would be shown the entire organization's. The\nserver resolves \"me\" from `ctx.subject_ref`, never a client-supplied id \u2014 `Literal[\"me\"]` is\nthe whole of the accepted vocabulary, so there is no `requester=<uuid>` shape to accept or\nreject in application code at all; anything else fails FastAPI's own query validation before\nthis function runs (422), which is the boundary validation CLAUDE.md asks for rather than a\nsecond, hand-rolled check here.",
+        "operationId": "list_requests_api_v1_approvals_requests_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "requester",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "const": "me",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Requester"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_RequestListItemOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Requests I raised (OWN) or every request (ORG)",
+        "tags": [
+          "approval"
+        ]
+      }
+    },
+    "/api/v1/approvals/requests/{request_id}": {
+      "get": {
+        "description": "`GET /requests/{id}` (ADR-0006 \u00a711, amended): OWN reaches the requester, **or anyone who\nappears on a step of this request, any outcome** \u2014 a past decider, a past delegate, anyone\nescalated past, keeps full read access to what they took part in. ORG reaches any. A caller\nwho cannot see the request gets **404, not 403** (ADR-0006 \u00a711: \"so that request ids cannot\nbe probed\"), and a wrong-tenant id is indistinguishable from one that never existed.",
+        "operationId": "get_request_detail_api_v1_approvals_requests__request_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request detail",
+        "tags": [
+          "approval"
+        ]
+      }
+    },
+    "/api/v1/approvals/requests/{request_id}/decision": {
+      "post": {
+        "description": "`POST /requests/{id}/decision` (ADR-0006 \u00a77). `require(\"core.approval.request.decide\")`\nis only the first gate; `app/services.decide_request` re-checks ADR-0006 \u00a76 under the\nrequest row's lock and is what actually decides who may act \u2014 **403** not eligible, **409**\nalready decided (with the recorded outcome, via the conflict message).",
+        "operationId": "decide_request_api_v1_approvals_requests__request_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve or reject a pending request",
         "tags": [
           "approval"
         ]

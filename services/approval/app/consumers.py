@@ -40,7 +40,11 @@ from typing import Any
 
 from app.config import settings
 from app.models import ProcessedEvent
-from app.services import upsert_hierarchy_node
+from app.services import (
+    apply_regularization_outcome,
+    open_regularization_request,
+    upsert_hierarchy_node,
+)
 from platform_core.db import assert_app_role, init_engine, session_scope
 from platform_core.events import EventConsumer, already_processed, mark_processed
 from platform_core.logging import get_logger
@@ -190,6 +194,96 @@ async def on_employee_transitioned(envelope: dict[str, Any]) -> None:
     await _apply_hierarchy_event(envelope)
 
 
+# --------------------------------------------------------------------- routing (slice 2)
+
+#: Contract strings from attendance-service, named here rather than imported (CLAUDE.md). Both
+#: payload shapes are verified against `services/attendance/app/services.py` as this slice was
+#: built — `request_regularization` and `_publish_regularization_applied` — with **no mismatch**:
+#: attendance already publishes exactly the fields ADR-0006 §12 specifies.
+EVT_REGULARIZATION_REQUESTED = "hrms.time.regularization.requested"
+EVT_REGULARIZATION_APPLIED = "hrms.time.regularization.applied"
+
+REGULARIZATION_EVENTS = (EVT_REGULARIZATION_REQUESTED, EVT_REGULARIZATION_APPLIED)
+
+
+@consumer.on(EVT_REGULARIZATION_REQUESTED)
+async def on_regularization_requested(envelope: dict[str, Any]) -> None:
+    """Opens a `hrms.time.regularization` request (ADR-0006 §4). Payload:
+    `organization_id, regularization_request_id (-> source_ref), attendance_id,
+    employee_id (-> requester), requested_status, current_status, reason (-> request_note), date`.
+
+    `attendance_id` is not read here: the two rows are joined by `(organization_id, request_type,
+    source_ref)` alone (ADR-0006 §3), never by the product's own foreign key, which belongs to
+    attendance's schema and stays there.
+    """
+    event_id = uuid.UUID(envelope["event_id"])
+    payload = envelope["payload"]
+    organization_id = uuid.UUID(payload["organization_id"])
+
+    opened = False
+    async with session_scope(organization_id=organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("regularization.requested.duplicate", event_id=str(event_id))
+            return
+
+        request = await open_regularization_request(
+            session,
+            organization_id=organization_id,
+            source_ref=uuid.UUID(str(payload["regularization_request_id"])),
+            requester_employee_id=uuid.UUID(str(payload["employee_id"])),
+            summary={
+                "date": payload["date"],
+                "from": payload["current_status"],
+                "to": payload["requested_status"],
+            },
+            request_note=payload.get("reason"),
+        )
+        opened = request is not None
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+
+    log.info(
+        "regularization.requested.processed",
+        event_id=str(event_id),
+        organization_id=str(organization_id),
+        opened=opened,
+    )
+
+
+@consumer.on(EVT_REGULARIZATION_APPLIED)
+async def on_regularization_applied(envelope: dict[str, Any]) -> None:
+    """Records the product's return leg (ADR-0006 §12) — published for every decision attendance
+    consumes, approvals and rejections alike, so `outcome` here is `applied|failed`, never
+    `approved|rejected`. Payload: `organization_id, regularization_request_id (-> source_ref),
+    approval_request_id, request_type, outcome, failure_reason?`.
+    """
+    event_id = uuid.UUID(envelope["event_id"])
+    payload = envelope["payload"]
+    organization_id = uuid.UUID(payload["organization_id"])
+
+    applied = False
+    async with session_scope(organization_id=organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("regularization.applied.duplicate", event_id=str(event_id))
+            return
+
+        request = await apply_regularization_outcome(
+            session,
+            organization_id=organization_id,
+            source_ref=uuid.UUID(str(payload["regularization_request_id"])),
+            outcome=str(payload["outcome"]),
+            failure_reason=payload.get("failure_reason"),
+        )
+        applied = request is not None
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+
+    log.info(
+        "regularization.applied.processed",
+        event_id=str(event_id),
+        organization_id=str(organization_id),
+        applied=applied,
+    )
+
+
 async def main() -> None:
     cfg = settings()
     engine = init_engine(cfg)
@@ -197,7 +291,10 @@ async def main() -> None:
     # security can bind this role. Started on the admin or outbox DSN by mistake, RLS would be
     # silently inert — refuse outside local (ADR-0002).
     await assert_app_role(engine, environment=cfg.environment)
-    log.info("approval.consumer.bindings", routing_keys=list(HIERARCHY_EVENTS))
+    log.info(
+        "approval.consumer.bindings",
+        routing_keys=list(HIERARCHY_EVENTS) + list(REGULARIZATION_EVENTS),
+    )
     await consumer.run()
 
 

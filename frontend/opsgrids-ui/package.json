@@ -4,13 +4,17 @@
   "private": true,
   "description": "The OpsGrids design system — the Console stylesheet and the components every app imports.",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./icons": "./src/icons.tsx",
     "./styles.css": "./src/styles/console.css"
   },
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "scripts": {
     "build": "tsc --noEmit",
     "lint": "eslint .",
@@ -22,14 +26,20 @@
     "react-router-dom": "^7.1.0"
   },
   "devDependencies": {
-    "@opsgrids/config": "workspace:*",
     "@eslint/js": "^9.17.0",
+    "@opsgrids/config": "workspace:*",
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.3",
     "@types/react": "^19.0.0",
+    "@types/react-dom": "19.2.4",
     "eslint": "^9.17.0",
     "eslint-plugin-react-hooks": "^5.1.0",
     "eslint-plugin-react-refresh": "^0.4.16",
     "globals": "^15.14.0",
+    "jsdom": "25.0.1",
     "react": "^19.0.0",
+    "react-dom": "19.2.8",
     "react-router-dom": "^7.1.0",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.19.0",

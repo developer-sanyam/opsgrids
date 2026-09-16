@@ -26,8 +26,10 @@ report for this slice.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ServiceInfo(BaseModel):
@@ -75,3 +77,126 @@ class ApprovalChainOut(BaseModel):
     #: had to stop defensively (ADR-0006 §5) — the chain still renders whatever it found, and the
     #: client shows the warning state screens §4.F specifies rather than treating this as a 5xx.
     unresolved: str | None = Field(default=None, pattern="^(cycle|depth_exceeded)$")
+
+
+# --------------------------------------------------------------------- routing (slice 2)
+
+
+class InboxItemOut(BaseModel):
+    """One `GET /inbox` row (ADR-0006 §11, screens §4.A). `request_note` and the requester's
+    `employee_no` both travel here — the inbox is where triage happens and where confusing two
+    people has consequences (screens §2.2, §2.9)."""
+
+    id: uuid.UUID
+    request_type: str
+    source_ref: uuid.UUID
+    #: Structured facts only (`date`, `from`, `to` for regularisation) — the client builds the
+    #: summary line from this, never from `request_note` (ADR-0006 §3).
+    summary: dict[str, Any]
+    request_note: str | None
+    opened_at: datetime
+    requester_employee_id: uuid.UUID
+    requester_name: str | None
+    requester_employee_no: str | None
+    requester_location_code: str | None
+    #: `assigned|delegated_to_me|escalated_to_me|delegated_away|escalated_away|unassigned`
+    #: (screens §2.3). The client maps this to a chip and derives nothing itself.
+    inbox_reason: str
+    #: Present exactly when `inbox_reason` names somebody (screens §2.3). `None` renders as a
+    #: reason-only chip, never as "undefined".
+    from_name: str | None
+
+
+class RequestListItemOut(BaseModel):
+    """One `GET /requests` row (ADR-0006 §11, screens §4.D). No `request_note` — deliberately
+    (screens §2.9: the requester wrote it, nothing renders it back to them)."""
+
+    id: uuid.UUID
+    request_type: str
+    source_ref: uuid.UUID
+    summary: dict[str, Any]
+    status: str
+    opened_at: datetime
+    requester_employee_id: uuid.UUID
+    requester_name: str | None
+    requester_employee_no: str | None
+    requester_location_code: str | None
+    #: The current open step's approver — `None` once decided, or while unassigned ("Waiting to
+    #: be routed", screens §4.D).
+    approver_employee_id: uuid.UUID | None
+    approver_name: str | None
+    decided_by_employee_id: uuid.UUID | None
+    decided_by_name: str | None
+    decided_at: datetime | None
+    comment: str | None
+    #: `applied|failed|None` — travels here as well as on the detail (C8): "the person who asked
+    #: is the one most worth telling" (ADR-0006 §11 amended).
+    application_state: str | None
+    application_failure_reason: str | None
+
+
+class StepOut(BaseModel):
+    """One row of a request's history (ADR-0006 §3, §11) — append-only, so this is the whole
+    story of how the request got to where it is now."""
+
+    level: int
+    reason: str
+    outcome: str
+    approver_employee_id: uuid.UUID | None
+    approver_name: str | None
+    acting_for_employee_id: uuid.UUID | None
+    acting_for_name: str | None
+    opened_at: datetime
+    closed_at: datetime | None
+    #: Always `None` in slices 2-3 (ADR-0006 §10 amended) — no SLA clock exists yet.
+    due_at: datetime | None
+
+
+class RequestDetailOut(BaseModel):
+    """`GET /requests/{id}` and the response of `POST .../decision` (ADR-0006 §11). The OWN-scope
+    read widens to anyone who ever appeared on a step, any outcome — a past decider keeps the
+    same shape a currently-eligible caller gets, minus the ability to act."""
+
+    id: uuid.UUID
+    request_type: str
+    source_ref: uuid.UUID
+    summary: dict[str, Any]
+    #: Present only for a principal §3's rule 3 allows to see it — the requester, anyone who
+    #: appears on a step, or a `read:ORG` holder. Every caller who can reach this endpoint at all
+    #: qualifies, by construction of the visibility check in `app/api/routes.py`.
+    request_note: str | None
+    status: str
+    opened_at: datetime
+    requester_employee_id: uuid.UUID
+    requester_name: str | None
+    requester_employee_no: str | None
+    requester_location_code: str | None
+    #: While pending: the current open step's approver/represented pair. Once decided: the
+    #: request's own decision-time `acting_for_employee_id` (ADR-0006 §7) — the same *concept*,
+    #: "who this is being handled on behalf of", read from whichever column currently holds it.
+    approver_employee_id: uuid.UUID | None
+    approver_name: str | None
+    acting_for_employee_id: uuid.UUID | None
+    acting_for_name: str | None
+    #: The §2.3 chip, present only while pending (screens §4.B's "Waiting on" card).
+    inbox_reason: str | None
+    from_name: str | None
+    decided_by_employee_id: uuid.UUID | None
+    decided_by_name: str | None
+    decided_at: datetime | None
+    comment: str | None
+    application_state: str | None
+    application_failure_reason: str | None
+    applied_at: datetime | None
+    steps: list[StepOut]
+
+
+class DecisionIn(BaseModel):
+    """`POST /requests/{id}/decision` (ADR-0006 §7). `comment` is optional for **both**
+    outcomes — a server rule, not a UI choice (§7 amended): a mandatory field the server does not
+    enforce drifts the moment a second client exists."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: Literal["approve", "reject"]
+    comment: str | None = Field(default=None, max_length=2000)

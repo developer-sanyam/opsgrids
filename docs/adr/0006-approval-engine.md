@@ -24,6 +24,18 @@ organizations only and every endpoint here returns 403 in every existing one.
 > and seven open questions; those that change the backend contract are resolved in §2, §3, §6, §7,
 > §11 and §12. Three consequential edits fall outside this ADR's ownership and are listed in §14.
 
+> **Amended again 2026-09-16, after slice 2's review.** Slice 2 shipped the routing and decide path,
+> its four tables, RLS and guard triggers, the inbox/detail/decision endpoints, and attendance's
+> request table and return leg. The review found no fault in the backend logic and three places where
+> this ADR and the code disagree — in two of them the ADR's *letter* is narrower than its own stated
+> reasoning, which is how the code came to be written the way it was. **§6** now applies the
+> active-employee requirement to *every* route to eligibility, including `decide:ORG`, and states in
+> one place what an exited employee can and cannot do. **§11** settles what each scope the
+> permission's own ceiling makes grantable means on every endpoint of this surface, instead of
+> leaving each endpoint to improvise a different answer. **§15** is new: it assigns indexes to slices
+> and states the rule that had one of them scheduled behind the query that needs it. §3, §9, §14 and
+> the Consequences carry the knock-on edits, each with its own **Amended** note.
+
 ---
 
 ## Context
@@ -300,7 +312,12 @@ signal unreadable. A control that must be bypassed to render a list is not a con
    rule employee applies to sealed fields, which record field *names* only.
 3. `request_note` is returned **only** to a principal who is the requester, appears on a step of the
    request (§11's amended detail rule — which includes anyone currently eligible and anyone who was
-   asked earlier), or holds `read:ORG` — never on any unauthenticated or cross-tenant surface.
+   asked earlier), or whose scope on `core.approval.request.read` reaches the requester (TEAM,
+   LOCATION or ORG, §11's amended scope rule) — never on any unauthenticated or cross-tenant
+   surface. **Amended (slice 2 review)**: this clause said `read:ORG`, which was written when §11
+   recognised only two scopes; the permission's ceiling makes TEAM and LOCATION grantable, so the
+   rule names the scope *reaching the requester* rather than one rung of the ladder. It is the same
+   test the read surface applies, quoted here, not a second one to keep in step.
 4. The cross-tenant sessions — the sweep and the alarms — **cannot read it at all.** The outbox role
    holds column-level `SELECT` and nothing wider: **seven** columns of `approval_steps`
    (`organization_id`, `request_id`, `id`, `outcome`, `approver_employee_id`, `due_at`, `opened_at`)
@@ -442,7 +459,11 @@ A caller may decide a request only if **all** of the following hold:
    is only a guarantee if every decider is an identifiable employee.
 3. The caller's `subject_ref` is **not** the `requester_employee_id`. This is checked first and
    overrides every other route to eligibility, including `decide:ORG`.
-4. At least one of:
+4. **The caller's own `hierarchy_nodes` row is not `exited`.** A caller the copy has never seen is
+   **not** exited: absence is "not caught up", not "gone" — the same reading §4 gives a requester
+   with no node, and the same direction to be wrong in, because the alternative locks out every
+   employee in an organization whose backfill has not run.
+5. At least one of:
    - **(a) assigned**: some step of the request with outcome `open`, `delegated` or `escalated` has
      `approver_employee_id = subject_ref`, and either the step has no `delegation_id` or that
      delegation is active now;
@@ -452,15 +473,15 @@ A caller may decide a request only if **all** of the following hold:
      **or** its approver's `hierarchy_nodes` row has `status = 'exited'`, and the caller holds
      `core.approval.request.decide` at scope `ORG`.
 
-**Amended — routes (a) and (b) additionally require that the caller's own node is not `exited`, and
-route (c) widens to cover a step held by an exited approver.** The original §9 dismissed this with
-"they cannot sign in, so it is moot". That is unverified and appears to be false:
-`employee.employees.status` and `account.memberships.status` live in different services, and **no
-wiring between them exists** — nothing in `account/app/consumers.py` binds
-`hrms.people.employee.transitioned` (it binds product activation and the entitling subscription
-events, and nothing else). An employee marked `exited` in HRMS therefore keeps an active membership
-and a valid token until somebody deactivates the membership by hand. Eligibility cannot rest on an
-assumption about sign-in; it is enforced here, on the copy, where the fact actually lives.
+**Amended (design review) — an exited approver is excluded, and route (c) widens to cover a step
+held by an exited approver.** The original §9 dismissed the first half with "they cannot sign in, so
+it is moot". That is unverified and appears to be false: `employee.employees.status` and
+`account.memberships.status` live in different services, and **no wiring between them exists** —
+nothing in `account/app/consumers.py` binds `hrms.people.employee.transitioned` (it binds product
+activation and the entitling subscription events, and nothing else). An employee marked `exited` in
+HRMS therefore keeps an active membership and a valid token until somebody deactivates the
+membership by hand. Eligibility cannot rest on an assumption about sign-in; it is enforced here, on
+the copy, where the fact actually lives.
 
 The two halves belong together. Excluding exited approvers alone would strand a request whose only
 eligible person has left, in the one case where escalation cannot rescue it: escalation is disabled
@@ -469,6 +490,43 @@ route (c) to treat such a step as answerable by `decide:ORG` holders gives HR a 
 re-routing anything, so rule 6 (§9) still holds: the step keeps its approver, its history and its
 `due_at`; only *who may answer it* changes. The cost is one join to `hierarchy_nodes` on the
 eligibility check and one extra `UNION` branch in the inbox's unassigned arm.
+
+**Amended (slice 2 review) — "not exited" is a condition on the caller, not a condition on two of
+the three routes.** It was written into routes (a) and (b) and left off route (c), which made the
+rule say something this section's own rationale never argued: that an exited employee holding
+`decide:ORG` may decide every unassigned and every abandoned request in the organization — the
+entire HR queue — while being refused the single request that was actually routed to them. The
+reasoning above is about the *decider*: an exit is not observable as a failure to sign in, so the
+copy is where the fact is enforced. That reasoning does not stop at routes (a) and (b), and neither
+does the rule now. It is condition 4 above, evaluated once, ahead of every route, and it applies to
+`decide:ORG` exactly as it applies to a chain-assigned approver. The same test belongs in **both**
+ORG arms of the inbox query (unassigned, and abandoned-approver) — otherwise the queue an exited
+holder may not act on is still the queue they are shown, which is a 403 waiting to be discovered by
+clicking, and it is the query that leaks the requests' `request_note` (§3).
+
+**What an exited employee can and cannot do**, stated here so it is not re-derived from three
+sections:
+
+- **Cannot decide anything, by any route.** Not a step assigned to them (a), not a step they are the
+  represented original approver of (b), and not an unassigned or abandoned step under `decide:ORG`
+  (c). The permission is not the gate; condition 4 is.
+- **Has an empty inbox** — including the unassigned queue, because both ORG arms carry the same
+  test. Empty page, not a 403, the same shape as a caller with no `sref`: the server's own filtering
+  is the gate (§11).
+- **Cannot become eligible through a delegation**, in either direction. A delegation to them does
+  not make them a decider (route (a) still requires condition 4), and §5 already refuses to name an
+  exited employee as a delegate at creation.
+- **Still holds whatever their `read` grant allows**, unchanged: their own past requests, any
+  request they appear on a step of, and — with `read:ORG` — every request in the organization
+  including its `request_note`. **Reading is not eligibility.** Withdrawing a read grant on exit
+  would make approval the arbiter of a membership lifecycle it does not own, on a copy that is
+  eventually consistent, and would take an HR administrator's own queue away from them the moment
+  their employee record was transitioned. The lever that actually exists is deactivating the
+  membership — and the durable fix is wiring employee status to membership status ("Revisit when").
+- **Is still named**: past decisions stand, steps keep their history, and their `display_name` still
+  resolves from the copy (§9). Their exit changes who may decide, never what a past decision says.
+- **Their open steps stay theirs.** Nothing re-routes (§9); route (c) is what gives `decide:ORG`
+  holders a way to answer them.
 
 Consequences of this definition, stated so nobody has to derive them:
 
@@ -623,6 +681,11 @@ rule — the power to approve. §6 now excludes them and hands the step to `deci
 instead. Rule 6 is untouched: nothing re-routes, and the step keeps its approver, its `due_at` and
 its place in the history.
 
+**Amended (slice 2 review) — the exclusion is a property of the caller and covers `decide:ORG`
+too.** §6's condition 4 is evaluated once, ahead of every route, so an exited employee cannot decide
+an unassigned or abandoned request either; §6 lists in full what an exited employee can and cannot
+do. This section's rule is unaffected either way — an exit still re-routes nothing.
+
 A requester who exits while a request is pending does not cancel it. It remains decidable, and the
 product decides what an approval means for a departed employee's row.
 
@@ -660,14 +723,80 @@ A policy edit applies to steps opened after it. Existing `due_at` values are sto
 Permission codes, declared in `services/approval/app/catalogue.py` as a slice of the **`core`**
 catalogue and exported to `libs/contracts/permissions/core.json`:
 
-| Code | Scopes | Meaning |
+| Code | Default / ceiling | Meaning of each rung |
 |---|---|---|
-| `core.approval.request.read` | OWN, ORG | OWN: requests I raised, requests I am eligible on, and my own chain. ORG: every request and any employee's chain |
-| `core.approval.request.decide` | OWN, ORG | OWN: decide where §6 (a) or (b) makes me eligible. ORG: additionally decide unassigned steps (§6 c) |
-| `core.approval.delegation.write` | OWN, ORG | OWN: create/revoke delegations where I am the delegator. ORG: for any delegator |
-| `core.approval.policy.write` | ORG | Edit SLA policy. Guarded `minimum=Scope.ORG` |
+| `core.approval.request.read` | OWN / ORG | **OWN**: requests I raised (plus, on the detail, any request I appear on a step of). **TEAM**: requests whose requester reports to me. **LOCATION**: requests whose requester is at one of my locations. **ORG**: every request, and any employee's chain |
+| `core.approval.request.decide` | OWN / ORG | **ORG**: additionally decide unassigned and abandoned steps (§6 c). **Anything below ORG**: decide where §6 (a) or (b) makes me eligible — TEAM and LOCATION are read as OWN |
+| `core.approval.delegation.write` | OWN / ORG | **ORG**: for any delegator. **Anything below ORG**: only where I am the delegator — TEAM and LOCATION are read as OWN |
+| `core.approval.policy.write` | ORG / ORG | Edit SLA policy. Guarded `minimum=Scope.ORG` |
 
-No TEAM or LOCATION reading is defined: approval authority comes from the chain, not from scope.
+**Amended (slice 2 review) — every scope the ceiling makes grantable now has a stated meaning, and
+the read surface honours it.** The original text said "no TEAM or LOCATION reading is defined:
+approval authority comes from the chain, not from scope". The second half is still true and is why
+`decide` collapses below ORG. The first half was not a decision anybody could enforce: the published
+manifest carries `max_scope: ORG` for all three OWN-defaulted permissions, `max_scope` is one rung on
+ADR-0000 §6's **ranked ladder**, and account validates a grant with a single comparison
+(`_SCOPE_RANK[grant.scope] > _SCOPE_RANK[permission.max_scope]`, `account/app/services.py`). A
+ceiling of ORG therefore makes `read:TEAM` and `read:LOCATION` grantable **today** — through the
+roles API, a customer-authored role, or ADR-0007's reconciler — and "not defined" became three
+different behaviours on one permission: `GET /requests` refuses such a caller outright (403 from
+`ScopeContext.apply`, which has no `team_col` to use), `GET /requests/{id}` silently narrows them to
+OWN, and slice 1's `GET /chain` honours them properly through `assert_can_touch`. A grant that means
+three things depending on which endpoint you call is not a scope.
+
+**Decision: the read surface honours TEAM and LOCATION; the ceiling stays at ORG.** Slice 1 resolved
+exactly this question on `/chain` by honouring the scope, and that answer is now the surface's, not
+one endpoint's. The subject of both rungs is always the **requester**, never the current approver:
+"whose requests may I see" is the question the screens ask (a manager's team view, a location HR
+partner's queue), and scoping on the approver would make a request visible or invisible depending on
+how far it had escalated.
+
+| Rung | Reaches | Enforced by |
+|---|---|---|
+| OWN | `requester_employee_id = sref`; on the detail also anyone on a step of the request | `ctx.apply(owner_col=…)` / the detail's own check |
+| TEAM | requests whose requester's node has `reporting_manager_id = sref` — one level, the same comparison `assert_can_touch(team_owner_id=…)` makes everywhere else on this platform | `ctx.apply(team_col=…)` over the joined `hierarchy_nodes` row |
+| LOCATION | requests whose requester's `location_code` is one of the caller's `loc` claim values | `ctx.apply(location_col=…)` over the same join |
+| ORG | every request in the organization | `ctx.apply` passes the statement through |
+
+**A requester the copy has never seen fails TEAM and LOCATION closed, and stays visible at OWN and
+ORG.** The join to `hierarchy_nodes` is a **LEFT OUTER** join for exactly this reason: §4's
+`requester_not_in_hierarchy` population — a lagging `onboarded` event, or an organization whose
+backfill has not run — has no node to compare against, and an inner join would silently drop those
+requests from *every* scope rather than from the two that need the comparison. It is the same
+fail-closed reading `/chain` already applies to a subject it cannot resolve.
+
+**What it costs**, stated because it is not free: for those two rungs the list query joins
+`hierarchy_nodes` on `(organization_id, requester_employee_id)` to supply the columns, and TEAM needs
+an index on `(organization_id, reporting_manager_id)` that the persistence design deliberately does
+not create ("nothing walks downward", data model §2.3). That index now has a query, so it ships with
+it (§15). OWN and ORG callers pay nothing — the join is added only for the scopes that need it.
+
+**Why the alternative was rejected.** The other coherent answer is to make TEAM and LOCATION
+*ungrantable*, so a bad grant fails at grant time rather than per request. It is not expressible:
+`max_scope` is a rung on a ladder, not a set, and both `read` and `decide` must be grantable at ORG —
+so every rung below ORG is representable by construction. Making them ungrantable means adding an
+allowed-scope set to `PermissionSpec`, to `account.permissions`, to the manifest schema, to the roles
+API's validation and to ADR-0007 §1's scope comparison: a change to ADR-0000 §5's grammar and §6's
+ladder, shipped platform-wide and migrated into every existing tenant's grants, to record one
+service's opinion about two rungs. ADR-0000 §6 already says the ladder is universal and that what a
+rung *means* is registered per product — so "what TEAM means here" is exactly the question this
+section is supposed to answer, and answering it is cheaper than removing the question. **The trade:**
+two rungs nobody has asked for are implemented, tested and carried, and a `read:TEAM` grant is a
+capability a customer can create without anybody designing a screen for it.
+
+**`decide` and `delegation.write` collapse below ORG, deliberately.** For both, **any scope below
+ORG is read as OWN**, and that is now written down rather than left as an accident of
+`ctx.scope is Scope.ORG`:
+
+- `decide` — authority comes from the chain, not from scope (§6). A manager's reports' requests
+  already route to them; a `decide:TEAM` that meant "decide my team's requests" would be a second,
+  parallel authority beside the chain, which is what §6 exists to prevent. Only ORG unlocks route (c).
+- `delegation.write` — the distinction is "my own delegations" versus "anybody's". There is no third
+  thing a TEAM delegator set could mean that ORG does not already cover.
+
+The collapse is never a refusal and never a widening: such a caller is treated as OWN, not 403'd. A
+403 here would turn a grant-time mistake into a runtime failure on whichever endpoint happened to
+call `ctx.apply()`, which is the defect this amendment exists to remove.
 
 **Role templates. Amended — the original plan could not reach a single existing customer, and the
 fix is a platform capability, not an approval one.**
@@ -756,16 +885,16 @@ Per endpoint:
 
 | Endpoint | Guard | Object-level rule |
 |---|---|---|
-| `GET /inbox` | `decide` (any scope) | Pending requests where §6 holds for the caller; unassigned only with ORG. Requester's own excluded |
-| `GET /requests` | `read` | OWN = `requester_employee_id = sref`; ORG = all. Via `ctx.apply()` |
-| `GET /requests/{id}` | `read` | OWN: requester, **or anyone who appears on a step of this request** (`approver_employee_id` or `acting_for_employee_id`, any outcome), else 404; ORG: any. **Amended, see below** |
-| `POST /requests/{id}/decision` | `decide` | §6 under lock; 403 when not eligible, 409 when decided |
-| `GET /delegations` | `delegation.write` | OWN: delegator or delegate is `sref`; ORG: all |
-| `POST /delegations` | `delegation.write` | OWN: `delegator_employee_id` must be `sref` (omitted → `sref`); another id needs ORG |
-| `POST /delegations/{id}/revoke` | `delegation.write` | OWN: only if caller is the delegator; ORG: any |
-| `GET /policies` | `read` (any scope) | Read-only, org-wide |
+| `GET /inbox` | `decide` (any scope) | Pending requests where §6 holds for the caller; unassigned **and abandoned** only with ORG, and only while the caller's own node is not `exited` (§6 condition 4). Requester's own excluded. Below ORG reads as OWN |
+| `GET /requests` | `read` | OWN = `requester_employee_id = sref`; TEAM = the requester reports to `sref`; LOCATION = the requester's `location_code` is one of the caller's; ORG = all. All four via `ctx.apply()`, with `team_col`/`location_col` from the joined requester node |
+| `GET /requests/{id}` | `read` | OWN: requester, **or anyone who appears on a step of this request** (`approver_employee_id` or `acting_for_employee_id`, any outcome); TEAM/LOCATION: additionally any request whose requester is in scope; ORG: any. Anything else is **404**, at every scope |
+| `POST /requests/{id}/decision` | `decide` | §6 under lock; 403 when not eligible, 409 when decided. Only ORG reaches route (c); below ORG reads as OWN |
+| `GET /delegations` | `delegation.write` | ORG: all. Below ORG (read as OWN): delegator or delegate is `sref` |
+| `POST /delegations` | `delegation.write` | Below ORG (read as OWN): `delegator_employee_id` must be `sref` (omitted → `sref`); another id needs ORG |
+| `POST /delegations/{id}/revoke` | `delegation.write` | Below ORG (read as OWN): only if caller is the delegator; ORG: any |
+| `GET /policies` | `read` (any scope) | Read-only, org-wide. The one read endpoint whose **scope is not consulted at all** — an SLA policy is organization configuration, not anybody's row |
 | `PUT /policies/{request_type}` | `policy.write`, `minimum=ORG` | — |
-| `GET /chain/{employee_id}` | `read` | OWN: only `employee_id = sref`; ORG: any |
+| `GET /chain/{employee_id}` | `read` | OWN: only `employee_id = sref`; TEAM: a direct report; LOCATION: an employee at one of the caller's locations; ORG: any. Via `assert_can_touch` against the **subject's** node, which fails TEAM and LOCATION closed when the copy has not seen the subject. **Amended (slice 2 review)**: this row said "OWN … ORG: any", which slice 1's shipped endpoint already contradicted — it is the precedent the scope rule above generalises, not an exception to it |
 | `GET /delegate-candidates?q=` | `delegation.write` (any scope) | **New, amended in.** Non-exited `hierarchy_nodes` in the caller's organization, excluding the caller. `q` required, ≥2 characters, results capped at 20 |
 
 **Amended — what the responses return, so the screens are shippable.** Approval holds UUIDs, and the
@@ -863,6 +992,16 @@ needs:
 - **a past approver can read a request they decided or were escalated past, and still cannot decide
   it** (§11's detail rule widened, §6 unchanged) — the read widens, the authority does not
 - an employee who never appeared on a request's steps still gets 404 on it at OWN
+- **an exited caller holding `decide:ORG` is refused on an unassigned step and on an abandoned one**,
+  and their inbox — including its unassigned and abandoned arms — is **empty** (§6 condition 4).
+  Both arms, both endpoints: the negative test for the inbox is not implied by the one for the
+  decision endpoint, because they are two separate expressions of the same rule
+- **a `read:TEAM` caller sees requests raised by a direct report and not one raised by a peer**, and
+  is neither refused outright nor narrowed to OWN; the same for `read:LOCATION` against a requester
+  outside the caller's locations. The test exists on `GET /requests` **and** `GET /requests/{id}`,
+  because those were the two endpoints that disagreed
+- **a `decide:TEAM` holder cannot decide an unassigned step** — only ORG reaches route (c) — and is
+  not refused on a request the chain did route to them
 
 ### 12. Events and the `request_type` convention
 
@@ -1039,6 +1178,9 @@ deliberate and short-lived, not discovered during implementation:
 | `docs/approval-engine-data-model.md` §1.2 | `ck_approval_policies_sla_minutes_range` becomes `BETWEEN 15 AND 525600` (§8, §10) |
 | `docs/approval-engine-data-model.md` §1.3 | `approval_requests` gains `request_note`, `application_state`, `application_failure_reason`, `applied_at` with their CHECKs; `summary` loses `reason` (§3, §12) |
 | `docs/approval-engine-data-model.md` §1.4 | `trg_approval_requests_decide_once` permits the `application_*` trio to be set once on a decided request (§12) |
+| `docs/approval-engine-data-model.md` §2.2a / §5 migration order | **Slice 2 review.** `ix_hierarchy_nodes_org_exited` ships with slice 2's routing migration, not with slice 4 (§15). Note also that `hierarchy_nodes` is created by slice 1's migration, so §5's "the four new indexes are built in migration 2 with their tables" is not true of the three that sit on `hierarchy_nodes` — they are added to an existing table and need their own `op.create_index` in the routing migration |
+| `docs/approval-engine-data-model.md` §2.3 | **Slice 2 review.** "No `(organization_id, reporting_manager_id)` on `hierarchy_nodes` — nothing walks downward" no longer holds: §11's TEAM read filters requests by the requester's manager. The index (and whatever LOCATION needs — a measurement this ADR does not make) ships with that change, per §15 |
+| `docs/approval-engine-data-model.md` §2.1 | **Slice 2 review.** The inbox's two ORG arms each gain the caller-active test (§6 condition 4); it is a bind parameter, not a join, so the measured shape is unchanged — but the documented predicate is |
 | `docs/architecture.md` port map | `approval :8152` on the PLATFORM line (§14) |
 | `docs/design/approval-engine-screens.md` §4.A | the inbox's department sub-line is not available in these slices (§2); every other contract dependency it raised is resolved in §2, §3, §11 and §12 |
 | `docs/design/approval-engine-screens.md` §9.2 | all six response-shape questions are now answered in §11 and §12: `location_code` on every instant-rendering response with a **labelled** org-time fallback (**O4**); `employee_no` with the requester, each chain rung and each candidate (**C6**); `request_note` on the inbox list and detail (**C7**, so the Reason column stays); `application_state` on `GET /requests` (**C8**, so "My requests" can show "Approved — not applied"); past participants may read a decided request (**O8**, so §4.B's 404 state and §3.2's note no longer apply to them); rejections are reported and the return path ships in **slice 2** (**O9**, **O10**, so §2.10 may render an application line for rejected requests) |
@@ -1046,6 +1188,61 @@ deliberate and short-lived, not discovered during implementation:
 The persistence design is otherwise authoritative and was followed wherever it and this ADR
 disagreed: the version trigger (§2), the advisory lock on the cycle check (§2), the step-outcome
 vocabulary (§3) and the recursive walk (§5) are all its findings, adopted here.
+
+### 15. Index timing: an index ships with the query, not with the feature it was designed for
+
+**Amended (slice 2 review) — added.** This ADR said nothing about when an index lands, and the one
+place it mattered got it wrong by default.
+
+**The case.** §6 route (c) has two arms, unassigned and abandoned-approver. The abandoned arm runs
+an `EXISTS` against `hierarchy_nodes` for `status = 'exited'`, and it runs for **every `decide:ORG`
+caller on every inbox render** as well as on the eligibility check under the decision lock. It
+shipped in **slice 2**, with the routing engine. `ix_hierarchy_nodes_org_exited` — the index designed
+for precisely that arm (persistence design §2.2a) — was scheduled with **slice 4**, because it was
+specified in the same amendment as the escalation work and silently inherited that work's slice.
+Measured at a 20,000-person organization with 3,200 open steps: **11.6 ms against 3.4 ms with the
+index**. The mechanism is worth stating precisely, because the obvious explanation is the wrong one:
+the `EXISTS` is reached from the *steps* side as a semi-join, and without the index the planner does
+**not** make 3,200 per-row primary-key probes — it sequentially scans the whole `hierarchy_nodes`
+table once to build the semi-join's hash side (516 buffers), which is genuinely the cheaper of the
+two plans available to it. The partial index gives it a third option: read only the `exited` subset.
+The gap therefore widens with headcount, because a sequential scan is proportional to *everyone*
+while the index is proportional to the exited population. (The persistence design measures the same
+arm on a different fixture as 6.3 ms → 1.98 ms, 13,203 buffers → 222; the plans differ, the
+conclusion does not.)
+
+**Correction: `ix_hierarchy_nodes_org_exited` belongs to slice 2**, shipped with the query that needs
+it. It lands as its own migration rather than inside the routing-tables migration, because
+`hierarchy_nodes` is a table slice 1 created — an index added to an existing table is its own
+revision, not an edit to a migration that has already run. Columns `(organization_id, employee_id)`
+with `WHERE status = 'exited'`: the status is the partial index's own predicate and does not need to
+be a column as well.
+
+**The general rule: an index moves with the query that needs it, not with the feature it was
+designed for.** An index is part of a query's plan, and a slice that ships the query without it has
+not deferred an optimisation — it has chosen a plan nobody reviewed, in the slice where the query is
+newest and least understood. "Designed alongside feature X" is a fact about authorship, not a
+schedule. Applied to the rest of the index set:
+
+| Index | Serves | Ships in |
+|---|---|---|
+| `ix_hierarchy_nodes_org_exited` | §6 route (c)'s abandoned arm — inbox and eligibility | **slice 2**, with that arm (was slice 4) |
+| `ix_hierarchy_nodes_org_display_name`, `…_org_employee_no` | `GET /delegate-candidates` | slice 3, with the delegation surface — not earlier either |
+| `ix_approval_requests_unapplied` | §12's "decided but never applied" probe, armed in slice 2 | slice 2, with the return leg |
+| `ix_approval_steps_sla_due`, `ix_approval_steps_stuck_open` | the sweep and its liveness alarm (§8) | slice 4 — the queries genuinely do not exist before then |
+| `(organization_id, reporting_manager_id)` on `hierarchy_nodes` | §11's TEAM read | with the change that honours TEAM. Data model §2.3 rejects this index as "nothing walks downward", which stops being true the moment the TEAM rung has a query |
+
+**What the rule gives up**, since it is a trade and not a free win: an index is carried, and paid for
+on every write, from the slice where its query appears rather than from the slice where the feature
+is finished. `ix_hierarchy_nodes_org_exited` is 696 kB and is maintained by the hierarchy consumer
+and by the backfill, which pays index maintenance on every page of a 50,000-row load. That is the
+cost, and it is accepted against the alternative: a per-caller sequential scan on the inbox, which
+does not fail, does not alarm, and surfaces months later as "approvals feel slow" in the one tenant
+large enough to notice.
+
+**The check a reviewer can apply to the next slice:** for every query a slice ships, name the index
+that serves it — or state that a sequential scan is the intended plan, and why. "The index comes
+later" is an answer only when the *query* comes later.
 
 ---
 
@@ -1123,6 +1320,27 @@ vocabulary (§3) and the recursive walk (§5) are all its findings, adopted here
   UI shows that status rather than the approval status.
 - **Steps are append-only history, and the request is the mutable aggregate**, the same split
   ADR-0005 draws between a cycle and its transitions.
+- **Two rungs of the scope ladder are carried before a screen asks for them** (§11). TEAM and
+  LOCATION reads are implemented, tested and joined for, because the permission's ceiling makes them
+  grantable whether or not this service has an opinion. The alternative was a platform-wide change to
+  the permission grammar; this is the cheaper half of a trade with no free side.
+- **An exited employee is inert in approval, and visibly so** (§6). No decisions, no inbox, no
+  delegation — but their read grant, their name and their history are untouched. The one lever that
+  removes their *read* is the membership, which approval does not own.
+- **The idempotency ledger is global by event id, not per tenant — an open item, not a decision this
+  ADR makes.** `platform_core.ProcessedEventMixin` keys `processed_events` on `event_id` alone, with
+  no `organization_id`, and the table is deliberately un-policied (ADR-0002 §5, data model §3.2). So
+  a service's ledger is one namespace per schema across every tenant it serves. It is safe **today**
+  by luck rather than by construction: every `event_id` is a freshly generated UUID, so two tenants
+  colliding is not a realistic accident. If one ever did — a replayed id, a producer bug, a hand-made
+  test message — the second tenant's event would be marked already-processed and **dropped silently
+  in the wrong tenant's ledger**: no error, no audit row, no consumer-side symptom, and for approval
+  specifically a request that never opens or a decision that never reaches the product. **Where it is
+  resolved: `libs/platform-core`, not here.** The mixin is shared by every service, so keying it on
+  `(organization_id, event_id)` — and deciding whether the table becomes policied — is a platform
+  migration across every schema and belongs to that library's owner. Approval neither worsens it nor
+  masks it, and this ADR deliberately does not fix it locally: one service carrying a different
+  `processed_events` shape from the other twelve is a worse problem than the one it would solve.
 
 ## Deferred, with the reason each is safe to defer
 
@@ -1165,3 +1383,10 @@ vocabulary (§3) and the recursive walk (§5) are all its findings, adopted here
 - **A second product needs `display_name` on its own copy of some other service's data.** Two
   denormalised-name copies is the point at which a shared read model deserves an ADR, rather than
   each service carrying its own.
+- **A customer actually grants `read:TEAM` or `read:LOCATION`** (§11). The rungs are defined and
+  enforced, but no screen is designed against them; the first real use is the moment to decide
+  whether the inbox and "My requests" need a team view rather than a filter.
+- **`processed_events` gains an `organization_id`.** A platform change, tracked in `libs/platform-core`
+  (Consequences). When it lands, approval's consumers need no edit — but this ADR's claim that a
+  cross-tenant id collision is "safe today" stops being load-bearing, and the paragraph should say so
+  rather than linger as a warning about a fixed problem.

@@ -14,7 +14,9 @@ app = create_app(
         "The platform's routing engine for who may say yes, who says it when they do not, and "
         "how the answer gets back to the product that asked (ADR-0006). Slice 1: the read-only "
         "copy of the reporting line (`hierarchy_nodes`) and the resolved chain endpoint. "
-        "Requests, steps, delegations and SLA policy land in slice 2."
+        "Slice 2: opening and deciding a `hrms.time.regularization` request — routing, "
+        "delegation applied at open, the inbox, and the product's application-state return leg. "
+        "No SLA clock yet: every step opens with `due_at = NULL` until slice 4."
     ),
     routers=[router],
     outbox_model=OutboxEvent,

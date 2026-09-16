@@ -35,6 +35,10 @@ from platform_core.db import TENANT_GUC, get_session
 
 TENANT_TABLES = (
     "hierarchy_nodes",
+    "approval_policies",
+    "approval_requests",
+    "approval_steps",
+    "delegations",
     "audit_logs",
     "outbox",
     "processed_events",

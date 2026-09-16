@@ -4,31 +4,78 @@ Fronted by `app-gateway` at `/api/v1/approvals`, with **no `product` key** in th
 (ADR-0006 §1, §14): approval is a platform surface every customer has, the same shape as
 `/api/v1/members`, and must work for a customer who has bought nothing yet.
 
-Slice 1 ships exactly one route, `GET /chain/{employee_id}` (ADR-0006 §5, §11). Every other
-route this ADR describes — the inbox, requests, decisions, delegations, policies — opens on top
-of tables (`approval_requests`, `approval_steps`, `delegations`, `approval_policies`) that do not
-exist until slice 2.
+Slice 1 shipped `GET /chain/{employee_id}`. Slice 2 adds the routing engine's read and decide
+surface: `GET /inbox`, `GET /requests`, `GET /requests/{id}` and `POST /requests/{id}/decision`
+(ADR-0006 §11). `/delegations`, `/delegate-candidates` and `/policies` open on top of write paths
+that ship in slices 3 and 4 — the tables exist (this slice's migration), but nothing here lets a
+caller write to them yet.
+
+**Holding the permission is never enough** (ADR-0006 §11's own words). `require(...)` below is
+the first gate on every route; the second — ADR-0006 §6's eligibility check, and the OWN-scope
+object-level rule on `read` — runs in `app/services.py` and this module, under the request's own
+lock where a decision is at stake, and is never replaced by a UI gate.
 """
 
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal, cast
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import domain, selectors
+from app import domain, selectors, services
 from app.config import settings
 from app.models import SCHEMA
-from app.schemas import ApprovalChainOut, ChainRungOut, DottedLineManagerOut, ServiceInfo
-from platform_core.auth import ScopeContext, require
+from app.schemas import (
+    ApprovalChainOut,
+    ChainRungOut,
+    DecisionIn,
+    DottedLineManagerOut,
+    InboxItemOut,
+    RequestDetailOut,
+    RequestListItemOut,
+    ServiceInfo,
+    StepOut,
+)
+from app.selectors import PersonInfo
+from platform_core.auth import Scope, ScopeContext, require
 from platform_core.db import get_tenant_session
+from platform_core.errors import NotFoundProblem
+from platform_core.pagination import Page, PageQuery, paginate
 
 router = APIRouter(tags=["approval"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
 ReadCtx = Annotated[ScopeContext, Depends(require("core.approval.request.read"))]
+#: `decide` at **any** scope: `MEMBER` holds `decide:OWN` by default, and §6's eligibility check
+#: — not the permission scope — is what actually decides who may act on any given request
+#: (ADR-0006 §11: "holding decide is not enough").
+DecideCtx = Annotated[ScopeContext, Depends(require("core.approval.request.decide"))]
+
+
+def _person_field(
+    people: dict[uuid.UUID, PersonInfo], employee_id: uuid.UUID | None, field: str
+) -> str | None:
+    """A field that cannot be resolved is `None` rather than absent (ADR-0006 §11) — the client
+    renders its own fallback and the row stays operable. One implementation behind the three
+    named wrappers below, rather than the same `None`-handling body copied three times."""
+    if employee_id is None:
+        return None
+    person = people.get(employee_id)
+    return cast("str | None", getattr(person, field)) if person else None
+
+
+def _name(people: dict[uuid.UUID, PersonInfo], employee_id: uuid.UUID | None) -> str | None:
+    return _person_field(people, employee_id, "display_name")
+
+
+def _employee_no(people: dict[uuid.UUID, PersonInfo], employee_id: uuid.UUID | None) -> str | None:
+    return _person_field(people, employee_id, "employee_no")
+
+
+def _location(people: dict[uuid.UUID, PersonInfo], employee_id: uuid.UUID | None) -> str | None:
+    return _person_field(people, employee_id, "location_code")
 
 
 @router.get("/approvals/info", response_model=ServiceInfo, summary="What this service is")
@@ -115,4 +162,345 @@ async def get_chain(
         chain=rungs,
         dotted_line_manager=dotted_line_manager,
         unresolved=unresolved,
+    )
+
+
+# --------------------------------------------------------------------- routing (slice 2)
+
+
+@router.get(
+    "/approvals/inbox",
+    response_model=Page[InboxItemOut],
+    summary="Pending requests the caller may decide",
+)
+async def get_inbox(
+    session: SessionDep,
+    ctx: DecideCtx,
+    params: PageQuery,
+) -> Page[InboxItemOut]:
+    """`GET /inbox` (ADR-0006 §11): pending requests where ADR-0006 §6 makes the caller eligible
+    — unassigned rows only for a `decide:ORG` holder — excluding the caller's own requests.
+
+    A caller with no `subject_ref` is eligible for nothing (§6 rule 2: "a membership with no
+    employee link can decide nothing, including unassigned steps") — an empty page, not a 403,
+    the same "let the server's own filtering be the gate" pattern screens §2.4 specifies for this
+    endpoint.
+    """
+    if ctx.subject_ref is None:
+        return Page.build([], total=0, params=params)
+
+    caller_id = ctx.subject_ref
+    caller_node = await selectors.get_hierarchy_node(session, ctx.organization_id, caller_id)
+    caller_active = caller_node is None or caller_node.status != "exited"
+    is_org = ctx.scope is Scope.ORG
+    # `services._db_now` is the one clock (ADR-0006 §8): reading `now()` again here, separately,
+    # would be a second one, and the two could disagree on clock skew or across a slow query.
+    db_now = await services._db_now(session)
+
+    rows, total = await selectors.list_inbox(
+        session,
+        organization_id=ctx.organization_id,
+        caller_id=caller_id,
+        caller_active=caller_active,
+        is_org_decider=is_org,
+        now=db_now,
+        limit=params.size,
+        offset=params.offset,
+    )
+
+    reasons = [
+        domain.inbox_reason_for(
+            caller_id=caller_id,
+            approver_employee_id=row.approver_employee_id,
+            acting_for_employee_id=row.acting_for_employee_id,
+            step_reason=row.reason,
+        )
+        for row in rows
+    ]
+    person_ids = {row.requester_employee_id for row in rows} | {
+        reason.from_employee_id for reason in reasons if reason.from_employee_id is not None
+    }
+    people = await selectors.get_hierarchy_people(session, ctx.organization_id, person_ids)
+
+    items = [
+        InboxItemOut(
+            id=row.request_id,
+            request_type=row.request_type,
+            source_ref=row.source_ref,
+            summary=row.summary,
+            request_note=row.request_note,
+            opened_at=row.opened_at,
+            requester_employee_id=row.requester_employee_id,
+            requester_name=_name(people, row.requester_employee_id),
+            requester_employee_no=_employee_no(people, row.requester_employee_id),
+            requester_location_code=_location(people, row.requester_employee_id),
+            inbox_reason=reason.reason,
+            from_name=_name(people, reason.from_employee_id),
+        )
+        for row, reason in zip(rows, reasons, strict=True)
+    ]
+    return Page.build(items, total=total, params=params)
+
+
+@router.get(
+    "/approvals/requests",
+    response_model=Page[RequestListItemOut],
+    summary="Requests I raised (OWN) or every request (ORG)",
+)
+async def list_requests(
+    session: SessionDep,
+    ctx: ReadCtx,
+    params: PageQuery,
+    requester: Annotated[Literal["me"] | None, Query()] = None,
+) -> Page[RequestListItemOut]:
+    """`GET /requests` (ADR-0006 §11): OWN = `requester_employee_id = sref`; TEAM = raised by a
+    direct report; LOCATION = raised by anyone at one of the caller's locations; ORG = every
+    request — all via `ctx.apply()` in `selectors.requests_stmt`. No `request_note` (screens
+    §2.9 — nothing renders the requester's own text back to them); `application_state` travels
+    here, deliberately (C8).
+
+    `?requester=me` is the "My requests" screen's own filter, layered on top of scope rather than
+    a replacement for it: scope answers "may this caller see this row", not "is this caller's
+    own" — a TEAM, LOCATION or ORG reader legitimately sees other people's requests through this
+    same endpoint (the HR/ORG "all requests" view screens also describe), so without this filter
+    an ORG-scoped caller asking for "my requests" would be shown the entire organization's. The
+    server resolves "me" from `ctx.subject_ref`, never a client-supplied id — `Literal["me"]` is
+    the whole of the accepted vocabulary, so there is no `requester=<uuid>` shape to accept or
+    reject in application code at all; anything else fails FastAPI's own query validation before
+    this function runs (422), which is the boundary validation CLAUDE.md asks for rather than a
+    second, hand-rolled check here."""
+    stmt = selectors.requests_stmt(ctx, mine_only=requester == "me")
+    rows, total = await paginate(session, stmt, params)
+
+    open_steps = await selectors.get_open_steps_for_requests(
+        session, ctx.organization_id, [row.id for row in rows]
+    )
+    person_ids: set[uuid.UUID] = set()
+    for row in rows:
+        person_ids.add(row.requester_employee_id)
+        if row.decided_by_employee_id is not None:
+            person_ids.add(row.decided_by_employee_id)
+        step = open_steps.get(row.id)
+        if step is not None and step.approver_employee_id is not None:
+            person_ids.add(step.approver_employee_id)
+    people = await selectors.get_hierarchy_people(session, ctx.organization_id, person_ids)
+
+    items = []
+    for row in rows:
+        step = open_steps.get(row.id)
+        approver_id = step.approver_employee_id if step is not None else None
+        items.append(
+            RequestListItemOut(
+                id=row.id,
+                request_type=row.request_type,
+                source_ref=row.source_ref,
+                summary=row.summary,
+                status=row.status,
+                opened_at=row.opened_at,
+                requester_employee_id=row.requester_employee_id,
+                requester_name=_name(people, row.requester_employee_id),
+                requester_employee_no=_employee_no(people, row.requester_employee_id),
+                requester_location_code=_location(people, row.requester_employee_id),
+                approver_employee_id=approver_id,
+                approver_name=_name(people, approver_id),
+                decided_by_employee_id=row.decided_by_employee_id,
+                decided_by_name=_name(people, row.decided_by_employee_id),
+                decided_at=row.decided_at,
+                comment=row.comment,
+                application_state=row.application_state,
+                application_failure_reason=row.application_failure_reason,
+            )
+        )
+    return Page.build(items, total=total, params=params)
+
+
+async def _build_detail(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    request_id: uuid.UUID,
+    viewer_subject_ref: uuid.UUID | None,
+    viewer_is_org: bool,
+) -> RequestDetailOut:
+    """The shape both `GET /requests/{id}` and `POST .../decision` return — built once so the two
+    can never drift on field names. Takes the viewer as plain values rather than a `ScopeContext`
+    because the two callers hold contexts built for *different* permissions (`read` and
+    `decide`), and a `ScopeContext`'s `.scope` only means "the scope this request satisfied one
+    particular permission at" — reusing one across the wrong permission would be a type-shaped
+    bug, so the callers pass only what this function actually needs.
+
+    Assumes the caller has already established visibility (the GET route's own check below; the
+    POST route's decider is trivially on a step of the request they just decided).
+    """
+    request = await selectors.get_request(session, organization_id, request_id)
+    if request is None:
+        raise NotFoundProblem("That request isn't available to you")
+
+    steps = await selectors.list_steps(session, organization_id, request_id)
+    open_step = next((s for s in steps if s.outcome == "open"), None)
+
+    person_ids: set[uuid.UUID] = {request.requester_employee_id}
+    if request.decided_by_employee_id is not None:
+        person_ids.add(request.decided_by_employee_id)
+    for step in steps:
+        if step.approver_employee_id is not None:
+            person_ids.add(step.approver_employee_id)
+        if step.acting_for_employee_id is not None:
+            person_ids.add(step.acting_for_employee_id)
+    people = await selectors.get_hierarchy_people(session, organization_id, person_ids)
+
+    # "Waiting on" (screens §4.B) — the same §2.3 chip the inbox shows, computed relative to
+    # *this* viewer. Only meaningful for a viewer who is themselves a personal party to the open
+    # step (an eligible decider); a requester or an uninvolved ORG reader sees no chip rather
+    # than a fabricated one, because `domain.inbox_reason_for` is only correct for a caller the
+    # inbox's own query would have matched.
+    inbox_reason: str | None = None
+    from_employee_id: uuid.UUID | None = None
+    approver_employee_id: uuid.UUID | None = None
+    acting_for_employee_id: uuid.UUID | None = None
+    if open_step is not None:
+        approver_employee_id = open_step.approver_employee_id
+        acting_for_employee_id = open_step.acting_for_employee_id
+        caller = viewer_subject_ref
+        if caller is not None and caller in (
+            open_step.approver_employee_id,
+            open_step.acting_for_employee_id,
+        ):
+            derived = domain.inbox_reason_for(
+                caller_id=caller,
+                approver_employee_id=open_step.approver_employee_id,
+                acting_for_employee_id=open_step.acting_for_employee_id,
+                step_reason=open_step.reason,
+            )
+            inbox_reason = derived.reason
+            from_employee_id = derived.from_employee_id
+        elif viewer_is_org:
+            approver_person = (
+                people.get(open_step.approver_employee_id)
+                if open_step.approver_employee_id is not None
+                else None
+            )
+            if open_step.approver_employee_id is None or (
+                approver_person is not None and approver_person.status == "exited"
+            ):
+                inbox_reason = domain.INBOX_REASON_UNASSIGNED
+    else:
+        # Decided: the same concept read from the request's own decision-time column, not the
+        # (nonexistent) open step (ADR-0006 §7).
+        acting_for_employee_id = request.acting_for_employee_id
+
+    steps_out = [
+        StepOut(
+            level=step.level,
+            reason=step.reason,
+            outcome=step.outcome,
+            approver_employee_id=step.approver_employee_id,
+            approver_name=_name(people, step.approver_employee_id),
+            acting_for_employee_id=step.acting_for_employee_id,
+            acting_for_name=_name(people, step.acting_for_employee_id),
+            opened_at=step.opened_at,
+            closed_at=step.closed_at,
+            due_at=step.due_at,
+        )
+        for step in steps
+    ]
+
+    # `request_note` is returned to every caller who reaches this point — the visibility check
+    # above already restricted access to the requester, ORG, or a step participant, which is
+    # exactly ADR-0006 §3's rule 3 for who may read it.
+    return RequestDetailOut(
+        id=request.id,
+        request_type=request.request_type,
+        source_ref=request.source_ref,
+        summary=request.summary,
+        request_note=request.request_note,
+        status=request.status,
+        opened_at=request.opened_at,
+        requester_employee_id=request.requester_employee_id,
+        requester_name=_name(people, request.requester_employee_id),
+        requester_employee_no=_employee_no(people, request.requester_employee_id),
+        requester_location_code=_location(people, request.requester_employee_id),
+        approver_employee_id=approver_employee_id,
+        approver_name=_name(people, approver_employee_id),
+        acting_for_employee_id=acting_for_employee_id,
+        acting_for_name=_name(people, acting_for_employee_id),
+        inbox_reason=inbox_reason,
+        from_name=_name(people, from_employee_id),
+        decided_by_employee_id=request.decided_by_employee_id,
+        decided_by_name=_name(people, request.decided_by_employee_id),
+        decided_at=request.decided_at,
+        comment=request.comment,
+        application_state=request.application_state,
+        application_failure_reason=request.application_failure_reason,
+        applied_at=request.applied_at,
+        steps=steps_out,
+    )
+
+
+@router.get(
+    "/approvals/requests/{request_id}",
+    response_model=RequestDetailOut,
+    summary="Request detail",
+)
+async def get_request_detail(
+    request_id: uuid.UUID, session: SessionDep, ctx: ReadCtx
+) -> RequestDetailOut:
+    """`GET /requests/{id}` (ADR-0006 §11, amended): OWN reaches the requester, **or anyone who
+    appears on a step of this request, any outcome** — a past decider, a past delegate, anyone
+    escalated past, keeps full read access to what they took part in. ORG reaches any. A caller
+    who cannot see the request gets **404, not 403** (ADR-0006 §11: "so that request ids cannot
+    be probed"), and a wrong-tenant id is indistinguishable from one that never existed.
+    """
+    if ctx.scope is not Scope.ORG:
+        subject = ctx.subject_ref
+        request = await selectors.get_request(session, ctx.organization_id, request_id)
+        is_requester = (
+            request is not None and subject is not None and request.requester_employee_id == subject
+        )
+        on_a_step = subject is not None and await selectors.caller_is_on_any_step(
+            session, ctx.organization_id, request_id, subject
+        )
+        if request is None or not (is_requester or on_a_step):
+            raise NotFoundProblem("That request isn't available to you")
+
+    return await _build_detail(
+        session,
+        organization_id=ctx.organization_id,
+        request_id=request_id,
+        viewer_subject_ref=ctx.subject_ref,
+        viewer_is_org=ctx.scope is Scope.ORG,
+    )
+
+
+@router.post(
+    "/approvals/requests/{request_id}/decision",
+    response_model=RequestDetailOut,
+    summary="Approve or reject a pending request",
+)
+async def decide_request(
+    request_id: uuid.UUID, body: DecisionIn, session: SessionDep, ctx: DecideCtx
+) -> RequestDetailOut:
+    """`POST /requests/{id}/decision` (ADR-0006 §7). `require("core.approval.request.decide")`
+    is only the first gate; `app/services.decide_request` re-checks ADR-0006 §6 under the
+    request row's lock and is what actually decides who may act — **403** not eligible, **409**
+    already decided (with the recorded outcome, via the conflict message)."""
+    await services.decide_request(
+        session,
+        organization_id=ctx.organization_id,
+        request_id=request_id,
+        caller_id=ctx.subject_ref,
+        has_org_decide=ctx.scope is Scope.ORG,
+        outcome=body.outcome,
+        comment=body.comment,
+    )
+    await session.flush()
+    # Built through the same shape `GET /requests/{id}` returns, so the two endpoints can never
+    # drift — the decider is, by definition, on a step of the request they just decided, so no
+    # separate visibility check is needed here.
+    return await _build_detail(
+        session,
+        organization_id=ctx.organization_id,
+        request_id=request_id,
+        viewer_subject_ref=ctx.subject_ref,
+        viewer_is_org=ctx.scope is Scope.ORG,
     )

@@ -30,6 +30,53 @@ config.set_main_option("sqlalchemy.url", cfg.admin_dsn)
 target_metadata = Base.metadata
 
 
+def grant_unapplied_alarm_reader(connection: Connection) -> None:
+    """Column-level `SELECT` on `approval_requests` for the outbox role — the decided-but-never-
+    applied alarm's read (data model §3.3, §12 pattern 18), armed from slice 2 rather than 4
+    because it is meaningful from the moment the first decision is taken.
+
+    Six content-free columns, named exactly — `organization_id`, `id`, `request_type`, `status`,
+    `decided_at`, `application_state` — never `summary`, `request_note` or `comment`. The outbox
+    role's slice-1 grant (`apply_schema_grants`, `SELECT, UPDATE` on `outbox` only) does not reach
+    this table at all; this is additive and narrower than a blanket `SELECT` would be, so a future
+    `SELECT *` in that alarm's query fails loudly with `42501` instead of quietly widening a
+    BYPASSRLS surface onto customer content.
+
+    The seven-column grant on `approval_steps` for the SLA sweep's own discovery (data model §3.3)
+    is **not** granted here — that reader serves probes armed in slice 4, and granting it early
+    buys nothing since nothing yet queries it.
+
+    Called from `do_run_migrations` after **every** `alembic` run, upgrade or downgrade alike —
+    there is no direction argument to key off here, so `REVOKE` first and `GRANT` again only if
+    the table still exists, rather than `GRANT`-only: a `GRANT`-only version left the privilege in
+    place forever once first issued, since a downgrade run reached this function too but had
+    nothing in it that would ever take the privilege back. Revoking unconditionally (whenever the
+    table exists) and re-granting exactly the same six columns is idempotent on every ordinary
+    upgrade — the two statements just repeat — and is what actually removes the grant on a
+    downgrade that drops the table (`REVOKE` before `DROP TABLE` is redundant there, since
+    Postgres drops dependent privileges with the table, but is what protects a *future* downgrade
+    that removes only a column this grant names, rather than the whole table).
+    """
+    reader = cfg.db_outbox_role
+    if not reader:
+        return
+    if not connection.execute(
+        text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": reader}
+    ).scalar():
+        return
+    if connection.execute(
+        text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.approval_requests"}
+    ).scalar():
+        connection.execute(text(f'REVOKE ALL ON "{SCHEMA}"."approval_requests" FROM "{reader}"'))
+        connection.execute(
+            text(
+                f"GRANT SELECT (organization_id, id, request_type, status, decided_at, "
+                f'application_state) ON "{SCHEMA}"."approval_requests" TO "{reader}"'
+            )
+        )
+    connection.commit()
+
+
 def include_object(obj, name, type_, reflected, compare_to) -> bool:  # type: ignore[no-untyped-def]
     """Manage only this service's own schema.
 
@@ -60,6 +107,7 @@ def do_run_migrations(connection: Connection) -> None:
     # created. Doing it here rather than as a per-service step means a new service cannot ship
     # without them -- which is exactly what happened the first time this was left out.
     apply_schema_grants(connection, SCHEMA, cfg.db_app_role, outbox_role=cfg.db_outbox_role)
+    grant_unapplied_alarm_reader(connection)
 
 
 async def run_async_migrations() -> None:

@@ -21,7 +21,11 @@ import { AuthProvider } from "./auth/AuthProvider";
 import { RequireAuth } from "./auth/RequireAuth";
 import { DashboardPage } from "./routes/Dashboard";
 import { EmployeesPage } from "./routes/Employees";
+import { EmployeeDetailPage } from "./routes/EmployeeDetail";
 import { AttendancePage } from "./routes/Attendance";
+import { ApprovalsPage } from "./routes/Approvals";
+import { RequestDetailPage } from "./routes/RequestDetail";
+import { MyRequestsPage } from "./routes/MyRequests";
 import { LoginPage } from "./routes/Login";
 import { ComingSoonPage } from "./routes/ComingSoon";
 
@@ -45,7 +49,11 @@ const router = createBrowserRouter([
         children: [
           { index: true, element: <DashboardPage /> },
           { path: "employees", element: <EmployeesPage /> },
+          { path: "employees/:employeeId", element: <EmployeeDetailPage /> },
           { path: "attendance", element: <AttendancePage /> },
+          { path: "approvals", element: <ApprovalsPage /> },
+          { path: "approvals/mine", element: <MyRequestsPage /> },
+          { path: "approvals/requests/:requestId", element: <RequestDetailPage /> },
           {
             path: "notifications",
             element: (

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 
 #: The number of rungs *above the requester* the walk (and employee's own cycle check, data
 #: model §4.3) will accept — a 32-rung proposed chain is accepted, a 33-rung one refused, on both
@@ -83,3 +84,70 @@ def skip_flags(rungs: list[Rung], requester_id: uuid.UUID) -> list[tuple[Rung, b
         if not is_exited:
             picked = True
     return out
+
+
+# --------------------------------------------------------------------- routing (slice 2)
+
+
+def delegation_is_active(
+    *, revoked_at: datetime | None, starts_at: datetime, ends_at: datetime, at: datetime
+) -> bool:
+    """A delegation is active at instant `t` when `revoked_at IS NULL AND starts_at <= t <
+    ends_at` (ADR-0006 §5) — the half-open window `ex_delegations_no_overlap` also uses, so a
+    delegation that has just ended cannot overlap the one starting in its place. Shared by
+    `app/services.py` (applying a delegation when a step opens) and the eligibility check
+    (deciding whether a delegate may still act), so the two never drift on what "active" means.
+    """
+    return revoked_at is None and starts_at <= at < ends_at
+
+
+#: `inbox_reason` values (screens §2.3). `escalated_to_me`/`escalated_away` are declared for
+#: completeness of the vocabulary but cannot be produced before slice 4 — see
+#: `app/selectors.py`'s `_INBOX_PAGE_SQL` docstring for why.
+INBOX_REASON_ASSIGNED = "assigned"
+INBOX_REASON_DELEGATED_TO_ME = "delegated_to_me"
+INBOX_REASON_ESCALATED_TO_ME = "escalated_to_me"
+INBOX_REASON_DELEGATED_AWAY = "delegated_away"
+INBOX_REASON_ESCALATED_AWAY = "escalated_away"
+INBOX_REASON_UNASSIGNED = "unassigned"
+
+
+@dataclass(frozen=True, slots=True)
+class InboxReason:
+    reason: str
+    from_employee_id: uuid.UUID | None
+
+
+def inbox_reason_for(
+    *,
+    caller_id: uuid.UUID,
+    approver_employee_id: uuid.UUID | None,
+    acting_for_employee_id: uuid.UUID | None,
+    step_reason: str,
+) -> InboxReason:
+    """Why this request is in the caller's inbox (ADR-0006 §6, screens §2.3), derived from the
+    request's one open step. Reading the open step's own fields is sufficient in slices 2-3: see
+    `_INBOX_PAGE_SQL`'s docstring for why a historical step is never needed there.
+
+    An unassigned step, and an assigned step whose approver has since exited (the ORG "abandoned"
+    widening, ADR-0006 §6 route c), both render as `unassigned` — the screens specification
+    defines no separate chip for the second case, and both describe the same fact to an ORG
+    decider: nobody real is going to answer this without intervention.
+    """
+    if approver_employee_id is None:
+        return InboxReason(INBOX_REASON_UNASSIGNED, None)
+    if approver_employee_id == caller_id:
+        if acting_for_employee_id is not None:
+            return InboxReason(INBOX_REASON_DELEGATED_TO_ME, acting_for_employee_id)
+        if step_reason == "escalated":
+            # Unreachable in slices 2-3 (nothing escalates yet); kept so the vocabulary is
+            # complete and slice 4 only has to supply the "from" lookup, not this branch.
+            return InboxReason(INBOX_REASON_ESCALATED_TO_ME, None)
+        return InboxReason(INBOX_REASON_ASSIGNED, None)
+    if acting_for_employee_id == caller_id:
+        if step_reason == "escalated":
+            return InboxReason(INBOX_REASON_ESCALATED_AWAY, approver_employee_id)
+        return InboxReason(INBOX_REASON_DELEGATED_AWAY, approver_employee_id)
+    # Route (c), abandoned: the caller is neither the approver nor the represented original, so
+    # this row can only have matched through the ORG "unassigned or abandoned" branch.
+    return InboxReason(INBOX_REASON_UNASSIGNED, None)

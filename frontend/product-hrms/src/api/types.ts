@@ -2,9 +2,13 @@
  * Wire types for the HRMS product.
  *
  * `EmployeeOut` and its enums mirror `services/employee/app/schemas.py` field-for-field, so a
- * generated client can drop in later without the UI changing. Attendance has no service on this
- * branch yet, so `AttendanceRecord` is modelled from the plan (check-in/out, status
- * present|late|absent, work_date) and shaped like the responses the service will return.
+ * generated client can drop in later without the UI changing. The attendance and approval shapes
+ * below mirror `services/attendance/app/schemas.py` and `services/approval/app/schemas.py`
+ * field-for-field too — those two services are live as of this slice (ADR-0006 §11, the
+ * approval-engine screens spec). Only the daily punch roster (`AttendanceRecord`, below) stays
+ * representative: the punch-level detail (check-in/out, source, hours) that widget renders has no
+ * live equivalent in `AttendanceOut` yet (see `api/client.ts`), so it is generated, deterministic
+ * sample data, labelled as such wherever it renders.
  */
 
 export type EmploymentType = "full_time" | "part_time" | "contract" | "intern";
@@ -44,16 +48,102 @@ export interface EmployeeOut {
   pii: EmployeePiiMasked | null;
 }
 
-/** Small envelope every list endpoint returns. */
+/** Small envelope a few list endpoints return. */
 export interface Page<T> {
   items: T[];
   total: number;
 }
 
-export type AttendanceStatus = "present" | "late" | "absent";
+/** `platform_core.pagination.Page` — every approval and attendance list carries these. */
+export interface Paged<T> {
+  items: T[];
+  total: number;
+  page: number;
+  size: number;
+  pages: number;
+}
+
+/* ------------------------------------------------------------------ locations, organization */
+
+/** Mirrors account-service `LocationOut` — the zone-lookup source (screens spec §2.1). */
+export interface LocationOut {
+  id: string;
+  name: string;
+  code: string;
+  timezone: string;
+  country: string | null;
+  is_active: boolean;
+}
+
+/** The fields the zone fallback needs from account-service `OrganizationOut`. */
+export interface OrganizationOut {
+  id: string;
+  name: string;
+  timezone: string;
+}
+
+/* ------------------------------------------------------------------ attendance */
+
+/**
+ * The service's four statuses (`services/attendance/app/schemas.py`
+ * `AttendanceStatusName`) — fixed here rather than the SPA's earlier, wrong
+ * `present | late | absent` vocabulary.
+ */
+export type AttendanceStatus = "present" | "half_day" | "absent" | "regularized";
+export type RegularizationStatus = "pending" | "approved" | "rejected" | "failed";
+
+/** Punch sources the sample punch roster renders. Not part of the live attendance contract. */
 export type PunchSource = "web" | "mobile" | "biometric" | "field";
 
-/** A single day's attendance for one employee. Modelled from the plan. */
+/** Mirrors `RegularizationRequestOut` exactly — the latest correction request on a record. */
+export interface RegularizationRequestOut {
+  id: string;
+  attendance_id: string;
+  employee_id: string;
+  requested_status: AttendanceStatus;
+  /** The requester's own words, stored on attendance's own row — the source, not a copy (§4.C,
+   *  §9.1 C3). Rendered on the requester's own row only; on other rows it is a density decision,
+   *  not an access one — the request detail is one activation away. */
+  reason: string;
+  status: RegularizationStatus;
+  approval_request_id: string | null;
+  /** Set once `core.approval.request.opened` has been applied to this row. Null while nothing is
+   *  known yet beyond "pending" — the true "has routing happened at all" signal, independent of
+   *  `approval_request_id`, which a `.decided` event can also set first on replay. */
+  approval_opened_at: string | null;
+  /** The routed approver's employee id from `.opened`, or null. */
+  approver_employee_id: string | null;
+  /** The routed approver's display name from `.opened`, stored verbatim. Null in every case
+   *  `approver_employee_id` is null (routing not yet known, or the step opened unassigned) *and*
+   *  whenever approval published the event without the key at all — the client never invents a
+   *  name it wasn't given. */
+  approver_name: string | null;
+  decided_at: string | null;
+  /** The decider's comment from `.decided`, verbatim, or null if none was given or no decision
+   *  has landed yet. */
+  decision_comment: string | null;
+  /** The decider's display name from `.decided`, stored verbatim. Null when the decider is not in
+   *  approval's hierarchy copy (legitimate for an org-level decider) or the key was absent from
+   *  the payload — never a reason to hide the row either way. */
+  decided_by_name: string | null;
+  failure_reason: string | null;
+  created_at: string;
+  /** `null` until `.opened` has landed (nothing known about routing yet); `true`/`false` after,
+   *  mirroring `approver_employee_id === null` at that point — a step can open with no approver
+   *  at all. Computed by the route at read time, not a stored column. */
+  approver_unassigned: boolean | null;
+  /** The punch's own location, or `null` when the punch carried none (falls back to
+   *  labelled organization time — the same rule approval's responses follow). */
+  location_code: string | null;
+}
+
+export interface RegularizationRequestIn {
+  requested_status: AttendanceStatus;
+  reason: string;
+}
+
+/** A single day's attendance for one employee — the punch roster's row shape.
+ *  Representative data (§ above); the `id` is not a real attendance record id. */
 export interface AttendanceRecord {
   id: string;
   employee_id: string;
@@ -68,6 +158,145 @@ export interface AttendanceRecord {
   worked_minutes: number | null;
   source: PunchSource;
   status: AttendanceStatus;
+  /** The record's own punch location — governs how its instants render (ADR-0000). */
+  location_code: string | null;
+  /** The latest correction request against this record, or `null` if none has ever been raised. */
+  regularization: RegularizationRequestOut | null;
+  /** What the server's own state machine permits from this record's current status. */
+  allowed_transitions: AttendanceStatus[];
+}
+
+/* ------------------------------------------------------------------ approval */
+
+export type InboxReason =
+  | "assigned"
+  | "delegated_to_me"
+  | "escalated_to_me"
+  | "delegated_away"
+  | "escalated_away"
+  | "unassigned";
+
+export type RequestStatus = "pending" | "approved" | "rejected";
+export type ApplicationState = "applied" | "failed" | null;
+
+/** `summary` for `request_type = "hrms.time.regularization"` — structured facts only (§2.9). */
+export interface RegularizationSummary {
+  date: string;
+  from: AttendanceStatus;
+  to: AttendanceStatus;
+}
+
+/** Mirrors `InboxItemOut` — one `GET /approvals/inbox` row. */
+export interface InboxItemOut {
+  id: string;
+  request_type: string;
+  source_ref: string;
+  summary: RegularizationSummary;
+  request_note: string | null;
+  opened_at: string;
+  requester_employee_id: string;
+  requester_name: string | null;
+  requester_employee_no: string | null;
+  requester_location_code: string | null;
+  inbox_reason: InboxReason;
+  from_name: string | null;
+}
+
+/** Mirrors `RequestListItemOut` — one `GET /approvals/requests` row. */
+export interface RequestListItemOut {
+  id: string;
+  request_type: string;
+  source_ref: string;
+  summary: RegularizationSummary;
+  status: RequestStatus;
+  opened_at: string;
+  requester_employee_id: string;
+  requester_name: string | null;
+  requester_employee_no: string | null;
+  requester_location_code: string | null;
+  approver_employee_id: string | null;
+  approver_name: string | null;
+  decided_by_employee_id: string | null;
+  decided_by_name: string | null;
+  decided_at: string | null;
+  comment: string | null;
+  application_state: ApplicationState;
+  application_failure_reason: string | null;
+}
+
+/** Mirrors `StepOut` — one row of a request's append-only history. */
+export interface StepOut {
+  level: number;
+  reason: string;
+  outcome: string;
+  approver_employee_id: string | null;
+  approver_name: string | null;
+  acting_for_employee_id: string | null;
+  acting_for_name: string | null;
+  opened_at: string;
+  closed_at: string | null;
+  /** Always `null` in slices 2–3 (§2.11) — no SLA clock exists yet. Never computed client-side. */
+  due_at: string | null;
+}
+
+/** Mirrors `RequestDetailOut` — `GET /approvals/requests/{id}` and the decision response. */
+export interface RequestDetailOut {
+  id: string;
+  request_type: string;
+  source_ref: string;
+  summary: RegularizationSummary;
+  request_note: string | null;
+  status: RequestStatus;
+  opened_at: string;
+  requester_employee_id: string;
+  requester_name: string | null;
+  requester_employee_no: string | null;
+  requester_location_code: string | null;
+  approver_employee_id: string | null;
+  approver_name: string | null;
+  acting_for_employee_id: string | null;
+  acting_for_name: string | null;
+  inbox_reason: InboxReason | null;
+  from_name: string | null;
+  decided_by_employee_id: string | null;
+  decided_by_name: string | null;
+  decided_at: string | null;
+  comment: string | null;
+  application_state: ApplicationState;
+  application_failure_reason: string | null;
+  applied_at: string | null;
+  steps: StepOut[];
+}
+
+export interface DecisionIn {
+  outcome: "approve" | "reject";
+  comment?: string | null;
+}
+
+/** Mirrors `ChainRungOut`. */
+export interface ChainRungOut {
+  level: number;
+  employee_id: string | null;
+  display_name: string | null;
+  employee_no: string | null;
+  skipped: boolean;
+  is_fallback: boolean;
+}
+
+/** Mirrors `DottedLineManagerOut`. */
+export interface DottedLineManagerOut {
+  employee_id: string;
+  display_name: string | null;
+  employee_no: string | null;
+}
+
+/** Mirrors `ApprovalChainOut`. */
+export interface ApprovalChainOut {
+  employee_id: string;
+  location_code: string | null;
+  chain: ChainRungOut[];
+  dotted_line_manager: DottedLineManagerOut | null;
+  unresolved: "cycle" | "depth_exceeded" | null;
 }
 
 /* --------------------------- dashboard rollups --------------------------- */

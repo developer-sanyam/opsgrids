@@ -3,9 +3,20 @@ import { useCallback, useMemo, useState } from "react";
 import { ATTENDANCE_IS_SAMPLE, listAttendance } from "@/api/client";
 import type { AttendanceRecord, AttendanceStatus } from "@/api/types";
 import { departmentLabel } from "@/data/departments";
+import { getMyEmployeeId } from "@/lib/subject";
+import { useZoneLookup } from "@/lib/zone";
 import { useAsync } from "@opsgrids/client";
-import { CalendarCheckIcon, ClockIcon, MapPinIcon, cn } from "@opsgrids/ui";
-import { formatMinutes, formatTime } from "@/lib/format";
+import {
+  Announcer,
+  CalendarCheckIcon,
+  ClockIcon,
+  MapPinIcon,
+  cn,
+  formatInstant,
+  useAnnounce,
+} from "@opsgrids/ui";
+import type { ZoneLookup } from "@opsgrids/ui";
+import { formatMinutes } from "@/lib/format";
 import {
   AttendancePill,
   Avatar,
@@ -19,6 +30,8 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
+import { CorrectionCell } from "@/ui/CorrectionCell";
+import { RequestCorrectionDialog } from "@/ui/RequestCorrectionDialog";
 import { SAMPLE_DATA } from "@/ui/sampleCopy";
 
 const TODAY_ISO = "2026-08-24";
@@ -51,92 +64,121 @@ const SOURCE_LABEL: Record<AttendanceRecord["source"], string> = {
   field: "Field",
 };
 
-const columns: Column<AttendanceRecord>[] = [
-  {
-    key: "name",
-    header: "Employee",
-    render: (r) => (
-      <div className="flex items-center gap-3">
-        <Avatar name={r.full_name} size="sm" />
-        <div className="flex flex-col leading-tight">
-          <span className="font-semibold text-ink">{r.full_name}</span>
-          <span className="text-xs text-muted">{departmentLabel(r)}</span>
-        </div>
-      </div>
-    ),
-  },
-  {
-    key: "check_in",
-    header: "Check-in",
-    render: (r) => <span className="tnum text-ink-soft">{formatTime(r.check_in)}</span>,
-  },
-  {
-    key: "check_out",
-    header: "Check-out",
-    render: (r) => <span className="tnum text-ink-soft">{formatTime(r.check_out)}</span>,
-  },
-  {
-    key: "hours",
-    header: "Hours",
-    cellClassName: "hidden sm:table-cell",
-    headerClassName: "hidden sm:table-cell",
-    render: (r) => <span className="tnum text-ink-soft">{formatMinutes(r.worked_minutes)}</span>,
-  },
-  {
-    key: "source",
-    header: "Source",
-    cellClassName: "hidden md:table-cell",
-    headerClassName: "hidden md:table-cell",
-    render: (r) => <span className="text-muted">{SOURCE_LABEL[r.source]}</span>,
-  },
-  {
-    key: "status",
-    header: "Status",
-    align: "right",
-    render: (r) => <AttendancePill status={r.status} />,
-  },
-];
-
-function SummaryTile({
-  label,
-  count,
-  status,
-}: {
-  label: string;
-  count: number;
-  status: AttendanceStatus;
-}) {
-  const tone =
-    status === "present"
-      ? "text-present"
-      : status === "late"
-        ? "text-late"
-        : "text-danger";
-  return (
-    <Card className="p-4 flex items-center justify-between">
-      <div className="flex flex-col">
-        <span className={cn("text-2xl font-extrabold tnum", tone)}>{count}</span>
-        <span className="text-xs font-medium text-muted">{label}</span>
-      </div>
-      <span className={cn("size-2.5 rounded-full", `bg-current ${tone}`)} aria-hidden />
-    </Card>
-  );
+/** A punch instant, in the record's own location zone (ADR-0000, C9) — "—" for a missing punch,
+ *  a plain ellipsis while the zone lookup is still loading (never the browser's zone as a
+ *  stand-in). */
+function punchTime(
+  iso: string | null,
+  record: AttendanceRecord,
+  zoneLookup: ZoneLookup | null,
+): string {
+  if (!iso) return "—";
+  if (!zoneLookup) return "…";
+  return formatInstant(iso, record.location_code, zoneLookup, "time").text;
 }
 
-export function AttendancePage() {
+function AttendanceTable() {
   const [date, setDate] = useState(TODAY_ISO);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [correctionRecord, setCorrectionRecord] = useState<AttendanceRecord | null>(null);
   const week = useMemo(() => weekOf(date), [date]);
+  const zoneLookup = useZoneLookup();
+  const announce = useAnnounce();
+  const myEmployeeId = getMyEmployeeId();
 
   const loader = useCallback(() => listAttendance(date), [date]);
-  const attendance = useAsync(loader, [date]);
+  const attendance = useAsync(loader, [date, refreshKey]);
 
   const records = attendance.status === "success" ? attendance.data : [];
   const present = records.filter((r) => r.status === "present").length;
-  const late = records.filter((r) => r.status === "late").length;
+  const halfDay = records.filter((r) => r.status === "half_day").length;
   const absent = records.filter((r) => r.status === "absent").length;
   // Actual field check-ins only — a field-mode worker who is absent has no punch to show.
   const fieldPunches = records.filter(
     (r) => r.source === "field" && r.check_in !== null,
+  );
+
+  const columns: Column<AttendanceRecord>[] = useMemo(
+    () => [
+      {
+        key: "name",
+        header: "Employee",
+        render: (r) => (
+          <div className="flex items-center gap-3">
+            <Avatar name={r.full_name} size="sm" />
+            <div className="flex flex-col leading-tight">
+              <span className="font-semibold text-ink">{r.full_name}</span>
+              <span className="text-xs text-muted">{departmentLabel(r)}</span>
+            </div>
+          </div>
+        ),
+      },
+      {
+        key: "check_in",
+        header: "Check-in",
+        render: (r) => (
+          <span className="tnum text-ink-soft">{punchTime(r.check_in, r, zoneLookup)}</span>
+        ),
+      },
+      {
+        key: "check_out",
+        header: "Check-out",
+        render: (r) => (
+          <span className="tnum text-ink-soft">{punchTime(r.check_out, r, zoneLookup)}</span>
+        ),
+      },
+      {
+        key: "hours",
+        header: "Hours",
+        cellClassName: "hidden sm:table-cell",
+        headerClassName: "hidden sm:table-cell",
+        render: (r) => <span className="tnum text-ink-soft">{formatMinutes(r.worked_minutes)}</span>,
+      },
+      {
+        key: "source",
+        header: "Source",
+        cellClassName: "hidden md:table-cell",
+        headerClassName: "hidden md:table-cell",
+        render: (r) => <span className="text-muted">{SOURCE_LABEL[r.source]}</span>,
+      },
+      {
+        key: "status",
+        header: "Status",
+        align: "right",
+        render: (r) => (
+          <div className="flex flex-col items-end gap-1.5">
+            <AttendancePill status={r.status} />
+            {/* §4.C item 3: below `md` the Correction column has nowhere to render, so its
+             *  content collapses into a line under the status pill instead of disappearing —
+             *  every correction state, including "Request a correction", must survive at 360px. */}
+            <div className="md:hidden">
+              <CorrectionCell
+                record={r}
+                isOwn={r.employee_id === myEmployeeId}
+                zoneLookup={zoneLookup}
+                onRequestCorrection={setCorrectionRecord}
+              />
+            </div>
+          </div>
+        ),
+      },
+      {
+        key: "correction",
+        header: "Correction",
+        align: "right",
+        cellClassName: "hidden md:table-cell",
+        headerClassName: "hidden md:table-cell",
+        render: (r) => (
+          <CorrectionCell
+            record={r}
+            isOwn={r.employee_id === myEmployeeId}
+            zoneLookup={zoneLookup}
+            onRequestCorrection={setCorrectionRecord}
+          />
+        ),
+      },
+    ],
+    [myEmployeeId, zoneLookup],
   );
 
   return (
@@ -189,8 +231,8 @@ export function AttendancePage() {
       <section aria-label="Attendance summary" className="grid grid-cols-3 gap-4">
         {attendance.status === "success" ? (
           <>
-            <SummaryTile label="Present" count={present + late} status="present" />
-            <SummaryTile label="Late arrivals" count={late} status="late" />
+            <SummaryTile label="Present" count={present} status="present" />
+            <SummaryTile label="Half day" count={halfDay} status="half_day" />
             <SummaryTile label="Absent" count={absent} status="absent" />
           </>
         ) : (
@@ -215,7 +257,7 @@ export function AttendancePage() {
               </div>
             ) : null}
             {attendance.status === "error" ? (
-              <ErrorState message={attendance.error.message} />
+              <ErrorState message={attendance.error.message} onRetry={() => setRefreshKey((k) => k + 1)} />
             ) : null}
             {attendance.status === "success" ? (
               <DataTable
@@ -256,7 +298,7 @@ export function AttendancePage() {
                       </span>
                       <span className="inline-flex items-center gap-1 text-xs text-muted">
                         <MapPinIcon className="size-3.5" />
-                        Field · {formatTime(r.check_in)}
+                        Field · {punchTime(r.check_in, r, zoneLookup)}
                       </span>
                     </div>
                     <div className="ml-auto">
@@ -278,6 +320,56 @@ export function AttendancePage() {
           </div>
         </Card>
       </div>
+
+      {correctionRecord ? (
+        <RequestCorrectionDialog
+          open={correctionRecord !== null}
+          onClose={() => setCorrectionRecord(null)}
+          record={correctionRecord}
+          zoneLookup={zoneLookup}
+          onSettled={(result) => {
+            setCorrectionRecord(null);
+            setRefreshKey((k) => k + 1);
+            if (result.kind === "gone") {
+              announce("That attendance record isn't available any more.");
+            }
+          }}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function SummaryTile({
+  label,
+  count,
+  status,
+}: {
+  label: string;
+  count: number;
+  status: AttendanceStatus;
+}) {
+  const tone =
+    status === "present"
+      ? "text-present"
+      : status === "half_day"
+        ? "text-late"
+        : "text-danger";
+  return (
+    <Card className="p-4 flex items-center justify-between">
+      <div className="flex flex-col">
+        <span className={cn("text-2xl font-extrabold tnum", tone)}>{count}</span>
+        <span className="text-xs font-medium text-muted">{label}</span>
+      </div>
+      <span className={cn("size-2.5 rounded-full", `bg-current ${tone}`)} aria-hidden />
+    </Card>
+  );
+}
+
+export function AttendancePage() {
+  return (
+    <Announcer>
+      <AttendanceTable />
+    </Announcer>
   );
 }

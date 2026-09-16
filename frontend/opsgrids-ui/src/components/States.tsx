@@ -37,25 +37,59 @@ export function EmptyState({ icon, title, description, action }: EmptyStateProps
   );
 }
 
+export type ErrorStateTone = "danger" | "warning" | "neutral";
+
+const ERROR_TONE: Record<ErrorStateTone, string> = {
+  danger: "text-negative",
+  warning: "text-late",
+  neutral: "text-ink",
+};
+
+interface ErrorStateProps {
+  message: string;
+  /**
+   * The heading. Defaults to "Something went wrong", which is right for a 5xx and wrong for
+   * everything else — a 403, a 404 and an offline state are different facts and say so
+   * ("You can't do this", "That request isn't available to you", "You're offline").
+   */
+  title?: string;
+  /**
+   * `danger` for a failure, `warning` for a state that is not the caller's fault and not
+   * broken, `neutral` for one that is simply unavailable. Colour never carries the meaning on
+   * its own — the heading does.
+   */
+  tone?: ErrorStateTone;
+  /**
+   * The problem document's `request_id`, rendered as `Reference: 7f3c1a2e`. Support asks for it;
+   * a user should never have to find it.
+   */
+  reference?: string;
+  onRetry?: () => void;
+  /** An action other than retry — "Back to approvals" on a 404, where retrying is pointless. */
+  action?: ReactNode;
+}
+
 /**
- * A recoverable error, with what went wrong and a way to retry. `role="alert"` so it is announced
- * when it replaces a loading state without a click.
+ * A recoverable error, with what went wrong and a way out of it. `role="alert"` so it is
+ * announced when it replaces a loading state without a click.
  */
 export function ErrorState({
   message,
+  title = "Something went wrong",
+  tone = "danger",
+  reference,
   onRetry,
-}: {
-  message: string;
-  onRetry?: () => void;
-}) {
+  action,
+}: ErrorStateProps) {
   return (
     <div
       className="flex flex-col items-center justify-center gap-3 py-12 text-center"
       role="alert"
     >
       <div className="flex flex-col gap-1 max-w-sm">
-        <p className="text-base font-bold text-negative">Something went wrong</p>
+        <p className={cn("text-base font-bold", ERROR_TONE[tone])}>{title}</p>
         <p className="text-sm text-muted">{message}</p>
+        {reference ? <p className="text-xs text-faint tnum">Reference: {reference}</p> : null}
       </div>
       {onRetry ? (
         <button
@@ -66,6 +100,7 @@ export function ErrorState({
           Try again
         </button>
       ) : null}
+      {action}
     </div>
   );
 }

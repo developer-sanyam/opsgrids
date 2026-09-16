@@ -44,8 +44,10 @@ from platform_core.db import TENANT_GUC, get_session
 from tests.helpers import FakeRedis, ctx_for
 
 #: Every table here is tenant-scoped or global-and-empty, so all are safe to truncate. CASCADE
-#: because `attendance_records` carries a foreign key into `shifts`.
+#: because `attendance_records` carries a foreign key into `shifts`, and `regularization_requests`
+#: carries one into `attendance_records`.
 TENANT_TABLES = (
+    "regularization_requests",
     "attendance_records",
     "shifts",
     "geofences",
