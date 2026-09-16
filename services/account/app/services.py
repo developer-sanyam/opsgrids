@@ -18,7 +18,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete
+from sqlalchemy import delete, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -453,6 +454,118 @@ async def add_member(
     return membership
 
 
+#: The partial unique index on `(organization_id, employee_id)` — one employee, one
+#: membership, per organization (`models.Membership.__table_args__`). Named here because
+#: ADR-0008 §5 requires the *specific* constraint to be recognised rather than every
+#: integrity failure being reported as this one business rule.
+EMPLOYEE_LINK_CONSTRAINT = "uq_memberships_org_employee"
+
+
+def _integrity_error_constraint(exc: IntegrityError) -> str | None:
+    """The name of the constraint that actually fired, when the driver surfaces one — or
+    `None` when it does not (a constraint with no name, or an `IntegrityError` that is not a
+    constraint violation at all).
+
+    asyncpg's own exception carries `constraint_name` directly, but SQLAlchemy's asyncpg
+    dialect re-raises it as a driver-shaped exception first
+    (`AsyncAdapt_asyncpg_dbapi.IntegrityError`, raised `from` the original), so the
+    structured attribute survives on `exc.orig.__cause__` rather than on `exc.orig` itself.
+    Both are checked, in that order, so this keeps working if a future SQLAlchemy version
+    stops wrapping. The same helper `approval/app/services.py` uses for its exclusion
+    constraint, for the same reason.
+    """
+    orig = exc.orig
+    name = getattr(orig, "constraint_name", None)
+    if name is not None:
+        return str(name)
+    cause = getattr(orig, "__cause__", None)
+    name = getattr(cause, "constraint_name", None)
+    return str(name) if name is not None else None
+
+
+def _employee_already_linked(
+    employee_id: uuid.UUID, holder_membership_id: uuid.UUID | None
+) -> ConflictProblem:
+    """ADR-0008 §5's 409, naming the membership that holds the link.
+
+    Naming it reveals nothing the caller cannot already list — reaching this code needs
+    `core.identity.membership.write` at ORG — and it is the difference between an error and
+    an instruction: the remedy is to PATCH that membership with `employee_id: null` first.
+    **Nothing is auto-unlinked**; reassigning somebody's identity as a side effect of
+    somebody else's PATCH is not a fix.
+    """
+    return ConflictProblem(
+        "That employee is already linked to another member of this organization",
+        errors=[
+            {
+                "field": "employee_id",
+                "code": "employee_already_linked",
+                "message": (
+                    "That employee record is already linked to another member. Unlink them "
+                    "first (PATCH that member with employee_id: null), then link this one."
+                ),
+                "employee_id": str(employee_id),
+                "membership_id": str(holder_membership_id) if holder_membership_id else None,
+            }
+        ],
+    )
+
+
+async def _write_employee_link(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    membership: Membership,
+    employee_id: uuid.UUID | None,
+) -> None:
+    """Write the link, translating **only** `uq_memberships_org_employee` into a 409.
+
+    The pre-check in `update_member` is what makes the common case legible; this is what
+    makes it correct. Between that read and this write another transaction can link the same
+    employee, and the index is what refuses it — ADR-0008 §5 requires both, and neither alone
+    is sufficient.
+
+    Four details are load-bearing, and the first two were arrived at the hard way:
+
+    * The write is an explicit tenant-scoped `UPDATE` inside a **savepoint**, not an ORM
+      `flush()`. A failed flush marks the enclosing `Session` transaction as rolled back, so
+      nothing may be executed on it afterwards — including the one question this function
+      still has to ask. A statement-level failure inside a savepoint leaves the transaction
+      usable, which is what lets the raced path name the holder instead of shrugging.
+    * The statement names `organization_id` as well as the primary key. Under RLS the policy
+      would refuse another tenant's row anyway; saying it here means the query is correct
+      before the net is, which is the rule for every scoped query in this service.
+    * Anything other than the link constraint **re-raises** and reaches
+      `platform_core.errors`' generic, non-leaking handler. A broad `except IntegrityError`
+      here would report every integrity failure as this one business rule, which for anything
+      else is simply false — the bug the delegation slice shipped and had to fix.
+    * `no_autoflush` keeps the rest of the PATCH's pending attribute changes out of this
+      probe: they are flushed by the caller's commit, and dragging them into a savepoint that
+      exists to test one constraint is how an unrelated failure arrives wearing this one's
+      exception.
+
+    The ORM attribute is set only after the statement succeeds, so an object in the identity
+    map never claims a link the database refused.
+    """
+    stmt = (
+        update(Membership)
+        .where(Membership.id == membership.id, Membership.organization_id == org_id)
+        .values(employee_id=employee_id)
+        .execution_options(synchronize_session=False)
+    )
+    try:
+        with session.no_autoflush:
+            async with session.begin_nested():
+                await session.execute(stmt)
+    except IntegrityError as exc:
+        if _integrity_error_constraint(exc) != EMPLOYEE_LINK_CONSTRAINT:
+            raise
+        assert employee_id is not None  # clearing a link cannot violate this index
+        holder = await selectors.get_membership_by_employee(session, org_id, employee_id)
+        holder_id = holder.id if holder is not None and holder.id != membership.id else None
+        raise _employee_already_linked(employee_id, holder_id) from exc
+    membership.employee_id = employee_id
+
+
 async def update_member(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -461,7 +574,34 @@ async def update_member(
     *,
     request: Request | None = None,
 ) -> Membership:
+    """Change one membership's facts, including **who that principal is** (ADR-0008 §2).
+
+    `employee_id` is handled explicitly and popped out of `changes` before the blind
+    `setattr` loop, exactly as `location_codes` already is. Letting the loop reach it would
+    write the sole origin of the `sref` claim with no conflict handling and no old value in
+    the audit row — which is how a 23505 becomes a 500 and how an identity reassignment
+    leaves no trail.
+    """
     changes = payload.model_dump(exclude_unset=True)
+    # Captured before anything is popped: the event names every field the caller actually
+    # sent, including the ones handled explicitly below.
+    changed_fields = sorted(changes)
+
+    # --- the identity link (ADR-0008) -------------------------------------------------
+    # Popped first so the `setattr` loop below cannot reach it under any later edit.
+    employee_id_requested = "employee_id" in changes
+    new_employee_id: uuid.UUID | None = changes.pop("employee_id", None)
+    previous_employee_id = membership.employee_id
+    employee_link_changes = employee_id_requested and new_employee_id != previous_employee_id
+
+    if employee_link_changes and new_employee_id is not None:
+        # Opportunistic, not the enforcement (`_write_employee_link` is): reads before the
+        # write so the ordinary, non-racing case gets a 409 that names the holder.
+        holder = await selectors.get_membership_by_employee(
+            session, ctx.organization_id, new_employee_id
+        )
+        if holder is not None and holder.id != membership.id:
+            raise _employee_already_linked(new_employee_id, holder.id)
 
     if "manager_membership_id" in changes:
         manager_id = changes["manager_membership_id"]
@@ -482,6 +622,9 @@ async def update_member(
         "manager_membership_id": str(membership.manager_membership_id or ""),
         "location_codes": membership.location_codes,
         "job_title": membership.job_title,
+        # ADR-0008 §10: an identity reassignment that is not in the audit trail is not
+        # defensible. One action code, so a member's whole history reads in one vocabulary.
+        "employee_id": str(previous_employee_id or ""),
     }
 
     if "location_codes" in changes and changes["location_codes"] is not None:
@@ -489,6 +632,9 @@ async def update_member(
     changes.pop("location_codes", None)
     for attr, value in changes.items():
         setattr(membership, attr, value)
+
+    if employee_link_changes:
+        await _write_employee_link(session, ctx.organization_id, membership, new_employee_id)
 
     record_audit(
         session,
@@ -504,6 +650,7 @@ async def update_member(
             "manager_membership_id": str(membership.manager_membership_id or ""),
             "location_codes": membership.location_codes,
             "job_title": membership.job_title,
+            "employee_id": str(membership.employee_id or ""),
         },
         request=request,
     )
@@ -517,10 +664,23 @@ async def update_member(
         payload={
             "organization_id": str(ctx.organization_id),
             "membership_id": str(membership.id),
-            "changed": sorted(changes),
+            "changed": changed_fields,
         },
         actor=_actor(ctx),
     )
+    # ADR-0008 §7's asymmetry, and it is deliberate. `pv` is bumped **per organization**, so
+    # every bump is a tenant-wide token-refresh burst:
+    #
+    #   null -> an employee id   no bump. The routine onboarding path. The token catches up
+    #                            at the next refresh, within one 900 s access-token life —
+    #                            ADR-0000 §4's "tolerable for a grant". Bumping here would
+    #                            fire that burst several times a day in a 4,000-person tenant.
+    #   a link cleared/replaced  bump. This is the revocation shape — the operation that
+    #                            *stops* somebody acting as an employee, most importantly to
+    #                            correct a wrong link — and fifteen more minutes of the wrong
+    #                            identity after the fix is not an acceptable answer.
+    employee_link_revoked = employee_link_changes and previous_employee_id is not None
+
     # Locations, department and reporting line all feed scope resolution, and `loc` is
     # carried in the token — so a move between sites has to invalidate it too. A change
     # to job title or display name does not.
@@ -528,6 +688,7 @@ async def update_member(
         before["location_codes"] != membership.location_codes
         or before["org_unit_id"] != str(membership.org_unit_id or "")
         or before["manager_membership_id"] != str(membership.manager_membership_id or "")
+        or employee_link_revoked
     ):
         await _invalidate_grants(ctx.organization_id)
     return membership
@@ -1237,3 +1398,185 @@ async def install_product_registration(
         "grants_added": len(diff.grants_added),
         "scopes_widened": len(diff.scopes_widened),
     }
+
+
+# ------------------------------------------------------- employee links (ADR-0008 §8)
+
+
+@dataclass(frozen=True, slots=True)
+class EmployeeLink:
+    """One row of employee-service's `GET /internal/v1/employee-links`.
+
+    Two UUIDs and nothing else — no name, no employee number, no PII (ADR-0008 §8).
+    `membership_id` is null for an employee nobody ever pointed at a membership; those rows
+    still matter, because they are what makes an `employee_id` account holds *recognised*.
+    """
+
+    employee_id: uuid.UUID
+    membership_id: uuid.UUID | None
+
+
+@dataclass(frozen=True, slots=True)
+class LinkConflict:
+    """A disagreement the reconcile reports and deliberately does not resolve.
+
+    `kind` is `"employee_taken"` (employee says E↔M, but a different membership already
+    holds E) or `"disagree"` (employee says E↔M, but M already holds a different employee).
+    """
+
+    kind: str
+    employee_id: uuid.UUID
+    membership_id: uuid.UUID
+    held_by_membership_id: uuid.UUID | None
+
+
+@dataclass(slots=True)
+class LinkReconcileSummary:
+    """The per-organization report line ADR-0008 §8 names."""
+
+    organization_id: uuid.UUID
+    links_written: int
+    conflicts: list[LinkConflict]
+    unrecognised_employee_ids: list[uuid.UUID]
+    unrecognised_membership_ids: list[uuid.UUID]
+    memberships_unlinked: int
+    changed: bool
+
+    @property
+    def conflicts_employee_taken(self) -> int:
+        return sum(1 for c in self.conflicts if c.kind == "employee_taken")
+
+    @property
+    def conflicts_disagree(self) -> int:
+        return sum(1 for c in self.conflicts if c.kind == "disagree")
+
+
+async def reconcile_employee_links(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    links: list[EmployeeLink],
+    *,
+    acting_as: str,
+    dry_run: bool = False,
+) -> LinkReconcileSummary:
+    """Fill and verify one organization's employee links — what
+    `tools/reconcile_membership_links.py` drives, one call per organization, inside that
+    organization's own transaction (ADR-0008 §8).
+
+    `links` is employee-service's full answer for this organization: **every** employee with
+    its `membership_id`, null or not. One page set serves both halves of the job.
+
+    **Fill.** For every row whose `membership_id` is not null, set that membership's
+    `employee_id`. Three rules, none of them negotiable:
+
+    * **It only ever fills a null.** A membership account has already linked is never
+      overwritten — not to a different value, not to the same one. That is what makes this
+      re-runnable, safe to run beside live traffic, safe to interrupt, and what removes any
+      need for a version gate (ADR-0008 §6): the interactive path is always the winner.
+    * **Conflicts are reported, never resolved.** An employee already held by a different
+      membership, or a membership already holding a different employee, is counted and
+      returned. An automatic fix to a disagreement about who somebody *is* is not a fix.
+    * **`pv` is never bumped.** Every write here is grant-shaped — a null becoming a value —
+      and ADR-0008 §7 says grant-shaped changes wait for the token. It also keeps a fleet run
+      from being a fleet-wide refresh storm. There is deliberately no `_invalidate_grants`
+      call anywhere in this function.
+
+    **Verify.** Every `employee_id` account holds that employee-service does not recognise is
+    returned in `unrecognised_employee_ids`. That is ADR-0008 §4's mistyped UUID — a
+    principal whose OWN scope silently resolves to nothing — and this pass is the only
+    mechanism in the platform that finds it.
+
+    An empty diff writes no audit row: "nothing happened" is not an event. A non-empty one
+    writes exactly one organization-level row in this same transaction, carrying the
+    counters. No outbox event: nothing consumes one, and a contract with no consumer is a
+    compatibility obligation bought for nothing (ADR-0008 §3).
+    """
+    memberships = await selectors.list_memberships(session, org_id)
+    by_id = {m.id: m for m in memberships}
+    # Who currently holds each employee id, maintained as rows are filled so two employee
+    # rows naming the same employee inside one run conflict rather than racing the index.
+    holder_by_employee: dict[uuid.UUID, uuid.UUID] = {
+        m.employee_id: m.id for m in memberships if m.employee_id is not None
+    }
+    known_employee_ids = {link.employee_id for link in links}
+
+    links_written = 0
+    conflicts: list[LinkConflict] = []
+    unrecognised_membership_ids: list[uuid.UUID] = []
+
+    for link in links:
+        if link.membership_id is None:
+            continue
+        membership = by_id.get(link.membership_id)
+        if membership is None or membership.status == "removed":
+            # A membership id account does not have, or one that has been revoked. Filling a
+            # removed row would block the rehire's new membership behind ADR-0008 §5's
+            # conflict for no gain, so this is reported rather than written.
+            unrecognised_membership_ids.append(link.membership_id)
+            continue
+        if membership.employee_id == link.employee_id:
+            continue  # already true; the verify half below still counts it as recognised
+        if membership.employee_id is not None:
+            conflicts.append(
+                LinkConflict(
+                    kind="disagree",
+                    employee_id=link.employee_id,
+                    membership_id=membership.id,
+                    held_by_membership_id=None,
+                )
+            )
+            continue
+        holder = holder_by_employee.get(link.employee_id)
+        if holder is not None:
+            conflicts.append(
+                LinkConflict(
+                    kind="employee_taken",
+                    employee_id=link.employee_id,
+                    membership_id=membership.id,
+                    held_by_membership_id=holder,
+                )
+            )
+            continue
+        membership.employee_id = link.employee_id
+        holder_by_employee[link.employee_id] = membership.id
+        links_written += 1
+
+    unrecognised_employee_ids = sorted(
+        (e for e in holder_by_employee if e not in known_employee_ids), key=str
+    )
+
+    # Flushed before the count so it sees this run's writes; the caller owns the commit, and
+    # under `--dry-run` the caller rolls the whole transaction back regardless.
+    await session.flush()
+    memberships_unlinked = await selectors.count_memberships_unlinked(session, org_id)
+
+    changed = links_written > 0
+    if changed and not dry_run:
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=org_id,
+            actor_id=None,
+            acting_as=acting_as,
+            action="membership.links_reconciled",
+            entity="organization",
+            entity_id=org_id,
+            after={
+                "links_written": links_written,
+                "conflicts_employee_taken": sum(1 for c in conflicts if c.kind == "employee_taken"),
+                "conflicts_disagree": sum(1 for c in conflicts if c.kind == "disagree"),
+                "unrecognised_employee_ids": [str(e) for e in unrecognised_employee_ids],
+                "unrecognised_membership_ids": [str(m) for m in unrecognised_membership_ids],
+                "memberships_unlinked": memberships_unlinked,
+            },
+        )
+
+    return LinkReconcileSummary(
+        organization_id=org_id,
+        links_written=links_written,
+        conflicts=conflicts,
+        unrecognised_employee_ids=unrecognised_employee_ids,
+        unrecognised_membership_ids=unrecognised_membership_ids,
+        memberships_unlinked=memberships_unlinked,
+        changed=changed,
+    )

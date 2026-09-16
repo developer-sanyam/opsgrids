@@ -15,7 +15,9 @@ catch, and the kind every service's own unit suite is structurally unable to see
     4  the owner activates HRMS                      product → relay → account, two services
     5  five colleagues join by invitation            no token, over HTTP, as a stranger would
     6  HR onboards them into a reporting line        employee-service, a real three-deep chain
-    7  their tokens carry a subject reference        ← the membership↔employee link (see below)
+    6a employee-service refuses to own the link      ADR-0008 §3, the loud half of the freeze
+    7  the owner links them, and `sref` lands        PATCH /api/v1/members, ADR-0008 §2
+    7a a second claim on one employee is a 409       ADR-0008 §5, naming the holder
     8  the hierarchy reaches approval                employee's events → approval's copy
     9  HR sets the SLA policy, a member may not      slice 4's policy admin, both directions
     10 a correction routes to the line manager       attendance → approval, and back again
@@ -28,15 +30,29 @@ catch, and the kind every service's own unit suite is structurally unable to see
 Steps run in file order and share state through the `wave0` fixture, because that is what a
 journey is: step 13 cannot mean anything if step 11 did not happen.
 
-**Two things this journey does not prove. Both are stated rather than papered over, because a
-step that reads as coverage and is not is worse than an absent one.**
+**On the membership → employee link, which this journey used to fake.** `sref` — the claim every
+OWN-scoped check in the estate resolves against — is minted from `account.memberships.employee_id`,
+and when this file was written **nothing in `services/` could write that column**. Step 7 completed
+it with a raw `UPDATE` over the admin DSN and said so. That gap is closed: ADR-0008 makes account
+the sole writer, through `PATCH /api/v1/members/{membership_id}` on the `membership.write:ORG`
+guard that already existed. Step 7 now uses it, with the owner's real token through the gateway,
+and the raw-SQL seeder is gone — so the platform's only writer of the estate's identity link has
+an end-to-end test, which is precisely the shape of gap that let the original defect survive.
 
-*The membership → employee link has no writer.* `account.memberships.employee_id` is what
-auth-service turns into the `sref` claim that every OWN-scoped check in the estate resolves
-against, and **nothing in `services/` writes it**. Step 7 completes it through a seeder
-(`_link_employee.py`, which records the search), exactly as `_seed_account.py` already completes
-`is_owner`. Everything that link makes possible is then proven over HTTP: the member signs in
-again, their token carries `sref`, and they punch, request, delegate and decide as themselves.
+**The `pv` asymmetry decides the ordering of step 7, and it is not incidental.** ADR-0008 §7:
+clearing or replacing a link bumps the organization's permission version, but **setting a first
+one does not** — `pv` is per-organization, so bumping on every new hire would fire a tenant-wide
+token-refresh burst. `Session` re-mints only when the platform answers 401 `token-stale`, and a
+first link produces no staleness signal at all, so nothing would ever tell it to. A cast member who
+signed in *before* being linked would therefore hold a perfectly valid token with no `sref` for up
+to the 900-second access-token lifetime, and every OWN-scoped step below would fail for a reason
+that has nothing to do with the code under test. The journey handles that by ordering rather than
+by waiting: **nobody in the cast signs in until after they are linked**, and step 7 asserts the
+absence of the bump (`owner.refreshes` is unchanged across five links) so the asymmetry is a fact
+this file pins rather than a rule it happens to obey.
+
+**One thing this journey does not prove. It is stated rather than papered over, because a step
+that reads as coverage and is not is worse than an absent one.**
 
 *The escalation ladder cannot be driven from outside.* Step 12 proves the SLA clock is armed off
 the policy, that the sweep's cross-tenant discovery finds the step, and that its re-check under
@@ -211,6 +227,9 @@ class Session:
 
     def put(self, path: str, **kwargs: Any) -> httpx.Response:
         return self.request("PUT", path, **kwargs)
+
+    def patch(self, path: str, **kwargs: Any) -> httpx.Response:
+        return self.request("PATCH", path, **kwargs)
 
 
 def signed_in(gateway: httpx.Client, wave0: dict[str, Any], key: str) -> Session:
@@ -479,6 +498,11 @@ class TestWave0ExitJourney:
         The owner does this, holding `hrms.people.employee.write:ORG` from the `HR_ADMIN` role
         step 4 installed. No member of the cast could: their `EMPLOYEE` role does not carry it,
         which is the point.
+
+        **No `membership_id` is sent.** It used to be, and employee-service stored it — on its own
+        side of a link nothing reads (ADR-0008 §3). The authoritative half is account's, written in
+        step 7 by the endpoint that owns it; `test_06a` proves this payload cannot write it even by
+        accident.
         """
         run = wave0["tenant"]["run"]
         owner = signed_in(gateway, wave0, "owner")
@@ -498,7 +522,6 @@ class TestWave0ExitJourney:
                 json={
                     "employee_no": f"W0-{run}-{index:02d}",
                     "full_name": spec["name"],
-                    "membership_id": wave0["cast"][key]["membership_id"],
                     "reporting_manager_id": manager_employee_id,
                     "location_code": "PUN",
                 },
@@ -508,34 +531,230 @@ class TestWave0ExitJourney:
             )
             employee = response.json()
             assert employee["reporting_manager_id"] == manager_employee_id
+            assert employee["membership_id"] is None, (
+                "employee-service invented a membership link for a create that did not ask for "
+                f"one: {employee}. Account owns that link (ADR-0008 §1)."
+            )
             wave0["cast"][key]["employee_id"] = employee["id"]
 
-    def test_07_the_membership_employee_link_reaches_the_token(
-        self, gateway: httpx.Client, wave0: dict[str, Any], link_employee: Any
+    def test_06a_employee_create_refuses_to_own_the_membership_link(
+        self, gateway: httpx.Client, wave0: dict[str, Any]
     ) -> None:
-        """`sref` — the claim every OWN-scoped check in the estate resolves against.
+        """ADR-0008 §3: the reverse half of the link is frozen, and a write to it is **refused
+        loudly** rather than ignored.
 
-        The link itself is completed by a seeder because nothing in `services/` writes that
-        column (see `_link_employee.py`; this is a real gap, reported rather than hidden). What
-        is proven here is the whole chain that depends on it, over HTTP: auth-service reads the
-        membership when it mints the token, the claim lands, and the gateway is willing to
-        forward it.
+        The field is deliberately still declared. Removing it would have been worse: Pydantic's
+        default `extra="ignore"` would swallow it, and an integration that has been setting it
+        would go on "succeeding" while writing nothing — which is this ADR's own failure mode in
+        a new costume. So the refusal is the deliverable, and what makes it useful is that the
+        message **names the endpoint that does work**. That is asserted here, not just the status:
+        a 422 with a generic message sends an integrator to a support ticket, and this journey is
+        the only place the message is read by anything other than a unit test.
 
-        Asserted before anything is punched or approved, because a `None` subject reference does
-        not produce an error further down — it produces an empty inbox and a silent 403, which
-        would be read as a routing bug ten steps later.
+        A rejected request is not a change, so this leaves nothing behind — the employee number is
+        distinct from step 6's anyway, and the refusal fires before the uniqueness check.
         """
-        link_employee(
-            [(person["membership_id"], person["employee_id"]) for person in wave0["cast"].values()]
+        run = wave0["tenant"]["run"]
+        response = signed_in(gateway, wave0, "owner").post(
+            "/api/v1/employees",
+            json={
+                "employee_no": f"W0-{run}-REFUSED",
+                "full_name": "Neville Notcreated",
+                "membership_id": wave0["cast"]["bystander"]["membership_id"],
+                "location_code": "PUN",
+            },
+        )
+        assert response.status_code == 422, (
+            f"employee-service accepted a membership link on create ({response.status_code}): "
+            f"{response.text[:400]}. ADR-0008 §3 freezes that half — account is the only writer "
+            "of the link, and a product service that can set it can decide who a platform "
+            "principal is."
+        )
+        detail = response.json().get("detail", "")
+        assert "/api/v1/members/" in detail, (
+            "refused, but without naming the endpoint that works — an integrator reading this "
+            f"has nowhere to go: {response.text[:400]}"
         )
 
-        for key, person in wave0["cast"].items():
+        listing = signed_in(gateway, wave0, "owner").get(
+            "/api/v1/employees", params={"q": "Neville"}
+        )
+        assert listing.status_code == 200, listing.text[:300]
+        assert listing.json()["total"] == 0, (
+            "the refused create wrote an employee row anyway — a rejected request is not a change"
+        )
+
+    def test_07_the_owner_links_the_cast_and_the_link_reaches_the_token(
+        self, gateway: httpx.Client, wave0: dict[str, Any]
+    ) -> None:
+        """`sref` — the claim every OWN-scoped check in the estate resolves against — written
+        through the endpoint that owns it.
+
+        This step used to reach into the database, because `account.memberships.employee_id` had
+        no writer anywhere in `services/`. ADR-0008 gave it one: account's existing member PATCH,
+        on the `core.identity.membership.write` guard floored at ORG, which the owner holds. It is
+        driven here the way everything else in this file is — real token, through the gateway — so
+        the estate's only identity writer is exercised end to end rather than bypassed.
+
+        Four things are proven, and the last two are new surface:
+
+        * **The link lands and reaches the token.** The member signs in and their token carries
+          `sref`. Asserted before anything is punched or approved, because a `None` subject
+          reference does not produce an error further down — it produces an empty inbox and a
+          silent 403, which reads as a routing bug ten steps later.
+        * **`?linked=false` is the screen an administrator would use** (ADR-0008 §9): every member
+          of the cast is on it before the link and off it afterwards, while the owner — who is
+          nobody's employee — stays on it throughout. Both directions, because a filter that
+          always returns everything passes half of this.
+        * **A first link does not bump `pv`** (§7). `owner.refreshes` is unchanged across five
+          links. That is the asymmetry that dictates the ordering of this step, and the reason
+          this file can have no `sleep` in it.
+        * **Nobody signs in before they are linked.** The sign-in loop is deliberately *after* the
+          link loop. Reverse the two and every OWN-scoped assertion below fails against a token
+          that is valid, unexpired, and carries no `sref` — with nothing to tell the client to
+          refresh, because §7's no-bump rule means no 401 `token-stale` is ever issued.
+        """
+        owner = signed_in(gateway, wave0, "owner")
+        cast = wave0["cast"]
+
+        def unlinked_membership_ids() -> set[str]:
+            response = owner.get("/api/v1/members", params={"linked": "false", "size": 200})
+            assert response.status_code == 200, f"{response.status_code} {response.text[:300]}"
+            body = response.json()
+            assert all(m["employee_id"] is None for m in body["items"]), (
+                f"`?linked=false` returned somebody who has a link: {body['items']}"
+            )
+            return {m["id"] for m in body["items"]}
+
+        before_ids = unlinked_membership_ids()
+        assert {p["membership_id"] for p in cast.values()} <= before_ids, (
+            "a member of the cast is already linked, or `?linked=false` is not listing unlinked "
+            f"members: {sorted(before_ids)}"
+        )
+
+        # Captured after the read above, so a stale token left over from an earlier step's grant
+        # change is spent before the count that matters starts.
+        refreshes_before = owner.refreshes
+
+        for key, person in cast.items():
+            linked = owner.patch(
+                f"/api/v1/members/{person['membership_id']}",
+                json={"employee_id": person["employee_id"]},
+            )
+            assert linked.status_code == 200, (
+                f"linking {key}: {linked.status_code} {linked.text[:400]}. A 403 means the owner "
+                "does not hold core.identity.membership.write at ORG in this tenant; a 422 means "
+                "`employee_id` never reached MemberPatch."
+            )
+            assert linked.json()["employee_id"] == person["employee_id"], (
+                f"the PATCH answered 200 without writing the link: {linked.json()}"
+            )
+
+        assert owner.refreshes == refreshes_before, (
+            "linking bumped the organization's permission version. ADR-0008 §7 is explicit that a "
+            "**first** link must not: `pv` is per-organization, so every bump is a tenant-wide "
+            "token-refresh burst, and firing one per new hire is the cost the design refuses. "
+            "Unlinking bumps; this is the other case."
+        )
+
+        after_ids = unlinked_membership_ids()
+        assert after_ids & {p["membership_id"] for p in cast.values()} == set(), (
+            "somebody the owner just linked is still listed as unlinked — either the write did "
+            f"not commit or the filter is not reading the column: {sorted(after_ids)}"
+        )
+        assert wave0["tenant"]["owner"]["membership_id"] in after_ids, (
+            "the owner, who is nobody's employee, dropped off `?linked=false` too. The filter is "
+            "then excluding everything rather than selecting the unlinked."
+        )
+
+        listed = owner.get("/api/v1/members", params={"linked": "true", "size": 200})
+        assert listed.status_code == 200, listed.text[:300]
+        linked_ids = {m["id"] for m in listed.json()["items"]}
+        assert {p["membership_id"] for p in cast.values()} <= linked_ids, (
+            f"`?linked=true` does not list the five people just linked: {sorted(linked_ids)}"
+        )
+        assert wave0["tenant"]["owner"]["membership_id"] not in linked_ids, (
+            "`?linked=true` lists the owner, who has no employee record — the two filters are "
+            "not complements of each other"
+        )
+
+        # Only now does anyone in the cast sign in. See the docstring: a token minted before the
+        # link would carry no `sref` and nothing would ever tell this client to refresh it.
+        for key, person in cast.items():
             token = signed_in(gateway, wave0, key).token
             assert _claims(token).get("sref") == person["employee_id"], (
                 f"{key}'s token carries sref={_claims(token).get('sref')!r}, not their employee "
                 f"id {person['employee_id']}. Every OWN-scoped check below would then resolve "
                 "against nothing."
             )
+
+    def test_07a_a_second_membership_cannot_claim_an_already_linked_employee(
+        self, gateway: httpx.Client, wave0: dict[str, Any]
+    ) -> None:
+        """ADR-0008 §5: the partial unique index has an HTTP answer, and the answer is an
+        instruction.
+
+        `uq_memberships_org_employee` is one employee, one membership, per organization. Reached
+        through the API it must be a 409 that **names the membership already holding the link** —
+        the remedy is to PATCH *that* member with `employee_id: null` first, and an operator
+        cannot do that without the id. A raw 23505 reaching the client as a 500 is the failure
+        this replaces.
+
+        The owner claims the requester's employee record for their own membership. Two properties
+        matter as much as the status code:
+
+        * **Nothing is auto-unlinked.** Resolving the conflict by silently clearing the holder's
+          link would be an identity reassignment performed as a side effect of somebody else's
+          PATCH. The requester is still linked afterwards, and the owner is still not.
+        * **The body is machine-readable.** `application/problem+json`, with `errors[0]` carrying
+          `field`, `code`, the `employee_id` in dispute and the holding `membership_id` — the
+          shape a screen attaches a message to. `membership_id` is documented as nullable for the
+          narrow race where the holder vanishes between the violation and the re-read, so this
+          asserts it names the holder *or* is explicitly null, rather than pretending the race
+          cannot happen.
+        """
+        owner = signed_in(gateway, wave0, "owner")
+        requester = wave0["cast"]["requester"]
+        owner_membership_id = wave0["tenant"]["owner"]["membership_id"]
+
+        response = owner.patch(
+            f"/api/v1/members/{owner_membership_id}",
+            json={"employee_id": requester["employee_id"]},
+        )
+        assert response.status_code == 409, (
+            f"a second membership claimed an employee another member already holds "
+            f"({response.status_code}): {response.text[:400]}. Two principals resolving `sref` to "
+            "one employee is an impersonation, not a duplicate row."
+        )
+        assert response.headers["content-type"].startswith("application/problem+json"), (
+            f"the conflict is not a problem document: {response.headers.get('content-type')!r}"
+        )
+        body = response.json()
+        errors = body.get("errors") or []
+        assert errors, f"the 409 carries no machine-readable error: {body}"
+        error = errors[0]
+        assert error["field"] == "employee_id", error
+        assert error["code"] == "employee_already_linked", error
+        assert error["employee_id"] == requester["employee_id"], error
+        assert error["membership_id"] in (requester["membership_id"], None), (
+            f"the conflict names {error['membership_id']!r} as the holder; the link is held by "
+            f"{requester['membership_id']} and the only other permitted answer is an explicit "
+            "null, for the race where the holder vanished between the violation and the re-read. "
+            "Without the id the remedy — unlink that member first — cannot be carried out."
+        )
+
+        # Nothing was auto-unlinked, and nothing was half-written.
+        held = owner.get(f"/api/v1/members/{requester['membership_id']}")
+        assert held.status_code == 200, held.text[:300]
+        assert held.json()["employee_id"] == requester["employee_id"], (
+            "the refused PATCH cleared the holder's link as a side effect. ADR-0008 §5: nothing "
+            f"is ever auto-unlinked: {held.json()}"
+        )
+        claimant = owner.get(f"/api/v1/members/{owner_membership_id}")
+        assert claimant.status_code == 200, claimant.text[:300]
+        assert claimant.json()["employee_id"] is None, (
+            f"the 409 wrote the link anyway: {claimant.json()}"
+        )
 
     # ------------------------------------------------------------- 8. the hierarchy crosses
 
@@ -1147,4 +1366,95 @@ class TestAnUnknownRequestIdIsIndistinguishable:
         assert unknown.status_code == forbidden.status_code == 404, (
             f"unknown id answered {unknown.status_code}, a real one the caller may not see "
             f"answered {forbidden.status_code} — the difference tells a prober which ids exist"
+        )
+
+
+class TestUnlinkingIsTheRevocationShape:
+    """ADR-0008 §7's other half, and the asymmetry stated in one place.
+
+    **Last in the file on purpose.** It unlinks a real person and links them back, and the
+    journey's ordered steps must all have run before anything moves somebody's identity.
+    The subject is the **bystander**, who is a party to no request and on no step, so even a
+    failure part-way through this test cannot change what any earlier step proved.
+
+    Two directions of the same field, with deliberately different urgency (§7):
+
+    * **Clearing a link bumps `pv`.** This is the revocation shape — the operation an
+      administrator performs to *stop* somebody acting as an employee, most importantly to
+      correct a wrong one — and fifteen more minutes of the wrong identity after the fix is not
+      an acceptable answer. The token minted before the unlink is refused at the gateway.
+    * **Setting one does not**, whether it is the first link or a link restored after an unlink
+      (`update_member` bumps on the *previous* value being non-null, which after an unlink it is
+      not). So the restored link reaches nobody's token until that token is re-minted, and this
+      test has to sign in again to see it — exactly the trap that dictates step 7's ordering, here
+      demonstrated rather than described.
+    """
+
+    def test_an_unlink_stales_the_token_and_a_relink_waits_for_the_next_sign_in(
+        self, gateway: httpx.Client, wave0: dict[str, Any]
+    ) -> None:
+        owner = signed_in(gateway, wave0, "owner")
+        bystander = signed_in(gateway, wave0, "bystander")
+        person = wave0["cast"]["bystander"]
+
+        # Warm the token and prove it carries the link, so what follows is a change rather than
+        # an observation about a token that never had one.
+        assert bystander.get("/api/v1/approvals/inbox").status_code == 200
+        assert _claims(bystander.token).get("sref") == person["employee_id"]
+        stale = bystander.headers  # captured before the unlink, deliberately not refreshed
+        refreshes_before = bystander.refreshes
+
+        unlinked = owner.patch(
+            f"/api/v1/members/{person['membership_id']}", json={"employee_id": None}
+        )
+        assert unlinked.status_code == 200, f"{unlinked.status_code} {unlinked.text[:400]}"
+        assert unlinked.json()["employee_id"] is None, (
+            f"an explicit null did not unlink: {unlinked.json()}. `exclude_unset` is what "
+            "separates 'absent, leave alone' from 'null, unlink', and this is the null case."
+        )
+
+        # Sent raw rather than through the session, which would transparently refresh and hide
+        # the behaviour being asserted.
+        refused = gateway.get("/api/v1/approvals/inbox", headers=stale)
+        assert refused.status_code == 401, (
+            f"the token minted before the unlink still resolves ({refused.status_code}). Until it "
+            "expires its holder goes on acting as an employee they are no longer linked to — "
+            "which is the incident-response lever ADR-0008 §7 bumps `pv` to provide."
+        )
+        assert refused.json().get("type", "").endswith("token-stale"), refused.text[:300]
+
+        assert bystander.get("/api/v1/approvals/inbox").status_code == 200
+        assert bystander.refreshes == refreshes_before + 1, (
+            "the client never had to refresh, so the assertion above was about a token this "
+            "session had already replaced"
+        )
+        assert _claims(bystander.token).get("sref") is None, (
+            "the re-minted token still carries a subject reference for a membership with no "
+            f"link: {_claims(bystander.token).get('sref')!r}"
+        )
+
+        relinked = owner.patch(
+            f"/api/v1/members/{person['membership_id']}",
+            json={"employee_id": person["employee_id"]},
+        )
+        assert relinked.status_code == 200, f"{relinked.status_code} {relinked.text[:400]}"
+        assert relinked.json()["employee_id"] == person["employee_id"]
+
+        assert bystander.get("/api/v1/approvals/inbox").status_code == 200
+        assert bystander.refreshes == refreshes_before + 1, (
+            "restoring the link bumped `pv`. Setting a link where there was none is the grant "
+            "shape, and ADR-0008 §7 refuses to pay a tenant-wide refresh burst for it — the "
+            "asymmetry is the whole reason step 7 links before anybody signs in."
+        )
+        assert _claims(bystander.token).get("sref") is None, (
+            "the held token acquired the new link without being re-minted, which no mechanism in "
+            "the platform can do — `sref` is stamped into the token at issue time"
+        )
+
+        # It reaches the token at the next issue, which is what "within one access-token
+        # lifetime" means when a client is not forced to refresh.
+        bystander.expire()
+        assert _claims(bystander.token).get("sref") == person["employee_id"], (
+            "the restored link never reached a freshly minted token, so it did not take effect "
+            "at all — `rotate_refresh` and sign-in both re-read the directory with no cache"
         )

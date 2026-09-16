@@ -238,6 +238,20 @@ async def create_employee(
     request: Request | None = None,
 ) -> Employee:
     """Onboard an employee. Starts on probation; the lifecycle is the only way out of it."""
+    # ADR-0008 §3: the membership link is frozen on this side. `account.memberships.employee_id`
+    # is authoritative and account is its only writer, because deciding which person a platform
+    # principal *is* is an authorization decision a product service must not be able to make.
+    # Refused loudly and before anything else runs: a rejected request is not a change, so this
+    # writes no audit row and stages no event. The message names the endpoint that does work,
+    # because the whole point of refusing rather than ignoring is that the caller finds out where
+    # to go.
+    if payload.membership_id is not None:
+        raise BusinessRuleProblem(
+            "membership_id is no longer accepted here: the employee link is owned by "
+            "account-service. Link this employee with "
+            "PATCH /api/v1/members/{membership_id} instead."
+        )
+
     if await selectors.get_by_employee_no(session, ctx.organization_id, payload.employee_no):
         raise ConflictProblem(f"An employee numbered {payload.employee_no!r} already exists")
 
@@ -254,8 +268,11 @@ async def create_employee(
         created_by=str(ctx.principal.sub),
         status=EmploymentStatus.PROBATION.value,
         # `pii` is a nested contract, sealed into its own row below — never a column on the
-        # employment record, so it is excluded from the mass assignment.
-        **payload.model_dump(exclude={"pii"}),
+        # employment record. `membership_id` is refused above and is excluded here as well, so
+        # this path cannot write the frozen column even if that guard is ever moved or relaxed
+        # (ADR-0008 §3) — the value is always `None` by the time we get here, and stating it
+        # keeps the mass assignment from quietly becoming a writer again.
+        **payload.model_dump(exclude={"pii", "membership_id"}),
     )
     session.add(employee)
     # `hierarchy_version`'s server default is fetched back automatically here (SQLAlchemy 2.0's
@@ -300,6 +317,10 @@ async def create_employee(
         aggregate_id=employee.id,
         payload={
             "organization_id": str(ctx.organization_id),
+            # Always null since ADR-0008 §3 froze the column — kept on the wire rather than
+            # removed because dropping a published key is a breaking contract change for a
+            # benefit nothing has asked for, and no consumer reads it. It goes when the later
+            # ADR drops the column.
             "membership_id": str(employee.membership_id) if employee.membership_id else None,
             # The event names which sensitive fields were set, never their contents.
             "pii_fields": sorted(sealed_fields),

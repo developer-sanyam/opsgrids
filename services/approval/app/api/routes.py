@@ -53,7 +53,10 @@ from app.selectors import PersonInfo
 from platform_core.auth import Scope, ScopeContext, require
 from platform_core.db import get_tenant_session
 from platform_core.errors import ForbiddenProblem, NotFoundProblem
+from platform_core.logging import get_logger
 from platform_core.pagination import Page, PageQuery, paginate
+
+log = get_logger("approval.routes")
 
 router = APIRouter(tags=["approval"])
 
@@ -222,6 +225,26 @@ async def get_inbox(
     endpoint.
     """
     if ctx.subject_ref is None:
+        # ADR-0008 §9.3, the third of that section's three surfaces for the unlinked state and
+        # the only one that lives here. `info`, not a warning: an unwritten
+        # `account.memberships.employee_id` is a modelled, correctable provisioning state, not a
+        # fault in this request — and §9's first bullet is why the *response* stays an empty page
+        # at 200 (an exited employee reaches the same "you may decide nothing" state holding a
+        # good `sref`, so an error here would split one state across two status codes). The
+        # surfacing therefore happens beside the response, never in it.
+        #
+        # This is the only site: the other null-`subject_ref` paths in this service are already
+        # loud (`POST /delegations`' 403 below, `/chain`'s `assert_can_touch`) or are a different
+        # condition (`selectors.requests_stmt`'s `mine_only`, which is a client-supplied filter
+        # rather than "this membership has no identity"). Routing facts only — the organization
+        # and the membership, as §9 specifies — and nothing from the request or the caller's
+        # person: the same read/write split the outbox role's column grant is built on.
+        membership_id = ctx.principal.membership_id
+        log.info(
+            "approval.inbox.no_subject_ref",
+            organization_id=str(ctx.organization_id),
+            membership_id=str(membership_id) if membership_id else None,
+        )
         return Page.build([], total=0, params=params)
 
     caller_id = ctx.subject_ref

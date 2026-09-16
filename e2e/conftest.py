@@ -500,9 +500,18 @@ def seed_password(platform: Platform) -> Any:
 # ------------------------------------------------- the Wave 0 exit journey's own machinery
 #
 # Everything below serves `test_approval_journey.py`. Each piece exists because the operation it
-# performs genuinely has no HTTP surface — provisioning a tenant, repairing the membership ↔
-# employee link, running a deploy-time reconcile, or advancing a background sweep's discovery
-# clock. Nothing here substitutes for a request the journey could have made.
+# performs genuinely has no HTTP surface — provisioning a tenant, running a deploy-time reconcile,
+# or advancing a background sweep's discovery clock. Nothing here substitutes for a request the
+# journey could have made.
+#
+# One fixture that used to live here is gone, and the reason is worth keeping. `link_employee` ran
+# a raw `UPDATE` against `account.memberships.employee_id` over the admin DSN, because when the
+# journey was written **nothing in `services/` could write that column** — the sole origin of the
+# `sref` claim had no writer, which was a platform defect the suite reported rather than hid. It
+# has one now (ADR-0008: `PATCH /api/v1/members/{membership_id}`, account's own endpoint on the
+# `membership.write:ORG` guard), so step 7 links over HTTP with the owner's real token and the
+# seeder was deleted. A seeder that outlives the gap it documented is how a suite ends up proving
+# its own workaround.
 
 
 @pytest.fixture(scope="session")
@@ -570,25 +579,6 @@ def reconcile(platform: Platform) -> Any:
         }
 
     return _run
-
-
-@pytest.fixture(scope="session")
-def link_employee(platform: Platform) -> Any:
-    """Complete the membership → employee link the platform has no writer for.
-
-    See `_link_employee.py`. Called with `(membership_id, employee_id)` pairs; the caller must
-    sign in again afterwards, because `sref` is minted at sign-in and a token issued before the
-    link carries none.
-    """
-
-    def _link(pairs: list[tuple[str, str]]) -> None:
-        _seed(
-            "_link_employee.py",
-            "account",
-            *[f"{membership_id}={employee_id}" for membership_id, employee_id in pairs],
-        )
-
-    return _link
 
 
 @pytest.fixture(scope="session")

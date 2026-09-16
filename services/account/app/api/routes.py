@@ -175,8 +175,17 @@ async def list_members(
     q: Annotated[str | None, Query(description="Name, email or job title")] = None,
     org_unit_id: Annotated[uuid.UUID | None, Query()] = None,
     member_status: Annotated[str | None, Query(alias="status")] = None,
+    linked: Annotated[
+        bool | None,
+        Query(
+            description="`false` lists people with no employee link — the ones whose "
+            "approval inbox is silently empty (ADR-0008 §9). Omitted lists both."
+        ),
+    ] = None,
 ) -> Page[MemberOut]:
-    stmt = selectors.members_stmt(ctx, q=q, org_unit_id=org_unit_id, status=member_status)
+    stmt = selectors.members_stmt(
+        ctx, q=q, org_unit_id=org_unit_id, status=member_status, linked=linked
+    )
     # `paginate` scalars() to the first entity, so page the memberships and read the
     # joined user off the relationship rather than losing the second column.
     rows, total = await paginate(session, stmt, params)

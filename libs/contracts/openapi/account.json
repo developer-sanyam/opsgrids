@@ -538,6 +538,18 @@
             ],
             "title": "Display Name"
           },
+          "employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee Id"
+          },
           "job_title": {
             "anyOf": [
               {
@@ -1647,6 +1659,24 @@
                 }
               ],
               "title": "Status"
+            }
+          },
+          {
+            "description": "`false` lists people with no employee link \u2014 the ones whose approval inbox is silently empty (ADR-0008 \u00a79). Omitted lists both.",
+            "in": "query",
+            "name": "linked",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`false` lists people with no employee link \u2014 the ones whose approval inbox is silently empty (ADR-0008 \u00a79). Omitted lists both.",
+              "title": "Linked"
             }
           },
           {

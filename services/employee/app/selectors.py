@@ -147,6 +147,47 @@ def hierarchy_stmt(org_id: uuid.UUID, *, cursor: uuid.UUID | None, limit: int) -
     return stmt.order_by(Employee.id).limit(limit)
 
 
+def employee_links_stmt(org_id: uuid.UUID, *, cursor: uuid.UUID | None, limit: int) -> Select[Any]:
+    """Keyset page of `(id, membership_id)` for **every** employee of one organization, linked or
+    not, in `id` order (ADR-0008 §8).
+
+    Two columns, selected by name rather than as whole entities: this backs an internal endpoint
+    whose entire security argument is that it cannot return a name, an employee number or a
+    sealed value, and `select(Employee)` would put every one of those on the wire regardless of
+    what the response model then projects away. The narrowness is enforced here, in SQL, not left
+    to a Pydantic model to remember.
+
+    **No `membership_id IS NOT NULL` filter, deliberately.** One page serves both halves of the
+    reconcile's job, and the rows with a null link are what make the second half work:
+
+    - *fill* reads the non-null rows — the estate's only record of anybody's intent — and writes
+      each into `account.memberships.employee_id`;
+    - *verify* treats any `employee_id` account holds that does **not** appear in the page as an
+      id employee does not recognise (ADR-0008 §4's mistyped UUID, and §8 calls this the only
+      mechanism that finds it).
+
+    Filtering to linked rows only would break verify, and break it worst where it matters most:
+    an id pointing at a real but not-yet-linked employee would be absent from the page and so
+    reported as junk — and during a rollout that population is precisely the one the reconcile
+    exists to create. The cost of carrying the nulls is page size and nothing else; an unlinked
+    row is still two UUIDs, still no PII, still strictly less than `hierarchy_stmt` returns.
+
+    `uq_employees_org_membership` — the partial unique index this service keeps precisely for
+    this read — guarantees at most one employee per membership, so fill never has to choose
+    between two candidates for the same membership.
+
+    Same pagination reasoning as `hierarchy_stmt`: keyset on `id`, served by `uq_employees_org_id`,
+    never offset — a row inserted mid-run would shift every later page and silently skip a link.
+    """
+    stmt = select(Employee.id, Employee.membership_id).where(
+        Employee.organization_id == org_id,
+        Employee.deleted_at.is_(None),
+    )
+    if cursor is not None:
+        stmt = stmt.where(Employee.id > cursor)
+    return stmt.order_by(Employee.id).limit(limit)
+
+
 #: Same value as approval's own `MAX_CHAIN_DEPTH` (`services/approval/app/domain.py`): a chain
 #: 32 rungs deep is still routable, one deeper is not (ADR-0006 §5). Approval's walk starts
 #: counting *at the employee* (depth 1, the requester's own row, not an approver rung) and can

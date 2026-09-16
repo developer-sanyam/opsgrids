@@ -80,6 +80,7 @@ def members_stmt(
     q: str | None = None,
     org_unit_id: uuid.UUID | None = None,
     status: str | None = None,
+    linked: bool | None = None,
 ) -> Select[Any]:
     """Scope-filtered member list. `ctx.apply` is the enforcement point."""
     stmt = (
@@ -122,6 +123,15 @@ def members_stmt(
         stmt = stmt.where(Membership.org_unit_id == org_unit_id)
     if status:
         stmt = stmt.where(Membership.status == status)
+    if linked is not None:
+        # ADR-0008 §9: `?linked=false` is the screen an administrator uses to find the people
+        # whose approval inbox is silently empty. It is a filter **within** the scope applied
+        # above — ANDed onto it, never in place of it — so it narrows what the caller can
+        # already see and can never widen it. A TEAM-scoped caller asking for unlinked members
+        # gets unlinked members *of their team*.
+        stmt = stmt.where(
+            Membership.employee_id.is_not(None) if linked else Membership.employee_id.is_(None)
+        )
 
     return stmt.order_by(User.full_name)
 
@@ -184,6 +194,59 @@ async def count_memberships_missing_grants(
             Membership.organization_id == org_id,
             Membership.status == "active",
             Membership.id.notin_(holds_one),
+        )
+    )
+    return int((await session.execute(stmt)).scalar_one())
+
+
+async def get_membership_by_employee(
+    session: AsyncSession, org_id: uuid.UUID, employee_id: uuid.UUID
+) -> Membership | None:
+    """The membership already holding `employee_id` in this organization, if any.
+
+    The read behind ADR-0008 §5's pre-check. Deliberately **not** filtered to active
+    memberships: `uq_memberships_org_employee` does not exclude removed rows either, and
+    `revoke_member` keeps the link so an ordinary rehire reuses the same row — so a
+    pre-check that skipped removed memberships would miss exactly the conflict the index is
+    about to raise, and downgrade a legible 409 naming the holder into a raced one.
+
+    At most one row can match: that is what the partial unique index guarantees, which is
+    why this is `scalar_one_or_none` rather than a list.
+    """
+    stmt = select(Membership).where(
+        Membership.organization_id == org_id,
+        Membership.employee_id == employee_id,
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def list_memberships(session: AsyncSession, org_id: uuid.UUID) -> list[Membership]:
+    """Every membership of one organization, whatever its status, in one query.
+
+    For `tools/reconcile_membership_links.py`, which needs three things from the same rows —
+    the fill target for each `membership_id` employee-service names, the set of employee ids
+    account already holds (for ADR-0008 §8's verify half), and who holds each one (for the
+    conflict counters). A per-row lookup would be an N+1 across a whole tenant; removed
+    memberships are included because they can hold a link and therefore cause a conflict.
+    """
+    stmt = select(Membership).where(Membership.organization_id == org_id).order_by(Membership.id)
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def count_memberships_unlinked(session: AsyncSession, org_id: uuid.UUID) -> int:
+    """Active memberships with no employee link — ADR-0008 §8's `memberships_unlinked`.
+
+    Deliberately the same shape as ADR-0007 §4's `memberships_without`: the number an
+    operator can act on, computed in one query rather than a loop, and reported rather than
+    fixed, because an automatic answer to "who is this person" is not a fix.
+    """
+    stmt = (
+        select(func.count())
+        .select_from(Membership)
+        .where(
+            Membership.organization_id == org_id,
+            Membership.status == "active",
+            Membership.employee_id.is_(None),
         )
     )
     return int((await session.execute(stmt)).scalar_one())

@@ -1,11 +1,24 @@
 """The internal API — service-to-service, never reachable from outside the cluster.
 
-One endpoint today: the hierarchy backfill approval-service's one-time job reads through
-(ADR-0006 §2.1). Employee is the only writer of reporting lines, and the ongoing supply is the
-full hierarchy state every write already stages on `hrms.people.employee.onboarded` /
-`.updated` / `.transitioned` (`app/services.py`). This is the bulk read for an organization
-that already had employees before approval shipped, and it is nothing but a page over the same
-state the events carry.
+Two endpoints, each with exactly one documented caller:
+
+- **`/internal/v1/hierarchy`** — the hierarchy backfill approval-service's one-time job reads
+  through (ADR-0006 §2.1). Employee is the only writer of reporting lines, and the ongoing
+  supply is the full hierarchy state every write already stages on
+  `hrms.people.employee.onboarded` / `.updated` / `.transitioned` (`app/services.py`). This is
+  the bulk read for an organization that already had employees before approval shipped, and it
+  is nothing but a page over the same state the events carry.
+- **`/internal/v1/employee-links`** — the membership-link reconcile reads through
+  (ADR-0008 §8). Two UUIDs per row and nothing else, for every employee of the organization,
+  linked or not. It returns strictly less than the hierarchy endpoint does: no name, no
+  employee number, no status, no PII — so the bulk-PII exposure the security pass flagged on
+  the hierarchy endpoint has no analogue here.
+
+**Each endpoint narrows the caller set to its own.** The router-level guard checks the union
+(`ALLOWED_INTERNAL_ISSUERS`); each route then asserts its own narrower set, so adding the
+reconcile as a legitimate caller of the *links* endpoint does not hand it the hierarchy
+endpoint's bulk PII read as a side effect. That containment is the whole reason the allowlist
+is per route rather than one flat set.
 
 **What actually guards this endpoint, and what does not.** `require_service_token`
 (`platform_core.auth`) — and the `verify_service_token` it calls — check only a token's
@@ -29,14 +42,23 @@ What this version adds, staying inside what one service can enforce without a
   explicit about this trade). What it buys: this endpoint no longer answers a service token
   minted for some other purpose by mistake, and forging a working call now requires knowing to
   claim a specific identity rather than only holding the key.
-- **An `org` claim, compared when present.** `mint_service_token`'s `claims=` argument already
-  lets a caller bind extra facts into a token it mints; if the caller does, the `organization_id`
-  asked for in the query string must be that value or the call is refused. This is **not yet
-  mandatory** — `services/approval/app/employee_client.py`, the one real caller, does not bind it
-  today, and this service cannot change that file or `libs/platform-core` to make binding it
-  compulsory. Until it does, a caller that only clears the `iss` check is still trusted for
-  whichever `organization_id` it names, same as before. See "What a complete fix still needs"
-  below.
+- **An `org` claim** — compared when present on `/hierarchy`, and **required** on
+  `/employee-links`. `mint_service_token`'s `claims=` argument already lets a caller bind extra
+  facts into a token it mints; if the caller does, the `organization_id` asked for in the query
+  string must be that value or the call is refused.
+
+  On `/hierarchy` this is **not yet mandatory** — `services/approval/app/employee_client.py`,
+  the one real caller, does not bind it today, and this service cannot change that file or
+  `libs/platform-core` to make binding it compulsory. Until it does, a caller that only clears
+  the `iss` check is still trusted for whichever `organization_id` it names, same as before. See
+  "What a complete fix still needs" below.
+
+  On `/employee-links` it is **mandatory from day one** (ADR-0008 §8): the endpoint is new, its
+  only caller is new, and that caller binds the claim, so there is no installed base to break by
+  requiring it. A token with no `org` claim is refused outright rather than trusted for whatever
+  organization it names — which is the difference between "the caller proved which tenant it was
+  authorized for" and "the caller told us which tenant to open". New internal surfaces start at
+  the posture the old one is still migrating towards; they do not inherit its gap.
 - **An audit row per page.** Every successful call now writes one `AuditLog` row, in the same
   transaction as the read, naming the organization read, the page's cursor and row count, and the
   caller's claimed `iss` — see `hierarchy()` for why `record_audit` rather than
@@ -51,12 +73,13 @@ What this version adds, staying inside what one service can enforce without a
    holds the shared secret can still mint a token claiming `iss="approval"`. The module docstring
    for `platform_core.internal_auth` already names this as the deliberate next step ("per-service
    keypairs or mTLS").
-2. **A way to make the `org` claim mandatory without breaking the one real caller.** The
-   mechanism (`mint_service_token(..., claims={...})`) already exists in `libs/platform-core` and
-   needs no change; what is missing is `services/approval/app/employee_client.py` binding
-   `claims={"org": str(organization_id)}` on every call. That file is outside this service's
-   ownership boundary. Once it does, this endpoint can flip the `org` claim from "checked when
-   present" to "required", closing the gap described in point 2 above for good.
+2. **A way to make the `org` claim mandatory on `/hierarchy` without breaking the one real
+   caller.** The mechanism (`mint_service_token(..., claims={...})`) already exists in
+   `libs/platform-core` and needs no change; what is missing is
+   `services/approval/app/employee_client.py` binding `claims={"org": str(organization_id)}` on
+   every call. That file is outside this service's ownership boundary. Once it does, `/hierarchy`
+   flips from `require_org=False` to `require_org=True` — a one-word change, because
+   `/employee-links` already runs that way and the mechanism is shared.
 3. **A replay ledger.** `platform_core.internal_auth`'s own docstring already records this as a
    known, deliberate omission: a captured token is valid for its full TTL against this endpoint,
    however many times it is replayed within that window. Closing it needs a `jti` ledger the
@@ -89,21 +112,41 @@ from starlette.requests import Request
 
 from app import selectors
 from app.models import AuditLog
-from app.schemas import HierarchyNodeOut, HierarchyPage
+from app.schemas import EmployeeLinkOut, EmployeeLinkPage, HierarchyNodeOut, HierarchyPage
 from platform_core.audit import record_audit
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
 from platform_core.errors import UnauthorizedProblem
 from platform_core.internal_auth import verify_service_token
 
-#: ADR-0006 §2.1: approval's one-time hierarchy backfill is this endpoint's only legitimate
-#: caller today. Narrower than "every service holding the internal-token key" — see the module
-#: docstring for exactly what this does and does not defend against.
-ALLOWED_INTERNAL_ISSUERS = frozenset({"approval"})
+#: ADR-0006 §2.1: approval's one-time hierarchy backfill is `/hierarchy`'s only legitimate caller.
+HIERARCHY_ISSUERS = frozenset({"approval"})
+
+#: ADR-0008 §8: the membership-link reconcile is `/employee-links`'s only legitimate caller.
+#:
+#: This names a *command* rather than a service, which is a departure from `HIERARCHY_ISSUERS`
+#: and is the value ADR-0008 §8 specifies. It is the narrower of the two options — the reconcile
+#: has no long-running service behind it to name — and it keeps the two endpoints' caller sets
+#: disjoint, which is the property the per-route allowlist exists to preserve.
+#:
+#: **Revisit when per-service keypairs or mTLS replace the shared HMAC.** While one secret signs
+#: and verifies for everybody, `iss` is a narrowing and this value costs nothing. Once a key
+#: belongs to a deployment, a *command* has no deployment to own one — and the likely outcome is
+#: the tool borrowing some service's key while claiming `iss="reconcile-membership-links"`, which
+#: is exactly the lie the allowlist is meant to narrow. At that point this becomes a service name
+#: (or the reconcile gets a key of its own), and account's `/internal/v1` — still on a bare
+#: `require_service_token` — should be brought up to this posture at the same time.
+EMPLOYEE_LINKS_ISSUERS = frozenset({"reconcile-membership-links"})
+
+#: The router-level floor: the union of every route's own set. A token has to clear this to reach
+#: any route here at all, and then clear its route's narrower set to be answered. Both checks are
+#: load-bearing — this one so a route added later cannot forget to be guarded, the per-route one
+#: so one endpoint's legitimate caller is not silently a legitimate caller of the other.
+ALLOWED_INTERNAL_ISSUERS = HIERARCHY_ISSUERS | EMPLOYEE_LINKS_ISSUERS
 
 #: The claim a caller binds its authorized organization into, via `mint_service_token`'s
-#: `claims=` argument. Compared when present, not yet required — see the module docstring's
-#: "What a complete fix still needs".
+#: `claims=` argument. Compared when present on `/hierarchy`, required on `/employee-links` —
+#: see the module docstring.
 ORG_CLAIM = "org"
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -139,6 +182,39 @@ def _verify_internal_caller(request: Request) -> dict[str, Any]:
     if claims.get("iss") not in ALLOWED_INTERNAL_ISSUERS:
         raise UnauthorizedProblem("Valid service token required")
     return claims
+
+
+def _assert_caller_authorized(
+    claims: dict[str, Any],
+    organization_id: uuid.UUID,
+    *,
+    allowed: frozenset[str],
+    require_org: bool,
+) -> None:
+    """The per-route half of the guard: this route's own issuer set, and its own `org` policy.
+
+    `_verify_internal_caller` has already proved the token and checked `iss` against the union of
+    every route's set. This narrows that to the route's own callers, so a token minted for one
+    endpoint is not accepted by the other — the reconcile must not be able to page the hierarchy
+    endpoint's names and employee numbers just because it is a legitimate caller here.
+
+    `require_org=True` refuses a token that carries no `ORG_CLAIM` at all, rather than trusting
+    the caller-supplied `organization_id` query parameter. `require_org=False` keeps the older,
+    weaker posture for `/hierarchy`, whose real caller does not bind the claim yet.
+
+    Every refusal raises the same deliberately vague message `_verify_internal_caller` uses:
+    distinguishing "wrong issuer" from "missing org claim" from "expired" tells whoever is
+    probing which half of their guess was right.
+    """
+    if claims.get("iss") not in allowed:
+        raise UnauthorizedProblem("Valid service token required")
+    claimed_org = claims.get(ORG_CLAIM)
+    if claimed_org is None:
+        if require_org:
+            raise UnauthorizedProblem("Valid service token required")
+        return
+    if str(claimed_org) != str(organization_id):
+        raise UnauthorizedProblem("Valid service token required")
 
 
 #: `dependencies=` at the router level, not per route, so a route added here later cannot forget
@@ -178,11 +254,11 @@ async def hierarchy(
     allowlist and (when the caller binds one) `org`-claim check are for, and why every page is
     now audited below.
     """
-    claimed_org = caller_claims.get(ORG_CLAIM)
-    if claimed_org is not None and str(claimed_org) != str(organization_id):
-        # Same deliberately vague message as an unverifiable token — see
-        # `_verify_internal_caller`'s docstring.
-        raise UnauthorizedProblem("Valid service token required")
+    # `require_org=False`: approval's client does not bind `ORG_CLAIM` yet and this service
+    # cannot change that file. See the module docstring's "What a complete fix still needs".
+    _assert_caller_authorized(
+        caller_claims, organization_id, allowed=HIERARCHY_ISSUERS, require_org=False
+    )
 
     settings: ServiceSettings = request.app.state.settings
     async with session.begin():
@@ -239,3 +315,88 @@ async def hierarchy(
     # for one more page, which comes back empty and terminates — see `HierarchyPage`.
     next_cursor = rows[-1].id if len(rows) == limit else None
     return HierarchyPage(items=items, next_cursor=next_cursor)
+
+
+@router.get(
+    "/employee-links",
+    response_model=EmployeeLinkPage,
+    summary="Keyset page of one organization's recorded employee/membership links",
+)
+async def employee_links(
+    session: SessionDep,
+    request: Request,
+    organization_id: Annotated[uuid.UUID, Query()],
+    caller_claims: Annotated[dict[str, Any], Depends(_verify_internal_caller)],
+    cursor: Annotated[uuid.UUID | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
+) -> EmployeeLinkPage:
+    """`(employee_id, membership_id)` for **every** employee of `organization_id`, linked or not,
+    in `id` order (ADR-0008 §8).
+
+    This is the read the membership-link reconcile keys on. `employee.employees.membership_id` is
+    the estate's only record of anybody's intent about the link — account's authoritative column
+    has never been written — so a page of this is what the reconcile turns into
+    `account.memberships.employee_id`. This service does not write account's column and never
+    could: no database role can read `employee.*` and write `account.*`, which is why the
+    reconcile is a separate process reading over HTTP rather than one transaction over two
+    schemas.
+
+    **Two UUIDs per row, enforced in the SELECT** (`selectors.employee_links_stmt`) rather than by
+    projection, so there is no shape of this endpoint that puts a name or an employee number on
+    the wire.
+
+    **One page serves both halves of the reconcile**, which is why unlinked employees travel with
+    a null `membership_id` rather than being filtered out: *fill* uses the non-null rows, and
+    *verify* uses the page as the set of employee ids this organization actually has, flagging
+    anything account points at that is not in it. Filtering to linked rows only would make verify
+    report every not-yet-linked employee as an unrecognised id — noise exactly where the reconcile
+    is most needed. `selectors.employee_links_stmt` carries the full reasoning.
+
+    Transaction handling matches `hierarchy()`: opened and bound to the named organization as its
+    first statement, because a service-token request carries no principal to take the ordinary
+    `get_tenant_session` chokepoint from. Unlike `hierarchy()`, naming an organization the caller
+    is not entitled to is refused outright and not merely audited: `require_org=True` means the
+    token itself has to carry the organization, so RLS is the net here rather than the only
+    guarantee.
+    """
+    _assert_caller_authorized(
+        caller_claims, organization_id, allowed=EMPLOYEE_LINKS_ISSUERS, require_org=True
+    )
+
+    settings: ServiceSettings = request.app.state.settings
+    async with session.begin():
+        await set_tenant(session, organization_id)
+        if not settings.is_production:
+            await assert_tenant(session, organization_id)
+        rows = (
+            await session.execute(
+                selectors.employee_links_stmt(organization_id, cursor=cursor, limit=limit)
+            )
+        ).all()
+
+        # Same reasoning as `hierarchy()`: `record_audit` rather than `record_sensitive_read`,
+        # because this is a bulk page rather than one unmasked field on one named entity. The
+        # row count, cursor and caller identity are what make a page traceable; no identifier
+        # from the page itself is echoed into the audit trail. Staged in the read's own
+        # transaction, so a rolled-back page leaves no row claiming it happened.
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=organization_id,
+            actor_id=None,
+            action="employee.links.exported",
+            entity="employee_link_page",
+            after={
+                "caller_iss": caller_claims.get("iss"),
+                "cursor": str(cursor) if cursor is not None else None,
+                "count": len(rows),
+                "limit": limit,
+            },
+            request=request,
+        )
+
+    items = [EmployeeLinkOut(employee_id=row.id, membership_id=row.membership_id) for row in rows]
+    # Identical termination rule to `HierarchyPage`: a short page is the last one, a page landing
+    # exactly on the boundary asks for one more, which comes back empty and stops the walk.
+    next_cursor = rows[-1].id if len(rows) == limit else None
+    return EmployeeLinkPage(items=items, next_cursor=next_cursor)

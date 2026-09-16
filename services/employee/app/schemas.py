@@ -87,6 +87,16 @@ class EmployeeIn(BaseModel):
     #: at write time if it would close a reporting cycle or push the chain past the depth cap,
     #: exactly like `reporting_manager_id` (`app/services.py::_assert_no_cycle`).
     dotted_line_manager_id: uuid.UUID | None = None
+    #: **Declared so it can be refused** (ADR-0008 §3). `account.memberships.employee_id` is the
+    #: authoritative link and account is its only writer; this service no longer accepts the
+    #: reverse half at create. Supplying a non-null value raises a `BusinessRuleProblem` naming
+    #: `PATCH /api/v1/members/{membership_id}` — see `app/services.py::create_employee`.
+    #:
+    #: The field stays here rather than being deleted because this model sets no `model_config`,
+    #: so Pydantic's default `extra="ignore"` applies (verified, not assumed): delete it and a
+    #: supplied `membership_id` is dropped during validation with no error at all, and an
+    #: integration that has been sending it keeps "succeeding" while doing nothing. A field that
+    #: refuses itself with a pointer is the loud option.
     membership_id: uuid.UUID | None = None
     #: Optional sensitive PII, sealed on write. Absent means the person has no PII row yet.
     pii: EmployeePiiIn | None = None
@@ -140,6 +150,10 @@ class EmployeeOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    #: **Advisory and possibly stale** (ADR-0008 §3). Nothing writes this column any more, and
+    #: nothing in the platform reads it: `account.memberships.employee_id` is the authoritative
+    #: link and `GET /api/v1/members` is the truth. Kept on the read contract so the reconcile
+    #: (ADR-0008 §8) and existing clients still see the estate's record of intent.
     membership_id: uuid.UUID | None
     employee_no: str
     full_name: str
@@ -207,4 +221,32 @@ class HierarchyPage(BaseModel):
     until it sees `null`, rather than inferring the end from the page size (ADR-0006 §2.1)."""
 
     items: list[HierarchyNodeOut]
+    next_cursor: uuid.UUID | None
+
+
+class EmployeeLinkOut(BaseModel):
+    """One employee's recorded membership link — **two UUIDs and nothing else** (ADR-0008 §8).
+
+    No name, no employee number, no status, no PII. Deliberately strictly less than
+    `HierarchyNodeOut`, so the bulk-PII exposure the security pass flagged on the hierarchy
+    endpoint does not exist on this one at all: the worst a holder of the shared internal-token
+    secret can learn here is that two opaque identifiers are associated.
+
+    `membership_id` is **nullable, and a null is not a filler value** — it is the payload. An
+    employee that appears here with a null link tells the reconcile "this id is a real employee
+    of this organization that simply has no link recorded", which is what separates a mistyped
+    `employee_id` in account from an ordinary not-yet-linked one. See
+    `selectors.employee_links_stmt` for why the unlinked rows travel.
+    """
+
+    employee_id: uuid.UUID
+    membership_id: uuid.UUID | None
+
+
+class EmployeeLinkPage(BaseModel):
+    """A keyset page of `EmployeeLinkOut`, ordered on the employee's `id` — the same contract and
+    the same termination rule as `HierarchyPage`: keep requesting with `cursor=next_cursor` until
+    it comes back `null`, rather than inferring the end from the page size."""
+
+    items: list[EmployeeLinkOut]
     next_cursor: uuid.UUID | None

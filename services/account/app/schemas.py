@@ -170,6 +170,16 @@ class MemberPatch(BaseModel):
     manager_membership_id: uuid.UUID | None = None
     location_codes: list[str] | None = None
     started_on: date | None = None
+    #: The HR employee record this principal **is** — the sole origin of the `sref` claim
+    #: every OWN-scoped check in the estate resolves against (ADR-0008 §1). This is the
+    #: platform's only writer of that link.
+    #:
+    #: `exclude_unset` carries the distinction this field needs and no other field here
+    #: has: **absent** leaves the link alone, an explicit **null unlinks**. It is not
+    #: validated against employee-service — account cannot read another schema, and a
+    #: synchronous cross-service check on an interactive write is what ADR-0008 §4
+    #: refuses; a mistyped id is accepted and found by `tools/reconcile_membership_links.py`.
+    employee_id: uuid.UUID | None = None
 
 
 class InvitationIn(BaseModel):
