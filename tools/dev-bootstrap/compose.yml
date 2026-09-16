@@ -20,7 +20,11 @@ services:
     ports: ['5434:5432']
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./init-db.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+      # The postgis image's own init script is 10_postgis.sh; '-' sorts before '_' in the
+      # entrypoint's run order, so mounting this at 10- would run it first and it would fail
+      # at the tiger/tiger_data/topology grant before postgis_tiger_geocoder exists. 20- runs
+      # after the image's script.
+      - ./init-db.sql:/docker-entrypoint-initdb.d/20-init.sql:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U opsgrids -d opsgrids']
       interval: 5s

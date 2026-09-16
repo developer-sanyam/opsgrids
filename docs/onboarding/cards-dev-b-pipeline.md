@@ -324,26 +324,28 @@ Two role templates. **Copy `code`, `name` and `is_default` character for charact
 character, `make openapi` stops with an error naming the field you disagreed on:
 
 ```python
-RoleTemplate(
-    code="SALESCRM_ADMIN",
-    name="Sales administrator",
-    product=PRODUCT,
-    description=(
-        "Administers the sales pipeline across the organization. Built from the "
-        "salescrm catalogue alone."
+[
+    RoleTemplate(
+        code="SALESCRM_ADMIN",
+        name="Sales administrator",
+        product=PRODUCT,
+        description=(
+            "Administers the sales pipeline across the organization. Built from the "
+            "salescrm catalogue alone."
+        ),
+        grants=SALESCRM_PIPELINES.all("ORG"),
     ),
-    grants=SALESCRM_PIPELINES.all("ORG"),
-),
-RoleTemplate(
-    code="SALESCRM_MEMBER",
-    name="Sales-team member",
-    product=PRODUCT,
-    description="Every person with a Sales CRM seat. Reads the book and works their own leads.",
-    is_default=True,
-    grants=SALESCRM_PIPELINES.pick(
-        ("salescrm.pipelines.pipeline.read", "ORG"),
+    RoleTemplate(
+        code="SALESCRM_MEMBER",
+        name="Sales-team member",
+        product=PRODUCT,
+        description="Every person with a Sales CRM seat. Reads the book and works their own leads.",
+        is_default=True,
+        grants=SALESCRM_PIPELINES.pick(
+            ("salescrm.pipelines.pipeline.read", "ORG"),
+        ),
     ),
-),
+]
 ```
 
 A team member reads pipelines but does not change them, so `SALESCRM_MEMBER` gets the read

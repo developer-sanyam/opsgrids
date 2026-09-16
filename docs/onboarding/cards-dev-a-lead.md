@@ -311,27 +311,29 @@ role codes in a different service, and the build hard-fails if the two of you di
 `name` or `is_default` of a shared template:
 
 ```python
-RoleTemplate(
-    code="SALESCRM_ADMIN",
-    name="Sales administrator",
-    product=PRODUCT,
-    description=(
-        "Administers the sales pipeline across the organization. Built from the "
-        "salescrm catalogue alone."
+[
+    RoleTemplate(
+        code="SALESCRM_ADMIN",
+        name="Sales administrator",
+        product=PRODUCT,
+        description=(
+            "Administers the sales pipeline across the organization. Built from the "
+            "salescrm catalogue alone."
+        ),
+        grants=SALESCRM_LEADS.all("ORG"),
     ),
-    grants=SALESCRM_LEADS.all("ORG"),
-),
-RoleTemplate(
-    code="SALESCRM_MEMBER",
-    name="Sales-team member",
-    product=PRODUCT,
-    description="Every person with a Sales CRM seat. Reads the book and works their own leads.",
-    is_default=True,
-    grants=SALESCRM_LEADS.pick(
-        ("salescrm.leads.lead.read", "ORG"),
-        ("salescrm.leads.lead.write", "OWN"),
+    RoleTemplate(
+        code="SALESCRM_MEMBER",
+        name="Sales-team member",
+        product=PRODUCT,
+        description="Every person with a Sales CRM seat. Reads the book and works their own leads.",
+        is_default=True,
+        grants=SALESCRM_LEADS.pick(
+            ("salescrm.leads.lead.read", "ORG"),
+            ("salescrm.leads.lead.write", "OWN"),
+        ),
     ),
-),
+]
 ```
 
 ### STEPS
