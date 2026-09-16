@@ -155,6 +155,50 @@ class HierarchyNode(Base, OrgScopedMixin, TimestampMixin):
             "employee_id",
             postgresql_where="status = 'exited'",
         ),
+        # Pattern 16 (data model §2.2a): `GET /delegate-candidates`'s picker (slice 3), created
+        # by `7108bbc9ecc6` via raw `op.execute()` rather than through this declaration — the
+        # migration is what actually builds them, transcribed verbatim from the data model's own
+        # literal SQL. These two `Index()` entries exist only so `alembic check` (which reflects
+        # the live database, sees a `varchar_pattern_ops` functional index, and would otherwise
+        # propose dropping "an index the model does not know about") has something to compare
+        # the migration's output against. `text(...)` is how SQLAlchemy represents a bare
+        # expression with an operator class attached — there is no typed construct for either.
+        # `WHERE status <> 'exited'` matches the endpoint's own exclusion; `employee_id` trails
+        # each as a third column for the same index-only reason `ix_hierarchy_nodes_org_manager`
+        # carries it.
+        Index(
+            "ix_hierarchy_nodes_org_display_name",
+            "organization_id",
+            text("lower(display_name) varchar_pattern_ops"),
+            "employee_id",
+            postgresql_where=text("status <> 'exited'"),
+        ),
+        # Removable if the endpoint ever ships name-only search (data model §2.2a: "delete this
+        # index rather than keeping it as a margin") — it exists only because `q` is also matched
+        # against the staff number.
+        Index(
+            "ix_hierarchy_nodes_org_employee_no",
+            "organization_id",
+            text("lower(employee_no) varchar_pattern_ops"),
+            "employee_id",
+            postgresql_where=text("status <> 'exited'"),
+        ),
+        # Pattern 19 (data model §2, table row 19): `GET /requests` at TEAM (`requests_stmt`'s
+        # `ctx.apply(team_col=HierarchyNode.reporting_manager_id, ...)`) filters this table by
+        # `reporting_manager_id = caller`, then feeds each match's `employee_id` into
+        # `ix_approval_requests_org_requester_opened` — index-only on both sides, measured at
+        # 0.081 ms / 89 buffers against 2.87 ms / 550 unindexed (20,000 nodes). The two comments
+        # above that cite this index's name as precedent for their own index-only column ordering
+        # were referring to an index that had never actually been created — declared in the data
+        # model at slice-2 time, cross-referenced by name, but never shipped in a migration until
+        # this one (a slice-3 review caught the gap). `employee_id` trails for the same
+        # index-only reason those two do.
+        Index(
+            "ix_hierarchy_nodes_org_manager",
+            "organization_id",
+            "reporting_manager_id",
+            "employee_id",
+        ),
     )
 
 
@@ -427,14 +471,18 @@ class ApprovalStep(Base, TenantBase):
 
 
 class Delegation(Base, TenantBase):
-    """Who stands in for whom, and when (ADR-0006 §5, data model §1.5). Not written by any
-    endpoint in this slice — the CRUD surface (`POST/GET /delegations`, the picker) ships in
-    slice 3 — but the table exists now because routing consults it: applying an *already
-    existing* delegation at step open (ADR-0006 §5) is this slice's job, even though nothing yet
-    lets a caller create one through the API. Slice 2's fixtures create rows directly.
+    """Who stands in for whom, and when (ADR-0006 §5, data model §1.5). The table shipped in
+    slice 2, written only by fixtures, because routing already consulted it: applying an
+    *already existing* delegation at step open (ADR-0006 §5) was slice 2's job even before
+    anything let a caller create one. Slice 3 adds the CRUD surface
+    (`POST/GET /delegations`, `POST /delegations/{id}/revoke`, the candidate picker,
+    `app/services.create_delegation` / `revoke_delegation`) — no column or constraint changes,
+    since the shape was already right.
 
-    `trg_delegations_revoke_only` (created in a later migration) is the append-only sibling for
-    this table: the app role may set exactly `revoked_at`/`revoked_by_employee_id`, once.
+    `trg_delegations_revoke_only` (created in `c8d3e6f4a1b2`) is the append-only sibling for
+    this table: the app role may set exactly `revoked_at`/`revoked_by_employee_id`, once — which
+    is why `app/services.revoke_delegation` refuses a second revoke itself, with a clean 409,
+    rather than let that attempt reach the trigger and surface as a raw exception.
     """
 
     __tablename__ = "delegations"
@@ -470,6 +518,32 @@ class Delegation(Base, TenantBase):
             where=text("revoked_at is null"),
             name="ex_delegations_no_overlap",
             using="gist",
+        ),
+        # Pattern 11b (data model §2, table row 11b): `GET /delegations` at ORG — the unique on
+        # `(organization_id, id)` leads with the wrong column for `ORDER BY starts_at DESC` and
+        # cannot serve it; without this the count and the page each `Seq Scan` the whole
+        # multi-tenant table. Plain, not partial on `deleted_at IS NULL` — measured against the
+        # partial form and it earns nothing at this table's soft-delete ratio (data model §2.3),
+        # and a delegation is revoked, not deleted, in the ordinary case anyway.
+        Index("ix_delegations_org_starts", "organization_id", "starts_at"),
+        # Pattern 11a: `GET /delegations` at OWN (and TEAM/LOCATION, which collapse to the same
+        # "either party" read — `app/catalogue.py`'s ceiling on `delegation.write`) — "delegator
+        # or delegate", which `selectors.delegations_stmt` writes as an `OR` across these two
+        # columns rather than `ctx.apply()`'s single `owner_col`. Two indexes, not one on
+        # `(organization_id, delegator_employee_id, delegate_employee_id, starts_at)`: the `OR`
+        # needs the planner to combine two independent scans (`BitmapOr`), which only a pair of
+        # indexes each leading with one side of the `OR` can serve.
+        Index(
+            "ix_delegations_org_delegator_starts",
+            "organization_id",
+            "delegator_employee_id",
+            "starts_at",
+        ),
+        Index(
+            "ix_delegations_org_delegate_starts",
+            "organization_id",
+            "delegate_employee_id",
+            "starts_at",
         ),
     )
 

@@ -26,6 +26,7 @@ import { AttendancePage } from "./routes/Attendance";
 import { ApprovalsPage } from "./routes/Approvals";
 import { RequestDetailPage } from "./routes/RequestDetail";
 import { MyRequestsPage } from "./routes/MyRequests";
+import { DelegationsPage } from "./routes/Delegations";
 import { LoginPage } from "./routes/Login";
 import { ComingSoonPage } from "./routes/ComingSoon";
 
@@ -54,6 +55,7 @@ const router = createBrowserRouter([
           { path: "approvals", element: <ApprovalsPage /> },
           { path: "approvals/mine", element: <MyRequestsPage /> },
           { path: "approvals/requests/:requestId", element: <RequestDetailPage /> },
+          { path: "approvals/delegations", element: <DelegationsPage /> },
           {
             path: "notifications",
             element: (

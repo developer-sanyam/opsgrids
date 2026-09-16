@@ -17,11 +17,19 @@ import {
   FIXTURE_DETAIL_BY_ID,
   FIXTURE_INBOX,
   FIXTURE_MY_REQUESTS,
+  __createFixtureDelegation,
+  __listFixtureDelegations,
+  __revokeFixtureDelegation,
+  __searchFixtureDelegateCandidates,
 } from "./fixtures";
 import { USE_FIXTURES } from "./client";
 import type {
   ApprovalChainOut,
   DecisionIn,
+  DelegateCandidateOut,
+  DelegationCreateIn,
+  DelegationCreateOut,
+  DelegationOut,
   InboxItemOut,
   Paged,
   RequestDetailOut,
@@ -141,4 +149,70 @@ export async function decideRequest(
 export async function getChain(employeeId: string): Promise<ApprovalChainOut> {
   if (USE_FIXTURES) return settle({ ...FIXTURE_CHAIN, employee_id: employeeId });
   return apiRequest<ApprovalChainOut>(`/approvals/chain/${employeeId}`);
+}
+
+/* --------------------------------------------------------------------- delegation (slice 3) */
+
+/**
+ * `GET /approvals/delegate-candidates?q=` — the delegate picker's source (§4.E). `q` is required
+ * and at least two characters; the `Combobox` calling this never sends fewer (§4.E's "a 422 for a
+ * state the UI can prevent is a bug"). Results are already capped at 20 by the server.
+ *
+ * `signal` is accepted for `Combobox`'s own abort-on-keystroke contract, but `@opsgrids/client`'s
+ * `apiRequest` takes no `AbortSignal` today (`RequestOptions` has no such field) — a client gap
+ * outside this package's ownership, noted in the slice-3 report. `Combobox` stays correct
+ * regardless: it discards any response that resolves after a newer query superseded it by
+ * checking `signal.aborted` itself, so an unlinked signal costs an occasional wasted request, not
+ * a wrong one.
+ */
+export async function listDelegateCandidates(
+  q: string,
+  signal?: AbortSignal,
+): Promise<DelegateCandidateOut[]> {
+  if (USE_FIXTURES) return settle(__searchFixtureDelegateCandidates(q, 20));
+  void signal;
+  return apiRequest<DelegateCandidateOut[]>(
+    `/approvals/delegate-candidates?${new URLSearchParams({ q }).toString()}`,
+  );
+}
+
+/**
+ * `GET /approvals/delegations` — ORG sees every delegation in the organization; below ORG sees
+ * only rows the caller is a party to, delegator or delegate, newest first. No employee filter
+ * exists on the real endpoint (`app/api/routes.py::list_delegations` takes only paging), so an
+ * ORG caller cannot ask the server to scope the list to one person — the screen's own search box
+ * is client-side over what's loaded, the same pattern `Approvals.tsx` and `MyRequests.tsx` already
+ * use where the backend has no query param to match. See the slice-3 report.
+ */
+export async function listDelegations(params: PageParams = {}): Promise<Paged<DelegationOut>> {
+  if (USE_FIXTURES) return settle(paginate(__listFixtureDelegations(), params));
+  return apiRequest<Paged<DelegationOut>>(`/approvals/delegations?${pageQuery(params)}`);
+}
+
+/**
+ * `POST /approvals/delegations` — omit `delegator_employee_id` to create for yourself; supplying
+ * a different id needs `delegation.write:ORG` and is refused with 403 below that (§4.E's "for
+ * another employee" mode). Returns the delegation plus `repointed_count`. Refusals: 422 with
+ * `errors[{field,code,message}]` for self-delegation, an end before or equal to the start, an end
+ * in the past, or a delegate who has left; 409 on an overlapping active delegation, naming the
+ * conflicting range in `problem.detail` when the opportunistic check catches it.
+ */
+export async function createDelegation(body: DelegationCreateIn): Promise<DelegationCreateOut> {
+  if (USE_FIXTURES) {
+    const { delegation, repointed_count } = __createFixtureDelegation(body);
+    return settle({ ...delegation, repointed_count });
+  }
+  return apiRequest<DelegationCreateOut>("/approvals/delegations", { method: "POST", body });
+}
+
+/**
+ * `POST /approvals/delegations/{id}/revoke` — returns the revoked row. Below ORG only the
+ * delegator may revoke: a bystander (neither party) gets 404, the delegate gets 403. A second
+ * revoke is 409.
+ */
+export async function revokeDelegation(delegationId: string): Promise<DelegationOut> {
+  if (USE_FIXTURES) return settle(__revokeFixtureDelegation(delegationId));
+  return apiRequest<DelegationOut>(`/approvals/delegations/${delegationId}/revoke`, {
+    method: "POST",
+  });
 }

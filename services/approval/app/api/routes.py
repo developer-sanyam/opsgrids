@@ -4,11 +4,12 @@ Fronted by `app-gateway` at `/api/v1/approvals`, with **no `product` key** in th
 (ADR-0006 §1, §14): approval is a platform surface every customer has, the same shape as
 `/api/v1/members`, and must work for a customer who has bought nothing yet.
 
-Slice 1 shipped `GET /chain/{employee_id}`. Slice 2 adds the routing engine's read and decide
+Slice 1 shipped `GET /chain/{employee_id}`. Slice 2 added the routing engine's read and decide
 surface: `GET /inbox`, `GET /requests`, `GET /requests/{id}` and `POST /requests/{id}/decision`
-(ADR-0006 §11). `/delegations`, `/delegate-candidates` and `/policies` open on top of write paths
-that ship in slices 3 and 4 — the tables exist (this slice's migration), but nothing here lets a
-caller write to them yet.
+(ADR-0006 §11). Slice 3 adds the delegation surface: `GET /delegate-candidates`,
+`GET /delegations`, `POST /delegations` and `POST /delegations/{id}/revoke`. `/policies` opens
+on top of a write path that ships in slice 4 — the table exists (slice 2's migration), but
+nothing here lets a caller write to it yet.
 
 **Holding the permission is never enough** (ADR-0006 §11's own words). `require(...)` below is
 the first gate on every route; the second — ADR-0006 §6's eligibility check, and the OWN-scope
@@ -19,18 +20,24 @@ lock where a decision is at stake, and is never replaced by a UI gate.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import StringConstraints
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, selectors, services
 from app.config import settings
-from app.models import SCHEMA
+from app.models import SCHEMA, Delegation
 from app.schemas import (
     ApprovalChainOut,
     ChainRungOut,
     DecisionIn,
+    DelegateCandidateOut,
+    DelegationCreateIn,
+    DelegationCreateOut,
+    DelegationOut,
     DottedLineManagerOut,
     InboxItemOut,
     RequestDetailOut,
@@ -41,10 +48,14 @@ from app.schemas import (
 from app.selectors import PersonInfo
 from platform_core.auth import Scope, ScopeContext, require
 from platform_core.db import get_tenant_session
-from platform_core.errors import NotFoundProblem
+from platform_core.errors import ForbiddenProblem, NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
 router = APIRouter(tags=["approval"])
+
+#: Screens §4.E: "the cap is the server's" — a client that fixes its own `Query(le=...)` still
+#: gets exactly this many, so the "showing the first 20" footer copy is never wrong.
+DELEGATE_CANDIDATES_LIMIT = 20
 
 SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
 ReadCtx = Annotated[ScopeContext, Depends(require("core.approval.request.read"))]
@@ -52,6 +63,11 @@ ReadCtx = Annotated[ScopeContext, Depends(require("core.approval.request.read"))
 #: — not the permission scope — is what actually decides who may act on any given request
 #: (ADR-0006 §11: "holding decide is not enough").
 DecideCtx = Annotated[ScopeContext, Depends(require("core.approval.request.decide"))]
+#: `delegation.write` at **any** scope, for the same reason: below ORG it is read as OWN
+#: (`app/catalogue.py`'s collapse), never refused outright, and the object-level rule that
+#: actually restricts a caller lives in `app/services.create_delegation` /
+#: `revoke_delegation`.
+DelegationCtx = Annotated[ScopeContext, Depends(require("core.approval.delegation.write"))]
 
 
 def _person_field(
@@ -193,9 +209,9 @@ async def get_inbox(
     caller_node = await selectors.get_hierarchy_node(session, ctx.organization_id, caller_id)
     caller_active = caller_node is None or caller_node.status != "exited"
     is_org = ctx.scope is Scope.ORG
-    # `services._db_now` is the one clock (ADR-0006 §8): reading `now()` again here, separately,
+    # `services.db_now` is the one clock (ADR-0006 §8): reading `now()` again here, separately,
     # would be a second one, and the two could disagree on clock skew or across a slow query.
-    db_now = await services._db_now(session)
+    db_now = await services.db_now(session)
 
     rows, total = await selectors.list_inbox(
         session,
@@ -504,3 +520,190 @@ async def decide_request(
         viewer_subject_ref=ctx.subject_ref,
         viewer_is_org=ctx.scope is Scope.ORG,
     )
+
+
+# --------------------------------------------------------------------- delegation (slice 3)
+
+
+def _delegation_out(
+    delegation: Delegation, people: dict[uuid.UUID, PersonInfo], now: datetime
+) -> DelegationOut:
+    """The shape every delegation endpoint returns, built once so create/list/revoke can never
+    drift on field names (the same discipline `_build_detail` uses for the request surface)."""
+    return DelegationOut(
+        id=delegation.id,
+        delegator_employee_id=delegation.delegator_employee_id,
+        delegator_name=_name(people, delegation.delegator_employee_id),
+        delegator_location_code=_location(people, delegation.delegator_employee_id),
+        delegate_employee_id=delegation.delegate_employee_id,
+        delegate_name=_name(people, delegation.delegate_employee_id),
+        starts_at=delegation.starts_at,
+        ends_at=delegation.ends_at,
+        # `domain.delegation_status` returns `domain.DelegationStatus`, the same alias
+        # `DelegationOut.status` is typed with — no `cast` needed to reconcile the two.
+        status=domain.delegation_status(
+            revoked_at=delegation.revoked_at,
+            starts_at=delegation.starts_at,
+            ends_at=delegation.ends_at,
+            at=now,
+        ),
+        created_by_employee_id=delegation.created_by_employee_id,
+        revoked_at=delegation.revoked_at,
+        revoked_by_employee_id=delegation.revoked_by_employee_id,
+    )
+
+
+@router.get(
+    "/approvals/delegate-candidates",
+    response_model=list[DelegateCandidateOut],
+    summary="Search colleagues to delegate to",
+)
+async def list_delegate_candidates(
+    session: SessionDep,
+    ctx: DelegationCtx,
+    q: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=2),
+        Query(description="At least two characters"),
+    ],
+) -> list[DelegateCandidateOut]:
+    """`GET /delegate-candidates` (ADR-0006 §11, screens §4.E): the delegation picker's source.
+    Gated on `delegation.write` at **any** scope — reachable only by someone who could actually
+    create a delegation, not a general employee directory (this is why the endpoint exists
+    instead of widening an HRMS scope, ADR-0006 §11). Excludes the caller and every exited node;
+    `q` is required and at least two characters **after stripping whitespace**:
+    `StringConstraints(strip_whitespace=True, min_length=2)` strips before it measures, not
+    after, so a request whose `q` is all whitespace (`"  "`) or is one real character padded
+    with whitespace (`"a "`) is a clean 422 here rather than reaching
+    `selectors.search_delegate_candidates` as an empty or one-character prefix. That distinction
+    is not cosmetic: `delegation.write` collapses to OWN in the default MEMBER template
+    (`app/catalogue.py`), so every employee holds it, and a prefix search with no effective floor
+    is a staff-directory enumeration ("a ".."z ", "0 ".."9 ") any employee could run to
+    completion in a few dozen requests — well under the gateway's per-minute rate limit. Capped
+    at `DELEGATE_CANDIDATES_LIMIT` regardless of how many rows match.
+    """
+    candidates = await selectors.search_delegate_candidates(
+        session,
+        organization_id=ctx.organization_id,
+        exclude_employee_id=ctx.subject_ref,
+        q=q,
+        limit=DELEGATE_CANDIDATES_LIMIT,
+    )
+    return [
+        DelegateCandidateOut(
+            employee_id=c.employee_id, display_name=c.display_name, employee_no=c.employee_no
+        )
+        for c in candidates
+    ]
+
+
+@router.get(
+    "/approvals/delegations",
+    response_model=Page[DelegationOut],
+    summary="Delegations I hold (OWN) or every delegation (ORG)",
+)
+async def list_delegations(
+    session: SessionDep, ctx: DelegationCtx, params: PageQuery
+) -> Page[DelegationOut]:
+    """`GET /delegations` (ADR-0006 §11): ORG reaches every delegation in the organization;
+    below ORG (read as OWN — `delegation.write` never gains TEAM or LOCATION) reaches a row the
+    caller is either party to, delegator or delegate."""
+    is_org = ctx.scope is Scope.ORG
+    stmt = selectors.delegations_stmt(
+        organization_id=ctx.organization_id, caller_id=ctx.subject_ref, is_org=is_org
+    )
+    rows, total = await paginate(session, stmt, params)
+
+    person_ids: set[uuid.UUID] = set()
+    for row in rows:
+        person_ids.add(row.delegator_employee_id)
+        person_ids.add(row.delegate_employee_id)
+    people = await selectors.get_hierarchy_people(session, ctx.organization_id, person_ids)
+    db_now = await services.db_now(session)
+
+    items = [_delegation_out(row, people, db_now) for row in rows]
+    return Page.build(items, total=total, params=params)
+
+
+@router.post(
+    "/approvals/delegations",
+    response_model=DelegationCreateOut,
+    status_code=201,
+    summary="Create a delegation",
+)
+async def create_delegation(
+    body: DelegationCreateIn, session: SessionDep, ctx: DelegationCtx
+) -> DelegationCreateOut:
+    """`POST /delegations` (ADR-0006 §5, §11). `delegator_employee_id` omitted resolves to the
+    caller; supplying a *different* id needs ORG (screens §4.E's "for another employee") — a
+    below-ORG caller doing so is refused here, at the permission boundary, before
+    `app/services.create_delegation` ever runs, so a business-rule refusal (self-delegation, an
+    overlap) can never leak anything about a delegator the caller was never authorized to name.
+    Every other refusal — self-delegation, an end before or in the past, an overlapping active
+    delegation, a delegate who has left — is `app/services.create_delegation`'s.
+    """
+    caller_id = ctx.subject_ref
+    if caller_id is None:
+        # `created_by_employee_id` is `NOT NULL` — a membership with no employee link has no
+        # identity to record as the creator, the same "nothing to act as" reading ADR-0006 §6
+        # rule 2 gives deciding.
+        raise ForbiddenProblem("No employee link to create a delegation")
+    is_org = ctx.scope is Scope.ORG
+    delegator_id = (
+        body.delegator_employee_id if body.delegator_employee_id is not None else caller_id
+    )
+    if delegator_id != caller_id and not is_org:
+        raise ForbiddenProblem("Creating a delegation for another employee needs ORG scope")
+
+    delegation, repointed_count = await services.create_delegation(
+        session,
+        organization_id=ctx.organization_id,
+        delegator_employee_id=delegator_id,
+        delegate_employee_id=body.delegate_employee_id,
+        starts_at=body.starts_at,
+        ends_at=body.ends_at,
+        created_by_employee_id=caller_id,
+    )
+    await session.flush()
+
+    people = await selectors.get_hierarchy_people(
+        session, ctx.organization_id, {delegator_id, body.delegate_employee_id}
+    )
+    db_now = await services.db_now(session)
+    base = _delegation_out(delegation, people, db_now)
+    return DelegationCreateOut(**base.model_dump(), repointed_count=repointed_count)
+
+
+@router.post(
+    "/approvals/delegations/{delegation_id}/revoke",
+    response_model=DelegationOut,
+    summary="Revoke a delegation",
+)
+async def revoke_delegation(
+    delegation_id: uuid.UUID, session: SessionDep, ctx: DelegationCtx
+) -> DelegationOut:
+    """`POST /delegations/{id}/revoke` (ADR-0006 §5, §11). `app/services.revoke_delegation` is
+    where the object-level rule lives: below ORG only the delegator may revoke, a bystander gets
+    **404**, an already-revoked delegation gets a clean **409** rather than the guard trigger's
+    raw exception."""
+    caller_id = ctx.subject_ref
+    if caller_id is None:
+        raise ForbiddenProblem("No employee link to revoke a delegation")
+    is_org = ctx.scope is Scope.ORG
+
+    delegation = await services.revoke_delegation(
+        session,
+        organization_id=ctx.organization_id,
+        delegation_id=delegation_id,
+        caller_id=caller_id,
+        is_org=is_org,
+    )
+    await session.flush()
+
+    people = await selectors.get_hierarchy_people(
+        session,
+        ctx.organization_id,
+        {delegation.delegator_employee_id, delegation.delegate_employee_id},
+    )
+    db_now = await services.db_now(session)
+    return _delegation_out(delegation, people, db_now)

@@ -149,6 +149,312 @@
         "title": "DecisionIn",
         "type": "object"
       },
+      "DelegateCandidateOut": {
+        "description": "One `GET /delegate-candidates` row (ADR-0006 \u00a711, screens \u00a74.E). Deliberately three\nfields and nothing else \u2014 no location, no status, no manager: the picker needs enough to\ntell two colleagues apart, never more (ADR-0006 \u00a711: \"exposes no PII \u2014 a name and a staff\nnumber, to a colleague in the same tenant\").",
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "employee_no": {
+            "title": "Employee No",
+            "type": "string"
+          }
+        },
+        "required": [
+          "employee_id",
+          "display_name",
+          "employee_no"
+        ],
+        "title": "DelegateCandidateOut",
+        "type": "object"
+      },
+      "DelegationCreateIn": {
+        "additionalProperties": false,
+        "description": "`POST /delegations` (ADR-0006 \u00a75, \u00a711). `delegator_employee_id` omitted means \"for\nmyself\" \u2014 the ordinary member flow; supplying a different id needs `delegation.write:ORG`\n(\"for another employee\", screens \u00a74.E), checked in `app/api/routes.py` before this reaches\n`app/services.create_delegation` at all, so a below-ORG caller's business-rule refusals\n(self-delegation, window checks) never leak *anything* about a delegator they are not\nauthorized to name.",
+        "properties": {
+          "delegate_employee_id": {
+            "format": "uuid",
+            "title": "Delegate Employee Id",
+            "type": "string"
+          },
+          "delegator_employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delegator Employee Id"
+          },
+          "ends_at": {
+            "format": "date-time",
+            "title": "Ends At",
+            "type": "string"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "delegate_employee_id",
+          "starts_at",
+          "ends_at"
+        ],
+        "title": "DelegationCreateIn",
+        "type": "object"
+      },
+      "DelegationCreateOut": {
+        "description": "`POST /delegations`'s own response \u2014 `DelegationOut` plus the one field only a create\nresponse carries (ADR-0006 \u00a711 amended, screens **C4**): how many of the delegator's\ncurrently open steps re-pointed to the delegate in the same transaction. `0` is a normal,\ncommon value (nothing was waiting, or the delegation starts in the future) \u2014 the client\nomits the \"N requests moved\" line entirely rather than rendering \"0 requests moved\".",
+        "properties": {
+          "created_by_employee_id": {
+            "format": "uuid",
+            "title": "Created By Employee Id",
+            "type": "string"
+          },
+          "delegate_employee_id": {
+            "format": "uuid",
+            "title": "Delegate Employee Id",
+            "type": "string"
+          },
+          "delegate_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delegate Name"
+          },
+          "delegator_employee_id": {
+            "format": "uuid",
+            "title": "Delegator Employee Id",
+            "type": "string"
+          },
+          "delegator_location_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delegator Location Code"
+          },
+          "delegator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delegator Name"
+          },
+          "ends_at": {
+            "format": "date-time",
+            "title": "Ends At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "repointed_count": {
+            "title": "Repointed Count",
+            "type": "integer"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "revoked_by_employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked By Employee Id"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "scheduled",
+              "ended",
+              "revoked"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "delegator_employee_id",
+          "delegator_name",
+          "delegator_location_code",
+          "delegate_employee_id",
+          "delegate_name",
+          "starts_at",
+          "ends_at",
+          "status",
+          "created_by_employee_id",
+          "revoked_at",
+          "revoked_by_employee_id",
+          "repointed_count"
+        ],
+        "title": "DelegationCreateOut",
+        "type": "object"
+      },
+      "DelegationOut": {
+        "description": "One `GET /delegations` row, and the shape `POST /delegations` and\n`POST /delegations/{id}/revoke` both return (ADR-0006 \u00a711, screens \u00a74.E). Both parties carry\na name (\u00a711's \"every id is accompanied by a name\") but not an `employee_no` \u2014 that field\ntravels only with the person being *identified* (screens **C6**), and a delegation row\nidentifies nobody in the sense a request's requester does.",
+        "properties": {
+          "created_by_employee_id": {
+            "format": "uuid",
+            "title": "Created By Employee Id",
+            "type": "string"
+          },
+          "delegate_employee_id": {
+            "format": "uuid",
+            "title": "Delegate Employee Id",
+            "type": "string"
+          },
+          "delegate_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delegate Name"
+          },
+          "delegator_employee_id": {
+            "format": "uuid",
+            "title": "Delegator Employee Id",
+            "type": "string"
+          },
+          "delegator_location_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delegator Location Code"
+          },
+          "delegator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delegator Name"
+          },
+          "ends_at": {
+            "format": "date-time",
+            "title": "Ends At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "revoked_by_employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked By Employee Id"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "scheduled",
+              "ended",
+              "revoked"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "delegator_employee_id",
+          "delegator_name",
+          "delegator_location_code",
+          "delegate_employee_id",
+          "delegate_name",
+          "starts_at",
+          "ends_at",
+          "status",
+          "created_by_employee_id",
+          "revoked_at",
+          "revoked_by_employee_id"
+        ],
+        "title": "DelegationOut",
+        "type": "object"
+      },
       "DottedLineManagerOut": {
         "description": "Shown, never routed (ADR-0006 \u00a72). Absent from the response when there is none.",
         "properties": {
@@ -308,6 +614,42 @@
           "from_name"
         ],
         "title": "InboxItemOut",
+        "type": "object"
+      },
+      "Page_DelegationOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DelegationOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[DelegationOut]",
         "type": "object"
       },
       "Page_InboxItemOut_": {
@@ -1044,6 +1386,197 @@
           }
         },
         "summary": "The resolved approval chain for one employee",
+        "tags": [
+          "approval"
+        ]
+      }
+    },
+    "/api/v1/approvals/delegate-candidates": {
+      "get": {
+        "description": "`GET /delegate-candidates` (ADR-0006 \u00a711, screens \u00a74.E): the delegation picker's source.\nGated on `delegation.write` at **any** scope \u2014 reachable only by someone who could actually\ncreate a delegation, not a general employee directory (this is why the endpoint exists\ninstead of widening an HRMS scope, ADR-0006 \u00a711). Excludes the caller and every exited node;\n`q` is required and at least two characters **after stripping whitespace**:\n`StringConstraints(strip_whitespace=True, min_length=2)` strips before it measures, not\nafter, so a request whose `q` is all whitespace (`\"  \"`) or is one real character padded\nwith whitespace (`\"a \"`) is a clean 422 here rather than reaching\n`selectors.search_delegate_candidates` as an empty or one-character prefix. That distinction\nis not cosmetic: `delegation.write` collapses to OWN in the default MEMBER template\n(`app/catalogue.py`), so every employee holds it, and a prefix search with no effective floor\nis a staff-directory enumeration (\"a \"..\"z \", \"0 \"..\"9 \") any employee could run to\ncompletion in a few dozen requests \u2014 well under the gateway's per-minute rate limit. Capped\nat `DELEGATE_CANDIDATES_LIMIT` regardless of how many rows match.",
+        "operationId": "list_delegate_candidates_api_v1_approvals_delegate_candidates_get",
+        "parameters": [
+          {
+            "description": "At least two characters",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "description": "At least two characters",
+              "minLength": 2,
+              "title": "Q",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DelegateCandidateOut"
+                  },
+                  "title": "Response List Delegate Candidates Api V1 Approvals Delegate Candidates Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search colleagues to delegate to",
+        "tags": [
+          "approval"
+        ]
+      }
+    },
+    "/api/v1/approvals/delegations": {
+      "get": {
+        "description": "`GET /delegations` (ADR-0006 \u00a711): ORG reaches every delegation in the organization;\nbelow ORG (read as OWN \u2014 `delegation.write` never gains TEAM or LOCATION) reaches a row the\ncaller is either party to, delegator or delegate.",
+        "operationId": "list_delegations_api_v1_approvals_delegations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_DelegationOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delegations I hold (OWN) or every delegation (ORG)",
+        "tags": [
+          "approval"
+        ]
+      },
+      "post": {
+        "description": "`POST /delegations` (ADR-0006 \u00a75, \u00a711). `delegator_employee_id` omitted resolves to the\ncaller; supplying a *different* id needs ORG (screens \u00a74.E's \"for another employee\") \u2014 a\nbelow-ORG caller doing so is refused here, at the permission boundary, before\n`app/services.create_delegation` ever runs, so a business-rule refusal (self-delegation, an\noverlap) can never leak anything about a delegator the caller was never authorized to name.\nEvery other refusal \u2014 self-delegation, an end before or in the past, an overlapping active\ndelegation, a delegate who has left \u2014 is `app/services.create_delegation`'s.",
+        "operationId": "create_delegation_api_v1_approvals_delegations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DelegationCreateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DelegationCreateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a delegation",
+        "tags": [
+          "approval"
+        ]
+      }
+    },
+    "/api/v1/approvals/delegations/{delegation_id}/revoke": {
+      "post": {
+        "description": "`POST /delegations/{id}/revoke` (ADR-0006 \u00a75, \u00a711). `app/services.revoke_delegation` is\nwhere the object-level rule lives: below ORG only the delegator may revoke, a bystander gets\n**404**, an already-revoked delegation gets a clean **409** rather than the guard trigger's\nraw exception.",
+        "operationId": "revoke_delegation_api_v1_approvals_delegations__delegation_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "delegation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Delegation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DelegationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke a delegation",
         "tags": [
           "approval"
         ]

@@ -31,6 +31,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.domain import DelegationStatus
+
 
 class ServiceInfo(BaseModel):
     service: str
@@ -200,3 +202,72 @@ class DecisionIn(BaseModel):
 
     outcome: Literal["approve", "reject"]
     comment: str | None = Field(default=None, max_length=2000)
+
+
+# --------------------------------------------------------------------- delegation (slice 3)
+
+
+class DelegateCandidateOut(BaseModel):
+    """One `GET /delegate-candidates` row (ADR-0006 §11, screens §4.E). Deliberately three
+    fields and nothing else — no location, no status, no manager: the picker needs enough to
+    tell two colleagues apart, never more (ADR-0006 §11: "exposes no PII — a name and a staff
+    number, to a colleague in the same tenant")."""
+
+    employee_id: uuid.UUID
+    display_name: str
+    employee_no: str
+
+
+class DelegationOut(BaseModel):
+    """One `GET /delegations` row, and the shape `POST /delegations` and
+    `POST /delegations/{id}/revoke` both return (ADR-0006 §11, screens §4.E). Both parties carry
+    a name (§11's "every id is accompanied by a name") but not an `employee_no` — that field
+    travels only with the person being *identified* (screens **C6**), and a delegation row
+    identifies nobody in the sense a request's requester does."""
+
+    id: uuid.UUID
+    delegator_employee_id: uuid.UUID
+    delegator_name: str | None
+    #: Where the delegator's day runs — the amendment's answer to **O4** for this surface: "the
+    #: times are in {location}" line under the form, and the same fact governs the display of
+    #: every instant on the row. `None` falls back to organization time, labelled, client-side.
+    delegator_location_code: str | None
+    delegate_employee_id: uuid.UUID
+    delegate_name: str | None
+    starts_at: datetime
+    ends_at: datetime
+    #: `active|scheduled|ended|revoked` (screens §4.E's row tag and its three list sections) —
+    #: computed server-side by `domain.delegation_status` from the database's own clock, never
+    #: from `starts_at`/`ends_at` compared against the caller's browser clock. Typed with
+    #: `domain.DelegationStatus` rather than its own `Literal` so the vocabulary has one
+    #: definition, not two that could drift.
+    status: DelegationStatus
+    created_by_employee_id: uuid.UUID
+    revoked_at: datetime | None
+    revoked_by_employee_id: uuid.UUID | None
+
+
+class DelegationCreateOut(DelegationOut):
+    """`POST /delegations`'s own response — `DelegationOut` plus the one field only a create
+    response carries (ADR-0006 §11 amended, screens **C4**): how many of the delegator's
+    currently open steps re-pointed to the delegate in the same transaction. `0` is a normal,
+    common value (nothing was waiting, or the delegation starts in the future) — the client
+    omits the "N requests moved" line entirely rather than rendering "0 requests moved"."""
+
+    repointed_count: int
+
+
+class DelegationCreateIn(BaseModel):
+    """`POST /delegations` (ADR-0006 §5, §11). `delegator_employee_id` omitted means "for
+    myself" — the ordinary member flow; supplying a different id needs `delegation.write:ORG`
+    ("for another employee", screens §4.E), checked in `app/api/routes.py` before this reaches
+    `app/services.create_delegation` at all, so a below-ORG caller's business-rule refusals
+    (self-delegation, window checks) never leak *anything* about a delegator they are not
+    authorized to name."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    delegator_employee_id: uuid.UUID | None = None
+    delegate_employee_id: uuid.UUID
+    starts_at: datetime
+    ends_at: datetime

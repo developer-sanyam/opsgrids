@@ -15,6 +15,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 
 #: The number of rungs *above the requester* the walk (and employee's own cycle check, data
 #: model §4.3) will accept — a 32-rung proposed chain is accepted, a 33-rung one refused, on both
@@ -151,3 +152,44 @@ def inbox_reason_for(
     # Route (c), abandoned: the caller is neither the approver nor the represented original, so
     # this row can only have matched through the ORG "unassigned or abandoned" branch.
     return InboxReason(INBOX_REASON_UNASSIGNED, None)
+
+
+# --------------------------------------------------------------------- delegation status (slice 3)
+
+#: `GET /delegations` row tags and the three list sections screens §4.E specifies (Active,
+#: Scheduled, Past — "Past" being `ended` and `revoked` together on the client side). The single
+#: source for this vocabulary — `app/schemas.py`'s `DelegationOut.status` is typed with this
+#: same alias rather than repeating the four literals, which is what lets
+#: `app/api/routes.py._delegation_out` pass `delegation_status(...)`'s return straight into the
+#: schema with no `cast`: previously the vocabulary was written three times (these constants,
+#: the schema's own `Literal`, and the cast that reconciled the two), which is exactly the
+#: shape that drifts the moment a fifth status is ever added to only one of the three.
+DelegationStatus = Literal["active", "scheduled", "ended", "revoked"]
+
+DELEGATION_STATUS_ACTIVE: Literal["active"] = "active"
+DELEGATION_STATUS_SCHEDULED: Literal["scheduled"] = "scheduled"
+DELEGATION_STATUS_ENDED: Literal["ended"] = "ended"
+DELEGATION_STATUS_REVOKED: Literal["revoked"] = "revoked"
+
+
+def delegation_status(
+    *, revoked_at: datetime | None, starts_at: datetime, ends_at: datetime, at: datetime
+) -> DelegationStatus:
+    """One of `active|scheduled|ended|revoked`, computed from the same three instants
+    `delegation_is_active` compares — so the row tag and the eligibility check can never
+    disagree about what a delegation currently grants.
+
+    `revoked` takes priority over the time-based reading even when `at` still falls inside
+    `[starts_at, ends_at)`: revocation changes eligibility **immediately** (ADR-0006 §5 — "the
+    delegate loses the power to decide immediately"), so the tag must say so rather than keep
+    reading "Active" until the original window would have ended on its own. The boundary at
+    `ends_at` is the same half-open one `delegation_is_active` and `ex_delegations_no_overlap`
+    both use: a delegation is no longer active at the exact instant it ends.
+    """
+    if revoked_at is not None:
+        return DELEGATION_STATUS_REVOKED
+    if at < starts_at:
+        return DELEGATION_STATUS_SCHEDULED
+    if at >= ends_at:
+        return DELEGATION_STATUS_ENDED
+    return DELEGATION_STATUS_ACTIVE

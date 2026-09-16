@@ -8,7 +8,9 @@ commit or roll back together.
 Slice 1 has exactly one write: the version-gated upsert of one `hierarchy_nodes` row (ADR-0006
 §2, data model §1.1). Slice 2 adds the routing engine's three writes: opening a request
 (`open_regularization_request`, ADR-0006 §4), deciding one (`decide_request`, §6-§7), and
-recording the product's return leg (`apply_regularization_outcome`, §12).
+recording the product's return leg (`apply_regularization_outcome`, §12). Slice 3 adds the
+delegation CRUD surface: `create_delegation` (§5, with the re-pointing it triggers) and
+`revoke_delegation` (§5, §11).
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from typing import Any, cast
 
 from sqlalchemy import CursorResult, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, selectors
@@ -30,11 +33,17 @@ from app.models import (
     ApprovalRequest,
     ApprovalStep,
     AuditLog,
+    Delegation,
     HierarchyNode,
     OutboxEvent,
 )
 from platform_core.audit import record_audit
-from platform_core.errors import ConflictProblem, ForbiddenProblem, NotFoundProblem
+from platform_core.errors import (
+    ConflictProblem,
+    ForbiddenProblem,
+    NotFoundProblem,
+    ValidationProblem,
+)
 from platform_core.events import publish_event
 
 #: `<product>.<module>.<thing>` (ADR-0006 §12) — the one request type this slice routes.
@@ -198,13 +207,19 @@ async def upsert_hierarchy_nodes_bulk(
 # --------------------------------------------------------------------- opening a request (§4)
 
 
-async def _db_now(session: AsyncSession) -> datetime:
+async def db_now(session: AsyncSession) -> datetime:
     """One clock, and it is the database's (ADR-0006 §8): every SLA instant and every
     delegation-activity comparison is read from PostgreSQL, once per transaction, then threaded
     through. Applied here too, even though slices 2-3 have no SLA clock, for the same reason —
     `opened_at`/`decided_at`/`closed_at` and the delegation-active check must agree with each
     other and with the mixins' own `server_default=func.now()`, or a constraint that compares an
-    app-supplied instant with a database-supplied one becomes a heisenbug on clock skew."""
+    app-supplied instant with a database-supplied one becomes a heisenbug on clock skew.
+
+    Public: `app/api/routes.py` reads it directly at four sites (`get_inbox`, `list_delegations`,
+    `create_delegation`, `revoke_delegation`) that need "now" for a response computed outside any
+    `services.py` write path — the inbox's eligibility reasoning and the delegation status tag
+    both have to agree with whatever clock instant a write in the same request used, so the route
+    calls this rather than reading its own, second `now()`."""
     return (await session.execute(select(func.now()))).scalar_one()
 
 
@@ -226,7 +241,7 @@ async def open_regularization_request(
     event id, one layer up in `app/consumers.py`. Returns the new request, with its one opened
     step, otherwise.
     """
-    db_now = await _db_now(session)
+    now = await db_now(session)
 
     insert_stmt = (
         pg_insert(ApprovalRequest)
@@ -238,7 +253,7 @@ async def open_regularization_request(
             summary=summary,
             request_note=request_note,
             status="pending",
-            opened_at=db_now,
+            opened_at=now,
         )
         .on_conflict_do_nothing(
             index_elements=[
@@ -302,7 +317,7 @@ async def open_regularization_request(
         # this step: rule keeps a delegation from silently changing who approves) or the
         # delegate's own node is exited.
         delegation = await selectors.get_active_delegation_for(
-            session, organization_id, approver_rung.employee_id, db_now
+            session, organization_id, approver_rung.employee_id, now
         )
         if delegation is not None and delegation.delegate_employee_id != requester_employee_id:
             delegate_node = await selectors.get_hierarchy_node(
@@ -326,7 +341,7 @@ async def open_regularization_request(
         acting_for_employee_id=step_acting_for_id,
         delegation_id=step_delegation_id,
         reason=step_reason,
-        opened_at=db_now,
+        opened_at=now,
         # Slices 2-3: no SLA clock exists yet, so every step opens with no due date at all
         # (ADR-0006 §10 amended, §8). `approval_policies.sla_minutes` is written and floored, but
         # nothing reads it before slice 4's sweep.
@@ -512,14 +527,14 @@ async def decide_request(
         # caller gets, rather than at the route — so there is exactly one place this rule lives.
         raise ForbiddenProblem("Not eligible to decide this request")
 
-    db_now = await _db_now(session)
+    now = await db_now(session)
     eligibility = await check_eligibility(
         session,
         organization_id=organization_id,
         request=request,
         caller_id=caller_id,
         has_org_decide=has_org_decide,
-        now=db_now,
+        now=now,
     )
     if not eligibility.eligible:
         raise ForbiddenProblem("Not eligible to decide this request")
@@ -540,12 +555,12 @@ async def decide_request(
         # "approve" else "rejected"` used to (a typo, or a third outcome added to the schema
         # without a matching case here, would otherwise reject a request nobody meant to reject).
         raise ValueError(f"unknown decision outcome: {outcome!r}") from None
-    step.closed_at = db_now
+    step.closed_at = now
 
     request.status = step.outcome
     request.decided_by_employee_id = caller_id
     request.acting_for_employee_id = eligibility.acting_for_employee_id
-    request.decided_at = db_now
+    request.decided_at = now
     request.comment = comment
 
     record_audit(
@@ -594,7 +609,7 @@ async def decide_request(
                 else None
             ),
             "comment": comment,
-            "decided_at": db_now.isoformat(),
+            "decided_at": now.isoformat(),
         },
         actor={"employee_id": str(caller_id)},
     )
@@ -630,9 +645,9 @@ async def apply_regularization_outcome(
     if request is None or request.status == "pending" or request.application_state is not None:
         return request
 
-    db_now = await _db_now(session)
+    now = await db_now(session)
     request.application_state = outcome
-    request.applied_at = db_now
+    request.applied_at = now
     request.application_failure_reason = failure_reason if outcome == "failed" else None
 
     record_audit(
@@ -647,3 +662,336 @@ async def apply_regularization_outcome(
         after={"application_state": outcome},
     )
     return request
+
+
+# --------------------------------------------------------------------- delegation (slice 3, §5)
+
+
+def _integrity_error_constraint(exc: IntegrityError) -> str | None:
+    """The name of the constraint that actually fired, when the driver surfaces one — or `None`
+    when it does not (a constraint with no name, or an `IntegrityError` that is not a constraint
+    violation at all).
+
+    asyncpg's own exception carries `constraint_name` directly, but SQLAlchemy's asyncpg dialect
+    re-raises it as a driver-shaped exception first (`AsyncAdapt_asyncpg_dbapi.IntegrityError`,
+    raised `from` the original — see `sqlalchemy.dialects.postgresql.asyncpg._handle_exception`),
+    so the structured attribute survives on `exc.orig.__cause__`, not on `exc.orig` itself. Both
+    are checked, in that order, so this keeps working if a future SQLAlchemy version stops
+    wrapping and starts surfacing the driver exception as `.orig` directly.
+    """
+    orig = exc.orig
+    name = getattr(orig, "constraint_name", None)
+    if name is not None:
+        return str(name)
+    cause = getattr(orig, "__cause__", None)
+    name = getattr(cause, "constraint_name", None)
+    return str(name) if name is not None else None
+
+
+def _validate_delegation_window(
+    *,
+    delegator_employee_id: uuid.UUID,
+    delegate_employee_id: uuid.UUID,
+    starts_at: datetime,
+    ends_at: datetime,
+    now: datetime,
+) -> None:
+    """The field-level refusals ADR-0006 §5 states plainly enough to check before ever touching
+    the database, each its own `ValidationProblem` with a `field` so the screens can attach the
+    message to the control that caused it (screens §4.E's validation states) rather than a
+    single undirected 422. Pure and synchronous — no I/O — so it is exercised directly by
+    `tests/test_delegations.py` without a database round trip for the cases that do not need
+    one.
+    """
+    if delegate_employee_id == delegator_employee_id:
+        # ADR-0006 §5's own CHECK (`ck_delegations_not_self`) would refuse this too, but as a
+        # raw `IntegrityError` the global handler turns into an undirected "conflicts with
+        # something" 409 — the wrong status for a validation mistake, and with no field to
+        # attach the screens' inline message to.
+        raise ValidationProblem(
+            "You can't delegate to yourself",
+            errors=[
+                {
+                    "field": "delegate_employee_id",
+                    "code": "self_delegation",
+                    "message": "You can't delegate to yourself.",
+                }
+            ],
+        )
+    if ends_at <= starts_at:
+        raise ValidationProblem(
+            "End must be after the start",
+            errors=[
+                {
+                    "field": "ends_at",
+                    "code": "window_backwards",
+                    "message": "End must be after the start.",
+                }
+            ],
+        )
+    if ends_at <= now:
+        # ADR-0006 §5: "ends_at must be in the future" — screens §4.E's Ends field validates the
+        # same rule client-side; this is the server making it a rule rather than a courtesy.
+        raise ValidationProblem(
+            "Pick a time in the future",
+            errors=[
+                {
+                    "field": "ends_at",
+                    "code": "window_in_the_past",
+                    "message": "Pick a time in the future.",
+                }
+            ],
+        )
+
+
+async def create_delegation(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    delegator_employee_id: uuid.UUID,
+    delegate_employee_id: uuid.UUID,
+    starts_at: datetime,
+    ends_at: datetime,
+    created_by_employee_id: uuid.UUID,
+) -> tuple[Delegation, int]:
+    """`POST /delegations` (ADR-0006 §5), one transaction:
+
+    1. Refuse self-delegation, an end before (or equal to) a start, and an end in the past.
+    2. Refuse a delegator with no `hierarchy_nodes` row in this tenant, symmetrically with the
+       delegate check below (no cross-tenant effect today — `organization_id` is bound into
+       every query regardless — but an id this service has never seen for this org is unvalidated
+       data all the same, and the same ADR-0006 §11 boundary-validation discipline the delegate
+       check already follows applies here).
+    3. Refuse a delegate whose `hierarchy_nodes` row is missing or `exited` (§5: "the delegate
+       must have a hierarchy_nodes row whose status is not exited").
+    4. Refuse an overlapping active delegation for this delegator with a clean 409 naming the
+       conflicting range, falling back to a generic one if a concurrent create wins the race the
+       opportunistic check cannot see — `ex_delegations_no_overlap` is the actual enforcement
+       either way (data model §1.5).
+    5. Insert the delegation, audit it.
+    6. Re-point every currently open step this delegator holds directly to the new delegate
+       (§5), **only** when `starts_at <= now` — a future-dated delegation re-points nothing at
+       creation, because nothing re-points it when it starts either (§5, and this ADR rejects
+       any re-route sweep, §9). The original approver stays eligible throughout (route b,
+       `check_eligibility`); only the *current* step moves.
+
+    Returns the new row and `repointed_count` (screens **C4**).
+    """
+    now = await db_now(session)
+    _validate_delegation_window(
+        delegator_employee_id=delegator_employee_id,
+        delegate_employee_id=delegate_employee_id,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        now=now,
+    )
+
+    delegator_node = await selectors.get_hierarchy_node(
+        session, organization_id, delegator_employee_id
+    )
+    if delegator_node is None:
+        # Symmetric with the delegate check below, one field over: an id with no row in this
+        # tenant's copy at all. Below-ORG callers can only ever name themselves here (the route's
+        # own gate), so this is reachable only for an ORG caller naming a `delegator_employee_id`
+        # the copy has never seen — a stale or cross-tenant id, never a live routing decision.
+        raise ValidationProblem(
+            "That delegator can't be found",
+            errors=[
+                {
+                    "field": "delegator_employee_id",
+                    "code": "delegator_not_in_tenant",
+                    "message": "That delegator can't be found in this organization.",
+                }
+            ],
+        )
+
+    delegate_node = await selectors.get_hierarchy_node(
+        session, organization_id, delegate_employee_id
+    )
+    if delegate_node is None or delegate_node.status == "exited":
+        # `GET /delegate-candidates` already excludes both populations, so reaching here means a
+        # client-supplied id the picker never offered — a raced departure, or a caller that
+        # bypassed the picker entirely.
+        raise ValidationProblem(
+            "That colleague can't be delegated to",
+            errors=[
+                {
+                    "field": "delegate_employee_id",
+                    "code": "delegate_not_available",
+                    "message": "That colleague can't be delegated to right now.",
+                }
+            ],
+        )
+
+    # Opportunistic, not the enforcement (`app/selectors.get_overlapping_delegation`'s own
+    # docstring): reads before the insert so the common, non-racing case gets a 409 naming the
+    # actual conflicting range (screens §4.E). The `except IntegrityError` below is what a race
+    # this read misses still falls back to.
+    overlap = await selectors.get_overlapping_delegation(
+        session, organization_id, delegator_employee_id, starts_at, ends_at
+    )
+    if overlap is not None:
+        raise ConflictProblem(
+            f"You already have a delegation from {overlap.starts_at.isoformat()} to "
+            f"{overlap.ends_at.isoformat()} that covers those dates."
+        )
+
+    delegation = Delegation(
+        organization_id=organization_id,
+        delegator_employee_id=delegator_employee_id,
+        delegate_employee_id=delegate_employee_id,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        created_by_employee_id=created_by_employee_id,
+    )
+    session.add(delegation)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        # `flush()` drains every pending object in the session, not only this one, so an
+        # `IntegrityError` here is not necessarily *this* insert's overlap — reporting every
+        # integrity failure as "you already have a delegation that covers those dates" would
+        # misreport an unrelated constraint violation as this specific, wrong business rule. Only
+        # `ex_delegations_no_overlap` firing gets the overlap message; anything else re-raises,
+        # which the platform's own `IntegrityError` handler (`platform_core/errors.py`) turns
+        # into a generic, non-leaking 409 — the same shape every other unanticipated constraint
+        # violation in this service gets.
+        if _integrity_error_constraint(exc) != "ex_delegations_no_overlap":
+            raise
+        # The race the pre-check above cannot see (the same shape `billing/app/services.py`'s
+        # credit-reversal race uses): another transaction created an overlapping delegation
+        # between our read and our insert, and the exclusion constraint refused ours — a clean
+        # 409, not the raw `IntegrityError` the global handler would otherwise turn into a less
+        # specific one.
+        raise ConflictProblem("You already have a delegation that covers those dates.") from exc
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=created_by_employee_id,
+        action="approval.delegation.created",
+        entity="delegation",
+        entity_id=delegation.id,
+        after={
+            "delegator_employee_id": str(delegator_employee_id),
+            "delegate_employee_id": str(delegate_employee_id),
+            "starts_at": starts_at.isoformat(),
+            "ends_at": ends_at.isoformat(),
+        },
+    )
+
+    repointed_count = 0
+    if starts_at <= now:
+        repointable = await selectors.get_repointable_open_steps(
+            session, organization_id, delegator_employee_id, delegate_employee_id
+        )
+        new_steps: list[ApprovalStep] = []
+        for step in repointable:
+            # Append-only (`trg_approval_steps_append_only`): the only permitted update to an
+            # open step is closing it, which is exactly what re-pointing does before inserting
+            # its successor — rerouting is never an edit (data model §1.4).
+            step.outcome = "delegated"
+            step.closed_at = now
+            new_step = ApprovalStep(
+                organization_id=organization_id,
+                request_id=step.request_id,
+                level=step.level,
+                approver_employee_id=delegate_employee_id,
+                acting_for_employee_id=delegator_employee_id,
+                delegation_id=delegation.id,
+                reason="delegated",
+                opened_at=now,
+                # "the predecessor's due_at carried over unchanged... re-pointing does not
+                # restart the SLA clock" (ADR-0006 §5). Always `None` in this slice regardless
+                # (ADR-0006 §10 amended) — carried through rather than hardcoded so slice 4's
+                # armed due dates re-point correctly without this line changing.
+                due_at=step.due_at,
+                outcome="open",
+            )
+            session.add(new_step)
+            new_steps.append(new_step)
+        repointed_count = len(new_steps)
+        if new_steps:
+            # One flush for the whole batch so every successor's id is assigned before the audit
+            # loop below needs it, rather than a round trip per step.
+            await session.flush()
+            for new_step in new_steps:
+                # One audit row per re-pointed step (ADR-0006 §13: "approval.step.delegated (one
+                # per re-pointed step)").
+                record_audit(
+                    session,
+                    AuditLog,
+                    organization_id=organization_id,
+                    actor_id=created_by_employee_id,
+                    action="approval.step.delegated",
+                    entity="approval_step",
+                    entity_id=new_step.id,
+                    after={
+                        "request_id": str(new_step.request_id),
+                        "level": new_step.level,
+                        "approver_employee_id": str(delegate_employee_id),
+                        "acting_for_employee_id": str(delegator_employee_id),
+                    },
+                    reason="delegation_created",
+                )
+
+    return delegation, repointed_count
+
+
+async def revoke_delegation(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    delegation_id: uuid.UUID,
+    caller_id: uuid.UUID,
+    is_org: bool,
+) -> Delegation:
+    """`POST /delegations/{id}/revoke` (ADR-0006 §5, §11). Revoking is the only mutation
+    `trg_delegations_revoke_only` permits, and it changes nothing else about the row or about
+    any step it already re-pointed: "Revocation and expiry never re-route... What it changes is
+    eligibility" (§5) — no step here is touched, closed, or reopened.
+
+    Below ORG (read as OWN, `app/catalogue.py`'s collapse), only the delegator may revoke — the
+    delegate can *see* the row (`GET /delegations`' OWN reading matches either party) but may
+    not act on it, the same 403-after-404 split `decide_request` draws for a caller who already
+    knows a row exists (ADR-0006 §11): a bystander who is neither party gets **404** (cannot see
+    it at all), a delegate who is not the delegator gets **403** (sees it, may not revoke it).
+
+    Idempotent in the sense `decide_request`'s "already decided" is: a second revoke is refused
+    with a clean **409** naming what happened — never the trigger's raw exception, and never a
+    silent no-op that could hide a client retrying against a delegation someone else already
+    revoked (screens §4.E: "This was already revoked.").
+    """
+    delegation = await selectors.get_delegation(session, organization_id, delegation_id)
+    if delegation is None:
+        raise NotFoundProblem("That delegation isn't available to you")
+    if not is_org and caller_id not in (
+        delegation.delegator_employee_id,
+        delegation.delegate_employee_id,
+    ):
+        # Cross-tenant, unknown, and "neither party, below ORG" all look identical here, on
+        # purpose (ADR-0006 §11's probe-resistance rule).
+        raise NotFoundProblem("That delegation isn't available to you")
+    if not is_org and caller_id != delegation.delegator_employee_id:
+        raise ForbiddenProblem("Only the delegator may revoke this delegation")
+
+    if delegation.revoked_at is not None:
+        raise ConflictProblem("This delegation was already revoked")
+
+    now = await db_now(session)
+    delegation.revoked_at = now
+    delegation.revoked_by_employee_id = caller_id
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=caller_id,
+        action="approval.delegation.revoked",
+        entity="delegation",
+        entity_id=delegation.id,
+        before={"revoked_at": None},
+        after={"revoked_at": now.isoformat()},
+    )
+    return delegation

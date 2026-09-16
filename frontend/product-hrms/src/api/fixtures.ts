@@ -3,10 +3,15 @@
  * without a live login. Swapped out by the `USE_FIXTURES` flag in `client.ts`.
  */
 
+import { ApiError } from "@opsgrids/client";
+import type { ProblemJson } from "@opsgrids/client";
+
 import type {
   ApprovalChainOut,
   AttendanceRecord,
   AttendanceStatus,
+  DelegateCandidateOut,
+  DelegationOut,
   EmployeeOut,
   EmploymentType,
   InboxItemOut,
@@ -782,3 +787,281 @@ export const FIXTURE_CHAIN: ApprovalChainOut = {
   },
   unresolved: null,
 };
+
+/* --------------------------- delegations (slice 3) --------------------------- */
+
+const DANIEL = byNo("ATM-0104");
+
+const delUuid = (n: number): string => `a33c0000-0000-4000-a000-${n.toString().padStart(12, "0")}`;
+
+/** Mirrors `domain.delegation_status` (`services/approval/app/domain.py`) — fixture-only, so a
+ *  delegation the fixture viewer creates or revokes against real wall-clock dates still tags
+ *  itself the same way the live service would. A live row never computes this client-side; its
+ *  `status` always comes straight off the wire. */
+function fixtureDelegationStatus(
+  revokedAt: string | null,
+  startsAt: string,
+  endsAt: string,
+  at: Date,
+): DelegationOut["status"] {
+  if (revokedAt !== null) return "revoked";
+  const now = at.getTime();
+  if (now < new Date(startsAt).getTime()) return "scheduled";
+  if (now >= new Date(endsAt).getTime()) return "ended";
+  return "active";
+}
+
+const DEL_ACTIVE_MINE_ID = delUuid(1);
+const DEL_SCHEDULED_MINE_ID = delUuid(2);
+const DEL_REVOKED_MINE_ID = delUuid(3);
+const DEL_ENDED_MINE_ID = delUuid(4);
+const DEL_DELEGATED_TO_ME_ID = delUuid(5);
+const DEL_OTHERS_ID = delUuid(6);
+
+/** Every status §4.E's three sections need, demonstrated from the fixture viewer's seat (Sneha
+ *  Kulkarni, ATM-0301) — delegator on most rows, delegate on one (the "either party" reading), and
+ *  one row that names neither, visible only in ORG mode. Dates are relative to *now* so the demo
+ *  stays honest across however many days this fixture set has been running. */
+// Typed here, ahead of `.sort()` below: a method call on an array literal is not itself
+// contextually typed by the outer `const` annotation, so `status: "active"` would otherwise
+// widen to `string` and fail `DelegationOut`'s literal union.
+const UNSORTED_FIXTURE_DELEGATIONS: DelegationOut[] = [
+  {
+    id: DEL_ACTIVE_MINE_ID,
+    delegator_employee_id: SNEHA.id,
+    delegator_name: SNEHA.full_name,
+    delegator_location_code: SNEHA.location_code,
+    delegate_employee_id: ROHAN.id,
+    delegate_name: ROHAN.full_name,
+    starts_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+    ends_at: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString(),
+    status: "active",
+    created_by_employee_id: SNEHA.id,
+    revoked_at: null,
+    revoked_by_employee_id: null,
+  },
+  {
+    id: DEL_SCHEDULED_MINE_ID,
+    delegator_employee_id: SNEHA.id,
+    delegator_name: SNEHA.full_name,
+    delegator_location_code: SNEHA.location_code,
+    delegate_employee_id: DANIEL.id,
+    delegate_name: DANIEL.full_name,
+    starts_at: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString(),
+    ends_at: new Date(Date.now() + 17 * 24 * 60 * 60 * 1000).toISOString(),
+    status: "scheduled",
+    created_by_employee_id: SNEHA.id,
+    revoked_at: null,
+    revoked_by_employee_id: null,
+  },
+  {
+    id: DEL_ENDED_MINE_ID,
+    delegator_employee_id: SNEHA.id,
+    delegator_name: SNEHA.full_name,
+    delegator_location_code: SNEHA.location_code,
+    delegate_employee_id: ROHAN.id,
+    delegate_name: ROHAN.full_name,
+    starts_at: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+    ends_at: new Date(Date.now() - 23 * 24 * 60 * 60 * 1000).toISOString(),
+    status: "ended",
+    created_by_employee_id: SNEHA.id,
+    revoked_at: null,
+    revoked_by_employee_id: null,
+  },
+  {
+    id: DEL_REVOKED_MINE_ID,
+    delegator_employee_id: SNEHA.id,
+    delegator_name: SNEHA.full_name,
+    delegator_location_code: SNEHA.location_code,
+    delegate_employee_id: MARCUS.id,
+    delegate_name: MARCUS.full_name,
+    starts_at: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString(),
+    ends_at: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString(),
+    status: "revoked",
+    created_by_employee_id: SNEHA.id,
+    revoked_at: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
+    revoked_by_employee_id: SNEHA.id,
+  },
+  {
+    id: DEL_DELEGATED_TO_ME_ID,
+    delegator_employee_id: PRIYA.id,
+    delegator_name: PRIYA.full_name,
+    delegator_location_code: PRIYA.location_code,
+    delegate_employee_id: SNEHA.id,
+    delegate_name: SNEHA.full_name,
+    starts_at: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(),
+    ends_at: new Date(Date.now() + 6 * 24 * 60 * 60 * 1000).toISOString(),
+    status: "active",
+    created_by_employee_id: PRIYA.id,
+    revoked_at: null,
+    revoked_by_employee_id: null,
+  },
+  {
+    // Names neither party as the fixture viewer — visible only once `core.approval.delegation
+    // .write:ORG` is granted (fixture mode grants it, §2.4's G1 fallback), demonstrating "ORG
+    // sees every delegation in the organization" (routes.py `list_delegations`).
+    id: DEL_OTHERS_ID,
+    delegator_employee_id: MARCUS.id,
+    delegator_name: MARCUS.full_name,
+    delegator_location_code: MARCUS.location_code,
+    delegate_employee_id: KABIR.id,
+    delegate_name: KABIR.full_name,
+    starts_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
+    ends_at: new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString(),
+    status: "active",
+    created_by_employee_id: MARCUS.id,
+    revoked_at: null,
+    revoked_by_employee_id: null,
+  },
+];
+
+export const FIXTURE_DELEGATIONS: DelegationOut[] = [...UNSORTED_FIXTURE_DELEGATIONS].sort(
+  (a, b) => new Date(b.starts_at).getTime() - new Date(a.starts_at).getTime(),
+);
+
+/** The mutable, in-session copy of the fixture delegation list — `listDelegations` reads it,
+ *  `createDelegation`/`revokeDelegation` write to it, the same "representative but internally
+ *  consistent" contract `sampleRoster` (`api/client.ts`) keeps for attendance. */
+let delegationStore: DelegationOut[] = FIXTURE_DELEGATIONS.map((d) => ({ ...d }));
+
+export function __listFixtureDelegations(): DelegationOut[] {
+  return delegationStore.map((d) => ({
+    ...d,
+    status: fixtureDelegationStatus(d.revoked_at, d.starts_at, d.ends_at, new Date()),
+  }));
+}
+
+/** Mirrors `services.create_delegation`'s field-level refusals (self-delegation, an end before or
+ *  in the past, an exited delegate, an overlap) so every failure branch in screens §3.3 is
+ *  exercised without a login — the same discipline `client.requestRegularization` keeps for
+ *  attendance's own rules. */
+export function __createFixtureDelegation(body: {
+  delegator_employee_id?: string;
+  delegate_employee_id: string;
+  starts_at: string;
+  ends_at: string;
+}): { delegation: DelegationOut; repointed_count: number } {
+  const delegatorId = body.delegator_employee_id ?? SNEHA.id;
+  const now = new Date();
+
+  if (body.delegate_employee_id === delegatorId) {
+    throw problemErrorFor(422, "You can't delegate to yourself", [
+      {
+        field: "delegate_employee_id",
+        code: "self_delegation",
+        message: "You can't delegate to yourself.",
+      },
+    ]);
+  }
+  const startsAt = new Date(body.starts_at);
+  const endsAt = new Date(body.ends_at);
+  if (endsAt.getTime() <= startsAt.getTime()) {
+    throw problemErrorFor(422, "End must be after the start", [
+      { field: "ends_at", code: "window_backwards", message: "End must be after the start." },
+    ]);
+  }
+  if (endsAt.getTime() <= now.getTime()) {
+    throw problemErrorFor(422, "Pick a time in the future", [
+      { field: "ends_at", code: "window_in_the_past", message: "Pick a time in the future." },
+    ]);
+  }
+  const delegateEmployee = EMPLOYEES.find((e) => e.id === body.delegate_employee_id);
+  if (!delegateEmployee || delegateEmployee.status === "exited") {
+    throw problemErrorFor(422, "That colleague can't be delegated to", [
+      {
+        field: "delegate_employee_id",
+        code: "delegate_not_available",
+        message: "That colleague can't be delegated to right now.",
+      },
+    ]);
+  }
+  const overlap = delegationStore.find(
+    (d) =>
+      d.delegator_employee_id === delegatorId &&
+      d.revoked_at === null &&
+      new Date(d.starts_at).getTime() < endsAt.getTime() &&
+      new Date(d.ends_at).getTime() > startsAt.getTime(),
+  );
+  if (overlap) {
+    throw problemErrorFor(
+      409,
+      `You already have a delegation from ${overlap.starts_at} to ${overlap.ends_at} that covers those dates.`,
+    );
+  }
+
+  const delegatorEmployee = EMPLOYEES.find((e) => e.id === delegatorId) ?? SNEHA;
+  const created: DelegationOut = {
+    id: delUuid(1000 + delegationStore.length + 1),
+    delegator_employee_id: delegatorId,
+    delegator_name: delegatorEmployee.full_name,
+    delegator_location_code: delegatorEmployee.location_code,
+    delegate_employee_id: delegateEmployee.id,
+    delegate_name: delegateEmployee.full_name,
+    starts_at: body.starts_at,
+    ends_at: body.ends_at,
+    status: fixtureDelegationStatus(null, body.starts_at, body.ends_at, now),
+    created_by_employee_id: SNEHA.id,
+    revoked_at: null,
+    revoked_by_employee_id: null,
+  };
+  delegationStore = [created, ...delegationStore];
+
+  // Re-points only when the window has already opened (`services.create_delegation`, §5) — the
+  // fixture inbox has exactly one open, unassigned step per requester and no step currently
+  // assigned to a delegator other than Sneha, so the illustrative count is 1 exactly when this
+  // delegation starts immediately and the delegator is the fixture viewer, 0 otherwise.
+  const repointedCount = startsAt.getTime() <= now.getTime() && delegatorId === SNEHA.id ? 1 : 0;
+  return { delegation: created, repointed_count: repointedCount };
+}
+
+export function __revokeFixtureDelegation(delegationId: string): DelegationOut {
+  const existing = delegationStore.find((d) => d.id === delegationId);
+  if (!existing) {
+    throw problemErrorFor(404, "That delegation isn't available to you");
+  }
+  if (existing.revoked_at !== null) {
+    throw problemErrorFor(409, "This delegation was already revoked");
+  }
+  const revoked: DelegationOut = {
+    ...existing,
+    status: "revoked",
+    revoked_at: new Date().toISOString(),
+    revoked_by_employee_id: SNEHA.id,
+  };
+  delegationStore = delegationStore.map((d) => (d.id === delegationId ? revoked : d));
+  return revoked;
+}
+
+/** Test-only: restores the fixture delegation list to its initial state between test cases. */
+export function __resetFixtureDelegationsForTests(): void {
+  delegationStore = FIXTURE_DELEGATIONS.map((d) => ({ ...d }));
+}
+
+function problemErrorFor(
+  status: number,
+  detail: string,
+  errors?: { field: string; code: string; message: string }[],
+): ApiError {
+  const body: ProblemJson & { errors?: typeof errors } = {
+    detail,
+    ...(errors ? { errors } : {}),
+  };
+  return new ApiError(status, detail, body);
+}
+
+/** The delegate picker's fixture source (`GET /delegate-candidates`): non-exited employees whose
+ *  name or staff number **starts with** `q` (`selectors._DELEGATE_CANDIDATES_SQL`'s own match —
+ *  not a substring search), excluding the fixture viewer, ordered by name, capped at `limit`. */
+export function __searchFixtureDelegateCandidates(q: string, limit: number): DelegateCandidateOut[] {
+  const prefix = q.trim().toLowerCase();
+  return EMPLOYEES.filter(
+    (e) =>
+      e.id !== SNEHA.id &&
+      e.status !== "exited" &&
+      (e.full_name.toLowerCase().startsWith(prefix) ||
+        e.employee_no.toLowerCase().startsWith(prefix)),
+  )
+    .sort((a, b) => a.full_name.localeCompare(b.full_name))
+    .slice(0, limit)
+    .map((e) => ({ employee_id: e.id, display_name: e.full_name, employee_no: e.employee_no }));
+}

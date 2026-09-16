@@ -299,6 +299,56 @@ export interface ApprovalChainOut {
   unresolved: "cycle" | "depth_exceeded" | null;
 }
 
+/* ------------------------------------------------------------------ delegation (slice 3) */
+
+/** Mirrors `DelegateCandidateOut` — one `GET /delegate-candidates` row. Three fields only: enough
+ *  to tell two colleagues apart, never more (ADR-0006 §11). */
+export interface DelegateCandidateOut {
+  employee_id: string;
+  display_name: string;
+  employee_no: string;
+}
+
+export type DelegationStatus = "active" | "scheduled" | "ended" | "revoked";
+
+/** Mirrors `DelegationOut` — one `GET /delegations` row, and what create/revoke both return.
+ *  Neither party carries `employee_no` (C6): a delegation row identifies nobody the way a
+ *  request's requester does. */
+export interface DelegationOut {
+  id: string;
+  delegator_employee_id: string;
+  delegator_name: string | null;
+  /** Where the delegator's day runs — governs every instant on the row (§2.1). */
+  delegator_location_code: string | null;
+  delegate_employee_id: string;
+  delegate_name: string | null;
+  starts_at: string;
+  ends_at: string;
+  /** Computed server-side from the database's own clock — never from the caller's browser clock. */
+  status: DelegationStatus;
+  created_by_employee_id: string;
+  revoked_at: string | null;
+  revoked_by_employee_id: string | null;
+}
+
+/** Mirrors `DelegationCreateOut` — `DelegationOut` plus the one field only a create response
+ *  carries: how many currently open steps re-pointed to the delegate in the same transaction. `0`
+ *  is common and ordinary; the client omits the "N requests moved" line rather than rendering
+ *  "0 requests moved" (C4). */
+export interface DelegationCreateOut extends DelegationOut {
+  repointed_count: number;
+}
+
+/** Mirrors `DelegationCreateIn` — `POST /delegations`. Omitting `delegator_employee_id` means
+ *  "for myself"; supplying a different id needs `delegation.write:ORG` (§4.E's "for another
+ *  employee" mode). */
+export interface DelegationCreateIn {
+  delegator_employee_id?: string;
+  delegate_employee_id: string;
+  starts_at: string;
+  ends_at: string;
+}
+
 /* --------------------------- dashboard rollups --------------------------- */
 
 /** One department's share of headcount — grouped live from employees. */

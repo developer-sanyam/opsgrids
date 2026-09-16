@@ -60,6 +60,71 @@ def test_delegation_is_not_active_once_revoked_even_inside_the_window() -> None:
     )
 
 
+class TestDelegationStatus:
+    """`domain.delegation_status` (slice 3, ADR-0006 §5, screens §4.E's row tags), which must
+    agree with `delegation_is_active` at every boundary — it is derived from the same three
+    instants."""
+
+    def test_scheduled_before_it_starts(self) -> None:
+        now = datetime.now(UTC)
+        assert (
+            domain.delegation_status(
+                revoked_at=None,
+                starts_at=now + timedelta(hours=1),
+                ends_at=now + timedelta(hours=2),
+                at=now,
+            )
+            == domain.DELEGATION_STATUS_SCHEDULED
+        )
+
+    def test_active_at_the_exact_start_instant(self) -> None:
+        now = datetime.now(UTC)
+        assert (
+            domain.delegation_status(
+                revoked_at=None, starts_at=now, ends_at=now + timedelta(hours=1), at=now
+            )
+            == domain.DELEGATION_STATUS_ACTIVE
+        )
+
+    def test_ended_at_the_exact_end_instant(self) -> None:
+        """Half-open `[starts_at, ends_at)`, the same boundary `delegation_is_active` uses — a
+        delegation reads `ended`, not `active`, at the instant it ends."""
+        now = datetime.now(UTC)
+        assert (
+            domain.delegation_status(
+                revoked_at=None, starts_at=now - timedelta(hours=1), ends_at=now, at=now
+            )
+            == domain.DELEGATION_STATUS_ENDED
+        )
+
+    def test_revoked_takes_priority_over_a_window_that_is_still_open(self) -> None:
+        """A delegation revoked mid-window reads `revoked`, never `active` — eligibility ends
+        immediately on revoke (ADR-0006 §5), and the tag must not keep claiming otherwise until
+        the original window would have lapsed on its own."""
+        now = datetime.now(UTC)
+        assert (
+            domain.delegation_status(
+                revoked_at=now - timedelta(minutes=1),
+                starts_at=now - timedelta(hours=1),
+                ends_at=now + timedelta(hours=1),
+                at=now,
+            )
+            == domain.DELEGATION_STATUS_REVOKED
+        )
+
+    def test_revoked_takes_priority_even_before_the_window_started(self) -> None:
+        now = datetime.now(UTC)
+        assert (
+            domain.delegation_status(
+                revoked_at=now,
+                starts_at=now + timedelta(hours=1),
+                ends_at=now + timedelta(hours=2),
+                at=now,
+            )
+            == domain.DELEGATION_STATUS_REVOKED
+        )
+
+
 class TestInboxReasonFor:
     def test_the_direct_approver_sees_assigned(self) -> None:
         caller = uuid.uuid4()

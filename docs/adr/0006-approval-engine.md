@@ -36,6 +36,16 @@ organizations only and every endpoint here returns 403 in every existing one.
 > and states the rule that had one of them scheduled behind the query that needs it. §3, §9, §14 and
 > the Consequences carry the knock-on edits, each with its own **Amended** note.
 
+> **Amended a third time 2026-09-16, during slice 3.** One section changes: **§15**. Its table
+> assigned a slice to every index it named and said nothing about the persistence design's **pattern
+> 11**, the delegation list — and the engineer building that surface resolved the silence by analogy
+> to a pattern the data model deliberately *rejects*, which is a correct reading of our own documents
+> and the wrong outcome (measured: a sequential scan of the whole multi-tenant `delegations` table on
+> every ORG render). §15 now assigns pattern 11 and the ORG arm's index to slice 3, covers every
+> index the persistence design names — including the ones it rejects, marked as rejected — and states
+> that a silence in a timing table is itself a defect rather than a gap. §14 carries the one
+> consequential edit this creates in a document this ADR does not own.
+
 ---
 
 ## Context
@@ -1180,6 +1190,7 @@ deliberate and short-lived, not discovered during implementation:
 | `docs/approval-engine-data-model.md` §1.4 | `trg_approval_requests_decide_once` permits the `application_*` trio to be set once on a decided request (§12) |
 | `docs/approval-engine-data-model.md` §2.2a / §5 migration order | **Slice 2 review.** `ix_hierarchy_nodes_org_exited` ships with slice 2's routing migration, not with slice 4 (§15). Note also that `hierarchy_nodes` is created by slice 1's migration, so §5's "the four new indexes are built in migration 2 with their tables" is not true of the three that sit on `hierarchy_nodes` — they are added to an existing table and need their own `op.create_index` in the routing migration |
 | `docs/approval-engine-data-model.md` §2.3 | **Slice 2 review.** "No `(organization_id, reporting_manager_id)` on `hierarchy_nodes` — nothing walks downward" no longer holds: §11's TEAM read filters requests by the requester's manager. The index (and whatever LOCATION needs — a measurement this ADR does not make) ships with that change, per §15 |
+| `docs/approval-engine-data-model.md` §2 pattern 11 | **Slice 3.** Pattern 11 records "two btree indexes" without naming them, and covers only the delegator-or-delegate arm — `GET /delegations` at **ORG** filters on neither column and needs `(organization_id, starts_at)`, which no pattern in §2 describes. The pattern row should name all three and carry the ORG arm's measured plan; §2.3's neighbouring rejections must not be readable as covering them (§15) |
 | `docs/approval-engine-data-model.md` §2.1 | **Slice 2 review.** The inbox's two ORG arms each gain the caller-active test (§6 condition 4); it is a bind parameter, not a join, so the measured shape is unchanged — but the documented predicate is |
 | `docs/architecture.md` port map | `approval :8152` on the PLATFORM line (§14) |
 | `docs/design/approval-engine-screens.md` §4.A | the inbox's department sub-line is not available in these slices (§2); every other contract dependency it raised is resolved in §2, §3, §11 and §12 |
@@ -1218,6 +1229,38 @@ revision, not an edit to a migration that has already run. Columns `(organizatio
 with `WHERE status = 'exited'`: the status is the partial index's own predicate and does not need to
 be a column as well.
 
+**Amended (slice 3) — the second case, and this section's own silence caused it.** The table below
+assigned a slice to every index it *listed*, and listed only the indexes the amendments had added. It
+said nothing about persistence design §2 **pattern 11**, the delegation list — the pair of btree
+indexes that serve `GET /delegations`. Slice 3 ships that endpoint. The engineer building it read
+the two documents together, found a pattern the data model names and this table does not mention, and
+deferred it by analogy to the nearest thing the persistence design says about a delegation index:
+§2.3's deliberate **rejection** of one for pattern 9 — *"delegation creation is rare … an index to
+serve it would be paid for on every step insert."* That analogy is a competent reading of our own
+documents and the wrong outcome, because pattern 9 is a rare write and pattern 11 is a read on every
+render of the delegation screen.
+
+Measured, which is how it was caught rather than inferred:
+
+- **At ORG**, `delegations_stmt` has no person predicate at all — organization, `deleted_at IS NULL`,
+  `ORDER BY starts_at DESC` — and the plan is a **sequential scan of the whole multi-tenant table**:
+  **1,710 buffers, ~10–12 ms at 94,704 rows across 281 organizations**. RLS does not rescue it; the
+  tenant policy narrows the *result*, never the scan, so the cost is the platform's row count and not
+  the tenant's.
+- **At OWN** (delegator **or** delegate), **634 buffers to return 4 matching rows out of 24,000** —
+  cost proportional to the organization's total delegations rather than to the caller's own. That is
+  the same structural defect §2.2a records for the TEAM read, and like that one it worsens with
+  tenant size while never failing, never alarming, and never producing anything but "this screen
+  feels slow" in the one tenant large enough to notice.
+
+**Correction: three indexes ship in slice 3** — pattern 11's documented pair, org-leading on
+`delegator_employee_id` and on `delegate_employee_id` (the `BitmapOr` the data model measures at
+0.26 ms), **plus `(organization_id, starts_at)` for the ORG arm, which pattern 11 never covered**.
+That third one is worth naming as its own lesson: pattern 11 is written as "delegator **or**
+delegate", and the ORG arm matches neither column, so an index set derived faithfully from the
+pattern list alone would still have missed the query that scans hardest. The pattern list describes
+the reads somebody enumerated; this table is the record of what each slice must actually ship.
+
 **The general rule: an index moves with the query that needs it, not with the feature it was
 designed for.** An index is part of a query's plan, and a slice that ships the query without it has
 not deferred an optimisation — it has chosen a plan nobody reviewed, in the slice where the query is
@@ -1226,11 +1269,16 @@ schedule. Applied to the rest of the index set:
 
 | Index | Serves | Ships in |
 |---|---|---|
-| `ix_hierarchy_nodes_org_exited` | §6 route (c)'s abandoned arm — inbox and eligibility | **slice 2**, with that arm (was slice 4) |
-| `ix_hierarchy_nodes_org_display_name`, `…_org_employee_no` | `GET /delegate-candidates` | slice 3, with the delegation surface — not earlier either |
-| `ix_approval_requests_unapplied` | §12's "decided but never applied" probe, armed in slice 2 | slice 2, with the return leg |
-| `ix_approval_steps_sla_due`, `ix_approval_steps_stuck_open` | the sweep and its liveness alarm (§8) | slice 4 — the queries genuinely do not exist before then |
-| `(organization_id, reporting_manager_id)` on `hierarchy_nodes` | §11's TEAM read | with the change that honours TEAM. Data model §2.3 rejects this index as "nothing walks downward", which stops being true the moment the TEAM rung has a query |
+| Every index and constraint declared in its table's own `CREATE TABLE` migration: `pk_hierarchy_nodes`; `ix_approval_steps_org_approver`, `…_org_acting_for`, `…_unassigned_open`, `…_org_request`, `uq_approval_steps_open_per_request`; `ix_approval_requests_org_pending`, `…_org_requester_opened`, `…_org_opened`, `uq_approval_requests_org_type_source`; `uq_delegations_org_id`, `ex_delegations_no_overlap` | patterns 1, 2, 4–8, 10, 12, 13 | with their table — `hierarchy_nodes` in **slice 1**, the routing tables in **slice 2**. Listed for completeness rather than because they were ever at risk: an index in the same migration as its table cannot be deferred separately from it |
+| `ix_hierarchy_nodes_org_exited` | §6 route (c)'s abandoned arm — inbox and eligibility (pattern 17) | **slice 2**, with that arm (was slice 4) |
+| `ix_approval_requests_unapplied` | §12's "decided but never applied" probe, armed in slice 2 (pattern 18) | slice 2, with the return leg |
+| `ix_hierarchy_nodes_org_manager` — `(organization_id, reporting_manager_id)` | §11's TEAM read (pattern 19) | **slice 2**, where `requests_stmt`'s TEAM arm shipped. This row previously read "with the change that honours TEAM", which names an authorship relationship and not a slice; by this section's own rule the index is owed wherever the query is, and the query is in slice 2. Data model §2.3 rejected it as "nothing walks downward", which stopped being true the moment the TEAM rung acquired a query |
+| `ix_hierarchy_nodes_org_display_name`, `…_org_employee_no` | `GET /delegate-candidates` (pattern 16) | slice 3, with the delegation surface — not earlier either |
+| **Pattern 11's pair — org-leading on `delegator_employee_id`, org-leading on `delegate_employee_id`, on `delegations`** | `GET /delegations` below ORG: the caller as either party (pattern 11) | **slice 3**, with the delegation surface. Previously **unassigned here**, which is the defect this amendment exists to close |
+| **`(organization_id, starts_at)` on `delegations`** | `GET /delegations` at **ORG** — organization plus `ORDER BY starts_at DESC`, which matches neither column of pattern 11's pair | **slice 3**, with the same endpoint. Not in the data model's pattern list at all (§14) |
+| `ix_approval_steps_sla_due`, `ix_approval_steps_stuck_open` | the sweep and its liveness alarm (§8, patterns 3, 14, 15) | slice 4 — the queries genuinely do not exist before then |
+| `(organization_id, location_code)` on `hierarchy_nodes` | §11's LOCATION read (pattern 20) | **Rejected**, data model §2.3 — built and measured, not overlooked: a 945-buffer / 11.3 ms hash join becomes 540 buffers / 8.4 ms, a constant factor for 1,736 kB of write cost on the hierarchy copy, on a rung no customer has asked for. **Revisit** if a tenant grants LOCATION against a selective site, or if this list moves to keyset pagination |
+| An index for pattern 9 (delegation re-point); a single-column `organization_id` index on any table; a GIN trigram index for the picker; an index on `application_state` alone | — | **Rejected**, data model §2.3, each with its own measurement or reason there. Recorded so that "absent from this table" can never again be read as "not yet" |
 
 **What the rule gives up**, since it is a trade and not a free win: an index is carried, and paid for
 on every write, from the slice where its query appears rather than from the slice where the feature
@@ -1240,9 +1288,35 @@ cost, and it is accepted against the alternative: a per-caller sequential scan o
 does not fail, does not alarm, and surfaces months later as "approvals feel slow" in the one tenant
 large enough to notice.
 
+**Amended (slice 3) — the completeness rule this table implied and did not enforce.** Two rules, and
+the table above is now written to satisfy both:
+
+1. **Every index the persistence design names appears in this table, with a slice.** A pattern that
+   has an index in one document and no row in the other is not "undecided"; it is an unreviewed plan
+   with a schedule nobody set.
+2. **An index the persistence design deliberately *rejects* is marked `Rejected` here, never
+   omitted.** A rejection and an omission look identical from inside this table, and they carry
+   opposite instructions. This is precisely what went wrong: pattern 11 was omitted, its nearest
+   documented neighbour was a rejection, and the omission was read as one.
+
+**The general lesson, in the form the rest of this section uses: an engineer reading two documents
+resolves a silence with an analogy, so a silence in a timing table is itself a defect — not a gap
+for whoever notices later.** The failure mode here was not carelessness and not ignorance; it was a
+competent reading of the nearest neighbouring statement, and the nearest neighbour is as likely to
+be a rejection as an assignment. Neither document was wrong on its own: the persistence design named
+pattern 11's indexes, and this table named slices for the indexes it listed. The defect lived
+*between* them, where no single document's review would find it, and it can only be fixed in the one
+place that is supposed to be exhaustive. **The cost of the rule** is that this table grows a row for
+every index in the service, including the eleven that ship inside their own `CREATE TABLE` and were
+never in danger, and that it must be edited in the same change as any new index — an exhaustive list
+is only load-bearing while it stays exhaustive, and a stale one is worse than none because it reads
+as settled.
+
 **The check a reviewer can apply to the next slice:** for every query a slice ships, name the index
 that serves it — or state that a sequential scan is the intended plan, and why. "The index comes
-later" is an answer only when the *query* comes later.
+later" is an answer only when the *query* comes later. And in the other direction: for every index
+the persistence design names, this table says either a slice or **Rejected**. A row that says
+neither is the defect itself, not a formatting gap.
 
 ---
 

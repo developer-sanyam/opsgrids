@@ -11,6 +11,7 @@ import {
   LifeBuoyIcon,
   MapPinIcon,
   PlugIcon,
+  ReplyIcon,
   SettingsIcon,
   Sidebar as SidebarShell,
   UserPlusIcon,
@@ -75,6 +76,9 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     items: [
       { to: "/approvals", label: "Waiting on me", icon: InboxIcon, ...(inboxCount ? { count: inboxCount } : {}) },
       { to: "/approvals/mine", label: "My requests", icon: ClipboardListIcon },
+      // §1.2: slice 3's own entry — deliberately left out of slice 2's group. "Approval settings"
+      // stays out too; it configures a sweep that is not running before slice 4 (§4.G).
+      { to: "/approvals/delegations", label: "Delegations", icon: ReplyIcon },
     ],
   };
   const groups: NavGroup[] = [MAIN_MENU, approvals, RECORDS, WORKSPACE];

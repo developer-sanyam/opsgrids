@@ -573,6 +573,14 @@ reprocessing every redelivered event (ADR-0002 §5).
 This table is the contract between the schema and `selectors.py`. Read frequency is per approver or
 per request; "verified" is the measured plan from the seeded scratch schema under RLS.
 
+**Read the `Index` column as a status, not a suggestion, and note that it holds two different kinds
+of row.** A row tagged **required** names an index this pattern has already been measured to need:
+the number beside it is the *indexed* plan, and without the index the pattern does not meet it. A row
+tagged **REJECTED** is the opposite claim — the index was built, measured, and deliberately not
+shipped, with the reasoning in §2.3. The two are not interchangeable and **must not be reasoned about
+by analogy**: "pattern N ships without an index" is a fact about pattern N's measurement, never a
+precedent for another pattern. §2.4 records the review where that analogy was drawn and what it cost.
+
 | # | Pattern | Filter / sort | Index | Verified |
 |---|---|---|---|---|
 | 1 | Inbox | pending requests where I am `approver` (delegation still active) or `acting_for` on any step | `ix_approval_steps_org_approver`, `ix_approval_steps_org_acting_for`, `ix_approval_requests_org_pending` | 14.7 ms hot / 0.56 ms normal |
@@ -584,9 +592,10 @@ per request; "verified" is the measured plan from the seeded scratch schema unde
 | 6 | ORG request list | `(organization_id)`, by `opened_at DESC` | `ix_approval_requests_org_opened` | 0.06 ms |
 | 7 | Request detail | `(organization_id, request_id)`, by `opened_at` | `ix_approval_steps_org_request` | 0.09 ms |
 | 8 | The open step | `(organization_id, request_id) WHERE outcome='open'` | `uq_approval_steps_open_per_request` | 0.07 ms |
-| 9 | Delegation re-point | my open, undelegated steps | `uq_approval_steps_open_per_request` | 47 ms @ 2,986 org pending |
+| 9 | Delegation re-point | my open, undelegated steps | **REJECTED** — served by `uq_approval_steps_open_per_request`; no dedicated index (§2.3) | 47 ms @ 2,986 org pending |
 | 10 | Active delegation | delegator + instant | `ex_delegations_no_overlap` (GiST) | 0.10–0.40 ms |
-| 11 | My delegations | delegator **or** delegate, by `starts_at DESC` | two btree indexes, BitmapOr | 0.26 ms |
+| 11a | **`GET /delegations` at OWN** | `(organization_id)` + delegator **or** delegate, `deleted_at IS NULL`, by `starts_at DESC` | **required** — `ix_delegations_org_delegator_starts` + `ix_delegations_org_delegate_starts`, planner `BitmapOr` | **8 buffers / 0.048 ms**, from 624 / 3.98 ms unindexed (§2.2b) |
+| 11b | **`GET /delegations` at ORG** | `(organization_id)` + `deleted_at IS NULL` only, by `starts_at DESC` | **required** — `ix_delegations_org_starts` | page **5 buffers / 0.038 ms** from a **1,754-buffer Seq Scan of the whole fleet table**; `paginate()`'s count 566 buffers / 7.1 ms (§2.2b) |
 | 12 | Chain walk | recursive, upward, carrying `display_name` | `pk_hierarchy_nodes` | 10 rungs, 1.9 ms, one index scan per rung |
 | 13 | Hierarchy upsert | `ON CONFLICT` + version gate | `pk_hierarchy_nodes` | 1.0 ms |
 | 14 | **Stuck-request alarm (primary)** | `outcome='open' AND due_at IS NULL AND approver IS NULL`, by `opened_at`, `LIMIT 1`, cross-tenant | `ix_approval_steps_stuck_open` | index-only, 3 buffers, 0.015 ms |
@@ -595,7 +604,7 @@ per request; "verified" is the measured plan from the seeded scratch schema unde
 | 17 | **Inbox "abandoned" arm** (§6 c) | org's open steps whose approver's node is `exited`, by `opened_at DESC`; plus the caller-active bind (§2.1) | `uq_approval_steps_open_per_request` + `ix_hierarchy_nodes_org_exited` | as shipped (`EXISTS`): **1.97 ms / 1,473 buffers**, vs 4.16 ms / 1,921 without the index, at 20k nodes / 3,200 open |
 | 18 | **Decided-but-never-applied alarm** (§12) | `status<>'pending' AND application_state IS NULL AND decided_at < now()-n`, cross-tenant | `ix_approval_requests_unapplied` | index-only, **1 buffer, 0.017 ms** (7.7 ms seq scan without it) |
 | 19 | **`GET /requests` at TEAM** (§11) | requests LEFT JOIN requester's node, `h.reporting_manager_id = sref`, by `opened_at DESC` | `ix_hierarchy_nodes_org_manager` feeding `ix_approval_requests_org_requester_opened` | index-only both sides, **0.081 ms / 89 buffers** (2.87 ms / 550 unindexed) |
-| 20 | **`GET /requests` at LOCATION** (§11) | same join, `h.location_code = ANY(:loc)`, by `opened_at DESC` | hash join, **no dedicated index** — measured and rejected (§2.3) | 11.3 ms / 945 buffers at 40% selectivity; the rejected index gives 8.4 ms / 540 |
+| 20 | **`GET /requests` at LOCATION** (§11) | same join, `h.location_code = ANY(:loc)`, by `opened_at DESC` | **REJECTED** — hash join, no dedicated index, measured and rejected (§2.3) | 11.3 ms / 945 buffers at 40% selectivity; the rejected index gives 8.4 ms / 540 |
 
 ### 2.1 The inbox is the pattern that decides the step indexes
 
@@ -865,6 +874,144 @@ staying near-empty. Today attendance reports back and it is the only consumer; a
 whose product does not publish `.applied` turns this from an 8 kB alarm index into a second copy of
 the table's decided population, and the alarm it feeds would be permanently firing anyway.
 
+### 2.2b The delegation list has two arms, and pattern 11 only ever covered one
+
+`GET /delegations` is one endpoint with two scopes, and they are different queries with different
+plans. Pattern 11 as originally written described only the OWN arm. The ORG arm — a `read:ORG`
+holder listing the whole tenant's delegations — was **not covered by pattern 11 at all**, and it is
+the worse of the two unindexed. Both are served by three indexes:
+
+```sql
+-- pattern 11a: "delegations where I am either side"
+CREATE INDEX ix_delegations_org_delegator_starts
+    ON approval.delegations (organization_id, delegator_employee_id, starts_at);
+CREATE INDEX ix_delegations_org_delegate_starts
+    ON approval.delegations (organization_id, delegate_employee_id, starts_at);
+
+-- pattern 11b: "every delegation in this tenant", newest first
+CREATE INDEX ix_delegations_org_starts
+    ON approval.delegations (organization_id, starts_at);
+```
+
+Column order is the standard one for this table: equality on the tenant, then equality on the
+employee, then the sort column so the ordering is inherited rather than sorted. `starts_at` is last
+in all three and is what lets the ORG arm stop at the `LIMIT`.
+
+**Measurement basis.** A scratch schema replicating the live `approval.delegations` DDL exactly —
+both CHECKs, `uq_delegations_org_id`, and the GiST `ex_delegations_no_overlap` — seeded to
+**94,704 delegations across 281 tenants, with the largest tenant holding 24,004** (23,524 live, 480
+soft-deleted); heap 14 MB. RLS enabled and **forced**, every plan taken as `opsgrids_approval` with
+the transaction-local GUC set, warm figures from the second run. The whole experiment ran inside one
+rolled-back transaction, which has one consequence worth stating: **a rolled-back scratch cannot be
+`VACUUM`ed, so the visibility map is unset and no index-only scan is available.** Every `count(*)`
+figure below is therefore an upper bound — in a vacuumed production table the count arm can go
+index-only and will be cheaper than the number quoted. The page figures are unaffected, since paging
+touches the heap for its 25 rows regardless.
+
+**Arm 1 — OWN (pattern 11a), a caller with 4 matching rows out of 23,524.**
+
+Without the pair, the tenant predicate is the only thing an index can serve, so the planner reads the
+tenant through `uq_delegations_org_id` and throws away 24,000 of 24,004 rows **on the heap**:
+
+```
+Limit (actual time=3.949..3.951 rows=4)  Buffers: shared hit=624
+  ->  Sort (Sort Key: starts_at DESC, quicksort)
+        ->  Bitmap Heap Scan on delegations (rows=4)  Heap Blocks: exact=445
+              Filter: deleted_at IS NULL AND (delegator_employee_id = … OR delegate_employee_id = …)
+              Rows Removed by Filter: 24000
+              ->  Bitmap Index Scan on uq_delegations_org_id (rows=24004)
+Execution Time: 3.975 ms   (6.311 ms cold)
+```
+
+With the pair, the planner produces the `BitmapOr` this document has always asserted, and the heap
+is touched for the 4 rows that survive:
+
+```
+Limit (actual time=0.023..0.025 rows=4)  Buffers: shared hit=8
+  ->  Sort (Sort Key: starts_at DESC, quicksort)
+        ->  Bitmap Heap Scan on delegations (rows=4)  Heap Blocks: exact=2
+              ->  BitmapOr
+                    ->  Bitmap Index Scan on ix_delegations_org_delegator_starts (rows=2)
+                    ->  Bitmap Index Scan on ix_delegations_org_delegate_starts (rows=2)
+Execution Time: 0.048 ms
+```
+
+624 buffers → **8**, 3.98 ms → **0.048 ms**; the count arm moves identically (624 / 4.10 ms → 8 /
+0.040 ms), because `paginate()` runs the same predicate twice. **Pattern 11's original prescription
+was right** and needs no correction beyond being labelled as required.
+
+**Arm 2 — ORG (pattern 11b), the whole tenant, page 1 of 25.** Here there is no predicate beyond the
+tenant, and this is the case pattern 11 never described. Neither `deleted_at` nor `starts_at` appears
+in any tenant-leading index, and `uq_delegations_org_id` cannot serve `ORDER BY starts_at DESC` — so
+both halves of `paginate()` fall to a **sequential scan of the whole multi-tenant table**:
+
+```
+Limit (actual time=15.609..15.613 rows=25)  Buffers: shared hit=1754
+  ->  Sort (Sort Key: starts_at DESC, top-N heapsort)
+        ->  Seq Scan on delegations (rows=23524)
+              Filter: deleted_at IS NULL AND organization_id = …
+              Rows Removed by Filter: 71180
+Execution Time: 15.626 ms   (17.787 ms cold; the count arm is the same scan, 1,754 buffers / 11.81 ms)
+```
+
+With `ix_delegations_org_starts` the page becomes an ordered walk that stops at the `LIMIT`:
+
+```
+Limit (actual time=0.011..0.022 rows=25)  Buffers: shared hit=5
+  ->  Index Scan Backward using ix_delegations_org_starts on delegations (rows=25)
+        Index Cond: (organization_id = …)
+        Filter: (deleted_at IS NULL)   Rows Removed by Filter: 1
+Execution Time: 0.038 ms
+```
+
+1,754 buffers → **5**, 15.6 ms → **0.038 ms** for the page. **The count arm improves but does not
+become free**: 566 buffers / 7.12 ms, because `count(*)` has no `LIMIT` to stop at and must still
+traverse all 24,004 of the tenant's index entries (and, absent the visibility map, their heap pages).
+That residue is the honest number for this endpoint and neither half should be quoted alone — the
+endpoint costs the page *plus* the count. Deep paging behaves as offset paging always does: page 100
+(`OFFSET 2475`) is 126 buffers / 0.85 ms, still ordered, with cost proportional to the offset.
+
+**The ORG arm's cost scales with the fleet table, not with the tenant — and that is the whole
+argument for the index.** Look at what the sequential scan actually did: it read all 94,704 rows and
+discarded **71,180 of them as belonging to other tenants**. Three quarters of the work had nothing to
+do with the caller. The consequence is counter-intuitive and is the reason this index looks
+skippable: **a tenant's delegation list gets slower when unrelated tenants are onboarded**, even if
+that tenant never creates another delegation. Per-tenant the table looks trivially small — the median
+tenant here holds 252 rows, and §7 projects only ~30 new rows per 1,000 employees per month — so
+sizing this index against *one tenant's* row count is sizing it against the wrong number.
+
+**It also will not reproduce in a small dev tenant, which is how it survives review.** The same ORG
+query run for a 252-row tenant in the same fleet does *not* sequentially scan: the planner uses
+`uq_delegations_org_id` and top-N sorts 253 rows (257 buffers, 0.267 ms). The flip to a sequential
+scan arrives only when one tenant is a large enough fraction of the table. A seeded dev database with
+a few hundred delegations will show the cheap plan every time and report nothing wrong.
+
+**Write cost, measured.** A bulk `INSERT … SELECT` of 2,000 delegations into the seeded table: 28,136
+buffers / 63.9 ms without the three indexes, 46,284 buffers / 98.0 ms with them — about **9 extra
+buffers and 0.017 ms per row**. Record the form, per §2.1's lesson: this is the *bulk* form, so it
+excludes the per-statement overhead a real single-row insert pays, which is why the per-row time is
+small relative to the buffer delta. The baseline is dominated by `ex_delegations_no_overlap`: the
+GiST index alone is 15 MB against a 14 MB heap and costs ~14 buffers per row on its own. Against a
+table that takes tens of writes per 1,000 employees per month, this is not a meaningful write cost.
+
+**Storage.** At 94,704 rows: `ix_delegations_org_delegator_starts` and
+`ix_delegations_org_delegate_starts` 5,592 kB each, `ix_delegations_org_starts` 3,864 kB — roughly
+15 MB of new index against a 14 MB heap. That is a real number rather than a rounding error, and it
+is accepted because all three serve shipped queries on the same screen. If the ORG scope is ever
+dropped from `GET /delegations`, `ix_delegations_org_starts` goes with it.
+
+**Where these figures differ from the performance pass that prompted this section.** The plan shapes
+agree exactly; two magnitudes do not. The unindexed ORG scan measured 1,754 buffers here against
+1,710 there (same Seq Scan, different fixture padding) but **15.6 ms against the reported 10–12 ms** —
+mine is slower. The indexed ORG page measured **5 buffers / 0.038 ms here against 28 / 0.46 ms
+there** — mine is cheaper, and the gap is most likely that the reported figure included the count arm
+or a heavier soft-delete ratio. The OWN arm reproduced within noise (624 vs 634 buffers unindexed,
+8 vs 7 indexed). Write cost differs in both directions: **~9 buffers and 0.017 ms per row here versus
+~4 buffers and 0.15 ms there**, consistent with that measurement having been taken single-row rather
+than bulk. None of these disagreements changes a decision — all three indexes are required either
+way — but the ORG *count* residue of 566 buffers is a number the original pass did not report, and it
+is the one that should be watched as tenants grow.
+
 ### 2.3 Indexes deliberately **not** created
 
 - ~~**No `(organization_id, reporting_manager_id)` on `hierarchy_nodes`** — nothing walks
@@ -886,6 +1033,19 @@ the table's decided population, and the alarm it feeds would be permanently firi
   this list moves to keyset pagination — either changes the arithmetic, and neither is true today.
 - **No index for pattern 9.** Delegation creation is rare (tens per month per 1,000 employees) and
   costs 47 ms at 2,986 pending; an index to serve it would be paid for on every step insert.
+  **This rejection is about `approval_steps`, and it does not generalise** — least of all to
+  `delegations`, whose three list indexes are *required* (§2.2b, patterns 11a and 11b). What makes
+  pattern 9 cheap to refuse is the ratio peculiar to it: a write-heavy table (every routing decision
+  inserts a step) serving a query that runs a few times a month. Pattern 11's table is written a few
+  times a month and read on every render of the delegation screen, which is the same ratio pointing
+  the other way. Cite this bullet only for a pattern whose own write/read ratio has been measured and
+  resembles pattern 9's; see §2.4.
+- **No partial `(organization_id, starts_at) WHERE deleted_at IS NULL` on `delegations`** — built and
+  measured against the plain composite, and it earns nothing today. At the measured 2% soft-delete
+  ratio the partial index is the *same size* (3,864 kB either way) and the page plan is the same
+  (4 buffers versus 5). The predicate only starts paying when soft-deleted rows dominate the tenant,
+  which is not how this table is used — a delegation is revoked (`revoked_at`), rarely deleted.
+  Revisit if `deleted_at IS NOT NULL` ever passes a large fraction of a tenant's rows.
 - **No single-column `organization_id` index anywhere** (see §1.0).
 - **No trigram index for the delegation picker.** `pg_trgm` is installed (1.6, verified), so a GIN
   trigram index would give substring rather than prefix matching. It is rejected for now on two
@@ -897,6 +1057,33 @@ the table's decided population, and the alarm it feeds would be permanently firi
 - **No index on `application_state` alone.** Pattern 18 is served by the partial index above; a
   general index on a column that is NULL on every pending row and one of two values afterwards would
   serve no query in this slice.
+
+### 2.4 A rejection and a commitment are not interchangeable
+
+The three indexes in §2.2b were deferred out of slice 3 once, and the argument for deferring them was
+an **analogy to pattern 9**: delegations are rare, pattern 9 already accepts 47 ms on a delegation
+write without an index, so the delegation surface can ship unindexed too. The analogy does not hold,
+and it is worth writing down why, because the shape of the mistake is more reusable than the
+instance.
+
+- **Pattern 9 is a rejection with stated reasoning.** §2.3 records that the index was considered and
+  refused, on a specific ratio: `approval_steps` is written on every routing decision, and the query
+  runs a few times a month. The cost lands on the writes.
+- **Pattern 11 was already a commitment with a measured number.** It did not say "no index"; it named
+  two indexes and quoted the plan they produce. Deferring them did not postpone an open question, it
+  **silently downgraded a decision the document had already taken** — and the endpoint shipped at 624
+  buffers where the table promised 8.
+- **The two rows looked alike**, and that is this document's fault rather than the reader's. Before
+  this revision the `Index` column in §2 mixed "here is the index this pattern requires" and "here is
+  why this pattern has no index" in the same visual form, with nothing but prose in a different
+  section to tell them apart. The legend above §2's table and the **required** / **REJECTED** tags
+  exist so that the next reader cannot make the same substitution.
+
+The general rule, which is ADR-0006 §15 seen from the other side: **an index ships with the query
+that needs it.** `GET /delegations` is that query for all three, both scopes of it land in slice 3,
+and so do the indexes. A pattern that already carries a measured indexed plan cannot be deferred by
+citing a different pattern's rejection — only by re-measuring *itself* and recording the new number
+here.
 
 ---
 
@@ -1280,6 +1467,17 @@ two *indexes* are scheduled with the delegation surface in slice 3, which is whe
 appears (ADR-0006 §15). The TEAM index in §2.3 is the fourth case and ships with the change that
 honours TEAM.
 
+**The three `delegations` list indexes (§2.2b) ship in slice 3 as well, with `GET /delegations`.**
+`delegations` is created by `0a7f41108309` with the routing tables, so — exactly like the hierarchy
+indexes, and for the same reason — `ix_delegations_org_delegator_starts`,
+`ix_delegations_org_delegate_starts` and `ix_delegations_org_starts` are indexes **added to a table
+that already exists and may already hold rows**, and they need their own revision with three
+`op.create_index` calls and the matching `op.drop_index` downgrade. Verified against the live
+database: `approval.delegations` today carries exactly `pk_delegations`, `uq_delegations_org_id` and
+`ex_delegations_no_overlap` and nothing else, so none of the three exists yet. All three serve both
+scopes of one endpoint; **shipping the endpoint without them is the deferral §2.4 records**, not a
+staging choice.
+
 **The columns and their indexes are on different schedules, and the two must not be conflated.**
 `display_name` and `employee_no` are **columns of `hierarchy_nodes` since the initial migration**
 (`3d96b212cc73`, above): both `NOT NULL`, both carrying a presence CHECK, and both present in the
@@ -1532,3 +1730,14 @@ erDiagram
 16. **`display_name` on the copy can be stale but never absent.** It is `NOT NULL`, fed only by
     version-gated full-state events; a *missing node* yields a `null` name in the API response,
     which is a different thing from a null column. Render the id's fallback, keep the row operable.
+17. **`GET /delegations` must sort by `starts_at DESC` and nothing else** (§2.2b). That sort is what
+    all three delegation indexes are built to inherit; sorting by `created_at`, `ends_at` or
+    `updated_at` instead silently returns the endpoint to a sequential scan of the whole
+    multi-tenant table, because no other tenant-leading index carries a sort column. If the screen
+    needs a different order, the index changes with it — do not change one without the other.
+18. **`paginate()` costs the page plus the count, and on the ORG arm the count is the expensive
+    half** — 566 buffers against the page's 5, because `count(*)` has no `LIMIT` to stop at (§2.2b).
+    Do not read the page plan as the endpoint's cost. If this list ever needs to scale past a
+    tenant's low tens of thousands of delegations, the answer is to stop counting exactly (or move
+    to keyset pagination), not to add another index — the count arm is already on the best index
+    available to it.

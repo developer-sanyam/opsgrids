@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { AuthProvider as BaseAuthProvider } from "@opsgrids/client";
+import { AuthProvider as BaseAuthProvider, PermissionProvider } from "@opsgrids/client";
 import type { MeOut } from "@opsgrids/client";
 
 import { USE_FIXTURES } from "@/api/client";
@@ -30,11 +30,28 @@ const FIXTURE_USER: MeOut = {
   organizations: [FIXTURE_ORG],
 };
 
+/**
+ * The fixture identity's grants (§2.4 gap **G1**): no live source exists yet — the access token
+ * carries no `perms` claim, and nothing downstream of it resolves one (`PermissionProvider`'s own
+ * doc comment). Fixture mode is the one place a caller is fed in, so the ORG "for another
+ * employee" delegation mode (§4.E) has something to demonstrate; a real build passes nothing,
+ * which reads as *unknown* and hides every grant-gated control (`core.approval.delegation.write`
+ * at ORG collapses to "not shown") until a real grants source exists — the documented fallback,
+ * not a bug.
+ */
+const FIXTURE_GRANTS = [
+  "core.approval.request.read:OWN",
+  "core.approval.request.decide:OWN",
+  "core.approval.delegation.write:ORG",
+];
+
 /** The session, wired to this product's fixture identity. The logic lives in `@opsgrids/client`. */
 export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <BaseAuthProvider fixtureUser={USE_FIXTURES ? FIXTURE_USER : null}>
-      {children}
+      <PermissionProvider grants={USE_FIXTURES ? FIXTURE_GRANTS : null}>
+        {children}
+      </PermissionProvider>
     </BaseAuthProvider>
   );
 }

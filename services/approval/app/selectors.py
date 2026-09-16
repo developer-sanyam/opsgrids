@@ -474,16 +474,22 @@ class InboxRow:
 #: not see, or decide, an unassigned or abandoned step either — including the `request_note` this
 #: same query returns alongside it.
 #:
-#: Only `outcome = 'open'` steps are considered. In slices 2-3 that is every step that can ever
-#: make a request eligible: nothing in this slice's write path ever produces a `delegated` or
-#: `escalated` **outcome** (that requires re-pointing on `POST /delegations`, slice 3, or the SLA
-#: sweep, slice 4), so a pending request's single open step already carries everything routes
-#: (a)/(b) need — including "delegated to me" and "delegated away", both derivable from the open
-#: step's own `approver_employee_id`/`acting_for_employee_id` when a delegation applied at open
-#: (ADR-0006 §5). The one route this simplification does not yet serve is `escalated_away`
-#: (ADR-0006 §6: eligible via the caller's own **now-closed** `escalated`-outcome step) — schemas
-#: §2.3 confirms it "cannot occur before slice 4", so it is deferred with the sweep that would be
-#: the only thing to ever produce it.
+#: Only `outcome = 'open'` steps are considered. Re-pointing (`app/services.create_delegation`,
+#: this slice) does now produce closed, `delegated`-outcome steps — the predecessor a
+#: re-pointed request leaves behind — so it is no longer true that nothing in this slice's write
+#: path produces that outcome. It remains true that only an *open* step can make a request
+#: eligible: a closed `delegated` step is history, not a live candidate, and this query is
+#: right to ignore it — deliberately, not by omission. Both routes a closed `delegated`
+#: predecessor could otherwise have fed are already covered without it: route (a) "delegated to
+#: me" is served by the *successor* step re-pointing opened (`approver_employee_id` = the new
+#: delegate, still `outcome = 'open'`), and route (b) "delegated away" — the original approver's
+#: own continuing eligibility — is served by that same successor's `acting_for_employee_id`
+#: naming the delegator, not by anything read off the predecessor it replaced. So a pending
+#: request's single open step still carries everything routes (a)/(b) need, and the closed
+#: `delegated` steps this slice now writes confer nothing here, on purpose. The one route this
+#: simplification does not yet serve is `escalated_away` (ADR-0006 §6: eligible via the caller's
+#: own **now-closed** `escalated`-outcome step) — schemas §2.3 confirms it "cannot occur before
+#: slice 4", so it is deferred with the sweep that would be the only thing to ever produce it.
 #: One CTE literal, concatenated with two different tails (count vs. page) rather than kept as two
 #: near-identical copies — so a future branch (`escalated_away`, slice 4) is added once and both
 #: statements pick it up, instead of being a one-copy-only bug waiting to happen. Every value that
@@ -588,3 +594,220 @@ async def list_inbox(
         for row in rows
     ]
     return items, int(total)
+
+
+# --------------------------------------------------------------------- delegation (slice 3)
+
+
+def delegations_stmt(
+    *, organization_id: uuid.UUID, caller_id: uuid.UUID | None, is_org: bool
+) -> Select[Any]:
+    """`GET /delegations` (ADR-0006 §11): ORG reaches every delegation in the organization;
+    anything below ORG reads as OWN — `delegation.write` never gains TEAM or LOCATION (the
+    catalogue's own "collapse below ORG" rule, `app/catalogue.py`) — and reaches a row the
+    caller is *either party* to, delegator or delegate (data model §2 pattern 11).
+
+    That "either party" reading is an `OR` across two columns `ScopeContext.apply()` has no
+    shape for (it takes one `owner_col`), so this bypasses it and checks `ctx.scope is
+    Scope.ORG` directly — the same pattern `app/api/routes.py`'s `get_inbox` and
+    `decide_request` already use for `decide`'s identical collapse.
+
+    A caller with no `subject_ref` below ORG has nothing to match either column against —
+    matches nothing rather than rendering `col == NULL`, the same "nothing to own with" guard
+    `ScopeContext.apply()`'s own OWN branch uses.
+    """
+    stmt = select(Delegation).where(
+        Delegation.organization_id == organization_id, Delegation.deleted_at.is_(None)
+    )
+    if not is_org:
+        if caller_id is None:
+            stmt = stmt.where(sa_false())
+        else:
+            stmt = stmt.where(
+                (Delegation.delegator_employee_id == caller_id)
+                | (Delegation.delegate_employee_id == caller_id)
+            )
+    # Pattern 11 (data model §2): "by starts_at DESC" — most recent first, matching the create
+    # response's own row landing at the top of the "Active"/"Scheduled" section it lands in
+    # (screens §4.E's "the new row appears first").
+    return stmt.order_by(Delegation.starts_at.desc())
+
+
+async def get_overlapping_delegation(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    delegator_employee_id: uuid.UUID,
+    starts_at: datetime,
+    ends_at: datetime,
+) -> Delegation | None:
+    """Any non-revoked delegation for this delegator whose half-open window overlaps
+    `[starts_at, ends_at)` — the same test `ex_delegations_no_overlap` (data model §1.5)
+    enforces atomically at insert time, read here opportunistically first so a conflict can be
+    reported with the *actual* conflicting range (screens §4.E: "with the conflicting range
+    named from problem.detail") rather than a bare 409.
+
+    This is **not** the concurrency control. No lock is taken, and the GiST exclusion
+    constraint remains the only thing that is: `app/services.create_delegation` still wraps its
+    insert in `except IntegrityError`, which is what a race this read misses still falls back
+    to (data model §1.5: "no advisory lock or SELECT ... FOR UPDATE dance is needed in
+    services.py — the constraint is atomic under concurrency, which a read-then-insert check is
+    not"). `s1 < e2 AND s2 < e1` is the half-open-range overlap test the exclusion constraint's
+    own `tstzrange(...,  '[)') WITH &&` compiles to.
+    """
+    stmt = select(Delegation).where(
+        Delegation.organization_id == organization_id,
+        Delegation.delegator_employee_id == delegator_employee_id,
+        Delegation.revoked_at.is_(None),
+        Delegation.starts_at < ends_at,
+        Delegation.ends_at > starts_at,
+    )
+    return (await session.execute(stmt)).scalars().first()
+
+
+async def get_repointable_open_steps(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    delegator_employee_id: uuid.UUID,
+    delegate_employee_id: uuid.UUID,
+) -> list[ApprovalStep]:
+    """Every step ADR-0006 §5's re-pointing rule closes and replaces when a new delegation is
+    created: the open step of a pending request, directly assigned to the delegator
+    (`acting_for_employee_id IS NULL` — a step already reached through someone *else's*
+    delegation is left alone, matching §5's "not transitive"), excluding a request whose
+    requester is the delegate — the same "delegate is the requester" rule step-open already
+    enforces (§5), so re-pointing can never hand a request to the person who raised it.
+
+    `outcome = 'open'` already implies the owning request is pending (the invariant
+    `uq_approval_steps_open_per_request` enforces, data model §1.4: "a decided request has
+    none"), but the requester comparison still needs the request row, hence the join.
+
+    **No dedicated index** (data model §2 pattern 9: "delegation creation is rare... an index to
+    serve it would be paid for on every step insert"), the same call the data model already
+    made for this exact query — this reuses `ix_approval_steps_org_approver`'s leading columns
+    for the scan.
+
+    `deleted_at IS NULL` on both sides, matching `get_request`/`get_request_for_update`'s own
+    reading of `ApprovalRequest` (via `get_scoped`, and its own explicit filter respectively) —
+    a soft-deleted request or step is invisible everywhere else this service reads one, and
+    re-pointing must not be the one write path that quietly acts on a row every read path
+    already treats as gone.
+    """
+    stmt = (
+        select(ApprovalStep)
+        .join(
+            ApprovalRequest,
+            (ApprovalRequest.organization_id == ApprovalStep.organization_id)
+            & (ApprovalRequest.id == ApprovalStep.request_id),
+        )
+        .where(
+            ApprovalStep.organization_id == organization_id,
+            ApprovalStep.outcome == "open",
+            ApprovalStep.approver_employee_id == delegator_employee_id,
+            ApprovalStep.acting_for_employee_id.is_(None),
+            ApprovalStep.deleted_at.is_(None),
+            ApprovalRequest.requester_employee_id != delegate_employee_id,
+            ApprovalRequest.deleted_at.is_(None),
+        )
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+@dataclass(frozen=True, slots=True)
+class DelegateCandidate:
+    """One `GET /delegate-candidates` row — a `hierarchy_nodes` projection, not the ORM row
+    itself, so the endpoint cannot accidentally widen what it returns by adding a column to the
+    query without a matching field here."""
+
+    employee_id: uuid.UUID
+    display_name: str
+    employee_no: str
+
+
+def _like_prefix(term: str) -> str:
+    """Escape a caller-supplied search term for use as a `LIKE ... ESCAPE '\\'` prefix.
+
+    Without this, someone searching for a literal `%` or `_` in a name — "50% Corp", "j_doe" —
+    would have that character read as a wildcard instead of the literal they typed, silently
+    widening rather than narrowing their search. Backslash is escaped first, or escaping a
+    literal `%` as `\\%` would itself introduce a second, unintended escape sequence.
+    """
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+#: `GET /delegate-candidates` (ADR-0006 §11, data model §2.2a pattern 16). Written as the plain
+#: `OR` form the data model specifies rather than a hand-rolled `UNION` of the two branches: the
+#: planner turns the `OR` into a `BitmapOr` over `ix_hierarchy_nodes_org_display_name` and
+#: `ix_hierarchy_nodes_org_employee_no` (853 buffers, measured) — which *beats* the `UNION`
+#: form's 2,189 buffers, "the opposite of the inbox's lesson in §2.1, and the reason each of
+#: these is measured rather than reasoned about." `lower(...)` on both sides matches the two
+#: partial indexes' own functional expression exactly, or the planner cannot use them.
+#: `employee_id IS DISTINCT FROM :exclude` reads as "true for every row" when `:exclude` binds
+#: SQL `NULL` (a caller with no `subject_ref`), which is the same "nothing to exclude" shape a
+#: plain `!=` cannot express — `!= NULL` is `NULL`, not `TRUE`, and would silently exclude
+#: nothing *or* everything depending on how the caller's driver renders it, rather than
+#: deterministically excluding nothing.
+_DELEGATE_CANDIDATES_SQL = text(
+    """
+    SELECT employee_id, display_name, employee_no
+      FROM approval.hierarchy_nodes
+     WHERE organization_id = :org
+       AND status <> 'exited'
+       AND employee_id IS DISTINCT FROM :exclude
+       AND (
+                lower(display_name) LIKE :prefix ESCAPE '\\'
+             OR lower(employee_no) LIKE :prefix ESCAPE '\\'
+           )
+     ORDER BY display_name
+     LIMIT :limit
+    """
+)
+
+
+async def search_delegate_candidates(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    exclude_employee_id: uuid.UUID | None,
+    q: str,
+    limit: int,
+) -> list[DelegateCandidate]:
+    """The delegation picker's source (ADR-0006 §11, screens §4.E): non-exited
+    `hierarchy_nodes` whose name or staff number starts with `q`, excluding the caller,
+    capped at `limit`. See `_DELEGATE_CANDIDATES_SQL` for the query shape and why it is
+    written the way it is.
+
+    The route already normalises `q` before its own length check (`StringConstraints(
+    strip_whitespace=True, min_length=2)`), so a whitespace-only or whitespace-padded
+    one-character query never reaches here over HTTP. This function refuses an empty
+    post-strip term anyway, as its own boundary rather than one only the route enforces: a
+    bare `%` prefix (what `_like_prefix("")` would build) matches every non-exited employee in
+    the tenant, which is exactly the staff-directory enumeration `q`'s length rule exists to
+    close — a second caller of this selector must not be able to reopen it by skipping the
+    route's own check.
+    """
+    term = q.strip().lower()
+    if not term:
+        return []
+    rows = (
+        (
+            await session.execute(
+                _DELEGATE_CANDIDATES_SQL,
+                {
+                    "org": str(organization_id),
+                    "exclude": str(exclude_employee_id) if exclude_employee_id else None,
+                    "prefix": _like_prefix(term),
+                    "limit": limit,
+                },
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return [
+        DelegateCandidate(
+            employee_id=row["employee_id"],
+            display_name=row["display_name"],
+            employee_no=row["employee_no"],
+        )
+        for row in rows
+    ]
