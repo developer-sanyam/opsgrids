@@ -7,9 +7,11 @@ Fronted by `app-gateway` at `/api/v1/approvals`, with **no `product` key** in th
 Slice 1 shipped `GET /chain/{employee_id}`. Slice 2 added the routing engine's read and decide
 surface: `GET /inbox`, `GET /requests`, `GET /requests/{id}` and `POST /requests/{id}/decision`
 (ADR-0006 §11). Slice 3 adds the delegation surface: `GET /delegate-candidates`,
-`GET /delegations`, `POST /delegations` and `POST /delegations/{id}/revoke`. `/policies` opens
-on top of a write path that ships in slice 4 — the table exists (slice 2's migration), but
-nothing here lets a caller write to it yet.
+`GET /delegations`, `POST /delegations` and `POST /delegations/{id}/revoke`. Slice 4 adds policy
+administration — `GET /policies` (any scope that can read at all) and
+`PUT /policies/{request_type}` (`policy.write`, floored at ORG) — and arms the SLA sweep, which
+is what makes `GET /inbox`'s `escalated_to_me`/`escalated_away` reasons producible for the first
+time (§10, §11).
 
 **Holding the permission is never enough** (ADR-0006 §11's own words). `require(...)` below is
 the first gate on every route; the second — ADR-0006 §6's eligibility check, and the OWN-scope
@@ -40,6 +42,8 @@ from app.schemas import (
     DelegationOut,
     DottedLineManagerOut,
     InboxItemOut,
+    PolicyOut,
+    PolicyUpdateIn,
     RequestDetailOut,
     RequestListItemOut,
     ServiceInfo,
@@ -68,6 +72,21 @@ DecideCtx = Annotated[ScopeContext, Depends(require("core.approval.request.decid
 #: actually restricts a caller lives in `app/services.create_delegation` /
 #: `revoke_delegation`.
 DelegationCtx = Annotated[ScopeContext, Depends(require("core.approval.delegation.write"))]
+#: `policy.write`, floored at ORG (ADR-0006 §11's table: "Guarded `minimum=Scope.ORG`") — the
+#: permission's own `max_scope` is already ORG (`app/catalogue.py`), so `minimum` here is what
+#: refuses a hypothetical narrower grant rather than collapsing it the way `decide`/
+#: `delegation.write` do; there is no "own" reading of organization-wide SLA configuration to
+#: collapse to.
+PolicyWriteCtx = Annotated[
+    ScopeContext, Depends(require("core.approval.policy.write", minimum=Scope.ORG))
+]
+#: `ApprovalPolicy.request_type`'s own shape (`app/models.py`'s `request_type_shape` CHECK),
+#: repeated here so a malformed path segment is a 422 at the boundary — the client's own mistake
+#: named as one — rather than reaching `app/services.update_policy` at all, let alone the
+#: database CHECK's generic 409.
+RequestTypePath = Annotated[
+    str, StringConstraints(pattern=r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
+]
 
 
 def _person_field(
@@ -230,6 +249,7 @@ async def get_inbox(
             approver_employee_id=row.approver_employee_id,
             acting_for_employee_id=row.acting_for_employee_id,
             step_reason=row.reason,
+            predecessor_approver_employee_id=row.predecessor_approver_employee_id,
         )
         for row in rows
     ]
@@ -252,6 +272,7 @@ async def get_inbox(
             requester_location_code=_location(people, row.requester_employee_id),
             inbox_reason=reason.reason,
             from_name=_name(people, reason.from_employee_id),
+            due_at=row.due_at,
         )
         for row, reason in zip(rows, reasons, strict=True)
     ]
@@ -369,7 +390,12 @@ async def _build_detail(
     # *this* viewer. Only meaningful for a viewer who is themselves a personal party to the open
     # step (an eligible decider); a requester or an uninvolved ORG reader sees no chip rather
     # than a fabricated one, because `domain.inbox_reason_for` is only correct for a caller the
-    # inbox's own query would have matched.
+    # inbox's own query would have matched. This does **not** widen to `escalated_away` the way
+    # `GET /inbox` now does (`app/selectors.py`'s `_INBOX_CANDIDATES_CTE`) — that reads a step
+    # this viewer no longer holds, which `steps` (already loaded, full history) could answer, but
+    # doing so is left for whichever slice next touches this endpoint rather than folded in here
+    # silently; the object-level rule above already lets such a viewer read and decide the
+    # request, this chip is cosmetic only.
     inbox_reason: str | None = None
     from_employee_id: uuid.UUID | None = None
     approver_employee_id: uuid.UUID | None = None
@@ -382,11 +408,28 @@ async def _build_detail(
             open_step.approver_employee_id,
             open_step.acting_for_employee_id,
         ):
+            # `escalated_to_me`'s "from" is the *previous* rung, off the open step itself
+            # (`domain.inbox_reason_for`'s own docstring) — free here since `steps` already holds
+            # the whole history, unlike the inbox's own self-join. `outcome == "escalated"` matches
+            # `app/selectors.py`'s `_INBOX_CANDIDATES_CTE` join exactly, and for the same reason:
+            # delegation re-pointing inserts its successor at the *same* level as the step it
+            # replaces (ADR-0006 §5 — re-pointing is not a rung), so a step that was re-pointed and
+            # then escalated has a closed, `delegated`-outcome step sitting at `level - 1` too.
+            # Without the outcome filter, `next(...)` would return whichever of the two happens to
+            # come first in `steps` (opened order) — silently naming the re-pointed-away approver
+            # instead of the one who actually let the SLA lapse.
+            predecessor = next(
+                (s for s in steps if s.level == open_step.level - 1 and s.outcome == "escalated"),
+                None,
+            )
             derived = domain.inbox_reason_for(
                 caller_id=caller,
                 approver_employee_id=open_step.approver_employee_id,
                 acting_for_employee_id=open_step.acting_for_employee_id,
                 step_reason=open_step.reason,
+                predecessor_approver_employee_id=(
+                    predecessor.approver_employee_id if predecessor is not None else None
+                ),
             )
             inbox_reason = derived.reason
             from_employee_id = derived.from_employee_id
@@ -603,14 +646,43 @@ async def list_delegate_candidates(
     summary="Delegations I hold (OWN) or every delegation (ORG)",
 )
 async def list_delegations(
-    session: SessionDep, ctx: DelegationCtx, params: PageQuery
+    session: SessionDep,
+    ctx: DelegationCtx,
+    params: PageQuery,
+    employee_id: Annotated[
+        uuid.UUID | None,
+        Query(description="Only delegations this employee is a party to, in either direction"),
+    ] = None,
 ) -> Page[DelegationOut]:
     """`GET /delegations` (ADR-0006 §11): ORG reaches every delegation in the organization;
     below ORG (read as OWN — `delegation.write` never gains TEAM or LOCATION) reaches a row the
-    caller is either party to, delegator or delegate."""
+    caller is either party to, delegator or delegate.
+
+    `?employee_id=` is the ORG screen's "filtered to a person" state (screens §4.E): rows where
+    that employee is the delegator **or** the delegate. It narrows, it never widens — the scope
+    predicate is still applied first and this `AND`s with it (`selectors.delegations_stmt`), the
+    same way `?requester=me` layers on top of scope on `GET /requests`. It exists because the
+    shipped UI had no server-side filter and so filtered an already-loaded page client-side while
+    still rendering the server's unfiltered `total`; with this the count and the rows agree.
+
+    **Not refused below ORG, deliberately** — unlike `POST /delegations`' `delegator_employee_id`,
+    which is. The two are different questions. A below-ORG caller's scope predicate is already
+    "delegator = me OR delegate = me", so `AND`ing "delegator = them OR delegate = them" can only
+    return rows the caller is *also* a party to — rows their own unfiltered first page already
+    contains, with both employee ids on them in plain sight. The count follows the same statement,
+    so `total` cannot leak a row either. And a non-matching, non-existent or cross-tenant id is an
+    empty page with `total = 0`, identical to a real employee this caller shares no delegation
+    with — no existence oracle, which is exactly what `POST`'s refusal exists to prevent: there,
+    naming a foreign delegator reaches `create_delegation`'s overlap check, whose 409 names the
+    conflicting window and so would confirm that a stranger holds a delegation and when. Nothing
+    on this path reads a row the scope predicate did not already admit.
+    """
     is_org = ctx.scope is Scope.ORG
     stmt = selectors.delegations_stmt(
-        organization_id=ctx.organization_id, caller_id=ctx.subject_ref, is_org=is_org
+        organization_id=ctx.organization_id,
+        caller_id=ctx.subject_ref,
+        is_org=is_org,
+        employee_id=employee_id,
     )
     rows, total = await paginate(session, stmt, params)
 
@@ -707,3 +779,68 @@ async def revoke_delegation(
     )
     db_now = await services.db_now(session)
     return _delegation_out(delegation, people, db_now)
+
+
+# ----------------------------------------------------------------- policy administration (slice 4)
+
+
+@router.get(
+    "/approvals/policies",
+    response_model=list[PolicyOut],
+    summary="SLA policy per request type",
+)
+async def list_policies(session: SessionDep, ctx: ReadCtx) -> list[PolicyOut]:
+    """`GET /policies` (ADR-0006 §10, §11): read-only, org-wide, and — deliberately — the one
+    read endpoint whose scope is not consulted at all. An SLA policy is organization
+    configuration, not anybody's row, so a caller holding `request.read` at **any** scope
+    (including plain `OWN`, which every member holds by default) sees exactly what an ORG reader
+    does: the settings screen's own read-only rendering for someone without `policy.write:ORG`
+    depends on this (screens §4.G's "No permission" state — "you can still see the current
+    settings below").
+
+    Iterates `services.KNOWN_REQUEST_TYPES` rather than only the request types a `PUT` has ever
+    written, so a brand-new organization that has never opened a regularization request still
+    sees the one type this service knows about, honestly at its defaults
+    (`app/selectors.list_policies`; screens §4.G's "Empty" state: "Using the default settings").
+    """
+    policies = await selectors.list_policies(
+        session, ctx.organization_id, services.KNOWN_REQUEST_TYPES
+    )
+    return [
+        PolicyOut(request_type=p.request_type, sla_minutes=p.sla_minutes, enabled=p.enabled)
+        for p in policies
+    ]
+
+
+@router.put(
+    "/approvals/policies/{request_type}",
+    response_model=PolicyOut,
+    summary="Set the SLA policy for one request type",
+)
+async def put_policy(
+    request_type: RequestTypePath,
+    payload: PolicyUpdateIn,
+    session: SessionDep,
+    ctx: PolicyWriteCtx,
+) -> PolicyOut:
+    """`PUT /policies/{request_type}` (ADR-0006 §8, §10, §11), floored at `policy.write:ORG`.
+
+    `app/schemas.PolicyUpdateIn`'s own bounds mirror `ApprovalPolicy`'s CHECK exactly, so a
+    sub-floor or over-ceiling `sla_minutes` never reaches `app/services.update_policy` at all —
+    it is a field-level 422 at the boundary (`errors: [{"field": "sla_minutes", ...}]`), not the
+    constraint's generic, field-less 409. `app/services.update_policy` writes only
+    `sla_minutes`/`enabled`: **disabling turns off escalation for this request type, and nothing
+    else** (§10 — "It never turns off approval") — this endpoint has no path to a request's own
+    status, by construction, not by convention.
+    """
+    policy = await services.update_policy(
+        session,
+        organization_id=ctx.organization_id,
+        request_type=request_type,
+        sla_minutes=payload.sla_minutes,
+        enabled=payload.enabled,
+        actor_id=ctx.subject_ref,
+    )
+    return PolicyOut(
+        request_type=policy.request_type, sla_minutes=policy.sla_minutes, enabled=policy.enabled
+    )

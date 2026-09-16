@@ -18,9 +18,11 @@ import {
   FIXTURE_INBOX,
   FIXTURE_MY_REQUESTS,
   __createFixtureDelegation,
+  __listFixturePolicies,
   __listFixtureDelegations,
   __revokeFixtureDelegation,
   __searchFixtureDelegateCandidates,
+  __updateFixturePolicy,
 } from "./fixtures";
 import { USE_FIXTURES } from "./client";
 import type {
@@ -32,6 +34,8 @@ import type {
   DelegationOut,
   InboxItemOut,
   Paged,
+  PolicyOut,
+  PolicyUpdateIn,
   RequestDetailOut,
   RequestListItemOut,
 } from "./types";
@@ -176,17 +180,35 @@ export async function listDelegateCandidates(
   );
 }
 
+export interface DelegationListParams extends PageParams {
+  /**
+   * `employee_id` — narrows to delegations this person is a party to, in **either** direction
+   * (delegator or delegate), ANDed with the caller's own scope. The server filters; the screen
+   * does not, which is what keeps `total` and "Load more" telling the truth about the same set.
+   */
+  employeeId?: string;
+}
+
 /**
  * `GET /approvals/delegations` — ORG sees every delegation in the organization; below ORG sees
- * only rows the caller is a party to, delegator or delegate, newest first. No employee filter
- * exists on the real endpoint (`app/api/routes.py::list_delegations` takes only paging), so an
- * ORG caller cannot ask the server to scope the list to one person — the screen's own search box
- * is client-side over what's loaded, the same pattern `Approvals.tsx` and `MyRequests.tsx` already
- * use where the backend has no query param to match. See the slice-3 report.
+ * only rows the caller is a party to, delegator or delegate, newest first. `employee_id` narrows
+ * that set server-side (§4.E's "filtered to a person"); omitting it is "everything my scope
+ * reaches", never "everything".
  */
-export async function listDelegations(params: PageParams = {}): Promise<Paged<DelegationOut>> {
-  if (USE_FIXTURES) return settle(paginate(__listFixtureDelegations(), params));
-  return apiRequest<Paged<DelegationOut>>(`/approvals/delegations?${pageQuery(params)}`);
+export async function listDelegations(
+  params: DelegationListParams = {},
+): Promise<Paged<DelegationOut>> {
+  const { employeeId, ...page } = params;
+  if (USE_FIXTURES) {
+    // `|| null`, not `?? null`: an empty string is "no filter" on the live path below, and the
+    // two must not disagree about what an absent value looks like.
+    return settle(paginate(__listFixtureDelegations(employeeId || null), page));
+  }
+  const query = pageQuery(page);
+  const filter = employeeId
+    ? `&${new URLSearchParams({ employee_id: employeeId }).toString()}`
+    : "";
+  return apiRequest<Paged<DelegationOut>>(`/approvals/delegations?${query}${filter}`);
 }
 
 /**
@@ -214,5 +236,35 @@ export async function revokeDelegation(delegationId: string): Promise<Delegation
   if (USE_FIXTURES) return settle(__revokeFixtureDelegation(delegationId));
   return apiRequest<DelegationOut>(`/approvals/delegations/${delegationId}/revoke`, {
     method: "POST",
+  });
+}
+
+/* ----------------------------------------------------------- policy administration (slice 4) */
+
+/**
+ * `GET /approvals/policies` — one row per request type approval knows about (today, exactly one:
+ * `hrms.time.regularization`), readable by anyone who can read requests at all, at any scope —
+ * the one read endpoint whose scope is not consulted (screens §4.G, §5 row 15). A type with no
+ * configured row still comes back, at the server's own defaults, so the settings screen never
+ * fabricates a row itself.
+ */
+export async function listPolicies(): Promise<PolicyOut[]> {
+  if (USE_FIXTURES) return settle(__listFixturePolicies());
+  return apiRequest<PolicyOut[]>("/approvals/policies");
+}
+
+/**
+ * `PUT /approvals/policies/{request_type}` — `policy.write`, floored at ORG. Refused with a
+ * field-level 422 on `sla_minutes` outside `15..525600` or on an unrecognised `request_type`,
+ * verbatim from the server (§2.5) — this function never narrows or renames the bound itself.
+ */
+export async function updatePolicy(
+  requestType: string,
+  body: PolicyUpdateIn,
+): Promise<PolicyOut> {
+  if (USE_FIXTURES) return settle(__updateFixturePolicy(requestType, body));
+  return apiRequest<PolicyOut>(`/approvals/policies/${encodeURIComponent(requestType)}`, {
+    method: "PUT",
+    body,
   });
 }

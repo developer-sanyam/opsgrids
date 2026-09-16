@@ -15,7 +15,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import selectors, services
+from app import domain, selectors, services
 from app.config import settings
 from app.consumers import on_regularization_requested
 from app.models import (
@@ -28,7 +28,7 @@ from app.models import (
 )
 from platform_core.db import dispose_engine, init_engine
 from platform_core.events import already_processed
-from tests.helpers import regularization_requested_envelope, seed_person
+from tests.helpers import regularization_requested_envelope, seed_person, seed_policy
 
 pytestmark = pytest.mark.integration
 
@@ -97,15 +97,17 @@ class TestManagerIsRouted:
         assert step.acting_for_employee_id is None
         assert step.delegation_id is None
         assert step.reason == "assigned"
-        assert step.due_at is None  # ADR-0006 §10 amended: no SLA clock in slices 2-3
+        # ADR-0006 §4 rule 4, §10 (slice 4): armed off the default policy (`enabled=True`,
+        # `sla_minutes=1440`) since no policy row exists for this org/type.
+        assert step.due_at == step.opened_at + timedelta(minutes=domain.DEFAULT_SLA_MINUTES)
         assert step.outcome == "open"
 
-    async def test_no_due_date_is_stamped_regardless_of_policy(
+    async def test_the_default_policy_sla_is_used_when_no_policy_row_exists(
         self, session: AsyncSession, org_id: uuid.UUID
     ) -> None:
-        """Task note 3 / ADR-0006 §10 amended: `due_at` is always NULL in this slice, whether or
-        not a policy row exists — there is no policy row here at all, and the step still opens
-        with no due date, which is the point."""
+        """ADR-0006 §10: "a missing row means the defaults" — no `approval_policies` row exists
+        for this org/type (no policy endpoint ships before slice 4's own successor), and the step
+        still opens with a due date, off `domain.DEFAULT_SLA_MINUTES`."""
         requester, manager = uuid.uuid4(), uuid.uuid4()
         async with session.begin():
             await seed_person(session, org_id, manager)
@@ -117,6 +119,46 @@ class TestManagerIsRouted:
         assert request is not None
         async with session.begin():
             step = await _open_step(session, org_id, request.id)
+        assert step.due_at == step.opened_at + timedelta(minutes=domain.DEFAULT_SLA_MINUTES)
+
+    async def test_a_configured_policys_sla_minutes_is_used(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """ADR-0006 §4 rule 4: `due_at = opened_at + sla_minutes` off **this org's own** policy
+        row, not the default, once one exists."""
+        requester, manager = uuid.uuid4(), uuid.uuid4()
+        async with session.begin():
+            await seed_person(session, org_id, manager)
+            await seed_person(session, org_id, requester, reporting_manager_id=manager)
+            await seed_policy(session, org_id, sla_minutes=15, enabled=True)
+
+        request = await _open(
+            session, org_id, source_ref=uuid.uuid4(), requester_employee_id=requester
+        )
+        assert request is not None
+        async with session.begin():
+            step = await _open_step(session, org_id, request.id)
+        assert step.due_at == step.opened_at + timedelta(minutes=15)
+
+    async def test_a_disabled_policy_opens_the_step_with_no_due_date(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """ADR-0006 §10: `enabled = false` turns off escalation for the type — the step still
+        opens **assigned**, just with `due_at = NULL`, the same shape slices 2-3 produced for
+        every request before this slice armed the clock at all."""
+        requester, manager = uuid.uuid4(), uuid.uuid4()
+        async with session.begin():
+            await seed_person(session, org_id, manager)
+            await seed_person(session, org_id, requester, reporting_manager_id=manager)
+            await seed_policy(session, org_id, enabled=False)
+
+        request = await _open(
+            session, org_id, source_ref=uuid.uuid4(), requester_employee_id=requester
+        )
+        assert request is not None
+        async with session.begin():
+            step = await _open_step(session, org_id, request.id)
+        assert step.approver_employee_id == manager
         assert step.due_at is None
 
 
@@ -490,7 +532,9 @@ class TestOutboxAndAudit:
         # waiting on.
         assert row.payload["approver_name"] == "Priya Manager"
         assert row.payload["requester_employee_id"] == str(requester)
-        assert row.payload["due_at"] is None
+        # Slice 4: armed off the default policy, and carried on the wire as an ISO instant rather
+        # than the `None` slices 2-3 always published.
+        assert row.payload["due_at"] is not None
         # request_note never travels on a published event payload (ADR-0006 §3).
         assert "request_note" not in row.payload
         assert "summary" not in row.payload

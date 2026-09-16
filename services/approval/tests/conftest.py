@@ -16,7 +16,9 @@ from __future__ import annotations
 import sys
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -91,6 +93,49 @@ async def admin_session() -> AsyncIterator[AsyncSession]:
     async with maker() as s:
         yield s
     await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def sweep_engines(session: AsyncSession) -> AsyncIterator[tuple[Any, Any]]:
+    """The two engines the SLA sweep runs on, wired exactly as `app/cron.py`'s `main()` wires
+    them. Depends on `session` only for its truncation, so a sweep test starts from a clean
+    schema. Same shape as `services/subscription/tests/conftest.py`'s own `sweep_engines`.
+
+    * **discovery** connects on the real **outbox DSN** — the BYPASSRLS role the sweep discovers
+      due work with. Using it here rather than the admin role proves the column grant
+      `migrations/env.py`'s `grant_sla_sweep_reader` applies is actually in effect: without it the
+      sweep would raise `42501`; without BYPASSRLS it would quietly find nothing.
+    * **work** connects on the app role, with the tenant bound per transaction, matching
+      `session_scope(organization_id=...)` in the real process.
+    """
+    cfg = settings()
+    discovery = create_async_engine(cfg.outbox_dsn, connect_args=_connect_args())
+    work = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
+    yield discovery, work
+    await discovery.dispose()
+    await work.dispose()
+
+
+@pytest_asyncio.fixture
+async def sweep(sweep_engines: tuple[Any, Any]) -> AsyncIterator[Any]:
+    """An `EscalationSweep` over real PostgreSQL, drivable one `tick(now)` at a time — real rows,
+    real locks, real policies, with no clock and no engine patched."""
+    from app.cron import EscalationSweep
+
+    discovery_engine, work_engine = sweep_engines
+    discovery = async_sessionmaker(discovery_engine, expire_on_commit=False)
+    work_maker = async_sessionmaker(work_engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def work_scope(organization_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
+        async with work_maker() as s, s.begin():
+            await s.execute(
+                text(f"SELECT set_config('{TENANT_GUC}', :org, true)"),
+                {"org": str(organization_id)},
+            )
+            yield s
+
+    yield EscalationSweep(discovery_factory=discovery, work_scope=work_scope)
 
 
 @pytest_asyncio.fixture

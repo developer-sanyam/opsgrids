@@ -419,9 +419,10 @@ class TestRepointing:
         assert successor.delegation_id == delegation.id
         assert successor.reason == "delegated"
         assert successor.level == original.level
-        # "the predecessor's due_at carried over unchanged" (ADR-0006 §5) — both are `None` in
-        # this slice (ADR-0006 §10 amended), so the carry-through is exercised even though the
-        # value itself is not yet interesting.
+        # "the predecessor's due_at carried over unchanged" (ADR-0006 §5) — the default policy
+        # arms a real value at open (slice 4), so this now exercises the carry-through with a
+        # non-trivial value rather than two `None`s trivially matching.
+        assert original.due_at is not None
         assert successor.due_at == original.due_at
 
     async def test_the_original_approver_can_still_decide_after_repointing(
@@ -1351,6 +1352,342 @@ class TestListEndpointVisibility:
         assert response.status_code == 200
         ids = {item["id"] for item in response.json()["items"]}
         assert ids == {str(mine.id)}
+
+
+class TestListEndpointEmployeeFilter:
+    """`GET /delegations?employee_id=` (screens §4.E's ORG "filtered to a person" state).
+
+    Two properties, and they are the whole of the contract: the filter matches **either
+    direction** (that person as delegator or as delegate), and it `AND`s with the endpoint's
+    scope predicate rather than replacing it. The second is the one a regression would be
+    invisible without — a reading that swapped the filter *in* for the scope check would pass
+    every single-scope assertion in `TestListEndpointVisibility` above and still hand a
+    below-ORG caller someone else's delegations.
+
+    The filter is deliberately **not** refused below ORG: intersecting "rows I am a party to"
+    with "rows they are a party to" can only ever return rows the caller's own unfiltered page
+    already contains, and a non-matching id is an empty page rather than a distinguishable
+    error — see `app/api/routes.py`'s `list_delegations` docstring for the full reasoning and
+    for why `POST /delegations`' `delegator_employee_id` is a different question.
+    """
+
+    async def test_org_scope_filters_to_a_person_in_both_directions(
+        self, client, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        subject, their_delegate, their_delegator = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        stranger_a, stranger_b = uuid.uuid4(), uuid.uuid4()
+        now = datetime.now(UTC)
+        async with session.begin():
+            for e in (subject, their_delegate, their_delegator, stranger_a, stranger_b):
+                await seed_person(session, org_id, e)
+        as_delegator, _ = await _create(
+            session,
+            org_id,
+            delegator_employee_id=subject,
+            delegate_employee_id=their_delegate,
+            starts_at=now,
+            ends_at=now + timedelta(days=1),
+        )
+        as_delegate, _ = await _create(
+            session,
+            org_id,
+            delegator_employee_id=their_delegator,
+            delegate_employee_id=subject,
+            starts_at=now,
+            ends_at=now + timedelta(days=1),
+        )
+        await _create(
+            session,
+            org_id,
+            delegator_employee_id=stranger_a,
+            delegate_employee_id=stranger_b,
+            starts_at=now,
+            ends_at=now + timedelta(days=1),
+        )
+
+        principal = principal_for(org_id, uuid.uuid4(), [f"{DELEGATION_WRITE}:ORG"])
+        with as_principal(principal):
+            unfiltered = await client.get("/api/v1/approvals/delegations")
+            response = await client.get(
+                "/api/v1/approvals/delegations", params={"employee_id": str(subject)}
+            )
+        assert unfiltered.json()["total"] == 3
+        assert response.status_code == 200
+        body = response.json()
+        assert {item["id"] for item in body["items"]} == {
+            str(as_delegator.id),
+            str(as_delegate.id),
+        }
+        assert body["total"] == 2
+
+    async def test_own_scope_filtering_to_self_returns_own_rows_both_directions(
+        self, client, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        caller, their_delegate, their_delegator = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        stranger_a, stranger_b = uuid.uuid4(), uuid.uuid4()
+        now = datetime.now(UTC)
+        async with session.begin():
+            for e in (caller, their_delegate, their_delegator, stranger_a, stranger_b):
+                await seed_person(session, org_id, e)
+        mine_as_delegator, _ = await _create(
+            session,
+            org_id,
+            delegator_employee_id=caller,
+            delegate_employee_id=their_delegate,
+            starts_at=now,
+            ends_at=now + timedelta(days=1),
+        )
+        mine_as_delegate, _ = await _create(
+            session,
+            org_id,
+            delegator_employee_id=their_delegator,
+            delegate_employee_id=caller,
+            starts_at=now,
+            ends_at=now + timedelta(days=1),
+        )
+        await _create(
+            session,
+            org_id,
+            delegator_employee_id=stranger_a,
+            delegate_employee_id=stranger_b,
+            starts_at=now,
+            ends_at=now + timedelta(days=1),
+        )
+
+        principal = principal_for(org_id, caller, [f"{DELEGATION_WRITE}:OWN"])
+        with as_principal(principal):
+            response = await client.get(
+                "/api/v1/approvals/delegations", params={"employee_id": str(caller)}
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert {item["id"] for item in body["items"]} == {
+            str(mine_as_delegator.id),
+            str(mine_as_delegate.id),
+        }
+        assert body["total"] == 2
+
+    async def test_own_scope_naming_a_third_party_gets_only_the_intersection(
+        self, client, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """The property the whole parameter turns on: the filter `AND`s with scope. `third` is a
+        party to two rows — one the caller shares with them, one the caller has nothing to do
+        with — and only the shared one comes back. A reading that replaced the scope predicate
+        with the filter would return both, which is the leak this asserts the absence of."""
+        caller, third, outsider = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        now = datetime.now(UTC)
+        async with session.begin():
+            for e in (caller, third, outsider):
+                await seed_person(session, org_id, e)
+        shared, _ = await _create(
+            session,
+            org_id,
+            delegator_employee_id=caller,
+            delegate_employee_id=third,
+            starts_at=now,
+            ends_at=now + timedelta(days=1),
+        )
+        # `third` as delegator with someone the caller is not a party to — visible to ORG, and to
+        # `third` themselves, but never through the caller's own scope predicate.
+        theirs_alone, _ = await _create(
+            session,
+            org_id,
+            delegator_employee_id=third,
+            delegate_employee_id=outsider,
+            starts_at=now,
+            ends_at=now + timedelta(days=1),
+        )
+
+        principal = principal_for(org_id, caller, [f"{DELEGATION_WRITE}:OWN"])
+        with as_principal(principal):
+            response = await client.get(
+                "/api/v1/approvals/delegations", params={"employee_id": str(third)}
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert [item["id"] for item in body["items"]] == [str(shared.id)]
+        assert body["total"] == 1
+
+        # …and an ORG caller, filtering on the same id, does see both — so the row the caller was
+        # denied is a real row that exists, not an artefact of the fixture.
+        org_principal = principal_for(org_id, uuid.uuid4(), [f"{DELEGATION_WRITE}:ORG"])
+        with as_principal(org_principal):
+            org_response = await client.get(
+                "/api/v1/approvals/delegations", params={"employee_id": str(third)}
+            )
+        assert {item["id"] for item in org_response.json()["items"]} == {
+            str(shared.id),
+            str(theirs_alone.id),
+        }
+        assert org_response.json()["total"] == 2
+
+    async def test_a_caller_with_no_subject_ref_still_sees_nothing_below_org(
+        self, client, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """`employee_id` is a narrowing filter, never a substitute identity: a membership with no
+        employee link has nothing to match the scope predicate against and still matches nothing,
+        exactly as it does unfiltered."""
+        manager, delegate = uuid.uuid4(), uuid.uuid4()
+        now = datetime.now(UTC)
+        async with session.begin():
+            await seed_person(session, org_id, manager)
+            await seed_person(session, org_id, delegate)
+        await _create(
+            session,
+            org_id,
+            delegator_employee_id=manager,
+            delegate_employee_id=delegate,
+            starts_at=now,
+            ends_at=now + timedelta(days=1),
+        )
+
+        principal = principal_for(org_id, None, [f"{DELEGATION_WRITE}:OWN"])
+        with as_principal(principal):
+            response = await client.get(
+                "/api/v1/approvals/delegations", params={"employee_id": str(manager)}
+            )
+        assert response.status_code == 200
+        assert response.json()["items"] == []
+        assert response.json()["total"] == 0
+
+    async def test_total_counts_the_filtered_set_across_more_than_one_page(
+        self, client, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """The paging lie this parameter exists to close. The shipped UI filtered an
+        already-loaded page client-side and rendered the server's *unfiltered* `total`, so the
+        footer claimed more rows than the filter could ever produce. `total` must count the
+        filtered set, and the pages must add up to it — which only more rows than one page holds
+        can prove."""
+        subject = uuid.uuid4()
+        delegates = [uuid.uuid4() for _ in range(3)]
+        stranger_a, stranger_b, stranger_c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        now = datetime.now(UTC)
+        async with session.begin():
+            for e in (subject, *delegates, stranger_a, stranger_b, stranger_c):
+                await seed_person(session, org_id, e)
+        mine = set()
+        for i, d in enumerate(delegates):
+            # Non-overlapping windows: `ex_delegations_no_overlap` forbids two live delegations
+            # for the same delegator from overlapping, so the three are spaced two days apart.
+            created, _ = await _create(
+                session,
+                org_id,
+                delegator_employee_id=subject,
+                delegate_employee_id=d,
+                starts_at=now + timedelta(days=2 * i),
+                ends_at=now + timedelta(days=2 * i + 1),
+            )
+            mine.add(str(created.id))
+        await _create(
+            session,
+            org_id,
+            delegator_employee_id=stranger_a,
+            delegate_employee_id=stranger_b,
+            starts_at=now,
+            ends_at=now + timedelta(days=1),
+        )
+        await _create(
+            session,
+            org_id,
+            delegator_employee_id=stranger_b,
+            delegate_employee_id=stranger_c,
+            starts_at=now,
+            ends_at=now + timedelta(days=1),
+        )
+
+        principal = principal_for(org_id, uuid.uuid4(), [f"{DELEGATION_WRITE}:ORG"])
+        with as_principal(principal):
+            unfiltered = await client.get("/api/v1/approvals/delegations", params={"size": 2})
+            first = await client.get(
+                "/api/v1/approvals/delegations",
+                params={"employee_id": str(subject), "size": 2, "page": 1},
+            )
+            second = await client.get(
+                "/api/v1/approvals/delegations",
+                params={"employee_id": str(subject), "size": 2, "page": 2},
+            )
+
+        assert unfiltered.json()["total"] == 5  # what the old client-side filter would have shown
+        assert first.status_code == 200
+        assert first.json()["total"] == 3
+        assert first.json()["pages"] == 2
+        assert len(first.json()["items"]) == 2
+        assert second.json()["total"] == 3
+        assert len(second.json()["items"]) == 1
+        seen = {item["id"] for item in first.json()["items"]} | {
+            item["id"] for item in second.json()["items"]
+        }
+        assert seen == mine
+
+    async def test_an_employee_id_matching_nobody_is_an_empty_page_not_an_error(
+        self, client, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """No existence oracle: an id nobody holds a delegation with — including one belonging to
+        no employee at all — is the same empty page as an id that simply shares no row with the
+        caller, never a 404 and never a 403."""
+        manager, delegate = uuid.uuid4(), uuid.uuid4()
+        now = datetime.now(UTC)
+        async with session.begin():
+            await seed_person(session, org_id, manager)
+            await seed_person(session, org_id, delegate)
+        await _create(
+            session,
+            org_id,
+            delegator_employee_id=manager,
+            delegate_employee_id=delegate,
+            starts_at=now,
+            ends_at=now + timedelta(days=1),
+        )
+
+        principal = principal_for(org_id, uuid.uuid4(), [f"{DELEGATION_WRITE}:ORG"])
+        with as_principal(principal):
+            response = await client.get(
+                "/api/v1/approvals/delegations", params={"employee_id": str(uuid.uuid4())}
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["items"] == []
+        assert body["total"] == 0
+        assert body["pages"] == 0
+
+    async def test_a_malformed_employee_id_is_422(self, client, org_id: uuid.UUID) -> None:
+        principal = principal_for(org_id, uuid.uuid4(), [f"{DELEGATION_WRITE}:ORG"])
+        with as_principal(principal):
+            response = await client.get(
+                "/api/v1/approvals/delegations", params={"employee_id": "not-a-uuid"}
+            )
+        assert response.status_code == 422
+        assert response.json()["errors"][0]["field"] == "employee_id"
+
+    async def test_an_employee_id_from_another_tenant_matches_nothing(
+        self, client, session: AsyncSession, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """Cross-tenant: the organization filter runs first and the `employee_id` narrows within
+        it, so naming an employee who holds delegations in *another* organization is the same
+        empty page as naming nobody."""
+        other_org = uuid.uuid4()
+        foreign_manager, foreign_delegate = uuid.uuid4(), uuid.uuid4()
+        now = datetime.now(UTC)
+        async with admin_session.begin():
+            admin_session.add(
+                Delegation(
+                    organization_id=other_org,
+                    delegator_employee_id=foreign_manager,
+                    delegate_employee_id=foreign_delegate,
+                    starts_at=now,
+                    ends_at=now + timedelta(days=1),
+                    created_by_employee_id=foreign_manager,
+                )
+            )
+
+        principal = principal_for(org_id, uuid.uuid4(), [f"{DELEGATION_WRITE}:ORG"])
+        with as_principal(principal):
+            response = await client.get(
+                "/api/v1/approvals/delegations", params={"employee_id": str(foreign_manager)}
+            )
+        assert response.status_code == 200
+        assert response.json()["items"] == []
+        assert response.json()["total"] == 0
 
 
 class TestRevokeEndpoint:

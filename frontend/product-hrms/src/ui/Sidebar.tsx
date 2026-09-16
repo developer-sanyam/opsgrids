@@ -1,4 +1,4 @@
-import { useAuth } from "@opsgrids/client";
+import { useAuth, usePermission } from "@opsgrids/client";
 import {
   BellIcon,
   BuildingIcon,
@@ -71,14 +71,19 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   // group itself: a 403 here means either a per-principal grant gap or an un-reconciled
   // organization (§2.8), and hiding the entry would make that deploy-order mistake invisible.
   const inboxCount = useInboxCount();
+  // §1.2, §2.4 rule 2: "Approval settings" is hidden without `policy.write:ORG` — the one entry
+  // in this group the server cannot gate by filtering, so it is hidden client-side instead. The
+  // route itself stays reachable by URL either way (§4.G's read-only "No permission" rendering).
+  const canConfigureApprovals = usePermission("core.approval.policy.write", "ORG");
   const approvals: NavGroup = {
     title: "Approvals",
     items: [
       { to: "/approvals", label: "Waiting on me", icon: InboxIcon, ...(inboxCount ? { count: inboxCount } : {}) },
       { to: "/approvals/mine", label: "My requests", icon: ClipboardListIcon },
-      // §1.2: slice 3's own entry — deliberately left out of slice 2's group. "Approval settings"
-      // stays out too; it configures a sweep that is not running before slice 4 (§4.G).
       { to: "/approvals/delegations", label: "Delegations", icon: ReplyIcon },
+      ...(canConfigureApprovals
+        ? [{ to: "/approvals/settings", label: "Approval settings", icon: SettingsIcon }]
+        : []),
     ],
   };
   const groups: NavGroup[] = [MAIN_MENU, approvals, RECORDS, WORKSPACE];

@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { ApiError } from "@opsgrids/client";
 import {
+  AlertTriangleIcon,
   Announcer,
   ArrowLeftIcon,
   Button,
@@ -24,6 +25,7 @@ import {
   applicationOutcomeCopy,
   buildHistoryEntries,
   detailStatusCopy,
+  dueLineCopy,
   inboxReasonChip,
 } from "@/lib/approvalCopy";
 import { attendanceStatusLabel } from "@/lib/format";
@@ -141,6 +143,11 @@ function RequestDetailScreen() {
       : null;
   const chip = inboxReasonChip(detail.inbox_reason, detail.from_name);
   const historyEntries = buildHistoryEntries(detail, formatAt);
+  // §4.B, slice 4: the due line reads the *current* open step's own `due_at` — never computed
+  // here, only formatted. `steps` is append-only and at most one entry is ever `open` while the
+  // request is pending (§2.10); a decided request has none, so the line does not render at all.
+  const openStep = detail.steps.find((s) => s.outcome === "open");
+  const dueLine = openStep ? dueLineCopy(openStep.due_at, (iso) => formatAt(iso).text) : null;
   const requesterDay = attendanceStatusLabel(detail.summary.from);
   const requesterTargetDay = attendanceStatusLabel(detail.summary.to);
   const dateLabel = formatInstant(`${detail.summary.date}T00:00:00Z`, detail.requester_location_code, zoneLookup ?? { locations: {}, organizationZone: "UTC" }, "date").text;
@@ -305,6 +312,16 @@ function RequestDetailScreen() {
                   <p className="text-sm text-muted">Unassigned — no approver found</p>
                 )}
                 {chip ? <Tag tone={chip.tone}>{chip.label}</Tag> : null}
+                {dueLine ? (
+                  <p
+                    className={`flex items-center gap-1.5 text-sm ${dueLine.kind === "overdue" ? "text-negative font-semibold" : "text-muted"}`}
+                  >
+                    {dueLine.kind === "overdue" ? (
+                      <AlertTriangleIcon className="size-4 shrink-0" aria-hidden />
+                    ) : null}
+                    {dueLine.label}
+                  </p>
+                ) : null}
               </div>
             </Card>
           ) : null}

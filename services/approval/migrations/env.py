@@ -43,8 +43,9 @@ def grant_unapplied_alarm_reader(connection: Connection) -> None:
     BYPASSRLS surface onto customer content.
 
     The seven-column grant on `approval_steps` for the SLA sweep's own discovery (data model §3.3)
-    is **not** granted here — that reader serves probes armed in slice 4, and granting it early
-    buys nothing since nothing yet queries it.
+    is `grant_sla_sweep_reader`, below — a separate function because it was deliberately not
+    granted here when this one shipped in slice 2: that reader serves probes armed in slice 4, and
+    granting it early would have bought nothing since nothing queried it yet.
 
     Called from `do_run_migrations` after **every** `alembic` run, upgrade or downgrade alike —
     there is no direction argument to key off here, so `REVOKE` first and `GRANT` again only if
@@ -72,6 +73,45 @@ def grant_unapplied_alarm_reader(connection: Connection) -> None:
             text(
                 f"GRANT SELECT (organization_id, id, request_type, status, decided_at, "
                 f'application_state) ON "{SCHEMA}"."approval_requests" TO "{reader}"'
+            )
+        )
+    connection.commit()
+
+
+def grant_sla_sweep_reader(connection: Connection) -> None:
+    """Column-level `SELECT` on `approval_steps` for the outbox role — the SLA sweep's own
+    discovery read and the stuck-open probes (data model §3.3, §15; ADR-0006 §8).
+
+    **Seven columns, not six** (data model §3.3's own correction to ADR-0006 §3/§8, both of which
+    originally said six): `organization_id`, `request_id`, `id`, `outcome`, `approver_employee_id`,
+    `due_at`, `opened_at`. The sweep's discovery query (pattern 3) only needs the first six;
+    `opened_at` is what the stuck-open probes (patterns 14/15) order by, because an unassigned
+    step has no `due_at` at all — it is the *only* clock such a step has. Verified against a
+    six-column grant: the sweep's own discovery still works, but the primary liveness alarm — the
+    one that finds a request nobody will ever answer — is refused with `42501`, failing closed
+    exactly where this ADR's Consequences section says an alarm must never fail.
+
+    Same idempotent shape as `grant_unapplied_alarm_reader` above, called after **every** alembic
+    run for the same reason: `REVOKE` first and `GRANT` again only if the table still exists,
+    rather than `GRANT`-only, which would leave the privilege in place forever once issued and
+    never take it back on a downgrade that drops the table.
+    """
+    reader = cfg.db_outbox_role
+    if not reader:
+        return
+    if not connection.execute(
+        text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": reader}
+    ).scalar():
+        return
+    if connection.execute(
+        text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.approval_steps"}
+    ).scalar():
+        connection.execute(text(f'REVOKE ALL ON "{SCHEMA}"."approval_steps" FROM "{reader}"'))
+        connection.execute(
+            text(
+                "GRANT SELECT (organization_id, request_id, id, outcome, "
+                "approver_employee_id, due_at, opened_at) "
+                f'ON "{SCHEMA}"."approval_steps" TO "{reader}"'
             )
         )
     connection.commit()
@@ -108,6 +148,7 @@ def do_run_migrations(connection: Connection) -> None:
     # without them -- which is exactly what happened the first time this was left out.
     apply_schema_grants(connection, SCHEMA, cfg.db_app_role, outbox_role=cfg.db_outbox_role)
     grant_unapplied_alarm_reader(connection)
+    grant_sla_sweep_reader(connection)
 
 
 async def run_async_migrations() -> None:

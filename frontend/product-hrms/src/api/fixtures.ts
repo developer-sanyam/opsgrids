@@ -17,6 +17,7 @@ import type {
   InboxItemOut,
   LocationOut,
   OrganizationOut,
+  PolicyOut,
   RequestDetailOut,
   RequestListItemOut,
   StepOut,
@@ -102,6 +103,17 @@ export const EMPLOYEES: EmployeeOut[] = SEEDS.map((s, i) => ({
 
 const TODAY = "2026-08-24";
 
+/** Slice 4: a due time is read against *now*, so the handful of fixtures that demonstrate one
+ *  compute it off the real clock rather than off `TODAY` (a fixed past date) — otherwise "Due in
+ *  6 hours" would render as a permanently stale "Overdue by …" no matter when this app runs.
+ *
+ *  The half-hour offsets are deliberate: a duration is floored to whole hours, so a deadline
+ *  exactly six hours out reads "Due in 5 hours" by the time the row paints. Six and a half reads
+ *  as the six the surrounding comments describe, whenever the demo is run. */
+function hoursFromNow(hours: number): string {
+  return new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+}
+
 /** The fixture identity `AuthProvider` signs in as (`sneha.kulkarni@opsgrids.example.com`,
  *  ATM-0301). Every "own record" and "raised by me" fixture below is told from her seat. */
 export const FIXTURE_EMPLOYEE_ID = uuid(12);
@@ -125,6 +137,14 @@ const REQ_MEERA_ID = reqUuid(3);
 const REQ_ARJUN_ID = reqUuid(4);
 const REQ_VIKRAM_ID = reqUuid(5);
 export const REQ_EMILY_ID = reqUuid(6);
+// Slice 4 — escalation (§2.3, §2.11): `escalated_to_me` and `escalated_away` cannot occur before
+// a policy sweep exists, so no earlier slice needed a fixture for either.
+export const REQ_ROHAN_ESCALATED_ID = reqUuid(7);
+export const REQ_DANIEL_ESCALATED_AWAY_ID = reqUuid(8);
+// Slice 4 — the inbox's overdue row (§4.A's Due column and `Overdue` filter). Assigned, so it has
+// an approver to hold the deadline, and past it, so the fixture demo has something for the filter
+// to find and for the `text-negative` treatment to render.
+export const REQ_KABIR_OVERDUE_ID = reqUuid(9);
 const REQ_MINE_1 = reqUuid(11);
 const REQ_MINE_2 = reqUuid(12);
 const REQ_MINE_3 = reqUuid(13);
@@ -414,7 +434,15 @@ const ROHAN = byNo("ATM-0102");
 const GRACE = byNo("ATM-0203");
 const EMILY = byNo("ATM-0205");
 const SNEHA = byNo("ATM-0301");
+const DANIEL = byNo("ATM-0104");
 
+/**
+ * Slice 4 (§4.A): every inbox row now carries the server's `due_at`, and the set below is chosen
+ * so the Due column's three renderings and the `Overdue` filter all have a row in fixture mode —
+ * a deadline ahead, a deadline behind, and two legitimate `null`s. The values match the same
+ * request's `FIXTURE_DETAIL_BY_ID` step exactly: the inbox reports the deadline of the step the
+ * reader is standing in front of, which for an escalated row is the **successor's**.
+ */
 export const FIXTURE_INBOX: InboxItemOut[] = [
   {
     id: REQ_ANANYA_ID,
@@ -429,6 +457,9 @@ export const FIXTURE_INBOX: InboxItemOut[] = [
     requester_location_code: ANANYA.location_code,
     inbox_reason: "unassigned",
     from_name: null,
+    // An unassigned step has nobody to hold a deadline, so the server stamps none
+    // (`ck_approval_steps_unassigned_has_no_due`). The cell reads "No due time".
+    due_at: null,
   },
   {
     id: REQ_GRACE_ID,
@@ -443,6 +474,7 @@ export const FIXTURE_INBOX: InboxItemOut[] = [
     requester_location_code: GRACE.location_code,
     inbox_reason: "unassigned",
     from_name: null,
+    due_at: null,
   },
   {
     id: REQ_EMILY_ID,
@@ -457,6 +489,60 @@ export const FIXTURE_INBOX: InboxItemOut[] = [
     requester_location_code: EMILY.location_code,
     inbox_reason: "assigned",
     from_name: null,
+    // The same instant as this request's open step in `FIXTURE_DETAIL_BY_ID` — "Due in 6 hours".
+    due_at: hoursFromNow(6.5),
+  },
+  {
+    // The overdue row: assigned to the fixture viewer, five hours past its deadline.
+    id: REQ_KABIR_OVERDUE_ID,
+    request_type: "hrms.time.regularization",
+    source_ref: `att-${KABIR.id}`,
+    summary: { date: TODAY, from: "absent", to: "present" },
+    request_note: "Was at the Chennai site all day; the badge reader there isn't linked yet.",
+    opened_at: `${TODAY}T04:20:00Z`,
+    requester_employee_id: KABIR.id,
+    requester_name: KABIR.full_name,
+    requester_employee_no: KABIR.employee_no,
+    requester_location_code: KABIR.location_code,
+    inbox_reason: "assigned",
+    from_name: null,
+    due_at: hoursFromNow(-5.5),
+  },
+  // Slice 4 (§2.3): the two escalation reasons, each with the `from_name` the chip names —
+  // `escalated_to_me` ("moved up to you because {from_name} didn't answer") and `escalated_away`
+  // ("still yours — now with {from_name}", the fixture viewer's own step that escalated past her).
+  {
+    id: REQ_ROHAN_ESCALATED_ID,
+    request_type: "hrms.time.regularization",
+    source_ref: `att-${ROHAN.id}`,
+    summary: { date: TODAY, from: "absent", to: "present" },
+    request_note: "Client visit ran past midnight; punched in from the hotel the next morning.",
+    opened_at: `${TODAY}T02:00:00Z`,
+    requester_employee_id: ROHAN.id,
+    requester_name: ROHAN.full_name,
+    requester_employee_no: ROHAN.employee_no,
+    requester_location_code: ROHAN.location_code,
+    inbox_reason: "escalated_to_me",
+    from_name: PRIYA.full_name,
+    // The **successor** step's deadline — Sneha's own, four hours out — not Priya's closed one,
+    // which stopped being anyone's deadline the moment it escalated.
+    due_at: hoursFromNow(4.5),
+  },
+  {
+    id: REQ_DANIEL_ESCALATED_AWAY_ID,
+    request_type: "hrms.time.regularization",
+    source_ref: `att-${DANIEL.id}`,
+    summary: { date: TODAY, from: "present", to: "half_day" },
+    request_note: "Doctor's appointment ran long; left before the second half of the day.",
+    opened_at: `${TODAY}T01:30:00Z`,
+    requester_employee_id: DANIEL.id,
+    requester_name: DANIEL.full_name,
+    requester_employee_no: DANIEL.employee_no,
+    requester_location_code: DANIEL.location_code,
+    inbox_reason: "escalated_away",
+    from_name: MARCUS.full_name,
+    // Escalated past the viewer to Marcus: the deadline shown is his open step's, an hour out.
+    due_at: hoursFromNow(1.5),
   },
 ];
 
@@ -594,6 +680,9 @@ function stepsFor(item: {
   openedAt: string;
   decidedAt?: string;
   outcome?: "approved" | "rejected";
+  /** Slice 4 (§2.11): `null` for an unassigned step, always — the server never stamps a deadline
+   *  with nobody to hold it. Only ever set here for an *assigned* step. */
+  dueAt?: string | null;
 }): StepOut[] {
   const opened: StepOut = {
     level: 1,
@@ -605,7 +694,7 @@ function stepsFor(item: {
     acting_for_name: null,
     opened_at: item.openedAt,
     closed_at: item.decidedAt ?? null,
-    due_at: null,
+    due_at: item.approver ? (item.dueAt ?? null) : null,
   };
   return [opened];
 }
@@ -690,7 +779,158 @@ export const FIXTURE_DETAIL_BY_ID: Record<string, RequestDetailOut> = {
     application_state: null,
     application_failure_reason: null,
     applied_at: null,
-    steps: stepsFor({ requester: EMILY, approver: SNEHA, openedAt: `${TODAY}T12:50:00Z` }),
+    steps: stepsFor({
+      requester: EMILY,
+      approver: SNEHA,
+      openedAt: `${TODAY}T12:50:00Z`,
+      // Slice 4: computed off the real clock, not `TODAY` (a fixed past date every other
+      // timestamp here uses) — a due time is meant to be read against *now*, so this is the one
+      // fixture field that has to track it to demonstrate "Due in …" rather than a permanently
+      // stale "Overdue by …".
+      dueAt: hoursFromNow(6.5),
+    }),
+  },
+  [REQ_KABIR_OVERDUE_ID]: {
+    id: REQ_KABIR_OVERDUE_ID,
+    request_type: "hrms.time.regularization",
+    source_ref: `att-${KABIR.id}`,
+    summary: { date: TODAY, from: "absent", to: "present" },
+    request_note: "Was at the Chennai site all day; the badge reader there isn't linked yet.",
+    status: "pending",
+    opened_at: `${TODAY}T04:20:00Z`,
+    requester_employee_id: KABIR.id,
+    requester_name: KABIR.full_name,
+    requester_employee_no: KABIR.employee_no,
+    requester_location_code: KABIR.location_code,
+    approver_employee_id: SNEHA.id,
+    approver_name: SNEHA.full_name,
+    acting_for_employee_id: null,
+    acting_for_name: null,
+    inbox_reason: "assigned",
+    from_name: null,
+    decided_by_employee_id: null,
+    decided_by_name: null,
+    decided_at: null,
+    comment: null,
+    application_state: null,
+    application_failure_reason: null,
+    applied_at: null,
+    // Past its deadline and still open: the sweep escalates on its next pass, which is exactly
+    // what the inbox's overdue treatment is warning the approver about.
+    steps: stepsFor({
+      requester: KABIR,
+      approver: SNEHA,
+      openedAt: `${TODAY}T04:20:00Z`,
+      dueAt: hoursFromNow(-5.5),
+    }),
+  },
+  [REQ_ROHAN_ESCALATED_ID]: {
+    id: REQ_ROHAN_ESCALATED_ID,
+    request_type: "hrms.time.regularization",
+    source_ref: `att-${ROHAN.id}`,
+    summary: { date: TODAY, from: "absent", to: "present" },
+    request_note: "Client visit ran past midnight; punched in from the hotel the next morning.",
+    status: "pending",
+    opened_at: `${TODAY}T02:00:00Z`,
+    requester_employee_id: ROHAN.id,
+    requester_name: ROHAN.full_name,
+    requester_employee_no: ROHAN.employee_no,
+    requester_location_code: ROHAN.location_code,
+    approver_employee_id: SNEHA.id,
+    approver_name: SNEHA.full_name,
+    acting_for_employee_id: null,
+    acting_for_name: null,
+    inbox_reason: "escalated_to_me",
+    from_name: PRIYA.full_name,
+    decided_by_employee_id: null,
+    decided_by_name: null,
+    decided_at: null,
+    comment: null,
+    application_state: null,
+    application_failure_reason: null,
+    applied_at: null,
+    // Escalation gets a fresh due time on the rung it lands on (§3.5): Priya's own step closed
+    // "escalated" a couple of hours ago; Sneha's step opened then, with a new deadline ahead.
+    steps: [
+      {
+        level: 1,
+        reason: "assigned",
+        outcome: "escalated",
+        approver_employee_id: PRIYA.id,
+        approver_name: PRIYA.full_name,
+        acting_for_employee_id: null,
+        acting_for_name: null,
+        opened_at: `${TODAY}T02:00:00Z`,
+        closed_at: hoursFromNow(-2),
+        due_at: hoursFromNow(-2),
+      },
+      {
+        level: 2,
+        reason: "escalated",
+        outcome: "open",
+        approver_employee_id: SNEHA.id,
+        approver_name: SNEHA.full_name,
+        acting_for_employee_id: null,
+        acting_for_name: null,
+        opened_at: hoursFromNow(-2),
+        closed_at: null,
+        due_at: hoursFromNow(4.5),
+      },
+    ],
+  },
+  [REQ_DANIEL_ESCALATED_AWAY_ID]: {
+    id: REQ_DANIEL_ESCALATED_AWAY_ID,
+    request_type: "hrms.time.regularization",
+    source_ref: `att-${DANIEL.id}`,
+    summary: { date: TODAY, from: "present", to: "half_day" },
+    request_note: "Doctor's appointment ran long; left before the second half of the day.",
+    status: "pending",
+    opened_at: `${TODAY}T01:30:00Z`,
+    requester_employee_id: DANIEL.id,
+    requester_name: DANIEL.full_name,
+    requester_employee_no: DANIEL.employee_no,
+    requester_location_code: DANIEL.location_code,
+    // Escalated past Sneha, who remains eligible (§2.3's "Still yours — now with {Name}") — the
+    // detail's "Waiting on" card names the *current* approver, Marcus, not her.
+    approver_employee_id: MARCUS.id,
+    approver_name: MARCUS.full_name,
+    acting_for_employee_id: null,
+    acting_for_name: null,
+    inbox_reason: "escalated_away",
+    from_name: MARCUS.full_name,
+    decided_by_employee_id: null,
+    decided_by_name: null,
+    decided_at: null,
+    comment: null,
+    application_state: null,
+    application_failure_reason: null,
+    applied_at: null,
+    steps: [
+      {
+        level: 1,
+        reason: "assigned",
+        outcome: "escalated",
+        approver_employee_id: SNEHA.id,
+        approver_name: SNEHA.full_name,
+        acting_for_employee_id: null,
+        acting_for_name: null,
+        opened_at: `${TODAY}T01:30:00Z`,
+        closed_at: hoursFromNow(-3),
+        due_at: hoursFromNow(-3),
+      },
+      {
+        level: 2,
+        reason: "escalated",
+        outcome: "open",
+        approver_employee_id: MARCUS.id,
+        approver_name: MARCUS.full_name,
+        acting_for_employee_id: null,
+        acting_for_name: null,
+        opened_at: hoursFromNow(-3),
+        closed_at: null,
+        due_at: hoursFromNow(1.5),
+      },
+    ],
   },
 };
 
@@ -789,8 +1029,6 @@ export const FIXTURE_CHAIN: ApprovalChainOut = {
 };
 
 /* --------------------------- delegations (slice 3) --------------------------- */
-
-const DANIEL = byNo("ATM-0104");
 
 const delUuid = (n: number): string => `a33c0000-0000-4000-a000-${n.toString().padStart(12, "0")}`;
 
@@ -924,11 +1162,24 @@ export const FIXTURE_DELEGATIONS: DelegationOut[] = [...UNSORTED_FIXTURE_DELEGAT
  *  consistent" contract `sampleRoster` (`api/client.ts`) keeps for attendance. */
 let delegationStore: DelegationOut[] = FIXTURE_DELEGATIONS.map((d) => ({ ...d }));
 
-export function __listFixtureDelegations(): DelegationOut[] {
-  return delegationStore.map((d) => ({
-    ...d,
-    status: fixtureDelegationStatus(d.revoked_at, d.starts_at, d.ends_at, new Date()),
-  }));
+/**
+ * `employeeId` mirrors the endpoint's `employee_id` exactly: delegations the named person is a
+ * party to in **either** direction, filtered before paging — so the fixture demo's `total` and
+ * "Load more" behave the way the live screen's do, which is the whole point of replacing the old
+ * client-side search. A person with no delegations returns an empty page, not every row.
+ */
+export function __listFixtureDelegations(employeeId: string | null = null): DelegationOut[] {
+  return delegationStore
+    .filter(
+      (d) =>
+        employeeId === null ||
+        d.delegator_employee_id === employeeId ||
+        d.delegate_employee_id === employeeId,
+    )
+    .map((d) => ({
+      ...d,
+      status: fixtureDelegationStatus(d.revoked_at, d.starts_at, d.ends_at, new Date()),
+    }));
 }
 
 /** Mirrors `services.create_delegation`'s field-level refusals (self-delegation, an end before or
@@ -1064,4 +1315,66 @@ export function __searchFixtureDelegateCandidates(q: string, limit: number): Del
     .sort((a, b) => a.full_name.localeCompare(b.full_name))
     .slice(0, limit)
     .map((e) => ({ employee_id: e.id, display_name: e.full_name, employee_no: e.employee_no }));
+}
+
+/* ----------------------------------------------------------- policy administration (slice 4) */
+
+// Mirrors `services.KNOWN_REQUEST_TYPES` — today, exactly one. `GET /policies` iterates this
+// same tuple server-side, which is why a type with nothing configured still appears (screens
+// §4.G's "Using the default settings"), never as a fabricated row this fixture invents on its
+// own that the real endpoint would not also produce.
+const FIXTURE_POLICY_DEFAULTS: PolicyOut[] = [
+  { request_type: "hrms.time.regularization", sla_minutes: 1440, enabled: true },
+];
+
+let policyStore: PolicyOut[] = FIXTURE_POLICY_DEFAULTS.map((p) => ({ ...p }));
+
+export function __listFixturePolicies(): PolicyOut[] {
+  return policyStore.map((p) => ({ ...p }));
+}
+
+/** Mirrors `services.update_policy` exactly: an unknown `request_type` is a field-level 422 on
+ *  that field, and `sla_minutes` outside `15..525600` — `ApprovalPolicy`'s own CHECK — is a
+ *  field-level 422 on `sla_minutes`, with pydantic's own `ge`/`le` message (verbatim, §2.5),
+ *  never a friendlier fixture-only rewrite that the real service would not send. */
+export function __updateFixturePolicy(
+  requestType: string,
+  body: { sla_minutes: number; enabled: boolean },
+): PolicyOut {
+  const known = policyStore.find((p) => p.request_type === requestType);
+  if (!known) {
+    throw problemErrorFor(422, "That request type is not one approval routes", [
+      {
+        field: "request_type",
+        code: "unknown_request_type",
+        message: `'${requestType}' is not a request type approval can configure`,
+      },
+    ]);
+  }
+  if (body.sla_minutes < 15) {
+    throw problemErrorFor(422, "Request payload failed validation", [
+      {
+        field: "sla_minutes",
+        code: "greater_than_equal",
+        message: "Input should be greater than or equal to 15",
+      },
+    ]);
+  }
+  if (body.sla_minutes > 525600) {
+    throw problemErrorFor(422, "Request payload failed validation", [
+      {
+        field: "sla_minutes",
+        code: "less_than_equal",
+        message: "Input should be less than or equal to 525600",
+      },
+    ]);
+  }
+  known.sla_minutes = body.sla_minutes;
+  known.enabled = body.enabled;
+  return { ...known };
+}
+
+/** Test-only: restores the fixture policy store to its default between test cases. */
+export function __resetFixturePoliciesForTests(): void {
+  policyStore = FIXTURE_POLICY_DEFAULTS.map((p) => ({ ...p }));
 }

@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError } from "@opsgrids/client";
 import {
+  AlertTriangleIcon,
   Announcer,
   Button,
   Card,
@@ -16,6 +17,7 @@ import {
   SearchInput,
   Skeleton,
   Tag,
+  formatInstant,
   formatRelative,
   useAnnounce,
 } from "@opsgrids/ui";
@@ -23,12 +25,25 @@ import type { Column } from "@opsgrids/ui";
 
 import { listInbox } from "@/api/approvals";
 import type { InboxItemOut } from "@/api/types";
-import { inboxReasonChip, summaryLine } from "@/lib/approvalCopy";
+import { dueCellCopy, inboxReasonChip, isOverdue, summaryLine } from "@/lib/approvalCopy";
+import { useZoneLookup } from "@/lib/zone";
 import { PersonRefBlock } from "@/ui/PersonRef";
 
 const PAGE_SIZE = 25;
 
-type Filter = "all" | "assigned" | "unassigned";
+// Slice 4 (§4.A): the Due column, its overdue treatment and the `Overdue` filter are built below,
+// against `InboxItemOut.due_at` — the server's own value for the step in front of the reader now
+// (for an escalated row, the successor's, not the closed predecessor's). The client formats it and
+// compares it to the clock; it never derives one, and a `null` is rendered as the modelled "no
+// deadline" state it is (§2.11).
+//
+// Two things §4.A names that are still NOT built, both for want of a server fact rather than a
+// design choice: the **overdue banner** ("{n} requests are overdue.") needs an `overdue_count` over
+// the whole result set, and `platform_core.pagination.Page` carries no such field — counting the
+// loaded pages would report "3 requests are overdue" to someone with 300 unloaded rows; and the
+// **Due sort** is specified as server-side (`nulls last`), while `GET /inbox` accepts only
+// `page`/`size`. Both are reported rather than approximated.
+type Filter = "all" | "assigned" | "unassigned" | "escalated_to_me" | "overdue";
 
 type LoadState =
   | { status: "loading" }
@@ -39,6 +54,7 @@ function ApprovalsInbox() {
   const navigate = useNavigate();
   const location = useLocation();
   const announce = useAnnounce();
+  const zoneLookup = useZoneLookup();
 
   const [items, setItems] = useState<InboxItemOut[]>([]);
   const [total, setTotal] = useState(0);
@@ -48,6 +64,10 @@ function ApprovalsInbox() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [everSawUnassigned, setEverSawUnassigned] = useState(false);
+  // One clock reading per load, shared by the Overdue filter and every Due cell, so a row can
+  // never read "Due in a minute" while the filter has already counted it as overdue. It is
+  // re-read whenever the list is, which is also when a `due_at` could have changed.
+  const [now, setNow] = useState(() => new Date());
 
   const load = useCallback(async (pageToLoad: number, append: boolean) => {
     if (append) setLoadingMore(true);
@@ -57,6 +77,7 @@ function ApprovalsInbox() {
       setItems((prev) => (append ? [...prev, ...result.items] : result.items));
       setTotal(result.total);
       setPage(pageToLoad);
+      setNow(new Date());
       setState({ status: "success" });
       if (result.items.some((i) => i.inbox_reason === "unassigned")) setEverSawUnassigned(true);
     } catch (err) {
@@ -89,16 +110,31 @@ function ApprovalsInbox() {
       const matchesFilter =
         filter === "all" ||
         (filter === "assigned" && item.inbox_reason === "assigned") ||
-        (filter === "unassigned" && item.inbox_reason === "unassigned");
+        (filter === "unassigned" && item.inbox_reason === "unassigned") ||
+        (filter === "escalated_to_me" && item.inbox_reason === "escalated_to_me") ||
+        // §4.A: `due_at < now`, off the server's value. A row with no deadline is never overdue.
+        (filter === "overdue" && isOverdue(item.due_at, now));
       const matchesSearch =
         q === "" ||
         (item.requester_name?.toLowerCase().includes(q) ?? false) ||
         (item.request_note?.toLowerCase().includes(q) ?? false);
       return matchesFilter && matchesSearch;
     });
-  }, [items, search, filter]);
+  }, [items, search, filter, now]);
 
   const hasActiveFilter = filter !== "all" || search.trim() !== "";
+
+  /**
+   * §2.1: an instant on an approval row renders in the **requester's** location zone, resolved
+   * from the row's own `requester_location_code` against the cached location list — never the
+   * browser's. The one-per-session lookup may not have resolved on first paint, and a zone fact
+   * this screen does not have yet is one it does not assert: the tooltip is absent until it
+   * arrives. Nothing visible depends on it, so nothing moves when it does.
+   */
+  const absoluteAt = (row: InboxItemOut, iso: string): string | undefined =>
+    zoneLookup
+      ? formatInstant(iso, row.requester_location_code, zoneLookup, "datetime", now).text
+      : undefined;
 
   const columns: Column<InboxItemOut>[] = [
     {
@@ -150,8 +186,8 @@ function ApprovalsInbox() {
       cellClassName: "hidden sm:table-cell",
       headerClassName: "hidden sm:table-cell",
       render: (r) => (
-        <span className="text-sm text-muted" title={r.opened_at}>
-          {formatRelative(r.opened_at)}
+        <span className="text-sm text-muted" title={absoluteAt(r, r.opened_at)}>
+          {formatRelative(r.opened_at, now)}
         </span>
       ),
     },
@@ -163,6 +199,36 @@ function ApprovalsInbox() {
       render: (r) => {
         const chip = inboxReasonChip(r.inbox_reason, r.from_name);
         return chip ? <Tag tone={chip.tone}>{chip.label}</Tag> : null;
+      },
+    },
+    {
+      // §4.A: the Due column stays visible at every width — it is the other half of "should I act
+      // on this now". The relative duration is the primary read (it needs no zone at all); the
+      // absolute instant, in the requester's own zone, rides in the `title`.
+      key: "due",
+      header: "Due",
+      render: (r) => {
+        const due = dueCellCopy(r.due_at, now);
+        if (due.kind === "none") {
+          // §2.11: `null` means *there is no deadline* — said in words, never left blank, never
+          // decorated as an error, and never replaced with a computed default.
+          return <span className="text-sm text-muted">{due.label}</span>;
+        }
+        return (
+          <span
+            className={`inline-flex items-center gap-1.5 text-sm whitespace-nowrap ${
+              due.kind === "overdue" ? "text-negative font-semibold" : "text-muted"
+            }`}
+            title={r.due_at ? absoluteAt(r, r.due_at) : undefined}
+          >
+            {/* Never colour alone (§4.A): the words "Overdue by" carry the state, the icon
+             *  reinforces it, and both are inside the row's accessible name. */}
+            {due.kind === "overdue" ? (
+              <AlertTriangleIcon className="size-4 shrink-0" aria-hidden />
+            ) : null}
+            {due.label}
+          </span>
+        );
       },
     },
   ];
@@ -211,6 +277,19 @@ function ApprovalsInbox() {
               Unassigned
             </Pill>
           ) : null}
+          {/* §4.A slice 4: the two filters that ship with the SLA sweep. `Escalated to me` reads
+           *  `inbox_reason`, which has shipped since slice 2; `Overdue` reads `due_at`, which
+           *  ships now. Both render unconditionally — unlike `Unassigned`, neither doubles as a
+           *  permission tell, so an empty result is a true answer rather than a leak. */}
+          <Pill
+            active={filter === "escalated_to_me"}
+            onClick={() => setFilter("escalated_to_me")}
+          >
+            Escalated to me
+          </Pill>
+          <Pill active={filter === "overdue"} onClick={() => setFilter("overdue")}>
+            Overdue
+          </Pill>
         </div>
       </Card>
 

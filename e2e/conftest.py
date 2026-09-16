@@ -50,6 +50,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -80,13 +81,59 @@ RABBITMQ_MGMT = "http://localhost:15673"
 
 PASSWORD = "e2e-Sufficiently-Long-Passw0rd!"
 
-#: Every service this journey needs running. The gateway is last only for readability.
-SERVICES = ("account", "product", "auth", "customer", "deal", "app-gateway")
+#: Every service these journeys need running. The gateway is last only for readability.
+#:
+#: `employee`, `attendance` and `approval` joined for the Wave 0 exit journey
+#: (`test_approval_journey.py`): an attendance correction is raised in one service, routed by a
+#: second off a hierarchy the third published, and applied back into the first. Every hop is a
+#: contract between two services, which is the only kind of defect this suite exists to catch.
+SERVICES = (
+    "account",
+    "product",
+    "auth",
+    "customer",
+    "deal",
+    "employee",
+    "attendance",
+    "approval",
+    "app-gateway",
+)
 
 #: The committed route table addresses services by port. Rewriting by port rather than by
 #: prefix keeps this harness in step with `routes.json` when a prefix is added or moved —
 #: and `_generate_routes` fails loudly if a service it boots ends up with no route.
-UPSTREAM_PORTS = {8110: "auth", 8111: "account", 8112: "product", 8130: "customer", 8131: "deal"}
+UPSTREAM_PORTS = {
+    8110: "auth",
+    8111: "account",
+    8112: "product",
+    8120: "employee",
+    8121: "attendance",
+    8130: "customer",
+    8131: "deal",
+    8152: "approval",
+}
+
+#: The background processes that carry an event from the service that staged it to the service
+#: that acts on it: `(process name, service directory, module)`. Every one of them is as much
+#: part of the platform as an API — the journeys' central steps are events crossing between
+#: services — so they boot with everything else rather than being started mid-test.
+#:
+#: `attendance` and `approval` each run **both** a relay and a consumer, because the
+#: regularization round trip crosses between them twice: attendance stages
+#: `hrms.time.regularization.requested` and approval consumes it; approval stages
+#: `core.approval.request.decided` and attendance consumes it; attendance then stages
+#: `hrms.time.regularization.applied` and approval consumes that. Drop any one of these six
+#: processes and the journey stalls at a different step, which is exactly what makes them worth
+#: running for real.
+BACKGROUND = (
+    ("product-relay", "product", "app.relay"),
+    ("account-consumer", "account", "app.consumers"),
+    ("employee-relay", "employee", "app.relay"),
+    ("attendance-relay", "attendance", "app.relay"),
+    ("attendance-consumer", "attendance", "app.consumers"),
+    ("approval-relay", "approval", "app.relay"),
+    ("approval-consumer", "approval", "app.consumers"),
+)
 
 #: The signing key for the whole run. One value shared by every process, which is what
 #: `internal_auth` expects; the gateway and each service derive per-call tokens from it.
@@ -166,10 +213,15 @@ def _ensure_infrastructure() -> None:
 def _generate_routes(ports: dict[str, int], target: Path) -> None:
     """The committed route table with this run's ports substituted in.
 
-    Routes whose upstream this suite does not boot are left pointing where they were. That
-    is intentional for the unentitled-product step: the gateway refuses with 402 *before* it
-    proxies, so the assertion holds without an employee-service running — and if the gate
-    ever regressed to proxying first, the request would fail loudly instead of passing.
+    Routes whose upstream this suite does not boot are left pointing where they were, which is
+    harmless: nothing answers on them, so a request that reached one would fail loudly rather
+    than quietly pass.
+
+    The unentitled-product step (`/api/v1/employees` for a tenant that never bought HRMS) is
+    stronger than it looks now that employee-service *is* booted: the gateway refuses with 402
+    before it proxies, and if that gate ever regressed to proxying first the request would now
+    reach a live service and come back 200/403 — a failed assertion either way, but for the
+    right reason rather than because nothing was listening.
     """
     table = json.loads((ROOT / "services" / "app-gateway" / "routes.json").read_text())
     routed: set[str] = set()
@@ -209,6 +261,11 @@ def _base_env(ports: dict[str, int], routes_file: Path) -> dict[str, str]:
         "JWKS_URL": f"http://127.0.0.1:{ports['auth']}/.well-known/jwks.json",
         "ACCOUNT_SERVICE_URL": f"http://127.0.0.1:{ports['account']}",
         "PRODUCT_SERVICE_URL": f"http://127.0.0.1:{ports['product']}",
+        # approval-service's hierarchy backfill reads employee-service's internal export
+        # (ADR-0006 §2.1). The Wave 0 journey drives the hierarchy through the *event* stream
+        # rather than the backfill, but the setting is part of the service's configuration and
+        # pointing it at a stale default would be a trap for whoever adds the backfill step.
+        "EMPLOYEE_SERVICE_URL": f"http://127.0.0.1:{ports['employee']}",
         "PERMISSION_MANIFEST_DIR": str(ROOT / "libs" / "contracts" / "permissions"),
         "ROUTES_FILE": str(routes_file),
     }
@@ -276,7 +333,17 @@ def _seed(script: str, service: str, *args: str) -> str:
             *args,
         ],
         cwd=ROOT / "services" / service,
-        env={**os.environ, "DATABASE_URL": DATABASE_URL, "REDIS_URL": REDIS_URL},
+        env={
+            **os.environ,
+            "DATABASE_URL": DATABASE_URL,
+            "REDIS_URL": REDIS_URL,
+            "RABBITMQ_URL": RABBITMQ_URL,
+            # `ci`, matching the services this suite boots: `assert_app_role` and
+            # `assert_outbox_role` refuse rather than warn, so a seeder or the sweep runner that
+            # connected on the wrong role fails here with the reason instead of silently seeing
+            # no rows — the same reasoning the module docstring gives for the services.
+            "ENVIRONMENT": "ci",
+        },
         capture_output=True,
         text=True,
     )
@@ -317,22 +384,19 @@ def platform(tmp_path_factory: pytest.TempPathFactory) -> Any:
         for name, proc in list(stack.processes):
             _wait_until_ready(stack, name, proc)
 
-        # The two background processes the journey's event step depends on. product-service
-        # stages `core.product.activated`; its relay publishes it; account-service's consumer
-        # installs the manifest. Defect (a) killed the middle hop silently.
-        for name, service, module in (
-            ("product-relay", "product", "app.relay"),
-            ("account-consumer", "account", "app.consumers"),
-        ):
+        # The background processes the journeys' event steps depend on. product-service stages
+        # `core.product.activated`; its relay publishes it; account-service's consumer installs
+        # the manifest. Defect (a) killed that middle hop silently. `BACKGROUND` names the rest.
+        for name, service, module in BACKGROUND:
             proc = _spawn(
                 name, [sys.executable, "-m", module], ROOT / "services" / service, env, log_dir
             )
             stack.processes.append((name, proc))
 
-        # Neither serves HTTP, so readiness is "still alive a moment later" — enough to catch
-        # the RLS-role refusal that `ENVIRONMENT=ci` now turns into an exit.
+        # None of them serves HTTP, so readiness is "still alive a moment later" — enough to
+        # catch the RLS-role refusal that `ENVIRONMENT=ci` now turns into an exit.
         time.sleep(3.0)
-        for name in ("product-relay", "account-consumer"):
+        for name, _, _ in BACKGROUND:
             proc = next(p for n, p in stack.processes if n == name)
             if proc.poll() is not None:
                 raise RuntimeError(
@@ -431,6 +495,126 @@ def seed_password(platform: Platform) -> Any:
         _seed("_seed_auth.py", "auth", user_id, password, "keep")
 
     return _set
+
+
+# ------------------------------------------------- the Wave 0 exit journey's own machinery
+#
+# Everything below serves `test_approval_journey.py`. Each piece exists because the operation it
+# performs genuinely has no HTTP surface — provisioning a tenant, repairing the membership ↔
+# employee link, running a deploy-time reconcile, or advancing a background sweep's discovery
+# clock. Nothing here substitutes for a request the journey could have made.
+
+
+@pytest.fixture(scope="session")
+def approval_tenant(platform: Platform, tenants: dict[str, Any]) -> dict[str, Any]:
+    """A third organization, created fresh for the approval journey, with a signed-in owner.
+
+    Its own tenant rather than alpha's, for two independent reasons. The CRM journey asserts
+    that alpha gets **402** on `/api/v1/employees` because it never bought HRMS — activating
+    HRMS on alpha would delete that assertion. And "a tenant is provisioned" is the first line
+    of the Wave 0 exit criterion: proving it against an organization another test already
+    activated products in would prove nothing.
+
+    Depends on `tenants` for ordering, not for data: `_seed_account.py` truncates the account
+    schema on its way in, so this must run after it or lose the organization it just made.
+    """
+    run = uuid.uuid4().hex[:8]
+    seeded = json.loads(_seed("_seed_approval_org.py", "account", run).splitlines()[-1])
+    _seed("_seed_auth.py", "auth", seeded["owner"]["user_id"], PASSWORD, "keep")
+    return {**seeded, "run": run, "password": PASSWORD}
+
+
+@pytest.fixture(scope="session")
+def reconcile(platform: Platform) -> Any:
+    """Run `tools/reconcile_permissions.py` — the real ADR-0007 §3 deploy step, not a stand-in.
+
+    Deliberately not an API and deliberately not run at startup (ADR-0007 "What this rejects"),
+    so a suite that wants a live tenant's roles widened has to invoke the same command an
+    operator would. Run from the repository root with this suite's own pinned database and
+    Redis, so it can never reach the shared development database.
+    """
+
+    def _run(product_key: str, org_id: str, *, dry_run: bool = False) -> dict[str, Any]:
+        args = [
+            sys.executable,
+            str(ROOT / "tools" / "reconcile_permissions.py"),
+            product_key,
+            "--org",
+            org_id,
+        ]
+        if dry_run:
+            args.append("--dry-run")
+        result = subprocess.run(
+            args,
+            cwd=ROOT,
+            env={
+                **os.environ,
+                "DATABASE_URL": DATABASE_URL,
+                "REDIS_URL": REDIS_URL,
+                "ENVIRONMENT": "ci",
+                "PERMISSION_MANIFEST_DIR": str(ROOT / "libs" / "contracts" / "permissions"),
+            },
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"reconcile_permissions.py {product_key} --org {org_id} failed:\n"
+                f"{result.stdout}\n{result.stderr}"
+            )
+        # The last line is the fleet summary; the ones before it are per-organization diffs.
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        return {
+            "summary": json.loads(lines[-1]),
+            "organizations": [json.loads(line) for line in lines[:-1]],
+        }
+
+    return _run
+
+
+@pytest.fixture(scope="session")
+def link_employee(platform: Platform) -> Any:
+    """Complete the membership → employee link the platform has no writer for.
+
+    See `_link_employee.py`. Called with `(membership_id, employee_id)` pairs; the caller must
+    sign in again afterwards, because `sref` is minted at sign-in and a token issued before the
+    link carries none.
+    """
+
+    def _link(pairs: list[tuple[str, str]]) -> None:
+        _seed(
+            "_link_employee.py",
+            "account",
+            *[f"{membership_id}={employee_id}" for membership_id, employee_id in pairs],
+        )
+
+    return _link
+
+
+@pytest.fixture(scope="session")
+def db_clock(platform: Platform) -> Any:
+    """PostgreSQL's `now()`, as a `datetime`. The only clock approval compares anything to."""
+
+    def _now() -> Any:
+        from datetime import datetime
+
+        return datetime.fromisoformat(_seed("_db_clock.py", "approval").splitlines()[-1])
+
+    return _now
+
+
+@pytest.fixture(scope="session")
+def sweep(platform: Platform) -> Any:
+    """One pass of the real SLA escalation sweep, with discovery looking `minutes_ahead` ahead.
+
+    See `_sweep.py` for why the sweep is driven through `tick(now=…)` rather than by waiting out
+    a fifteen-minute SLA, and why the instant is computed by the database rather than here.
+    """
+
+    def _tick(minutes_ahead: int) -> dict[str, Any]:
+        return dict(json.loads(_seed("_sweep.py", "approval", str(minutes_ahead)).splitlines()[-1]))
+
+    return _tick
 
 
 @pytest.fixture

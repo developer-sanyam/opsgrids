@@ -18,7 +18,28 @@ at that size.
 other two plan modules' queries — so `EXPLAIN` here runs against the statement compiled with
 `literal_binds=True` (values rendered inline rather than as bind parameters), which avoids
 juggling the asyncpg dialect's own parameter style inside a hand-built `EXPLAIN` string.
-"""
+
+**`?employee_id=` adds no index, and that was measured rather than assumed.** The filter is the
+same "delegator = X OR delegate = X" predicate the OWN arm already issues, only for a different
+person, so the pattern-11a pair above already serves it — there is no new column pair, no new
+sort key and no new leading column to index. Measured on a seeded table of 94,560 delegations
+across 281 organizations with one organization at 24,000 rows (`EXPLAIN (ANALYZE, BUFFERS)`,
+after `ANALYZE`, page size 25):
+
+    ORG, no filter (shipped)      Index Scan Backward ix_delegations_org_starts      4 buffers
+    ORG, ?employee_id=            BitmapOr over the 11a pair -> Sort               16 buffers
+    ORG, ?employee_id= (count)    BitmapOr over the 11a pair                       16 buffers
+    ORG, no filter  (count)       Bitmap Heap Scan ix_delegations_org_starts       458 buffers
+    below-ORG, own id             BitmapOr over the 11a pair -> Sort               16 buffers
+    below-ORG, foreign id         BitmapOr over the 11a pair -> Sort               16 buffers
+
+The filtered count is the one that matters, because it is the count the paging footer was
+previously lying about: 16 buffers against the unfiltered count's 458 — the filter makes the
+endpoint *cheaper*, it does not add a scan. The adversarial shape was measured too (a subject
+with 200 delegations whose `starts_at` are the oldest rows in a 24,000-row organization, so an
+ordered backward scan would have to filter through the whole organization before finding the
+first match): the planner still chooses the `BitmapOr` and a `top-N heapsort`, 13 buffers.
+Nothing here justifies a fourth index on a table every delegation write pays for."""
 
 from __future__ import annotations
 
@@ -116,6 +137,66 @@ class TestDelegationsOwnScopePlan:
         # of the three indexes this migration adds, not by `uq_delegations_org_id` (the
         # pre-existing index this pattern's own review finding named as unable to serve the
         # sort) and not by a sequential scan.
+        assert (
+            "ix_delegations_org_starts" in plan
+            or "ix_delegations_org_delegator_starts" in plan
+            or "ix_delegations_org_delegate_starts" in plan
+        )
+        assert "uq_delegations_org_id" not in plan
+
+
+class TestDelegationsEmployeeFilterPlan:
+    """`?employee_id=` reuses the pattern-11a pair rather than earning an index of its own — see
+    this module's own docstring for the fleet-scale numbers that call was made on. What a small
+    fixture can still pin is the structural property: the filtered arm is index-backed, at both
+    scopes, and never falls back to a sequential scan of the whole multi-tenant table."""
+
+    async def test_org_scope_with_the_filter_is_index_backed_with_no_seq_scan(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        manager, delegate = uuid.uuid4(), uuid.uuid4()
+        async with session.begin():
+            await seed_person(session, org_id, manager)
+            await seed_person(session, org_id, delegate)
+            await _seed_delegation(
+                session, org_id, delegator_employee_id=manager, delegate_employee_id=delegate
+            )
+
+        stmt = selectors.delegations_stmt(
+            organization_id=org_id, caller_id=None, is_org=True, employee_id=manager
+        )
+        async with session.begin():
+            plan = await _explain(session, stmt)
+
+        assert "Seq Scan" not in plan
+        assert (
+            "ix_delegations_org_starts" in plan
+            or "ix_delegations_org_delegator_starts" in plan
+            or "ix_delegations_org_delegate_starts" in plan
+        )
+        assert "uq_delegations_org_id" not in plan
+
+    async def test_own_scope_with_the_filter_is_index_backed_with_no_seq_scan(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """The two-`OR` conjunction — the scope predicate `AND` the filter — is the shape a
+        below-ORG caller naming a third party produces, and the one most likely to defeat the
+        planner's `BitmapOr` if either side were written differently."""
+        manager, delegate = uuid.uuid4(), uuid.uuid4()
+        async with session.begin():
+            await seed_person(session, org_id, manager)
+            await seed_person(session, org_id, delegate)
+            await _seed_delegation(
+                session, org_id, delegator_employee_id=manager, delegate_employee_id=delegate
+            )
+
+        stmt = selectors.delegations_stmt(
+            organization_id=org_id, caller_id=manager, is_org=False, employee_id=delegate
+        )
+        async with session.begin():
+            plan = await _explain(session, stmt)
+
+        assert "Seq Scan" not in plan
         assert (
             "ix_delegations_org_starts" in plan
             or "ix_delegations_org_delegator_starts" in plan

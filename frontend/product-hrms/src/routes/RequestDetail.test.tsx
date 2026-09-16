@@ -137,3 +137,79 @@ describe("RequestDetail — deciding", () => {
     expect(screen.queryByText(/^Inbox/)).toBeNull();
   });
 });
+
+describe("RequestDetail — the due line (slice 4, §2.11, §4.B)", () => {
+  beforeEach(() => {
+    getRequestDetail.mockReset();
+    decideRequest.mockReset();
+  });
+
+  it("a step with no due_at renders 'No due time' — never a fabricated deadline", async () => {
+    getRequestDetail.mockResolvedValue(PENDING); // PENDING's own open step has `due_at: null`.
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText("Waiting on")).toBeDefined());
+    expect(screen.getByText("No due time")).toBeDefined();
+    expect(screen.queryByText(/^Due /)).toBeNull();
+    expect(screen.queryByText(/^Overdue/)).toBeNull();
+  });
+
+  it("an overdue step is marked, in words, not colour alone", async () => {
+    getRequestDetail.mockResolvedValue({
+      ...PENDING,
+      steps: [
+        {
+          ...PENDING.steps[0]!,
+          due_at: "2020-01-01T00:00:00Z", // Long past — overdue no matter when this test runs.
+        },
+      ],
+    });
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText(/^Overdue by /)).toBeDefined());
+    expect(screen.queryByText("No due time")).toBeNull();
+  });
+
+  it("a future due_at reads 'Due …' with both the absolute time and a relative one", async () => {
+    getRequestDetail.mockResolvedValue({
+      ...PENDING,
+      steps: [
+        {
+          ...PENDING.steps[0]!,
+          // A couple of minutes past the 6-hour mark, so rounding in `formatDuration` (which
+          // floors) can never tip this into "5 hours" no matter how long the test takes to run.
+          due_at: new Date(Date.now() + (6 * 60 + 2) * 60 * 1000).toISOString(),
+        },
+      ],
+    });
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText(/^Due /)).toBeDefined());
+    expect(screen.getByText(/in 6 hours/)).toBeDefined();
+  });
+
+  it("a decided request has no open step, so no due line renders at all", async () => {
+    getRequestDetail.mockResolvedValue({
+      ...PENDING,
+      status: "approved",
+      application_state: "applied",
+      decided_by_employee_id: "emp-sneha",
+      decided_by_name: "Sneha Kulkarni",
+      decided_at: "2026-08-24T09:00:00Z",
+      steps: [
+        {
+          ...PENDING.steps[0]!,
+          outcome: "approved",
+          closed_at: "2026-08-24T09:00:00Z",
+          due_at: "2026-08-24T12:00:00Z",
+        },
+      ],
+    });
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText("Approved")).toBeDefined());
+    expect(screen.queryByText("No due time")).toBeNull();
+    expect(screen.queryByText(/^Due /)).toBeNull();
+    expect(screen.queryByText(/^Overdue/)).toBeNull();
+  });
+});

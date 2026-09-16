@@ -107,6 +107,15 @@ class InboxItemOut(BaseModel):
     #: Present exactly when `inbox_reason` names somebody (screens §2.3). `None` renders as a
     #: reason-only chip, never as "undefined".
     from_name: str | None
+    #: The row's own deadline, straight off the step this row matched through — never recomputed
+    #: here (screens §4.A's Due column, the overdue banner, the Overdue filter). `None` for a step
+    #: opened before slice 4 armed the SLA clock, and for an unassigned step, which has no due
+    #: date to carry (`ck_approval_steps_unassigned_has_no_due`) — the client's own "no deadline"
+    #: rendering, not a value this endpoint fabricates. For `escalated_to_me`/`escalated_away`
+    #: rows this is the *current* open step's `due_at`, matching every other field this endpoint
+    #: reports for those two reasons (`approver_employee_id`, `reason`) — never the closed
+    #: predecessor's, which stopped being anyone's deadline the moment it escalated.
+    due_at: datetime | None
 
 
 class RequestListItemOut(BaseModel):
@@ -255,6 +264,39 @@ class DelegationCreateOut(DelegationOut):
     omits the "N requests moved" line entirely rather than rendering "0 requests moved"."""
 
     repointed_count: int
+
+
+# ----------------------------------------------------------------- policy administration (slice 4)
+
+
+class PolicyOut(BaseModel):
+    """One `GET /policies` row, and what `PUT /policies/{request_type}` echoes back (ADR-0006
+    §10, §11, screens §4.G). `request_type` travels on every row — the response is a bare array,
+    not a mapping keyed by it — so the client never has to parse the vocabulary out of a dict key.
+
+    Never a fabricated database row: a request type with nothing written for it still renders
+    here, at `app/domain.DEFAULT_SLA_MINUTES`/`DEFAULT_POLICY_ENABLED` — the same reading
+    `app/services._sla_due_at` already gives a missing row when a step opens, so a read and a
+    routing decision can never disagree about what "unconfigured" means."""
+
+    request_type: str
+    sla_minutes: int
+    enabled: bool
+
+
+class PolicyUpdateIn(BaseModel):
+    """`PUT /policies/{request_type}` (ADR-0006 §8, §10, screens §4.G). The bounds mirror
+    `ApprovalPolicy`'s own CHECK exactly (`ck_approval_policies_sla_minutes_range`: 15 minutes to
+    365 days) so a sub-floor or over-ceiling value is a field-level 422 at this boundary —
+    `platform_core.errors.ValidationProblem`, naming `sla_minutes` — rather than an opaque 409 off
+    the database constraint. `enabled` has no default: the settings screen's switch is always
+    rendered from a real value (a written row's own, or the honest default), so there is nothing
+    for a client to omit here that it has not already been shown."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sla_minutes: int = Field(ge=15, le=525600)
+    enabled: bool
 
 
 class DelegationCreateIn(BaseModel):

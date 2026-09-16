@@ -11,13 +11,13 @@ import {
   LoadMore,
   PageHeader,
   ReplyIcon,
-  SearchInput,
   SectionHeader,
   Skeleton,
   Tag,
   formatInstant,
   useAnnounce,
 } from "@opsgrids/ui";
+import type { ComboboxOption } from "@opsgrids/ui";
 
 import { listDelegations } from "@/api/approvals";
 import type { DelegationCreateOut, DelegationOut } from "@/api/types";
@@ -31,6 +31,7 @@ import {
 import { getMyEmployeeId } from "@/lib/subject";
 import { useZoneLookup } from "@/lib/zone";
 import type { ZoneDirectory } from "@/lib/zone";
+import { DelegatePicker } from "@/ui/DelegatePicker";
 import { DelegationForm } from "@/ui/DelegationForm";
 import { RevokeDelegationDialog } from "@/ui/RevokeDelegationDialog";
 
@@ -99,7 +100,10 @@ function DelegationsScreen() {
   const [page, setPage] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
   const [state, setState] = useState<LoadState>({ status: "loading" });
-  const [search, setSearch] = useState("");
+  // §4.E "filtered to a person": the server does this filtering (`employee_id`, either
+  // direction), so `total` and "Load more" keep describing the same set the list is showing. The
+  // screen never filters loaded rows itself — that was the paging lie this replaced.
+  const [person, setPerson] = useState<ComboboxOption | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [revokeTarget, setRevokeTarget] = useState<DelegationOut | null>(null);
   const [repointNote, setRepointNote] = useState<string | null>(null);
@@ -127,11 +131,15 @@ function DelegationsScreen() {
     setPendingFocus(null);
   }, [pendingFocus]);
 
-  const load = useCallback(async (pageToLoad: number, append: boolean) => {
+  const load = useCallback(async (pageToLoad: number, append: boolean, employeeId: string | null) => {
     if (append) setLoadingMore(true);
     else setState({ status: "loading" });
     try {
-      const result = await listDelegations({ page: pageToLoad, size: PAGE_SIZE });
+      const result = await listDelegations({
+        page: pageToLoad,
+        size: PAGE_SIZE,
+        ...(employeeId !== null ? { employeeId } : {}),
+      });
       setItems((prev) => (append ? [...prev, ...result.items] : result.items));
       setTotal(result.total);
       setPage(pageToLoad);
@@ -147,24 +155,17 @@ function DelegationsScreen() {
     }
   }, []);
 
+  const personId = person?.id ?? null;
+
+  // Changing the person resets to page 1 and drops the accumulated pages (§2.6) — the new filter
+  // is a different query, not a view over the old one's rows.
   useEffect(() => {
-    void load(1, false);
-  }, [load]);
+    void load(1, false, personId);
+  }, [load, personId]);
 
-  const q = search.trim().toLowerCase();
-  const filtered =
-    q === ""
-      ? items
-      : items.filter(
-          (d) =>
-            (d.delegator_name?.toLowerCase().includes(q) ?? false) ||
-            (d.delegate_name?.toLowerCase().includes(q) ?? false),
-        );
-  const hasActiveFilter = q !== "";
-
-  const active = filtered.filter((d) => d.status === "active");
-  const scheduled = filtered.filter((d) => d.status === "scheduled");
-  const past = filtered.filter((d) => d.status === "ended" || d.status === "revoked");
+  const active = items.filter((d) => d.status === "active");
+  const scheduled = items.filter((d) => d.status === "scheduled");
+  const past = items.filter((d) => d.status === "ended" || d.status === "revoked");
 
   function replaceItem(updated: DelegationOut) {
     setItems((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
@@ -176,8 +177,20 @@ function DelegationsScreen() {
     delegatorName: string | null,
   ) {
     setFormOpen(false);
-    setItems((prev) => [created, ...prev]);
-    setTotal((t) => t + 1);
+    // A person filter is a server-side query, so a new row only belongs in the list when the
+    // server would have returned it. When it would not, the list is reloaded rather than guessed
+    // at — prepending a row the filter excludes would put `total` and the visible rows back out
+    // of step, which is the thing this screen just stopped doing.
+    const matchesFilter =
+      personId === null ||
+      created.delegator_employee_id === personId ||
+      created.delegate_employee_id === personId;
+    if (matchesFilter) {
+      setItems((prev) => [created, ...prev]);
+      setTotal((t) => t + 1);
+    } else {
+      void load(1, false, personId);
+    }
     const startsImmediately = new Date(created.starts_at).getTime() <= Date.now();
     const startText = zoneLookup
       ? formatInstant(created.starts_at, created.delegator_location_code, zoneLookup).text
@@ -239,15 +252,22 @@ function DelegationsScreen() {
         <InlineAlert tone="warning" title="This was already revoked." live="auto" />
       ) : null}
 
-      {items.length > 0 ? (
+      {/* §4.E's person filter, served by the same `/delegate-candidates` combobox the form uses —
+       *  one way to look a colleague up on this screen, not two. `employee_id` is ANDed with the
+       *  caller's own scope, so below ORG it narrows "rows I'm a party to" rather than the whole
+       *  organization, and an id matching nobody in that intersection is an ordinary empty result,
+       *  never an error. The control stays mounted while a filter is applied even when the result
+       *  is empty — otherwise clearing it would need the control the empty result just removed. */}
+      {items.length > 0 || personId !== null ? (
         <Card className="p-4 sm:p-5">
-          <SearchInput
-            label="Search delegations"
-            placeholder="Search by person…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            containerClassName="lg:max-w-xs"
-          />
+          <div className="lg:max-w-xs">
+            <DelegatePicker
+              label="Filter by person"
+              value={person}
+              onChange={setPerson}
+              helper="Shows delegations they hand over and delegations they take on."
+            />
+          </div>
         </Card>
       ) : null}
 
@@ -263,34 +283,41 @@ function DelegationsScreen() {
 
       {state.status === "error" ? (
         <Card className="p-6">
-          <ErrorState message={state.error.message} onRetry={() => void load(1, false)} />
+          <ErrorState message={state.error.message} onRetry={() => void load(1, false, personId)} />
         </Card>
       ) : null}
 
       {state.status === "success" ? (
         items.length === 0 ? (
-          <EmptyState
-            icon={<ReplyIcon className="size-6" />}
-            title="No delegations yet"
-            description="Going away? Let a colleague decide your approvals while you're out."
-            action={
-              !formOpen ? (
-                <Button variant="primary" onClick={() => setFormOpen(true)}>
-                  Set up a delegation
-                </Button>
-              ) : undefined
-            }
-          />
-        ) : filtered.length === 0 ? (
-          <EmptyState
-            title="No delegations match this search"
-            description="Try another search."
-            action={
-              <Button variant="outline" onClick={() => setSearch("")}>
-                Clear search
-              </Button>
-            }
-          />
+          person ? (
+            // §4.E "Empty (ORG mode, filtered to a person)" — a true statement about that person
+            // now that the server, not the browser, decided the set. Below ORG the same query is
+            // ANDed with the caller's own rows, so the honest claim is narrower: the *intersection*
+            // is empty, not that person's whole history, and the title says so. Clearing the filter
+            // is the picker's own removable chip, still on screen above.
+            <EmptyState
+              icon={<ReplyIcon className="size-6" />}
+              title={
+                orgMode
+                  ? `${person.label} has no delegations`
+                  : `You have no delegations with ${person.label}`
+              }
+              description="You can set one up for them."
+            />
+          ) : (
+            <EmptyState
+              icon={<ReplyIcon className="size-6" />}
+              title="No delegations yet"
+              description="Going away? Let a colleague decide your approvals while you're out."
+              action={
+                !formOpen ? (
+                  <Button variant="primary" onClick={() => setFormOpen(true)}>
+                    Set up a delegation
+                  </Button>
+                ) : undefined
+              }
+            />
+          )
         ) : (
           <div className="flex flex-col gap-6">
             {active.length > 0 ? (
@@ -339,19 +366,15 @@ function DelegationsScreen() {
               </div>
             ) : null}
 
-            {hasActiveFilter && items.length < total ? (
-              <p className="text-center text-sm text-muted">
-                Search only looks at what's loaded so far. Clear it to load more delegations.
-              </p>
-            ) : (
-              <LoadMore
-                loaded={items.length}
-                total={total}
-                noun="delegations"
-                loading={loadingMore}
-                onLoadMore={() => void load(page + 1, true)}
-              />
-            )}
+            {/* Both numbers now describe the same, server-decided set, filtered or not — so
+             *  "Load more · {n} left" is a promise the next page keeps (§2.6). */}
+            <LoadMore
+              loaded={items.length}
+              total={total}
+              noun="delegations"
+              loading={loadingMore}
+              onLoadMore={() => void load(page + 1, true, personId)}
+            />
           </div>
         )
       ) : null}
@@ -374,7 +397,7 @@ function DelegationsScreen() {
           onAlreadyRevoked={() => {
             setRevokeTarget(null);
             setAlreadyRevokedNote(true);
-            void load(1, false);
+            void load(1, false, personId);
           }}
         />
       ) : null}

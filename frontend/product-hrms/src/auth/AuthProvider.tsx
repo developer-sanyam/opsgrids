@@ -43,6 +43,7 @@ const FIXTURE_GRANTS = [
   "core.approval.request.read:OWN",
   "core.approval.request.decide:OWN",
   "core.approval.delegation.write:ORG",
+  "core.approval.policy.write:ORG",
 ];
 
 /** The session, wired to this product's fixture identity. The logic lives in `@opsgrids/client`. */

@@ -221,6 +221,79 @@ describe("Delegations screen", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("filters to a person server-side, and clears back to the unfiltered list", async () => {
+    // The round trip under test: pick a person → `employee_id` on the request → the server's own
+    // page is what renders, `total` included. Nothing is filtered in the browser, which is why
+    // the second response can contain a row the first one did not.
+    const otherParty: DelegationOut = {
+      ...ACTIVE,
+      id: "del-others",
+      delegator_employee_id: "emp-marcus",
+      delegator_name: "Marcus Feng",
+      delegate_employee_id: "emp-kabir",
+      delegate_name: "Kabir Shah",
+    };
+    listDelegations.mockResolvedValue(paged([ACTIVE, SCHEDULED]));
+    listDelegateCandidates.mockResolvedValue([
+      { employee_id: "emp-kabir", display_name: "Kabir Shah", employee_no: "ATM-0204" },
+    ]);
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText("Rohan Mehta decides for you")).toBeDefined());
+    expect(listDelegations).toHaveBeenLastCalledWith({ page: 1, size: 25 });
+
+    listDelegations.mockResolvedValue(paged([otherParty]));
+    await user.type(screen.getByRole("combobox", { name: "Filter by person" }), "Ka");
+    await screen.findByRole("option", { name: /Kabir Shah/ });
+    await user.keyboard("{ArrowDown}{Enter}");
+
+    await waitFor(() =>
+      expect(listDelegations).toHaveBeenLastCalledWith({
+        page: 1,
+        size: 25,
+        employeeId: "emp-kabir",
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("Kabir Shah decides for Marcus Feng")).toBeDefined(),
+    );
+    // The previous page's rows are dropped, not filtered over: a new filter is a new query.
+    expect(screen.queryByText("Rohan Mehta decides for you")).toBeNull();
+
+    listDelegations.mockResolvedValue(paged([ACTIVE, SCHEDULED]));
+    await user.click(screen.getByRole("button", { name: "Remove Kabir Shah" }));
+    await waitFor(() =>
+      expect(listDelegations).toHaveBeenLastCalledWith({ page: 1, size: 25 }),
+    );
+    await waitFor(() => expect(screen.getByText("Rohan Mehta decides for you")).toBeDefined());
+  });
+
+  it("renders the filtered-empty state naming the person, not the unfiltered empty state", async () => {
+    listDelegations.mockResolvedValue(paged([ACTIVE]));
+    listDelegateCandidates.mockResolvedValue([
+      { employee_id: "emp-kabir", display_name: "Kabir Shah", employee_no: "ATM-0204" },
+    ]);
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText("Rohan Mehta decides for you")).toBeDefined());
+
+    // `pages: 0` is what the server sends for an empty page — nothing on screen counts pages.
+    listDelegations.mockResolvedValue({ items: [], total: 0, page: 1, size: 25, pages: 0 });
+    await user.type(screen.getByRole("combobox", { name: "Filter by person" }), "Ka");
+    await screen.findByRole("option", { name: /Kabir Shah/ });
+    await user.keyboard("{ArrowDown}{Enter}");
+
+    await waitFor(() =>
+      expect(screen.getByText("You have no delegations with Kabir Shah")).toBeDefined(),
+    );
+    expect(screen.getByText("You can set one up for them.")).toBeDefined();
+    expect(screen.queryByText("No delegations yet")).toBeNull();
+    // The picker survives its own empty result — it is the only way back to the full list.
+    expect(screen.getByRole("combobox", { name: "Filter by person" })).toBeDefined();
+  });
+
   it("shows 'already revoked' on a 409 and refreshes the row", async () => {
     listDelegations
       .mockResolvedValueOnce(paged([ACTIVE]))

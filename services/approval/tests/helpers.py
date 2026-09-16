@@ -14,6 +14,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models import ApprovalPolicy, ApprovalRequest, ApprovalStep
 from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.events import build_envelope
 
@@ -159,6 +160,84 @@ async def seed_person(
         source_version=source_version,
         source_occurred_at=datetime.now(UTC),
     )
+
+
+async def seed_pending_request_with_step(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    *,
+    requester_employee_id: uuid.UUID,
+    approver_employee_id: uuid.UUID | None,
+    acting_for_employee_id: uuid.UUID | None = None,
+    delegation_id: uuid.UUID | None = None,
+    reason: str = "assigned",
+    level: int = 1,
+    opened_at: datetime | None = None,
+    due_at: datetime | None = None,
+    source_ref: uuid.UUID | None = None,
+) -> tuple[ApprovalRequest, ApprovalStep]:
+    """Insert a pending request and its one open step directly, bypassing
+    `open_regularization_request`'s routing — for the SLA sweep and escalation tests, which need
+    a step whose `due_at` is already in the past without waiting real minutes for one the routing
+    path opened. `trg_approval_steps_append_only` only restricts an `UPDATE` to an open step (the
+    predecessor's own `due_at` cannot be edited after insert, only carried forward by a new row —
+    ADR-0006 §5); it does not restrict what an `INSERT` may set, which is what this relies on.
+
+    Caller must `session.begin()`/commit around this — matches every other seeding helper here.
+    """
+    now = opened_at or datetime.now(UTC)
+    request = ApprovalRequest(
+        organization_id=org_id,
+        request_type=REQUEST_TYPE_REGULARIZATION,
+        source_ref=source_ref or uuid.uuid4(),
+        requester_employee_id=requester_employee_id,
+        summary={"date": "2026-09-12", "from": "absent", "to": "present"},
+        request_note="Forgot to punch in",
+        status="pending",
+        opened_at=now,
+    )
+    session.add(request)
+    await session.flush()
+    step = ApprovalStep(
+        organization_id=org_id,
+        request_id=request.id,
+        level=level,
+        approver_employee_id=approver_employee_id,
+        acting_for_employee_id=acting_for_employee_id,
+        delegation_id=delegation_id,
+        reason=reason,
+        opened_at=now,
+        due_at=due_at,
+        outcome="open",
+    )
+    session.add(step)
+    await session.flush()
+    return request, step
+
+
+async def seed_policy(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    *,
+    request_type: str = REQUEST_TYPE_REGULARIZATION,
+    sla_minutes: int = 15,
+    enabled: bool = True,
+) -> ApprovalPolicy:
+    """An `approval_policies` row — no `PUT` endpoint ships before this slice's own successor, so
+    tests that need a non-default SLA (the 15-minute floor, most often, to keep fixtures readable
+    without arithmetic on `domain.DEFAULT_SLA_MINUTES`) write the row directly.
+
+    Caller must `session.begin()`/commit around this — matches `seed_pending_request_with_step`.
+    """
+    policy = ApprovalPolicy(
+        organization_id=org_id,
+        request_type=request_type,
+        sla_minutes=sla_minutes,
+        enabled=enabled,
+    )
+    session.add(policy)
+    await session.flush()
+    return policy
 
 
 def envelope_from_outbox_row(raw: dict[str, Any], *, producer: str) -> dict[str, Any]:

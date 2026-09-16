@@ -393,7 +393,11 @@ class ApprovalStep(Base, TenantBase):
     delegation_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     reason: Mapped[str] = mapped_column(String(20), nullable=False)
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    #: NULL in slices 2-3, always (ADR-0006 §10 amended) — no SLA clock exists yet to set it.
+    #: NULL for every step slices 2-3 opened (ADR-0006 §10 amended) — no SLA clock existed yet to
+    #: set it, and the sweep does not retroactively adopt those rows (§10: "steps opened earlier
+    #: keep due_at = NULL and never escalate"). Slice 4 stamps a real value at routing, delegation
+    #: re-pointing (carried through unchanged, §5) and escalation (`app/services.py`'s
+    #: `_sla_due_at`) whenever the type's policy is enabled and the step has an approver.
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     outcome: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
@@ -467,6 +471,69 @@ class ApprovalStep(Base, TenantBase):
         ),
         # Pattern 7: request detail / history, in opened order.
         Index("ix_approval_steps_org_request", "organization_id", "request_id", "opened_at"),
+        # Patterns 3/3b (data model §2.2, ADR-0006 §8/§15): the SLA sweep's own discovery, and
+        # pattern 3's complement. Both are cross-tenant — deliberately not leading with
+        # `organization_id` — because they serve the sweep's BYPASSRLS discovery session
+        # (`app/cron.py`), which exists to find out *which* organizations have work, so there is
+        # no tenant to bind while asking (the same reason `ix_dunning_cycles_due` in subscription
+        # is shaped this way). Both ship in slice 4, not with the table: §15's own rule is "an
+        # index moves with the query that needs it", and the sweep's queries did not exist before
+        # this slice (data model §2.2's "the queries genuinely do not exist before then").
+        #
+        # The two predicates are exact complements over open steps (data model §2.2): this one
+        # holds the open steps that *will* escalate (assigned, with a due date); the other holds
+        # the ones that *never* will (unassigned, or assigned under a disabled policy) —
+        # `ck_approval_steps_unassigned_has_no_due` is what makes that split exhaustive rather than
+        # leaving a fourth, invisible combination. `due_at is not null` is spelled out explicitly
+        # even though `approver_employee_id is not null` already implies it is legal to be set —
+        # Postgres proves partial-index applicability from a query's own quals, never from a table
+        # CHECK, so the query this index serves must repeat the same predicate verbatim (data
+        # model §2.2: "must spell out due_at IS NULL" — the same lesson, the complementary
+        # predicate).
+        Index(
+            "ix_approval_steps_sla_due",
+            "due_at",
+            postgresql_include=("organization_id", "request_id", "id"),
+            postgresql_where=(
+                "outcome = 'open' and approver_employee_id is not null and due_at is not null"
+            ),
+        ),
+        # Slice-4 review amendment: `ix_approval_steps_sla_due` alone made the fairness cap
+        # advisory rather than real — the discovery query used to take the 500 oldest overdue
+        # steps *platform-wide* first and only then cap each tenant's share of what it already
+        # fetched, so one tenant supplying 500+ overdue steps filled the slice entirely and every
+        # other tenant's escalations silently stopped ticking. Discovery now caps *inside* the
+        # per-organization `LATERAL` (`app/selectors.py`'s `_DUE_ESCALATION_STEPS_SQL`), which
+        # `(due_at)` alone cannot serve without re-scanning the whole table once per organization
+        # found — leading with `organization_id` is what turns that into an index-only lookup of
+        # exactly the oldest `per_org_cap` rows for one tenant at a time. Same partial predicate as
+        # `ix_approval_steps_sla_due` (the two exist for different halves of the same query, not
+        # as alternatives to each other — see that query's own docstring for the measured plan).
+        Index(
+            "ix_approval_steps_sla_due_by_org",
+            "organization_id",
+            "due_at",
+            postgresql_include=("request_id",),
+            postgresql_where=(
+                "outcome = 'open' and approver_employee_id is not null and due_at is not null"
+            ),
+        ),
+        # The stuck-open liveness probes (data model §2.2, patterns 14/15): the primary alarm is
+        # the oldest **unassigned** open step (nothing escalates it — the ladder's own terminus,
+        # §8), and the secondary is the oldest **assigned** open step under a disabled policy
+        # (`enabled = false`, §10) — both keyed on `opened_at` alone, not `due_at`, because neither
+        # population has one. Keying on `(approver_employee_id, opened_at)` instead was built and
+        # measured and is worse: `IS NULL` is a `NullTest`, not an equality the planner can treat
+        # as a constant leading column, so it cannot inherit the index's own ordering and falls
+        # back to reading every entry and sorting it (data model §2.2: "12 buffers, 0.260 ms" vs.
+        # "3 buffers, 0.015 ms" keyed on `opened_at` alone with the approver test left as a filter
+        # over an `INCLUDE`d column).
+        Index(
+            "ix_approval_steps_stuck_open",
+            "opened_at",
+            postgresql_include=("organization_id", "request_id", "id", "approver_employee_id"),
+            postgresql_where="outcome = 'open' and due_at is null",
+        ),
     )
 
 

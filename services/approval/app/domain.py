@@ -13,8 +13,9 @@ it is written once, here, rather than re-implemented at each call site.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 
 #: The number of rungs *above the requester* the walk (and employee's own cycle check, data
@@ -47,9 +48,29 @@ def pick_approver(rungs: list[Rung], requester_id: uuid.UUID) -> Rung | None:
     rung and this function is what skips: `requester → exited manager → director` must reach the
     director. Returns `None` when nobody usable is found — an empty chain, a chain that is all
     exited managers, or a chain that never got past the requester's own row (no manager at all).
+
+    A one-id specialisation of `pick_next_approver` (ADR-0006 §8 added the second caller with
+    more than one id to skip — see that function) — left as its own name and signature rather
+    than folded away, since every routing call site already reads `pick_approver(rungs,
+    requester_id)` and changing that is churn this slice has no reason to cause.
     """
+    return pick_next_approver(rungs, skip_ids=(requester_id,))
+
+
+def pick_next_approver(rungs: list[Rung], skip_ids: Collection[uuid.UUID]) -> Rung | None:
+    """The first rung that is neither `exited` nor named in `skip_ids`.
+
+    ADR-0006 §8's escalation walk is the second caller: it starts from the step's own original
+    approver (`walk_chain(start=original_approver)`, so `rungs[0]` is that approver's own row,
+    not a rung above them) and must skip **two** ids — the walk's own starting point, so a step
+    never escalates to the person who was just asked, and the requester, "skipping the requester"
+    being §5's rule restated for a walk that does not start at the requester this time. A single
+    `skip_ids` collection covers both without a second parameter that `pick_approver`'s one-id
+    callers would have to pass `None` or an empty set for.
+    """
+    skip = set(skip_ids)
     for rung in rungs:
-        if rung.employee_id == requester_id:
+        if rung.employee_id in skip:
             continue
         if rung.status == "exited":
             continue
@@ -90,6 +111,23 @@ def skip_flags(rungs: list[Rung], requester_id: uuid.UUID) -> list[tuple[Rung, b
 # --------------------------------------------------------------------- routing (slice 2)
 
 
+#: `approval_policies`' own row defaults (ADR-0006 §10): a missing row means these, not an
+#: unconfigured state. Mirrors the model's own `default=` values (`app/models.py`'s
+#: `ApprovalPolicy`) so the two never drift on what "no row yet" means.
+DEFAULT_SLA_MINUTES = 1440
+DEFAULT_POLICY_ENABLED = True
+
+
+def compute_due_at(*, opened_at: datetime, sla_minutes: int) -> datetime:
+    """`due_at = opened_at + sla_minutes` — ADR-0006 §4 rule 4 at routing and delegation
+    re-pointing's own carry-through, and §8's "due_at = now + sla_minutes" at escalation, where
+    the caller passes its own `now()` as `opened_at` (the escalated step's opening instant).
+    Calendar time only, no calendar awareness — weekends and holidays count (ADR-0006
+    Consequences: "when a calendar exists, only the due_at computation changes").
+    """
+    return opened_at + timedelta(minutes=sla_minutes)
+
+
 def delegation_is_active(
     *, revoked_at: datetime | None, starts_at: datetime, ends_at: datetime, at: datetime
 ) -> bool:
@@ -102,9 +140,10 @@ def delegation_is_active(
     return revoked_at is None and starts_at <= at < ends_at
 
 
-#: `inbox_reason` values (screens §2.3). `escalated_to_me`/`escalated_away` are declared for
-#: completeness of the vocabulary but cannot be produced before slice 4 — see
-#: `app/selectors.py`'s `_INBOX_PAGE_SQL` docstring for why.
+#: `inbox_reason` values (screens §2.3). `escalated_to_me`/`escalated_away` need a due date to
+#: exist at all, so slices 2-3 (no SLA clock, ADR-0006 §10 amended) could declare the vocabulary
+#: but never produce it — slice 4 arms the sweep (`app/selectors.py`'s `_INBOX_CANDIDATES_CTE`)
+#: and supplies both.
 INBOX_REASON_ASSIGNED = "assigned"
 INBOX_REASON_DELEGATED_TO_ME = "delegated_to_me"
 INBOX_REASON_ESCALATED_TO_ME = "escalated_to_me"
@@ -125,10 +164,22 @@ def inbox_reason_for(
     approver_employee_id: uuid.UUID | None,
     acting_for_employee_id: uuid.UUID | None,
     step_reason: str,
+    predecessor_approver_employee_id: uuid.UUID | None = None,
 ) -> InboxReason:
-    """Why this request is in the caller's inbox (ADR-0006 §6, screens §2.3), derived from the
-    request's one open step. Reading the open step's own fields is sufficient in slices 2-3: see
-    `_INBOX_PAGE_SQL`'s docstring for why a historical step is never needed there.
+    """Why this request is in the caller's inbox (ADR-0006 §6, screens §2.3).
+
+    For every reason but `escalated_to_me`, the request's *current open step* is sufficient —
+    `approver_employee_id`, `acting_for_employee_id` and `step_reason` are that step's own three
+    fields. `escalated_to_me` is the one exception: "the step moved up to you because {from_name}
+    didn't answer in time" (screens §2.3) names the *previous* rung's approver, a fact the open
+    step itself does not carry (it only knows who holds it now, not who held it before) — hence
+    the separate `predecessor_approver_employee_id` parameter, which `app/selectors.py`'s
+    `_INBOX_CANDIDATES_CTE` resolves with one extra self-join on `level - 1`, and
+    `app/api/routes.py`'s request-detail assembly resolves for free out of the steps it has
+    already loaded. `escalated_away`'s own "from" is not a predecessor at all — it is the
+    *current* open step's approver, already carried in `approver_employee_id` by the caller's own
+    construction of this function's other arguments (see `_INBOX_CANDIDATES_CTE`'s escalated-away
+    branches).
 
     An unassigned step, and an assigned step whose approver has since exited (the ORG "abandoned"
     widening, ADR-0006 §6 route c), both render as `unassigned` — the screens specification
@@ -141,9 +192,7 @@ def inbox_reason_for(
         if acting_for_employee_id is not None:
             return InboxReason(INBOX_REASON_DELEGATED_TO_ME, acting_for_employee_id)
         if step_reason == "escalated":
-            # Unreachable in slices 2-3 (nothing escalates yet); kept so the vocabulary is
-            # complete and slice 4 only has to supply the "from" lookup, not this branch.
-            return InboxReason(INBOX_REASON_ESCALATED_TO_ME, None)
+            return InboxReason(INBOX_REASON_ESCALATED_TO_ME, predecessor_approver_employee_id)
         return InboxReason(INBOX_REASON_ASSIGNED, None)
     if acting_for_employee_id == caller_id:
         if step_reason == "escalated":

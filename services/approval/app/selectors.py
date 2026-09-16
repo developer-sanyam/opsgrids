@@ -19,12 +19,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import Select, select, text
+from sqlalchemy import ColumnElement, Select, select, text
 from sqlalchemy import false as sa_false
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain import MAX_CHAIN_DEPTH, Rung
-from app.models import ApprovalRequest, ApprovalStep, Delegation, HierarchyNode
+from app.domain import DEFAULT_POLICY_ENABLED, DEFAULT_SLA_MINUTES, MAX_CHAIN_DEPTH, Rung
+from app.models import ApprovalPolicy, ApprovalRequest, ApprovalStep, Delegation, HierarchyNode
 from platform_core.auth import ScopeContext
 from platform_core.db import get_scoped
 
@@ -270,6 +270,32 @@ async def get_request_for_update(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_request_for_escalation(
+    session: AsyncSession, organization_id: uuid.UUID, request_id: uuid.UUID
+) -> ApprovalRequest | None:
+    """The sweep's own lock (ADR-0006 §8): `SELECT ... FOR UPDATE SKIP LOCKED`, unlike
+    `get_request_for_update`'s blocking form the decision path uses. A step and a decision race
+    the same request row (§7: "lock order is always request, then steps, in the decision path and
+    the sweep alike"), and the sweep is a background loop with 500 candidates a tick — it must
+    move past a row someone else already holds rather than queue behind it. `None` covers both
+    "another replica's escalation is mid-flight" and "a decision landed and holds the lock right
+    now"; the caller treats either as a skip, not an error.
+
+    Filters `deleted_at IS NULL`, matching `get_request_for_update` — a soft-deleted request must
+    not be escalated any more than it can be decided.
+    """
+    stmt = (
+        select(ApprovalRequest)
+        .where(
+            ApprovalRequest.organization_id == organization_id,
+            ApprovalRequest.id == request_id,
+            ApprovalRequest.deleted_at.is_(None),
+        )
+        .with_for_update(skip_locked=True)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def get_request_by_source(
     session: AsyncSession, organization_id: uuid.UUID, request_type: str, source_ref: uuid.UUID
 ) -> ApprovalRequest | None:
@@ -294,6 +320,45 @@ async def get_open_step(
         ApprovalStep.outcome == "open",
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+#: Outcomes that still confer eligibility on the step's approver/represented original (ADR-0006
+#: §6 condition 5's "some step of the request with outcome open, delegated or escalated"). Not
+#: `approved`/`rejected` — a request carrying either is decided, and `check_eligibility`'s caller
+#: already refuses a non-`pending` request before this ever runs.
+_ELIGIBILITY_OUTCOMES = ("open", "delegated", "escalated")
+
+
+async def get_lineage_steps(
+    session: AsyncSession, organization_id: uuid.UUID, request_id: uuid.UUID
+) -> list[ApprovalStep]:
+    """Every step of this request whose outcome still confers eligibility (ADR-0006 §6 condition
+    5), ordered by `level`.
+
+    Through slice 3, `get_open_step` alone was sufficient for `check_eligibility`'s routes (a) and
+    (b): a `delegated`-outcome predecessor's original approver is already reachable through the
+    *successor*'s `acting_for_employee_id` (`_INBOX_CANDIDATES_CTE`'s own docstring explains why
+    in full), so checking only the current open step and checking every live step in the request's
+    history produced the same answer. Escalation breaks that equivalence — a successor step's
+    `acting_for_employee_id` is set only when a delegation applies *at the new rung*, never to
+    carry the *previous* rung's approver forward — so "the original approver stays eligible ...
+    and after escalation (a on the escalated step)" (§6) requires actually looking at the step
+    history rather than only the current open step.
+
+    Bounded by construction: at most 33 rows per request (`ck_approval_steps_level_range`), served
+    by `ix_approval_steps_org_request` (pattern 7, the same index `list_steps`/request-detail
+    already uses) — no new index for this slice's own query.
+    """
+    stmt = (
+        select(ApprovalStep)
+        .where(
+            ApprovalStep.organization_id == organization_id,
+            ApprovalStep.request_id == request_id,
+            ApprovalStep.outcome.in_(_ELIGIBILITY_OUTCOMES),
+        )
+        .order_by(ApprovalStep.level)
+    )
+    return list((await session.execute(stmt)).scalars().all())
 
 
 async def get_open_steps_for_requests(
@@ -375,6 +440,58 @@ async def get_active_delegation_for(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_policy(
+    session: AsyncSession, organization_id: uuid.UUID, request_type: str
+) -> ApprovalPolicy | None:
+    """The SLA policy row for one request type, or `None` when nothing has ever been written for
+    it — ADR-0006 §10's "a missing row means the defaults" (`enabled = True`, `sla_minutes =
+    1440`; `app/domain.DEFAULT_POLICY_ENABLED`/`DEFAULT_SLA_MINUTES`). Natural composite PK
+    lookup, one row at most (`app/models.ApprovalPolicy`)."""
+    stmt = select(ApprovalPolicy).where(
+        ApprovalPolicy.organization_id == organization_id,
+        ApprovalPolicy.request_type == request_type,
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyView:
+    """One `GET /policies` row (ADR-0006 §10, §11): the written row's values where one exists,
+    `domain.py`'s own defaults otherwise — never a fabricated `ApprovalPolicy` row. Distinct from
+    the model itself so a read can never be mistaken for something a `PUT` actually wrote."""
+
+    request_type: str
+    sla_minutes: int
+    enabled: bool
+
+
+async def list_policies(
+    session: AsyncSession, organization_id: uuid.UUID, request_types: Collection[str]
+) -> list[PolicyView]:
+    """Every request type in `request_types`, in that order, each resolved through the same
+    default-fallback `get_policy` gives a single one (ADR-0006 §10) — one round trip
+    (`request_type.in_(...)`) rather than N single-row lookups, the N+1 guard the settings screen
+    needs the moment a second request type exists (`app/services.KNOWN_REQUEST_TYPES` is one
+    today). A type nobody has ever written a row for still comes back, at the honest defaults,
+    rather than being silently absent from the response."""
+    types = list(dict.fromkeys(request_types))  # de-duplicate, keep the given order
+    if not types:
+        return []
+    stmt = select(ApprovalPolicy).where(
+        ApprovalPolicy.organization_id == organization_id,
+        ApprovalPolicy.request_type.in_(types),
+    )
+    written = {row.request_type: row for row in (await session.execute(stmt)).scalars().all()}
+    return [
+        PolicyView(
+            request_type=t,
+            sla_minutes=written[t].sla_minutes if t in written else DEFAULT_SLA_MINUTES,
+            enabled=written[t].enabled if t in written else DEFAULT_POLICY_ENABLED,
+        )
+        for t in types
+    ]
+
+
 def requests_stmt(ctx: ScopeContext, *, mine_only: bool = False) -> Select[Any]:
     """`GET /requests` (ADR-0006 §11): OWN reaches requests the caller raised, ORG reaches every
     request in the organization, TEAM reaches requests raised by the caller's direct reports, and
@@ -447,6 +564,17 @@ class InboxRow:
     approver_employee_id: uuid.UUID | None
     acting_for_employee_id: uuid.UUID | None
     reason: str
+    #: The rung the open step's `reason = 'escalated'` moved up *from* — `None` for every other
+    #: reason, and for an escalated step whose predecessor is off the end of `candidate_steps`'
+    #: self-join (there never is one; level 1 has no level 0). Feeds `domain.inbox_reason_for`'s
+    #: `escalated_to_me` "from" (ADR-0006 §11, screens §2.3) — see that function's own docstring
+    #: for why the open step alone cannot answer this.
+    predecessor_approver_employee_id: uuid.UUID | None
+    #: The deadline off the step this row matched through — the *current* open step's, always,
+    #: never a closed predecessor's (see `_INBOX_CANDIDATES_CTE`'s own docstring on why the
+    #: `escalated_away` branches project `cur.due_at`, not `hs.due_at`). `None` for a step opened
+    #: before slice 4 or one that is unassigned; never computed here.
+    due_at: datetime | None
 
 
 #: The steps-first shape data model §2.1 measured at 27ms against the EXISTS-driven alternative's
@@ -474,31 +602,94 @@ class InboxRow:
 #: not see, or decide, an unassigned or abandoned step either — including the `request_note` this
 #: same query returns alongside it.
 #:
-#: Only `outcome = 'open'` steps are considered. Re-pointing (`app/services.create_delegation`,
-#: this slice) does now produce closed, `delegated`-outcome steps — the predecessor a
-#: re-pointed request leaves behind — so it is no longer true that nothing in this slice's write
-#: path produces that outcome. It remains true that only an *open* step can make a request
-#: eligible: a closed `delegated` step is history, not a live candidate, and this query is
-#: right to ignore it — deliberately, not by omission. Both routes a closed `delegated`
-#: predecessor could otherwise have fed are already covered without it: route (a) "delegated to
-#: me" is served by the *successor* step re-pointing opened (`approver_employee_id` = the new
-#: delegate, still `outcome = 'open'`), and route (b) "delegated away" — the original approver's
-#: own continuing eligibility — is served by that same successor's `acting_for_employee_id`
-#: naming the delegator, not by anything read off the predecessor it replaced. So a pending
-#: request's single open step still carries everything routes (a)/(b) need, and the closed
-#: `delegated` steps this slice now writes confer nothing here, on purpose. The one route this
-#: simplification does not yet serve is `escalated_away` (ADR-0006 §6: eligible via the caller's
-#: own **now-closed** `escalated`-outcome step) — schemas §2.3 confirms it "cannot occur before
-#: slice 4", so it is deferred with the sweep that would be the only thing to ever produce it.
+#: Only `outcome = 'open'` steps are considered for the *live* routes above. Re-pointing
+#: (`app/services.create_delegation`, slice 3) does now produce closed, `delegated`-outcome steps
+#: — the predecessor a re-pointed request leaves behind — so it is no longer true that nothing in
+#: this slice's write path produces that outcome. It remains true that only an *open* step can
+#: make a request eligible *through those two branches*: a closed `delegated` step is history,
+#: not a live candidate. Both routes a closed `delegated` predecessor could otherwise have fed are
+#: already covered without it: route (a) "delegated to me" is served by the *successor* step
+#: re-pointing opened (`approver_employee_id` = the new delegate, still `outcome = 'open'`), and
+#: route (b) "delegated away" — the original approver's own continuing eligibility — is served by
+#: that same successor's `acting_for_employee_id` naming the delegator, not by anything read off
+#: the predecessor it replaced.
+#:
+#: **`escalated_away` (slice 4) is the one route a live open step genuinely cannot serve**, and it
+#: needs two more branches rather than a tweak to the first two: ADR-0006 §6's "the original
+#: approver stays eligible ... after escalation (a on the escalated step)" is eligibility through
+#: the caller's own **now-closed**, `escalated`-outcome step — a step `check_eligibility`
+#: (`app/services.py`) already walks via `get_lineage_steps`, which is exactly the asymmetry this
+#: CTE closed: a caller could already *decide* a request that had escalated away from them by
+#: knowing its id, but `GET /inbox` never listed it, because every branch above reads only the
+#: open step. The two new branches below read `outcome = 'escalated'` steps instead of `open`
+#: ones, matching routes (a)-undelegated/(b) and (a)-delegated exactly as the first two branches
+#: do for the live step, and both project the *current* open step's `approver_employee_id` as
+#: this row's "approver" and the caller's own id as its "acting_for" — not because either is
+#: literally true of the historical step, but because that is precisely the (approver, acting_for,
+#: reason) triple `domain.inbox_reason_for` needs to derive `escalated_away` with the right "from"
+#: (the request's *current* holder, screens §2.3: "now with {from_name}") without a sixth
+#: parameter threading a different shape through a function every other branch already calls the
+#: same way. `cur.approver_employee_id IS DISTINCT FROM :caller AND cur.acting_for_employee_id IS
+#: DISTINCT FROM :caller` excludes the (rare, cycle-shaped) case where the caller is *also* the
+#: step's current live holder — the live branches above already cover that with a stronger reason
+#: (`assigned`/`escalated_to_me`/`delegated_to_me`), and without the exclusion `matched` could
+#: return the same request twice for the same caller under a hierarchy loop, which `UNION`'s
+#: dedup cannot catch when the two branches project different tuples.
+#:
+#: `escalated_to_me` needed no new branch — the live open step's own `reason = 'escalated'` was
+#: already reachable through the first (undelegated) branch the moment a step could actually carry
+#: that value, which slice 4's sweep is the first thing in this service ever to write
+#: (`escalate_step` never sets `delegation_id` on a step whose `reason` is `'escalated'` — the two
+#: are mutually exclusive by `ck_approval_steps_delegated_iff_delegation`, so the *delegated*
+#: branch below it can never produce that reason either). What slice 4 *does* add for it is the
+#: `predecessor_approver_employee_id` self-join in the first branch only (the only branch that can
+#: ever produce `reason = 'escalated'`): the open step's own columns name who holds the request
+#: now, never who held it a rung ago, and "the step moved up to you because {from_name} didn't
+#: answer in time" (screens §2.3) needs that previous rung. One extra join on `level - 1` within
+#: the same request answers it in the same round trip rather than a second query per row.
+#:
+#: `prev.outcome = 'escalated'` on that same join is load-bearing, not decorative: delegation
+#: re-pointing (`app/services.create_delegation`) inserts its successor **at the same level** as
+#: the step it replaces (§5 — re-pointing is not a rung), so a step that was re-pointed and *then*
+#: escalated has two candidate predecessors at `level - 1` in the plain `level = s.level - 1` join
+#: — the closed, `delegated`-outcome original and, if it too was re-pointed, another one before
+#: it. Both are real rows, so `UNION` cannot dedup them: the two tuples they produce differ only in
+#: `predecessor_approver_employee_id`, which `UNION` treats as two distinct rows, and the same
+#: request would appear twice in one caller's inbox with two different "from" names. Exactly one
+#: step at `level - 1` can ever have escalated a request up to `level` — `escalate_step` closes the
+#: step it escalates with `outcome = 'escalated'`, never `'delegated'` — so filtering on that
+#: outcome is what picks the one predecessor that is actually the "from" of an `escalated_to_me`
+#: reason, not merely *a* step that once occupied the rung below.
+#:
 #: One CTE literal, concatenated with two different tails (count vs. page) rather than kept as two
-#: near-identical copies — so a future branch (`escalated_away`, slice 4) is added once and both
-#: statements pick it up, instead of being a one-copy-only bug waiting to happen. Every value that
-#: varies is still a bind parameter (`:org`, `:caller`, ...), never interpolated into the text —
-#: this is string concatenation of two complete, literal fragments, not dynamic SQL construction.
+#: near-identical copies — so every branch is written once and both statements pick it up, instead
+#: of being a one-copy-only bug waiting to happen. Every value that varies is still a bind
+#: parameter (`:org`, `:caller`, ...), never interpolated into the text — this is string
+#: concatenation of two complete, literal fragments, not dynamic SQL construction.
 _INBOX_CANDIDATES_CTE = """
     WITH candidate_steps AS (
-        SELECT s.request_id, s.approver_employee_id, s.acting_for_employee_id, s.reason
+        -- Every branch below aliases every projected column, including the ones a bare column
+        -- reference would already have named correctly on its own: `mappings()` (this CTE's only
+        -- Python-side reader, `list_inbox`) keys off the **first** branch's names regardless of
+        -- what the other three call theirs, which is exactly what makes a silent reorder possible
+        -- in branches 3/4 below — two adjacent `uuid`-typed columns swapping position type-checks
+        -- cleanly and changes nothing PostgreSQL would ever refuse, only which employee id a
+        -- caller sees themselves as (`approver` vs. `acting_for`). Explicit aliases on every
+        -- column, in every branch, are what turn that into something a reviewer (or a diff) can
+        -- actually catch: an alias that no longer matches its position reads as wrong on sight,
+        -- even though PostgreSQL itself only ever looks at the first branch's names.
+        SELECT s.request_id AS request_id,
+               s.approver_employee_id AS approver_employee_id,
+               s.acting_for_employee_id AS acting_for_employee_id,
+               s.reason AS reason,
+               prev.approver_employee_id AS predecessor_approver_employee_id,
+               s.due_at AS due_at
           FROM approval.approval_steps s
+          LEFT JOIN approval.approval_steps prev
+            ON prev.organization_id = s.organization_id
+           AND prev.request_id = s.request_id
+           AND prev.level = s.level - 1
+           AND prev.outcome = 'escalated'
          WHERE s.organization_id = :org AND s.outcome = 'open'
            AND (
                 (s.delegation_id IS NULL AND :caller_active AND s.approver_employee_id = :caller)
@@ -519,18 +710,81 @@ _INBOX_CANDIDATES_CTE = """
 
         UNION
 
-        SELECT s.request_id, s.approver_employee_id, s.acting_for_employee_id, s.reason
+        SELECT s.request_id AS request_id,
+               s.approver_employee_id AS approver_employee_id,
+               s.acting_for_employee_id AS acting_for_employee_id,
+               s.reason AS reason,
+               NULL::uuid AS predecessor_approver_employee_id,
+               s.due_at AS due_at
           FROM approval.approval_steps s
           JOIN approval.delegations d
             ON d.organization_id = s.organization_id AND d.id = s.delegation_id
          WHERE s.organization_id = :org AND s.outcome = 'open'
            AND s.delegation_id IS NOT NULL AND :caller_active AND s.approver_employee_id = :caller
            AND d.revoked_at IS NULL AND d.starts_at <= :now AND :now < d.ends_at
+
+        UNION
+
+        -- escalated_away, routes (a)-undelegated and (b): the caller was the approver (with no
+        -- delegation on that historical step) or the represented original of a step that has
+        -- since escalated away, on a request still pending. "approver" here is the *current*
+        -- open step's holder (the "now with" name), "acting_for" is the caller's own id, and
+        -- "reason" is the literal 'escalated' sentinel `domain.inbox_reason_for` reads for it —
+        -- see this CTE's own docstring for why those three values, not the historical step's.
+        -- `cur.due_at`, not `hs.due_at`: the closed, escalated-away `hs` step's own deadline
+        -- already lapsed and stopped being anyone's due date the moment it escalated — the row's
+        -- `due_at` is the *current* open step's, matching every other field this branch reports
+        -- for it (`approver_employee_id`, `reason`).
+        SELECT hs.request_id AS request_id,
+               cur.approver_employee_id AS approver_employee_id,
+               CAST(:caller AS uuid) AS acting_for_employee_id,
+               'escalated' AS reason,
+               NULL::uuid AS predecessor_approver_employee_id,
+               cur.due_at AS due_at
+          FROM approval.approval_steps hs
+          JOIN approval.approval_steps cur
+            ON cur.organization_id = hs.organization_id
+           AND cur.request_id = hs.request_id
+           AND cur.outcome = 'open'
+         WHERE hs.organization_id = :org AND hs.outcome = 'escalated'
+           AND :caller_active
+           AND cur.approver_employee_id IS DISTINCT FROM :caller
+           AND cur.acting_for_employee_id IS DISTINCT FROM :caller
+           AND (
+                (hs.delegation_id IS NULL AND hs.approver_employee_id = :caller)
+             OR hs.acting_for_employee_id = :caller
+           )
+
+        UNION
+
+        -- escalated_away, route (a)-delegated: the caller was reached through a delegation still
+        -- active now on the historical escalated step. Same projection as the branch above,
+        -- `cur.due_at` for the same reason.
+        SELECT hs.request_id AS request_id,
+               cur.approver_employee_id AS approver_employee_id,
+               CAST(:caller AS uuid) AS acting_for_employee_id,
+               'escalated' AS reason,
+               NULL::uuid AS predecessor_approver_employee_id,
+               cur.due_at AS due_at
+          FROM approval.approval_steps hs
+          JOIN approval.delegations d
+            ON d.organization_id = hs.organization_id AND d.id = hs.delegation_id
+          JOIN approval.approval_steps cur
+            ON cur.organization_id = hs.organization_id
+           AND cur.request_id = hs.request_id
+           AND cur.outcome = 'open'
+         WHERE hs.organization_id = :org AND hs.outcome = 'escalated'
+           AND hs.delegation_id IS NOT NULL AND hs.approver_employee_id = :caller
+           AND :caller_active
+           AND cur.approver_employee_id IS DISTINCT FROM :caller
+           AND cur.acting_for_employee_id IS DISTINCT FROM :caller
+           AND d.revoked_at IS NULL AND d.starts_at <= :now AND :now < d.ends_at
     ),
     matched AS (
         SELECT r.id, r.request_type, r.source_ref, r.requester_employee_id, r.summary,
                r.request_note, r.opened_at,
-               cs.approver_employee_id, cs.acting_for_employee_id, cs.reason
+               cs.approver_employee_id, cs.acting_for_employee_id, cs.reason,
+               cs.predecessor_approver_employee_id, cs.due_at
           FROM candidate_steps cs
           JOIN approval.approval_requests r
             ON r.organization_id = :org AND r.id = cs.request_id AND r.status = 'pending'
@@ -590,6 +844,8 @@ async def list_inbox(
             approver_employee_id=row["approver_employee_id"],
             acting_for_employee_id=row["acting_for_employee_id"],
             reason=row["reason"],
+            predecessor_approver_employee_id=row["predecessor_approver_employee_id"],
+            due_at=row["due_at"],
         )
         for row in rows
     ]
@@ -599,8 +855,21 @@ async def list_inbox(
 # --------------------------------------------------------------------- delegation (slice 3)
 
 
+def _either_party(employee_id: uuid.UUID) -> ColumnElement[bool]:
+    """ "Is a party to this delegation, in either direction" — pattern 11's own `OR` across the
+    two employee columns, written once so the scope predicate and the `employee_id` filter can
+    never drift into two different readings of the same phrase."""
+    return (Delegation.delegator_employee_id == employee_id) | (
+        Delegation.delegate_employee_id == employee_id
+    )
+
+
 def delegations_stmt(
-    *, organization_id: uuid.UUID, caller_id: uuid.UUID | None, is_org: bool
+    *,
+    organization_id: uuid.UUID,
+    caller_id: uuid.UUID | None,
+    is_org: bool,
+    employee_id: uuid.UUID | None = None,
 ) -> Select[Any]:
     """`GET /delegations` (ADR-0006 §11): ORG reaches every delegation in the organization;
     anything below ORG reads as OWN — `delegation.write` never gains TEAM or LOCATION (the
@@ -615,18 +884,38 @@ def delegations_stmt(
     A caller with no `subject_ref` below ORG has nothing to match either column against —
     matches nothing rather than rendering `col == NULL`, the same "nothing to own with" guard
     `ScopeContext.apply()`'s own OWN branch uses.
+
+    `employee_id` is the ORG screen's "filtered to a person" state (screens §4.E), and it is the
+    *same* "either party" predicate applied to a **different** person: rows where the named
+    employee is the delegator or the delegate. It is layered **on top of** the scope predicate
+    with `AND`, never in place of it — exactly the way `requests_stmt`'s `mine_only` layers on
+    top of `ctx.apply()`. Below ORG that makes the result the intersection of "rows I am a party
+    to" and "rows they are a party to", which is a subset of what the caller's unfiltered page
+    already returns; there is nothing for the route to refuse (see `list_delegations`' own
+    docstring for the full reasoning, and why this differs from `POST /delegations`'
+    `delegator_employee_id`, which *is* refused at the route).
+
+    Because the count `platform_core.pagination.paginate` takes is derived from this same
+    statement, `total` is the filtered total — which is the entire point of the parameter. The
+    UI previously filtered an already-loaded page client-side while still rendering the server's
+    unfiltered `total`, so the paging footer disagreed with the rows on screen.
+
+    No new index: measured at 94,560 delegations across 281 organizations (one at 24,000) and the
+    filtered arm is served by the pattern-11a pair `ix_delegations_org_delegator_starts` /
+    `ix_delegations_org_delegate_starts` as a planner `BitmapOr` — the same access path the OWN
+    arm already uses, because it is literally the same predicate shape. See
+    `tests/test_delegations_plan.py` for the pinned plans.
     """
     stmt = select(Delegation).where(
         Delegation.organization_id == organization_id, Delegation.deleted_at.is_(None)
     )
     if not is_org:
-        if caller_id is None:
-            stmt = stmt.where(sa_false())
-        else:
-            stmt = stmt.where(
-                (Delegation.delegator_employee_id == caller_id)
-                | (Delegation.delegate_employee_id == caller_id)
-            )
+        scope_predicate: ColumnElement[bool] = (
+            sa_false() if caller_id is None else _either_party(caller_id)
+        )
+        stmt = stmt.where(scope_predicate)
+    if employee_id is not None:
+        stmt = stmt.where(_either_party(employee_id))
     # Pattern 11 (data model §2): "by starts_at DESC" — most recent first, matching the create
     # response's own row landing at the top of the "Active"/"Scheduled" section it lands in
     # (screens §4.E's "the new row appears first").
@@ -811,3 +1100,99 @@ async def search_delegate_candidates(
         )
         for row in rows
     ]
+
+
+# --------------------------------------------------------------------- the SLA sweep (slice 4)
+
+#: ADR-0006 §8, data model §2 patterns 3/3b: every open, assigned, overdue step, capped so one
+#: tenant cannot occupy a whole tick.
+#:
+#: Runs on the sweep's BYPASSRLS session (`get_outbox_sessionmaker`, `app/cron.py`) — exactly the
+#: shape `subscription/app/cron.py`'s `due_dunning_cycles` and the outbox relay itself document
+#: (ADR-0002's split, applied a third time): it exists to discover *which* organizations have
+#: overdue steps, so there is no tenant to bind while asking, and as the NOBYPASSRLS app role it
+#: would return zero rows, log nothing, and every overdue step in the platform would sit
+#: unescalated forever. Nothing here decides or writes anything; every action happens back on the
+#: app role inside `session_scope(organization_id=...)`, under the tenant policy.
+#:
+#: **The cap is applied per organization, before any platform-wide ordering or limit is taken** —
+#: this is the property a slice-then-cap shape (take the 500 oldest steps platform-wide, *then*
+#: cap each tenant to 20 of whatever it already got) does not actually deliver: a single tenant
+#: with 500+ overdue steps fills the initial slice entirely on its own, so every other tenant's
+#: `row_number()` never gets a chance to run at all — the sweep starves every other organization
+#: silently, still logging a healthy `considered=500`. Two stages instead:
+#:   1. `due_organizations` — `SELECT DISTINCT organization_id` over every step matching the
+#:      predicate, so *which* tenants have overdue work is known before any tenant's rows are
+#:      fetched, ordering or limit applied.
+#:   2. `CROSS JOIN LATERAL`, once per organization found above: the `per_org_cap` (default 20)
+#:      oldest overdue steps *for that organization alone*, `due_at`-ordered — evaluated
+#:      independently per tenant, so a tenant with 500 overdue steps and a tenant with one each
+#:      contribute their own oldest rows, not a shared, globally-ordered pool one of them can fill.
+#:      The outer `SELECT` then takes the tick's own action budget of `limit` (default 100) off the
+#:      combined, `due_at`-ordered result — so the oldest overdue steps platform-wide are still
+#:      acted on first, subject to no tenant supplying more than its own per-organization share of
+#:      *that* ordering, not of a pool a single large tenant could already have exhausted.
+#:
+#: Served by `ix_approval_steps_sla_due_by_org` — `(organization_id, due_at)` with the same partial
+#: predicate — which is what makes both stages index-only: `ix_approval_steps_sla_due`'s `due_at`
+#: alone (no leading `organization_id`) cannot serve the per-organization `LATERAL` without a
+#: re-scan per tenant, and cannot serve `DISTINCT organization_id` as an index-only unique scan
+#: either. See the migration that adds it (`app/selectors.py`'s docstring is not the place plans
+#: are measured — the migration's own docstring carries the before/after `EXPLAIN`).
+_DUE_ESCALATION_STEPS_SQL = text(
+    """
+    WITH due_organizations AS (
+        SELECT DISTINCT organization_id
+          FROM approval.approval_steps
+         WHERE outcome = 'open' AND approver_employee_id IS NOT NULL AND due_at <= :now
+    )
+    SELECT top.organization_id AS organization_id, top.request_id AS request_id
+      FROM due_organizations o
+      CROSS JOIN LATERAL (
+              SELECT s.organization_id, s.request_id, s.due_at
+                FROM approval.approval_steps s
+               WHERE s.organization_id = o.organization_id
+                 AND s.outcome = 'open'
+                 AND s.approver_employee_id IS NOT NULL
+                 AND s.due_at <= :now
+               ORDER BY s.due_at
+               LIMIT :per_org_cap
+           ) AS top
+     ORDER BY top.due_at
+     LIMIT :limit
+    """
+)
+
+
+async def due_escalation_steps(
+    session: AsyncSession,
+    *,
+    now: datetime,
+    per_org_cap: int = 20,
+    limit: int = 100,
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """`(organization_id, request_id)` for every step the sweep should act on this tick. See
+    `_DUE_ESCALATION_STEPS_SQL` for the query shape and the fairness reasoning.
+
+    `now` is read once by the caller, in the discovery transaction, and passed in — the sweep's
+    "one clock, and it is the database's" (ADR-0006 §8): discovery evaluates `due_at <= now()` in
+    the database, and each action transaction (`app/services.escalate_step`) reads its own,
+    deliberately later `now()` when it re-checks the step under the lock.
+
+    No `step_id` in the result: `app/cron.py`'s `_escalate` calls `app/services.escalate_step`
+    with only `(organization_id, request_id)` — it re-finds the request's own open step itself,
+    under the lock, rather than trusting discovery's now-possibly-stale id (the same "re-check
+    under the lock" discipline `escalate_step`'s own docstring describes for `due_at`) — so a
+    discovered-but-unused id would be dead weight on every row this query returns.
+    """
+    rows = (
+        (
+            await session.execute(
+                _DUE_ESCALATION_STEPS_SQL,
+                {"now": now, "per_org_cap": per_org_cap, "limit": limit},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return [(row["organization_id"], row["request_id"]) for row in rows]

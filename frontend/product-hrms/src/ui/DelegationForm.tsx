@@ -4,7 +4,6 @@ import { ApiError } from "@opsgrids/client";
 import {
   Button,
   Card,
-  Combobox,
   DateRangeField,
   InlineAlert,
   SectionHeader,
@@ -16,18 +15,14 @@ import {
 } from "@opsgrids/ui";
 import type { ComboboxOption } from "@opsgrids/ui";
 
-import { createDelegation, listDelegateCandidates } from "@/api/approvals";
+import { createDelegation } from "@/api/approvals";
 import { getEmployee } from "@/api/client";
-import type { DelegateCandidateOut, DelegationCreateOut } from "@/api/types";
+import type { DelegationCreateOut } from "@/api/types";
 import { delegationConsequenceNote } from "@/lib/delegationCopy";
 import { fieldError } from "@/lib/problem";
 import type { ZoneDirectory } from "@/lib/zone";
 import { delegationZoneNote } from "@/lib/zone";
-
-const DELEGATE_COPY = {
-  idle: "Start typing a colleague's name.",
-  error: "Couldn't load colleagues.",
-};
+import { DelegatePicker } from "@/ui/DelegatePicker";
 
 function pad(n: number): string {
   return n.toString().padStart(2, "0");
@@ -48,10 +43,6 @@ function nextHourBoundary(zone: string, now: Date = new Date()): string {
   const rolled = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h) + 1, 0, 0));
   const nextWall = `${rolled.getUTCFullYear()}-${pad(rolled.getUTCMonth() + 1)}-${pad(rolled.getUTCDate())}T${pad(rolled.getUTCHours())}:${pad(rolled.getUTCMinutes())}`;
   return wallClockToInstant(nextWall, zone);
-}
-
-function toOption(c: DelegateCandidateOut): ComboboxOption {
-  return { id: c.employee_id, label: c.display_name, sublabel: c.employee_no };
 }
 
 interface DelegationFormProps {
@@ -231,25 +222,19 @@ export function DelegationForm({
       <SectionHeader title="Set up a delegation" />
 
       {orgMode ? (
-        <Combobox
+        <DelegatePicker
           label="Set this up for"
           value={delegatingFor}
           onChange={setDelegatingFor}
-          loadOptions={async (q, signal) => (await listDelegateCandidates(q, signal)).map(toOption)}
           helper="Leave this blank to set up your own delegation."
-          placeholder="Search for a colleague…"
-          copy={DELEGATE_COPY}
         />
       ) : null}
 
-      <Combobox
+      <DelegatePicker
         label="Delegate"
         value={delegate}
         onChange={setDelegate}
-        loadOptions={async (q, signal) => (await listDelegateCandidates(q, signal)).map(toOption)}
         helper="They'll be able to decide anything waiting on you while the delegation runs."
-        placeholder="Search for a colleague…"
-        copy={DELEGATE_COPY}
         {...(delegateError !== undefined ? { error: delegateError } : {})}
       />
 

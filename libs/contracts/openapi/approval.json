@@ -510,6 +510,18 @@
       "InboxItemOut": {
         "description": "One `GET /inbox` row (ADR-0006 \u00a711, screens \u00a74.A). `request_note` and the requester's\n`employee_no` both travel here \u2014 the inbox is where triage happens and where confusing two\npeople has consequences (screens \u00a72.2, \u00a72.9).",
         "properties": {
+          "due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
           "from_name": {
             "anyOf": [
               {
@@ -611,7 +623,8 @@
           "requester_employee_no",
           "requester_location_code",
           "inbox_reason",
-          "from_name"
+          "from_name",
+          "due_at"
         ],
         "title": "InboxItemOut",
         "type": "object"
@@ -722,6 +735,52 @@
           "pages"
         ],
         "title": "Page[RequestListItemOut]",
+        "type": "object"
+      },
+      "PolicyOut": {
+        "description": "One `GET /policies` row, and what `PUT /policies/{request_type}` echoes back (ADR-0006\n\u00a710, \u00a711, screens \u00a74.G). `request_type` travels on every row \u2014 the response is a bare array,\nnot a mapping keyed by it \u2014 so the client never has to parse the vocabulary out of a dict key.\n\nNever a fabricated database row: a request type with nothing written for it still renders\nhere, at `app/domain.DEFAULT_SLA_MINUTES`/`DEFAULT_POLICY_ENABLED` \u2014 the same reading\n`app/services._sla_due_at` already gives a missing row when a step opens, so a read and a\nrouting decision can never disagree about what \"unconfigured\" means.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "request_type": {
+            "title": "Request Type",
+            "type": "string"
+          },
+          "sla_minutes": {
+            "title": "Sla Minutes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "request_type",
+          "sla_minutes",
+          "enabled"
+        ],
+        "title": "PolicyOut",
+        "type": "object"
+      },
+      "PolicyUpdateIn": {
+        "additionalProperties": false,
+        "description": "`PUT /policies/{request_type}` (ADR-0006 \u00a78, \u00a710, screens \u00a74.G). The bounds mirror\n`ApprovalPolicy`'s own CHECK exactly (`ck_approval_policies_sla_minutes_range`: 15 minutes to\n365 days) so a sub-floor or over-ceiling value is a field-level 422 at this boundary \u2014\n`platform_core.errors.ValidationProblem`, naming `sla_minutes` \u2014 rather than an opaque 409 off\nthe database constraint. `enabled` has no default: the settings screen's switch is always\nrendered from a real value (a written row's own, or the honest default), so there is nothing\nfor a client to omit here that it has not already been shown.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "sla_minutes": {
+            "maximum": 525600.0,
+            "minimum": 15.0,
+            "title": "Sla Minutes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sla_minutes",
+          "enabled"
+        ],
+        "title": "PolicyUpdateIn",
         "type": "object"
       },
       "RequestDetailOut": {
@@ -1443,9 +1502,28 @@
     },
     "/api/v1/approvals/delegations": {
       "get": {
-        "description": "`GET /delegations` (ADR-0006 \u00a711): ORG reaches every delegation in the organization;\nbelow ORG (read as OWN \u2014 `delegation.write` never gains TEAM or LOCATION) reaches a row the\ncaller is either party to, delegator or delegate.",
+        "description": "`GET /delegations` (ADR-0006 \u00a711): ORG reaches every delegation in the organization;\nbelow ORG (read as OWN \u2014 `delegation.write` never gains TEAM or LOCATION) reaches a row the\ncaller is either party to, delegator or delegate.\n\n`?employee_id=` is the ORG screen's \"filtered to a person\" state (screens \u00a74.E): rows where\nthat employee is the delegator **or** the delegate. It narrows, it never widens \u2014 the scope\npredicate is still applied first and this `AND`s with it (`selectors.delegations_stmt`), the\nsame way `?requester=me` layers on top of scope on `GET /requests`. It exists because the\nshipped UI had no server-side filter and so filtered an already-loaded page client-side while\nstill rendering the server's unfiltered `total`; with this the count and the rows agree.\n\n**Not refused below ORG, deliberately** \u2014 unlike `POST /delegations`' `delegator_employee_id`,\nwhich is. The two are different questions. A below-ORG caller's scope predicate is already\n\"delegator = me OR delegate = me\", so `AND`ing \"delegator = them OR delegate = them\" can only\nreturn rows the caller is *also* a party to \u2014 rows their own unfiltered first page already\ncontains, with both employee ids on them in plain sight. The count follows the same statement,\nso `total` cannot leak a row either. And a non-matching, non-existent or cross-tenant id is an\nempty page with `total = 0`, identical to a real employee this caller shares no delegation\nwith \u2014 no existence oracle, which is exactly what `POST`'s refusal exists to prevent: there,\nnaming a foreign delegator reaches `create_delegation`'s overlap check, whose 409 names the\nconflicting window and so would confirm that a stranger holds a delegation and when. Nothing\non this path reads a row the scope predicate did not already admit.",
         "operationId": "list_delegations_api_v1_approvals_delegations_get",
         "parameters": [
+          {
+            "description": "Only delegations this employee is a party to, in either direction",
+            "in": "query",
+            "name": "employee_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only delegations this employee is a party to, in either direction",
+              "title": "Employee Id"
+            }
+          },
           {
             "in": "query",
             "name": "page",
@@ -1655,6 +1733,86 @@
           }
         },
         "summary": "What this service is",
+        "tags": [
+          "approval"
+        ]
+      }
+    },
+    "/api/v1/approvals/policies": {
+      "get": {
+        "description": "`GET /policies` (ADR-0006 \u00a710, \u00a711): read-only, org-wide, and \u2014 deliberately \u2014 the one\nread endpoint whose scope is not consulted at all. An SLA policy is organization\nconfiguration, not anybody's row, so a caller holding `request.read` at **any** scope\n(including plain `OWN`, which every member holds by default) sees exactly what an ORG reader\ndoes: the settings screen's own read-only rendering for someone without `policy.write:ORG`\ndepends on this (screens \u00a74.G's \"No permission\" state \u2014 \"you can still see the current\nsettings below\").\n\nIterates `services.KNOWN_REQUEST_TYPES` rather than only the request types a `PUT` has ever\nwritten, so a brand-new organization that has never opened a regularization request still\nsees the one type this service knows about, honestly at its defaults\n(`app/selectors.list_policies`; screens \u00a74.G's \"Empty\" state: \"Using the default settings\").",
+        "operationId": "list_policies_api_v1_approvals_policies_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PolicyOut"
+                  },
+                  "title": "Response List Policies Api V1 Approvals Policies Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "SLA policy per request type",
+        "tags": [
+          "approval"
+        ]
+      }
+    },
+    "/api/v1/approvals/policies/{request_type}": {
+      "put": {
+        "description": "`PUT /policies/{request_type}` (ADR-0006 \u00a78, \u00a710, \u00a711), floored at `policy.write:ORG`.\n\n`app/schemas.PolicyUpdateIn`'s own bounds mirror `ApprovalPolicy`'s CHECK exactly, so a\nsub-floor or over-ceiling `sla_minutes` never reaches `app/services.update_policy` at all \u2014\nit is a field-level 422 at the boundary (`errors: [{\"field\": \"sla_minutes\", ...}]`), not the\nconstraint's generic, field-less 409. `app/services.update_policy` writes only\n`sla_minutes`/`enabled`: **disabling turns off escalation for this request type, and nothing\nelse** (\u00a710 \u2014 \"It never turns off approval\") \u2014 this endpoint has no path to a request's own\nstatus, by construction, not by convention.",
+        "operationId": "put_policy_api_v1_approvals_policies__request_type__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_type",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$",
+              "title": "Request Type",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyUpdateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set the SLA policy for one request type",
         "tags": [
           "approval"
         ]

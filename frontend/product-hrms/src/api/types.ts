@@ -200,6 +200,16 @@ export interface InboxItemOut {
   requester_location_code: string | null;
   inbox_reason: InboxReason;
   from_name: string | null;
+  /**
+   * The deadline of the step this row matched through — the server's own value, never recomputed
+   * or defaulted here (§2.11: "the client never computes a due time"). `null` is a modelled state,
+   * not missing data: an unassigned step has no approver to hold a deadline
+   * (`ck_approval_steps_unassigned_has_no_due`), a request type with escalation switched off never
+   * gets one, and a step opened before the SLA clock was armed keeps `null` forever. On an
+   * `escalated_to_me` / `escalated_away` row this is the *successor* step's deadline — the one in
+   * front of the reader now — never the closed predecessor's.
+   */
+  due_at: string | null;
 }
 
 /** Mirrors `RequestListItemOut` — one `GET /approvals/requests` row. */
@@ -235,7 +245,7 @@ export interface StepOut {
   acting_for_name: string | null;
   opened_at: string;
   closed_at: string | null;
-  /** Always `null` in slices 2–3 (§2.11) — no SLA clock exists yet. Never computed client-side. */
+  /** This step's own deadline, or `null` where there is none (§2.11). Never computed client-side. */
   due_at: string | null;
 }
 
@@ -347,6 +357,27 @@ export interface DelegationCreateIn {
   delegate_employee_id: string;
   starts_at: string;
   ends_at: string;
+}
+
+/* ------------------------------------------------------------------ policy administration (slice 4) */
+
+/** Mirrors `PolicyOut` — one `GET /policies` row (`services/approval/app/schemas.py`). A request
+ *  type with nothing configured still appears here, at the server's own defaults
+ *  (`domain.DEFAULT_SLA_MINUTES` = 1440, `DEFAULT_POLICY_ENABLED` = true) — never a row the
+ *  client fabricates itself. Readable by anyone who can read requests, at any scope: the one read
+ *  endpoint whose scope is not consulted at all (§5 row 15). */
+export interface PolicyOut {
+  request_type: string;
+  sla_minutes: number;
+  enabled: boolean;
+}
+
+/** Mirrors `PolicyUpdateIn` — `PUT /policies/{request_type}`, floored at `policy.write:ORG`.
+ *  Bounds mirror the database CHECK exactly (15 minutes to 365 days); a value outside them is a
+ *  field-level 422 on `sla_minutes`, an unknown `request_type` a field-level 422 on that field. */
+export interface PolicyUpdateIn {
+  sla_minutes: number;
+  enabled: boolean;
 }
 
 /* --------------------------- dashboard rollups --------------------------- */

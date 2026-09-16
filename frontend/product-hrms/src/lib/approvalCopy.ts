@@ -4,6 +4,7 @@
  * string is quoted from the spec.
  */
 
+import { formatDuration, formatRelative } from "@opsgrids/ui";
 import type { TagTone } from "@opsgrids/ui";
 
 import type {
@@ -236,4 +237,89 @@ export function buildHistoryEntries(
   }
 
   return entries;
+}
+
+/**
+ * §4.B's "Waiting on" due line and §4.A's Due column (slice 4, §2.11): the client never computes
+ * a due time — this only formats the `due_at` the server sent, and renders the literal words "No
+ * due time" when it sent none. `null` is not "unknown, show a placeholder"; it is "there is no
+ * deadline", and stays that way forever for a step opened before slice 4 or one whose request
+ * type has escalation switched off.
+ */
+export type DueKind = "none" | "due" | "overdue";
+
+export interface DueLine {
+  kind: DueKind;
+  label: string;
+  tone: TagTone;
+}
+
+/** The one place `due_at` is compared to the clock. Comparing is allowed; deriving is not — a
+ *  value that is absent or unparseable is "there is no deadline", never "assume one". */
+function dueKind(dueAt: string | null, now: Date): { kind: DueKind; diff: number } {
+  if (!dueAt) return { kind: "none", diff: 0 };
+  const dueMs = new Date(dueAt).getTime();
+  if (Number.isNaN(dueMs)) return { kind: "none", diff: 0 };
+  const diff = dueMs - now.getTime();
+  return { kind: diff <= 0 ? "overdue" : "due", diff };
+}
+
+/** §4.B — the detail's "Waiting on" card, where the absolute instant is body text, not a tooltip. */
+export function dueLineCopy(
+  dueAt: string | null,
+  formatAbsolute: (iso: string) => string,
+  now: Date = new Date(),
+): DueLine {
+  const { kind, diff } = dueKind(dueAt, now);
+  if (kind === "none" || !dueAt) return { kind: "none", label: "No due time", tone: "neutral" };
+  if (kind === "overdue") {
+    return {
+      kind: "overdue",
+      label: `Overdue by ${formatDuration(-diff)}`,
+      tone: "negative",
+    };
+  }
+  return {
+    kind: "due",
+    label: `Due ${formatAbsolute(dueAt)} · ${formatRelative(dueAt, now)}`,
+    tone: "neutral",
+  };
+}
+
+/**
+ * §4.A's Due **column**, whose primary read is a duration — `Due in 6 hours` / `Overdue by 6
+ * hours` / `No due time` — with the absolute instant carried in the cell's `title` by the screen,
+ * which is the only thing that knows the requester's location code. Same rule as the line above:
+ * this formats the server's `due_at` and computes nothing when there is none.
+ */
+export function dueCellCopy(
+  dueAt: string | null,
+  now: Date = new Date(),
+): { kind: DueKind; label: string } {
+  const { kind, diff } = dueKind(dueAt, now);
+  if (kind === "none" || !dueAt) return { kind: "none", label: "No due time" };
+  if (kind === "overdue") return { kind: "overdue", label: `Overdue by ${formatDuration(-diff)}` };
+  return { kind: "due", label: `Due ${formatRelative(dueAt, now)}` };
+}
+
+/** §4.A's `Overdue` filter — `due_at < now`, read off the server's value only. A row with no
+ *  deadline can never be overdue, which is why this is not the negation of "due". */
+export function isOverdue(dueAt: string | null, now: Date = new Date()): boolean {
+  return dueKind(dueAt, now).kind === "overdue";
+}
+
+/** §4.G — the plain, user-facing name of each known `request_type` (§1.1: "the word 'request
+ *  type' is shown once, on the settings screen, as the plain name"). Today there is exactly one
+ *  (`services.KNOWN_REQUEST_TYPES`); an unrecognised type falls back to itself rather than
+ *  hiding the card, so a future request type still renders a settings card before this map is
+ *  updated for it. */
+const REQUEST_TYPE_LABELS: Record<string, { title: string; subtitle: string }> = {
+  "hrms.time.regularization": {
+    title: "Attendance correction",
+    subtitle: "Raised when an employee asks to fix their own attendance.",
+  },
+};
+
+export function requestTypeCopy(requestType: string): { title: string; subtitle: string } {
+  return REQUEST_TYPE_LABELS[requestType] ?? { title: requestType, subtitle: "" };
 }
