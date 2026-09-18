@@ -12,10 +12,10 @@
 
 import { apiRequest } from "@opsgrids/client";
 
-import { adoptTheme as forkTheme } from "@/theme/store";
+import { adoptTheme as forkTheme, resolveMode } from "@/theme/store";
 import type { StoreDoc, Theme } from "@/theme/schema";
-import { depot, suggestedBrand, themeByKey, THEMES } from "@/theme/themes";
-import { CATEGORY_LIST, PRODUCTS } from "./fixtures";
+import { quickcart, suggestedBrand, themeByKey, THEMES } from "@/theme/themes";
+import { CATEGORY_LIST, PRODUCTS, RETAIL_CATEGORY_LIST, RETAIL_PRODUCTS } from "./fixtures";
 import type { Category, Page, Product, StoreResponse } from "./types";
 
 /** Default source. Fixtures unless `VITE_USE_FIXTURES=false` pins the app to the live gateway.
@@ -54,8 +54,12 @@ export async function listThemes(): Promise<Theme[]> {
  * Fixture mode starts with a theme already adopted so the buyer-facing view is reachable without
  * a click; "Remove this store" on the gallery clears it back to `null`, which is the state a
  * merchant who has just activated the product is genuinely in.
+ *
+ * The pre-adopted theme is `quickcart`, paired with *its own* suggested brand. `adoptTheme` keeps
+ * whatever brand the store already has, which is right for a real merchant re-theming and wrong
+ * for a seed — forking here rather than calling `adoptTheme` is what keeps both true.
  */
-let currentStore: StoreDoc | null = forkTheme(depot, suggestedBrand(depot.key));
+let currentStore: StoreDoc | null = forkTheme(quickcart, suggestedBrand(quickcart.key));
 
 export async function getStore(): Promise<StoreResponse> {
   if (USE_FIXTURES) return settle(currentStore);
@@ -106,13 +110,34 @@ export async function removeStore(): Promise<null> {
 
 /* ------------------------------- catalogue -------------------------------- */
 
+/**
+ * Which fixture catalogue the adopted store should see.
+ *
+ * **Fixture-only.** A real storefront service returns the merchant's own catalogue and has no
+ * notion of a "retail slice" — a grocer's stock is a grocer's stock whatever theme they picked.
+ * This exists because one shared fixture catalogue would put a quick-commerce theme in front of
+ * `FST-HX-M12 Hex bolt M12 × 60` under a "27% OFF" flag, which is not a demo anyone can defend.
+ *
+ * With no store adopted the merchant is on the gallery, where the trade catalogue is the safe
+ * default: `resolveMode` narrows anything unrecognised to trade for the same reason.
+ */
+function fixtureSlice(): { products: Product[]; categories: Category[] } {
+  const retail = currentStore !== null && resolveMode(currentStore) === "retail";
+  return retail
+    ? { products: RETAIL_PRODUCTS, categories: RETAIL_CATEGORY_LIST }
+    : { products: PRODUCTS, categories: CATEGORY_LIST };
+}
+
 export async function listProducts(): Promise<Page<Product>> {
-  if (USE_FIXTURES) return settle({ items: PRODUCTS, total: PRODUCTS.length });
+  if (USE_FIXTURES) {
+    const { products } = fixtureSlice();
+    return settle({ items: products, total: products.length });
+  }
   return apiRequest<Page<Product>>(`/storefront/products?size=${FULL_PAGE}`);
 }
 
 export async function listCategories(): Promise<Category[]> {
-  if (USE_FIXTURES) return settle(CATEGORY_LIST);
+  if (USE_FIXTURES) return settle(fixtureSlice().categories);
   return apiRequest<Category[]>(`/storefront/categories`);
 }
 

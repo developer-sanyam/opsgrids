@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Pack of biscuits">
+  <rect width="400" height="300" fill="#F3EEE2"/>
+  <rect x="104" y="112" width="192" height="106" rx="10" fill="#1F4E9C"/>
+  <rect x="104" y="112" width="192" height="30" fill="#163A76"/>
+  <rect x="126" y="156" width="148" height="42" rx="6" fill="#F6E8CB"/>
+  <circle cx="166" cy="177" r="16" fill="#C08A3E"/>
+  <circle cx="200" cy="177" r="16" fill="#AE7830"/>
+  <circle cx="234" cy="177" r="16" fill="#C08A3E"/>
+  <rect x="140" y="222" width="120" height="10" rx="5" fill="#C9A227"/>
+</svg>

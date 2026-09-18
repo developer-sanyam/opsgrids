@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Tea, coffee and cold drinks">
+  <rect width="400" height="300" fill="#DCEAE1"/>
+  <rect y="236" width="400" height="64" fill="#C2DACB"/>
+  <path d="M92 158h84v50a26 26 0 0 1-26 26h-32a26 26 0 0 1-26-26z" fill="#FFFFFF"/>
+  <path d="M176 172h18a18 18 0 0 1 0 36h-18z" fill="#FFFFFF"/>
+  <path d="M100 166h68v26h-68z" fill="#B5783C"/>
+  <path d="M120 128c0-14 16-14 16-28M148 128c0-14 16-14 16-28" stroke="#9BBCA9" stroke-width="7" fill="none" stroke-linecap="round"/>
+  <path d="M232 236V128l10-14V92h44v22l10 14v108z" fill="#2E6B4A"/>
+  <rect x="244" y="80" width="40" height="14" rx="4" fill="#1F4A33"/>
+  <rect x="232" y="152" width="64" height="36" fill="#EBF3EE"/>
+  <rect x="320" y="120" width="52" height="116" rx="8" fill="#C73C3C"/>
+  <rect x="320" y="158" width="52" height="34" fill="#F4E3C3"/>
+  <rect x="332" y="104" width="28" height="18" rx="4" fill="#8E2626"/>
+</svg>

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Packet of chips">
+  <rect width="400" height="300" fill="#FDF2E0"/>
+  <path d="M110 244 126 88h148l16 156z" fill="#1E7A46"/>
+  <path d="M118 72h164l-8 18H126z" fill="#145633"/>
+  <path d="M112 244h176l-6 18H118z" fill="#145633"/>
+  <rect x="146" y="132" width="108" height="46" rx="8" fill="#FBEAC4"/>
+  <path d="M170 168c0-16 12-26 30-26s30 10 30 26z" fill="#E8A43A"/>
+  <rect x="158" y="196" width="84" height="10" rx="5" fill="#F2C94C"/>
+</svg>

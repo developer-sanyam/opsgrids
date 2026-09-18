@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Lighting and décor">
+  <rect width="400" height="300" fill="#F3EADA"/>
+  <rect y="252" width="400" height="48" fill="#E0D2B9"/>
+  <path d="M132 176h136l-30-70H162z" fill="#2E2620"/>
+  <path d="M132 176h136l-16 16H148z" fill="#C9A227"/>
+  <rect x="196" y="28" width="8" height="78" fill="#2E2620"/>
+  <path d="M152 192h96l-48 62z" fill="#F6E4B4" opacity="0.75"/>
+  <circle cx="200" cy="186" r="12" fill="#F7DE9A"/>
+  <path d="M296 252v-52h44v52z" fill="#3C332A"/>
+  <path d="M292 200h52l-12-40h-28z" fill="#C9A227"/>
+  <rect x="312" y="150" width="12" height="14" fill="#3C332A"/>
+  <circle cx="82" cy="216" r="26" fill="#8C7A5B"/>
+  <rect x="74" y="164" width="16" height="54" fill="#3C332A"/>
+</svg>

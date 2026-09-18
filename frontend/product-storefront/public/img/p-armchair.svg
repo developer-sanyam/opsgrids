@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Upholstered armchair">
+  <rect width="400" height="300" fill="#F0E8DC"/>
+  <rect y="252" width="400" height="48" fill="#DDD0BA"/>
+  <path d="M132 176V116a44 44 0 0 1 44-44h48a44 44 0 0 1 44 44v60z" fill="#8E3B3B"/>
+  <rect x="112" y="150" width="36" height="88" rx="14" fill="#6F2C2C"/>
+  <rect x="252" y="150" width="36" height="88" rx="14" fill="#6F2C2C"/>
+  <rect x="140" y="168" width="120" height="66" rx="12" fill="#A64B4B"/>
+  <rect x="160" y="112" width="80" height="54" rx="10" fill="#C9A227"/>
+  <path d="M136 238l-16 34M264 238l16 34" stroke="#3A2A1E" stroke-width="12" stroke-linecap="round"/>
+</svg>

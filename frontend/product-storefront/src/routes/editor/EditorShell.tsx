@@ -16,11 +16,13 @@ import {
 } from "@/editor/document";
 import type { Device, EditorAction, EditorState } from "@/editor/document";
 import { EditorToolbar } from "@/editor/EditorToolbar";
+import { PageManager } from "@/editor/PageManager";
 import { SectionPalette } from "@/editor/SectionPalette";
 import { findDef } from "@/editor/sectionLibrary";
 import { SettingsInspector } from "@/editor/SettingsInspector";
 import { ThemeTokenPanel } from "@/editor/ThemeTokenPanel";
-import type { SectionDef, StoreDoc } from "@/theme/schema";
+import type { NavPlacement, SectionDef, StoreDoc } from "@/theme/schema";
+import { resolveMode } from "@/theme/store";
 
 /**
  * The three panes, the toolbar above them, and the one place document edits are turned into
@@ -59,6 +61,7 @@ export function EditorShell({
   // control on a laptop. Kept here rather than in a store: two components read it, both children.
   const [paletteOpen, setPaletteOpen] = useState(true);
   const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [pagesOpen, setPagesOpen] = useState(false);
   const idSeq = useRef(0);
 
   const page = currentPage(state);
@@ -76,9 +79,9 @@ export function EditorShell({
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [dirty]);
 
-  function newId(): string {
+  function newId(prefix = "sec"): string {
     idSeq.current += 1;
-    return `sec-${Date.now().toString(36)}-${idSeq.current}`;
+    return `${prefix}-${Date.now().toString(36)}-${idSeq.current}`;
   }
 
   /** Dispatch, then say what happened — computed from the document the reducer will produce. */
@@ -113,6 +116,35 @@ export function EditorShell({
       },
     );
     setFocusRequest({ id, token: idSeq.current });
+  }
+
+  /*
+   * The page actions, and the sentence each one produces.
+   *
+   * Every one is computed from the document the reducer *will* produce, the same way a section
+   * move is: a route the merchant typed is normalised on the way in, so announcing what they typed
+   * would be announcing something that did not happen.
+   */
+  function pageName(next: EditorState, id: string): string | null {
+    return next.present.pages.find((candidate) => candidate.id === id)?.name ?? null;
+  }
+
+  function addPage(route: string, name: string) {
+    const id = newId("page");
+    run({ type: "add-page", id, route, name }, (next) => {
+      const page = next.present.pages.find((candidate) => candidate.id === id);
+      if (!page) return `That address is already taken. The page wasn't added.`;
+      return `${page.name} added at ${page.route}. You're editing it now.`;
+    });
+  }
+
+  function deletePage(id: string) {
+    const label = state.present.pages.find((candidate) => candidate.id === id)?.name ?? "Page";
+    run({ type: "delete-page", pageId: id }, (next) => {
+      const landed = pageName(next, next.pageId);
+      const where = landed === null ? "" : ` Now editing ${landed}.`;
+      return `${label} deleted. Undo brings it back.${where}`;
+    });
   }
 
   async function save() {
@@ -206,6 +238,7 @@ export function EditorShell({
               return name === undefined ? null : `Editing the ${name} page.`;
             })
           }
+          onManagePages={() => setPagesOpen(true)}
           onDevice={(device) =>
             run({ type: "set-device", device }, () => `Showing the ${DEVICE_WORDS[device]} width.`)
           }
@@ -241,6 +274,7 @@ export function EditorShell({
               library={library}
               tokens={state.present.tokens}
               brand={state.present.brand}
+              mode={resolveMode(state.present)}
               products={products}
               categories={categories}
               device={state.device}
@@ -339,9 +373,57 @@ export function EditorShell({
           </aside>
         </div>
       </Card>
+
+      <PageManager
+        open={pagesOpen}
+        onClose={() => setPagesOpen(false)}
+        pages={state.present.pages}
+        pageId={state.pageId}
+        canEdit={canEdit}
+        onSelect={(pageId) =>
+          run({ type: "set-page", pageId }, (next) => {
+            const name = pageName(next, pageId);
+            return name === null ? null : `Editing the ${name} page.`;
+          })
+        }
+        onAdd={addPage}
+        onRename={(pageId, name) =>
+          run({ type: "rename-page", pageId, name }, (next) => {
+            const renamed = pageName(next, pageId);
+            return renamed === null ? null : `Page renamed to ${renamed}.`;
+          })
+        }
+        onRoute={(pageId, route) =>
+          run({ type: "set-page-route", pageId, route }, (next) => {
+            const page = next.present.pages.find((candidate) => candidate.id === pageId);
+            return page === undefined ? null : `${page.name} now answers ${page.route}.`;
+          })
+        }
+        onNav={(pageId, nav) =>
+          run({ type: "set-page-nav", pageId, nav }, (next) => {
+            const name = pageName(next, pageId);
+            return name === null ? null : `${name} is ${NAV_WORDS[nav]}.`;
+          })
+        }
+        onReorder={(pageId, direction) =>
+          run({ type: "reorder-pages", pageId, direction }, (next) => {
+            const index = next.present.pages.findIndex((candidate) => candidate.id === pageId);
+            const page = next.present.pages[index];
+            if (index === -1 || !page) return null;
+            return `${page.name} is now ${index + 1} of ${next.present.pages.length} in the navigation order.`;
+          })
+        }
+        onDelete={deletePage}
+      />
     </div>
   );
 }
+
+const NAV_WORDS: Record<NavPlacement, string> = {
+  primary: "in the top navigation",
+  footer: "in the footer",
+  none: "not in the navigation — link to it from a section instead",
+};
 
 const DEVICE_WORDS: Record<Device, string> = {
   desktop: "desktop",

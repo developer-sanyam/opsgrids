@@ -25,6 +25,7 @@ interface EditorToolbarProps {
   paletteOpen: boolean;
   inspectorOpen: boolean;
   onPage: (pageId: string) => void;
+  onManagePages: () => void;
   onDevice: (device: Device) => void;
   onTogglePalette: () => void;
   onToggleInspector: () => void;
@@ -46,6 +47,7 @@ export function EditorToolbar({
   paletteOpen,
   inspectorOpen,
   onPage,
+  onManagePages,
   onDevice,
   onTogglePalette,
   onToggleInspector,
@@ -64,6 +66,15 @@ export function EditorToolbar({
           options={pages.map((page) => ({ value: page.id, label: `${page.name} — ${page.route}` }))}
           containerClassName="min-w-56"
         />
+
+        {/* The select switches; everything else a page can have done to it — added, renamed,
+            re-routed, reordered, placed in the navigation, deleted — is behind here. Splitting
+            them keeps the one-handed act of "show me the other page" a single control. */}
+        <div className="pb-1">
+          <Button variant="outline" size="sm" onClick={onManagePages}>
+            Pages
+          </Button>
+        </div>
 
         <div className="pb-1">
           <DeviceToggle value={device} onChange={onDevice} />

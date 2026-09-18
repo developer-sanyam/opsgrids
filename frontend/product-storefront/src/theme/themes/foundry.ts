@@ -15,6 +15,7 @@ export const foundry: Theme = {
   description:
     "Square, dense and unsentimental. A black hero band, safety red on one action, and proof above product.",
   industry: "Industrial & manufacturing",
+  mode: "trade",
   tokens: {
     colorBg: "#F2F3F5",
     colorSurface: "#FFFFFF",
@@ -48,6 +49,11 @@ export const foundry: Theme = {
         heading: "Shop by category",
         columns: 4,
         limit: 8,
+        /* Two across on a phone, not the library's four. These word-only tiles carry a category
+           name like "Bearings & Power Transmission"; four across at 390px leaves about eighty
+           pixels for it, which is legible but cramped. The photographic styles a retail theme uses
+           are what four across was widened for. */
+        mobileColumns: 2,
       }),
       sec("fdy-grid", "product-grid", { x: 0, y: 20, w: 12, h: 12 }, {
         heading: "Fast-moving lines",

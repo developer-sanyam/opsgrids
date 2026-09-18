@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Bunch of bananas">
+  <rect width="400" height="300" fill="#FAF6DF"/>
+  <path d="M104 132c4 66 48 108 116 108 42 0 70-16 84-40-30 12-58 14-84 6-40-12-68-42-80-90z" fill="#F2C51E"/>
+  <path d="M116 108c8 62 48 100 110 100 30 0 52-8 68-22-26 8-50 8-72 0-38-14-62-42-74-90z" fill="#F7D84E"/>
+  <path d="M100 118c-8-14-4-26 8-30 8 12 8 22 2 32z" fill="#7A5B18"/>
+  <path d="M296 214c14 4 22 12 20 22-14 0-22-6-26-16z" fill="#7A5B18"/>
+  <path d="M132 96c10 56 44 88 96 90" stroke="#D9A806" stroke-width="6" fill="none" stroke-linecap="round"/>
+</svg>

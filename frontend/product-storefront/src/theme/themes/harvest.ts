@@ -16,6 +16,7 @@ export const harvest: Theme = {
   description:
     "Open and reassuring. Pale green, wide corners, the biggest spacing step, and answers placed before the order form.",
   industry: "Agri inputs",
+  mode: "trade",
   tokens: {
     colorBg: "#F3F7F0",
     colorSurface: "#FFFFFF",
@@ -104,6 +105,8 @@ export const harvest: Theme = {
         heading: "By season need",
         columns: 2,
         limit: 4,
+        // Two across on a phone: these are word-only tiles carrying long category names.
+        mobileColumns: 2,
       }),
       sec("hrv-cat-grid", "product-grid", { x: 0, y: 13, w: 12, h: 12 }, {
         heading: "Everything in stock",

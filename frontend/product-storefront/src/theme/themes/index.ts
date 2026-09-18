@@ -7,14 +7,16 @@
  */
 
 import type { StoreDoc, Theme } from "../schema";
+import { atelier } from "./atelier";
 import { carton } from "./carton";
 import { circuit } from "./circuit";
 import { depot } from "./depot";
 import { foundry } from "./foundry";
 import { harvest } from "./harvest";
 import { quarry } from "./quarry";
+import { quickcart } from "./quickcart";
 
-export const THEMES: Theme[] = [foundry, depot, quarry, circuit, carton, harvest];
+export const THEMES: Theme[] = [quickcart, atelier, foundry, depot, quarry, circuit, carton, harvest];
 
 export function themeByKey(key: string): Theme | null {
   return THEMES.find((theme) => theme.key === key) ?? null;
@@ -58,6 +60,16 @@ export const SUGGESTED_BRAND: Record<string, StoreDoc["brand"]> = {
     tagline: "Nutrition and irrigation, district-wise",
     logoText: "YAI",
   },
+  quickcart: {
+    name: "QuickCart",
+    tagline: "Groceries at the door in 11 minutes",
+    logoText: "QC",
+  },
+  atelier: {
+    name: "Atelier Handicrafts",
+    tagline: "Hand-made furniture from Jodhpur since 1994",
+    logoText: "ATL",
+  },
 };
 
 export function suggestedBrand(themeKey: string): StoreDoc["brand"] {
@@ -70,4 +82,4 @@ export function suggestedBrand(themeKey: string): StoreDoc["brand"] {
   );
 }
 
-export { carton, circuit, depot, foundry, harvest, quarry };
+export { atelier, carton, circuit, depot, foundry, harvest, quarry, quickcart };

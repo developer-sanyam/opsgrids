@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Bar of chocolate">
+  <rect width="400" height="300" fill="#F2E9E0"/>
+  <rect x="82" y="118" width="236" height="88" rx="8" fill="#4B2A80"/>
+  <rect x="82" y="118" width="236" height="20" fill="#3A1F66"/>
+  <rect x="206" y="118" width="112" height="88" rx="8" fill="#5C3596"/>
+  <rect x="214" y="132" width="44" height="28" rx="4" fill="#6B4425"/>
+  <rect x="264" y="132" width="44" height="28" rx="4" fill="#5A3419"/>
+  <rect x="214" y="166" width="44" height="28" rx="4" fill="#5A3419"/>
+  <rect x="264" y="166" width="44" height="28" rx="4" fill="#6B4425"/>
+  <rect x="102" y="150" width="86" height="12" rx="6" fill="#F0C14B"/>
+  <rect x="102" y="172" width="58" height="8" rx="4" fill="#C7B6E0"/>
+</svg>

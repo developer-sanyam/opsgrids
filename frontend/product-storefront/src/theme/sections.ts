@@ -12,7 +12,10 @@
  * verbose, and it is what keeps one control per field in the editor with no nested-array UI.
  */
 
+import { BLEED_SETTING } from "./schema";
 import type { SectionDef, SettingField, SettingValue } from "./schema";
+import { CMS_SECTION_DEFS } from "./sections.cms";
+import { RETAIL_SECTION_DEFS } from "./sections.retail";
 import { PRODUCT_SOURCE_OPTIONS } from "./sources";
 
 const ALIGN_OPTIONS = [
@@ -32,6 +35,121 @@ const PRICE_NOTE_OPTIONS = [
   { value: "on-request", label: "Price on request" },
 ];
 
+/**
+ * How a band section arranges its picture and its words.
+ *
+ * `split` is the two-column arrangement every trade theme already ships, and it stays the default
+ * so adopting this field changes nothing. `overlay` is the photograph with the words on top of it.
+ */
+const BAND_LAYOUT_OPTIONS = [
+  { value: "split", label: "Side by side" },
+  { value: "overlay", label: "Words over the picture" },
+];
+
+/** What sits between an overlay band's photograph and its words. Ignored by `split`. */
+const OVERLAY_OPTIONS = [
+  { value: "none", label: "Nothing" },
+  { value: "scrim", label: "Even scrim" },
+  { value: "gradient", label: "Gradient from the foot" },
+];
+
+/** Which part of a cropped photograph survives the crop. */
+const IMAGE_FOCUS_OPTIONS = [
+  { value: "center", label: "Centre" },
+  { value: "top", label: "Top" },
+  { value: "bottom", label: "Bottom" },
+  { value: "left", label: "Left" },
+  { value: "right", label: "Right" },
+];
+
+/** `TONE_OPTIONS` plus the "paint no ground at all" case, which is what prose usually wants. */
+const PANEL_TONE_OPTIONS = [{ value: "none", label: "No ground" }, ...TONE_OPTIONS];
+
+/**
+ * How large a block of prose is set. These are the heading scale's own five steps, by name, and
+ * they must stay in step with `SIZES` in `RichText.tsx` — an option the renderer does not accept
+ * is a control that silently does nothing.
+ *
+ * "Display" moved up one: it now names the top step rather than `xl`, which is the step that makes
+ * a closing wordmark read as a wordmark. Only the label moved — `xl` keeps its stored value, so no
+ * store that already chose it changes.
+ */
+const TEXT_SIZE_OPTIONS = [
+  { value: "sm", label: "Small" },
+  { value: "md", label: "Medium" },
+  { value: "lg", label: "Large" },
+  { value: "xl", label: "Extra large" },
+  { value: "display", label: "Display" },
+];
+
+const CARD_STYLE_OPTIONS = [
+  { value: "detail", label: "With the spec line" },
+  { value: "compact", label: "Compact" },
+];
+
+/**
+ * The shape of a category tile's picture.
+ *
+ * Nothing wider than 16:9 is offered, on purpose. The bundled category art is drawn 4:3 with the
+ * subject centred and the tile covers its box, so a wider frame crops the top and the bottom off
+ * the silhouette — which is the only thing the drawing has.
+ */
+const TILE_ASPECT_OPTIONS = [
+  { value: "square", label: "Square" },
+  { value: "landscape", label: "Landscape (4:3)" },
+  { value: "wide", label: "Wide (16:9)" },
+];
+
+const CTA_PLACEMENT_OPTIONS = [
+  { value: "trailing", label: "Beside the heading" },
+  { value: "below", label: "Centred below the row" },
+];
+
+/**
+ * The one setting key the page layer reads back off an instance.
+ *
+ * Declared through a helper so every section that offers it spells `BLEED_SETTING` and never a
+ * retyped string — the whole reason that constant exists.
+ */
+function bleedField(): SettingField {
+  return {
+    key: BLEED_SETTING,
+    label: "Full width",
+    type: "toggle",
+    default: false,
+    help: "Span the page edge to edge instead of sitting in the content column.",
+  };
+}
+
+/**
+ * The card options every section that renders a `ProductCard` offers.
+ *
+ * One list, so the same control is spelled the same way in the grid and in the rail and a merchant
+ * cannot find two settings that look identical and behave differently. `showBadge` and `showEta`
+ * are permissions, not instructions: the card still requires a retail store *and* non-null data
+ * before either one paints.
+ */
+function cardOptionFields(): SettingField[] {
+  return [
+    { key: "cardStyle", label: "Card style", type: "select", options: CARD_STYLE_OPTIONS, default: "detail" },
+    {
+      key: "showBadge",
+      label: "Show the discount flag",
+      type: "toggle",
+      default: true,
+      help: "Retail stores only, and only where a published MRP is above the selling price.",
+    },
+    {
+      key: "showEta",
+      label: "Show the delivery time",
+      type: "toggle",
+      default: true,
+      help: "Retail stores only, and only where the line carries a delivery promise.",
+    },
+    { key: "showVariants", label: "Show the pack-size selector", type: "toggle", default: true },
+  ];
+}
+
 /** A `product-source` control, used by every commerce section. */
 function sourceField(help: string): SettingField {
   return {
@@ -44,7 +162,7 @@ function sourceField(help: string): SettingField {
   };
 }
 
-export const SECTION_DEFS: SectionDef[] = [
+const CORE_SECTION_DEFS: SectionDef[] = [
   {
     type: "hero",
     name: "Hero",
@@ -66,6 +184,31 @@ export const SECTION_DEFS: SectionDef[] = [
       { key: "image", label: "Image", type: "image", default: null, help: "Leave empty to use the theme's generated plate." },
       { key: "align", label: "Alignment", type: "select", options: ALIGN_OPTIONS, default: "left" },
       { key: "tone", label: "Tone", type: "select", options: TONE_OPTIONS, default: "contrast" },
+      { key: "layout", label: "Layout", type: "select", options: BAND_LAYOUT_OPTIONS, default: "split" },
+      {
+        key: "overlay",
+        label: "Overlay",
+        type: "select",
+        options: OVERLAY_OPTIONS,
+        default: "scrim",
+        help: "Words-over-the-picture only. With nothing between them, the heading is only as readable as the photograph under it.",
+      },
+      {
+        key: "imageFocus",
+        label: "Focal point",
+        type: "select",
+        options: IMAGE_FOCUS_OPTIONS,
+        default: "center",
+        help: "Which part of the picture survives the crop. Words-over-the-picture only.",
+      },
+      {
+        key: "minHeight",
+        label: "Minimum height",
+        type: "number",
+        default: 420,
+        help: "In pixels, 240 to 720. Words-over-the-picture only.",
+      },
+      bleedField(),
     ],
   },
   {
@@ -84,6 +227,16 @@ export const SECTION_DEFS: SectionDef[] = [
       },
       { key: "align", label: "Alignment", type: "select", options: ALIGN_OPTIONS, default: "left" },
       { key: "columns", label: "Text columns", type: "number", default: 1, help: "1 or 2." },
+      {
+        key: "size",
+        label: "Size",
+        type: "select",
+        options: TEXT_SIZE_OPTIONS,
+        default: "lg",
+        help: "Display sets the heading at the top of the theme's scale — a closing wordmark, not a paragraph.",
+      },
+      { key: "tone", label: "Ground", type: "select", options: PANEL_TONE_OPTIONS, default: "none" },
+      bleedField(),
     ],
   },
   {
@@ -114,6 +267,23 @@ export const SECTION_DEFS: SectionDef[] = [
       { key: "caption", label: "Caption", type: "text", default: "Bhiwandi distribution centre" },
       { key: "ctaLabel", label: "Button", type: "text", default: "" },
       { key: "ctaHref", label: "Button link", type: "text", default: "/store/catalogue" },
+      { key: "layout", label: "Layout", type: "select", options: BAND_LAYOUT_OPTIONS, default: "split" },
+      {
+        key: "overlay",
+        label: "Overlay",
+        type: "select",
+        options: OVERLAY_OPTIONS,
+        default: "scrim",
+        help: "Words-over-the-picture only.",
+      },
+      {
+        key: "tint",
+        label: "Ground tint",
+        type: "color",
+        default: null,
+        help: "Leave empty for no ground. A brand surface colour, not a link colour — the words on it stay the theme's text.",
+      },
+      bleedField(),
     ],
   },
   {
@@ -144,10 +314,18 @@ export const SECTION_DEFS: SectionDef[] = [
       sourceField("Which slice of the catalogue this grid draws from."),
       { key: "limit", label: "Maximum items", type: "number", default: 8 },
       { key: "columns", label: "Columns", type: "number", default: 4, help: "2, 3 or 4." },
+      {
+        key: "mobileColumns",
+        label: "Columns on a phone",
+        type: "number",
+        default: 2,
+        help: "1 to 4. Applies below the stacking width.",
+      },
       { key: "showCode", label: "Show product code", type: "toggle", default: true },
       { key: "showPrice", label: "Show price", type: "toggle", default: true },
       { key: "showStock", label: "Show stock and lead time", type: "toggle", default: true },
       { key: "priceNote", label: "Price basis", type: "select", options: PRICE_NOTE_OPTIONS, default: "exclusive" },
+      ...cardOptionFields(),
     ],
   },
   {
@@ -162,6 +340,22 @@ export const SECTION_DEFS: SectionDef[] = [
       { key: "showPrice", label: "Show price", type: "toggle", default: true },
       { key: "ctaLabel", label: "Trailing link", type: "text", default: "See all" },
       { key: "ctaHref", label: "Trailing link target", type: "text", default: "/store/catalogue" },
+      {
+        key: "ctaPlacement",
+        label: "Link placement",
+        type: "select",
+        options: CTA_PLACEMENT_OPTIONS,
+        default: "trailing",
+      },
+      {
+        key: "cardWidth",
+        label: "Card width",
+        type: "number",
+        default: 230,
+        help: "In pixels, 140 to 420. On a phone a card never takes more than about half the canvas, so part of the next one always shows and the row reads as scrollable.",
+      },
+      { key: "priceNote", label: "Price basis", type: "select", options: PRICE_NOTE_OPTIONS, default: "exclusive" },
+      ...cardOptionFields(),
     ],
   },
   {
@@ -187,8 +381,22 @@ export const SECTION_DEFS: SectionDef[] = [
     fields: [
       { key: "heading", label: "Heading", type: "text", default: "Shop by category" },
       { key: "limit", label: "Maximum tiles", type: "number", default: 6 },
-      { key: "columns", label: "Columns", type: "number", default: 3, help: "2, 3 or 4." },
+      { key: "columns", label: "Columns", type: "number", default: 3, help: "2 to 6." },
+      {
+        key: "mobileColumns",
+        label: "Columns on a phone",
+        type: "number",
+        default: 4,
+        help: "2 to 4. Applies below the stacking width — a phone shows a category grid, not a column of cards.",
+      },
       { key: "showCount", label: "Show line count", type: "toggle", default: true },
+      {
+        key: "showBlurb",
+        label: "Show the category description",
+        type: "toggle",
+        default: true,
+        help: "Dropped automatically once the tiles are too narrow to carry a sentence.",
+      },
       {
         key: "style",
         label: "Style",
@@ -196,8 +404,25 @@ export const SECTION_DEFS: SectionDef[] = [
         options: [
           { value: "tile", label: "Tiles" },
           { value: "list", label: "List" },
+          { value: "photo", label: "Photographs" },
+          { value: "compact", label: "Compact panels" },
         ],
         default: "tile",
+      },
+      {
+        key: "aspect",
+        label: "Picture shape",
+        type: "select",
+        options: TILE_ASPECT_OPTIONS,
+        default: "landscape",
+        help: "Photograph and compact-panel styles only.",
+      },
+      {
+        key: "tint",
+        label: "Tile tint",
+        type: "color",
+        default: null,
+        help: "Leave empty for the theme's card colour. A brand surface colour — the label on it stays the theme's text.",
       },
     ],
   },
@@ -307,6 +532,13 @@ export const SECTION_DEFS: SectionDef[] = [
       { key: "showBrand", label: "Show the brand line", type: "toggle", default: true },
     ],
   },
+];
+
+/** The whole library: the original blocks, the retail four, then the content seven. */
+export const SECTION_DEFS: SectionDef[] = [
+  ...CORE_SECTION_DEFS,
+  ...RETAIL_SECTION_DEFS,
+  ...CMS_SECTION_DEFS,
 ];
 
 /** Indexed by `type`, for the renderer and the editor's lookups. */

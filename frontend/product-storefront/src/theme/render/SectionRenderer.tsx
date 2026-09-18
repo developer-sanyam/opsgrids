@@ -2,7 +2,7 @@ import { Component } from "react";
 import type { ErrorInfo, ReactNode } from "react";
 
 import type { Category, Product } from "@/api/types";
-import type { SectionInstance } from "../schema";
+import type { SectionInstance, StoreMode } from "../schema";
 import { sectionDef } from "../sections";
 import { StoreHeading, StoreText } from "./primitives";
 import { sectionComponent } from "./registry";
@@ -82,10 +82,21 @@ export interface SectionRendererProps {
   products: Product[];
   categories: Category[];
   stacked: boolean;
+  /** The canvas width in px — the fine-grained companion to `stacked`. */
+  width: number;
+  /** Retail or trade, already narrowed by `resolveMode`. */
+  mode: StoreMode;
 }
 
 /** Resolves a section instance to its component, or to a labelled placeholder. */
-export function SectionRenderer({ section, products, categories, stacked }: SectionRendererProps) {
+export function SectionRenderer({
+  section,
+  products,
+  categories,
+  stacked,
+  width,
+  mode,
+}: SectionRendererProps) {
   const Component_ = sectionComponent(section.type);
 
   if (!Component_) {
@@ -108,6 +119,8 @@ export function SectionRenderer({ section, products, categories, stacked }: Sect
         products={products}
         categories={categories}
         stacked={stacked}
+        width={width}
+        mode={mode}
       />
     </SectionBoundary>
   );

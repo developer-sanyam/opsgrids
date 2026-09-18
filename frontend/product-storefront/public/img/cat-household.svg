@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Cleaning and household supplies">
+  <rect width="400" height="300" fill="#E4E7F6"/>
+  <rect y="238" width="400" height="62" fill="#CDD2ED"/>
+  <path d="M104 238V126l24-22h28l24 22v112z" fill="#3C6FD1"/>
+  <rect x="120" y="70" width="42" height="36" rx="6" fill="#2A54A6"/>
+  <path d="M162 84h34l14 22" stroke="#2A54A6" stroke-width="10" fill="none" stroke-linecap="round"/>
+  <rect x="104" y="156" width="76" height="42" fill="#EDF0FA"/>
+  <rect x="232" y="132" width="80" height="106" rx="8" fill="#E06A2B"/>
+  <rect x="232" y="168" width="80" height="40" fill="#FBEFE4"/>
+  <rect x="254" y="110" width="36" height="24" rx="5" fill="#B44D18"/>
+  <circle cx="352" cy="198" r="30" fill="#F2C73E"/>
+  <path d="M322 198a30 30 0 0 1 60 0z" fill="#FADD86"/>
+  <rect x="340" y="152" width="24" height="46" rx="8" fill="#8D6A2A"/>
+</svg>

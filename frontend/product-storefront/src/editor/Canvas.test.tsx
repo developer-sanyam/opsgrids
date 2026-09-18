@@ -80,6 +80,7 @@ function renderCanvas(
       library={[BLOCK]}
       tokens={TOKENS}
       brand={{ name: "Verma Traders", tagline: "Since 1994", logoText: "VT" }}
+      mode="trade"
       products={[]}
       categories={[]}
       device={options.device ?? "desktop"}

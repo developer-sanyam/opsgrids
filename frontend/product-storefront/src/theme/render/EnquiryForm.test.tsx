@@ -19,6 +19,8 @@ function renderForm() {
       products={PRODUCTS}
       categories={CATEGORY_LIST}
       stacked={false}
+      width={1200}
+      mode="trade"
     />,
   );
 }

@@ -2,7 +2,15 @@
  * Turning a theme into a store, and keeping the two apart afterwards.
  */
 
-import type { PageDoc, SectionInstance, StoreDoc, Theme, ThemeTokens } from "./schema";
+import type {
+  NavPlacement,
+  PageDoc,
+  SectionInstance,
+  StoreDoc,
+  StoreMode,
+  Theme,
+  ThemeTokens,
+} from "./schema";
 
 export function cloneTokens(tokens: ThemeTokens): ThemeTokens {
   return { ...tokens };
@@ -22,6 +30,10 @@ export function clonePage(page: PageDoc): PageDoc {
     id: page.id,
     route: page.route,
     name: page.name,
+    // Spread rather than assign: `nav` is optional and `exactOptionalPropertyTypes` will not take
+    // an explicit `undefined`. A theme that says nothing keeps saying nothing, which is what makes
+    // `navPlacement`'s default the same answer before and after an adopt.
+    ...(page.nav !== undefined ? { nav: page.nav } : {}),
     sections: page.sections.map(cloneSection),
   };
 }
@@ -45,13 +57,53 @@ export function clonePages(pages: PageDoc[]): PageDoc[] {
 export function adoptTheme(theme: Theme, brand: StoreDoc["brand"]): StoreDoc {
   return {
     themeKey: theme.key,
+    // Copied, not looked up later through `themeByKey(store.themeKey)`: that would reinstate the
+    // live theme link this fork exists to cut, and it has nothing to return for a store carrying a
+    // theme key this build no longer ships.
+    mode: theme.mode,
     brand: { ...brand },
     tokens: cloneTokens(theme.tokens),
     pages: clonePages(theme.pages),
   };
 }
 
+/**
+ * The store's mode, narrowed.
+ *
+ * Render code calls this rather than reading `store.mode` directly: a `StoreDoc` can arrive off
+ * the wire, or out of a document written before this field existed, so the value is only
+ * `StoreMode` by type and not by evidence. Trade is the safe default — a trade store missing an
+ * ADD button is boring, a retail store missing its MOQ is wrong.
+ */
+export function resolveMode(store: Pick<StoreDoc, "mode">): StoreMode {
+  return store.mode === "retail" ? "retail" : "trade";
+}
+
 /** A store's page for a route, or null when the store has no such page. */
 export function pageForRoute(store: StoreDoc, route: string): PageDoc | null {
   return store.pages.find((p) => p.route === route) ?? null;
+}
+
+/**
+ * Where a page shows up in the store's chrome, narrowed.
+ *
+ * Read through here, never off `page.nav` directly: the field is optional and a document can
+ * arrive off the wire or out of a build that predates it, so the value is `NavPlacement` by type
+ * and not by evidence. **Absent means `"primary"`** — the behaviour every store had before this
+ * field existed, so nothing already published moves.
+ */
+export function navPlacement(page: Pick<PageDoc, "nav">): NavPlacement {
+  if (page.nav === "footer") return "footer";
+  if (page.nav === "none") return "none";
+  return "primary";
+}
+
+/**
+ * The store's pages that belong in one part of the chrome, in page order.
+ *
+ * Page order *is* nav order — there is no second ordering to keep in step with it, which is why
+ * `reorder-pages` in the editor is the only control a merchant needs to arrange the bar.
+ */
+export function pagesInNav(store: Pick<StoreDoc, "pages">, placement: NavPlacement): PageDoc[] {
+  return store.pages.filter((page) => navPlacement(page) === placement);
 }

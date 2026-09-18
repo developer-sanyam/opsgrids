@@ -9,7 +9,7 @@ const SLOTS = [1, 2, 3, 4] as const;
  * Up to four short value propositions. Empty slots are skipped rather than rendered blank, so a
  * merchant who fills three of four gets three columns and not a hole.
  */
-export function FeatureColumns({ settings, stacked }: SectionRenderProps) {
+export function FeatureColumns({ settings, stacked, width }: SectionRenderProps) {
   const heading = optional(settings, "heading");
   const columns = clampNum(settings, "columns", 3, 2, 4);
 
@@ -21,7 +21,7 @@ export function FeatureColumns({ settings, stacked }: SectionRenderProps) {
 
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: step(1.1), height: "100%" }}>
-      {heading ? <StoreHeading>{heading}</StoreHeading> : null}
+      {heading ? <StoreHeading width={width}>{heading}</StoreHeading> : null}
       {items.length === 0 ? (
         <SectionEmpty
           title="No columns yet"

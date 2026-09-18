@@ -6,7 +6,7 @@ import type { SectionRenderProps } from "./types";
 const TONES = ["surface", "accent", "contrast"] as const;
 
 /** The closing ask. One action, said once. */
-export function FooterCta({ settings, stacked }: SectionRenderProps) {
+export function FooterCta({ settings, stacked, width }: SectionRenderProps) {
   const tone = choice(settings, "tone", TONES, "accent");
   const heading = optional(settings, "heading");
   const body = optional(settings, "body");
@@ -33,7 +33,7 @@ export function FooterCta({ settings, stacked }: SectionRenderProps) {
       }}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: step(0.4) }}>
-        {heading ? <StoreHeading style={{ color: foreground }}>{heading}</StoreHeading> : null}
+        {heading ? <StoreHeading width={width} style={{ color: foreground }}>{heading}</StoreHeading> : null}
         {body ? <StoreText style={{ color: foreground, opacity: 0.88 }}>{body}</StoreText> : null}
         {showBrand ? (
           <StoreText small style={{ color: foreground, opacity: 0.7 }}>

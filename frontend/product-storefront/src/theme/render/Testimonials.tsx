@@ -6,7 +6,7 @@ import type { SectionRenderProps } from "./types";
 const SLOTS = [1, 2, 3] as const;
 
 /** Up to three quotes. A quote with no text is skipped; an author with no quote is not a quote. */
-export function Testimonials({ settings, stacked }: SectionRenderProps) {
+export function Testimonials({ settings, stacked, width }: SectionRenderProps) {
   const heading = optional(settings, "heading");
   const quotes = SLOTS.map((slot) => ({
     slot,
@@ -17,7 +17,7 @@ export function Testimonials({ settings, stacked }: SectionRenderProps) {
 
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: step(1.1), height: "100%" }}>
-      {heading ? <StoreHeading>{heading}</StoreHeading> : null}
+      {heading ? <StoreHeading width={width}>{heading}</StoreHeading> : null}
       {quotes.length === 0 ? (
         <SectionEmpty title="No quotes yet" hint="Add a quote in this section's settings to show it here." />
       ) : (

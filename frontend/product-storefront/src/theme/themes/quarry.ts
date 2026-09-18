@@ -15,6 +15,7 @@ export const quarry: Theme = {
   description:
     "Editorial and unhurried. Warm sand, a serif set, square corners and a brochure-shaped home page that earns the product grid.",
   industry: "Building materials",
+  mode: "trade",
   tokens: {
     colorBg: "#F5F0E6",
     colorSurface: "#FFFFFF",
@@ -92,6 +93,8 @@ export const quarry: Theme = {
         heading: "By trade",
         columns: 3,
         limit: 6,
+        // Two across on a phone: these are word-only tiles carrying long category names.
+        mobileColumns: 2,
       }),
       sec("qry-cat-grid", "product-grid", { x: 0, y: 13, w: 12, h: 13 }, {
         heading: "All lines",

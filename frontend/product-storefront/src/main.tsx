@@ -12,6 +12,7 @@ import { RequireAuth } from "./auth/RequireAuth";
 import { ComingSoonPage } from "./routes/ComingSoon";
 import { EditorFallback } from "./routes/EditorFallback";
 import { GalleryPage } from "./routes/Gallery";
+import { LiveStorePage } from "./routes/LiveStore";
 import { LoginPage } from "./routes/Login";
 import { NotFoundPage } from "./routes/NotFound";
 import { StorefrontPage } from "./routes/Storefront";
@@ -26,8 +27,16 @@ const EditorPage = lazy(() => import("./routes/editor"));
 /**
  * The routed screens under the app shell.
  *
- * `/store/*` is the buyer-facing preview: one component, one `route` prop per store page, so a new
- * page in a theme is a new entry here and nothing else. The `*` catch-all stays last.
+ * `/store/*` is the buyer-facing preview, framed by the console. One component and one splat, the
+ * same shape `/live/*` uses: the address after the base *is* the `PageDoc.route`, so every page in
+ * the store has a preview address — the three a theme ships and the thirty-five a merchant adds.
+ * It used to be three fixed entries, which meant a page a merchant had just created answered its
+ * own preview address with the console's 404 while working perfectly on `/live`.
+ *
+ * A route the store has no page for is not a 404 here either: the renderer draws "this store has
+ * no page at that address" inside the frame, which is what `/live` already does and is the true
+ * answer — the address is a store address, the store just has nothing at it. The `*` catch-all
+ * below still owns everything that is not a store address at all.
  */
 const shellRoutes = [
   { index: true, element: <GalleryPage /> },
@@ -39,36 +48,7 @@ const shellRoutes = [
       </Suspense>
     ),
   },
-  {
-    path: "store",
-    element: (
-      <StorefrontPage
-        route="/"
-        title="Your storefront"
-        description="The home page a dealer lands on, drawn from your store document. Switch the preview width to see how the 12-column grid stacks."
-      />
-    ),
-  },
-  {
-    path: "store/catalogue",
-    element: (
-      <StorefrontPage
-        route="/catalogue"
-        title="Catalogue page"
-        description="Every line you carry, composed from the same section library as the home page."
-      />
-    ),
-  },
-  {
-    path: "store/product",
-    element: (
-      <StorefrontPage
-        route="/product"
-        title="Line detail page"
-        description="One catalogue line, with its specification, related prices and the enquiry form."
-      />
-    ),
-  },
+  { path: "store/*", element: <StorefrontPage /> },
   {
     path: "settings",
     element: (
@@ -102,6 +82,27 @@ const router = createBrowserRouter([
     ),
     children: [
       { path: "/login", element: <LoginPage /> },
+      {
+        /**
+         * The buyer's store, outside the shell on purpose.
+         *
+         * `/store` frames the same document in the console — sidebar, page header, device toggle.
+         * `/live` is what a dealer would see at the store's own domain: full viewport, the store's
+         * own header and footer as the only chrome, and its `maxWidth` token deciding the content
+         * column. The splat carries the page: `/live`, `/live/catalogue`, `/live/product`, and any
+         * route a theme adds later.
+         *
+         * Still behind `RequireAuth`: this is a merchant previewing their own store, and the
+         * catalogue behind it is their data, which the gateway will not serve anonymously either
+         * way. The chrome is what is dropped here, not the authorization.
+         */
+        path: "/live/*",
+        element: (
+          <RequireAuth>
+            <LiveStorePage />
+          </RequireAuth>
+        ),
+      },
       {
         path: "/",
         element: (

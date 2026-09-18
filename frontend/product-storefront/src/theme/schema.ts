@@ -42,13 +42,49 @@ export interface SectionInstance {
   layout: { x: number; y: number; w: number; h: number };
 }
 
+/**
+ * Where a page appears in the store's chrome.
+ *
+ * A ~120-page sitemap is the reason this exists: `StoreRenderer` used to put every page in
+ * `store.pages` into the top navigation, which is a readable bar at three pages and an unusable
+ * one at thirty-five. Legal pages belong at the bottom, most company pages belong in a group, and
+ * some pages — a thank-you page, a campaign landing page — should only be reachable from a link
+ * somewhere else.
+ *
+ * **Optional on purpose.** Absent means `"primary"`, so every theme this build ships and every
+ * store document written before this field existed renders exactly as it did.
+ *
+ * This is the chrome's *automatic* navigation: the store's own list of pages, placed. It is not
+ * the only way a link reaches a footer — the `footer-columns` section lets a merchant hand-author
+ * whole link columns, including links to pages set to `"none"` here, plus addresses this document
+ * knows nothing about (a PDF, a WhatsApp number, an external portal). The two are deliberately
+ * different mechanisms and neither subsumes the other: `nav` answers "where does *this page* show
+ * up", `footer-columns` answers "what does *this footer* say". Where both land on one page the
+ * section owns the `contentinfo` — one page, one footer landmark — and the chrome's footer nav
+ * drops below it as a legal strip. Do not build a third mechanism.
+ */
+export type NavPlacement = "primary" | "footer" | "none";
+
 export interface PageDoc {
   id: string;
   /** "/", "/catalogue", "/product", "/about", "/contact" */
   route: string;
   name: string;
+  /** Absent means `"primary"`. Read it through `navPlacement`, never raw. */
+  nav?: NavPlacement;
   sections: SectionInstance[];
 }
+
+/**
+ * What kind of buyer this store serves. Retail buyers add to a cart; trade buyers build a line
+ * list and enquire. It is a property of the store, never of a page or a section.
+ *
+ * It is deliberately **not** a `ThemeTokens` member: `TOKEN_VARS` is
+ * `satisfies Record<keyof ThemeTokens, string>`, so a thirteenth member would force a meaningless
+ * `--st-mode` custom property that no section reads, and `ThemeTokenPanel` would offer the
+ * merchant a colour picker for it.
+ */
+export type StoreMode = "retail" | "trade";
 
 export interface ThemeTokens {
   colorBg: string;
@@ -73,6 +109,8 @@ export interface Theme {
   name: string;
   description: string;
   industry: string;
+  /** Retail or trade. Copied onto the store at adopt time; never read back off the theme after. */
+  mode: StoreMode;
   tokens: ThemeTokens;
   /** The starting templates. Copied into a `StoreDoc` on adopt; never read after that. */
   pages: PageDoc[];
@@ -81,6 +119,12 @@ export interface Theme {
 /** One merchant's store — a COPY of a theme, then edited. */
 export interface StoreDoc {
   themeKey: string;
+  /**
+   * Copied from the theme by `adoptTheme`, not resolved from `themeKey` — resolving would
+   * reinstate the live theme link the fork deliberately cuts, and would break for a store carrying
+   * a theme key this build no longer ships. Render code reads it through `resolveMode`.
+   */
+  mode: StoreMode;
   brand: { name: string; tagline: string; logoText: string };
   tokens: ThemeTokens;
   pages: PageDoc[];
@@ -98,3 +142,13 @@ export const ROW_HEIGHT = 40;
  * preview and a genuinely narrow browser behave identically.
  */
 export const STACK_WIDTH = 768;
+
+/**
+ * The one setting key the page layer itself understands. A section declaring this field and
+ * setting it true spans the full canvas width instead of its grid columns.
+ *
+ * Named here so it is not a magic string in two files: the section that declares the field and
+ * `PageRenderer`, which reads it off the instance. Everything else in `settings` belongs to the
+ * section alone — the page layer must never grow a second well-known key without a decision.
+ */
+export const BLEED_SETTING = "bleed";

@@ -16,7 +16,7 @@ const cell = {
 } as const;
 
 /** A real `<table>`: this is tabular data, and a buyer reads down the price column. */
-export function PriceTable({ settings, products }: SectionRenderProps) {
+export function PriceTable({ settings, products, width }: SectionRenderProps) {
   const heading = optional(settings, "heading");
   const source = str(settings, "source", "all");
   const limit = clampNum(settings, "limit", 8, 1, 48);
@@ -31,7 +31,7 @@ export function PriceTable({ settings, products }: SectionRenderProps) {
 
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: step(1), height: "100%" }}>
-      {heading ? <StoreHeading>{heading}</StoreHeading> : null}
+      {heading ? <StoreHeading width={width}>{heading}</StoreHeading> : null}
       {items.length === 0 ? (
         <SectionEmpty title="No lines to price" hint={emptySourceHint(source)} />
       ) : (

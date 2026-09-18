@@ -4,7 +4,14 @@ import type { CSSProperties, DragEvent, PointerEvent, RefObject } from "react";
 import { EmptyState, InlineAlert, LayoutIcon } from "@opsgrids/ui";
 
 import type { Category, Product } from "@/api/types";
-import type { PageDoc, SectionDef, SectionInstance, StoreDoc, ThemeTokens } from "@/theme/schema";
+import type {
+  PageDoc,
+  SectionDef,
+  SectionInstance,
+  StoreDoc,
+  StoreMode,
+  ThemeTokens,
+} from "@/theme/schema";
 import { ROW_HEIGHT, STACK_WIDTH } from "@/theme/schema";
 import { ThemeFrame } from "@/theme/render";
 import { useElementWidth } from "@/lib/useElementWidth";
@@ -35,6 +42,19 @@ import { findDef } from "./sectionLibrary";
  * contract in the schema and is not something the editor may lower to suit its own furniture.
  */
 
+/**
+ * **The mirror grid deliberately has no bleed rails.**
+ *
+ * `PageRenderer` places a section carrying `BLEED_SETTING` across two extra rails either side of
+ * the twelve columns. This grid does not reproduce them, so a bleeding section previews inside the
+ * content track here and reaches the canvas edge on the buyer-facing route. That is a known and
+ * bounded v1 gap, taken on purpose: every pointer position on this canvas resolves against
+ * `gridRef`'s width divided by twelve, and the drop outline and the grid lines are a separate
+ * twelve-column overlay on `inset-0`. Adding rails moves all three off the columns they are meant
+ * to describe, and a drop that lands a column from the cursor is a worse defect than a preview
+ * that is one gutter narrow.
+ */
+
 /** Empty rows kept under the last section, so there is always somewhere to drop. */
 const TRAILING_ROWS = 4;
 const MIN_ROWS = 12;
@@ -57,6 +77,8 @@ interface CanvasProps {
   library: SectionDef[];
   tokens: ThemeTokens;
   brand: StoreDoc["brand"];
+  /** The store's mode, narrowed by the shell. Sections preview as the buyer will see them. */
+  mode: StoreMode;
   products: Product[];
   categories: Category[];
   device: Device;
@@ -82,6 +104,7 @@ export function Canvas({
   library,
   tokens,
   brand,
+  mode,
   products,
   categories,
   device,
@@ -332,6 +355,8 @@ export function Canvas({
                           selected={section.id === selectedId}
                           canEdit={canEdit}
                           stacked={stacked}
+                          width={designWidth}
+                          mode={mode}
                           style={frameStyle(section, stacked)}
                           instructionsId={instructionsId}
                           frameRef={(element) => {

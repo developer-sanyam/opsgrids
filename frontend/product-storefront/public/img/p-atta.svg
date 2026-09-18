@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Bag of atta">
+  <rect width="400" height="300" fill="#FCF2DC"/>
+  <path d="M110 256V118l-16-20 26-12h160l26 12-16 20v138z" fill="#C0392B"/>
+  <path d="M120 86h160l-12 20H132z" fill="#95291D"/>
+  <rect x="134" y="140" width="132" height="60" rx="6" fill="#F7E9C8"/>
+  <path d="M168 170c0-18 14-30 32-30s32 12 32 30z" fill="#C0392B"/>
+  <rect x="152" y="212" width="96" height="10" rx="5" fill="#F0C14B"/>
+  <path d="M254 106l26 12-16 20v118" fill="#A22E21"/>
+</svg>

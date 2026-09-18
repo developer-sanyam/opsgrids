@@ -1,11 +1,12 @@
 import { useCallback, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 
 import { useAsync } from "@opsgrids/client";
 import { CheckIcon, LayoutIcon } from "@opsgrids/ui";
 
 import { adoptTheme, listCategories, listProducts, listThemes, removeStore, getStore } from "@/api/client";
 import type { Category, Product } from "@/api/types";
+import { CONSOLE_STORE_BASE, LIVE_BASE } from "@/routes/live/liveRoutes";
 import type { StoreDoc, Theme } from "@/theme/schema";
 import {
   Button,
@@ -33,6 +34,21 @@ function adoptionState(store: StoreDoc | null, theme: Theme): "none" | "current"
   return store.themeKey === theme.key ? "current" : "other";
 }
 
+/**
+ * The sentence whoever sent the visitor here wrote for them.
+ *
+ * `/live` redirects to this screen when no theme has been adopted, carrying its reason on the
+ * navigation state. Landing on a theme picker with no explanation is the kind of bounce that reads
+ * as a bug, so the reason is rendered rather than dropped. `location.state` is `unknown` and can
+ * hold anything a caller — or a restored history entry — put there, so it is narrowed here rather
+ * than cast.
+ */
+function noticeFrom(state: unknown): string | null {
+  if (typeof state !== "object" || state === null) return null;
+  const notice = (state as { notice?: unknown }).notice;
+  return typeof notice === "string" && notice.trim() !== "" ? notice.trim() : null;
+}
+
 export function GalleryPage() {
   const load = useCallback(
     async (): Promise<GalleryData> => {
@@ -47,6 +63,7 @@ export function GalleryPage() {
     [],
   );
   const state = useAsync(load, []);
+  const notice = noticeFrom(useLocation().state);
 
   // The adopted store is owned by the server; this holds only what this screen has changed since
   // it loaded, so nothing is duplicated into a store that would then drift.
@@ -102,7 +119,9 @@ export function GalleryPage() {
         title="Pick a theme"
         description="Each theme ships a full set of pages — home, catalogue and line detail — already composed. Adopting one copies its pages into your store, where you can edit them."
         actions={
-          <div className="flex items-center gap-2">
+          /* Wraps: there are four controls here now, and at 360px a single row would push the
+             page sideways instead of stacking. */
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <SampleChip title="Representative data — there is no storefront service yet, so the catalogue and the store document come from local fixtures" />
             {store ? (
               <Button
@@ -114,12 +133,22 @@ export function GalleryPage() {
               </Button>
             ) : null}
             {/* Navigation is an `<a>`, never a button that navigates — the house pattern for a
-                link wearing the primary action's skin (see product-hrms `ComingSoon`). */}
+                link wearing the primary action's skin (see product-hrms `ComingSoon`).
+
+                Two destinations, named apart: one frames the store inside the console, the other
+                is the page a buyer gets. Calling both "Preview" would hide the difference that
+                the second route exists to make. */}
             <Link
-              to="/store"
+              to={CONSOLE_STORE_BASE}
+              className="inline-flex h-11 items-center rounded-full border border-line bg-surface px-5 font-semibold text-ink transition-colors hover:bg-ground"
+            >
+              Preview in the console
+            </Link>
+            <Link
+              to={LIVE_BASE}
               className="inline-flex h-11 items-center rounded-full bg-accent px-5 font-semibold text-white transition-colors hover:bg-accent-strong"
             >
-              View the store
+              Open the live store
             </Link>
           </div>
         }
@@ -130,6 +159,9 @@ export function GalleryPage() {
       <p aria-live="polite" role="status" className="sr-only">
         {announcement}
       </p>
+
+      {/* Why this visit started here, when it started somewhere else. */}
+      {notice ? <InlineAlert tone="info" title={notice} /> : null}
 
       {failure ? (
         <InlineAlert tone="danger" title="That didn't work">
@@ -143,11 +175,13 @@ export function GalleryPage() {
           live="off"
           title={`Your store is running the ${currentThemeName} theme`}
           action={
+            // Safe to send them straight to the buyer's view: this alert only renders when a
+            // theme has been adopted, which is the one condition `/live` needs.
             <Link
-              to="/store"
+              to={LIVE_BASE}
               className="inline-flex h-9 items-center rounded-full border border-line bg-surface px-4 text-sm font-semibold text-ink transition-colors hover:bg-ground"
             >
-              Open it
+              Open the live store
             </Link>
           }
         >
@@ -158,7 +192,7 @@ export function GalleryPage() {
 
       {state.status === "loading" ? (
         // Reserves the card grid's height so nothing jumps when the themes arrive.
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {[0, 1, 2, 3, 4, 5].map((i) => (
             <Card key={i} className="p-4">
               <Skeleton className="h-58" />
@@ -191,7 +225,12 @@ export function GalleryPage() {
       ) : null}
 
       {state.status === "success" && state.data.themes.length > 0 ? (
-        <ul className="grid list-none gap-4 p-0 md:grid-cols-2 xl:grid-cols-3">
+        /* `grid-cols-1` is load-bearing, not tidiness. Without it the single-column case is one
+           `auto` track, which sizes to its content — and each card holds a `ThemePreview` composed
+           at 1280px before it is scaled. Measured in Chrome at a 745px viewport: the track came out
+           1314px wide and the page scrolled sideways by 585px. `md:grid-cols-2` is already
+           `minmax(0, 1fr)`, which is why this only ever showed below 768. */
+        <ul className="grid list-none grid-cols-1 gap-4 p-0 md:grid-cols-2 xl:grid-cols-3">
           {state.data.themes.map((theme) => {
             const adoption = adoptionState(store, theme);
             const busy = busyKey === theme.key;
@@ -226,10 +265,10 @@ export function GalleryPage() {
                   <div className="mt-auto flex flex-wrap items-center gap-2">
                     {adoption === "current" ? (
                       <Link
-                        to="/store"
+                        to={CONSOLE_STORE_BASE}
                         className="inline-flex h-11 items-center rounded-full border border-line bg-surface px-5 font-semibold text-ink transition-colors hover:bg-ground"
                       >
-                        View the store
+                        Preview in the console
                       </Link>
                     ) : confirmKey === theme.key ? (
                       <>

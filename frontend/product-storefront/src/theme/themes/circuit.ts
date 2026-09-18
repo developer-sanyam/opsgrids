@@ -16,6 +16,7 @@ export const circuit: Theme = {
   description:
     "Dark, monospaced and spec-led. A lime signal accent, a rail of categories beside a tight grid, and ratings before pictures.",
   industry: "Electrical components",
+  mode: "trade",
   tokens: {
     colorBg: "#0B0E11",
     colorSurface: "#151B21",

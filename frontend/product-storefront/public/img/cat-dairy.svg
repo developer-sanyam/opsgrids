@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Milk, bread and eggs">
+  <rect width="400" height="300" fill="#E2EDF7"/>
+  <rect y="236" width="400" height="64" fill="#CBDDEE"/>
+  <path d="M96 236V132l18-26V84h34v22l18 26v104z" fill="#FFFFFF"/>
+  <rect x="112" y="74" width="38" height="14" rx="3" fill="#2F6FB5"/>
+  <rect x="96" y="160" width="70" height="34" fill="#2F6FB5"/>
+  <path d="M212 236v-84l34-24 34 24v84z" fill="#C88A48"/>
+  <path d="M212 168h68v-16l-34-24-34 24z" fill="#DFA764"/>
+  <rect x="226" y="186" width="40" height="6" rx="3" fill="#A96E33"/>
+  <rect x="226" y="202" width="40" height="6" rx="3" fill="#A96E33"/>
+  <path d="M300 236a34 34 0 0 1 68 0z" fill="#E7EEF6"/>
+  <ellipse cx="318" cy="210" rx="17" ry="21" fill="#FFFFFF"/>
+  <ellipse cx="350" cy="214" rx="15" ry="19" fill="#F3E3C8"/>
+</svg>

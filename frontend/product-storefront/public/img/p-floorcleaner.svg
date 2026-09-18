@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Bottle of floor cleaner">
+  <rect width="400" height="300" fill="#EAF3EE"/>
+  <path d="M148 256V124l16-22V72h72v30l16 22v132z" fill="#7A3FA8"/>
+  <rect x="170" y="52" width="60" height="22" rx="6" fill="#55287A"/>
+  <rect x="148" y="146" width="104" height="70" rx="6" fill="#F6F1FA"/>
+  <path d="M200 160c10 14 16 22 16 30a16 16 0 0 1-32 0c0-8 6-16 16-30z" fill="#7A3FA8"/>
+  <rect x="164" y="200" width="72" height="8" rx="4" fill="#C9A227"/>
+  <rect x="156" y="232" width="88" height="10" rx="5" fill="#55287A"/>
+</svg>

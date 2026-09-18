@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Packets of snacks and namkeen">
+  <rect width="400" height="300" fill="#FBE7CE"/>
+  <rect y="238" width="400" height="62" fill="#EFD2AC"/>
+  <path d="M86 238 104 96h96l18 142z" fill="#E2542F"/>
+  <path d="M96 84h112l-8 22H104z" fill="#B93C1C"/>
+  <rect x="116" y="150" width="72" height="12" rx="6" fill="#FBE7CE"/>
+  <rect x="126" y="176" width="52" height="8" rx="4" fill="#F7B27A"/>
+  <path d="M236 238l14-96h84l14 96z" fill="#F2A91E"/>
+  <path d="M244 132h96l-6 14h-84z" fill="#C97F09"/>
+  <rect x="258" y="178" width="56" height="10" rx="5" fill="#FBE7CE"/>
+  <circle cx="286" cy="212" r="12" fill="#8A4A16"/>
+</svg>

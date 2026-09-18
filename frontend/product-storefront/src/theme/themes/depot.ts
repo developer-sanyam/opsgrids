@@ -15,6 +15,7 @@ export const depot: Theme = {
   description:
     "Price-list first. A centred blue hero, four value columns, and the rate card above the fold beside a live enquiry form.",
   industry: "Wholesale distribution",
+  mode: "trade",
   tokens: {
     colorBg: "#FFFFFF",
     colorSurface: "#F6F8FA",
@@ -101,6 +102,8 @@ export const depot: Theme = {
         heading: "Narrow it down",
         columns: 4,
         limit: 8,
+        // Two across on a phone: these are word-only tiles carrying long category names.
+        mobileColumns: 2,
       }),
       sec("dpt-cat-cta", "footer-cta", { x: 0, y: 25, w: 12, h: 5 }, {
         heading: "Can't find a line?",

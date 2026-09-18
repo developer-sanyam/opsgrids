@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Loaf of bread">
+  <rect width="400" height="300" fill="#FBF1DF"/>
+  <path d="M92 246V150c0-30 24-52 58-52h100c34 0 58 22 58 52v96z" fill="#D79A52"/>
+  <path d="M92 168c0-38 24-60 58-60h100c34 0 58 22 58 60z" fill="#EFC287"/>
+  <rect x="120" y="186" width="160" height="10" rx="5" fill="#B87A34"/>
+  <rect x="120" y="212" width="120" height="10" rx="5" fill="#B87A34"/>
+  <path d="M240 98c0-16 14-24 32-22-4 14-16 22-32 22z" fill="#9C6528"/>
+</svg>

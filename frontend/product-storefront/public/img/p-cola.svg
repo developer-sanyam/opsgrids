@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Bottle of cold drink">
+  <rect width="400" height="300" fill="#ECE4E4"/>
+  <path d="M164 256V126l-12-18V80h96v28l-12 18v130z" fill="#6B2E1F"/>
+  <rect x="172" y="56" width="56" height="26" rx="6" fill="#B0332B"/>
+  <rect x="152" y="140" width="96" height="60" fill="#E9E2DC"/>
+  <path d="M152 150q48 22 96 0" stroke="#C0392B" stroke-width="12" fill="none"/>
+  <rect x="166" y="178" width="68" height="8" rx="4" fill="#6B2E1F"/>
+  <rect x="164" y="228" width="72" height="10" rx="5" fill="#4E1F14"/>
+</svg>

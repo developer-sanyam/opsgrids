@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Jerrycan of cooking oil">
+  <rect width="400" height="300" fill="#FDF6E3"/>
+  <rect x="122" y="104" width="156" height="152" rx="16" fill="#F0B429"/>
+  <rect x="160" y="70" width="44" height="38" rx="6" fill="#D19410"/>
+  <path d="M204 82h40a18 18 0 0 1 0 36h-6" stroke="#D19410" stroke-width="14" fill="none" stroke-linecap="round"/>
+  <rect x="142" y="140" width="116" height="74" rx="8" fill="#FFFBF0"/>
+  <path d="M200 156c14 16 22 26 22 36a22 22 0 0 1-44 0c0-10 8-20 22-36z" fill="#F0B429"/>
+  <rect x="146" y="226" width="108" height="10" rx="5" fill="#B67F0C"/>
+</svg>

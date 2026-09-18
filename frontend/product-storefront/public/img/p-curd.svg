@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Cup of curd">
+  <rect width="400" height="300" fill="#EFF4F8"/>
+  <path d="M124 110h152l-18 146H142z" fill="#FFFFFF"/>
+  <rect x="112" y="92" width="176" height="24" rx="8" fill="#D64B3F"/>
+  <rect x="136" y="150" width="128" height="46" rx="6" fill="#D64B3F"/>
+  <rect x="152" y="166" width="96" height="8" rx="4" fill="#FFFFFF"/>
+  <rect x="152" y="180" width="62" height="6" rx="3" fill="#F6BDB6"/>
+  <path d="M140 214h120l-4 30H144z" fill="#E7EFF5"/>
+</svg>

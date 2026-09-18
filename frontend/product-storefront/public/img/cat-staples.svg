@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Sacks of atta, rice and dal">
+  <rect width="400" height="300" fill="#F6ECD6"/>
+  <rect y="234" width="400" height="66" fill="#E3D0AB"/>
+  <path d="M104 234V136l-16-18 24-10h62l24 10-16 18v98z" fill="#C98B3A"/>
+  <path d="M112 108h62l-11 16h-40z" fill="#A66A22"/>
+  <rect x="120" y="162" width="46" height="34" rx="3" fill="#F6ECD6"/>
+  <rect x="130" y="174" width="26" height="4" fill="#C98B3A"/>
+  <path d="M216 234v-74l-12-14 20-8h50l20 8-12 14v74z" fill="#8FA65A"/>
+  <path d="M224 138h44l-9 12h-26z" fill="#6D8341"/>
+  <rect x="230" y="176" width="32" height="26" rx="3" fill="#F6ECD6"/>
+  <circle cx="330" cy="208" r="26" fill="#E7B948"/>
+  <path d="M304 208a26 26 0 0 1 52 0z" fill="#F3CE79"/>
+  <rect x="300" y="204" width="60" height="9" rx="4" fill="#B0842A"/>
+</svg>

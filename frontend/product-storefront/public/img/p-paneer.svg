@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Block of paneer">
+  <rect width="400" height="300" fill="#F3F5EE"/>
+  <path d="M112 238V132l30-24h150l-30 24v106z" fill="#FBF8EE"/>
+  <path d="M112 132h150v106H112z" fill="#F6F1E2"/>
+  <path d="M142 108h150l-30 24H112z" fill="#FFFDF6"/>
+  <rect x="132" y="156" width="110" height="52" rx="6" fill="#2E6B4A"/>
+  <rect x="146" y="172" width="82" height="8" rx="4" fill="#FBF8EE"/>
+  <rect x="146" y="188" width="52" height="6" rx="3" fill="#8FC2A6"/>
+  <path d="M262 132l30-24v106l-30 24z" fill="#E7E1CE"/>
+</svg>

@@ -1,17 +1,42 @@
 import { useAuth } from "@opsgrids/client";
 import {
   BoxIcon,
+  GlobeIcon,
   LayoutIcon,
   LifeBuoyIcon,
   MonitorIcon,
-  PackageIcon,
   SettingsIcon,
   Sidebar as SidebarShell,
-  TagIcon,
 } from "@opsgrids/ui";
 import type { NavEntry, NavGroup } from "@opsgrids/ui";
+import { CONSOLE_STORE_BASE, LIVE_BASE } from "@/routes/live/liveRoutes";
 import { LogoMark } from "./LogoMark";
 
+/**
+ * The two ways to look at the same store, named apart on purpose.
+ *
+ * **Console preview** (`/store`) is the merchant checking their work: the sidebar is still there,
+ * a page header explains what they are looking at, and a device toggle fakes a width. **Live
+ * store** (`/live`) is the page a buyer gets — full viewport, no console furniture, the store's
+ * own header and footer as the only chrome.
+ *
+ * Calling both of them "Preview" would hide the only difference that matters, so the groups say
+ * which is which and each entry names its destination rather than the act of previewing.
+ *
+ * **Each is one entry, and the store's pages are not listed here.** They used to be: three links,
+ * `/store`, `/store/catalogue` and `/store/product`, which were the three pages every theme
+ * shipped. A merchant can now add pages, so that list was a constant claiming to be a store — it
+ * could not grow a thirty-sixth page, it could not lose a deleted one, and it named three pages a
+ * merchant may have set to "Not in the navigation". A navigation that lies about what the store
+ * contains is worse than one that does not try.
+ *
+ * Nothing replaces it here, because nothing here can: the sidebar renders before any store
+ * document is fetched, and putting a request behind the navigation would give the app's frame a
+ * loading state and an error state of its own. The page list belongs where the document already
+ * is — the preview screen's own switcher, built from `store.pages`, which reaches every page
+ * including the ones kept out of the buyer's navigation, and the store's own nav bar inside the
+ * frame. Both are the document; neither can drift from it.
+ */
 const GROUPS: NavGroup[] = [
   {
     title: "Store",
@@ -21,11 +46,20 @@ const GROUPS: NavGroup[] = [
     ],
   },
   {
-    title: "Preview",
+    title: "Console preview",
     items: [
-      { to: "/store", label: "Storefront", icon: MonitorIcon, end: true },
-      { to: "/store/catalogue", label: "Catalogue", icon: PackageIcon },
-      { to: "/store/product", label: "Line detail", icon: TagIcon },
+      // No `end`: every store page is previewed under this base, and all of them are "the console
+      // preview". The entry opens on the home page; the switcher on the screen moves between them.
+      // "Open the console preview" is the full name and truncates in the rail; the group heading
+      // above already says which kind of looking this is, so the item says the act and fits.
+      { to: CONSOLE_STORE_BASE, label: "Open the preview", icon: MonitorIcon },
+    ],
+  },
+  {
+    title: "Live store",
+    items: [
+      // No `end`: the buyer's pages hang off this base, and all of them are "the live store".
+      { to: LIVE_BASE, label: "Open the live store", icon: GlobeIcon },
     ],
   },
 ];

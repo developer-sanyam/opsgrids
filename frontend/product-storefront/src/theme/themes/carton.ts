@@ -15,6 +15,7 @@ export const carton: Theme = {
   description:
     "Kraft tones and soft corners, built for re-ordering. A carousel of last week's lines sits above the story.",
   industry: "Packaging & consumables",
+  mode: "trade",
   tokens: {
     colorBg: "#EFE7DA",
     colorSurface: "#FFFCF7",
@@ -97,6 +98,8 @@ export const carton: Theme = {
         heading: "By use",
         columns: 4,
         limit: 8,
+        // Two across on a phone: these are word-only tiles carrying long category names.
+        mobileColumns: 2,
       }),
       sec("crt-cat-grid", "product-grid", { x: 0, y: 12, w: 12, h: 13 }, {
         heading: "All lines",

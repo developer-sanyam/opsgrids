@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Tin of ghee">
+  <rect width="400" height="300" fill="#FDF4DE"/>
+  <rect x="126" y="112" width="148" height="144" rx="10" fill="#E8B21C"/>
+  <rect x="118" y="94" width="164" height="24" rx="8" fill="#B8850A"/>
+  <rect x="142" y="148" width="116" height="66" rx="6" fill="#FFFBEE"/>
+  <circle cx="200" cy="180" r="24" fill="#F0C14B"/>
+  <path d="M200 160a20 20 0 0 1 0 40z" fill="#DCA51E"/>
+  <rect x="146" y="226" width="108" height="10" rx="5" fill="#8E6606"/>
+  <rect x="170" y="80" width="60" height="16" rx="6" fill="#8E6606"/>
+</svg>

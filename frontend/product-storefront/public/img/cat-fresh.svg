@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Fresh fruit and vegetables">
+  <rect width="400" height="300" fill="#E6F1D8"/>
+  <rect y="240" width="400" height="60" fill="#CFE3BB"/>
+  <circle cx="122" cy="188" r="52" fill="#D8433A"/>
+  <path d="M122 136c-10-22 6-34 24-36-2 20-10 32-24 36z" fill="#5C9B3E"/>
+  <rect x="118" y="126" width="8" height="18" rx="4" fill="#7A5230"/>
+  <path d="M206 240c-14-30-6-72 22-96 26 22 34 66 20 96z" fill="#F2C12E"/>
+  <path d="M228 144c-6-16 4-28 18-32-2 16-8 26-18 32z" fill="#8FAE4A"/>
+  <circle cx="318" cy="196" r="44" fill="#B87ACB"/>
+  <path d="M318 152c-6-14 2-24 14-28-2 14-6 22-14 28z" fill="#6E9A45"/>
+  <path d="M274 196a44 44 0 0 0 88 0z" fill="#9C5FB1"/>
+  <path d="M292 172q26 22 52 0" stroke="#EAD7F0" stroke-width="5" fill="none" stroke-linecap="round"/>
+</svg>

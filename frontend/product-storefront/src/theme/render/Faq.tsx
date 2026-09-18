@@ -12,7 +12,7 @@ const SLOTS = [1, 2, 3, 4] as const;
  * browser's own in-page search even while collapsed — three things a hand-rolled accordion has to
  * re-earn and usually does not.
  */
-export function Faq({ settings }: SectionRenderProps) {
+export function Faq({ settings, width }: SectionRenderProps) {
   const heading = optional(settings, "heading");
   const openFirst = bool(settings, "openFirst", true);
   const entries = SLOTS.map((slot) => ({
@@ -23,7 +23,7 @@ export function Faq({ settings }: SectionRenderProps) {
 
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: step(1), height: "100%" }}>
-      {heading ? <StoreHeading>{heading}</StoreHeading> : null}
+      {heading ? <StoreHeading width={width}>{heading}</StoreHeading> : null}
       {entries.length === 0 ? (
         <SectionEmpty title="No questions yet" hint="Add a question and its answer in this section's settings." />
       ) : (

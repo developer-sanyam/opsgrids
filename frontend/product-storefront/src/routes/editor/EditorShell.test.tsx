@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -37,6 +37,7 @@ const LIBRARY = [BLOCK, BANNER];
 function store(): StoreDoc {
   return {
     themeKey: "depot",
+    mode: "trade",
     brand: { name: "Verma Traders", tagline: "Since 1994", logoText: "VT" },
     tokens: {
       colorBg: "#ffffff",
@@ -329,5 +330,186 @@ describe("without permission to edit", () => {
     expect(screen.queryByRole("button", { name: "Add Test block" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+  });
+
+  it("opens the page manager to look, with nothing in it that changes the store", async () => {
+    const user = userEvent.setup();
+    renderShell({ canEdit: false });
+
+    await user.click(screen.getByRole("button", { name: "Pages" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Pages" });
+    // The row names itself in full: a screen reader gets the page, its address, what is on it and
+    // where it sits, not four spans run together.
+    expect(
+      within(dialog).getByRole("button", { name: "Home — /, No sections yet, 1 of 2" }),
+    ).toBeDefined();
+    expect(within(dialog).queryByRole("button", { name: "Add page" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Delete About" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Rename About" })).toBeNull();
+    // A UI gate hides a control; the server refuses the `PUT` either way.
+    expect(within(dialog).queryByLabelText("Navigation for About")).toBeNull();
+  });
+});
+
+/**
+ * The page manager, driven entirely from the keyboard.
+ *
+ * A merchant with a 120-page sitemap lives in this dialog, and every act in it — add, rename,
+ * re-route, reorder, place, delete — has to be reachable without a mouse, the same way the canvas
+ * and the section list already are. Each one announces what the document became, not what was
+ * asked for: an address is normalised on the way in, so announcing the typed string would be
+ * announcing something that did not happen.
+ */
+describe("the page manager", () => {
+  async function openManager(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("button", { name: "Pages" }));
+    return screen.getByRole("dialog", { name: "Pages" });
+  }
+
+  it("puts focus in the name field on open, so typing starts a page", async () => {
+    const user = userEvent.setup();
+    renderShell();
+
+    await openManager(user);
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByLabelText("Page name")),
+    );
+  });
+
+  it("adds a page by typing a name and pressing Enter, deriving the address from it", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    await openManager(user);
+
+    await user.type(screen.getByLabelText("Page name"), "About Us{Enter}");
+
+    expect(screen.getByText("About Us added at /about-us. You're editing it now.")).toBeDefined();
+    // The form is ready for the next one, with focus back where typing continues.
+    expect(screen.getByLabelText("Page name")).toHaveProperty("value", "");
+    expect(document.activeElement).toBe(screen.getByLabelText("Page name"));
+  });
+
+  it("refuses a duplicate, keeps what was typed, and sends focus to the field that is wrong", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    await openManager(user);
+
+    await user.type(screen.getByLabelText("Page name"), "About{Enter}");
+
+    const address = screen.getByLabelText("Address");
+    expect(document.activeElement).toBe(address);
+    expect(address).toHaveProperty("value", "/about");
+    expect(address.getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByText(/Another page already uses “\/about”/)).toBeDefined();
+    // Nothing was added and nothing was lost.
+    expect(screen.getByLabelText("Page name")).toHaveProperty("value", "About");
+  });
+
+  it("renames a page through its row, and says what it is called now", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    await openManager(user);
+
+    await user.click(screen.getByRole("button", { name: "Rename About" }));
+    const field = screen.getByLabelText("Page name for About");
+    await user.clear(field);
+    await user.type(field, "Who we are{Enter}");
+
+    expect(screen.getByText("Page renamed to Who we are.")).toBeDefined();
+    expect(screen.getByRole("button", { name: /^Who we are — \/about,/ })).toBeDefined();
+  });
+
+  it("will not let the home page move address, and says why on the field itself", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    await openManager(user);
+
+    await user.click(screen.getByRole("button", { name: "Rename Home" }));
+
+    const address = screen.getByLabelText("Address for Home");
+    expect(address).toHaveProperty("disabled", true);
+    expect(screen.getByText(/Every store needs a home page/)).toBeDefined();
+    // Renaming it is still fine — the name is the merchant's, the address is not.
+    expect(screen.getByLabelText("Page name for Home")).toHaveProperty("disabled", false);
+  });
+
+  it("re-routes a page the merchant owns, normalising what was typed", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    await openManager(user);
+
+    await user.click(screen.getByRole("button", { name: "Rename About" }));
+    const address = screen.getByLabelText("Address for About");
+    await user.clear(address);
+    await user.type(address, "Who We Are{Enter}");
+
+    expect(screen.getByText("About now answers /who-we-are.")).toBeDefined();
+  });
+
+  it("moves a page through the order with Alt and an arrow key, and counts it out loud", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    await openManager(user);
+
+    const row = screen.getByRole("button", { name: "About — /about, No sections yet, 2 of 2" });
+    row.focus();
+    await user.keyboard("{Alt>}{ArrowUp}{/Alt}");
+
+    expect(screen.getByText("About is now 1 of 2 in the navigation order.")).toBeDefined();
+  });
+
+  it("places a page in the footer from its row", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    await openManager(user);
+
+    await user.selectOptions(screen.getByLabelText("Navigation for About"), "footer");
+
+    expect(screen.getByText("About is in the footer.")).toBeDefined();
+  });
+
+  it("confirms a delete by naming the page and counting what goes with it", async () => {
+    const user = userEvent.setup();
+    renderShell();
+
+    // Put work on the page first: "delete this page" is the same sentence for an empty page and
+    // for an afternoon's work, and only the merchant knows which this is.
+    await user.selectOptions(screen.getByLabelText("Page"), "about");
+    await user.click(screen.getByRole("button", { name: "Add Test block" }));
+    await user.click(screen.getByRole("button", { name: "Add Test banner" }));
+
+    await openManager(user);
+    await user.click(screen.getByRole("button", { name: "Delete About" }));
+
+    expect(screen.getByText("Delete “About”?")).toBeDefined();
+    expect(screen.getByText(/All 2 sections on it go too/)).toBeDefined();
+
+    await user.keyboard("{Enter}");
+
+    expect(screen.getByText("About deleted. Undo brings it back. Now editing Home.")).toBeDefined();
+    expect(screen.queryByRole("button", { name: /About/ })).toBeNull();
+  });
+
+  it("backs out of a delete without closing the whole dialog", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    await openManager(user);
+
+    await user.click(screen.getByRole("button", { name: "Delete About" }));
+    await user.keyboard("{Escape}");
+
+    expect(screen.getByRole("dialog", { name: "Pages" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Delete About" })).toBeDefined();
+  });
+
+  it("offers no way to delete the pages a section links to implicitly", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    await openManager(user);
+
+    expect(screen.queryByRole("button", { name: "Delete Home" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Delete About" })).toBeDefined();
   });
 });

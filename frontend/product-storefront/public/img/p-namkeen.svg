@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Pack of namkeen">
+  <rect width="400" height="300" fill="#FBEFD8"/>
+  <path d="M118 246 132 94h136l14 152z" fill="#B8342A"/>
+  <path d="M124 78h152l-8 16H132z" fill="#8A2118"/>
+  <rect x="148" y="134" width="104" height="52" rx="8" fill="#FBEFD8"/>
+  <path d="M164 176q10-22 22 0 10-22 22 0 10-22 22 0" stroke="#E0952A" stroke-width="7" fill="none" stroke-linecap="round"/>
+  <circle cx="176" cy="150" r="7" fill="#E0952A"/>
+  <circle cx="200" cy="146" r="7" fill="#C97B14"/>
+  <circle cx="224" cy="150" r="7" fill="#E0952A"/>
+  <rect x="156" y="204" width="88" height="10" rx="5" fill="#F0C14B"/>
+</svg>

@@ -13,6 +13,17 @@ import type { SectionInstance } from "../schema";
 import { SECTION_COMPONENTS } from "./registry";
 import { SectionRenderer } from "./SectionRenderer";
 
+/** The two reference widths: the phone the retail work is designed at, and the desktop canvas. */
+const PHONE_WIDTH = 390;
+const DESKTOP_WIDTH = 1200;
+
+/**
+ * Every section's own root element. `footer-columns` is a real `<footer>` — the reference's footer
+ * *is* the page's footer, so the landmark belongs on that element rather than on a `<section>`
+ * wrapped around it to satisfy this sweep.
+ */
+const SECTION_ROOT = "section, footer";
+
 function instance(type: string, overrides: Partial<SectionInstance> = {}): SectionInstance {
   return {
     id: `test-${type}`,
@@ -31,6 +42,8 @@ function renderSection(section: SectionInstance, stacked = false) {
         products={PRODUCTS}
         categories={CATEGORY_LIST}
         stacked={stacked}
+        width={stacked ? PHONE_WIDTH : DESKTOP_WIDTH}
+        mode="trade"
       />
     </MemoryRouter>,
   );
@@ -56,13 +69,13 @@ describe.each(SECTION_DEFS.map((def) => [def.type, def.name] as const))(
   (type) => {
     it("renders its declared defaults without throwing", () => {
       const { container } = renderSection(instance(type));
-      expect(container.querySelector("section")).not.toBeNull();
+      expect(container.querySelector(SECTION_ROOT)).not.toBeNull();
       expect(screen.queryByText("Section unavailable")).toBeNull();
     });
 
     it("renders with an empty settings bag — a document written before a field existed", () => {
       const { container } = renderSection(instance(type, { settings: {} }));
-      expect(container.querySelector("section")).not.toBeNull();
+      expect(container.querySelector(SECTION_ROOT)).not.toBeNull();
       expect(screen.queryByText("Section unavailable")).toBeNull();
     });
 
@@ -70,7 +83,14 @@ describe.each(SECTION_DEFS.map((def) => [def.type, def.name] as const))(
       const section = instance(type);
       render(
         <MemoryRouter>
-          <SectionRenderer section={section} products={[]} categories={[]} stacked={false} />
+          <SectionRenderer
+            section={section}
+            products={[]}
+            categories={[]}
+            stacked={false}
+            width={DESKTOP_WIDTH}
+            mode="trade"
+          />
         </MemoryRouter>,
       );
       expect(screen.queryByText("Section unavailable")).toBeNull();

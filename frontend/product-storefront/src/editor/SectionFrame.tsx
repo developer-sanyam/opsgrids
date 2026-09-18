@@ -3,7 +3,7 @@ import type { CSSProperties, KeyboardEvent, PointerEvent } from "react";
 import { cn } from "@opsgrids/ui";
 
 import type { Category, Product } from "@/api/types";
-import type { SectionDef, SectionInstance } from "@/theme/schema";
+import type { SectionDef, SectionInstance, StoreMode } from "@/theme/schema";
 import { SectionRenderer } from "@/theme/render";
 
 import { COLUMNS } from "./grid";
@@ -32,6 +32,10 @@ interface SectionFrameProps {
   canEdit: boolean;
   /** Below the breakpoint the grid is not editable, so the frame drops its drag affordances. */
   stacked: boolean;
+  /** The width the preview is composed at — the same number the buyer's canvas would report. */
+  width: number;
+  /** The store's mode, so the preview shows the buyer's own card and vocabulary. */
+  mode: StoreMode;
   /** Grid placement, or nothing at all when the page is stacked. */
   style: CSSProperties;
   /** The id of the shared `sr-only` paragraph describing the keyboard controls. */
@@ -55,6 +59,8 @@ export function SectionFrame({
   selected,
   canEdit,
   stacked,
+  width,
+  mode,
   style,
   instructionsId,
   frameRef,
@@ -116,6 +122,8 @@ export function SectionFrame({
           products={products}
           categories={categories}
           stacked={stacked}
+          width={width}
+          mode={mode}
         />
       </div>
 

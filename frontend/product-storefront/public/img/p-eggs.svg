@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Tray of eggs">
+  <rect width="400" height="300" fill="#F4F1E8"/>
+  <ellipse cx="146" cy="150" rx="30" ry="38" fill="#F0DCB8"/>
+  <ellipse cx="216" cy="142" rx="30" ry="38" fill="#FBF3E4"/>
+  <ellipse cx="286" cy="152" rx="30" ry="38" fill="#E8D2A8"/>
+  <path d="M96 190h216l-14 62H110z" fill="#C4B79C"/>
+  <path d="M96 190h216l-8 18H104z" fill="#D8CDB6"/>
+  <circle cx="146" cy="216" r="16" fill="#A79A80"/>
+  <circle cx="200" cy="216" r="16" fill="#A79A80"/>
+  <circle cx="254" cy="216" r="16" fill="#A79A80"/>
+</svg>

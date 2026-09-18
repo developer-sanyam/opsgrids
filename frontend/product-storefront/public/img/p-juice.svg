@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Carton of fruit juice">
+  <rect width="400" height="300" fill="#FBF0DC"/>
+  <path d="M144 256V116l-12-22 16-16h104l16 16-12 22v140z" fill="#E4801E"/>
+  <path d="M148 78h104l-10 16h-84z" fill="#B85E0C"/>
+  <rect x="158" y="140" width="84" height="62" rx="6" fill="#FFF6E6"/>
+  <circle cx="186" cy="170" r="18" fill="#F2A21C"/>
+  <path d="M186 152a18 18 0 0 1 0 36z" fill="#D9820E"/>
+  <circle cx="220" cy="180" r="12" fill="#C0392B"/>
+  <rect x="160" y="216" width="80" height="8" rx="4" fill="#8E4708"/>
+</svg>

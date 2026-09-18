@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Tomatoes">
+  <rect width="400" height="300" fill="#F0F4E4"/>
+  <circle cx="156" cy="182" r="58" fill="#D63A2C"/>
+  <circle cx="252" cy="200" r="42" fill="#BF2E22"/>
+  <path d="M130 200a30 30 0 0 0 52 0z" fill="#E6584A" opacity="0.5"/>
+  <path d="M156 124c-22-10-30-24-28-38 18 2 28 10 32 22 6-10 18-16 34-14-2 16-16 28-38 30z" fill="#4E8C36"/>
+  <rect x="150" y="112" width="12" height="18" rx="5" fill="#3B6B27"/>
+  <path d="M252 158c-14-6-18-16-16-26 12 2 18 8 20 16 4-8 14-10 22-8-2 10-10 18-26 18z" fill="#4E8C36"/>
+</svg>

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Bag of basmati rice">
+  <rect width="400" height="300" fill="#F7F3E6"/>
+  <path d="M118 256V112l-14-18 24-10h144l24 10-14 18v144z" fill="#2E6B4A"/>
+  <path d="M128 80h144l-10 18H138z" fill="#1E4A32"/>
+  <rect x="142" y="132" width="116" height="72" rx="6" fill="#FBF7EA"/>
+  <ellipse cx="176" cy="166" rx="9" ry="20" transform="rotate(-24 176 166)" fill="#DCCDA6"/>
+  <ellipse cx="200" cy="174" rx="9" ry="20" transform="rotate(8 200 174)" fill="#CDBC92"/>
+  <ellipse cx="226" cy="164" rx="9" ry="20" transform="rotate(26 226 164)" fill="#DCCDA6"/>
+  <rect x="150" y="216" width="100" height="10" rx="5" fill="#C9A227"/>
+</svg>

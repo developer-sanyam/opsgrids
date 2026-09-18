@@ -5,8 +5,11 @@
 
 import { describe, expect, it } from "vitest";
 
-import { adoptTheme, clonePages, pageForRoute } from "./store";
+import type { StoreDoc, StoreMode } from "./schema";
+import { adoptTheme, clonePages, pageForRoute, resolveMode } from "./store";
 import { THEMES, foundry, suggestedBrand } from "./themes";
+
+const MODES: StoreMode[] = ["retail", "trade"];
 
 const BRAND = { name: "Test Supply", tagline: "Testing", logoText: "TS" };
 
@@ -18,6 +21,14 @@ describe("adoptTheme", () => {
     expect(store.brand).toEqual(BRAND);
     expect(store.tokens).toEqual(foundry.tokens);
     expect(store.pages.map((p) => p.route)).toEqual(foundry.pages.map((p) => p.route));
+  });
+
+  it("copies the theme's mode onto the store", () => {
+    // Copied at adopt time, not resolved from `themeKey` later: the fork cuts the link to the
+    // theme, and a store may outlive the theme key it was adopted from.
+    for (const theme of THEMES) {
+      expect(adoptTheme(theme, BRAND).mode).toBe(theme.mode);
+    }
   });
 
   it("deep-copies rather than aliasing — mutating the store cannot reach the theme", () => {
@@ -82,6 +93,34 @@ describe("clonePages", () => {
     const copy = clonePages(foundry.pages);
     expect(copy).toEqual(foundry.pages);
     expect(copy[0]).not.toBe(foundry.pages[0]);
+  });
+});
+
+describe("resolveMode", () => {
+  it("passes both declared modes straight through", () => {
+    expect(resolveMode({ mode: "retail" })).toBe("retail");
+    expect(resolveMode({ mode: "trade" })).toBe("trade");
+  });
+
+  it("falls back to trade for a document that predates the field or came off the wire", () => {
+    // Both shapes are reachable in production: a stored document written before `mode` existed,
+    // and a server response carrying a value this build does not know. A trade store missing an
+    // ADD button is boring; a retail store missing its MOQ is wrong — so trade is the safe answer.
+    const missing = {} as Pick<StoreDoc, "mode">;
+    const unknown = { mode: "wholesale" } as unknown as Pick<StoreDoc, "mode">;
+    const nulled = { mode: null } as unknown as Pick<StoreDoc, "mode">;
+
+    expect(resolveMode(missing)).toBe("trade");
+    expect(resolveMode(unknown)).toBe("trade");
+    expect(resolveMode(nulled)).toBe("trade");
+  });
+});
+
+describe("the shipped theme library", () => {
+  it("declares a valid mode on every theme", () => {
+    for (const theme of THEMES) {
+      expect(MODES, `"${theme.key}" declares an unknown mode`).toContain(theme.mode);
+    }
   });
 });
 

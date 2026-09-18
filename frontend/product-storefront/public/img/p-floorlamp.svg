@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Standing floor lamp">
+  <rect width="400" height="300" fill="#EFE7D6"/>
+  <rect y="262" width="400" height="38" fill="#DCCFB6"/>
+  <path d="M146 152h108l-16-92h-76z" fill="#E6D8B4"/>
+  <path d="M146 152h108l-8 12h-92z" fill="#C9A227"/>
+  <rect x="192" y="164" width="14" height="98" fill="#3A322A"/>
+  <path d="M158 262h84l-8-12h-68z" fill="#3A322A"/>
+  <ellipse cx="200" cy="262" rx="52" ry="10" fill="#2A241E"/>
+  <path d="M168 86h64l6 36h-76z" fill="#F5EBCB"/>
+</svg>

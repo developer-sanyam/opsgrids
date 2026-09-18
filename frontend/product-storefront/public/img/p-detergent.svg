@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Box of detergent powder">
+  <rect width="400" height="300" fill="#E9EDF7"/>
+  <path d="M116 256V96l20-14h132l16 14v160z" fill="#2E58B8"/>
+  <path d="M136 82h132l16 14H116z" fill="#1F3F8C"/>
+  <rect x="136" y="132" width="132" height="64" rx="6" fill="#F4F7FD"/>
+  <circle cx="176" cy="164" r="18" fill="#F2C94C"/>
+  <circle cx="212" cy="156" r="12" fill="#2E58B8"/>
+  <circle cx="234" cy="176" r="10" fill="#6B8FE0"/>
+  <rect x="146" y="212" width="112" height="10" rx="5" fill="#F2C94C"/>
+</svg>
