@@ -17,7 +17,7 @@ import asyncio
 import smtplib
 from dataclasses import dataclass, field
 from email.message import EmailMessage
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 
@@ -40,11 +40,22 @@ class TransportUnavailable(TransportError):
 
 @dataclass(frozen=True, slots=True)
 class Outgoing:
-    """What a transport is asked to send. Deliberately not the ORM row."""
+    """What a transport is asked to send. Deliberately not the ORM row.
+
+    `template` carries a provider-registered template payload, already built and validated by
+    `domain.build_template_payload`. When it is set the transport sends the template and `body`
+    is only a human-readable record of what the customer will read; when it is None the
+    transport sends `body` as free text.
+
+    A transport that cannot send templates ignores the field rather than failing: email has no
+    such concept, and the alternative — every caller knowing which channel supports what — puts
+    provider knowledge back in the rules engine.
+    """
 
     to_address: str
     subject: str | None
     body: str
+    template: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,10 +172,14 @@ class SmtpTransport:
 class WhatsAppCloudTransport:
     """WhatsApp via Meta's Cloud API.
 
-    Sends a `text` message to an E.164 recipient. Note the constraint this does not pretend to
-    solve: outside a 24-hour customer service window Meta accepts only pre-approved *template*
-    messages, and a free-text send is refused. That refusal arrives as a 4xx and is classified
-    permanent, which is the honest outcome — the fix is an approved template, not a retry.
+    Sends either a pre-approved **template** message or free **text** to an E.164 recipient,
+    depending on whether the caller supplied a built template payload.
+
+    That choice is the 24-hour customer service window, and it is not cosmetic: Meta accepts free
+    text only inside the window, and only a template outside it. A proactive notification — an
+    invoice reminder, an order update, anything the customer did not just ask for — is by
+    definition outside, so it must be a template. A free-text send there is refused with a 4xx,
+    classified permanent below, which is honest but still undelivered.
 
     4xx is refused, 5xx and timeouts are unavailable. 429 is deliberately *unavailable*: rate
     limiting is the one 4xx that time does fix.
@@ -185,13 +200,20 @@ class WhatsAppCloudTransport:
         self._timeout = timeout
 
     async def send(self, message: Outgoing) -> Receipt:
-        payload = {
+        payload: dict[str, Any] = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
             "to": message.to_address,
-            "type": "text",
-            "text": {"body": message.body},
         }
+        if message.template is not None:
+            # The only shape that reaches a user outside the 24-hour customer service window.
+            payload["type"] = "template"
+            payload["template"] = message.template
+        else:
+            # Free text, valid only inside the window. Outside it Meta refuses with a 4xx,
+            # which is classified permanent below — the fix is an approved template, not a retry.
+            payload["type"] = "text"
+            payload["text"] = {"body": message.body}
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 response = await client.post(

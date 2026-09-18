@@ -10,6 +10,8 @@ transport, so the status-code mapping is tested without a network.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -137,3 +139,92 @@ async def test_whatsapp_network_error_is_transient(monkeypatch: pytest.MonkeyPat
 
     with pytest.raises(transports.TransportUnavailable):
         await _send_against(handler, monkeypatch)
+
+
+async def test_whatsapp_sends_a_template_when_one_is_supplied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shape that reaches a user outside the 24-hour window. Asserted on the wire, because
+    the difference between `type: text` and `type: template` is the difference between a
+    delivered notification and a 4xx."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json={"messages": [{"id": "wamid.T"}]})
+
+    transport = transports.WhatsAppCloudTransport(
+        api_base="https://graph.example.com/v25.0",
+        phone_number_id="1234",
+        access_token="token",
+        timeout=1.0,
+    )
+    mock = httpx.MockTransport(handler)
+    original = httpx.AsyncClient
+
+    def patched(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        kwargs.pop("timeout", None)
+        return original(transport=mock, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched)
+
+    built = {
+        "name": "invoice_due_reminder",
+        "language": {"code": "en_US"},
+        "components": [{"type": "body", "parameters": [{"type": "text", "text": "INV-9"}]}],
+    }
+    receipt = await transport.send(
+        transports.Outgoing(
+            to_address="+917976603446",
+            subject=None,
+            body="preview only",
+            template=built,
+        )
+    )
+
+    assert receipt.provider_message_id == "wamid.T"
+    assert seen["type"] == "template"
+    assert seen["template"] == built
+    # The preview text must not be sent alongside — the provider holds the wording.
+    assert "text" not in seen
+
+
+async def test_whatsapp_sends_text_when_no_template_is_supplied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json={"messages": [{"id": "wamid.X"}]})
+
+    transport = transports.WhatsAppCloudTransport(
+        api_base="https://graph.example.com/v25.0",
+        phone_number_id="1234",
+        access_token="token",
+        timeout=1.0,
+    )
+    mock = httpx.MockTransport(handler)
+    original = httpx.AsyncClient
+
+    def patched(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        kwargs.pop("timeout", None)
+        return original(transport=mock, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched)
+
+    await transport.send(
+        transports.Outgoing(to_address="+917976603446", subject=None, body="Hello")
+    )
+    assert seen["type"] == "text"
+    assert seen["text"] == {"body": "Hello"}
+    assert "template" not in seen
+
+
+async def test_email_transport_ignores_a_template(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A transport without templates ignores the field rather than failing — the alternative
+    puts provider knowledge back in the rules engine."""
+    receipt = await transports.LogTransport("email").send(
+        transports.Outgoing(to_address="a@b.com", subject="S", body="B", template={"name": "x"})
+    )
+    assert receipt.provider == "log"

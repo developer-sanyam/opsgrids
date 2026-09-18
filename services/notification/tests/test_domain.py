@@ -123,6 +123,7 @@ def _valid(**over: object) -> dict[str, object]:
         "event_type": "support.desk.ticket.created",
         "recipient_path": "requester_email",
         "recipient_literal": None,
+        "template_code": "ticket_acknowledged",
     }
     base.update(over)
     return base
@@ -157,6 +158,27 @@ def test_a_literal_recipient_is_validated_at_authoring_time() -> None:
         domain.validate_rule(  # type: ignore[arg-type]
             **_valid(recipient_path=None, recipient_literal="not-an-email")
         )
+
+
+def test_a_rule_with_no_template_is_refused() -> None:
+    """A rule that fires and renders nothing is an absence — the hardest failure to notice."""
+    with pytest.raises(domain.RuleError, match="needs a template"):
+        domain.validate_rule(**_valid(template_code=None))  # type: ignore[arg-type]
+
+
+def test_a_rule_cannot_name_both_kinds_of_template() -> None:
+    """Ambiguous about which wording the customer reads, so refused rather than resolved."""
+    with pytest.raises(domain.RuleError, match="not both"):
+        domain.validate_rule(  # type: ignore[arg-type]
+            **_valid(provider_template_code="invoice_due_reminder")
+        )
+
+
+def test_a_provider_template_alone_is_coherent() -> None:
+    """The proactive-WhatsApp shape: no body of ours, only wording the provider holds."""
+    domain.validate_rule(  # type: ignore[arg-type]
+        **_valid(template_code=None, provider_template_code="invoice_due_reminder")
+    )
 
 
 # --------------------------------------------------------------------- the event catalogue

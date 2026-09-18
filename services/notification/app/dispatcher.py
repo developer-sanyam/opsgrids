@@ -73,6 +73,10 @@ async def dispatch(
             to_address=message.to_address,
             subject=message.subject,
             body=message.body,
+            # Built and validated when the message was staged, not now: a template that cannot
+            # be built is an authoring fault and belongs to the rule that named it, where the
+            # log line can say which variable was missing. By here it is settled.
+            template=message.provider_template_payload,
         )
         channel = message.channel
         attempt = message.attempts

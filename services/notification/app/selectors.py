@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Delivery, Message, Preference, Rule, Template
+from app.models import Delivery, Message, Preference, ProviderTemplate, Rule, Template
 from platform_core.auth import ScopeContext
 
 
@@ -201,5 +201,30 @@ async def get_preference(
         Preference.channel == channel,
         Preference.category == category,
         Preference.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def provider_templates_stmt(ctx: ScopeContext, *, channel: str | None = None) -> Select[Any]:
+    """Scope-filtered provider-template list."""
+    stmt = select(ProviderTemplate).where(
+        ProviderTemplate.organization_id == ctx.organization_id,
+        ProviderTemplate.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=ProviderTemplate.created_by)
+    if channel:
+        stmt = stmt.where(ProviderTemplate.channel == channel)
+    return stmt.order_by(ProviderTemplate.code.asc())
+
+
+async def get_provider_template(
+    session: AsyncSession, org_id: uuid.UUID, code: str, channel: str
+) -> ProviderTemplate | None:
+    """Org-scoped fetch by code and channel. None on a tenant mismatch."""
+    stmt = select(ProviderTemplate).where(
+        ProviderTemplate.code == code,
+        ProviderTemplate.channel == channel,
+        ProviderTemplate.organization_id == org_id,
+        ProviderTemplate.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
