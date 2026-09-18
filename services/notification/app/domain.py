@@ -507,9 +507,12 @@ def build_template_payload(
         components.append(
             {
                 "type": COMPONENT_BUTTON,
-                # `url` covers a dynamic link suffix, which is the button parameter an
-                # automation actually needs; `quick_reply` carries an opaque payload instead.
-                "sub_type": "payload" if params[0].kind == "payload" else "url",
+                # Two valid sub_types, read off Meta's example: a `quick_reply` button carries
+                # an opaque `payload` parameter, a `url` button carries a `text` suffix for the
+                # link. `payload` is the *parameter* type, never the sub_type — emitting it here
+                # produced a payload Meta rejects outright, which the dispatcher would classify
+                # permanent and the message would die with no retry.
+                "sub_type": "quick_reply" if params[0].kind == "payload" else "url",
                 # A string, matching Meta's published example rather than the integer it looks
                 # like it should be.
                 "index": str(button_index),

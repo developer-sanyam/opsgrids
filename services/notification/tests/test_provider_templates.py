@@ -91,7 +91,9 @@ def test_button_sub_type_follows_the_parameter_kind() -> None:
         context={"pay_link": "https://pay.example/9"},
     )
     button = next(c for c in payload_button["components"] if c["type"] == "button")
-    assert button["sub_type"] == "payload"
+    # `quick_reply`, not `payload`: Meta's sub_types are quick_reply and url, while `payload` is
+    # the parameter type carried inside a quick_reply button.
+    assert button["sub_type"] == "quick_reply"
     assert button["parameters"] == [{"type": "payload", "payload": "https://pay.example/9"}]
 
 
@@ -104,6 +106,20 @@ def test_each_button_gets_its_own_component() -> None:
     )
     buttons = [c for c in payload["components"] if c["type"] == "button"]
     assert [b["index"] for b in buttons] == ["0", "1"]
+
+
+def test_button_sub_types_are_only_metas_two() -> None:
+    """A regression guard. `payload` is a parameter type, not a sub_type — emitting it as one
+    produces a payload Meta rejects outright, and the dispatcher classifies that permanent, so
+    the message dies without a retry."""
+    for kind, expected in (("payload", "quick_reply"), ("text", "url")):
+        payload = _build(
+            variables=[TemplateVariable(key="pay_link", component=COMPONENT_BUTTON, kind=kind)],
+            context={"pay_link": "https://pay.example/9"},
+        )
+        button = next(c for c in payload["components"] if c["type"] == "button")
+        assert button["sub_type"] == expected
+        assert button["sub_type"] in ("quick_reply", "url")
 
 
 # --------------------------------------------------------------------- strictness

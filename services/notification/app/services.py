@@ -144,6 +144,11 @@ async def upsert_provider_template(
         raise ValidationProblem(f"{category!r} is not a template category")
     if status not in domain.TEMPLATE_STATUSES:
         raise ValidationProblem(f"{status!r} is not a template status")
+    if parameter_format not in (domain.FORMAT_POSITIONAL, domain.FORMAT_NAMED):
+        # Validated here like the other three, so a typo is a 422 on the template rather than a
+        # skipped send later. `named` is storable but not yet sendable; that is checked when the
+        # payload is built, where the error can say why.
+        raise ValidationProblem(f"{parameter_format!r} is not a template parameter format")
 
     try:
         domain.validate_template_variables([domain.TemplateVariable(**v) for v in variables])
