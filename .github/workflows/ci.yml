@@ -85,6 +85,24 @@ jobs:
     needs: changes
     if: needs.changes.outputs.backend == 'true'
 
+    env:
+      # Serial, deliberately, and this is the interesting number in the whole file.
+      #
+      # The per-service fan-outs in the Makefile are a large win on a developer machine —
+      # `typecheck-services` goes from 200s to 46s on eight cores. On this runner they are a
+      # *regression*, and the measurement is unambiguous: with `JOBS=2` (its core count) the
+      # type-check step went from 219s to 327s. Completion timestamps came in pairs separated
+      # by 18s gaps, so concurrency was exactly 2 and each mypy took 18s — against 6s when it
+      # had the machine to itself. Two at a time, each three times slower, is arithmetic that
+      # loses.
+      #
+      # A GitHub-hosted standard runner has 2 vCPUs, and mypy --strict with the pydantic
+      # plugin is not a job that shares one. `JOBS=1` here keeps CI on the fast path and
+      # leaves the fan-out available where there are cores to use it.
+      #
+      # Revisit if this repository moves to larger runners: at 4+ cores the fan-out wins.
+      JOBS: 1
+
     services:
       postgres:
         image: postgis/postgis:16-3.4
