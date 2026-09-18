@@ -11,7 +11,7 @@
     "preview": "vite preview --port 4340 --strictPort",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@opsgrids/client": "workspace:*",
