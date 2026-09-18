@@ -29,6 +29,7 @@ Start here.
 | If you want to… | Read |
 |---|---|
 | Know what is next and what is blocked | [backlog.md](backlog.md) |
+| Know which sales claims the code actually supports, and what closing the rest costs | [ecosystem-gaps.md](ecosystem-gaps.md) |
 | Understand the longer arc and its sequencing | [plan.md](plan.md) |
 | Know whether this can be deployed | [production-readiness.md](production-readiness.md) |
 | Understand why something is shaped the way it is | [decisions.md](decisions.md) · [adr/](adr/) |
