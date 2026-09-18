@@ -13,6 +13,11 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 Channel = Literal["email", "whatsapp"]
+TemplateCategory = Literal["utility", "marketing", "authentication"]
+ParameterFormat = Literal["positional", "named"]
+TemplateStatus = Literal["draft", "pending", "approved", "rejected", "paused", "disabled"]
+VariableComponent = Literal["body", "header", "button"]
+VariableKind = Literal["text", "payload"]
 MessageState = Literal["pending", "sent", "failed", "suppressed"]
 Outcome = Literal["sent", "failed"]
 
@@ -51,10 +56,74 @@ class TemplateIn(BaseModel):
 # --------------------------------------------------------------------- rules
 
 
+class TemplateVariableIn(BaseModel):
+    """One value a provider template expects.
+
+    `key` is our vocabulary — the same name a rule's payload path resolves — while `position`
+    is the provider's. Keeping both here is what lets the rest of the service speak one
+    language and confines the provider's ordering to this row.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=120)
+    component: VariableComponent = "body"
+    position: int = Field(default=0, ge=0)
+    button_index: int = Field(default=0, ge=0)
+    kind: VariableKind = "text"
+
+
+class TemplateVariableOut(TemplateVariableIn):
+    pass
+
+
+class ProviderTemplateOut(BaseModel):
+    id: str
+    channel: Channel
+    provider_name: str
+    provider_template_id: str | None
+    language: str
+    category: TemplateCategory
+    parameter_format: ParameterFormat
+    status: TemplateStatus
+    status_reason: str | None
+    status_checked_at: datetime | None
+    variables: list[TemplateVariableOut]
+    preview_text: str
+    #: Whether this template may be sent right now. Only an approved one may.
+    sendable: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProviderTemplateIn(BaseModel):
+    """Register or update a template the provider holds.
+
+    `status` is the provider's answer, not ours, so it defaults to `draft` and is expected to be
+    corrected by a sync rather than asserted here. Setting it to `approved` by hand is possible
+    and is exactly how a test fixture works, but in production it is a claim about somebody
+    else's system.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9_]+$")
+    channel: Channel
+    provider_name: str = Field(min_length=1, max_length=200)
+    language: str = Field(default="en", max_length=20)
+    category: TemplateCategory = "utility"
+    parameter_format: ParameterFormat = "positional"
+    status: TemplateStatus = "draft"
+    status_reason: str | None = Field(default=None, max_length=2000)
+    variables: list[TemplateVariableIn] = Field(default_factory=list)
+    preview_text: str = ""
+
+
 class RuleOut(BaseModel):
     id: str
     event_type: str
-    template_code: str
+    template_code: str | None
+    provider_template_code: str | None
     channel: Channel
     category: str
     recipient_path: str | None
@@ -76,8 +145,12 @@ class RuleIn(BaseModel):
 
     code: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9_]+$")
     event_type: str = Field(min_length=1, max_length=120)
-    template_code: str = Field(min_length=1, max_length=80)
     channel: Channel
+    #: Exactly one of these. `template_code` renders a body of ours as free text;
+    #: `provider_template_code` sends wording the provider holds, which is the only thing that
+    #: reaches a WhatsApp user outside the 24-hour customer service window.
+    template_code: str | None = Field(default=None, max_length=80)
+    provider_template_code: str | None = Field(default=None, max_length=80)
     category: str = Field(default="operational", max_length=40)
     recipient_path: str | None = Field(default=None, max_length=120)
     recipient_literal: str | None = Field(default=None, max_length=254)

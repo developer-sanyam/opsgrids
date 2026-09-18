@@ -24,12 +24,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
 from app.config import settings
-from app.models import SCHEMA, Delivery, Message, Preference, Rule, Template
+from app.models import SCHEMA, Delivery, Message, Preference, ProviderTemplate, Rule, Template
 from app.schemas import (
     DeliveryOut,
     MessageOut,
     PreferenceIn,
     PreferenceOut,
+    ProviderTemplateIn,
+    ProviderTemplateOut,
     RuleIn,
     RuleOut,
     SendIn,
@@ -91,11 +93,33 @@ def _template_out(row: Template) -> TemplateOut:
     )
 
 
+def _provider_template_out(row: ProviderTemplate) -> ProviderTemplateOut:
+    return ProviderTemplateOut(
+        id=row.code,
+        channel=row.channel,
+        provider_name=row.provider_name,
+        provider_template_id=row.provider_template_id,
+        language=row.language,
+        category=row.category,
+        parameter_format=row.parameter_format,
+        status=row.status,
+        status_reason=row.status_reason,
+        status_checked_at=row.status_checked_at,
+        variables=list(row.variables),
+        preview_text=row.preview_text,
+        # Derived rather than stored, so it can never disagree with `status`.
+        sendable=domain.template_is_sendable(row.status),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
 def _rule_out(row: Rule) -> RuleOut:
     return RuleOut(
         id=row.code,
         event_type=row.event_type,
         template_code=row.template_code,
+        provider_template_code=row.provider_template_code,
         channel=row.channel,
         category=row.category,
         recipient_path=row.recipient_path,
@@ -214,6 +238,54 @@ async def put_template(
     return _template_out(row)
 
 
+# --------------------------------------------------------------------- provider templates
+
+
+@router.get(
+    "/notifications/provider-templates",
+    response_model=Page[ProviderTemplateOut],
+    summary="Templates the channel provider holds",
+    dependencies=[Entitled],
+)
+async def list_provider_templates(
+    session: SessionDep,
+    ctx: TemplateRead,
+    params: PageQuery,
+    channel: Annotated[str | None, Query(description="email or whatsapp")] = None,
+) -> Page[ProviderTemplateOut]:
+    """What can be sent outside a conversation window, and what is still in review."""
+    stmt = selectors.provider_templates_stmt(ctx, channel=channel)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([_provider_template_out(r) for r in rows], total=total, params=params)
+
+
+@router.put(
+    "/notifications/provider-templates",
+    response_model=ProviderTemplateOut,
+    summary="Register or update a provider-held template",
+    dependencies=[Entitled],
+)
+async def put_provider_template(
+    body: ProviderTemplateIn, session: SessionDep, ctx: TemplateWrite, request: Request
+) -> ProviderTemplateOut:
+    row = await services.upsert_provider_template(
+        session,
+        ctx,
+        code=body.code,
+        channel=body.channel,
+        provider_name=body.provider_name,
+        language=body.language,
+        category=body.category,
+        parameter_format=body.parameter_format,
+        status=body.status,
+        status_reason=body.status_reason,
+        variables=[v.model_dump() for v in body.variables],
+        preview_text=body.preview_text,
+        request=request,
+    )
+    return _provider_template_out(row)
+
+
 # --------------------------------------------------------------------- rules
 
 
@@ -249,6 +321,7 @@ async def put_rule(
         code=body.code,
         event_type=body.event_type,
         template_code=body.template_code,
+        provider_template_code=body.provider_template_code,
         channel=body.channel,
         category=body.category,
         recipient_path=body.recipient_path,

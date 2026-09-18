@@ -22,7 +22,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import domain, selectors
-from app.models import AuditLog, Delivery, Message, OutboxEvent, Preference, Rule, Template
+from app.models import (
+    AuditLog,
+    Delivery,
+    Message,
+    OutboxEvent,
+    Preference,
+    ProviderTemplate,
+    Rule,
+    Template,
+)
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
@@ -106,14 +115,91 @@ async def upsert_template(
     return template
 
 
+async def upsert_provider_template(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    code: str,
+    channel: str,
+    provider_name: str,
+    language: str,
+    category: str,
+    parameter_format: str,
+    status: str,
+    status_reason: str | None,
+    variables: list[dict[str, Any]],
+    preview_text: str,
+    request: Request | None = None,
+) -> ProviderTemplate:
+    """Register or update a template the provider holds. Keyed by `(code, channel)`. Idempotent.
+
+    The variables are validated here rather than at send time, for the reason the validator
+    itself explains: the provider fills parameters in order, so a gap does not leave a hole — it
+    shifts every later value into the wrong placeholder and delivers a real message carrying
+    somebody else's data. That is worth a 422 now.
+    """
+    if channel not in domain.CHANNELS:
+        raise ValidationProblem(f"{channel!r} is not a channel this service can reach")
+    if category not in domain.CATEGORIES:
+        raise ValidationProblem(f"{category!r} is not a template category")
+    if status not in domain.TEMPLATE_STATUSES:
+        raise ValidationProblem(f"{status!r} is not a template status")
+
+    try:
+        domain.validate_template_variables([domain.TemplateVariable(**v) for v in variables])
+    except (domain.TemplateError, TypeError) as exc:
+        raise ValidationProblem(str(exc)) from exc
+
+    row = await selectors.get_provider_template(session, ctx.organization_id, code, channel)
+    if row is None:
+        row = ProviderTemplate(
+            organization_id=ctx.organization_id,
+            created_by=str(ctx.principal.sub),
+            code=code,
+            channel=channel,
+        )
+        session.add(row)
+    else:
+        row.updated_by = str(ctx.principal.sub)
+    row.provider_name = provider_name
+    row.language = language
+    row.category = category
+    row.parameter_format = parameter_format
+    row.status = status
+    row.status_reason = status_reason
+    row.variables = variables
+    row.preview_text = preview_text
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="provider_template.upserted",
+        entity="provider_template",
+        entity_id=row.id,
+        after={
+            "code": code,
+            "channel": channel,
+            "provider_name": provider_name,
+            "status": status,
+            "category": category,
+        },
+        request=request,
+    )
+    return row
+
+
 async def upsert_rule(
     session: AsyncSession,
     ctx: ScopeContext,
     *,
     code: str,
     event_type: str,
-    template_code: str,
     channel: str,
+    template_code: str | None = None,
+    provider_template_code: str | None = None,
     category: str = "operational",
     recipient_path: str | None = None,
     recipient_literal: str | None = None,
@@ -133,13 +219,27 @@ async def upsert_rule(
             event_type=event_type,
             recipient_path=recipient_path,
             recipient_literal=recipient_literal,
+            template_code=template_code,
+            provider_template_code=provider_template_code,
         )
     except domain.RuleError as exc:
         raise ValidationProblem(str(exc)) from exc
 
-    if await selectors.get_template(session, ctx.organization_id, template_code, channel) is None:
+    if template_code and (
+        await selectors.get_template(session, ctx.organization_id, template_code, channel) is None
+    ):
         raise ValidationProblem(
             f"No {channel} template named {template_code!r} — create the template first"
+        )
+    if provider_template_code and (
+        await selectors.get_provider_template(
+            session, ctx.organization_id, provider_template_code, channel
+        )
+        is None
+    ):
+        raise ValidationProblem(
+            f"No {channel} provider template named {provider_template_code!r} — "
+            "register the template first"
         )
 
     rule = await selectors.get_rule(session, ctx.organization_id, code)
@@ -154,6 +254,7 @@ async def upsert_rule(
         rule.updated_by = str(ctx.principal.sub)
     rule.event_type = event_type
     rule.template_code = template_code
+    rule.provider_template_code = provider_template_code
     rule.channel = channel
     rule.category = category
     rule.recipient_path = recipient_path
@@ -249,6 +350,8 @@ async def stage_message(
     source_event_id: uuid.UUID | None = None,
     dedupe_key: str | None = None,
     actor: dict[str, Any] | None = None,
+    provider_template_code: str | None = None,
+    provider_template_payload: dict[str, Any] | None = None,
 ) -> Message | None:
     """Stage one already-rendered message, suppression and de-duplication applied.
 
@@ -280,6 +383,8 @@ async def stage_message(
         event_type=event_type,
         source_event_id=source_event_id,
         dedupe_key=dedupe_key,
+        provider_template_code=provider_template_code,
+        provider_template_payload=provider_template_payload,
     )
     session.add(message)
     await session.flush()
@@ -365,30 +470,12 @@ async def apply_rules(
             )
             continue
 
-        template = await selectors.get_template(
-            session, organization_id, rule.template_code, rule.channel
-        )
-        if template is None:
-            log.error(
-                "notification.rule.template_missing",
-                rule=rule.code,
-                template=rule.template_code,
-                channel=rule.channel,
-            )
+        wording = await _wording_for(session, organization_id, rule, payload)
+        if wording is None:
+            # Every reason is already logged inside `_wording_for`, each with the rule and the
+            # template it names. One rule failing must not stop the others on this event.
             continue
-
-        try:
-            body = domain.render(template.body, payload)
-            subject = domain.render(template.subject, payload) if template.subject else None
-        except domain.RenderError as exc:
-            log.error(
-                "notification.rule.render_failed",
-                rule=rule.code,
-                template=rule.template_code,
-                event_type=event_type,
-                error=str(exc),
-            )
-            continue
+        subject, body, provider_code, provider_payload = wording
 
         message = await stage_message(
             session,
@@ -409,11 +496,105 @@ async def apply_rules(
                 dedupe_key_path=rule.dedupe_key_path,
             ),
             actor={"type": "system", "id": SYSTEM_ACTOR},
+            provider_template_code=provider_code,
+            provider_template_payload=provider_payload,
         )
         if message is not None:
             staged.append(message)
 
     return staged
+
+
+async def _wording_for(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    rule: Rule,
+    payload: dict[str, Any],
+) -> tuple[str | None, str, str | None, dict[str, Any] | None] | None:
+    """Resolve what one rule will actually say, or None with the reason logged.
+
+    Two sources, and the rule names exactly one. A `Template` is a body we own and render into
+    free text. A `ProviderTemplate` is wording the provider holds and reviews, where we supply
+    only parameters — and the only thing that reaches a WhatsApp user outside the 24-hour
+    customer service window.
+
+    Returns `(subject, body, provider_template_code, provider_template_payload)`. Every failure
+    returns None after logging, because one unsendable rule must not stop the others reacting to
+    the same event, and an absent message with an explanation beats a malformed one delivered.
+    """
+    if rule.provider_template_code:
+        provider = await selectors.get_provider_template(
+            session, organization_id, rule.provider_template_code, rule.channel
+        )
+        if provider is None:
+            log.error(
+                "notification.rule.provider_template_missing",
+                rule=rule.code,
+                template=rule.provider_template_code,
+                channel=rule.channel,
+            )
+            return None
+        if not domain.template_is_sendable(provider.status):
+            # Checked here rather than left to the provider: its refusal would arrive as a 4xx
+            # the dispatcher classifies permanent, costing a message and telling the operator
+            # nothing that this log line does not say now.
+            log.error(
+                "notification.rule.provider_template_not_approved",
+                rule=rule.code,
+                template=provider.code,
+                status=provider.status,
+                reason=provider.status_reason,
+            )
+            return None
+        try:
+            variables = [domain.TemplateVariable(**v) for v in provider.variables]
+            built = domain.build_template_payload(
+                template_name=provider.provider_name,
+                language=provider.language,
+                variables=variables,
+                context=payload,
+                parameter_format=provider.parameter_format,
+            )
+        except (domain.TemplateError, TypeError) as exc:
+            # TypeError covers a `variables` row whose keys do not match `TemplateVariable` —
+            # stored JSON drifting from the dataclass, which is a data fault, not a send fault.
+            log.error(
+                "notification.rule.provider_template_invalid",
+                rule=rule.code,
+                template=provider.code,
+                event_type=rule.event_type,
+                error=str(exc),
+            )
+            return None
+        # `body` is the provider's wording for display and for the record. It is deliberately
+        # not substituted: the provider owns the text, the substitution happens on their side,
+        # and a locally-rendered guess at the result would be a message we never sent.
+        return None, provider.preview_text, provider.code, built
+
+    template = await selectors.get_template(
+        session, organization_id, rule.template_code or "", rule.channel
+    )
+    if template is None:
+        log.error(
+            "notification.rule.template_missing",
+            rule=rule.code,
+            template=rule.template_code,
+            channel=rule.channel,
+        )
+        return None
+    try:
+        body = domain.render(template.body, payload)
+        subject = domain.render(template.subject, payload) if template.subject else None
+    except domain.RenderError as exc:
+        log.error(
+            "notification.rule.render_failed",
+            rule=rule.code,
+            template=rule.template_code,
+            event_type=rule.event_type,
+            error=str(exc),
+        )
+        return None
+    return subject, body, None, None
 
 
 async def send_direct(

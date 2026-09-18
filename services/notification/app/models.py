@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -35,6 +36,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -111,7 +113,9 @@ class Rule(Base, TenantBase):
     code: Mapped[str] = mapped_column(String(80), nullable=False)
     #: The routing key this rule reacts to, e.g. ``support.desk.ticket.created``.
     event_type: Mapped[str] = mapped_column(String(120), nullable=False)
-    template_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    #: A `Template.code` whose body we render and send as free text. Null when the rule
+    #: sends a provider-held template instead — exactly one of the two is set.
+    template_code: Mapped[str | None] = mapped_column(String(80))
     #: email | whatsapp.
     channel: Mapped[str] = mapped_column(String(20), nullable=False)
     #: Suppression bucket a recipient can opt out of, e.g. ``billing``, ``marketing``.
@@ -124,6 +128,11 @@ class Rule(Base, TenantBase):
     #: Dotted path to a value that makes this send unique. Optional.
     dedupe_key_path: Mapped[str | None] = mapped_column(String(120))
 
+    #: A `ProviderTemplate.code` to send instead of rendering `template_code` as free text.
+    #: Set for any rule that must reach a WhatsApp user outside the 24-hour window, which is
+    #: every proactive notification. Null means free text, which stays correct for email.
+    provider_template_code: Mapped[str | None] = mapped_column(String(80))
+
     #: An inactive rule is left in place and skipped — an audit trail of what used to fire.
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
@@ -131,6 +140,73 @@ class Rule(Base, TenantBase):
         # The consumer's hot path: every message asks "which rules watch this event type?".
         Index("ix_rules_org_event", "organization_id", "event_type", "active"),
         UniqueConstraint("organization_id", "code", name="uq_rules_org_code"),
+    )
+
+
+class ProviderTemplate(Base, TenantBase):
+    """A template registered with the **channel provider**, not text this service owns.
+
+    The distinction from `Template` is the whole reason both exist. A `Template` is our body,
+    rendered here and sent as free text. A `ProviderTemplate` is an artifact living at the
+    provider: Meta holds the wording, reviews it, approves or rejects it, and we supply only the
+    parameters. It is the only way to reach a WhatsApp user outside the 24-hour customer service
+    window — which is to say, the only way to send a notification the customer did not just ask
+    for, which is what "automation" means.
+
+    Named `provider_template` rather than `whatsapp_template` because the shape is not
+    WhatsApp's alone: SMS in India carries DLT-registered templates with the same
+    register-then-reference lifecycle. The channel is a column, not a table name.
+
+    `status` is the provider's answer, not ours. Only `approved` may be sent, and that is checked
+    before staging rather than left to the provider, because Meta's refusal arrives as a 4xx the
+    dispatcher classifies permanent — a dead message and an operator wondering why, when "that
+    template is still in review" was knowable in advance.
+
+    `variables` is a list of `{key, component, position, button_index, kind}` describing what the
+    template expects. `key` is **our** vocabulary — the same name a rule's payload path resolves —
+    so the rest of the service keeps speaking one language and the provider's positional
+    ordering stays contained in this row.
+    """
+
+    __tablename__ = "provider_templates"
+
+    #: Our stable code, referenced by a rule. Unique per organization and channel.
+    code: Mapped[str] = mapped_column(String(80), nullable=False)
+    #: email | whatsapp.
+    channel: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    #: The name the template is registered under at the provider, e.g. ``invoice_due_reminder``.
+    provider_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: The provider's own identifier, once known from a sync. Null until then.
+    provider_template_id: Mapped[str | None] = mapped_column(String(200))
+    #: Meta language code, e.g. ``en`` or ``en_US``. Part of the template's identity there.
+    language: Mapped[str] = mapped_column(String(20), nullable=False, default="en")
+    #: utility | marketing | authentication. Drives pricing and consent obligations.
+    category: Mapped[str] = mapped_column(String(20), nullable=False, default="utility")
+    #: positional | named. Declared when the template is created at the provider.
+    parameter_format: Mapped[str] = mapped_column(String(20), nullable=False, default="positional")
+
+    #: draft | pending | approved | rejected | paused | disabled. The provider's answer.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    #: Why the provider refused it, kept so an operator does not have to leave the product.
+    status_reason: Mapped[str | None] = mapped_column(Text)
+    #: When the status was last confirmed against the provider.
+    status_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    #: List of {key, component, position, button_index, kind}. See the class docstring.
+    variables: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+
+    #: A copy of the provider's body text, for display only. Never rendered or sent — the
+    #: provider holds the authoritative wording, and a stale copy that got sent would be a
+    #: message we did not write.
+    preview_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    __table_args__ = (
+        Index("ix_provider_templates_org_code", "organization_id", "code"),
+        Index("ix_provider_templates_org_channel", "organization_id", "channel", "status"),
+        UniqueConstraint(
+            "organization_id", "code", "channel", name="uq_provider_templates_org_code_chan"
+        ),
     )
 
 
@@ -166,6 +242,12 @@ class Message(Base, TenantBase):
 
     #: Stable identity for "this exact send". Unique per organization when present.
     dedupe_key: Mapped[str | None] = mapped_column(String(200))
+
+    #: The provider template this was sent as, if any, and the exact parameter payload handed
+    #: over. Stored rather than re-derived for the same reason `body` is: the provider may edit
+    #: or retire a template, and "what did we actually send this customer" must survive that.
+    provider_template_code: Mapped[str | None] = mapped_column(String(80))
+    provider_template_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(Text)

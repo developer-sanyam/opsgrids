@@ -261,6 +261,8 @@ def validate_rule(
     event_type: str,
     recipient_path: str | None,
     recipient_literal: str | None,
+    template_code: str | None = None,
+    provider_template_code: str | None = None,
 ) -> None:
     """Refuse a rule that could not work. Raised at write time, not at send time.
 
@@ -287,6 +289,15 @@ def validate_rule(
     if recipient_literal:
         # Validated now so a literal typo is a 422 on the rule, not a failed send later.
         normalize_recipient(channel, recipient_literal)
+
+    # Exactly one source of wording. Both would be ambiguous about which the customer reads;
+    # neither leaves a rule that fires and renders nothing.
+    if template_code and provider_template_code:
+        raise RuleError(
+            "A rule sends either a template of ours or one the provider holds, not both"
+        )
+    if not template_code and not provider_template_code:
+        raise RuleError("A rule needs a template: template_code or provider_template_code")
 
 
 def is_suppressed(
@@ -328,6 +339,207 @@ def dedupe_key(
         if value is not None:
             return f"{rule_code}:{value}"
     return f"{rule_code}:{event_id or 'direct'}"
+
+
+# --------------------------------------------------------------------- provider templates
+#
+# A provider template is an artifact registered with the channel provider, not text we own. Meta
+# holds the body; we supply parameters. This is the only way to reach a WhatsApp user outside the
+# 24-hour customer service window, which is to say it is the only way to send a notification the
+# customer did not just ask for.
+#
+# Every field name below was read off Meta's own published example rather than recalled. The
+# verified shape is:
+#
+#     {"messaging_product": "whatsapp", "to": "…", "type": "template",
+#      "template": {"name": "…", "language": {"code": "en_US"},
+#                   "components": [
+#                     {"type": "body",   "parameters": [{"type": "text", "text": "Pablo"}]},
+#                     {"type": "header", "parameters": [{"type": "image", "image": {"id": "…"}}]},
+#                     {"type": "button", "sub_type": "quick_reply", "index": "0",
+#                      "parameters": [{"type": "payload", "payload": "…"}]}]}}
+#
+# Note `index` is a **string** in that example, not an integer, and it is emitted as one here.
+
+#: Template parameter formats, declared at the template's creation with Meta. Positional
+#: templates take values in order; named templates take them by label.
+FORMAT_POSITIONAL: Final = "positional"
+FORMAT_NAMED: Final = "named"
+
+#: Where a variable lands in the rendered template.
+COMPONENT_BODY: Final = "body"
+COMPONENT_HEADER: Final = "header"
+COMPONENT_BUTTON: Final = "button"
+
+#: Meta's template categories. `authentication` is listed for completeness; sending one is a
+#: different compliance question and nothing here selects it.
+CATEGORIES: Final[tuple[str, ...]] = ("utility", "marketing", "authentication")
+
+#: Only an approved template can be sent. The others are recorded so an operator can see why a
+#: send is refused without leaving the product.
+STATUS_APPROVED: Final = "approved"
+TEMPLATE_STATUSES: Final[tuple[str, ...]] = (
+    "draft",
+    "pending",
+    STATUS_APPROVED,
+    "rejected",
+    "paused",
+    "disabled",
+)
+
+
+class TemplateError(ValueError):
+    """A template cannot be sent as configured, or the payload it needs cannot be built."""
+
+
+@dataclass(frozen=True, slots=True)
+class TemplateVariable:
+    """One value a template expects.
+
+    `key` is our own vocabulary — the same `{{placeholder}}` name a rule's payload path resolves
+    — so the rest of the service keeps speaking one language. `position` is Meta's: the order the
+    parameter appears within its component. `button_index` identifies which button, and is only
+    meaningful for `COMPONENT_BUTTON`.
+    """
+
+    key: str
+    component: str = COMPONENT_BODY
+    position: int = 0
+    button_index: int = 0
+    #: `text` | `payload`. Media parameters are out of scope until document-service exists.
+    kind: str = "text"
+
+
+def validate_template_variables(variables: list[TemplateVariable]) -> None:
+    """Refuse a variable set that could not produce a well-formed payload.
+
+    Checked at authoring time rather than at send time, because a malformed template is an
+    operator's mistake and discovering it when the invoice reminder fails to arrive is far too
+    late. Meta rejects the whole message, so one bad position loses every parameter with it.
+    """
+    for var in variables:
+        if var.component not in (COMPONENT_BODY, COMPONENT_HEADER, COMPONENT_BUTTON):
+            raise TemplateError(f"{var.component!r} is not a template component")
+        if var.position < 0:
+            raise TemplateError(f"{var.key!r} has a negative position")
+
+    seen: set[tuple[str, int, int]] = set()
+    for var in variables:
+        slot = (var.component, var.button_index, var.position)
+        if slot in seen:
+            raise TemplateError(
+                f"two variables both claim {var.component} position {var.position}"
+                + (f" on button {var.button_index}" if var.component == COMPONENT_BUTTON else "")
+            )
+        seen.add(slot)
+
+    # Positions within a component must be contiguous from zero. Meta fills them in order, so a
+    # gap does not leave a hole — it shifts every later parameter into the wrong placeholder,
+    # which sends the customer a real message containing someone else's data.
+    groups: dict[tuple[str, int], list[int]] = {}
+    for var in variables:
+        groups.setdefault((var.component, var.button_index), []).append(var.position)
+    for (component, button_index), positions in groups.items():
+        expected = list(range(len(positions)))
+        if sorted(positions) != expected:
+            where = component + (f" button {button_index}" if component == COMPONENT_BUTTON else "")
+            raise TemplateError(
+                f"{where} positions are {sorted(positions)}; they must be {expected} — "
+                "a gap shifts every later parameter into the wrong placeholder"
+            )
+
+
+def build_template_payload(
+    *,
+    template_name: str,
+    language: str,
+    variables: list[TemplateVariable],
+    context: dict[str, Any],
+    parameter_format: str = FORMAT_POSITIONAL,
+) -> dict[str, Any]:
+    """Build the `template` object Meta expects, or raise.
+
+    **Named format is deliberately refused.** Meta's documentation establishes that a template
+    may declare named parameters, but the shape a *named* parameter takes in the send payload is
+    not published on any page consulted, and inventing it would mean shipping a guess into a
+    customer's phone. A named template therefore fails loudly here with an instruction, rather
+    than being silently sent as positional and rejected — or worse, accepted with the values in
+    the wrong placeholders.
+    """
+    if parameter_format == FORMAT_NAMED:
+        raise TemplateError(
+            "Named-parameter templates are not supported yet: the send-side payload shape for a "
+            "named parameter is not published in the documentation consulted, and guessing it "
+            "risks delivering values in the wrong placeholders. Re-create the template with "
+            "positional parameters, or confirm the named send shape against Meta's reference and "
+            "implement it here."
+        )
+    if parameter_format != FORMAT_POSITIONAL:
+        raise TemplateError(f"{parameter_format!r} is not a template parameter format")
+
+    validate_template_variables(variables)
+
+    missing = [v.key for v in variables if resolve_path(context, v.key) is None]
+    if missing:
+        # The same strictness as `render`: a template that reaches Meta with a blank parameter
+        # is a message the customer reads with a hole in it.
+        raise TemplateError(f"No value for: {', '.join(sorted(set(missing)))}")
+
+    components: list[dict[str, Any]] = []
+
+    for component in (COMPONENT_HEADER, COMPONENT_BODY):
+        params = sorted(
+            (v for v in variables if v.component == component), key=lambda v: v.position
+        )
+        if params:
+            components.append(
+                {
+                    "type": component,
+                    "parameters": [_parameter(v, context) for v in params],
+                }
+            )
+
+    buttons = [v for v in variables if v.component == COMPONENT_BUTTON]
+    for button_index in sorted({v.button_index for v in buttons}):
+        params = sorted(
+            (v for v in buttons if v.button_index == button_index), key=lambda v: v.position
+        )
+        components.append(
+            {
+                "type": COMPONENT_BUTTON,
+                # `url` covers a dynamic link suffix, which is the button parameter an
+                # automation actually needs; `quick_reply` carries an opaque payload instead.
+                "sub_type": "payload" if params[0].kind == "payload" else "url",
+                # A string, matching Meta's published example rather than the integer it looks
+                # like it should be.
+                "index": str(button_index),
+                "parameters": [_parameter(v, context) for v in params],
+            }
+        )
+
+    return {
+        "name": template_name,
+        "language": {"code": language},
+        "components": components,
+    }
+
+
+def _parameter(var: TemplateVariable, context: dict[str, Any]) -> dict[str, Any]:
+    """One parameter object. `payload` carries an opaque value; everything else is text."""
+    value = str(resolve_path(context, var.key))
+    if var.kind == "payload":
+        return {"type": "payload", "payload": value}
+    return {"type": "text", "text": value}
+
+
+def template_is_sendable(status: str) -> bool:
+    """Only an approved template may be sent.
+
+    Checked before staging rather than left to Meta, because Meta's refusal arrives as a 4xx
+    that the dispatcher classifies permanent — a failed message and an operator wondering why,
+    when the answer ("that template is still in review") was knowable in advance.
+    """
+    return status == STATUS_APPROVED
 
 
 def should_retry(attempts: int, *, max_attempts: int) -> bool:

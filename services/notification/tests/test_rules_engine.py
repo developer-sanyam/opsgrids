@@ -240,3 +240,146 @@ async def test_messages_record_the_rendered_text_not_a_template_reference(sessio
     stored = (await session.execute(select(Message))).scalars().one()
     assert stored.subject == "We have your ticket TK-0001"
     assert "Rewritten." not in stored.body
+
+
+# --------------------------------------------------------------------- provider templates
+
+
+async def _seed_provider_template(session, org_id, *, status: str = "approved") -> None:
+    """An approved WhatsApp template and a rule that sends it. The proactive shape."""
+    write = ctx_for(org_id, "notification.delivery.template.write", Scope.ORG)
+    async with session.begin():
+        await services.upsert_provider_template(
+            session,
+            write,
+            code="ticket_ack_wa",
+            channel="whatsapp",
+            provider_name="ticket_acknowledged",
+            language="en_US",
+            category="utility",
+            parameter_format="positional",
+            status=status,
+            status_reason=None,
+            variables=[
+                {"key": "requester_name", "component": "body", "position": 0},
+                {"key": "number", "component": "body", "position": 1},
+            ],
+            preview_text="Hello {{1}}, we opened {{2}} and are on it.",
+        )
+        await services.upsert_rule(
+            session,
+            write,
+            code="ack_new_tickets_wa",
+            event_type=TICKET,
+            channel="whatsapp",
+            provider_template_code="ticket_ack_wa",
+            recipient_path="requester_phone",
+        )
+
+
+def _wa_event(org_id: uuid.UUID) -> dict:
+    return envelope_for(
+        org_id,
+        TICKET,
+        {
+            "number": "TK-0001",
+            "requester_name": "Helena Vogel",
+            "requester_phone": "+917976603446",
+        },
+    )
+
+
+async def test_a_rule_sends_a_provider_template(session, org_id) -> None:
+    """The whole point of the phase: a proactive WhatsApp notification, which free text cannot
+    deliver outside the 24-hour window."""
+    await _seed_provider_template(session, org_id)
+
+    async with session.begin():
+        staged = await services.apply_rules(
+            session, organization_id=org_id, envelope=_wa_event(org_id)
+        )
+
+    assert len(staged) == 1
+    message = staged[0]
+    assert message.channel == "whatsapp"
+    assert message.to_address == "+917976603446"
+    assert message.provider_template_code == "ticket_ack_wa"
+    assert message.provider_template_payload == {
+        "name": "ticket_acknowledged",
+        "language": {"code": "en_US"},
+        "components": [
+            {
+                "type": "body",
+                "parameters": [
+                    {"type": "text", "text": "Helena Vogel"},
+                    {"type": "text", "text": "TK-0001"},
+                ],
+            }
+        ],
+    }
+
+
+async def test_an_unapproved_template_stages_nothing(session, org_id) -> None:
+    """Refused here rather than by Meta: its 4xx would cost a message and tell the operator
+    nothing that "still in review" does not say now."""
+    await _seed_provider_template(session, org_id, status="pending")
+
+    async with session.begin():
+        staged = await services.apply_rules(
+            session, organization_id=org_id, envelope=_wa_event(org_id)
+        )
+    assert staged == []
+
+
+async def test_a_missing_template_variable_stages_nothing(session, org_id) -> None:
+    """Strictness carried through to templates: a blank parameter is a message the customer
+    reads with a hole in it."""
+    await _seed_provider_template(session, org_id)
+    event = envelope_for(org_id, TICKET, {"number": "TK-2", "requester_phone": "+917976603446"})
+    async with session.begin():
+        staged = await services.apply_rules(session, organization_id=org_id, envelope=event)
+    assert staged == []
+
+
+async def test_a_rule_naming_a_missing_provider_template_is_refused(session, org_id) -> None:
+    from platform_core.errors import ValidationProblem
+
+    write = ctx_for(org_id, "notification.delivery.template.write", Scope.ORG)
+    with pytest.raises(ValidationProblem, match="register the template first"):
+        async with session.begin():
+            await services.upsert_rule(
+                session,
+                write,
+                code="broken_wa",
+                event_type=TICKET,
+                channel="whatsapp",
+                provider_template_code="does_not_exist",
+                recipient_path="requester_phone",
+            )
+
+
+async def test_a_template_with_a_position_gap_is_refused_at_authoring(session, org_id) -> None:
+    """The gap check, through the service: a shifted parameter delivers real data to the wrong
+    placeholder, so it is a 422 now rather than a wrong message later."""
+    from platform_core.errors import ValidationProblem
+
+    write = ctx_for(org_id, "notification.delivery.template.write", Scope.ORG)
+    with pytest.raises(ValidationProblem, match="wrong placeholder"):
+        async with session.begin():
+            await services.upsert_provider_template(
+                session,
+                write,
+                code="gappy",
+                channel="whatsapp",
+                provider_name="gappy",
+                language="en",
+                category="utility",
+                parameter_format="positional",
+                status="approved",
+                status_reason=None,
+                variables=[
+                    {"key": "a", "component": "body", "position": 0},
+                    {"key": "b", "component": "body", "position": 2},
+                ],
+                preview_text="",
+            )

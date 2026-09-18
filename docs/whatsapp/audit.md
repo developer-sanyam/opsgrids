@@ -75,10 +75,10 @@ a product area, not an integration detail.
 
 | # | Gap | Notes |
 |---|---|---|
-| C1 | **Template messages** | Transport sends `type: "text"` only. Verified against current Meta docs: *"Template messages are the only type of message that can be sent to WhatsApp users outside of a customer service window."* This is why proactive automation does not work today |
+| C1 | ~~Template messages~~ | **Done.** Positional templates send end to end; named format refuses rather than guessing — see `templates.md`. Originally: Verified against current Meta docs: *"Template messages are the only type of message that can be sent to WhatsApp users outside of a customer service window."* This is why proactive automation does not work today |
 | C2 | ~~API version is stale~~ | **Fixed in this change.** Pinned `v21.0`; v25.0 is current (released 2026-02-18). Left overridable per environment |
-| C3 | **Template registry** | No model for Meta template name, language, category, variable definitions, approval status |
-| C4 | **Variable mapping** | See the correction in §9 — smaller than the brief assumes |
+| C3 | ~~Template registry~~ | **Done.** `provider_templates`, channel-agnostic, with approval status checked before staging |
+| C4 | ~~Variable mapping~~ | **Done** for positional, with the contiguity check that stops a gap shifting values into the wrong placeholder. Named still open |
 | C5 | **24-hour window tracking** | Nothing records `last_customer_message_at`, because nothing records inbound messages at all |
 | C6 | **Inbound webhook** | No endpoint. Needs `hub.challenge` verification and `X-Hub-Signature-256` HMAC-SHA256 over the **raw** body keyed by App Secret |
 | C7 | **Webhook deduplication** | Meta redelivers. `processed_events` is the existing pattern to reuse |

@@ -271,6 +271,42 @@
         "title": "Page[PreferenceOut]",
         "type": "object"
       },
+      "Page_ProviderTemplateOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderTemplateOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ProviderTemplateOut]",
+        "type": "object"
+      },
       "Page_RuleOut_": {
         "properties": {
           "items": {
@@ -442,6 +478,233 @@
         "title": "PreferenceOut",
         "type": "object"
       },
+      "ProviderTemplateIn": {
+        "additionalProperties": false,
+        "description": "Register or update a template the provider holds.\n\n`status` is the provider's answer, not ours, so it defaults to `draft` and is expected to be\ncorrected by a sync rather than asserted here. Setting it to `approved` by hand is possible\nand is exactly how a test fixture works, but in production it is a claim about somebody\nelse's system.",
+        "properties": {
+          "category": {
+            "default": "utility",
+            "enum": [
+              "utility",
+              "marketing",
+              "authentication"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "channel": {
+            "enum": [
+              "email",
+              "whatsapp"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "code": {
+            "maxLength": 80,
+            "minLength": 1,
+            "pattern": "^[a-z0-9_]+$",
+            "title": "Code",
+            "type": "string"
+          },
+          "language": {
+            "default": "en",
+            "maxLength": 20,
+            "title": "Language",
+            "type": "string"
+          },
+          "parameter_format": {
+            "default": "positional",
+            "enum": [
+              "positional",
+              "named"
+            ],
+            "title": "Parameter Format",
+            "type": "string"
+          },
+          "preview_text": {
+            "default": "",
+            "title": "Preview Text",
+            "type": "string"
+          },
+          "provider_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Provider Name",
+            "type": "string"
+          },
+          "status": {
+            "default": "draft",
+            "enum": [
+              "draft",
+              "pending",
+              "approved",
+              "rejected",
+              "paused",
+              "disabled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "status_reason": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Reason"
+          },
+          "variables": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateVariableIn"
+            },
+            "title": "Variables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "code",
+          "channel",
+          "provider_name"
+        ],
+        "title": "ProviderTemplateIn",
+        "type": "object"
+      },
+      "ProviderTemplateOut": {
+        "properties": {
+          "category": {
+            "enum": [
+              "utility",
+              "marketing",
+              "authentication"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "channel": {
+            "enum": [
+              "email",
+              "whatsapp"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "parameter_format": {
+            "enum": [
+              "positional",
+              "named"
+            ],
+            "title": "Parameter Format",
+            "type": "string"
+          },
+          "preview_text": {
+            "title": "Preview Text",
+            "type": "string"
+          },
+          "provider_name": {
+            "title": "Provider Name",
+            "type": "string"
+          },
+          "provider_template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Template Id"
+          },
+          "sendable": {
+            "title": "Sendable",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "pending",
+              "approved",
+              "rejected",
+              "paused",
+              "disabled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "status_checked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Checked At"
+          },
+          "status_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Reason"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "variables": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateVariableOut"
+            },
+            "title": "Variables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "channel",
+          "provider_name",
+          "provider_template_id",
+          "language",
+          "category",
+          "parameter_format",
+          "status",
+          "status_reason",
+          "status_checked_at",
+          "variables",
+          "preview_text",
+          "sendable",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ProviderTemplateOut",
+        "type": "object"
+      },
       "RuleIn": {
         "additionalProperties": false,
         "description": "Author one automation.\n\n`recipient_path` or `recipient_literal` \u2014 exactly one. The coherence rules live in\n`domain.validate_rule` so the same check guards the API and the consumer.",
@@ -490,6 +753,18 @@
             "title": "Event Type",
             "type": "string"
           },
+          "provider_template_code": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Template Code"
+          },
           "recipient_literal": {
             "anyOf": [
               {
@@ -515,16 +790,21 @@
             "title": "Recipient Path"
           },
           "template_code": {
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Template Code",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Code"
           }
         },
         "required": [
           "code",
           "event_type",
-          "template_code",
           "channel"
         ],
         "title": "RuleIn",
@@ -572,6 +852,17 @@
             "title": "Id",
             "type": "string"
           },
+          "provider_template_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Template Code"
+          },
           "recipient_literal": {
             "anyOf": [
               {
@@ -595,8 +886,15 @@
             "title": "Recipient Path"
           },
           "template_code": {
-            "title": "Template Code",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Code"
           },
           "updated_at": {
             "format": "date-time",
@@ -608,6 +906,7 @@
           "id",
           "event_type",
           "template_code",
+          "provider_template_code",
           "channel",
           "category",
           "recipient_path",
@@ -793,6 +1092,101 @@
           "updated_at"
         ],
         "title": "TemplateOut",
+        "type": "object"
+      },
+      "TemplateVariableIn": {
+        "additionalProperties": false,
+        "description": "One value a provider template expects.\n\n`key` is our vocabulary \u2014 the same name a rule's payload path resolves \u2014 while `position`\nis the provider's. Keeping both here is what lets the rest of the service speak one\nlanguage and confines the provider's ordering to this row.",
+        "properties": {
+          "button_index": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Button Index",
+            "type": "integer"
+          },
+          "component": {
+            "default": "body",
+            "enum": [
+              "body",
+              "header",
+              "button"
+            ],
+            "title": "Component",
+            "type": "string"
+          },
+          "key": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "default": "text",
+            "enum": [
+              "text",
+              "payload"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "position": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Position",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "title": "TemplateVariableIn",
+        "type": "object"
+      },
+      "TemplateVariableOut": {
+        "additionalProperties": false,
+        "properties": {
+          "button_index": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Button Index",
+            "type": "integer"
+          },
+          "component": {
+            "default": "body",
+            "enum": [
+              "body",
+              "header",
+              "button"
+            ],
+            "title": "Component",
+            "type": "string"
+          },
+          "key": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "default": "text",
+            "enum": [
+              "text",
+              "payload"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "position": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Position",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "title": "TemplateVariableOut",
         "type": "object"
       },
       "ValidationError": {
@@ -1162,6 +1556,120 @@
           }
         },
         "summary": "Record or lift a recipient's suppression",
+        "tags": [
+          "notification"
+        ]
+      }
+    },
+    "/api/v1/notifications/provider-templates": {
+      "get": {
+        "description": "What can be sent outside a conversation window, and what is still in review.",
+        "operationId": "list_provider_templates_api_v1_notifications_provider_templates_get",
+        "parameters": [
+          {
+            "description": "email or whatsapp",
+            "in": "query",
+            "name": "channel",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "email or whatsapp",
+              "title": "Channel"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ProviderTemplateOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Templates the channel provider holds",
+        "tags": [
+          "notification"
+        ]
+      },
+      "put": {
+        "operationId": "put_provider_template_api_v1_notifications_provider_templates_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderTemplateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderTemplateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register or update a provider-held template",
         "tags": [
           "notification"
         ]
