@@ -4,9 +4,9 @@ import { useSearchParams } from "react-router-dom";
 import { listProjects } from "@/api/client";
 import type { Project, ProjectStatus } from "@/api/types";
 import { personName } from "@/data/people";
-import { ChevronDown, CloseIcon, LayersIcon, cn } from "@atmora/ui";
+import { ChevronDown, CloseIcon, LayersIcon, cn } from "@opsgrids/ui";
 import { formatDate, formatMoney } from "@/lib/format";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Avatar,
   Card,

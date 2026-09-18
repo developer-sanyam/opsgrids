@@ -6,7 +6,7 @@ the fact is not one you can defend, so append-only is enforced at the database â
 new row (a later transition), never a mutation of an old one.
 
 **Why a trigger and not a `REVOKE`.** The tidy expression of append-only would be `REVOKE UPDATE,
-DELETE ... FROM atmora_subscription`. It does not hold: `migrations/env.py` runs
+DELETE ... FROM opsgrids_subscription`. It does not hold: `migrations/env.py` runs
 `apply_schema_grants` at the end of every migration run, which `GRANT`s UPDATE/DELETE on *all*
 tables in the schema and only re-revokes them on `audit_logs`. A revoke in a migration is therefore
 undone moments later, in the same `alembic upgrade` â€” verified against this database, not assumed. A

@@ -8,7 +8,7 @@ Two console-specific steps run after `apply_schema_grants`, for the same reason 
 this file runs here rather than in the bootstrap SQL: the tables do not exist when the bootstrap
 runs, and a step somebody must remember is a step somebody eventually forgets.
 
-* `grant_directory_reader` gives `atmora_console_directory` cross-tenant SELECT on the projection
+* `grant_directory_reader` gives `opsgrids_console_directory` cross-tenant SELECT on the projection
   and audit tables — this is what makes the operator's read API work, and it is SELECT-only so a
   bug in that read path can never write (ADR-0002 §2, copied from product-service).
 * the append-only re-revoke keeps `revenue_events` append-only across grant re-application:
@@ -43,7 +43,7 @@ target_metadata = Base.metadata
 
 #: The projection and audit tables the operator reads cross-tenant. SELECT only — no write ever
 #: reaches the directory role, so a bug in the read path cannot write across tenants.
-DIRECTORY_READER = "atmora_console_directory"
+DIRECTORY_READER = "opsgrids_console_directory"
 DIRECTORY_TABLES = ("org_commercial_state", "revenue_events", "usage_summary", "audit_logs")
 
 #: Append-only at the database, enforced by a table privilege rather than a policy (ADR-0000 §9).
@@ -53,7 +53,7 @@ APPEND_ONLY_TABLE = "revenue_events"
 def grant_directory_reader(connection: Connection) -> None:
     """Cross-tenant SELECT for the operator read API, on the projection and audit tables.
 
-    `apply_schema_grants` grants the account directory reader (`atmora_directory`); console's
+    `apply_schema_grants` grants the account directory reader (`opsgrids_directory`); console's
     reader is its own role on its own tables, so it is granted here explicitly — SELECT only. Each
     grant is guarded by `to_regclass`, so a downgrade that has dropped the tables is a no-op.
     """

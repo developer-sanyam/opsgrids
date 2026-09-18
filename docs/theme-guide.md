@@ -4,7 +4,7 @@ How to use and extend the visual system. What exists today is in
 [existing-theme-features.md](existing-theme-features.md); this page is the working rules.
 
 **Scope, honestly:** the theme currently lives in one file — the marketing site's
-`globals.css`. There is no shared design-system package yet (`atmora-ui` is declared and empty),
+`globals.css`. There is no shared design-system package yet (`opsgrids-ui` is declared and empty),
 so "the theme" is one stylesheet that product apps are expected to inherit from when they exist.
 Everything below is written so that inheritance is possible later rather than a rewrite.
 
@@ -233,7 +233,7 @@ skip-to-content link — keep it, and keep it first in the DOM.
 
 ## When the design system arrives
 
-The marketing stylesheet is the prototype, not the destination. When `atmora-ui` is built, tokens
+The marketing stylesheet is the prototype, not the destination. When `opsgrids-ui` is built, tokens
 move there and the site imports them; token names should survive the move, which is why they are
 semantic.
 

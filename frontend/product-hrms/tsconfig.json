@@ -1,5 +1,5 @@
 {
-  "extends": "@atmora/config/tsconfig.base.json",
+  "extends": "@opsgrids/config/tsconfig.base.json",
   "compilerOptions": {
     "paths": { "@/*": ["./src/*"] },
     "types": ["node", "vite/client"]

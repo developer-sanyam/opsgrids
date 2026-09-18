@@ -1,5 +1,5 @@
 import { formatMoneyCompact } from "@/lib/format";
-import { cn } from "@atmora/ui";
+import { cn } from "@opsgrids/ui";
 
 interface BudgetBarProps {
   spentMinor: number;

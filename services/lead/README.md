@@ -1,6 +1,6 @@
 # Lead service
 
-Part of the Atmora platform. Owns the `lead` schema.
+Part of the OpsGrids platform. Owns the `lead` schema.
 
 ```bash
 make run SERVICE=lead PORT=8110    # API

@@ -9,6 +9,6 @@ from platform_core.app import create_app
 app = create_app(
     settings(),
     title="Operations service",
-    description="Operations service — part of the Atmora platform.",
+    description="Operations service — part of the OpsGrids platform.",
     routers=[router],
 )

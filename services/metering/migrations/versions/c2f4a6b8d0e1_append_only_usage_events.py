@@ -6,7 +6,7 @@ gone — so it is never mutated: a correction is a new, compensating event (ADR-
 using UPDATE or DELETE on rows it can see. Append-only is a *verb* question, so the right tool is
 a table privilege, not a policy — the same tool `audit_logs` uses (platform_core `apply_schema_grants`).
 
-This migration revokes UPDATE and DELETE on `metering.usage_events` from `atmora_metering`, so no
+This migration revokes UPDATE and DELETE on `metering.usage_events` from `opsgrids_metering`, so no
 code path this service's role can reach may rewrite or erase a recorded reading. INSERT and SELECT
 remain: the sink is written once and read many times.
 
@@ -35,7 +35,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "metering"
-APP_ROLE = "atmora_metering"
+APP_ROLE = "opsgrids_metering"
 TABLE = "usage_events"
 
 

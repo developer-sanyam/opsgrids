@@ -1,0 +1,181 @@
+/* ------------------------------------------------------------------ *
+ * The OpsGrids "Console" design language — one stylesheet, every app.
+ *
+ * Manrope, a single violet accent spent sparingly, light-grey ground
+ * with white rounded cards, a grouped left sidebar, and a full dark
+ * theme. One accent; semantic colour is separate from it and never
+ * doubles as decoration.
+ *
+ * An app imports this after `@import "tailwindcss"` and adds only what
+ * is genuinely its own — a product's money face, an extra utility. It
+ * never redefines a token that lives here, because the suite reading as
+ * one system is the whole point of the file.
+ * ------------------------------------------------------------------ */
+@theme {
+  --font-sans:
+    "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  /* The figure face, for amounts and identifiers. A product that wants a distinct one — Finance
+     runs Spline Sans Mono — overrides this token in its own `@theme`, not the `.money` rule. */
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Accent — the single violet, spent only on the most important thing on a screen. */
+  --color-accent: #6c4cf1;
+  --color-accent-strong: #5a3ce6;
+  --color-accent-soft: #eee9fe;
+  --color-accent-ink: #4a2fc7;
+
+  /* Neutrals. Biased a hair toward violet, not a pure grey. */
+  --color-ground: #f5f5f7;
+  --color-surface: #ffffff;
+  --color-elevated: #ffffff;
+  --color-ink: #17171a;
+  --color-ink-soft: #3a3a40;
+  --color-muted: #6b6b72;
+  --color-faint: #9a9aa2;
+  --color-line: #ececef;
+
+  /* Semantic — separate from the accent, never decoration. */
+  --color-positive: #1f9d55;
+  --color-positive-soft: #e3f7ec;
+  --color-negative: #d64027;
+  --color-negative-soft: #fbe6e1;
+
+  /* Status pill families: green / amber / red / blue / cyan. */
+  --color-present: #1f9d55;
+  --color-present-soft: #e3f7ec;
+  --color-late: #a9711a;
+  --color-late-soft: #fbf0dc;
+  --color-danger: #d64027;
+  --color-danger-soft: #fbe6e1;
+  --color-info: #2563c9;
+  --color-info-soft: #e6eefb;
+  --color-cyan: #0e7c8b;
+  --color-cyan-soft: #dcf3f6;
+
+  --radius-card: 18px;
+  --radius-tile: 14px;
+
+  --shadow-card: 0 1px 2px rgba(23, 23, 26, 0.04), 0 12px 28px -14px rgba(23, 23, 26, 0.14);
+  --shadow-float: 0 1px 2px rgba(23, 23, 26, 0.05), 0 20px 44px -18px rgba(23, 23, 26, 0.22);
+}
+
+/* ---------------------------- dark theme ---------------------------- *
+ * A near-black navy ground, dark cards, the same violet accent pushed a
+ * touch brighter, and softer semantic fills.
+ * ------------------------------------------------------------------ */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-accent: #8468ff;
+  --color-accent-strong: #9781ff;
+  --color-accent-soft: #241d45;
+  --color-accent-ink: #c8bbff;
+
+  --color-ground: #0b0b11;
+  --color-surface: #16161f;
+  --color-elevated: #1c1c27;
+  --color-ink: #f3f3f7;
+  --color-ink-soft: #cfcfd8;
+  --color-muted: #9797a4;
+  --color-faint: #6a6a78;
+  --color-line: #26262f;
+
+  --color-positive: #4ade80;
+  --color-positive-soft: #12301f;
+  --color-negative: #f77066;
+  --color-negative-soft: #3a1c19;
+
+  --color-present: #4ade80;
+  --color-present-soft: #12301f;
+  --color-late: #e0a83c;
+  --color-late-soft: #38290f;
+  --color-danger: #f77066;
+  --color-danger-soft: #3a1c19;
+  --color-info: #6aa1f5;
+  --color-info-soft: #172740;
+  --color-cyan: #48c9d8;
+  --color-cyan-soft: #123034;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 14px 34px -18px rgba(0, 0, 0, 0.7);
+  --shadow-float: 0 1px 2px rgba(0, 0, 0, 0.5), 0 24px 50px -20px rgba(0, 0, 0, 0.8);
+}
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background-color: var(--color-ground);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-synthesis-weight: none;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Digits that line up in columns — most of these apps — get tabular figures. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Amounts and identifiers: monospaced, tabular, so rupee columns rule up exactly. */
+.money {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* Headings track tight and balance their line breaks. */
+.display {
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+/* A consistent, visible violet focus ring for keyboard users on every interactive surface. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+/* One page-load orchestration: a soft staggered rise, honoured only when motion is welcome. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.rise {
+  animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* A staggered cascade for a row of cards; each child leans on its --i index. */
+.cascade > * {
+  animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--i, 0) * 60ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rise,
+  .cascade > * {
+    animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+}

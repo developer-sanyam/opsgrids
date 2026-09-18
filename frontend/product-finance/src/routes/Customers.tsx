@@ -6,8 +6,8 @@ import type { CustomerSort } from "@/api/client";
 import type { CustomerStanding, CustomerSummary } from "@/api/types";
 import { formatDate } from "@/lib/format";
 import { formatAmount } from "@/lib/money";
-import { UsersIcon, cn } from "@atmora/ui";
-import { useAsync } from "@atmora/client";
+import { UsersIcon, cn } from "@opsgrids/ui";
+import { useAsync } from "@opsgrids/client";
 import {
   Avatar,
   Card,

@@ -1,6 +1,6 @@
 # Product service
 
-Part of the Atmora platform. Owns the `product` schema.
+Part of the OpsGrids platform. Owns the `product` schema.
 
 ```bash
 make run SERVICE=product PORT=8110    # API

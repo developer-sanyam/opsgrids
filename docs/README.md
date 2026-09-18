@@ -1,4 +1,4 @@
-# Atmora docs
+# OpsGrids docs
 
 Start here.
 
@@ -39,7 +39,7 @@ Start here.
 
 ## The one-paragraph version
 
-Atmora is one platform selling many products. A customer has **one organization, one account
+OpsGrids is one platform selling many products. A customer has **one organization, one account
 and one user directory**, and activates products — HRMS, CRM, PulseBoard, and others — against
 it. The backend is Python microservices, each owning its own schema, sitting behind two
 gateways: `app-gateway` for product UIs and `admin-gateway` for staff and internal calls.

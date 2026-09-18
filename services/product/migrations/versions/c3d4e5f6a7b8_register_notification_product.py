@@ -41,7 +41,7 @@ def upgrade() -> None:
                 (id, key, name, category, status, tagline, connects_to, features,
                  is_platform, sort_order)
             VALUES
-                (gen_random_uuid(), :key, 'Atmora Notifications', 'Platform', 'available',
+                (gen_random_uuid(), :key, 'OpsGrids Notifications', 'Platform', 'available',
                  'Email and WhatsApp that react to what the platform already knows',
                  '[]'::jsonb, '[]'::jsonb, true, 5)
             ON CONFLICT (key) DO NOTHING

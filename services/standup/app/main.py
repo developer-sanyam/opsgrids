@@ -11,7 +11,7 @@ app = create_app(
     settings(),
     title="Standup service",
     description="PulseBoard's daily check-ins — yesterday, today and blockers, part of the "
-    "Atmora platform.",
+    "OpsGrids platform.",
     routers=[router],
     # A stalled relay is silent; `/health/outbox` makes it visible, counting through the
     # outbox engine so it is not blind to the rows the app role cannot see.

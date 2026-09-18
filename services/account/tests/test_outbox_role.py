@@ -6,7 +6,7 @@ returns nothing: `attempts` never increments, nothing logs, the outbox grows wit
 (ADR-0002, "Relay stall"). `/health/outbox`, the probe built to make that stall visible, read
 through the same engine and reported `pending: 0` for the same reason.
 
-Both now run as `atmora_outbox`: BYPASSRLS, and SELECT and UPDATE on `outbox` only. These
+Both now run as `opsgrids_outbox`: BYPASSRLS, and SELECT and UPDATE on `outbox` only. These
 tests pin both halves — that the role can see and mark rows across tenants, and that it can
 do nothing else. The app-role case is kept deliberately: it is the defect, recorded so it
 stays recorded.

@@ -9,7 +9,7 @@ original RLS migration sets out. Neither is vocabulary: a GSTIN belongs to one c
 filing history is the evidence of one company's reporting.
 
 **Append-only on `einvoice_filings`**, by trigger. The tidy expression would be
-`REVOKE UPDATE, DELETE ON finance.einvoice_filings FROM atmora_finance`, and it does not hold:
+`REVOKE UPDATE, DELETE ON finance.einvoice_filings FROM opsgrids_finance`, and it does not hold:
 `migrations/env.py` runs `apply_schema_grants` at the end of every migration run, which `GRANT`s
 UPDATE and DELETE on *all* tables in the schema and only re-revokes `audit_logs`. A revoke written
 here is undone moments later, in the same `alembic upgrade` — which is the trap the platform
@@ -46,7 +46,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "finance"
-APP_ROLE = "atmora_finance"
+APP_ROLE = "opsgrids_finance"
 
 #: Both new tables are tenant-scoped. Neither is vocabulary, so neither joins `tax_rates` and
 #: `processed_events` on the unpolicied list.

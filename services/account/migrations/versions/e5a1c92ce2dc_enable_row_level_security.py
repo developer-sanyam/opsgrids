@@ -36,7 +36,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "account"
-APP_ROLE = "atmora_account"
+APP_ROLE = "opsgrids_account"
 
 #: Tables carrying `organization_id`. The ordinary case.
 TENANT_TABLES = (
@@ -145,7 +145,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     """The deliberate undo, and the slowest of three rollbacks.
 
-    For an incident there are faster levers: `ALTER ROLE atmora_account BYPASSRLS` restores
+    For an incident there are faster levers: `ALTER ROLE opsgrids_account BYPASSRLS` restores
     service in one statement with no lock and leaves the policies intact for diagnosis, and
     pointing the DSN back at the admin role needs no database change at all. This one takes a
     brief ACCESS EXCLUSIVE lock per table and touches no rows.

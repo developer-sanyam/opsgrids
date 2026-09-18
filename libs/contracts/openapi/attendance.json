@@ -845,7 +845,7 @@
     }
   },
   "info": {
-    "description": "HRMS attendance, shifts and field geo-fencing \u2014 part of the Atmora platform.",
+    "description": "HRMS attendance, shifts and field geo-fencing \u2014 part of the OpsGrids platform.",
     "title": "Attendance service",
     "version": "0.1.0"
   },

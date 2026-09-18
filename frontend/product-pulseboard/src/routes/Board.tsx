@@ -1,9 +1,9 @@
 import { useCallback } from "react";
 
 import { getTasks } from "@/api/client";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import { Card, ErrorState, KanbanBoard, PageHeader, Skeleton, TASK_STATUS_META } from "@/ui";
-import { ColumnsIcon } from "@atmora/ui";
+import { ColumnsIcon } from "@opsgrids/ui";
 
 const COLUMN_ORDER = ["backlog", "in_progress", "review", "done"] as const;
 

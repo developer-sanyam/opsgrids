@@ -2,7 +2,7 @@ import { useId, useMemo, useState } from "react";
 
 import type { BurndownPoint, BurndownRange } from "@/api/types";
 import { BURNDOWN, BURNDOWN_DELTA } from "@/api/fixtures";
-import { DeltaPill, cn } from "@atmora/ui";
+import { DeltaPill, cn } from "@opsgrids/ui";
 
 const RANGES: { value: BurndownRange; label: string }[] = [
   { value: "sprint", label: "Sprint" },

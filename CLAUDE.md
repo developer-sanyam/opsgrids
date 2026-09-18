@@ -1,4 +1,4 @@
-# CLAUDE.md — Atmora Platform
+# CLAUDE.md — OpsGrids Platform
 
 One ecosystem, many products. Python microservices behind two gateways, one PostgreSQL cluster
 with a schema per service, RabbitMQ for domain events.
@@ -29,7 +29,7 @@ These cause data corruption, audit failure, or an unshippable migration — not 
   it per connection is a cross-tenant leak — the pool reuses connections across requests.
 - **The outbox relay and consumers need `BYPASSRLS`** (or a per-message GUC). Getting this wrong
   silently stops event processing: nothing errors, the outbox just fills (the relay runs as
-  `atmora_outbox`, which may read and update `outbox` and nothing else).
+  `opsgrids_outbox`, which may read and update `outbox` and nothing else).
 - **No cross-schema foreign keys.** This is what keeps a later database-per-service split a config
   change rather than a rewrite. `org_id` is a plain indexed UUID, not an FK.
 - **Enqueue background work only after commit** — via the outbox, never inline.

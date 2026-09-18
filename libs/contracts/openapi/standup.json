@@ -211,7 +211,7 @@
     }
   },
   "info": {
-    "description": "PulseBoard's daily check-ins \u2014 yesterday, today and blockers, part of the Atmora platform.",
+    "description": "PulseBoard's daily check-ins \u2014 yesterday, today and blockers, part of the OpsGrids platform.",
     "title": "Standup service",
     "version": "0.1.0"
   },

@@ -5,7 +5,7 @@ database enforces, exactly as it is on the `account`, `product` and `employee` s
 
 Three things had to be true before this could do anything, and all three are already in place
 platform-wide: policies exist (this file); the API connects as a **NOBYPASSRLS** role
-(`atmora_attendance`), so it cannot bypass row security the way a superuser would; and something
+(`opsgrids_attendance`), so it cannot bypass row security the way a superuser would; and something
 sets the tenant GUC — `get_tenant_session` binds every request transaction to the caller's
 organization as its first statement.
 
@@ -31,7 +31,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "attendance"
-APP_ROLE = "atmora_attendance"
+APP_ROLE = "opsgrids_attendance"
 
 #: Tenant-scoped. Every one carries `organization_id`: `shifts` and `geofences` are the org
 #: definitions, `attendance_records` is the daily record, and the other two are the platform
@@ -87,7 +87,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     """The deliberate undo, and the slowest of the rollbacks.
 
-    For an incident there are faster levers: `ALTER ROLE atmora_attendance BYPASSRLS` restores
+    For an incident there are faster levers: `ALTER ROLE opsgrids_attendance BYPASSRLS` restores
     service in one statement with no lock and leaves the policies intact for diagnosis, and
     pointing the DSN back at the admin role needs no database change at all. This one takes a
     brief ACCESS EXCLUSIVE lock per table and touches no rows.

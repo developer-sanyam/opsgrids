@@ -22,7 +22,7 @@ CRM's owners could read contacts and not deals.
 Launch status is deployment data — which products this deployment is selling — not a property
 of the code. Both services are built and both have manifests, so flipping the flag in this
 suite's own database exercises a real path rather than fabricating one. It is confined to
-`atmora_wt`, and `make gate`'s migration round-trip re-runs the seed migration, which puts
+`opsgrids_wt`, and `make gate`'s migration round-trip re-runs the seed migration, which puts
 the committed value back.
 
 Usage: `_seed_product.py <service_dir>`

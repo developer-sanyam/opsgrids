@@ -1,6 +1,6 @@
 # Dev D — the CRM app and the design system
 
-**You own `frontend/product-crm/` and `frontend/atmora-ui/`.**
+**You own `frontend/product-crm/` and `frontend/opsgrids-ui/`.**
 
 Five cards, in this order. Each is roughly a day. Do not start a card until the previous one
 is merged.
@@ -14,7 +14,7 @@ value. Nothing currently notices if someone breaks them.
 
 The other three cards fix real defects in the CRM app.
 
-You also own `atmora-ui`, the shared design system every app imports. **Only one person may
+You also own `opsgrids-ui`, the shared design system every app imports. **Only one person may
 have an open change to it at a time, and that person is you.** An app may never copy a
 component out of it — if a product needs a variant, the variant becomes a prop on the shared
 component.
@@ -29,9 +29,9 @@ Read these once before card D1:
 
 ```bash
 cd frontend && pnpm install                    # once
-pnpm --filter @atmora/ui test                  # the design system's tests
-pnpm --filter @atmora/product-crm test         # the CRM app's tests
-pnpm --filter @atmora/product-crm dev          # http://localhost:4340
+pnpm --filter @opsgrids/ui test                  # the design system's tests
+pnpm --filter @opsgrids/product-crm test         # the CRM app's tests
+pnpm --filter @opsgrids/product-crm dev          # http://localhost:4340
 ```
 
 ### A note on how tests work here
@@ -40,7 +40,7 @@ The tests you are writing are for **pure functions** — you give them an input,
 output, nothing else happens. No browser, no network, no database. That makes them the easiest
 kind of test to write and the easiest to be sure about.
 
-Your reference is `frontend/atmora-ui/src/lib/qr.test.ts`. Read its opening comment: it explains
+Your reference is `frontend/opsgrids-ui/src/lib/qr.test.ts`. Read its opening comment: it explains
 *why* the test exists before it tests anything. Yours should too.
 
 ---
@@ -53,14 +53,14 @@ Your reference is `frontend/atmora-ui/src/lib/qr.test.ts`. Read its opening comm
 
 ### REFERENCE
 
-`frontend/atmora-ui/src/lib/qr.test.ts` — the only existing test in the frontend. Copy its
+`frontend/opsgrids-ui/src/lib/qr.test.ts` — the only existing test in the frontend. Copy its
 shape: a docstring explaining why, then `describe` / `it` blocks.
 
 ### FILES YOU WILL TOUCH
 
 ```
-frontend/atmora-ui/src/lib/cn.test.ts        ← new file
-frontend/atmora-ui/src/lib/format.test.ts    ← new file
+frontend/opsgrids-ui/src/lib/cn.test.ts        ← new file
+frontend/opsgrids-ui/src/lib/format.test.ts    ← new file
 ```
 
 Nothing else. You are not changing the functions, only describing what they already do.
@@ -121,9 +121,9 @@ If what it returns looks wrong to you — say so in the pull request. Do not cha
 
 ```bash
 cd frontend
-pnpm --filter @atmora/ui test
-pnpm --filter @atmora/ui typecheck
-pnpm --filter @atmora/ui lint
+pnpm --filter @opsgrids/ui test
+pnpm --filter @opsgrids/ui typecheck
+pnpm --filter @opsgrids/ui lint
 ```
 
 ### DO NOT TOUCH
@@ -148,7 +148,7 @@ person reads, and nothing currently tests it.
 
 ### REFERENCE
 
-Your own card D1, and `frontend/atmora-ui/src/lib/qr.test.ts`.
+Your own card D1, and `frontend/opsgrids-ui/src/lib/qr.test.ts`.
 
 ### FILES YOU WILL TOUCH
 
@@ -186,9 +186,9 @@ it on this card.
 
 ```bash
 cd frontend
-pnpm --filter @atmora/product-crm test
-pnpm --filter @atmora/product-crm typecheck
-pnpm --filter @atmora/product-crm lint
+pnpm --filter @opsgrids/product-crm test
+pnpm --filter @opsgrids/product-crm typecheck
+pnpm --filter @opsgrids/product-crm lint
 ```
 
 ### DO NOT TOUCH
@@ -249,10 +249,10 @@ Two that need particular care:
 
 ```bash
 cd frontend
-pnpm --filter @atmora/product-crm test
-pnpm --filter @atmora/product-crm typecheck
-pnpm --filter @atmora/product-crm lint
-pnpm --filter @atmora/product-crm build
+pnpm --filter @opsgrids/product-crm test
+pnpm --filter @opsgrids/product-crm typecheck
+pnpm --filter @opsgrids/product-crm lint
+pnpm --filter @opsgrids/product-crm build
 ```
 
 ### DO NOT TOUCH
@@ -291,7 +291,7 @@ For each of the seven screens, check all four states and fix what is missing:
 Put a table in the pull request body: one row per screen, one column per state, marked as
 already-correct or fixed-by-this-PR. That table is the deliverable as much as the code is.
 
-Use the existing components in `@atmora/ui`'s `States.tsx`. Do not write new ones, and do not
+Use the existing components in `@opsgrids/ui`'s `States.tsx`. Do not write new ones, and do not
 copy them into this app.
 
 Error messages: no apologies, no vagueness. *"Could not load deals. Check your connection and
@@ -308,10 +308,10 @@ try again."* — not *"Oops! Something went wrong :("*.
 
 ```bash
 cd frontend
-pnpm --filter @atmora/product-crm typecheck
-pnpm --filter @atmora/product-crm lint
-pnpm --filter @atmora/product-crm test
-pnpm --filter @atmora/product-crm build
+pnpm --filter @opsgrids/product-crm typecheck
+pnpm --filter @opsgrids/product-crm lint
+pnpm --filter @opsgrids/product-crm test
+pnpm --filter @opsgrids/product-crm build
 ```
 
 and the seven-row table is in the pull request.
@@ -361,10 +361,10 @@ answered.
 
 ```bash
 cd frontend
-pnpm --filter @atmora/product-crm typecheck
-pnpm --filter @atmora/product-crm lint
-pnpm --filter @atmora/product-crm test
-pnpm --filter @atmora/product-crm build
+pnpm --filter @opsgrids/product-crm typecheck
+pnpm --filter @opsgrids/product-crm lint
+pnpm --filter @opsgrids/product-crm test
+pnpm --filter @opsgrids/product-crm build
 ```
 
 and both calls return real data against a running gateway, evidenced in the pull request.
@@ -379,5 +379,5 @@ and both calls return real data against a running gateway, evidenced in the pull
 
 `product-crm` still defaults to fixture data, unlike the six apps that already default to live —
 flipping it is the next card, and D5 has to land first or every screen breaks at once. Beyond
-that, `atmora-ui` has eighteen components and no tests that render any of them; adding the
+that, `opsgrids-ui` has eighteen components and no tests that render any of them; adding the
 tooling for that is a card for a reviewer, and the tests that follow it are cards for you.

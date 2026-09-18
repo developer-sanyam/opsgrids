@@ -1,7 +1,7 @@
 # product-crm
 
-The standalone **CRM** product app — **Atmora Revenue** (ADR-0001). Vite + React + TypeScript +
-Tailwind CSS v4. Visual language is the shared "Console" system used across every Atmora product:
+The standalone **CRM** product app — **OpsGrids Revenue** (ADR-0001). Vite + React + TypeScript +
+Tailwind CSS v4. Visual language is the shared "Console" system used across every OpsGrids product:
 Manrope, a single violet accent (`#6C4CF1`) spent sparingly, big-radius white cards on a light-grey
 ground, a grouped left sidebar with an account switcher and ⌘K search, and a full light/dark theme
 (toggle in the sidebar).
@@ -9,10 +9,10 @@ ground, a grouped left sidebar with an account switcher and ⌘K search, and a f
 ## Run it
 
 ```bash
-pnpm --filter @atmora/product-crm dev        # http://localhost:4340
-pnpm --filter @atmora/product-crm build
-pnpm --filter @atmora/product-crm typecheck
-pnpm --filter @atmora/product-crm lint
+pnpm --filter @opsgrids/product-crm dev        # http://localhost:4340
+pnpm --filter @opsgrids/product-crm build
+pnpm --filter @opsgrids/product-crm typecheck
+pnpm --filter @opsgrids/product-crm lint
 ```
 
 Dev serves on **:4340** (`--strictPort`), clear of the marketing site on 4300 and the HRMS product

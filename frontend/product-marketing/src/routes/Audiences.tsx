@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { getAudiences, getCampaigns } from "@/api/client";
 import type { Audience, Campaign } from "@/api/types";
 import { campaignsForAudience } from "@/data/derive";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import { formatMoneyCompact, formatNumber } from "@/lib/format";
 import {
   Card,
@@ -14,7 +14,7 @@ import {
   SearchInput,
   Skeleton,
 } from "@/ui";
-import { ArrowRightIcon, UsersIcon } from "@atmora/ui";
+import { ArrowRightIcon, UsersIcon } from "@opsgrids/ui";
 
 const CURRENCY = "INR";
 const NO_AUDIENCES: Audience[] = [];

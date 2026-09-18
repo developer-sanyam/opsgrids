@@ -109,7 +109,7 @@ class Route:
     upstream: str
     #: Which product must be activated. `None` for platform routes every customer has.
     product: str | None = None
-    #: Only reachable by Atmora staff. Used by the operator console.
+    #: Only reachable by OpsGrids staff. Used by the operator console.
     staff_only: bool = False
 
 
@@ -167,7 +167,7 @@ class GatewayPolicy:
     rate_limit: int = 300
     #: Unauthenticated callers are limited harder, and by address.
     anonymous_rate_limit: int = 60
-    #: Refuse anyone who is not Atmora staff. The operator console sets this.
+    #: Refuse anyone who is not OpsGrids staff. The operator console sets this.
     staff_only: bool = False
     upstream_timeout: float = 30.0
 
@@ -368,7 +368,7 @@ def build_gateway(
 
 
 def _slug_from_host(request: Request) -> str | None:
-    """`acme.atmora.com` → `acme`.
+    """`acme.opsgrids.com` → `acme`.
 
     Only the gateway parses the Host header. A service that trusted it directly would be
     trusting a client-supplied value.

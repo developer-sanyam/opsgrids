@@ -12,11 +12,11 @@ class Settings(ServiceSettings):
     #: Every table here is tenant-scoped, so the API must connect as a role RLS can bind
     #: (ADR-0002 finding 2) — and the projection consumer downstream in product-service relies
     #: on the same discipline: a write only passes the tenant policy when the GUC is set.
-    db_app_role: str | None = "atmora_subscription"
-    db_admin_role: str | None = "atmora_admin"
+    db_app_role: str | None = "opsgrids_subscription"
+    db_admin_role: str | None = "opsgrids_admin"
     #: The outbox relay's role: BYPASSRLS, SELECT+UPDATE on `outbox` only. subscription emits
     #: the `commerce.subscription.*` lifecycle stream that product-service projects to Activation.
-    db_outbox_role: str | None = "atmora_outbox"
+    db_outbox_role: str | None = "opsgrids_outbox"
 
     #: Where the catalog service answers the pin lookup. A subscribe/change-plan resolves its
     #: `plan_version_id` against catalog over the service-token internal API before pinning it —

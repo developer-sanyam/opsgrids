@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { listPurchaseOrders } from "@/api/client";
 import type { PoStatus, PurchaseOrderOut } from "@/api/types";
 import { CATEGORY_LABEL, poItemCount, poTotalMinor } from "@/data/derive";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import { formatDate, formatMoney } from "@/lib/format";
 import {
   Card,
@@ -18,7 +18,7 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { ClipboardListIcon } from "@atmora/ui";
+import { ClipboardListIcon } from "@opsgrids/ui";
 
 type StatusFilter = PoStatus | "all";
 

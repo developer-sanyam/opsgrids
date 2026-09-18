@@ -5,13 +5,13 @@ import { Link, useNavigate } from "react-router-dom";
 import { getOverview } from "@/api/client";
 import { getCustomerById } from "@/api/customers";
 import type { Customer, Invoice, OverviewKpi } from "@/api/types";
-import { useAuth } from "@atmora/client";
+import { useAuth } from "@opsgrids/client";
 import { customerName } from "@/data/customers";
 import { daysOverdue, outstandingMinor } from "@/data/derive";
 import { TODAY } from "@/api/fixtures";
 import { formatDate } from "@/lib/format";
 import { formatMoney, formatMoneyCompact } from "@/lib/money";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   AgingBreakdown,
   Avatar,
@@ -32,7 +32,7 @@ import {
   ReceiptIcon,
   TrendingUpIcon,
   WalletIcon,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 
 /** Per-KPI presentation: icon, pastel tone, and whether a rise reads as bad news. */
 const KPI_STYLE: Record<string, { icon: ReactNode; tone: KpiTone; invert: boolean }> = {
@@ -135,7 +135,7 @@ export function OverviewPage() {
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
     user?.organizations[0]?.name ??
-    "Atmora";
+    "OpsGrids";
 
   const period = overview.status === "success" ? overview.data.period_label : "";
 

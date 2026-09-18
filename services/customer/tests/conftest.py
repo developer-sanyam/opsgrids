@@ -107,7 +107,7 @@ async def data(session: AsyncSession, org_id: uuid.UUID) -> dict:
             session,
             write,
             full_name="Sofia Marchetti",
-            email="sofia.marchetti@atmora.example.com",
+            email="sofia.marchetti@opsgrids.example.com",
             role="Regional Sales Head",
             owner_id=SUBJECT_A,
         )
@@ -115,7 +115,7 @@ async def data(session: AsyncSession, org_id: uuid.UUID) -> dict:
             session,
             write,
             full_name="Kabir Malhotra",
-            email="kabir.malhotra@atmora.example.com",
+            email="kabir.malhotra@opsgrids.example.com",
             role="Enterprise AE",
             owner_id=SUBJECT_B,
         )

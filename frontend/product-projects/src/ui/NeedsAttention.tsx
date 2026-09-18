@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { NOW } from "@/api/fixtures";
 import type { MilestoneOut } from "@/api/types";
 import { formatDateShort, relativeDue } from "@/lib/format";
-import { Avatar, CheckSquareIcon, EmptyState } from "@atmora/ui";
+import { Avatar, CheckSquareIcon, EmptyState } from "@opsgrids/ui";
 import { MilestoneStatusPill } from "./ProjectPills";
 
 /**

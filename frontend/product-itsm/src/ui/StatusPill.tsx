@@ -11,7 +11,7 @@ import {
   requestStatusLabel,
   slaLabel,
 } from "@/lib/format";
-import { CheckIcon, cn } from "@atmora/ui";
+import { CheckIcon, cn } from "@opsgrids/ui";
 
 const PILL_BASE =
   "inline-flex items-center gap-1.5 rounded-full pl-2 pr-2.5 py-1 text-xs font-semibold whitespace-nowrap";

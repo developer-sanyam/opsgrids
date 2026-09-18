@@ -8,7 +8,7 @@ import { isOutstanding, reasonLabel, suggestionSentence } from "@/data/complianc
 import { readErrorMessage } from "@/lib/errors";
 import { formatDate } from "@/lib/format";
 import { formatAmount } from "@/lib/money";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Card,
   DataTable,
@@ -24,7 +24,7 @@ import {
   Tag,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { InboxIcon } from "@atmora/ui";
+import { InboxIcon } from "@opsgrids/ui";
 
 const STATUS_FILTERS: { value: ImsStatusFilter; label: string }[] = [
   { value: "all", label: "All" },

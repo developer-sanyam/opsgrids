@@ -3,7 +3,7 @@ import { useId, useMemo, useState } from "react";
 import type { TrendPoint } from "@/api/types";
 import { PIPELINE_DELTA, PIPELINE_TREND } from "@/data/samples";
 import { formatMoneyCompact } from "@/lib/format";
-import { DeltaPill, SampleChip } from "@atmora/ui";
+import { DeltaPill, SampleChip } from "@opsgrids/ui";
 import { SAMPLE_DATA } from "./sampleCopy";
 
 const W = 640;

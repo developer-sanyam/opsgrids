@@ -93,7 +93,7 @@ def auth_header(token: str) -> dict[str, str]:
 
 def seed_id(org_id: str, key: str) -> str:
     """The same deterministic id `_seed_crm.py` wrote the row under."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"atmora-e2e-crm:{org_id}:{key}"))
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"opsgrids-e2e-crm:{org_id}:{key}"))
 
 
 class TestTheJourney:
@@ -194,7 +194,7 @@ class TestTheJourney:
         assert state.get("published", 0) >= 1, (
             "the activation event was staged but never published: the outbox relay is not "
             f"draining. Probe said: {state}. This is the silent stall — check the relay is "
-            "running as atmora_outbox (BYPASSRLS), not the service's app role."
+            "running as opsgrids_outbox (BYPASSRLS), not the service's app role."
         )
         journey["published_event_ids"] = [r["id"] for r in state["rows"] if r["published"]]
 

@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { getAllDeals, listActivities } from "@/api/client";
 import type { Deal } from "@/api/types";
-import { useAuth } from "@atmora/client";
+import { useAuth } from "@opsgrids/client";
 import {
   needsAttention,
   openCount,
@@ -14,7 +14,7 @@ import {
 } from "@/data/derive";
 import { ACTIVITIES_THIS_WEEK, KPI_TRENDS } from "@/data/samples";
 import { NOW_ISO, formatMoneyCompact } from "@/lib/format";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   ActivityTimeline,
   Button,
@@ -36,7 +36,7 @@ import {
   PlusIcon,
   SearchIcon,
   TargetIcon,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 import { SAMPLE_DATA } from "@/ui/sampleCopy";
 
 const TODAY = NOW_ISO.slice(0, 10);
@@ -181,7 +181,7 @@ export function OverviewPage() {
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
     user?.organizations[0]?.name ??
-    "Atmora";
+    "OpsGrids";
 
   const items = useMemo(
     () => (deals.status === "success" ? deals.data.items : EMPTY_DEALS),

@@ -22,7 +22,7 @@
     }
   },
   "info": {
-    "description": "Quotation service \u2014 part of the Atmora platform.",
+    "description": "Quotation service \u2014 part of the OpsGrids platform.",
     "title": "Quotation service",
     "version": "0.1.0"
   },

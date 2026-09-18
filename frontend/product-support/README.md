@@ -6,15 +6,15 @@ sparingly, big-radius cards on a light-grey ground, a grouped left sidebar with 
 and ⌘K search, and a full light/dark theme (toggle in the sidebar). Semantic colour — priority,
 status and SLA health — is kept strictly separate from the accent and is always paired with a label.
 
-Product line: **Atmora Support** — one queue for customers and staff, with SLAs that mean something.
+Product line: **OpsGrids Support** — one queue for customers and staff, with SLAs that mean something.
 
 ## Run it
 
 ```bash
-pnpm --filter @atmora/product-support dev        # http://localhost:4340
-pnpm --filter @atmora/product-support build
-pnpm --filter @atmora/product-support typecheck
-pnpm --filter @atmora/product-support lint
+pnpm --filter @opsgrids/product-support dev        # http://localhost:4340
+pnpm --filter @opsgrids/product-support build
+pnpm --filter @opsgrids/product-support typecheck
+pnpm --filter @opsgrids/product-support lint
 ```
 
 Dev serves on **:4340** (`--strictPort`), clear of the marketing site (4300) and product-hrms (4310).
@@ -70,11 +70,11 @@ A local set under [`src/ui/`](src/ui): `Button`, `Pill`, `Card`, `Avatar`, `Tag`
 `Skeleton` / `EmptyState` / `ErrorState` / `SectionHeader`. Charts are hand-rolled — no charting
 dependency.
 
-> **Follow-up:** these should **graduate to the shared `atmora-ui` package** — ADR-0001 forbids an
+> **Follow-up:** these should **graduate to the shared `opsgrids-ui` package** — ADR-0001 forbids an
 > app forking shared components long-term. They live here only for this first product slice.
 
 ## Deferred (next slices)
 
 - **Support service** — wire live tickets, agents and the SLA policy so the app drops fixtures.
-- **`atmora-ui` graduation** — move `src/ui/*` into the shared design-system package.
+- **`opsgrids-ui` graduation** — move `src/ui/*` into the shared design-system package.
 - **Customers, Topics, Reports** — currently routed placeholders.

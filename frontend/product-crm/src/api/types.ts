@@ -1,5 +1,5 @@
 /**
- * Wire types for the CRM ("Atmora Revenue") product.
+ * Wire types for the CRM ("OpsGrids Revenue") product.
  *
  * These mirror the planned `services/crm/app/schemas.py` field-for-field, so a generated client
  * can drop in later without the UI changing. The CRM service is a skeleton on this branch, so the
@@ -17,7 +17,7 @@ export type DealStage =
   | "closed_won"
   | "closed_lost";
 
-/** A company's relationship to Atmora. */
+/** A company's relationship to OpsGrids. */
 export type CompanyStatus = "customer" | "prospect" | "lead" | "churned";
 
 /** Where a contact sits in the funnel. */

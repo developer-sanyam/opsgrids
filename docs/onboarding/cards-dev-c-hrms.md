@@ -36,7 +36,7 @@ type.
 
 ```bash
 cd frontend && pnpm install                       # once
-pnpm --filter @atmora/product-hrms dev            # http://localhost:4310
+pnpm --filter @opsgrids/product-hrms dev            # http://localhost:4310
 ```
 
 To see live data you need the backend running — `make infra`, then `make run SERVICE=auth
@@ -113,9 +113,9 @@ shape — what the table renders — as opposed to `AttendanceOut`, the **wire**
 
 ```bash
 cd frontend
-pnpm --filter @atmora/product-hrms typecheck
-pnpm --filter @atmora/product-hrms lint
-pnpm --filter @atmora/product-hrms build
+pnpm --filter @opsgrids/product-hrms typecheck
+pnpm --filter @opsgrids/product-hrms lint
+pnpm --filter @opsgrids/product-hrms build
 ```
 
 ### DO NOT TOUCH
@@ -182,17 +182,17 @@ Run the two requests concurrently with `Promise.all`, not one after the other.
 3. Delete the comment above it that says *"No attendance service on this org yet"* — that is no
    longer true and a stale comment is worse than none.
 4. Check it in the browser both ways:
-   `pnpm --filter @atmora/product-hrms dev` for live, and with `VITE_USE_FIXTURES=true` set for
+   `pnpm --filter @opsgrids/product-hrms dev` for live, and with `VITE_USE_FIXTURES=true` set for
    fixtures. Both must work.
 
 ### DONE WHEN
 
 ```bash
 cd frontend
-pnpm --filter @atmora/product-hrms typecheck
-pnpm --filter @atmora/product-hrms lint
-pnpm --filter @atmora/product-hrms test
-pnpm --filter @atmora/product-hrms build
+pnpm --filter @opsgrids/product-hrms typecheck
+pnpm --filter @opsgrids/product-hrms lint
+pnpm --filter @opsgrids/product-hrms test
+pnpm --filter @opsgrids/product-hrms build
 ```
 
 and, in the pull request, one sentence each on what you saw on the Attendance screen in live
@@ -253,10 +253,10 @@ its comment to what is still sample.
 
 ```bash
 cd frontend
-pnpm --filter @atmora/product-hrms typecheck
-pnpm --filter @atmora/product-hrms lint
-pnpm --filter @atmora/product-hrms test
-pnpm --filter @atmora/product-hrms build
+pnpm --filter @opsgrids/product-hrms typecheck
+pnpm --filter @opsgrids/product-hrms lint
+pnpm --filter @opsgrids/product-hrms test
+pnpm --filter @opsgrids/product-hrms build
 grep -rn "ATTENDANCE_IS_SAMPLE" product-hrms/src     # every remaining hit is justified in the PR
 ```
 
@@ -319,7 +319,7 @@ The four states:
 | empty | what to do next — *"No departments yet. An administrator can add them from the organization settings."* |
 | full | the table |
 
-Use components from `@atmora/ui` — `PageHeader`, `Card`, `DataTable`, `Pill`, and the loading
+Use components from `@opsgrids/ui` — `PageHeader`, `Card`, `DataTable`, `Pill`, and the loading
 and error components in `States.tsx`. **Do not build your own versions of these, and do not
 copy one into this app.**
 
@@ -336,17 +336,17 @@ copy one into this app.**
 
 ```bash
 cd frontend
-pnpm --filter @atmora/product-hrms typecheck
-pnpm --filter @atmora/product-hrms lint
-pnpm --filter @atmora/product-hrms test
-pnpm --filter @atmora/product-hrms build
+pnpm --filter @opsgrids/product-hrms typecheck
+pnpm --filter @opsgrids/product-hrms lint
+pnpm --filter @opsgrids/product-hrms test
+pnpm --filter @opsgrids/product-hrms build
 ```
 
 and, in the pull request, a screenshot of each of the four states.
 
 ### DO NOT TOUCH
 
-`frontend/atmora-ui/` — if you think a shared component needs a change, that is a different
+`frontend/opsgrids-ui/` — if you think a shared component needs a change, that is a different
 card for a different person. Comment.
 
 ---

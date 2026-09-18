@@ -1,4 +1,4 @@
-<title>Atmora Platform Map</title>
+<title>OpsGrids Platform Map</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chivo:wght@500;600;700;900&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap">
@@ -320,13 +320,13 @@ footer p{max-width:80ch;margin:0 0 5px}
 
 <header class="top">
   <div class="brandrow">
-    <span class="mark">Atmora</span>
+    <span class="mark">OpsGrids</span>
     <div class="stamp">
       <span><b>Snapshot</b> 20 Aug 2026</span>
       <span><b>Source</b> plan + committed code</span>
     </div>
   </div>
-  <h1>Atmora Platform Map</h1>
+  <h1>OpsGrids Platform Map</h1>
   <p class="sub">
     One organization, one account, one user directory — and every product activated on top of
     it. Thirty-four Python microservices behind two gateways, one PostgreSQL cluster with a
@@ -467,7 +467,7 @@ footer p{max-width:80ch;margin:0 0 5px}
     <h3>Event topics</h3>
     <p class="lede">
       Routing key is <code>&lt;product&gt;.&lt;aggregate&gt;.&lt;verb&gt;</code> on one durable
-      topic exchange, <code>atmora.events</code>. Publishing goes through a transactional outbox,
+      topic exchange, <code>opsgrids.events</code>. Publishing goes through a transactional outbox,
       so an event and the state change it describes commit together or not at all.
     </p>
     <div class="tw"><table>
@@ -583,7 +583,7 @@ footer p{max-width:80ch;margin:0 0 5px}
     </p>
 
     <h3>Repository</h3>
-    <pre class="tree">atmora/
+    <pre class="tree">opsgrids/
 ├── services/        34 services, each owning one Postgres schema
 │   └── &lt;name&gt;/       app/{api,models,schemas,selectors,services,consumers,relay}
 │                     migrations/  tests/  bin/{api,worker,cron}  Dockerfile
@@ -609,7 +609,7 @@ footer p{max-width:80ch;margin:0 0 5px}
 
 <footer>
   <p>Assembled from the approved architecture plan and the committed code at
-    <span class="mono">Documents/salasarauction/atmora</span>. Status per node reflects the
+    <span class="mono">Documents/salasarauction/opsgrids</span>. Status per node reflects the
     repository, not intent.</p>
   <p>Counts are of designed components, not shipped ones. One library is built and tested; one
     service is a generated skeleton. Everything else is a plan — which is exactly what this map
@@ -644,10 +644,10 @@ const NODES = [
   /* clients */
   N("product-shell","client","Clients","Ecosystem dashboard and every product UI in one shell","React 19 · Vite · TS","—","planned",9,"frontend/product-shell","REST → app-gateway"),
   N("admin-console","client","Clients","Customer's own administration — users, teams, roles, subscriptions, usage","React 19 · Vite","—","planned",9,"frontend/admin-console","REST → app-gateway"),
-  N("operator-console","client","Clients","Atmora staff: every organization, plan overrides, impersonation, revenue","React 19 · Vite","—","planned",9,"frontend/operator-console","REST → admin-gateway"),
+  N("operator-console","client","Clients","OpsGrids staff: every organization, plan overrides, impersonation, revenue","React 19 · Vite","—","planned",9,"frontend/operator-console","REST → admin-gateway"),
   N("pulseboard-web","client","Clients","Existing PulseBoard UI, repointed at the platform","Next.js 15 · React 19","—","planned",6,"frontend/pulseboard-web","OIDC + REST → app-gateway"),
   N("mobile-app","client","Clients","Punch, approvals, standups on the phone","React Native","—","planned",9,"mobile/","REST → app-gateway"),
-  N("atmora-tech","client","Clients","Public marketing site and storefront — already live","Next.js 16 · static","—","built",0,"(separate repo)","—"),
+  N("opsgrids-tech","client","Clients","Public marketing site and storefront — already live","Next.js 16 · static","—","built",0,"(separate repo)","—"),
 
   /* edge */
   N("app-gateway","edge","Edge","Backend-for-frontend. Verifies the JWT once, resolves the org, shapes per-screen payloads, refuses un-entitled products with 402","FastAPI · Redis","no tables","planned",2,"services/app-gateway","REST → every service"),
@@ -720,7 +720,7 @@ const LIB = [
 const STORES = [
   ["PostgreSQL 16 + PostGIS","Relational · schema per service","Primary store. Every table carries organization_id; row-level security enforces it. PostGIS backs the attendance geo-fence.","every service"],
   ["Redis","Cache · sessions · locks · rate limit","Token and session validation, entitlement snapshots written before a mutation returns, fixed-window rate limiting, distributed locks. Cache degrades to the database; locks fail hard.","gateways · auth · product"],
-  ["RabbitMQ","Async messaging","Durable topic exchange atmora.events. Relays publish from each service's outbox; consumers run as separate worker processes.","every service"],
+  ["RabbitMQ","Async messaging","Durable topic exchange opsgrids.events. Relays publish from each service's outbox; consumers run as separate worker processes.","every service"],
   ["MinIO / S3","Object storage","Documents, payslips, resumes and exports. Clients PUT directly against a presigned URL — bytes never transit the API.","document-service"],
   ["OpenSearch","Full-text search","Cross-product search over projections rather than over other services' tables.","search-service"],
   ["ClickHouse","Columnar analytics","Usage rollups and dashboards once metering volume justifies it. Deliberately deferred.","metering · analytics"],

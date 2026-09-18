@@ -6,7 +6,7 @@ decides *which rows* the app role may touch; it does not stop the role using UPD
 rows it can see. Append-only is a *verb* question, so the right tool is a table privilege, not a
 policy — the same tool `audit_logs` and metering's `usage_events` use.
 
-This migration revokes UPDATE and DELETE on `console.revenue_events` from `atmora_console`, so no
+This migration revokes UPDATE and DELETE on `console.revenue_events` from `opsgrids_console`, so no
 code path this service's role can reach may rewrite or erase a folded transition. INSERT and SELECT
 remain: the log is written once and read many times.
 
@@ -35,7 +35,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "console"
-APP_ROLE = "atmora_console"
+APP_ROLE = "opsgrids_console"
 TABLE = "revenue_events"
 
 

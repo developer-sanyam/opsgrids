@@ -1,6 +1,6 @@
 # Quotation service
 
-Part of the Atmora platform. Owns the `quotation` schema.
+Part of the OpsGrids platform. Owns the `quotation` schema.
 
 ```bash
 make run SERVICE=quotation PORT=8110    # API

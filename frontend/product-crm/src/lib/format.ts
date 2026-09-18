@@ -1,5 +1,5 @@
 /**
- * Formatting helpers for Atmora Revenue. Money is always passed as an integer count of **minor
+ * Formatting helpers for OpsGrids Revenue. Money is always passed as an integer count of **minor
  * units** (paise for INR) plus an ISO currency — these are the only place minor units become a
  * human string, so the rest of the app never divides by 100 by hand.
  */

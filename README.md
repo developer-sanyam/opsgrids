@@ -1,4 +1,4 @@
-# Atmora Platform
+# OpsGrids Platform
 
 One organization → one account → one user directory → many products.
 

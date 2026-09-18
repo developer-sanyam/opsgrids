@@ -15,12 +15,12 @@ class Settings(ServiceSettings):
     #: inbox all carry a tenant policy — so the API must connect as a role row-level security can
     #: bind (ADR-0002 finding 2). Append-only on `refunds` and `provider_events` is enforced
     #: *below* this role with a trigger, not by trusting the application to behave.
-    db_app_role: str | None = "atmora_payment"
-    db_admin_role: str | None = "atmora_admin"
+    db_app_role: str | None = "opsgrids_payment"
+    db_admin_role: str | None = "opsgrids_admin"
     #: The outbox relay's role: BYPASSRLS, SELECT+UPDATE on `outbox` only. payment emits
     #: `commerce.payment.captured` / `commerce.payment.failed`, and a failure is what closes the
     #: suspend loop (ADR-0004 §5) — so the relay draining this outbox is load-bearing.
-    db_outbox_role: str | None = "atmora_outbox"
+    db_outbox_role: str | None = "opsgrids_outbox"
 
     # --- provider (Razorpay-first) ------------------------------------------------
     #: The active provider. One provider per deployment for now; the seam (ADR-0004 §6) is built

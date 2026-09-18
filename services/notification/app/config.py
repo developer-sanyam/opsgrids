@@ -16,10 +16,11 @@ from platform_core.config import ServiceSettings, settings_for
 class Settings(ServiceSettings):
     service_name: str = "notification"
     db_schema: str = "notification"
-    #: Its own NOBYPASSRLS role, granted DML on the `notification` schema and nothing else.
-    db_app_role: str | None = "atmora_notification"
-    db_admin_role: str | None = "atmora_admin"
-    db_outbox_role: str | None = "atmora_outbox"
+    #: Its own NOBYPASSRLS role, granted DML on the `notification` schema and nothing else — so
+    #: this service cannot read another product's tables, the whole point of the split.
+    db_app_role: str | None = "opsgrids_notification"
+    db_admin_role: str | None = "opsgrids_admin"
+    db_outbox_role: str | None = "opsgrids_outbox"
 
     # ----------------------------------------------------------------- transports
     #: `log` | `smtp` — which transport serves the email channel.
@@ -31,7 +32,7 @@ class Settings(ServiceSettings):
     smtp_password: SecretStr | None = None
     smtp_use_tls: bool = False
     smtp_timeout_seconds: float = 10.0
-    email_from: str = "no-reply@atmora.example.com"
+    email_from: str = "no-reply@opsgrids.example.com"
 
     #: `log` | `whatsapp_cloud` — which transport serves the WhatsApp channel.
     whatsapp_transport: str = "log"

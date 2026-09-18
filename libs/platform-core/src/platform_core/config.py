@@ -66,7 +66,7 @@ class ServiceSettings(BaseSettings):
     debug: bool = False
 
     # --- datastores ---------------------------------------------------------------
-    database_url: str = "postgresql+asyncpg://atmora:atmora@localhost:5434/atmora"
+    database_url: str = "postgresql+asyncpg://opsgrids:opsgrids@localhost:5434/opsgrids"
 
     #: The role the API connects as. **NOBYPASSRLS**, granted DML on this service's schema
     #: only — so account-service cannot read `auth.credentials`, which is the entire reason
@@ -103,7 +103,7 @@ class ServiceSettings(BaseSettings):
     db_outbox_role: str | None = None
 
     redis_url: str = "redis://localhost:6380/0"
-    rabbitmq_url: str = "amqp://atmora:atmora@localhost:5673/"
+    rabbitmq_url: str = "amqp://opsgrids:opsgrids@localhost:5673/"
 
     # Under ASGI we never hold a connection across a request boundary; the pool is the
     # single place connections are managed.
@@ -117,7 +117,7 @@ class ServiceSettings(BaseSettings):
     jwt_private_key_path: str | None = None
     jwt_kid: str = "dev-1"
     jwt_algorithm: str = "EdDSA"
-    jwt_issuer: str = "https://auth.atmora.local"
+    jwt_issuer: str = "https://auth.opsgrids.local"
     jwks_url: str = "http://localhost:8110/.well-known/jwks.json"
     access_token_ttl_seconds: int = 900
     refresh_token_ttl_seconds: int = 604_800

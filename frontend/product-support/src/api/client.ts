@@ -7,7 +7,7 @@
  * from `fixtures.ts` with no login — handy for offline design work.
  */
 
-import { apiRequest } from "@atmora/client";
+import { apiRequest } from "@opsgrids/client";
 import { AGENTS, SLA_POLICY, TICKETS } from "./fixtures";
 import type { Agent, Page, SlaPolicy, Ticket } from "./types";
 

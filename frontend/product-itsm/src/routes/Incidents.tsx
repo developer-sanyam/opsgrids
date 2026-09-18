@@ -5,7 +5,7 @@ import { listIncidents } from "@/api/client";
 import type { IncidentSort } from "@/api/client";
 import type { Incident, IncidentStatus, Priority } from "@/api/types";
 import { formatSlaClock, incidentCategoryLabel, relativeTime } from "@/lib/format";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Avatar,
   Card,
@@ -21,7 +21,7 @@ import {
   SlaPill,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { AlertTriangleIcon, SortIcon } from "@atmora/ui";
+import { AlertTriangleIcon, SortIcon } from "@opsgrids/ui";
 
 type PriorityFilter = Priority | "all";
 type StatusFilter = IncidentStatus | "all";

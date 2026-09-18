@@ -1,6 +1,6 @@
 import type { StandupEntry } from "@/api/types";
 import { person } from "@/data/people";
-import { AlertTriangleIcon, Avatar, CheckCircleIcon, cn } from "@atmora/ui";
+import { AlertTriangleIcon, Avatar, CheckCircleIcon, cn } from "@opsgrids/ui";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (

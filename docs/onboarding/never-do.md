@@ -41,7 +41,7 @@ net, not permission to skip the filter.
 
 A query that forgets it is how one customer sees another customer's data.
 
-### 5. Never copy a component out of `@atmora/ui` into an app.
+### 5. Never copy a component out of `@opsgrids/ui` into an app.
 
 Nine apps growing nine slightly different date pickers is exactly the failure this rule
 prevents. If a product needs a variant, the variant becomes a **prop on the shared

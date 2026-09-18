@@ -10,7 +10,7 @@ and `outbox` already have it — a table carrying `organization_id` that shipped
 would be readable across tenants, which for the platform's most sensitive table is the worst
 place to get it wrong. The `employee.current_org()` function was created by the RLS migration
 this one follows, so the policy only has to reference it. `apply_schema_grants` (run by env.py
-after every migration) hands `atmora_employee` its DML on the new table.
+after every migration) hands `opsgrids_employee` its DML on the new table.
 
 Revision ID: 6b37df855f2f
 Revises: f37fb99b221a
@@ -31,7 +31,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "employee"
-APP_ROLE = "atmora_employee"
+APP_ROLE = "opsgrids_employee"
 TABLE = "employee_pii"
 
 

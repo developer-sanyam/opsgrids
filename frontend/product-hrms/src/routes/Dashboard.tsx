@@ -5,7 +5,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { getAllEmployees, listAttendance } from "@/api/client";
 import { getOrgUnitNameById } from "@/api/orgUnits";
 import type { EmployeeOut } from "@/api/types";
-import { useAuth } from "@atmora/client";
+import { useAuth } from "@opsgrids/client";
 import {
   activeCount,
   distinctDepartmentCount,
@@ -13,7 +13,7 @@ import {
   workforceMix,
 } from "@/data/derive";
 import { RECENT_ACTIVITY, SAMPLE_ATTENDANCE, TASKS_TODAY } from "@/data/samples";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Button,
   Card,
@@ -39,7 +39,7 @@ import {
   PlusIcon,
   SearchIcon,
   UsersIcon,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 import { SAMPLE_DATA } from "@/ui/sampleCopy";
 
 const TODAY = "2026-08-24";
@@ -213,7 +213,7 @@ export function DashboardPage() {
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
     user?.organizations[0]?.name ??
-    "Atmora";
+    "OpsGrids";
 
   const attendanceSummary = useMemo(() => {
     if (attendance.status !== "success") return null;

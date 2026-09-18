@@ -10,9 +10,9 @@ The tenancy classification is a security decision written out per table (ADR-000
 projections are **tenant-scoped and RLS-policied**: the consumer writes them one organization at a
 time as the NOBYPASSRLS app role with the tenant GUC set per message, so a fold for org A can never
 write org B's row. The operator's cross-tenant read does not go through the app role at all — it
-runs on the SELECT-only BYPASSRLS directory role (`atmora_console_directory`), the named, auditable
-bypass ADR-0003 §2 requires. That the projections are RLS-real is what makes the bypass meaningful,
-and both halves are covered by a test.
+runs on the SELECT-only BYPASSRLS directory role (`opsgrids_console_directory`), the named,
+auditable bypass ADR-0003 §2 requires. That the projections are RLS-real is what makes the bypass
+meaningful, and both halves are covered by a test.
 
 `revenue_events` is additionally **append-only** at the database (a `REVOKE UPDATE, DELETE` on the
 app role, the same tool `audit_logs` and metering's `usage_events` use): the time series MRR, churn

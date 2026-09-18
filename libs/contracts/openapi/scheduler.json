@@ -22,7 +22,7 @@
     }
   },
   "info": {
-    "description": "Scheduler service \u2014 part of the Atmora platform.",
+    "description": "Scheduler service \u2014 part of the OpsGrids platform.",
     "title": "Scheduler service",
     "version": "0.1.0"
   },

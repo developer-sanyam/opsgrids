@@ -3,11 +3,11 @@ import { Link, useParams } from "react-router-dom";
 
 import { getTicket, listAgents } from "@/api/client";
 import type { Agent, Message, Ticket } from "@/api/types";
-import { useAuth } from "@atmora/client";
+import { useAuth } from "@opsgrids/client";
 import { agentById } from "@/data/derive";
-import { ChevronRightIcon, MailIcon, PaperclipIcon, ReplyIcon, cn } from "@atmora/ui";
+import { ChevronRightIcon, MailIcon, PaperclipIcon, ReplyIcon, cn } from "@opsgrids/ui";
 import { channelLabel, formatDateTime, initials } from "@/lib/format";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Avatar,
   Button,

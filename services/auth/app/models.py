@@ -382,7 +382,7 @@ class SigningKey(Base):
 
 
 class StaffAccount(Base):
-    """An Atmora operator — vendor staff, not a tenant user.
+    """An OpsGrids operator — vendor staff, not a tenant user.
 
     This is a **separate registry from the tenant user directory** (account-service) and
     from `Credential` above. Operators are the *vendor* looking across its tenants

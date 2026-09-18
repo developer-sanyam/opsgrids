@@ -1,4 +1,4 @@
-"""Operator (Atmora staff) sign-in, and the boundary that keeps it apart from tenant login.
+"""Operator (OpsGrids staff) sign-in, and the boundary that keeps it apart from tenant login.
 
 The security property this file exists to hold: an operator token is a *different audience*
 carrying `stf`, minted only when a `staff_accounts` row authenticates — and nothing on the
@@ -24,7 +24,7 @@ from tests.conftest import (
 
 pytestmark = pytest.mark.integration
 
-STAFF_EMAIL = "ops@atmora.tech"
+STAFF_EMAIL = "ops@opsgrids.tech"
 STAFF_PASSWORD = "operator-correct-horse-9"  # pragma: allowlist secret
 
 
@@ -96,7 +96,7 @@ class TestOperatorSignIn:
         # Same message an unknown operator gives — no enumeration oracle.
         with pytest.raises(UnauthorizedProblem) as unknown:
             await services.operator_login(
-                session, cfg=cfg, pair=pair, email="nobody@atmora.tech", password=STAFF_PASSWORD
+                session, cfg=cfg, pair=pair, email="nobody@opsgrids.tech", password=STAFF_PASSWORD
             )
         assert str(wrong.value) == str(unknown.value) == services.INVALID
 
@@ -249,17 +249,17 @@ class TestBootstrap:
     async def test_seeding_the_owner_is_idempotent(self, session) -> None:
         first = await bootstrap_staff_owner(
             session,
-            email="owner@atmora.local",
+            email="owner@opsgrids.local",
             password="dev-operator-not-a-real-password",  # pragma: allowlist secret
-            display_name="Atmora Owner (dev)",
+            display_name="OpsGrids Owner (dev)",
             roles=["owner"],
         )
         again = await bootstrap_staff_owner(
             session,
-            email="owner@atmora.local",
+            email="owner@opsgrids.local",
             password="a-different-one",  # pragma: allowlist secret
             display_name="Someone Else",
             roles=["support"],
         )
         assert again.id == first.id, "re-seeding must not duplicate or rewrite the owner"
-        assert again.display_name == "Atmora Owner (dev)"
+        assert again.display_name == "OpsGrids Owner (dev)"

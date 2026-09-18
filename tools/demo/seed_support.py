@@ -11,8 +11,8 @@ re-running does not duplicate.
 
 Usage: seed_support.py <support_service_dir> <org_id> <admin_user_id> <admin_membership_id>
 
-Point `DATABASE_URL` at the intended database before running — the demo targets `atmora_wt`
-in this workspace, never the shared `atmora`.
+Point `DATABASE_URL` at the intended database before running — the demo targets `opsgrids_wt`
+in this workspace, never the shared `opsgrids`.
 """
 
 from __future__ import annotations

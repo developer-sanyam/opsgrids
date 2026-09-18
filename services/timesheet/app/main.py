@@ -11,7 +11,7 @@ app = create_app(
     settings(),
     title="Timesheet service",
     description="PulseBoard's weekly time grid — timesheet weeks, entries and utilization, "
-    "part of the Atmora platform.",
+    "part of the OpsGrids platform.",
     routers=[router],
     # A stalled relay is silent; `/health/outbox` makes it visible, counting through the
     # outbox engine so it is not blind to the rows the app role cannot see.

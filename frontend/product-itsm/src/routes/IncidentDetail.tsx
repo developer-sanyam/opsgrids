@@ -10,7 +10,7 @@ import {
   incidentCategoryLabel,
   relativeTime,
 } from "@/lib/format";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import {
   Avatar,
   Card,
@@ -30,7 +30,7 @@ import {
   MessageIcon,
   ShieldCheckIcon,
   UserIcon,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 
 type IconType = ComponentType<SVGProps<SVGSVGElement>>;
 

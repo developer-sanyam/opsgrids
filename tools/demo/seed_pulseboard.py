@@ -26,7 +26,7 @@ the fixtures build theirs around their `TODAY` constant.
 
 The person behind a timesheet row or a standup entry is the project service's roster person.
 No stage reads another's schema (that is the whole point of the split), so the shared person
-UUID is **deterministic**: `uuid5(NAMESPACE_URL, "atmora:pulseboard:person:<org>:<ref>")` —
+UUID is **deterministic**: `uuid5(NAMESPACE_URL, "opsgrids:pulseboard:person:<org>:<ref>")` —
 every stage derives the same id from the same ref, and re-running never mints a new identity.
 
 Idempotent: a person ref / project code / task key / person-week / person-day that already
@@ -56,7 +56,7 @@ def _date(s: str) -> date:
 
 def person_uuid(org_id: uuid.UUID, ref: str) -> uuid.UUID:
     """The deterministic roster-person UUID shared by all three services (see module doc)."""
-    return uuid.uuid5(uuid.NAMESPACE_URL, f"atmora:pulseboard:person:{org_id}:{ref}")
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"opsgrids:pulseboard:person:{org_id}:{ref}")
 
 
 # ------------------------------------------------------------------ people (ref, name, role, location, capacity_hours)
@@ -124,7 +124,7 @@ PROJECTS: list[tuple[Any, ...]] = [
     (
         "PB-04",
         "Nimbus Design System",
-        "Atmora Studio",
+        "OpsGrids Studio",
         "on_track",
         78,
         9_000_000,
@@ -264,7 +264,7 @@ PROJECTS: list[tuple[Any, ...]] = [
     (
         "PB-14",
         "Zephyr Internal Tooling",
-        "Atmora Studio",
+        "OpsGrids Studio",
         "on_track",
         35,
         6_000_000,

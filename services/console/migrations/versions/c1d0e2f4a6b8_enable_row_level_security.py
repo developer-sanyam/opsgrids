@@ -39,7 +39,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "console"
-APP_ROLE = "atmora_console"
+APP_ROLE = "opsgrids_console"
 
 #: Tenant-scoped: the three projections plus the two platform tables.
 TENANT_TABLES = (

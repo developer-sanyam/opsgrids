@@ -1,5 +1,5 @@
 /**
- * This product's mark. Every other glyph comes from the shared set in `@atmora/ui`; the mark is
+ * This product's mark. Every other glyph comes from the shared set in `@opsgrids/ui`; the mark is
  * the one drawing that is genuinely per-product, and it matches the favicon.
  */
 import type { SVGProps } from "react";

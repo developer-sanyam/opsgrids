@@ -27,9 +27,9 @@ fixing only the obvious one produces a system that looks isolated and is not.**
 | # | Finding | Evidence |
 |---|---|---|
 | 1 | **No table has `rowsecurity` enabled** | `pg_tables` on the dev database: 28 tables across `account` and `auth`, of which 26 are domain tables and 2 are `alembic_version` |
-| 2 | The application connects as a **superuser** | `.env` → `postgresql+asyncpg://atmora:...`; `pg_roles` shows `atmora` is `rolsuper=t, rolbypassrls=t`. **Superusers bypass RLS unconditionally — `FORCE` cannot override this** |
-| 3 | Every table is **owned by the connecting role** | all 28 owned by `atmora`. A table owner bypasses its own policies unless the table is `FORCE ROW LEVEL SECURITY` |
-| 4 | The purpose-built roles are **unused and unprivileged** | `atmora_app` (NOBYPASSRLS) and `atmora_admin` (BYPASSRLS) exist in `init-db.sql:23,26`, but the only grant either holds is `GRANT CONNECT` (`:31`). No `USAGE`, no table privileges |
+| 2 | The application connects as a **superuser** | `.env` → `postgresql+asyncpg://opsgrids:...`; `pg_roles` shows `opsgrids` is `rolsuper=t, rolbypassrls=t`. **Superusers bypass RLS unconditionally — `FORCE` cannot override this** |
+| 3 | Every table is **owned by the connecting role** | all 28 owned by `opsgrids`. A table owner bypasses its own policies unless the table is `FORCE ROW LEVEL SECURITY` |
+| 4 | The purpose-built roles are **unused and unprivileged** | `opsgrids_app` (NOBYPASSRLS) and `opsgrids_admin` (BYPASSRLS) exist in `init-db.sql:23,26`, but the only grant either holds is `GRANT CONNECT` (`:31`). No `USAGE`, no table privileges |
 | 5 | **The tenant GUC is never set by anything** | `set_tenant` (`platform_core/db.py:98`) is called only by `session_scope` (`db.py:134`), and `session_scope` has no callers in any service |
 | 6 | The GUC **name differs between code and docs** | code: `app.organization_id` (`db.py:36`). ADR-0000 `:121` and `CLAUDE.md:28`: `app.org_id` |
 | 7 | `processed_events` has **no `organization_id`** | `event_id`, `event_type`, `processed_at` only (`platform_core/events.py:63-72`) |
@@ -84,11 +84,11 @@ test bypasses it and the suite passes while production is unprotected.** Tests m
 
 | Role | Used by | RLS |
 |---|---|---|
-| `atmora_admin` | Alembic migrations. Owns the schemas and tables | BYPASSRLS |
-| `atmora_app` | Every service API process, and event consumers | **NOBYPASSRLS** |
-| `atmora_directory` *(new)* | The `/internal/v1` cross-tenant reads, and nothing else | BYPASSRLS, **SELECT only**, on a named subset of `account` tables |
+| `opsgrids_admin` | Alembic migrations. Owns the schemas and tables | BYPASSRLS |
+| `opsgrids_app` | Every service API process, and event consumers | **NOBYPASSRLS** |
+| `opsgrids_directory` *(new)* | The `/internal/v1` cross-tenant reads, and nothing else | BYPASSRLS, **SELECT only**, on a named subset of `account` tables |
 
-`atmora_directory` is deliberately **not** `atmora_admin`. The migration role owns everything
+`opsgrids_directory` is deliberately **not** `opsgrids_admin`. The migration role owns everything
 and can write anything; the directory reader must not be able to write at all. The point is
 least privilege *inside* the bypass, because the risk being managed is a future route added to
 that module, not the three that exist today.
@@ -125,7 +125,7 @@ ALTER TABLE account.memberships ENABLE ROW LEVEL SECURITY;
 ALTER TABLE account.memberships FORCE  ROW LEVEL SECURITY;
 
 CREATE POLICY tenant_isolation ON account.memberships
-    FOR ALL TO atmora_app
+    FOR ALL TO opsgrids_app
     USING      (organization_id = account.current_org())
     WITH CHECK (organization_id = account.current_org());
 ```
@@ -140,11 +140,11 @@ someone writes an explicit per-command policy. Write it out.
 **`FORCE` is defence-in-depth, not a requirement** — an earlier draft of this ADR said it was
 required, and that was wrong. Verified empirically against the dev database: a NOBYPASSRLS role
 that does **not** own the table sees only its own rows with plain `ENABLE`, no `FORCE` needed
-(1 of 2 probe rows); the owner sees all of them (2 of 2). In the target split `atmora_admin`
-owns and `atmora_app` connects, so `atmora_app` is never the owner and RLS applies to it
+(1 of 2 probe rows); the owner sees all of them (2 of 2). In the target split `opsgrids_admin`
+owns and `opsgrids_app` connects, so `opsgrids_app` is never the owner and RLS applies to it
 regardless. `FORCE` is still worth setting, for the two futures where it bites: a table created
 accidentally by the app role, which would then own it and silently bypass its own policy, and a
-later decision to drop `BYPASSRLS` from `atmora_admin`. One extra statement, no cost — but it is
+later decision to drop `BYPASSRLS` from `opsgrids_admin`. One extra statement, no cost — but it is
 not what makes this work, and believing it is would misdirect debugging when a policy appears
 inert.
 
@@ -227,9 +227,9 @@ Two blockers if this were ignored: the nil-UUID sentinel (`uuid.UUID(int=0)`, 6 
 rows, so a `WITH CHECK` policy would **break password reset**; and `refresh_tokens.organization_id`
 is legitimately NULL in the pre-org window.
 
-**The real gap in `auth` is privilege isolation, not RLS.** With one shared `atmora_app`, the
+**The real gap in `auth` is privilege isolation, not RLS.** With one shared `opsgrids_app`, the
 account service's connection can `SELECT * FROM auth.credentials`. Per-service login roles
-(`atmora_account`, `atmora_auth`), each with `USAGE` on only its own schema, closes a hole
+(`opsgrids_account`, `opsgrids_auth`), each with `USAGE` on only its own schema, closes a hole
 wider than the missing RLS. *Recommended, and cheapest to do now.*
 
 ### 7. Reconcile the GUC name
@@ -295,12 +295,12 @@ the mechanism is a false pass.
 
 **Slice one — tenancy prerequisites. No policies in it** (decision 4).
 
-0. **Fix ownership and grants.** Schemas and tables to `atmora_admin`. Create
-   **`atmora_account` and `atmora_auth`** (decision 2), each with `USAGE` on only its own schema
+0. **Fix ownership and grants.** Schemas and tables to `opsgrids_admin`. Create
+   **`opsgrids_account` and `opsgrids_auth`** (decision 2), each with `USAGE` on only its own schema
    and DML via `ALTER DEFAULT PRIVILEGES`. Deliberately withhold `TRUNCATE`, and withhold
    `UPDATE`/`DELETE` on `audit_logs` — table privileges, not RLS, are the right tool for
    append-only.
-1. **Split the DSN.** `ServiceSettings` gains a migration URL (`atmora_admin`) distinct from the
+1. **Split the DSN.** `ServiceSettings` gains a migration URL (`opsgrids_admin`) distinct from the
    app URL; `migrations/env.py` uses the former. Both read the same setting today.
 2. **Wire the chokepoint** (§1). A no-op against a database with RLS off, so it lands
    independently. **Exit gate for this slice:** an assertion that the GUC is set inside every
@@ -319,7 +319,7 @@ the mechanism is a false pass.
 7. **Fix the test fixtures** — see below.
 
 Migrations themselves do not break: DDL is not subject to RLS, and data migrations run as
-`atmora_admin` with BYPASSRLS. The failure mode to watch is *ownership*, not RLS — if a table
+`opsgrids_admin` with BYPASSRLS. The failure mode to watch is *ownership*, not RLS — if a table
 ends up owned by anything else, `ALTER TABLE` fails.
 
 ## What breaks
@@ -336,7 +336,7 @@ ends up owned by anything else, `ALTER TABLE` fails.
 4. `POST /api/v1/invitations/accept` (finding 9) — public, and it **writes**. Fails closed on
    its first SELECT with a message identical to the one a forged token gets.
 
-Paths 1–3 move to the `atmora_directory` session. Path 4 gets the better pattern, which should
+Paths 1–3 move to the `opsgrids_directory` session. Path 4 gets the better pattern, which should
 become the model: **bypass for the lookup only, then narrow** — read the invitation on the
 bypass session, take its `organization_id`, then open a tenant session and do every write under
 policy. The bypass touches one row of one table; the writes stay enforced.
@@ -348,7 +348,7 @@ the kind of claim someone will rely on.
 **Tests.** `services/account/tests/conftest.py` breaks in several distinct ways: it builds its
 own engine from the app DSN (which, if left as the superuser, makes every RLS assertion a false
 pass — the worst outcome); it `TRUNCATE`s, which is an owner privilege deliberately withheld
-from `atmora_app`; it yields a session with no GUC; and the `org` fixture creates an
+from `opsgrids_app`; it yields a session with no GUC; and the `org` fixture creates an
 organization, which no tenant GUC can name before it exists. The fixture graph has to invert:
 `org` on the admin engine first, then a tenant session bound to it.
 
@@ -362,9 +362,9 @@ before RLS lands, so there is a baseline** — this is worth doing regardless of
 Three levers, cheapest first — the whole change is DDL plus a connection string, so no rows are
 touched:
 
-1. `ALTER ROLE atmora_app BYPASSRLS;` — one statement, no lock, service restored instantly with
+1. `ALTER ROLE opsgrids_app BYPASSRLS;` — one statement, no lock, service restored instantly with
    policies intact for diagnosis. Whoever is on call must know this exists.
-2. Point `DATABASE_URL` back at `atmora_admin` — config change and restart, no database change.
+2. Point `DATABASE_URL` back at `opsgrids_admin` — config change and restart, no database change.
 3. `alembic downgrade` — drops policies; brief `ACCESS EXCLUSIVE` per table.
 
 Making `roles.organization_id` NOT NULL is the one part that is not trivially reversible; it
@@ -400,7 +400,7 @@ reversible.
 
 ### 2. Per-service database roles — **yes, now**
 
-Split `atmora_app` into `atmora_account` and `atmora_auth` in step 0, each with `USAGE` on only
+Split `opsgrids_app` into `opsgrids_account` and `opsgrids_auth` in step 0, each with `USAGE` on only
 its own schema.
 
 With one shared role, account-service's connection can `SELECT * FROM auth.credentials` — the
@@ -459,7 +459,7 @@ GUC is set on every transaction, with no policy anywhere.
 ## Consequences
 
 - Isolation stops depending on every developer remembering a filter, forever.
-- A bypass surface is created deliberately (`atmora_directory`) that did not exist before. It is
+- A bypass surface is created deliberately (`opsgrids_directory`) that did not exist before. It is
   narrower than the superuser everything uses today, but it is a named target and needs the
   route-blast-radius test and audit logging that `record_sensitive_read` already exists for and
   nothing calls.

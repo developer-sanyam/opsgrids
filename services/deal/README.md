@@ -1,6 +1,6 @@
 # Deal service
 
-The pipeline half of the **CRM** product ("Atmora Revenue"). Owns the `deal` schema:
+The pipeline half of the **CRM** product ("OpsGrids Revenue"). Owns the `deal` schema:
 deals moving through the six-stage pipeline and the append-only activity timeline. Serves
 the `product-crm` SPA together with customer-service, whose companies, contacts and reps
 these rows point at by plain UUID — never a cross-schema foreign key.
@@ -86,5 +86,5 @@ Nothing yet.
 
 `tools/demo/seed_crm.py` seeds **both** CRM services and mirrors the SPA fixtures exactly
 (18 deals across all six stages and 20 timeline activities — plus the book in
-customer-service) into the "Atmora Demo" org via the real write paths, cross-linked by
-deterministic UUIDs. Idempotent. `DATABASE_URL` must point at `atmora_wt`.
+customer-service) into the "OpsGrids Demo" org via the real write paths, cross-linked by
+deterministic UUIDs. Idempotent. `DATABASE_URL` must point at `opsgrids_wt`.

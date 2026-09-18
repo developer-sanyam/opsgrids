@@ -95,9 +95,9 @@ Two more, in rough order of how likely they are to catch you:
 
 ```bash
 cd frontend && pnpm install
-pnpm --filter atmora-website dev     # http://localhost:4300
+pnpm --filter opsgrids-website dev     # http://localhost:4300
 ```
 
-The marketing site is the only frontend that exists. `atmora-ui` and `atmora-client` are
+The marketing site is the only frontend that exists. `opsgrids-ui` and `opsgrids-client` are
 declared workspace packages with **empty `src/` directories** — scaffolding for a design system
 and a typed API client that have not been written.

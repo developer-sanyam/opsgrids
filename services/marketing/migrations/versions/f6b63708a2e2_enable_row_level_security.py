@@ -4,7 +4,7 @@ Tenant isolation stops being a convention every query has to remember and become
 database enforces, exactly as it is on the `account`, `product` and `employee` schemas (ADR-0002).
 
 Three things have to be true before this does anything, and all three are already in place:
-policies exist (this file); the API connects as a **NOBYPASSRLS** role (`atmora_marketing`), so it
+policies exist (this file); the API connects as a **NOBYPASSRLS** role (`opsgrids_marketing`), so it
 cannot bypass row security the way a superuser would; and something sets the tenant GUC —
 `get_tenant_session` binds every request transaction to the caller's organization as its first
 statement.
@@ -31,7 +31,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "marketing"
-APP_ROLE = "atmora_marketing"
+APP_ROLE = "opsgrids_marketing"
 
 #: Tenant-scoped. Every one carries `organization_id`: the three domain tables plus the two
 #: platform tables every service has.
@@ -92,7 +92,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     """The deliberate undo, and the slowest of the rollbacks.
 
-    For an incident there are faster levers: `ALTER ROLE atmora_marketing BYPASSRLS` restores
+    For an incident there are faster levers: `ALTER ROLE opsgrids_marketing BYPASSRLS` restores
     service in one statement with no lock and leaves the policies intact for diagnosis, and
     pointing the DSN back at the admin role needs no database change at all. This one takes a brief
     ACCESS EXCLUSIVE lock per table and touches no rows.

@@ -5,7 +5,7 @@ import { getPurchaseOrder } from "@/api/client";
 import { TODAY } from "@/api/fixtures";
 import type { PoLineItem, PoStatus, PurchaseOrderOut } from "@/api/types";
 import { CATEGORY_LABEL, isLate, PO_STATUS_LABEL } from "@/data/derive";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import { daysBetween, formatDate, formatMoney, formatMoneyPrecise, relativeDue } from "@/lib/format";
 import { Avatar, Button, Card, ErrorState, PoStatusPill, SectionHeader, Skeleton } from "@/ui";
 import {
@@ -15,7 +15,7 @@ import {
   ClockIcon,
   MapPinIcon,
   TruckIcon,
-} from "@atmora/ui";
+} from "@opsgrids/ui";
 
 function lineTotal(line: PoLineItem): number {
   return line.quantity * line.unit_price_minor;

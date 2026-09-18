@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 
 import type { Incident } from "@/api/types";
 import { formatSlaClock } from "@/lib/format";
-import { ChevronRight, EmptyState, ShieldCheckIcon } from "@atmora/ui";
+import { ChevronRight, EmptyState, ShieldCheckIcon } from "@opsgrids/ui";
 import { PriorityPill, SlaPill } from "./StatusPill";
 
 /**

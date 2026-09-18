@@ -3,8 +3,8 @@ import { useCallback, useMemo, useState } from "react";
 import { ATTENDANCE_IS_SAMPLE, listAttendance } from "@/api/client";
 import type { AttendanceRecord, AttendanceStatus } from "@/api/types";
 import { departmentLabel } from "@/data/departments";
-import { useAsync } from "@atmora/client";
-import { CalendarCheckIcon, ClockIcon, MapPinIcon, cn } from "@atmora/ui";
+import { useAsync } from "@opsgrids/client";
+import { CalendarCheckIcon, ClockIcon, MapPinIcon, cn } from "@opsgrids/ui";
 import { formatMinutes, formatTime } from "@/lib/format";
 import {
   AttendancePill,

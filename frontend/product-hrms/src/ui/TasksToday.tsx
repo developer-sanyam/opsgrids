@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 
 import type { TaskItem } from "@/api/types";
-import { CheckSquareIcon, PlusIcon, SquareIcon, cn } from "@atmora/ui";
+import { CheckSquareIcon, PlusIcon, SquareIcon, cn } from "@opsgrids/ui";
 
 /**
  * Today's task checklist. The checkboxes toggle real local state and a small inline form appends

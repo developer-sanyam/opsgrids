@@ -2,7 +2,7 @@ import { useId, useMemo, useState } from "react";
 
 import type { SpendPoint, SpendRange } from "@/api/types";
 import { SPEND_DELTA, SPEND_TREND } from "@/api/fixtures";
-import { DeltaPill, cn } from "@atmora/ui";
+import { DeltaPill, cn } from "@opsgrids/ui";
 import { formatMoney, formatMoneyCompact } from "@/lib/format";
 
 const RANGES: { value: SpendRange; label: string }[] = [

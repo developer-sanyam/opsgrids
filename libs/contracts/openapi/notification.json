@@ -22,7 +22,7 @@
     }
   },
   "info": {
-    "description": "Notification service \u2014 part of the Atmora platform.",
+    "description": "Notification service \u2014 part of the OpsGrids platform.",
     "title": "Notification service",
     "version": "0.1.0"
   },

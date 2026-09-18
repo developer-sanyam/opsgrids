@@ -1,5 +1,5 @@
 import type { Priority, ProjectStatus } from "@/api/types";
-import { cn } from "@atmora/ui";
+import { cn } from "@opsgrids/ui";
 import { PROJECT_STATUS_META } from "./statusMeta";
 
 const PILL_BASE =

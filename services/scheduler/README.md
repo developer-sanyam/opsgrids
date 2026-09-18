@@ -1,6 +1,6 @@
 # Scheduler service
 
-Part of the Atmora platform. Owns the `scheduler` schema.
+Part of the OpsGrids platform. Owns the `scheduler` schema.
 
 ```bash
 make run SERVICE=scheduler PORT=8110    # API

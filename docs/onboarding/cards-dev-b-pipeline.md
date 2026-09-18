@@ -120,7 +120,7 @@ uv run ruff check services/pipeline && uv run ruff format --check services/pipel
 
 ### DO NOT TOUCH
 
-`tools/dev-bootstrap/init-db.sql` — the `atmora_pipeline` role is already there. Any other
+`tools/dev-bootstrap/init-db.sql` — the `opsgrids_pipeline` role is already there. Any other
 service. Anything under `libs/`.
 
 ### IF YOU GET STUCK
@@ -153,8 +153,8 @@ services/pipeline/migrations/versions/<new file>
 In `app/config.py`, add to the `Settings` class, keeping the reference's comment style:
 
 ```python
-db_app_role: str | None = "atmora_pipeline"
-db_admin_role: str | None = "atmora_admin"
+db_app_role: str | None = "opsgrids_pipeline"
+db_admin_role: str | None = "opsgrids_admin"
 ```
 
 Do not change `service_name`, `db_schema`, or the existing `db_outbox_role`.

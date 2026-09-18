@@ -62,9 +62,9 @@ ROOT = Path(__file__).resolve().parent.parent
 # --------------------------------------------------------------- isolation
 
 #: The worktree database. Pinned here and passed explicitly to every subprocess: the live
-#: demo lives in `atmora`, and no `.env` on any developer's machine may steer this suite
+#: demo lives in `opsgrids`, and no `.env` on any developer's machine may steer this suite
 #: into it.
-DATABASE_URL = "postgresql+asyncpg://atmora:atmora@localhost:5434/atmora_wt"
+DATABASE_URL = "postgresql+asyncpg://opsgrids:opsgrids@localhost:5434/opsgrids_wt"
 
 #: Its own Redis db. The gateway keeps permission versions and rate-limit counters here, and
 #: sharing db 0 with a running stack makes both flaky.
@@ -74,8 +74,8 @@ REDIS_URL = "redis://localhost:6380/9"
 #: services (`account.events`), so on the default vhost this suite and a running stack would
 #: round-robin the same queue — and an event minted here could be consumed by a process
 #: writing to the live database.
-VHOST = "atmora_e2e"
-RABBITMQ_URL = f"amqp://atmora:atmora@localhost:5673/{VHOST}"
+VHOST = "opsgrids_e2e"
+RABBITMQ_URL = f"amqp://opsgrids:opsgrids@localhost:5673/{VHOST}"
 RABBITMQ_MGMT = "http://localhost:15673"
 
 PASSWORD = "e2e-Sufficiently-Long-Passw0rd!"
@@ -117,7 +117,7 @@ class Platform:
     def gateway(self) -> str:
         """`localhost`, deliberately — **not** the loopback address.
 
-        The gateway infers a tenant slug from the Host header (`acme.atmora.com` → `acme`),
+        The gateway infers a tenant slug from the Host header (`acme.opsgrids.com` → `acme`),
         skipping hosts with fewer than three dotted labels. `127.0.0.1` has four, so an IP
         address is read as the organization `127`: sign-in then finds no membership matching
         that slug and offers an organization picker instead of a token. `localhost` is one
@@ -151,10 +151,10 @@ def _ensure_infrastructure() -> None:
     # The vhost is created rather than assumed: a fresh machine has only "/", and a missing
     # vhost surfaces as an opaque AMQP handshake failure inside the relay.
     try:
-        auth = ("atmora", "atmora")
+        auth = ("opsgrids", "opsgrids")
         httpx.put(f"{RABBITMQ_MGMT}/api/vhosts/{VHOST}", auth=auth, timeout=10.0)
         httpx.put(
-            f"{RABBITMQ_MGMT}/api/permissions/{VHOST}/atmora",
+            f"{RABBITMQ_MGMT}/api/permissions/{VHOST}/opsgrids",
             auth=auth,
             json={"configure": ".*", "write": ".*", "read": ".*"},
             timeout=10.0,

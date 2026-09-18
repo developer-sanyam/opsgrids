@@ -9,10 +9,10 @@ light/dark theme (toggle in the sidebar).
 ## Run it
 
 ```bash
-pnpm --filter @atmora/product-operations dev        # http://localhost:4380
-pnpm --filter @atmora/product-operations build
-pnpm --filter @atmora/product-operations typecheck
-pnpm --filter @atmora/product-operations lint
+pnpm --filter @opsgrids/product-operations dev        # http://localhost:4380
+pnpm --filter @opsgrids/product-operations build
+pnpm --filter @opsgrids/product-operations typecheck
+pnpm --filter @opsgrids/product-operations lint
 ```
 
 Dev serves on **:4380** (`--strictPort`), clear of the marketing site (4300) and product-hrms
@@ -68,11 +68,11 @@ A local set under [`src/ui/`](src/ui): `Button`, `Pill`, `Card`, `KpiCard`, `Spa
 `Avatar`, `Tag`, `SearchInput`, `Sidebar`, `ThemeToggle`, and shared `Skeleton` / `EmptyState` /
 `ErrorState` / `SectionHeader`. Charts are hand-rolled inline SVG — no charting dependency.
 
-> **Follow-up:** these should **graduate to the shared `atmora-ui` package** — ADR-0001 forbids an
+> **Follow-up:** these should **graduate to the shared `opsgrids-ui` package** — ADR-0001 forbids an
 > app forking shared components long-term. They live here only for this first product slice.
 
 ## Deferred (next slices)
 
 - **Operations service** — wire live suppliers, purchase orders and inventory (flip `USE_FIXTURES`).
 - **Receiving** — post real goods-receipt notes that decrement stock.
-- **`atmora-ui` graduation** — move `src/ui/*` into the shared design-system package.
+- **`opsgrids-ui` graduation** — move `src/ui/*` into the shared design-system package.

@@ -26,7 +26,7 @@ from jwt.algorithms import RSAAlgorithm
 from app.oidc import TokenResponse
 
 ISSUER = "https://idp.example.test"
-CLIENT_ID = "atmora-test-client"
+CLIENT_ID = "opsgrids-test-client"
 #: Long enough that the HS256 forgery test does not trip PyJWT's short-key warning — the
 #: point of that test is the algorithm allow-list, not the key length.
 CLIENT_SECRET = "idp-test-client-secret-padded-to-thirty-two-bytes"  # pragma: allowlist secret

@@ -16,7 +16,7 @@ the manifest exists to avoid.
 
 Three properties are load-bearing, and each has a test:
 
-* **The GUC is set per message.** This process runs as `atmora_account` (NOBYPASSRLS), and
+* **The GUC is set per message.** This process runs as `opsgrids_account` (NOBYPASSRLS), and
   roles, grants and the audit trail are under forced tenant policies.
   `session_scope(organization_id=...)` binds the tenant for the transaction, so the writes
   pass the policies' `WITH CHECK`. (`permissions` is global and deliberately un-policied.)

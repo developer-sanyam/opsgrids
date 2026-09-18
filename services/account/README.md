@@ -1,6 +1,6 @@
 # Account service
 
-Part of the Atmora platform. Owns the `account` schema.
+Part of the OpsGrids platform. Owns the `account` schema.
 
 ```bash
 make run SERVICE=account PORT=8110    # API

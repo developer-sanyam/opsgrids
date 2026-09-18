@@ -11,7 +11,7 @@ from platform_core.app import create_app
 app = create_app(
     settings(),
     title="Account service",
-    description="Account service — part of the Atmora platform.",
+    description="Account service — part of the OpsGrids platform.",
     routers=[router],
     # Redis is not optional here. Every write that changes what somebody may do bumps the
     # organization's permission version, and that bump *raises* rather than degrading —

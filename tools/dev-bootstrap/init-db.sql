@@ -9,40 +9,40 @@ CREATE EXTENSION IF NOT EXISTS citext;       -- email is case-insensitive and gl
 -- ---------------------------------------------------------------------------
 -- The roles, and the difference between them matters.
 --
---   atmora_app        runs the services. NOBYPASSRLS, so a missing tenant filter returns
+--   opsgrids_app        runs the services. NOBYPASSRLS, so a missing tenant filter returns
 --                     nothing rather than everything. Superseded by the per-service roles
 --                     below, kept so an older .env still connects.
---   atmora_admin      runs migrations and backfills — work that owns the schema and
+--   opsgrids_admin      runs migrations and backfills — work that owns the schema and
 --                     legitimately spans organizations. BYPASSRLS.
---   atmora_directory  the cross-tenant identity reads sign-in depends on. BYPASSRLS,
+--   opsgrids_directory  the cross-tenant identity reads sign-in depends on. BYPASSRLS,
 --                     SELECT-only on a named handful of `account` tables.
---   atmora_product_directory
+--   opsgrids_product_directory
 --                     the cross-tenant entitlements read auth-service makes while minting a
 --                     token — resolving an organization's activations before any tenant is
 --                     bound. BYPASSRLS, SELECT-only on `product.activations` and
---                     `product.products`. Its own role rather than atmora_directory because a
+--                     `product.products`. Its own role rather than opsgrids_directory because a
 --                     bypass reader is granted only its own service's named tables.
---   atmora_outbox     the outbox relay and the outbox-lag probe. BYPASSRLS, SELECT and
+--   opsgrids_outbox     the outbox relay and the outbox-lag probe. BYPASSRLS, SELECT and
 --                     UPDATE on each service's `outbox` and nothing else.
 --
--- Each service also gets its own NOBYPASSRLS login role — atmora_account, atmora_auth,
--- atmora_product, atmora_employee, atmora_attendance, atmora_catalog, and one per
--- product/platform service (atmora_project, atmora_customer, atmora_lead, atmora_document, …)
--- — so one service's connection cannot read another's schema. `atmora_catalog` owns the
+-- Each service also gets its own NOBYPASSRLS login role — opsgrids_account, opsgrids_auth,
+-- opsgrids_product, opsgrids_employee, opsgrids_attendance, opsgrids_catalog, and one per
+-- product/platform service (opsgrids_project, opsgrids_customer, opsgrids_lead, opsgrids_document, …)
+-- — so one service's connection cannot read another's schema. `opsgrids_catalog` owns the
 -- commerce definitional layer: its plan/price tables are global and un-policied, but its
 -- `audit_logs`/`outbox` carry a tenant policy, so it too must be a role RLS can bind.
--- `atmora_billing` owns the financial record — invoices, invoice lines and the append-only
+-- `opsgrids_billing` owns the financial record — invoices, invoice lines and the append-only
 -- credit ledger, all tenant-policied — so it is NOBYPASSRLS too; its append-only and
 -- finalize-freeze guarantees are enforced below the role, with table privileges and a trigger.
--- `atmora_metering` owns the append-only usage sink: its `usage_events` additionally has
+-- `opsgrids_metering` owns the append-only usage sink: its `usage_events` additionally has
 -- UPDATE/DELETE revoked from it in a service migration, so append-only holds at the database.
--- `atmora_payment` owns the provider-facing edge — mandates, charges, and the append-only
+-- `opsgrids_payment` owns the provider-facing edge — mandates, charges, and the append-only
 -- `refunds` and `provider_events` (webhook inbox); it is NOBYPASSRLS too, and append-only there
 -- is enforced below the role by a trigger that survives the post-migration grant re-apply.
--- `atmora_console` owns the operator read model: its `revenue_events` projection is likewise
+-- `opsgrids_console` owns the operator read model: its `revenue_events` projection is likewise
 -- append-only (UPDATE/DELETE revoked in a service migration), and it carries a second BYPASSRLS
--- reader, `atmora_console_directory`, for the cross-tenant operator read API (below).
--- `atmora_projects`, `atmora_finance`, `atmora_operations` and `atmora_itsm` are the newest
+-- reader, `opsgrids_console_directory`, for the cross-tenant operator read API (below).
+-- `opsgrids_projects`, `opsgrids_finance`, `opsgrids_operations` and `opsgrids_itsm` are the newest
 -- product-line services: gate-green skeletons for now (outbox, audit_logs, processed_events
 -- only), each a NOBYPASSRLS role confined to its own schema like every other product service.
 --
@@ -51,19 +51,19 @@ CREATE EXTENSION IF NOT EXISTS citext;       -- email is case-insensitive and gl
 -- ---------------------------------------------------------------------------
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'atmora_app') THEN
-    CREATE ROLE atmora_app LOGIN PASSWORD 'atmora' NOBYPASSRLS;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'opsgrids_app') THEN
+    CREATE ROLE opsgrids_app LOGIN PASSWORD 'opsgrids' NOBYPASSRLS;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'atmora_admin') THEN
-    CREATE ROLE atmora_admin LOGIN PASSWORD 'atmora' BYPASSRLS;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'opsgrids_admin') THEN
+    CREATE ROLE opsgrids_admin LOGIN PASSWORD 'opsgrids' BYPASSRLS;
   END IF;
 END
 $$;
 
-GRANT CONNECT ON DATABASE atmora TO atmora_app, atmora_admin;
+GRANT CONNECT ON DATABASE opsgrids TO opsgrids_app, opsgrids_admin;
 -- The admin role owns the schemas, so it must be able to create them. Each service's
 -- first migration issues CREATE SCHEMA; nothing else in the platform creates one.
-GRANT CREATE ON DATABASE atmora TO atmora_admin;
+GRANT CREATE ON DATABASE opsgrids TO opsgrids_admin;
 
 -- One schema per service. No foreign key may cross a schema boundary — that rule is what
 -- keeps a later database-per-service split a config change rather than a rewrite.
@@ -88,25 +88,25 @@ DECLARE
   r text;
 BEGIN
   FOREACH r IN ARRAY ARRAY[
-    'atmora_account', 'atmora_auth', 'atmora_product', 'atmora_employee', 'atmora_attendance',
+    'opsgrids_account', 'opsgrids_auth', 'opsgrids_product', 'opsgrids_employee', 'opsgrids_attendance',
     -- PulseBoard
-    'atmora_project', 'atmora_timesheet', 'atmora_standup', 'atmora_quotation',
+    'opsgrids_project', 'opsgrids_timesheet', 'opsgrids_standup', 'opsgrids_quotation',
     -- CRM
-    'atmora_customer', 'atmora_deal', 'atmora_marketing', 'atmora_support',
+    'opsgrids_customer', 'opsgrids_deal', 'opsgrids_marketing', 'opsgrids_support',
     -- Sales CRM
-    'atmora_lead', 'atmora_pipeline', 'atmora_activity',
+    'opsgrids_lead', 'opsgrids_pipeline', 'opsgrids_activity',
     -- Platform (shared)
-    'atmora_document', 'atmora_notification', 'atmora_scheduler',
-    'atmora_eventbridge', 'atmora_config',
+    'opsgrids_document', 'opsgrids_notification', 'opsgrids_scheduler',
+    'opsgrids_eventbridge', 'opsgrids_config',
     -- Commerce
-    'atmora_catalog', 'atmora_billing', 'atmora_metering', 'atmora_subscription', 'atmora_console', 'atmora_payment',
+    'opsgrids_catalog', 'opsgrids_billing', 'opsgrids_metering', 'opsgrids_subscription', 'opsgrids_console', 'opsgrids_payment',
     -- Product lines (skeletons)
-    'atmora_projects', 'atmora_finance', 'atmora_operations', 'atmora_itsm'
+    'opsgrids_projects', 'opsgrids_finance', 'opsgrids_operations', 'opsgrids_itsm'
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
-      EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L NOBYPASSRLS', r, 'atmora');
+      EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L NOBYPASSRLS', r, 'opsgrids');
     END IF;
-    EXECUTE format('GRANT CONNECT ON DATABASE atmora TO %I', r);
+    EXECUTE format('GRANT CONNECT ON DATABASE opsgrids TO %I', r);
   END LOOP;
 END
 $$;
@@ -116,14 +116,14 @@ $$;
 -- `alembic check` with "permission denied for schema tiger" — a confusing error that has
 -- nothing to do with the service's own tables. Reference data, no tenant rows.
 GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
-  TO atmora_admin, atmora_account, atmora_auth, atmora_product, atmora_employee, atmora_attendance,
-     atmora_project, atmora_timesheet, atmora_standup, atmora_quotation,
-     atmora_customer, atmora_deal, atmora_marketing, atmora_support,
-     atmora_lead, atmora_pipeline, atmora_activity,
-     atmora_document, atmora_notification, atmora_scheduler,
-     atmora_eventbridge, atmora_config, atmora_catalog, atmora_billing, atmora_metering, atmora_subscription,
-     atmora_console, atmora_payment,
-     atmora_projects, atmora_finance, atmora_operations, atmora_itsm;
+  TO opsgrids_admin, opsgrids_account, opsgrids_auth, opsgrids_product, opsgrids_employee, opsgrids_attendance,
+     opsgrids_project, opsgrids_timesheet, opsgrids_standup, opsgrids_quotation,
+     opsgrids_customer, opsgrids_deal, opsgrids_marketing, opsgrids_support,
+     opsgrids_lead, opsgrids_pipeline, opsgrids_activity,
+     opsgrids_document, opsgrids_notification, opsgrids_scheduler,
+     opsgrids_eventbridge, opsgrids_config, opsgrids_catalog, opsgrids_billing, opsgrids_metering, opsgrids_subscription,
+     opsgrids_console, opsgrids_payment,
+     opsgrids_projects, opsgrids_finance, opsgrids_operations, opsgrids_itsm;
 
 -- The directory reader (ADR-0002, "the cross-tenant reader").
 --
@@ -134,13 +134,13 @@ GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
 -- inside the bypass, because the risk being managed is a route added there later.
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'atmora_directory') THEN
-    CREATE ROLE atmora_directory LOGIN PASSWORD 'atmora' NOINHERIT BYPASSRLS;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'opsgrids_directory') THEN
+    CREATE ROLE opsgrids_directory LOGIN PASSWORD 'opsgrids' NOINHERIT BYPASSRLS;
   END IF;
 END
 $$;
-GRANT CONNECT ON DATABASE atmora TO atmora_directory;
-GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO atmora_directory;
+GRANT CONNECT ON DATABASE opsgrids TO opsgrids_directory;
+GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO opsgrids_directory;
 
 -- The product entitlements reader (ADR-0002, "the cross-tenant reader"), one per service.
 --
@@ -149,19 +149,19 @@ GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO atmora_directory;
 -- would establish one. Under row-level security the application role reads nothing there, so
 -- every product's routes 402 at the gateway. The read runs on its own BYPASSRLS role instead,
 -- SELECT-only on `product.activations` and `product.products` and nothing else. A separate
--- role from atmora_directory because each bypass reader is confined to its own service's
+-- role from opsgrids_directory because each bypass reader is confined to its own service's
 -- named tables — least privilege inside the bypass, for the route added to that module later.
 -- Table grants are applied by product's `migrations/env.py`, because the tables do not exist
 -- when this file runs.
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'atmora_product_directory') THEN
-    CREATE ROLE atmora_product_directory LOGIN PASSWORD 'atmora' NOINHERIT BYPASSRLS;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'opsgrids_product_directory') THEN
+    CREATE ROLE opsgrids_product_directory LOGIN PASSWORD 'opsgrids' NOINHERIT BYPASSRLS;
   END IF;
 END
 $$;
-GRANT CONNECT ON DATABASE atmora TO atmora_product_directory;
-GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO atmora_product_directory;
+GRANT CONNECT ON DATABASE opsgrids TO opsgrids_product_directory;
+GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO opsgrids_product_directory;
 
 -- The operator console's cross-tenant reader (ADR-0002 §2/§3, ADR-0003 §2).
 --
@@ -169,19 +169,19 @@ GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO atmora_product_dire
 -- override-audit at once — so its read API cannot carry a tenant binding and cannot run on the
 -- application role. It gets its own BYPASSRLS role, SELECT-only on console's projection tables
 -- (`org_commercial_state`, `revenue_events`, `usage_summary`) and its `audit_logs`, and nothing
--- else — a named, auditable bypass, not a superuser. A separate role from atmora_directory and
--- atmora_product_directory because each bypass reader is confined to its own service's named
+-- else — a named, auditable bypass, not a superuser. A separate role from opsgrids_directory and
+-- opsgrids_product_directory because each bypass reader is confined to its own service's named
 -- tables — least privilege inside the bypass. Table grants are applied by console's
 -- `migrations/env.py`, because the tables do not exist when this file runs.
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'atmora_console_directory') THEN
-    CREATE ROLE atmora_console_directory LOGIN PASSWORD 'atmora' NOINHERIT BYPASSRLS;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'opsgrids_console_directory') THEN
+    CREATE ROLE opsgrids_console_directory LOGIN PASSWORD 'opsgrids' NOINHERIT BYPASSRLS;
   END IF;
 END
 $$;
-GRANT CONNECT ON DATABASE atmora TO atmora_console_directory;
-GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO atmora_console_directory;
+GRANT CONNECT ON DATABASE opsgrids TO opsgrids_console_directory;
+GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO opsgrids_console_directory;
 
 -- The outbox relay (ADR-0002 §2, "The outbox relay must run BYPASSRLS").
 --
@@ -193,10 +193,10 @@ GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO atmora_console_dire
 -- `migrations/env.py`, because the table does not exist when this file runs.
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'atmora_outbox') THEN
-    CREATE ROLE atmora_outbox LOGIN PASSWORD 'atmora' NOINHERIT BYPASSRLS;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'opsgrids_outbox') THEN
+    CREATE ROLE opsgrids_outbox LOGIN PASSWORD 'opsgrids' NOINHERIT BYPASSRLS;
   END IF;
 END
 $$;
-GRANT CONNECT ON DATABASE atmora TO atmora_outbox;
-GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO atmora_outbox;
+GRANT CONNECT ON DATABASE opsgrids TO opsgrids_outbox;
+GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO opsgrids_outbox;

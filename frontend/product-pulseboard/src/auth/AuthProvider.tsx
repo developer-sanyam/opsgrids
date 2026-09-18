@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
-import { AuthProvider as BaseAuthProvider } from "@atmora/client";
-import type { MeOut } from "@atmora/client";
+import { AuthProvider as BaseAuthProvider } from "@opsgrids/client";
+import type { MeOut } from "@opsgrids/client";
 
 import { USE_FIXTURES } from "@/api/client";
 
@@ -12,14 +12,14 @@ import { USE_FIXTURES } from "@/api/client";
  */
 const FIXTURE_ORG = {
   organization_id: "org-fixture-0001",
-  slug: "atmora-studio",
-  name: "Atmora Studio",
+  slug: "opsgrids-studio",
+  name: "OpsGrids Studio",
   roles: ["delivery_lead"],
 };
 
 const FIXTURE_USER: MeOut = {
   user_id: "user-fixture-0001",
-  email: "nadia.rahman@atmora.example.com",
+  email: "nadia.rahman@opsgrids.example.com",
   full_name: "Nadia Rahman",
   organization_id: FIXTURE_ORG.organization_id,
   membership_id: "mem-fixture-0001",
@@ -30,7 +30,7 @@ const FIXTURE_USER: MeOut = {
   organizations: [FIXTURE_ORG],
 };
 
-/** The session, wired to this product's fixture identity. The logic lives in `@atmora/client`. */
+/** The session, wired to this product's fixture identity. The logic lives in `@opsgrids/client`. */
 export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <BaseAuthProvider fixtureUser={USE_FIXTURES ? FIXTURE_USER : null}>

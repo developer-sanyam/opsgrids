@@ -627,7 +627,7 @@
     }
   },
   "info": {
-    "description": "The support desk \u2014 part of the Atmora platform.",
+    "description": "The support desk \u2014 part of the OpsGrids platform.",
     "title": "Support service",
     "version": "0.1.0"
   },

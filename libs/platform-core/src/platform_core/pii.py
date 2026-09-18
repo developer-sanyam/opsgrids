@@ -61,7 +61,7 @@ _KEY_LEN = 32  # AES-256.
 #: HKDF context. Fixed, because derivation has to be deterministic for a passphrase or rotation
 #: could never reproduce the key that sealed an existing row. Distinct from any other HKDF use
 #: on the same secret so the derived keys cannot collide with them.
-_HKDF_INFO = b"atmora.pii.aes256gcm.v1"
+_HKDF_INFO = b"opsgrids.pii.aes256gcm.v1"
 
 BULLET = "•"  # • — the masking glyph, one constant so every mask reads the same.
 

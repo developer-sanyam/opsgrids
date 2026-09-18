@@ -120,7 +120,7 @@ class TestDeclaredDependencies:
     async def test_declaring_an_outbox_opens_the_outbox_engine(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The probe counts through `atmora_outbox`, so the lifespan has to open it.
+        """The probe counts through `opsgrids_outbox`, so the lifespan has to open it.
 
         Through the application engine `/health/outbox` reports zero whatever the table
         holds — the app role is NOBYPASSRLS and the probe binds no tenant — which wires the

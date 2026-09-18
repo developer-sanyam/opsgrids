@@ -14,8 +14,8 @@ role templates land too.
 
 Usage: activate_product.py <product_service_dir> <org_id> <product_key> [activated_by_membership_id]
 
-Point `DATABASE_URL` at the intended database before running — the demo targets `atmora_wt`
-in this workspace, never the shared `atmora`.
+Point `DATABASE_URL` at the intended database before running — the demo targets `opsgrids_wt`
+in this workspace, never the shared `opsgrids`.
 """
 
 from __future__ import annotations

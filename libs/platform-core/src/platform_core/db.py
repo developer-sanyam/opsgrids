@@ -89,7 +89,7 @@ def apply_schema_grants(
     # The directory reader: cross-tenant SELECT on the identity tables only. Granted here for
     # the same reason as everything else in this function — the tables do not exist when the
     # bootstrap runs, and a step somebody must remember is a step somebody forgets.
-    directory = "atmora_directory"
+    directory = "opsgrids_directory"
     if connection.execute(
         text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": directory}
     ).scalar():
@@ -264,7 +264,7 @@ async def assert_outbox_role(engine: AsyncEngine, *, environment: str) -> None:
             f"refusing to run the outbox relay as database role {role!r}: it has neither "
             "BYPASSRLS nor superuser, so under row-level security its drain query matches "
             "zero rows and the outbox fills silently. Configure db_outbox_role "
-            "(atmora_outbox) and its grants"
+            "(opsgrids_outbox) and its grants"
         )
     log.warning(
         "outbox.role.rls_bound",
@@ -492,7 +492,7 @@ async def session_scope(
     """Transaction for workers, relays and scripts. Commits on a clean exit.
 
     Pass `organization_id` when the work belongs to one tenant. Anything that deliberately
-    passes nothing must run as a role with BYPASSRLS — the relay has its own, `atmora_outbox`,
+    passes nothing must run as a role with BYPASSRLS — the relay has its own, `opsgrids_outbox`,
     reached through `get_outbox_sessionmaker` rather than this — see CLAUDE.md, because
     getting this wrong stops event processing silently.
     """

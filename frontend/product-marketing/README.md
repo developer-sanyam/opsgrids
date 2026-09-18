@@ -10,10 +10,10 @@ light/dark theme (toggle in the sidebar). The semantic palette doubles as the ch
 ## Run it
 
 ```bash
-pnpm --filter @atmora/product-marketing dev        # http://localhost:4370
-pnpm --filter @atmora/product-marketing build
-pnpm --filter @atmora/product-marketing typecheck
-pnpm --filter @atmora/product-marketing lint
+pnpm --filter @opsgrids/product-marketing dev        # http://localhost:4370
+pnpm --filter @opsgrids/product-marketing build
+pnpm --filter @opsgrids/product-marketing typecheck
+pnpm --filter @opsgrids/product-marketing lint
 ```
 
 Dev serves on **:4370** (`--strictPort`), clear of the marketing website (4300) and product-hrms
@@ -66,5 +66,5 @@ A local set under [`src/ui/`](src/ui): `Button`, `Pill`, `Card`, `Tag`, `Avatar`
 `CampaignPerformanceChart`, and shared `Skeleton` / `EmptyState` / `ErrorState` / `SectionHeader`.
 Charts are hand-rolled inline SVG — no charting dependency.
 
-> **Follow-up:** these should **graduate to the shared `atmora-ui` package** — ADR-0001 forbids an
+> **Follow-up:** these should **graduate to the shared `opsgrids-ui` package** — ADR-0001 forbids an
 > app forking shared components long-term. They live here only for this first product slice.

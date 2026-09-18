@@ -8,9 +8,9 @@ import {
   weeklyEnteredHours,
 } from "@/data/derive";
 import { formatHours } from "@/lib/format";
-import { useAsync } from "@atmora/client";
+import { useAsync } from "@opsgrids/client";
 import { Card, ErrorState, PageHeader, SectionHeader, Skeleton, TimeGrid } from "@/ui";
-import { CalendarIcon, ClockIcon } from "@atmora/ui";
+import { CalendarIcon, ClockIcon } from "@opsgrids/ui";
 
 interface TimesheetData {
   rows: TimesheetRow[];

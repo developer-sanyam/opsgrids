@@ -1,4 +1,4 @@
-name: atmora
+name: opsgrids
 
 # Local development infrastructure.
 #
@@ -14,15 +14,15 @@ services:
   postgres:
     image: postgis/postgis:16-3.4
     environment:
-      POSTGRES_USER: atmora
-      POSTGRES_PASSWORD: atmora
-      POSTGRES_DB: atmora
+      POSTGRES_USER: opsgrids
+      POSTGRES_PASSWORD: opsgrids
+      POSTGRES_DB: opsgrids
     ports: ['5434:5432']
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./init-db.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U atmora -d atmora']
+      test: ['CMD-SHELL', 'pg_isready -U opsgrids -d opsgrids']
       interval: 5s
       timeout: 3s
       retries: 20
@@ -44,8 +44,8 @@ services:
   rabbitmq:
     image: rabbitmq:3-management-alpine
     environment:
-      RABBITMQ_DEFAULT_USER: atmora
-      RABBITMQ_DEFAULT_PASS: atmora
+      RABBITMQ_DEFAULT_USER: opsgrids
+      RABBITMQ_DEFAULT_PASS: opsgrids
     ports: ['5673:5672', '15673:15672']
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
@@ -60,8 +60,8 @@ services:
     image: minio/minio:latest
     command: ['server', '/data', '--console-address', ':9001']
     environment:
-      MINIO_ROOT_USER: atmora
-      MINIO_ROOT_PASSWORD: atmora-secret
+      MINIO_ROOT_USER: opsgrids
+      MINIO_ROOT_PASSWORD: opsgrids-secret
     ports: ['9100:9000', '9101:9001']
     volumes:
       - minio-data:/data

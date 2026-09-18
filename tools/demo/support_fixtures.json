@@ -3,7 +3,7 @@
     {
       "ref": "ag-01",
       "name": "Priya Nair",
-      "email": "priya.nair@atmora.example.com",
+      "email": "priya.nair@opsgrids.example.com",
       "role": "team_lead",
       "team": "Tier 1",
       "open_load": 7,
@@ -15,7 +15,7 @@
     {
       "ref": "ag-02",
       "name": "Daniel Okafor",
-      "email": "daniel.okafor@atmora.example.com",
+      "email": "daniel.okafor@opsgrids.example.com",
       "role": "senior_agent",
       "team": "Billing",
       "open_load": 9,
@@ -27,7 +27,7 @@
     {
       "ref": "ag-03",
       "name": "Sofia Marchetti",
-      "email": "sofia.marchetti@atmora.example.com",
+      "email": "sofia.marchetti@opsgrids.example.com",
       "role": "agent",
       "team": "Tier 1",
       "open_load": 12,
@@ -39,7 +39,7 @@
     {
       "ref": "ag-04",
       "name": "Kabir Malhotra",
-      "email": "kabir.malhotra@atmora.example.com",
+      "email": "kabir.malhotra@opsgrids.example.com",
       "role": "senior_agent",
       "team": "Technical",
       "open_load": 6,
@@ -51,7 +51,7 @@
     {
       "ref": "ag-05",
       "name": "Grace Adeyemi",
-      "email": "grace.adeyemi@atmora.example.com",
+      "email": "grace.adeyemi@opsgrids.example.com",
       "role": "agent",
       "team": "Onboarding",
       "open_load": 10,
@@ -63,7 +63,7 @@
     {
       "ref": "ag-06",
       "name": "Tobias Berg",
-      "email": "tobias.berg@atmora.example.com",
+      "email": "tobias.berg@opsgrids.example.com",
       "role": "agent",
       "team": "Technical",
       "open_load": 8,
@@ -75,7 +75,7 @@
     {
       "ref": "ag-07",
       "name": "Meera Krishnan",
-      "email": "meera.krishnan@atmora.example.com",
+      "email": "meera.krishnan@opsgrids.example.com",
       "role": "agent",
       "team": "Billing",
       "open_load": 5,
@@ -87,7 +87,7 @@
     {
       "ref": "ag-08",
       "name": "Lena Novak",
-      "email": "lena.novak@atmora.example.com",
+      "email": "lena.novak@opsgrids.example.com",
       "role": "senior_agent",
       "team": "Tier 1",
       "open_load": 11,
@@ -776,8 +776,8 @@
       "subject": "Staff laptop can't reach the internal admin console",
       "requester": {
         "name": "Aditya Rao",
-        "email": "aditya.rao@atmora.example.com",
-        "company": "Atmora (internal)",
+        "email": "aditya.rao@opsgrids.example.com",
+        "company": "OpsGrids (internal)",
         "kind": "staff"
       },
       "priority": "normal",

@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 
 import type { StatusSlice } from "@/api/types";
-import { ArrowRightIcon } from "@atmora/ui";
+import { ArrowRightIcon } from "@opsgrids/ui";
 
 /** Status colours line up with the PO status pills: draft grey, approved blue, received green, closed cyan. */
 const STATUS_COLOR: Record<string, string> = {

@@ -10,7 +10,7 @@ from platform_core.app import create_app
 app = create_app(
     settings(),
     title="Notification service",
-    description="Templates, automation rules and delivery — part of the Atmora platform.",
+    description="Templates, automation rules and delivery — part of the OpsGrids platform.",
     routers=[router],
     # A stalled relay is silent, and here it stalls *sending*: messages stage as `pending` and
     # never queue. `/health/outbox` is what makes that visible, counted through the outbox

@@ -7,7 +7,7 @@
  * with no login — handy for offline design work.
  */
 
-import { apiRequest } from "@atmora/client";
+import { apiRequest } from "@opsgrids/client";
 import { ASSETS, CATALOG, INCIDENTS, REQUESTS } from "./fixtures";
 import type {
   Asset,

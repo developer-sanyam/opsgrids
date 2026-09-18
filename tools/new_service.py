@@ -33,7 +33,7 @@ from platform_core.config import ServiceSettings, settings_for
 class Settings(ServiceSettings):
     service_name: str = "{name}"
     db_schema: str = "{schema}"
-    db_outbox_role: str | None = "atmora_outbox"
+    db_outbox_role: str | None = "opsgrids_outbox"
 
 
 def settings() -> Settings:
@@ -137,13 +137,13 @@ from platform_core.app import create_app
 app = create_app(
     settings(),
     title="{title}",
-    description="{title} — part of the Atmora platform.",
+    description="{title} — part of the OpsGrids platform.",
     routers=[router],
 )
 ''',
         "app/relay.py": f'''"""Outbox relay for {name}. Runs as its own process.
 
-Runs as `atmora_outbox`: BYPASSRLS, because it drains every organization's events in one
+Runs as `opsgrids_outbox`: BYPASSRLS, because it drains every organization's events in one
 loop and under row-level security the app role would silently see nothing; privileged to read
 and mark rows in `outbox` and nothing else, because the admin role owns the whole schema and a
 bug here must not be able to write anything but the rows it marks as sent.
@@ -439,11 +439,11 @@ FROM python:3.12-slim-bookworm AS runtime
 ENV PYTHONUNBUFFERED=1 \\
     PYTHONDONTWRITEBYTECODE=1 \\
     PATH="/app/.venv/bin:$PATH"
-RUN groupadd -r atmora && useradd -r -g atmora atmora
+RUN groupadd -r opsgrids && useradd -r -g opsgrids opsgrids
 WORKDIR /app
 COPY --from=builder /build/.venv /app/.venv
-COPY --chown=atmora:atmora services/{name}/ /app/
-USER atmora
+COPY --chown=opsgrids:opsgrids services/{name}/ /app/
+USER opsgrids
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \\
   CMD python -c "import urllib.request as u,sys; \\
@@ -452,7 +452,7 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 """,
         "README.md": f"""# {title}
 
-Part of the Atmora platform. Owns the `{schema}` schema.
+Part of the OpsGrids platform. Owns the `{schema}` schema.
 
 ```bash
 make run SERVICE={name} PORT=8110    # API
@@ -476,7 +476,7 @@ _Event types, and which projection each one maintains._
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Scaffold an Atmora service")
+    parser = argparse.ArgumentParser(description="Scaffold an OpsGrids service")
     parser.add_argument("--name", required=True, help="service name, e.g. billing")
     parser.add_argument("--schema", help="postgres schema (defaults to the name)")
     args = parser.parse_args()
