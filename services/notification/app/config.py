@@ -37,7 +37,12 @@ class Settings(ServiceSettings):
     #: `log` | `whatsapp_cloud` — which transport serves the WhatsApp channel.
     whatsapp_transport: str = "log"
     #: Meta Graph API. The phone number id is the sender, not the sender's number.
-    whatsapp_api_base: str = "https://graph.facebook.com/v21.0"
+    #:
+    #: Pinned to an explicit version rather than an alias, because Meta's versions carry
+    #: breaking changes and an unpinned call would change behaviour on their release schedule
+    #: rather than ours. v25.0 is current (released 2026-02-18); v21.0 was two years behind.
+    #: Overridable per environment so a version bump is a config change, not a deploy.
+    whatsapp_api_base: str = "https://graph.facebook.com/v25.0"
     whatsapp_phone_number_id: str | None = None
     whatsapp_access_token: SecretStr | None = None
     whatsapp_timeout_seconds: float = 10.0
