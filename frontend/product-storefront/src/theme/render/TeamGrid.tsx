@@ -1,3 +1,4 @@
+import { resolveImageSrc } from "./assetSrc";
 import { ImagePlate, SectionEmpty, StoreHeading, StoreText } from "./primitives";
 import { choice, clampNum, optional } from "./settings";
 import { T, step } from "./tokens";
@@ -79,7 +80,7 @@ export function TeamGrid({ settings, stacked, width }: SectionRenderProps) {
               >
                 <ImagePlate
                   seed={`team-${person.slot}`}
-                  src={person.image}
+                  src={resolveImageSrc(person.image)}
                   alt=""
                   style={{
                     aspectRatio: SHAPE_RATIO[shape],

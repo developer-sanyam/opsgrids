@@ -8,6 +8,26 @@ pnpm dev        # http://localhost:4400
 pnpm typecheck && pnpm lint && pnpm test && pnpm build
 ```
 
+## Environment
+
+Two variables, neither with a secret in it. There is no `.env.example` here because no app in this
+workspace has one; this section is the reference.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `VITE_USE_FIXTURES` | fixtures **on** in dev | `false` runs against the real gateway. Fixture mode is dev-only and refuses uploads with an explanation rather than faking one. |
+| `VITE_ASSET_BASE_URL` | empty (same origin) | Where uploaded images are served from. Locally that is MinIO: `http://localhost:9100/opsgrids-public`. |
+
+**`VITE_ASSET_BASE_URL` has no dev default on purpose.** A `localhost` default compiled into a
+production bundle would point every merchant's imagery at a machine that is not there — a failure
+that shows up only after deploy, on someone else's store. Empty means same-origin, which is wrong
+loudly rather than quietly.
+
+It must agree with the document service's own `PUBLIC_ASSET_BASE_URL` (see `.env.example` at the
+repo root). The two live in different files under different names and **nothing checks that they
+match** — a unit test pins the URL *shape* both sides agree on, not the configured values. If
+uploaded images 404 locally, this is the first thing to check.
+
 ## How it is put together
 
 | Path | Holds |

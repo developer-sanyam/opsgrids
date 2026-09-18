@@ -1,6 +1,199 @@
 {
   "components": {
     "schemas": {
+      "AssetOut": {
+        "description": "One asset in the merchant's library.\n\nNote what is absent: the **object key**. It is derivable from `public_path`, so hiding it\nwould be theatre \u2014 but naming it `storage_key` in a response is how a later contributor\ngets the idea that a route might accept one, and no route in this service ever will\n(ADR-0009 \u00a73).",
+        "properties": {
+          "checksum_sha256": {
+            "title": "Checksum Sha256",
+            "type": "string"
+          },
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "original_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Filename"
+          },
+          "public_path": {
+            "examples": [
+              "/a/8f1c.../3b9d..."
+            ],
+            "title": "Public Path",
+            "type": "string"
+          },
+          "public_url": {
+            "title": "Public Url",
+            "type": "string"
+          },
+          "purged_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purged At"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "uploaded_by_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploaded By User Id"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "public_path",
+          "public_url",
+          "content_type",
+          "size_bytes",
+          "width",
+          "height",
+          "checksum_sha256",
+          "original_filename",
+          "uploaded_by_user_id",
+          "created_at",
+          "deleted_at",
+          "purged_at"
+        ],
+        "title": "AssetOut",
+        "type": "object"
+      },
+      "AssetPage": {
+        "description": "The library listing. Paginated, newest first, soft-deleted rows excluded.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AssetOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/AssetUsageOut"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages",
+          "usage"
+        ],
+        "title": "AssetPage",
+        "type": "object"
+      },
+      "AssetUsageOut": {
+        "description": "What the organization is consuming against the hard ceiling (ADR-0009 \u00a77).\n\nReturned alongside the library listing so the picker can show \"1.2 GB of 2 GB used\"\nwithout a second round trip, and so an over-quota refusal is never the first time a\nmerchant hears about the limit.",
+        "properties": {
+          "asset_count": {
+            "title": "Asset Count",
+            "type": "integer"
+          },
+          "asset_count_limit": {
+            "title": "Asset Count Limit",
+            "type": "integer"
+          },
+          "bytes_limit": {
+            "title": "Bytes Limit",
+            "type": "integer"
+          },
+          "bytes_used": {
+            "title": "Bytes Used",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bytes_used",
+          "bytes_limit",
+          "asset_count",
+          "asset_count_limit"
+        ],
+        "title": "AssetUsageOut",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -18,11 +211,51 @@
         ],
         "title": "ServiceInfo",
         "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
       }
     }
   },
   "info": {
-    "description": "Document service \u2014 part of the OpsGrids platform.",
+    "description": "The platform's **public asset store** (ADR-0009), not a document vault. A merchant uploads an image; it is decoded, downscaled and re-encoded, and written to a bucket that is world-readable in its entirety under a key of two UUIDs. The reference it returns never expires, because nothing about it is signed \u2014 which is the single property the design exists to get: a presigned URL stored inside a merchant's store document would serve AccessDenied a week later, with nothing failing on our side. This service never serves image bytes and offers no way to store a private object; the private half is named and unbuilt, so the failure mode for a confidential file is a missing feature rather than a misplaced payslip.",
     "title": "Document service",
     "version": "0.1.0"
   },
@@ -49,6 +282,202 @@
         ]
       }
     },
+    "/api/v1/documents/assets": {
+      "get": {
+        "description": "`core.content.asset.read`, floored at ORG. Newest first, soft-deleted rows excluded.\n\nPaginated, and the page size is capped by the server rather than by the client\n(`page_params`, max 200) \u2014 there is no way to ask this endpoint for the whole library.\n\nCarries the organization's storage usage alongside the page, so the picker can show how\nmuch room is left and an over-quota refusal is never the first time a merchant hears about\nthe limit.",
+        "operationId": "list_assets_api_v1_documents_assets_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The organization's image library",
+        "tags": [
+          "document"
+        ]
+      },
+      "post": {
+        "description": "`core.content.asset.write`, floored at ORG.\n\n**The uploaded image is world-readable by anyone who has its address, forever, until it is\ndeleted.** That is a decision, not a leak (ADR-0009 \u00a71) \u2014 a storefront is a shopfront \u2014 but\nit is one the merchant has to be told about *on the control*, not in a help page, because\na supplier price list or a customer's ID scan dropped into an image slot has been\npublished. `DELETE \u2026?purge=true` is the only remedy and it is after the fact.\n\nThe response's `public_path` is what belongs in a store document. `public_url` is for\npreview and must not be persisted.",
+        "operationId": "upload_asset_api_v1_documents_assets_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "file": {
+                    "description": "One JPEG, PNG or WebP image, at most 5 MiB. The declared content type and the filename extension are both ignored: the bytes are decoded to decide what this is, and re-encoded before storage.",
+                    "format": "binary",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Upload an image to the organization's library",
+        "tags": [
+          "document"
+        ]
+      }
+    },
+    "/api/v1/documents/assets/{asset_id}": {
+      "delete": {
+        "description": "`core.content.asset.write`, floored at ORG. Two verbs behind one endpoint (ADR-0009 \u00a78).\n\n**Default \u2014 remove from the library.** Sets `deleted_at`. The image disappears from the\npicker and stops counting against the quota, **the object is not touched, and the public\nURL keeps working**, so a published store that references it keeps rendering. \"Delete\" in a\nmerchant's head means \"take it out of my library\", not \"break my live store\", and those two\nreadings differ by an outage nobody asked for. A sweep purges the object after the\nretention window; until then, undelete is free.\n\n**`?purge=true` \u2014 take it down now.** The object is deleted from the bucket immediately.\nThis exists for the one case the soft path cannot serve: a merchant who has just put a\ncustomer's ID scan or an internal price list into a world-readable bucket. \"Wait 30 days\"\nis not an answer to that, and neither is an operator ticket. Same permission, explicit\nflag, audit row carrying the flag.\n\n**This service cannot tell you whether the image is in use**, and will not pretend to: the\nstore document lives in a service that does not exist yet and will own a schema this one\nis forbidden to read. The editor's confirmation has to say so.\n\nIdempotent: a repeat of the same request returns the same row and writes no second audit.",
+        "operationId": "delete_asset_api_v1_documents_assets__asset_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Asset Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Delete the stored object immediately. The public URL starts returning 404 and any published store referencing this image shows a broken image.",
+            "in": "query",
+            "name": "purge",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Delete the stored object immediately. The public URL starts returning 404 and any published store referencing this image shows a broken image.",
+              "title": "Purge",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove an image from the library, or take it down immediately",
+        "tags": [
+          "document"
+        ]
+      },
+      "get": {
+        "description": "`core.content.asset.read`, floored at ORG. Metadata, **not bytes** \u2014 this service never\nserves image bytes; the bucket does.\n\nAn asset in another organization is a 404 and never a 403: confirming that an id exists in\n*some* organization is itself a disclosure.",
+        "operationId": "get_asset_api_v1_documents_assets__asset_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Asset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One image's details",
+        "tags": [
+          "document"
+        ]
+      }
+    },
     "/health": {
       "get": {
         "operationId": "health_health_get",
@@ -69,6 +498,30 @@
           }
         },
         "summary": "Liveness \u2014 is the process up?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/outbox": {
+      "get": {
+        "description": "How far behind the relay is. **Alert on `oldest_seconds`.**\n\nA stalled relay is the platform's quietest failure. It selects, finds nothing,\nlogs nothing, sleeps, and loops \u2014 `attempts` never increments and `last_error`\nstays null, so the process looks healthy indefinitely while the outbox grows\nwithout bound and every consumer downstream starves.\n\nDeliberately **not** part of readiness. A backlog is not a reason to take the\nservice out of rotation: refusing traffic would stop new events being written\nwithout helping drain the ones already queued, which makes the incident worse.\nThis is a metric to alert on, not a health state.\n\nCounted through the outbox engine, not the application one. The app role is\nNOBYPASSRLS and this request binds no tenant, so through it `pending` would be\nzero whatever the table holds \u2014 the probe that exists to expose the stall would\nbe wired to the same blind spot that causes it.",
+        "operationId": "outbox_health_outbox_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Outbox Health Outbox Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Outbox depth and age \u2014 scrape this",
         "tags": [
           "health"
         ]

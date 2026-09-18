@@ -1,3 +1,4 @@
+import { resolveImageSrc } from "./assetSrc";
 import { ImagePlate, SectionEmpty, StoreHeading } from "./primitives";
 import { choice, clampNum, optional } from "./settings";
 import { T, step } from "./tokens";
@@ -73,7 +74,7 @@ export function MediaGallery({ settings, stacked, width }: SectionRenderProps) {
               <figure style={{ margin: 0, display: "flex", flexDirection: "column", gap: step(0.45) }}>
                 <ImagePlate
                   seed={`gallery-${item.slot}`}
-                  src={item.image}
+                  src={resolveImageSrc(item.image)}
                   /* Empty alt on purpose where a caption is present: the caption is already in the
                      document and beside the picture, so an alt repeating it makes a screen reader
                      read the same sentence twice. Where there is no caption there is nothing to

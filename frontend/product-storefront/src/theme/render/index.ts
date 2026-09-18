@@ -10,6 +10,7 @@ export type { SectionRendererProps } from "./SectionRenderer";
 export { StoreRenderer } from "./StoreRenderer";
 export type { StoreRendererProps } from "./StoreRenderer";
 export { storeHref } from "./href";
+export { ASSET_BASE, resolveImageSrc } from "./assetSrc";
 export { ThemeFrame } from "./ThemeFrame";
 export { SECTION_COMPONENTS, sectionComponent } from "./registry";
 export { resolveProducts, emptySourceHint } from "./products";

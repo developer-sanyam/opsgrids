@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { Category } from "@/api/types";
+import { resolveImageSrc } from "./assetSrc";
 import { ImagePlate, SectionEmpty, StoreHeading, StoreText } from "./primitives";
 import { bool, choice, clampNum, optional } from "./settings";
 import { T, step } from "./tokens";
@@ -84,7 +85,7 @@ export function CategoryTiles({ settings, categories, stacked, width }: SectionR
     return (
       <ImagePlate
         seed={`cat-${category.key}`}
-        src={category.image_url}
+        src={resolveImageSrc(category.image_url)}
         style={{
           aspectRatio: ASPECT_RATIO[aspect],
           minHeight: 0,

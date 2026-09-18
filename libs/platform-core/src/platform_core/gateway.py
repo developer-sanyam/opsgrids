@@ -18,6 +18,11 @@ Rate limiting comes *after* authentication so it counts against a person rather 
 address, which is what makes a shared office NAT usable. The unauthenticated paths are
 limited by IP instead.
 
+The proxy step caps the request body (`DEFAULT_MAX_BODY_BYTES`, or a route's own override)
+and enforces it against the bytes actually read. The gateway buffers a body whole before
+forwarding it, so without a cap a single large POST exhausts the process before the
+downstream service — whose own limit protects only itself — is ever asked its opinion.
+
 **The gateway owns no tables.** Everything it needs is in the token or in Redis.
 """
 
@@ -41,6 +46,7 @@ from platform_core.cache import (
 from platform_core.config import ServiceSettings
 from platform_core.errors import (
     NotFoundProblem,
+    PayloadTooLargeProblem,
     PaymentRequiredProblem,
     ProblemError,
     UnauthorizedProblem,
@@ -91,6 +97,25 @@ SPOOFABLE = frozenset(
 )
 
 
+#: Ceiling on a forwarded request body, in bytes, unless a route says otherwise.
+#:
+#: The gateway buffers a request body whole before forwarding it (see `_forward`), so an
+#: uncapped POST is a one-request memory exhaustion of the whole process — the downstream
+#: service's own limit protects that service, not the platform, because the body is already
+#: in gateway memory by the time the service is asked.
+#:
+#: 2 MiB is roughly eight times the largest legitimate JSON body on the platform (the
+#: 1000-event metering ingest batch) and bounds the worst case to a few hundred megabytes
+#: at realistic concurrency. Anything that genuinely needs more — an upload endpoint — says
+#: so per route in `routes.json` rather than raising the ceiling for every endpoint.
+DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024
+
+#: The highest a per-route override may go. A route table is data and a typo in data must
+#: not be able to hand back the unbounded buffer this cap exists to remove, so an override
+#: past this refuses at boot rather than at request time.
+MAX_ROUTE_BODY_BYTES = 32 * 1024 * 1024
+
+
 class TokenStaleProblem(ProblemError):
     """The token predates a change to the caller's grants.
 
@@ -111,6 +136,29 @@ class Route:
     product: str | None = None
     #: Only reachable by OpsGrids staff. Used by the operator console.
     staff_only: bool = False
+    #: Per-route request-body ceiling in bytes. `None` means the gateway's default. An
+    #: upload route legitimately needs more than a JSON POST; nothing else should.
+    max_body_bytes: int | None = None
+
+
+def _parse_max_body_bytes(item: dict[str, object]) -> int | None:
+    """Read and bound a route's `max_body_bytes`, refusing nonsense at boot.
+
+    A bad value here is a deployment artefact, not a request, so the loud failure belongs
+    at startup — a route table that silently parsed `"5mb"` as absent would hand back the
+    unbounded buffer on exactly the route that asked to be different.
+    """
+    raw = item.get("max_body_bytes")
+    if raw is None:
+        return None
+    if not isinstance(raw, int) or isinstance(raw, bool) or raw <= 0:
+        raise ValueError(f"route {item.get('prefix')!r}: max_body_bytes must be a positive integer")
+    if raw > MAX_ROUTE_BODY_BYTES:
+        raise ValueError(
+            f"route {item.get('prefix')!r}: max_body_bytes {raw} exceeds the "
+            f"{MAX_ROUTE_BODY_BYTES} byte ceiling the gateway will buffer"
+        )
+    return raw
 
 
 class RouteTable:
@@ -136,6 +184,7 @@ class RouteTable:
                     upstream=item["upstream"].rstrip("/"),
                     product=item.get("product"),
                     staff_only=bool(item.get("staff_only", False)),
+                    max_body_bytes=_parse_max_body_bytes(item),
                 )
                 for item in raw["routes"]
             ]
@@ -170,6 +219,9 @@ class GatewayPolicy:
     #: Refuse anyone who is not OpsGrids staff. The operator console sets this.
     staff_only: bool = False
     upstream_timeout: float = 30.0
+    #: Request bodies larger than this are refused with 413 before being read into memory.
+    #: A route may raise its own ceiling; see `Route.max_body_bytes`.
+    max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
 
 
 DEFAULT_PUBLIC_PATHS = frozenset(
@@ -380,18 +432,78 @@ def _slug_from_host(request: Request) -> str | None:
     return parts[0]
 
 
+def _format_bytes(limit: int) -> str:
+    """`2097152` → `2 MiB`. This goes in the refusal, so the caller can act on it."""
+    for unit, size in (("MiB", 1024 * 1024), ("KiB", 1024)):
+        if limit >= size:
+            value = limit / size
+            return f"{value:.0f} {unit}" if value == int(value) else f"{value:.1f} {unit}"
+    return f"{limit} bytes"
+
+
+async def _read_capped_body(request: Request, limit: int) -> bytes:
+    """Buffer the request body, refusing anything past `limit` before it is all in memory.
+
+    Checked twice, because `Content-Length` is a claim and not a fact:
+
+    * against the declared length, which refuses an oversized body without reading a byte
+      of it;
+    * against the bytes actually read, which is what catches a header that lies and a
+      chunked request that never sent one at all.
+
+    The counter is the enforcement. The header is only an early exit.
+    """
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > limit:
+        raise PayloadTooLargeProblem(
+            f"Request body exceeds the {_format_bytes(limit)} limit for this endpoint"
+        )
+
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            # Stop reading here. Draining the remainder would buffer exactly what was
+            # refused, which is the thing this function exists to prevent.
+            raise PayloadTooLargeProblem(
+                f"Request body exceeds the {_format_bytes(limit)} limit for this endpoint"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 async def _forward(
     request: Request, route: Route, headers: dict[str, str], policy: GatewayPolicy
 ) -> Response:
     client: httpx.AsyncClient = request.app.state.http
     url = f"{route.upstream}{request.url.path}"
 
+    # Before the body is buffered, and before the upstream is opened: an oversized request
+    # must cost the gateway neither the memory nor a connection to a service that would
+    # only refuse it later.
+    limit = policy.max_body_bytes if route.max_body_bytes is None else route.max_body_bytes
+    try:
+        body = await _read_capped_body(request, limit)
+    except PayloadTooLargeProblem:
+        # The log carries the limit and the claim; the client is told the limit and
+        # nothing about where the request was headed.
+        log.warning(
+            "gateway.body_too_large",
+            path=request.url.path,
+            method=request.method,
+            limit=limit,
+            declared=request.headers.get("content-length"),
+            request_id=getattr(request.state, "request_id", None),
+        )
+        raise
+
     upstream_request = client.build_request(
         request.method,
         url,
         headers=headers,
         params=dict(request.query_params),
-        content=await request.body(),
+        content=body,
     )
     try:
         upstream = await client.send(upstream_request, stream=True)
@@ -422,7 +534,9 @@ def http_client(policy: GatewayPolicy) -> httpx.AsyncClient:
 
 
 __all__ = [
+    "DEFAULT_MAX_BODY_BYTES",
     "DEFAULT_PUBLIC_PATHS",
+    "MAX_ROUTE_BODY_BYTES",
     "GatewayPolicy",
     "PermissionResolver",
     "Route",

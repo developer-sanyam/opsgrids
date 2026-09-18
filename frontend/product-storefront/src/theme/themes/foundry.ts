@@ -40,6 +40,7 @@ export const foundry: Theme = {
         secondaryLabel: "Talk to a regional manager",
         tone: "contrast",
         align: "left",
+        image: "/img/hero-foundry.svg",
       }),
       sec("fdy-logos", "logo-wall", { x: 0, y: 9, w: 12, h: 4 }, {
         heading: "On approved vendor lists at",
@@ -119,6 +120,7 @@ export const foundry: Theme = {
         body: "Galvanising is done in-house to a 45-micron minimum and every carton is weight-counted before it is sealed, so a 500-piece box is 500 pieces.",
         caption: "Ludhiana plating line",
         imageSide: "left",
+        image: "/img/hero-foundry.svg",
       }),
       sec("fdy-prd-enquiry", "enquiry-form", { x: 7, y: 6, w: 5, h: 12 }, {
         heading: "Ask for a quote on this line",

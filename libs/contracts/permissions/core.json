@@ -40,6 +40,24 @@
     {
       "action": "read",
       "default_scope": "ORG",
+      "description": "List the organization's uploaded images and read one image's details. Organization-wide: an asset library has no team or location reading",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "content",
+      "resource": "asset"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Upload an image to the organization's library, and remove one from it \u2014 including an immediate takedown of the published object",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "content",
+      "resource": "asset"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
       "description": "Read the audit trail",
       "is_dangerous": false,
       "max_scope": "ORG",
@@ -205,7 +223,7 @@
     {
       "code": "ORG_OWNER",
       "cross_product": false,
-      "description": "Runs the account: billing, product activation, members and roles. Deliberately separate from a product administrator \u2014 owning the company is not the same job as administering its HR data. Account's template already grants every `core` permission at ORG over its own specs; this is approval's contribution to that union. It is what guarantees every organization ends ADR-0007's reconcile with at least one holder of decide:ORG, so the unassigned queue always has an owner.",
+      "description": "Runs the account: billing, product activation, members and roles. Deliberately separate from a product administrator \u2014 owning the company is not the same job as administering its HR data. Account's template already grants every `core` permission at ORG over its own specs; this is approval's contribution to that union. It is what guarantees every organization ends ADR-0007's reconcile with at least one holder of decide:ORG, so the unassigned queue always has an owner. Document's contribution to that union is the organization's image library.",
       "grants": [
         {
           "code": "core.approval.delegation.write",
@@ -221,6 +239,14 @@
         },
         {
           "code": "core.approval.request.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.content.asset.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.content.asset.write",
           "scope": "ORG"
         },
         {
@@ -303,7 +329,7 @@
     {
       "code": "ORG_ADMIN",
       "cross_product": false,
-      "description": "Manages people and structure, but not billing. The organization's administrator. SLA policy is organization configuration, not billing, so it is in scope for the role defined as people and structure.",
+      "description": "Manages people and structure, but not billing. The organization's administrator. SLA policy is organization configuration, not billing, so it is in scope for the role defined as people and structure. The image library is organization content rather than billing, so it belongs to the same role.",
       "grants": [
         {
           "code": "core.approval.delegation.write",
@@ -319,6 +345,14 @@
         },
         {
           "code": "core.approval.request.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.content.asset.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.content.asset.write",
           "scope": "ORG"
         },
         {
@@ -449,6 +483,7 @@
   ],
   "sources": [
     "account",
-    "approval"
+    "approval",
+    "document"
   ]
 }

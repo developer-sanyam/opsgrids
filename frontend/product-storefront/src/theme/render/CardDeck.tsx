@@ -1,3 +1,4 @@
+import { resolveImageSrc } from "./assetSrc";
 import { isSafeHref } from "./linkList";
 import { ImagePlate, SectionEmpty, StoreHeading, StoreText } from "./primitives";
 import { choice, clampNum, optional, str } from "./settings";
@@ -91,7 +92,7 @@ export function CardDeck({ settings, stacked, width }: SectionRenderProps) {
                 {aspect === "none" ? null : (
                   <ImagePlate
                     seed={`card-${card.slot}`}
-                    src={card.image}
+                    src={resolveImageSrc(card.image)}
                     alt=""
                     style={{
                       aspectRatio: ASPECT_RATIO[aspect],

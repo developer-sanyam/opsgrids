@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { resolveImageSrc } from "./assetSrc";
 import { isSafeHref } from "./linkList";
 import { ImagePlate, SectionEmpty, StoreHeading, StoreText, VisuallyHidden } from "./primitives";
 import { clampNum, optional, str } from "./settings";
@@ -151,7 +152,7 @@ export function VideoList({ settings, stacked, width }: SectionRenderProps) {
                     <>
                       <ImagePlate
                         seed={`video-${film.slot}`}
-                        src={film.poster}
+                        src={resolveImageSrc(film.poster)}
                         alt=""
                         style={{
                           width: "100%",

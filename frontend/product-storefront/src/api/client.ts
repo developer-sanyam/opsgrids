@@ -10,13 +10,20 @@
  * written out below already, so going live is a flag flip and not a rewrite.
  */
 
-import { apiRequest } from "@opsgrids/client";
+import {
+  API_BASE,
+  ApiError,
+  apiRequest,
+  getAccessToken,
+  notifyUnauthorized,
+  type ProblemJson,
+} from "@opsgrids/client";
 
 import { adoptTheme as forkTheme, resolveMode } from "@/theme/store";
 import type { StoreDoc, Theme } from "@/theme/schema";
 import { quickcart, suggestedBrand, themeByKey, THEMES } from "@/theme/themes";
 import { CATEGORY_LIST, PRODUCTS, RETAIL_CATEGORY_LIST, RETAIL_PRODUCTS } from "./fixtures";
-import type { Category, Page, Product, StoreResponse } from "./types";
+import type { Asset, Category, Page, Product, StoreResponse } from "./types";
 
 /** Default source. Fixtures unless `VITE_USE_FIXTURES=false` pins the app to the live gateway.
  *  Dev builds only: `import.meta.env.DEV` compiles to `false` in production, so a stray
@@ -177,4 +184,142 @@ export async function submitEnquiry(input: EnquiryInput): Promise<EnquiryReceipt
     return settle({ id: `enq-${Date.now().toString(36)}`, received_at: new Date().toISOString() }, 480);
   }
   return apiRequest<EnquiryReceipt>(`/storefront/enquiries`, { method: "POST", body: input });
+}
+
+/* --------------------------------- assets --------------------------------- */
+
+/**
+ * Image upload, against `services/document` — a **platform** route (`/api/v1/documents`), not a
+ * storefront one, so it is live even while everything above this line is fixtures. It is the one
+ * call in this file that carries bytes, which is why it does not go through `apiRequest`: that
+ * helper JSON-encodes its body and sets `Content-Type: application/json`, and a multipart body
+ * needs the browser to set the header itself so the boundary matches.
+ */
+
+/** 5 MiB, matching the server's limit exactly (ADR-0009 §5). Checked here so the common mistake
+ *  is caught instantly instead of after a five-megabyte round trip — never *instead of* there. */
+export const MAX_ASSET_BYTES = 5 * 1024 * 1024;
+
+/** The three formats the server accepts. Anything else is refused, and the bytes decide there. */
+export const ACCEPTED_ASSET_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
+
+/** For the file input's `accept`. A filter in the picker, never a check — it is trivially bypassed. */
+export const ASSET_ACCEPT = ACCEPTED_ASSET_TYPES.join(",");
+
+export const ASSET_TOO_LARGE =
+  "That image is over 5 MB. Export it at a smaller size or a lower quality and try again.";
+
+/** SVG is refused by the server permanently — it is a script container (ADR-0009 §5), so this is
+ *  not a limit that will be raised and the copy says so rather than inviting a retry. */
+export const ASSET_SVG_REFUSED =
+  "SVG files can't be uploaded. Export the artwork as a PNG or WebP and upload that.";
+
+export const ASSET_WRONG_TYPE = "Only JPEG, PNG and WebP images can be uploaded.";
+
+/**
+ * What fixtures mode does instead of uploading: **it refuses, and says why.**
+ *
+ * The alternative — hand back a `blob:` URL and let the editor look like it worked — writes an
+ * address into the store document that dies with the tab, renders for nobody else, and fails on
+ * reload with no explanation. A refusal costs the merchant one message; a fake success costs them
+ * the time it takes to work out that their store is broken. Fixtures mode is dev-only
+ * (`USE_FIXTURES` requires `import.meta.env.DEV`), so the audience for this sentence is an
+ * engineer and it names the flag.
+ */
+export const UPLOAD_NEEDS_SERVICE =
+  "Uploads need the document service, and this app is running on sample data. Paste an image address instead, or set VITE_USE_FIXTURES=false to run against the gateway.";
+
+/** How long to wait before giving up. The server's own budget for 5 MiB is 20s (ADR-0009 §10);
+ *  this sits beyond it so a slow-but-working upload is never cut off by the client first. */
+const UPLOAD_TIMEOUT_MS = 30_000;
+
+function megabytes(bytes: number): string {
+  return (bytes / (1024 * 1024)).toFixed(1);
+}
+
+/**
+ * The client-side half of validation — mirroring the server's rules, never replacing them.
+ *
+ * Returns the sentence to show, or `null` when the file is worth sending. An empty `type` is *not*
+ * refused: some platforms report nothing for a perfectly good JPEG, and the server decides from
+ * the decoded bytes anyway. Guessing here would refuse a file the server would have accepted.
+ */
+export function refuseAssetFile(file: File): string | null {
+  const type = file.type.toLowerCase();
+  const name = file.name.toLowerCase();
+
+  if (type === "image/svg+xml" || name.endsWith(".svg")) return ASSET_SVG_REFUSED;
+  if (type !== "" && !(ACCEPTED_ASSET_TYPES as readonly string[]).includes(type)) {
+    return ASSET_WRONG_TYPE;
+  }
+  if (file.size > MAX_ASSET_BYTES) {
+    return `${ASSET_TOO_LARGE} This one is ${megabytes(file.size)} MB.`;
+  }
+  return null;
+}
+
+/** What to say when the server refused and sent no problem document to say it better. */
+function uploadFallbackMessage(status: number): string {
+  if (status === 401) return "Your session has expired. Sign in again and retry the upload.";
+  if (status === 403) return "You don't have permission to upload images. An owner or admin can grant it.";
+  if (status === 413) return ASSET_TOO_LARGE;
+  if (status === 415 || status === 422) return ASSET_WRONG_TYPE;
+  if (status === 429) return "Too many uploads at once. Wait a moment and try again.";
+  if (status >= 500) return "The upload service isn't responding. Try again in a moment.";
+  return `The upload failed (${status}).`;
+}
+
+/**
+ * Upload one image and get back the asset whose `public_path` goes into the setting.
+ *
+ * The caller writes `asset.public_path` — a root-relative `/a/{org}/{id}` — into the document, and
+ * `resolveImageSrc` puts a host in front of it at render time. No absolute URL is ever stored.
+ */
+export async function uploadAsset(file: File): Promise<Asset> {
+  const refusal = refuseAssetFile(file);
+  if (refusal !== null) throw new Error(refusal);
+
+  if (USE_FIXTURES) throw new Error(UPLOAD_NEEDS_SERVICE);
+
+  const form = new FormData();
+  form.append("file", file, file.name);
+
+  const headers: Record<string, string> = { Accept: "application/json" };
+  const token = getAccessToken();
+  if (token !== null) headers.Authorization = `Bearer ${token}`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/documents/assets`, {
+      method: "POST",
+      headers,
+      body: form,
+      signal: controller.signal,
+    });
+  } catch {
+    // An abort and a dead network are indistinguishable to the merchant, and the remedy is the
+    // same sentence. Nothing was written — the server's transaction rolls back (ADR-0009 §9).
+    throw new Error(
+      controller.signal.aborted
+        ? "The upload timed out. Check your connection and try again — nothing was saved."
+        : "Couldn't reach the server. Check your connection and try again.",
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!res.ok) {
+    if (res.status === 401) notifyUnauthorized();
+    const problem = await res
+      .json()
+      .then((body: ProblemJson) => body)
+      .catch(() => null);
+    // The server's own detail is the specific one — it names the quota, the limit, the format.
+    throw new ApiError(res.status, problem?.detail ?? uploadFallbackMessage(res.status), problem);
+  }
+
+  return (await res.json()) as Asset;
 }

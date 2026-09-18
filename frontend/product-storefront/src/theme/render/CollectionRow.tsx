@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 
+import { resolveImageSrc } from "./assetSrc";
 import { ImagePlate, SectionEmpty, StoreHeading } from "./primitives";
 import { bool, choice, clampNum, optional, str } from "./settings";
 import { TileShell } from "./TileShell";
@@ -134,7 +135,7 @@ export function CollectionRow({ settings, stacked, width }: SectionRenderProps) 
                 >
                   <ImagePlate
                     seed={`collection-${item.slot}-${item.title}`}
-                    src={item.image}
+                    src={resolveImageSrc(item.image)}
                     style={{
                       height: "100%",
                       minHeight: 0,

@@ -41,6 +41,15 @@ export const depot: Theme = {
         secondaryLabel: "Open a trade account",
         tone: "accent",
         align: "center",
+        image: "/img/hero-depot.svg",
+        /* Still the centred blue hero this theme is described by — the picture sits behind the
+           words rather than beside them, because `Hero` only paints its split plate when the copy
+           is left-aligned (`showPlate = !centred && !stacked`) and otherwise drops the `image`
+           without saying so. The scrim keeps the blue; `hero-depot` is drawn dark so the white
+           copy over it stays well clear of 4.5:1. */
+        layout: "overlay",
+        overlay: "scrim",
+        minHeight: 360,
       }),
       sec("dpt-features", "feature-columns", { x: 0, y: 8, w: 12, h: 6 }, {
         heading: "What a distributor account gets you",
@@ -132,6 +141,7 @@ export const depot: Theme = {
         body: "Any length above 20 metres is cut, tagged with the order reference and re-coiled, so a site store can put it away without measuring it again.",
         caption: "Bhiwandi cutting bay",
         imageSide: "right",
+        image: "/img/hero-depot.svg",
       }),
       sec("dpt-prd-contact", "contact-block", { x: 6, y: 17, w: 6, h: 8 }, {
         heading: "The cable desk",

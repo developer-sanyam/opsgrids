@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useId, useRef, useState } from "react";
 
-import { Select, Switch, TextArea, TextField } from "@opsgrids/ui";
+import { Button, InlineAlert, Select, Switch, TextArea, TextField } from "@opsgrids/ui";
 
+import { ASSET_ACCEPT, uploadAsset } from "@/api/client";
 import type { SettingField, SettingValue } from "@/theme/schema";
 import { PRODUCT_SOURCE_OPTIONS } from "@/theme/sources";
+import { resolveImageSrc } from "@/theme/render/assetSrc";
 
 /**
  * One control for one `SettingField`, chosen by its `type` and nothing else.
@@ -230,34 +232,128 @@ function ColorControl({ field, value, onChange, disabled }: Required<SettingCont
   );
 }
 
+/**
+ * An image setting: paste an address, or upload a file.
+ *
+ * **Two ways to fill one field, on purpose.** Upload is the answer for a merchant who has a photo
+ * on their laptop and nowhere to put it; the URL box stays because a merchant who already has a
+ * CDN should not be forced through our storage, and removing it would be a regression for every
+ * store written before uploads existed. Both write a plain string, and `resolveImageSrc` is what
+ * knows the difference at render time.
+ *
+ * The size and format checks here mirror the server's and do not replace them — the server decides
+ * from the decoded bytes (ADR-0009 §5). They exist so the two mistakes people actually make, a
+ * 12 MB camera original and an SVG logo, are answered in the same instant they are made rather
+ * than after a round trip that was never going to succeed.
+ */
 function ImageControl({ field, value, onChange, disabled }: Required<SettingControlProps>) {
-  const url = typeof value === "string" ? value.trim() : "";
+  const fileInput = useRef<HTMLInputElement>(null);
+  const noteId = useId();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [broken, setBroken] = useState(false);
+  const [seen, setSeen] = useState(value);
+
+  // The same "reset when the document moved underneath" shape `useDraft` uses. Without it an undo
+  // or a successful upload leaves the preview still saying the *previous* address did not load.
+  if (value !== seen) {
+    setSeen(value);
+    setBroken(false);
+  }
+
+  const src = resolveImageSrc(value);
+  const typed = typeof value === "string" ? value : "";
+
+  async function receive(file: File | undefined) {
+    // Re-picking the same file has to re-fire `change`, so the input is cleared either way.
+    if (fileInput.current !== null) fileInput.current.value = "";
+    if (file === undefined || busy) return;
+
+    setBusy(true);
+    setError(null);
+    try {
+      const asset = await uploadAsset(file);
+      // The root-relative path, never an absolute URL — the host belongs to config (ADR-0009 §6).
+      onChange(asset.public_path);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The upload failed. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="flex flex-col gap-2">
       <TextField
         label={field.label}
-        value={typeof value === "string" ? value : ""}
+        value={typed}
         placeholder="https://"
         onChange={(event) => {
-          setBroken(false);
+          setError(null);
           onChange(event.target.value === "" ? null : event.target.value);
         }}
-        disabled={disabled}
+        disabled={disabled || busy}
         {...(field.help !== undefined ? { helper: field.help } : {})}
       />
+
+      <div className="flex items-center gap-3">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => fileInput.current?.click()}
+          disabled={disabled || busy}
+          aria-describedby={noteId}
+        >
+          {busy ? "Uploading…" : "Upload"}
+        </Button>
+        {/* Kept out of the tab order and out of the accessibility tree: the button above is the
+            real control, and a focusable element nobody can see is a keyboard trap in miniature. */}
+        <input
+          ref={fileInput}
+          type="file"
+          accept={ASSET_ACCEPT}
+          tabIndex={-1}
+          aria-label={`Upload an image for ${field.label}`}
+          className="hidden"
+          onChange={(event) => void receive(event.target.files?.[0])}
+        />
+        {/* Reserved whether or not it has anything to say, so nothing moves when it does. */}
+        <p role="status" aria-live="polite" className="min-h-4 text-xs text-muted">
+          {busy ? "Uploading…" : null}
+        </p>
+      </div>
+
+      <p id={noteId} className="text-xs text-muted">
+        JPEG, PNG or WebP, up to 5 MB. SVG files aren&apos;t accepted. An uploaded image can be
+        viewed by anyone who has its address.
+      </p>
+
+      {error !== null ? (
+        <InlineAlert
+          tone="danger"
+          title="That image wasn't uploaded"
+          action={
+            <Button variant="ghost" size="sm" onClick={() => setError(null)}>
+              Dismiss
+            </Button>
+          }
+        >
+          {error}
+        </InlineAlert>
+      ) : null}
+
       {/* Not a labelled control — a preview of the address above it, which is why it carries no
-          `<label>` and its states say what they mean in words. */}
+          `<label>` and its states say what they mean in words. Fixed height in every state, so
+          the inspector does not jump when an image resolves. */}
       <div className="grid h-20 place-items-center overflow-hidden rounded-tile border border-line bg-ground px-3 text-center text-xs text-muted">
-        {url === "" ? (
+        {src === null ? (
           <span>No image — the theme draws its own plate.</span>
         ) : broken ? (
           <span>That image didn&apos;t load. Check the address.</span>
         ) : (
           // Decorative here: the merchant is checking that the address resolves, and the
           // storefront's own alt text belongs to the renderer, not to this preview.
-          <img src={url} alt="" className="h-20 w-full object-cover" onError={() => setBroken(true)} />
+          <img src={src} alt="" className="h-20 w-full object-cover" onError={() => setBroken(true)} />
         )}
       </div>
     </div>

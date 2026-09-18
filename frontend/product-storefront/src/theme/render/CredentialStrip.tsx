@@ -1,3 +1,4 @@
+import { resolveImageSrc } from "./assetSrc";
 import { SectionEmpty, StoreHeading, StoreText } from "./primitives";
 import { clampNum, optional } from "./settings";
 import { T, step } from "./tokens";
@@ -28,7 +29,9 @@ export function CredentialStrip({ settings, stacked, width }: SectionRenderProps
 
   const items = SLOTS.map((slot) => ({
     slot,
-    image: optional(settings, `item${slot}Image`),
+    // Resolved here rather than at the tag, so the truthiness check below narrows the *resolved*
+    // address and an `/a/…` upload reaches this `<img>` the same way an absolute URL does.
+    image: resolveImageSrc(optional(settings, `item${slot}Image`)),
     mark: optional(settings, `item${slot}Mark`),
     label: optional(settings, `item${slot}Label`),
     issuer: optional(settings, `item${slot}Issuer`),

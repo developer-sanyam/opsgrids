@@ -41,6 +41,7 @@ export const circuit: Theme = {
         secondaryLabel: "Send a bill of materials",
         tone: "surface",
         align: "left",
+        image: "/img/hero-circuit.svg",
       }),
       sec("cir-carousel", "product-carousel", { x: 0, y: 9, w: 12, h: 8 }, {
         heading: "Switchgear on the shelf",
@@ -135,6 +136,7 @@ export const circuit: Theme = {
         body: "B, C and D curves from 6A to 63A, single through four pole, in one bin system. The rating you need is almost never the one we have to order.",
         caption: "Chennai bin store",
         imageSide: "left",
+        image: "/img/hero-circuit.svg",
       }),
       sec("cir-prd-prices", "price-table", { x: 6, y: 6, w: 6, h: 9 }, {
         heading: "Ratings and rates",

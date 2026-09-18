@@ -181,7 +181,18 @@ const CORE_SECTION_DEFS: SectionDef[] = [
       { key: "ctaHref", label: "Primary button link", type: "text", default: "/store/catalogue" },
       { key: "secondaryLabel", label: "Secondary button", type: "text", default: "Request a quote" },
       { key: "secondaryHref", label: "Secondary button link", type: "text", default: "/store/catalogue" },
-      { key: "image", label: "Image", type: "image", default: null, help: "Leave empty to use the theme's generated plate." },
+      {
+        key: "image",
+        label: "Image",
+        type: "image",
+        default: null,
+        /* Says what actually happens, including the case that used to surprise people: the split
+           arrangement puts the picture beside the copy, so a centred split hero has nowhere to
+           put it and shows none. Overlay is the arrangement for a picture with words over it.
+           Making the split arrangement honour a centred image is a renderer change worth making
+           on its own, with the six themes that centre their heroes re-checked in a browser. */
+        help: "Shown beside the copy in the split arrangement, or behind it in the overlay one. A centred split hero shows no picture — choose Overlay for words over an image. Leave empty for the theme's generated plate.",
+      },
       { key: "align", label: "Alignment", type: "select", options: ALIGN_OPTIONS, default: "left" },
       { key: "tone", label: "Tone", type: "select", options: TONE_OPTIONS, default: "contrast" },
       { key: "layout", label: "Layout", type: "select", options: BAND_LAYOUT_OPTIONS, default: "split" },

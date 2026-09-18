@@ -76,6 +76,57 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # One-shot: creates the public asset bucket and gives it an anonymous **read-object-only**
+  # policy (ADR-0009 §13, "Bootstrap"). Without it `make infra` leaves MinIO running with no
+  # bucket at all, and the first upload fails at runtime with an opaque NoSuchBucket.
+  #
+  # The policy is written out rather than set with `mc anonymous set download`, and that is not
+  # a style preference. On the MinIO in this file, `set download` expands to **two** statements:
+  # `s3:GetObject` on the objects, and `s3:GetBucketLocation` + **`s3:ListBucket`** on the
+  # bucket. The second one is anonymous enumeration — `curl host/opsgrids-public/` returns every
+  # key — which destroys the entire isolation argument of ADR-0009 §3: what keeps one tenant out
+  # of another's objects is that there is no listing to walk and a v4 UUID is not guessable.
+  # Verified against the running container, not assumed. Do not replace this with `set download`,
+  # and do not "fix" it to `set public`, which adds write on top.
+  #
+  # Idempotent on purpose: `mb --ignore-existing` and a policy set are both safe to re-run, so
+  # `make infra` on an existing stack is a no-op rather than an error.
+  #
+  # Runs the `minio/minio` image rather than `minio/mc`, which is the more obvious choice: `mc`
+  # already ships inside the server image — it is what the healthcheck above calls — so reusing
+  # it costs `make infra` no second image pull, and keeps the client and the server on one
+  # version instead of two that drift independently.
+  minio-bootstrap:
+    image: minio/minio:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: opsgrids
+      MINIO_ROOT_PASSWORD: opsgrids-secret
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        set -e
+        mc alias set og http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing og/opsgrids-public
+        cat > /tmp/public-read.json <<'JSON'
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {"AWS": ["*"]},
+              "Action": ["s3:GetObject"],
+              "Resource": ["arn:aws:s3:::opsgrids-public/*"]
+            }
+          ]
+        }
+        JSON
+        mc anonymous set-json /tmp/public-read.json og/opsgrids-public
+        echo "opsgrids-public ready: anonymous GetObject only, no ListBucket"
+    restart: on-failure
+
   mailhog:
     image: mailhog/mailhog:latest
     ports: ['1026:1025', '8026:8025']

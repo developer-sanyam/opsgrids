@@ -40,6 +40,14 @@ export const carton: Theme = {
         secondaryLabel: "See the full range",
         tone: "accent",
         align: "center",
+        image: "/img/hero-carton.svg",
+        /* Words over the picture, not beside it. `Hero` only paints its plate when the copy is
+           left-aligned (`showPlate = !centred && !stacked`), so a centred hero with an `image`
+           set silently shows nothing. The centred composition this theme is described by is kept
+           — the picture moves behind the words instead of being dropped. */
+        layout: "overlay",
+        overlay: "scrim",
+        minHeight: 380,
       }),
       sec("crt-carousel", "product-carousel", { x: 0, y: 9, w: 12, h: 8 }, {
         heading: "What you ordered last",
@@ -53,6 +61,7 @@ export const carton: Theme = {
         caption: "Corrugation line, Vasai",
         imageSide: "right",
         ctaLabel: "Ask about printing",
+        image: "/img/plate-carton.svg",
       }),
       sec("crt-features", "feature-columns", { x: 0, y: 25, w: 12, h: 6 }, {
         heading: "Why despatch managers switch",
@@ -144,6 +153,7 @@ export const carton: Theme = {
         body: "Every case carries its batch and its tested bursting strength. If a load reads under specification, it goes back and the replacement is free.",
         caption: "Board testing, Vasai",
         imageSide: "left",
+        image: "/img/plate-carton.svg",
       }),
       sec("crt-prd-enquiry", "enquiry-form", { x: 7, y: 7, w: 5, h: 12 }, {
         heading: "Order or ask",

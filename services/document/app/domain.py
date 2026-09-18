@@ -1,0 +1,229 @@
+"""Pure image validation and normalisation. No I/O, no session, no S3, no settings.
+
+This is ADR-0009 §5 in one function. Every rule here exists because of a specific attack or
+a specific silent ruin, and the comments name which.
+
+**The bytes decide.** The declared `Content-Type` and the filename extension are both ignored
+for the decision — a file that lies about its type never gets the chance to. Pillow decodes,
+and the stored content type is derived from what the decoder says the image is.
+
+**Everything is re-encoded**, which is what makes the rule above structural rather than a
+check somebody has to remember. The round trip strips EXIF (including the GPS coordinates a
+merchant's phone photo routinely carries), neutralises polyglot files (a thing that is
+simultaneously a valid JPEG and a valid HTML document does not survive it), and bounds the
+object at 2560 px on the long edge.
+
+**The decompression bomb is the attack a byte limit does not cover**, and it is the one that
+gets forgotten: a 5 MiB PNG can decode to tens of gigabytes of pixels. `Image.MAX_IMAGE_PIXELS`
+is set explicitly below, because Pillow's default behaviour at that threshold is a *warning* —
+worse than either alternative — and the size is checked off the header, before the decode
+completes, rather than after.
+
+**One honest cost, named rather than hidden.** PNG and WebP are re-encoded losslessly, so a
+noisy photographic PNG can come out of the round trip *larger* than it went in — bounded at
+roughly 26 MB by the 2560 px cap, and counted against the quota at its real stored size. The
+alternative is lossy re-encoding of a format merchants choose precisely because it is not, so
+the amplification is accepted and the quota absorbs it.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import io
+from dataclasses import dataclass
+
+from PIL import Image, ImageOps, UnidentifiedImageError
+
+#: 50 MP, about 8000x6000. Set **explicitly** rather than left at Pillow's default, and
+#: checked by this module as well: Pillow raises `DecompressionBombError` only at twice this
+#: value and merely warns at it, so relying on the library alone means a 60 MP image decodes
+#: with a logged warning nobody reads.
+MAX_IMAGE_PIXELS = 50_000_000
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+
+#: More than any storefront hero needs. Bounds the buyer's download and the re-encode cost.
+MAX_LONG_EDGE = 2560
+
+#: The trade is a re-encoded JPEG being very slightly softer than the original.
+JPEG_QUALITY = 85
+
+#: Pillow's format name → the content type that gets stored and served. The map *is* the
+#: accept-list: a format absent from it is refused, so adding a format is one entry and a
+#: matching encode branch, and forgetting the branch is a `KeyError` at import-time review
+#: rather than a surprise in production.
+ACCEPTED_FORMATS = {
+    "JPEG": "image/jpeg",
+    "PNG": "image/png",
+    "WEBP": "image/webp",
+}
+
+ACCEPTED_DESCRIPTION = "JPEG, PNG or WebP"
+
+
+class ImageRejected(Exception):
+    """The bytes are not something this service will store.
+
+    A value, not a surprise: `code` is a stable string the frontend can branch on, and
+    `message` is safe to show a merchant verbatim — it names what was accepted and never
+    echoes anything the uploader supplied.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessedImage:
+    """What actually gets stored. The uploader's bytes are not in here."""
+
+    data: bytes
+    content_type: str
+    width: int
+    height: int
+    checksum_sha256: str
+
+    @property
+    def size_bytes(self) -> int:
+        return len(self.data)
+
+
+def _open(raw: bytes) -> Image.Image:
+    """Decode the header only, and refuse anything that is not one of the three formats.
+
+    `Image.open` is lazy — it reads enough to know the format and the size and stops — which
+    is exactly what the bomb check below needs: a decision before the pixels are expanded.
+    """
+    try:
+        image = Image.open(io.BytesIO(raw))
+    except UnidentifiedImageError as exc:
+        # SVG lands here, permanently and by construction: Pillow has no SVG decoder, so the
+        # refusal is not a rule somebody could relax by editing a list.
+        raise ImageRejected(
+            "unsupported_image",
+            f"That file is not an image this service can read. Upload {ACCEPTED_DESCRIPTION}.",
+        ) from exc
+    except Image.DecompressionBombError as exc:
+        raise ImageRejected(
+            "image_too_many_pixels",
+            f"That image has too many pixels. The limit is {MAX_IMAGE_PIXELS // 1_000_000} "
+            "megapixels.",
+        ) from exc
+    except Exception as exc:  # a truncated or malformed file of an otherwise known format
+        raise ImageRejected(
+            "unsupported_image",
+            f"That file could not be read as an image. Upload {ACCEPTED_DESCRIPTION}.",
+        ) from exc
+
+    if image.format not in ACCEPTED_FORMATS:
+        raise ImageRejected(
+            "unsupported_image_format",
+            f"That image format is not supported. Upload {ACCEPTED_DESCRIPTION}.",
+        )
+    return image
+
+
+def _refuse_bombs_and_animation(image: Image.Image) -> None:
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        raise ImageRejected("unsupported_image", "That image has no pixels.")
+    if width * height > MAX_IMAGE_PIXELS:
+        raise ImageRejected(
+            "image_too_many_pixels",
+            f"That image is {width}x{height}, which is over the "
+            f"{MAX_IMAGE_PIXELS // 1_000_000} megapixel limit.",
+        )
+    # Animated WebP is refused for the same reason GIF is not accepted at all: the re-encode
+    # would silently keep one frame, and refusing is louder than ruining.
+    if getattr(image, "n_frames", 1) > 1:
+        raise ImageRejected(
+            "animated_image",
+            "Animated images are not supported. Upload a single-frame image.",
+        )
+
+
+def _encode(image: Image.Image, fmt: str) -> bytes:
+    """Re-encode to `fmt`. This is the step that strips EXIF and kills polyglots."""
+    buffer = io.BytesIO()
+    if fmt == "JPEG":
+        # JPEG carries no alpha. Flattening onto white rather than letting Pillow raise is
+        # the only branch here that changes pixels the merchant can see, and it only fires
+        # for an image whose declared format was already JPEG — i.e. effectively never.
+        if image.mode not in ("RGB", "L"):
+            image = image.convert("RGB")
+        image.save(buffer, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+    elif fmt == "PNG":
+        image.save(buffer, format="PNG", optimize=True)
+    else:  # WEBP
+        image.save(buffer, format="WEBP", lossless=True)
+    return buffer.getvalue()
+
+
+def process_upload(raw: bytes) -> ProcessedImage:
+    """Validate, downscale and re-encode. Raises `ImageRejected`; never raises anything else.
+
+    Synchronous and CPU-bound by nature — Pillow is C holding the GIL for most of a
+    150-300 ms round trip on a 5 MiB JPEG. The caller runs it in a thread pool
+    (`anyio.to_thread.run_sync`), because this is the only CPU work on any request path in
+    this service and it must not be the reason `GET /assets` is slow (ADR-0009 §11).
+    """
+    image = _open(raw)
+    fmt = image.format or ""
+    _refuse_bombs_and_animation(image)
+
+    try:
+        # Orientation is applied *before* the metadata is dropped. Without this, stripping
+        # EXIF would silently rotate every portrait photo taken on a phone — the re-encode
+        # would be doing visible harm in the name of privacy.
+        image = ImageOps.exif_transpose(image) or image
+        image.thumbnail((MAX_LONG_EDGE, MAX_LONG_EDGE), Image.Resampling.LANCZOS)
+        data = _encode(image, fmt)
+    except ImageRejected:
+        raise
+    except Exception as exc:
+        # A file that passes the header check and then fails mid-decode is truncated or
+        # corrupt. It is the uploader's problem, not a 500.
+        raise ImageRejected(
+            "unsupported_image",
+            f"That image could not be processed. Upload {ACCEPTED_DESCRIPTION}.",
+        ) from exc
+
+    width, height = image.size
+    return ProcessedImage(
+        data=data,
+        content_type=ACCEPTED_FORMATS[fmt],
+        width=width,
+        height=height,
+        checksum_sha256=hashlib.sha256(data).hexdigest(),
+    )
+
+
+def storage_key(organization_id: object, asset_id: object) -> str:
+    """`{organization_id}/{asset_id}`, both UUIDs, **no extension**.
+
+    The format travels in the object's `Content-Type` metadata, which is what S3 serves, and
+    leaving the extension out is what makes the public URL derivable from two ids alone.
+
+    The organization id is in the key for **operations, not isolation** (ADR-0009 §3): a
+    prefix delete is a tenant erasure, a per-prefix cost report answers "what does this
+    customer cost us", and during an incident an object's tenant is recoverable from the key
+    without the database. Isolation is the row policy, and the reason that is enough is that
+    every object in this bucket is world-readable anyway.
+    """
+    return f"{organization_id}/{asset_id}"
+
+
+def public_path(organization_id: object, asset_id: object) -> str:
+    """The root-relative reference a merchant's store document stores (ADR-0009 §6).
+
+    **Not an absolute URL**, because an absolute URL bakes the hostname into merchant data:
+    moving MinIO → AWS, renaming the bucket or putting a CDN in front would then be a data
+    migration over customer-authored content, to change a hostname.
+
+    The leading `/a` is a sentinel meaning "this is one of our assets", not a path segment of
+    the object key — the frontend's `resolveImageSrc` drops it and joins the rest onto
+    `ASSET_BASE`, so `/a/{org}/{asset}` resolves to `{ASSET_BASE}/{org}/{asset}` and matches
+    `storage_key` exactly.
+    """
+    return f"/a/{storage_key(organization_id, asset_id)}"

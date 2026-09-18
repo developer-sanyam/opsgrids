@@ -1,4 +1,5 @@
 import { BLEED_SETTING, STACK_WIDTH } from "../schema";
+import { resolveImageSrc } from "./assetSrc";
 import { pageGutter } from "./pageGrid";
 import { ActionLink, Eyebrow, ImagePlate, StoreHeading, StoreText } from "./primitives";
 import { bool, optional, str } from "./settings";
@@ -121,7 +122,7 @@ export function PromoBanner({ settings, width }: SectionRenderProps) {
                   >
                     <ImagePlate
                       seed={`promo-${tile.slot}-${tile.title}`}
-                      src={tile.image}
+                      src={resolveImageSrc(tile.image)}
                       style={{
                         aspectRatio: "1 / 1",
                         minHeight: 0,
@@ -174,7 +175,7 @@ export function PromoBanner({ settings, width }: SectionRenderProps) {
         {split ? (
           <ImagePlate
             seed={`promo-${heading ?? "banner"}`}
-            src={image}
+            src={resolveImageSrc(image)}
             style={{ aspectRatio: "4 / 3", minHeight: 0, border: "none", objectFit: "contain" }}
           />
         ) : null}

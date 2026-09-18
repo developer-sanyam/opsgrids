@@ -97,7 +97,10 @@ export const atelier: Theme = {
         ctaLabel: "Shop now",
         ctaHref: "/store/catalogue",
         secondaryLabel: "",
-        image: "/img/cat-seating.svg",
+        /* The wide plate, not the 4:3 room tile. This hero is a 2:1 band, and `cover` on a 4:3
+           source throws away the top and bottom third — the tile's sofa lost its feet and the
+           lamp above it. `hero-atelier` is the same showroom composed for the band it lands in. */
+        image: "/img/hero-atelier.svg",
         layout: "overlay",
         overlay: "gradient",
         imageFocus: "center",

@@ -14,6 +14,7 @@ import {
   variantPrice,
 } from "@/lib/format";
 import type { StoreMode } from "../schema";
+import { resolveImageSrc } from "./assetSrc";
 import { DEFAULT_CARD_OPTIONS, stepQuantity, type CardOptions } from "./cardOptions";
 import {
   ActionButton,
@@ -168,7 +169,7 @@ export function ProductCard({
       <div style={{ position: "relative" }}>
         <ImagePlate
           seed={product.code}
-          src={product.image_url}
+          src={resolveImageSrc(product.image_url)}
           style={{ aspectRatio: "16 / 10", minHeight: 0, border: "none", borderRadius: 0 }}
         />
         {flag === null ? null : (

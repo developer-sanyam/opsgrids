@@ -41,6 +41,13 @@ export const harvest: Theme = {
         secondaryLabel: "Become a dealer",
         tone: "surface",
         align: "center",
+        image: "/img/hero-harvest.svg",
+        /* See the note on Carton's hero: a centred split hero drops its picture, so this one is
+           an overlay. The scrim is the theme's own pale surface, which keeps the near-black
+           heading on it rather than forcing white text onto a light field. */
+        layout: "overlay",
+        overlay: "scrim",
+        minHeight: 400,
       }),
       sec("hrv-features", "feature-columns", { x: 0, y: 10, w: 12, h: 6 }, {
         heading: "What a dealership gets",
@@ -141,6 +148,7 @@ export const harvest: Theme = {
         body: "Every batch is dissolved and filtered before it leaves. An input that passes its NPK analysis and then blocks a drip line has failed the only test that matters on a farm.",
         caption: "Yavat blending unit",
         imageSide: "left",
+        image: "/img/hero-harvest.svg",
       }),
       sec("hrv-prd-prices", "price-table", { x: 0, y: 15, w: 7, h: 10 }, {
         heading: "Grades and dealer rates",

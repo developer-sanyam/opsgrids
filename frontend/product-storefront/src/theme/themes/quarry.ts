@@ -40,6 +40,7 @@ export const quarry: Theme = {
         secondaryLabel: "Request a site visit",
         tone: "surface",
         align: "center",
+        image: "/img/hero-quarry.svg",
       }),
       sec("qry-plate", "image-with-text", { x: 0, y: 10, w: 12, h: 8 }, {
         heading: "One silo, one grade, one batch number",
@@ -47,6 +48,7 @@ export const quarry: Theme = {
         caption: "Chakan bulk terminal",
         imageSide: "left",
         ctaLabel: "How we test",
+        image: "/img/plate-quarry.svg",
       }),
       sec("qry-prose", "rich-text", { x: 2, y: 18, w: 8, h: 6 }, {
         heading: "Thirty years of the same delivery window",
@@ -139,6 +141,7 @@ export const quarry: Theme = {
         body: "Every batch is re-tested for compressive strength and setting time when it lands at our terminal. The mill's certificate and ours both travel with the load.",
         caption: "Terminal laboratory, Chakan",
         imageSide: "right",
+        image: "/img/plate-quarry.svg",
       }),
       sec("qry-prd-prices", "price-table", { x: 0, y: 15, w: 7, h: 10 }, {
         heading: "Grades and rates",

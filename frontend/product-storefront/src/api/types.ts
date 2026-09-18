@@ -118,3 +118,51 @@ export interface Category {
 
 /** The merchant's live store document. `null` until a theme is adopted. */
 export type StoreResponse = StoreDoc | null;
+
+/* --------------------------------- assets --------------------------------- */
+
+/**
+ * One image in the organization's asset library — the response of
+ * `POST /api/v1/documents/assets` and of the library routes beside it (ADR-0009 §4, §12).
+ *
+ * Owned by `services/document`, which is the platform's public asset store: **every object in it
+ * is world-readable to anyone holding its address**, forever, by design (ADR-0009 §1). The upload
+ * control says so in words, because a merchant who puts a supplier price list into an image slot
+ * has published it and must not discover that afterwards.
+ */
+export interface Asset {
+  id: string;
+  /**
+   * `/a/{organization_id}/{asset_id}` — **root-relative, and this is the only field that may be
+   * persisted.** Never an absolute URL: the host is resolved at render time by `resolveImageSrc`,
+   * so moving the bucket or putting a CDN in front stays a config change rather than a migration
+   * over merchant data (ADR-0009 §6). Nothing here is signed and nothing expires. The leading
+   * `/a` is a sentinel, not a path segment — the object's key is `{org}/{asset}`.
+   */
+  public_path: string;
+  /**
+   * The absolute address, **for preview only**. It embeds whatever host the server is configured
+   * with today, which is precisely what `public_path` exists to keep out of merchant data — so a
+   * setting, a store document or any other record that outlives the session takes `public_path`
+   * and never this.
+   */
+  public_url: string;
+  /** Derived from the decoded bytes, never from what the request claimed (ADR-0009 §5). */
+  content_type: "image/jpeg" | "image/png" | "image/webp";
+  /** Of the **stored** object, after the server's downscale and re-encode — so routinely smaller
+   *  than the file the merchant chose, and for a lossless PNG sometimes larger. */
+  size_bytes: number;
+  /** Post-downscale, long edge at most 2560px. */
+  width: number;
+  height: number;
+  checksum_sha256: string;
+  /** Display only — the server never builds a key or a path from it, and it can be absent. */
+  original_filename: string | null;
+  uploaded_by_user_id: string | null;
+  created_at: string;
+  /** Removed from the library. **The object is untouched and the address keeps working** — a
+   *  published store that still references it keeps rendering (ADR-0009 §8). */
+  deleted_at: string | null;
+  /** The object is gone from the bucket and the address now 404s. */
+  purged_at: string | null;
+}

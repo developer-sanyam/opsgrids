@@ -9,7 +9,7 @@
  * literal colour, size or radius anywhere in this folder.
  */
 
-import { useId, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useId, useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { classifyHref } from "./linkList";
@@ -696,6 +696,16 @@ export function ImagePlate({
   alt?: string;
   style?: CSSProperties;
 }) {
+  /* An address that does not load falls back to the generated plate rather than the browser's
+     broken-image icon. A merchant who purges an asset a page still references would otherwise see
+     a torn-page glyph on their live store — and because deletion is soft for thirty days, it would
+     appear long after the action that caused it, which is the hardest kind of fault to connect.
+     Keyed on `src` so replacing a bad address with a good one retries instead of staying broken. */
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
+
   const base: CSSProperties = {
     width: "100%",
     height: "100%",
@@ -707,7 +717,9 @@ export function ImagePlate({
     ...style,
   };
 
-  if (src) return <img src={src} alt={alt ?? ""} style={base} />;
+  if (src && !failed) {
+    return <img src={src} alt={alt ?? ""} style={base} onError={() => setFailed(true)} />;
+  }
 
   const variant = seedOf(seed) % 4;
   return (
