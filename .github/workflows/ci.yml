@@ -19,9 +19,71 @@ env:
   PII_ENCRYPTION_KEY: ci-only-pii-key
 
 jobs:
+  # Which halves of the repository this change can possibly affect. Runs without a checkout —
+  # it asks the API for the pull request's file list — so it costs a few seconds rather than
+  # the clone every other job pays.
+  #
+  # Deliberately fail-open: anything that is not under `frontend/` counts as backend, so a
+  # path nobody anticipated is still tested. `docs/**` is *not* excluded, and that is not an
+  # oversight — `ruff format` checks Python inside Markdown fences, so a docs-only change has
+  # broken the backend lint before.
+  changes:
+    name: Changed areas
+    runs-on: ubuntu-latest
+    # Least privilege: this job only reads a pull request's file list. Scoped here rather
+    # than at the workflow root so the other jobs keep whatever the repository grants them.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # A push to main verifies everything, always. Skipping work on the branch every
+          # deployment is cut from is a false economy.
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "backend=true"  >> "$GITHUB_OUTPUT"
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          files=$(gh api --paginate \
+            "repos/${{ github.repository }}/pulls/${{ github.event.number }}/files" \
+            --jq '.[].filename')
+
+          backend=false
+          frontend=false
+          while read -r f; do
+            [ -n "$f" ] || continue
+            case "$f" in
+              frontend/*)            frontend=true ;;
+              .github/workflows/*)   backend=true; frontend=true ;;
+              *)                     backend=true ;;
+            esac
+          done <<< "$files"
+
+          # An empty file list means the API told us nothing useful; run everything rather
+          # than conclude a pull request changed nothing.
+          if [ -z "$files" ]; then
+            backend=true
+            frontend=true
+          fi
+
+          echo "backend=$backend"   >> "$GITHUB_OUTPUT"
+          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
+          echo "backend=$backend frontend=$frontend"
+
   backend:
     name: Backend — lint, types, tests
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
 
     services:
       postgres:
@@ -50,6 +112,27 @@ jobs:
           enable-cache: true
 
       - run: uv sync --frozen
+
+      # The single largest win available. `mypy --strict` with the pydantic plugin costs about
+      # 6.5s from cold and 0.3s incrementally for one service; across libs, tools and
+      # thirty-odd services that is the difference between ~220s and a handful. Nothing cached
+      # these before, so every run paid full price for code that had not changed.
+      #
+      # Keyed on the lockfile, which pins the mypy version — a mypy upgrade must not read a
+      # cache written by the previous one. The rolling `github.sha` suffix makes each run save
+      # a fresh entry while `restore-keys` recovers the most recent compatible one. mypy
+      # validates its own cache per file, so a partial hit degrades to recomputing that file
+      # rather than trusting stale results.
+      - name: Restore mypy caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            .mypy_cache
+            services/*/.mypy_cache
+          key: mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
+          restore-keys: |
+            mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-
+            mypy-${{ runner.os }}-
 
       - name: Bootstrap extensions and roles
         run: |
@@ -107,6 +190,8 @@ jobs:
   supply-chain:
     name: Supply chain — vulnerabilities, licences, secrets
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -131,6 +216,8 @@ jobs:
   contracts:
     name: Contracts — events validate against their schemas
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -145,6 +232,8 @@ jobs:
   frontend:
     name: Frontend — types, lint, tests, build
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     defaults:
       run:
         working-directory: frontend
@@ -163,11 +252,23 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Every app and package, in dependency order. `-r` walks the workspace, so a new
-      # product app is covered the day it is added — no edit here.
-      - name: Type check
-        run: pnpm -r typecheck
+      # Next's build cache. Only the marketing site has one, and it is the slowest package to
+      # build; the Vite apps keep nothing worth carrying between runs.
+      - name: Restore Next.js build cache
+        uses: actions/cache@v4
+        with:
+          path: frontend/opsgrids-website/.next/cache
+          key: next-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}-${{ github.sha }}
+          restore-keys: |
+            next-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}-
+            next-${{ runner.os }}-
 
+      # There is no separate type-check step because there is nothing left for it to do.
+      # Twelve of the fourteen packages run `tsc --noEmit` inside their own `build`, the two
+      # library packages *are* `tsc --noEmit`, and the marketing site's `next build`
+      # type-checks unless `typescript.ignoreBuildErrors` is set, which it is not. Running it
+      # again beforehand type-checked the whole workspace twice and cost ~45s for no extra
+      # coverage; a type error still fails the Build step, identically.
       - name: Lint
         run: pnpm -r lint
 
