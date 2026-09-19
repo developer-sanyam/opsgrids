@@ -193,6 +193,10 @@ DEFAULT_PUBLIC_PATHS = frozenset(
         "/api/v1/auth/sso/callback",
         "/api/v1/auth/password/forgot",
         "/api/v1/auth/password/reset",
+        # Meta's WhatsApp webhooks. Public by necessity — the provider cannot hold one of our
+        # tokens — and authenticated instead by an HMAC-SHA256 signature over the raw body,
+        # verified in notification-service. The GET is Meta's subscription handshake.
+        "/webhooks/whatsapp",
         "/api/v1/invitations/accept",
     }
 )

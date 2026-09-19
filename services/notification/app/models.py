@@ -32,6 +32,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -219,6 +220,54 @@ class ProviderTemplate(Base, TenantBase):
     )
 
 
+class ProviderAccount(Base, TenantBase):
+    """One organization's connection to a channel provider.
+
+    It exists for two jobs, and the first is routing. Meta posts every tenant's webhooks to a
+    single URL — there is no per-tenant endpoint — and the only thing in the payload that says
+    whose message it is, is `metadata.phone_number_id`. So that column is unique **globally**,
+    not per organization: it is the routing key, and two tenants claiming one number would make
+    an inbound message unattributable.
+
+    Resolving it necessarily happens *before* a tenant is known, which row-level security cannot
+    express. That read therefore runs on the service's SELECT-only BYPASSRLS directory reader —
+    the same pattern account-service uses to resolve a person at sign-in, confined here to this
+    one table.
+
+    The second job is the credential. `access_token_enc` is the tenant's own WhatsApp token,
+    sealed with `platform_core.pii.seal` like any other secret at rest — a token that can send
+    messages as the customer's business is not less sensitive than a phone number. The App
+    Secret and verify token are *not* here: the Meta App is the vendor's, so they are platform
+    configuration and one of them signs every tenant's webhooks.
+    """
+
+    __tablename__ = "provider_accounts"
+
+    #: email | whatsapp. A column so the table can hold the next channel without a new table.
+    channel: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    #: Meta's WhatsApp Business Account id.
+    waba_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    #: The sender. **Globally unique** — this is the webhook routing key.
+    phone_number_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    #: The human-readable number, for an operator to recognise. Not a secret and not a mask:
+    #: it is the business's own published number, not a customer's.
+    display_number: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+
+    #: The tenant's access token, sealed. Never returned by any API.
+    access_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+
+    #: connected | disconnected. A disconnected account still routes inbound webhooks, so the
+    #: messages are not lost, but nothing is sent from it.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="connected")
+
+    __table_args__ = (
+        Index("ix_provider_accounts_org_channel", "organization_id", "channel"),
+        # Global, deliberately. See the class docstring: this is the routing key.
+        UniqueConstraint("phone_number_id", name="uq_provider_accounts_phone_number_id"),
+    )
+
+
 class Message(Base, TenantBase):
     """One rendered notification and where it got to.
 
@@ -240,7 +289,7 @@ class Message(Base, TenantBase):
     subject: Mapped[str | None] = mapped_column(String(300))
     body: Mapped[str] = mapped_column(Text, nullable=False)
 
-    #: pending | sending | sent | failed | suppressed.
+    #: pending | sending | sent | delivered | read | failed | suppressed.
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
 
     #: Which rule produced this, and which event it reacted to. Null for a direct API send —
@@ -261,6 +310,14 @@ class Message(Base, TenantBase):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(Text)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Filled from provider receipts. Separate columns rather than only a state, because "when
+    #: was it read" is a question analytics asks and a single state cannot answer.
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The provider's own error code and title on a failure, kept so an operator sees what Meta
+    #: said rather than "failed".
+    provider_error_code: Mapped[str | None] = mapped_column(String(40))
+    provider_error_detail: Mapped[str | None] = mapped_column(Text)
     #: Provider-side identifier, kept for support requests about a specific message.
     provider_message_id: Mapped[str | None] = mapped_column(String(200))
 
@@ -268,6 +325,14 @@ class Message(Base, TenantBase):
         # The dispatcher's claim query: pending rows for this org, oldest first.
         Index("ix_messages_org_state", "organization_id", "state", "created_at"),
         Index("ix_messages_org_channel", "organization_id", "channel"),
+        # A receipt arrives knowing only the provider's message id, and the webhook has already
+        # resolved the tenant, so the lookup leads with the organization like every other index
+        # here (ADR-0002).
+        Index(
+            "ix_messages_org_provider_message_id",
+            "organization_id",
+            "provider_message_id",
+        ),
         # Two rules on one event are two messages; one event twice is one message.
         UniqueConstraint("organization_id", "dedupe_key", name="uq_messages_org_dedupe"),
     )

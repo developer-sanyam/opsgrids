@@ -178,9 +178,20 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'opsgrids_console_directory') THEN
     CREATE ROLE opsgrids_console_directory LOGIN PASSWORD 'opsgrids' NOINHERIT BYPASSRLS;
   END IF;
+  -- notification's bypass reader. Meta posts every organization's WhatsApp webhooks to one
+  -- URL, so the service has to resolve *which* tenant from the payload's `phone_number_id`
+  -- before a tenant is known — a lookup row-level security cannot express. Confined by the
+  -- migration to SELECT on `notification.provider_accounts` alone, like every other bypass
+  -- reader here: least privilege inside the bypass, because the risk being managed is a route
+  -- added to that module later.
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'opsgrids_notification_directory') THEN
+    CREATE ROLE opsgrids_notification_directory LOGIN PASSWORD 'opsgrids' NOINHERIT BYPASSRLS;
+  END IF;
 END
 $$;
 GRANT CONNECT ON DATABASE opsgrids TO opsgrids_console_directory;
+GRANT CONNECT ON DATABASE opsgrids TO opsgrids_notification_directory;
+GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO opsgrids_notification_directory;
 GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO opsgrids_console_directory;
 
 -- The outbox relay (ADR-0002 §2, "The outbox relay must run BYPASSRLS").

@@ -34,6 +34,23 @@ class Settings(ServiceSettings):
     smtp_timeout_seconds: float = 10.0
     email_from: str = "no-reply@opsgrids.example.com"
 
+    #: Its own SELECT-only BYPASSRLS reader, for the one lookup that happens before a tenant
+    #: is known: Meta posts every organization's webhooks to one URL, and the payload's
+    #: `phone_number_id` is what says whose they are. Same shape as account's and console's
+    #: directory readers, and confined to `provider_accounts` alone.
+    db_directory_role: str | None = "opsgrids_notification_directory"
+
+    # ----------------------------------------------------------------- inbound webhooks
+    #: Meta's App Secret, used to verify `X-Hub-Signature-256` over the raw request body.
+    #:
+    #: Platform configuration rather than per-tenant, because the App is the vendor's: tenants
+    #: onboard their WhatsApp Business Account to it, so one secret signs every tenant's
+    #: webhooks. A tenant's own credential is its access token, which *is* per-account and
+    #: sealed in `provider_accounts`.
+    whatsapp_app_secret: SecretStr | None = None
+    #: The token echoed back during Meta's `GET` verification handshake. Also app-level.
+    whatsapp_verify_token: SecretStr | None = None
+
     #: `log` | `whatsapp_cloud` — which transport serves the WhatsApp channel.
     whatsapp_transport: str = "log"
     #: Meta Graph API. The phone number id is the sender, not the sender's number.
