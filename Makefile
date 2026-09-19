@@ -6,6 +6,25 @@ SHELL := /bin/bash
 SERVICES := $(notdir $(wildcard services/*))
 COMPOSE  := docker compose -f tools/dev-bootstrap/compose.yml --env-file .env
 
+# How many services to process at once in the per-service fan-outs below. Thirty-odd
+# invocations of mypy, pytest or alembic run one at a time is most of what CI spends its
+# time on, and each invocation is an independent process against its own directory and its
+# own database schema — so they are parallelisable, not merely parallel-looking.
+#
+# `JOBS=1` restores the previous strictly-serial behaviour exactly, which is the escape
+# hatch if a parallel run is ever suspected of hiding something.
+JOBS ?= $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
+# Run one command per service, `JOBS` at a time. See tools/fan-out.sh for why this is a
+# script rather than an inline xargs pipeline, and why it is safe to parallelise at all.
+#
+#   $(1) a path that must exist inside services/<name>, or the service is skipped
+#   $(2) `ok-empty` to accept pytest's "no tests collected", otherwise `strict`
+#   $(3) the command, run with services/<name> as the working directory
+define fan_out
+	@tools/fan-out.sh $(JOBS) $(1) $(2) $(3)
+endef
+
 # Every per-service target runs from services/<name>, and a service's settings read `.env`
 # relative to the working directory — so without this, `make migrate` and `make test` never
 # see the root .env and silently fall back to the built-in defaults, which point at the
@@ -50,10 +69,11 @@ infra-reset: ## Destroy and recreate the data volumes (destructive)
 # ---------------------------------------------------------------- database
 .PHONY: migrate
 migrate: ## Apply migrations for every service
-	@set -e; for s in $(SERVICES); do \
-	  test -f services/$$s/alembic.ini || continue; \
-	  echo "→ $$s"; (cd services/$$s && uv run alembic upgrade head); \
-	done
+	# Safe to run concurrently because of ADR-0000 §10: no foreign key crosses a schema
+	# boundary, so each service's DDL touches only its own schema and there is no ordering
+	# between them. The shared objects — extensions, roles — are created once by
+	# `tools/dev-bootstrap/init-db.sql` before any of this runs.
+	$(call fan_out,alembic.ini,strict,uv run alembic upgrade head)
 
 .PHONY: makemigration
 makemigration: ## Autogenerate: make makemigration SERVICE=account M="add memberships"
@@ -63,21 +83,20 @@ makemigration: ## Autogenerate: make makemigration SERVICE=account M="add member
 
 .PHONY: migration-check
 migration-check: ## Fail if a model changed without a migration
-	@set -e; for s in $(SERVICES); do \
-	  test -f services/$$s/alembic.ini || continue; \
-	  echo "→ $$s"; (cd services/$$s && uv run alembic check); \
-	done
+	# Read-only: `alembic check` autogenerates in memory and compares, emitting no DDL.
+	$(call fan_out,alembic.ini,strict,uv run alembic check)
 
 # A downgrade() nobody has run is a rollback nobody has. Going to base and back proves each
 # one actually reverts what its upgrade() did — against the configured database, so run it
 # where you would run `make migrate`. env.py re-applies the schema grants after every step.
 .PHONY: migration-roundtrip
 migration-roundtrip: ## upgrade head → downgrade base → upgrade head, every service
-	@set -e; for s in $(SERVICES); do \
-	  test -f services/$$s/alembic.ini || continue; \
-	  echo "→ $$s"; (cd services/$$s && uv run alembic upgrade head \
-	    && uv run alembic downgrade base && uv run alembic upgrade head); \
-	done
+	# The same per-schema independence as `migrate`, so the fan-out applies here too. This
+	# is the strictest thing in the suite — a downgrade that does not revert is found here
+	# rather than during a rollback — and the assertions are unchanged: every service still
+	# goes all the way up, all the way down and all the way up again. Only the scheduling
+	# differs, and `JOBS=1` puts it back.
+	$(call fan_out,alembic.ini,strict,$(CURDIR)/tools/roundtrip.sh)
 
 # ---------------------------------------------------------------- run
 .PHONY: run
@@ -139,9 +158,10 @@ typecheck-tools: ## mypy over the repository tooling
 
 .PHONY: typecheck-services
 typecheck-services: ## mypy per service — they cannot share a process
-	@set -e; for s in $(SERVICES); do \
-	  echo "→ $$s"; (cd services/$$s && uv run mypy app); \
-	done
+	# `import app` is ambiguous across services, so mypy genuinely cannot check them in one
+	# process. It can check them in several at once: each runs in its own directory against
+	# its own `.mypy_cache`, so there is nothing to share and nothing to race.
+	$(call fan_out,app,strict,uv run mypy app)
 
 .PHONY: test
 test: test-libs test-services ## Everything CI runs
@@ -152,11 +172,14 @@ test-libs: ## Shared library tests
 
 .PHONY: test-services
 test-services: ## Each service in its own process
-	@set -e; for s in $(SERVICES); do \
-	  echo "→ $$s"; rc=0; \
-	  (cd services/$$s && uv run pytest tests -p no:cacheprovider) || rc=$$?; \
-	  if [ $$rc -eq 5 ]; then echo "  (no tests yet)"; elif [ $$rc -ne 0 ]; then exit $$rc; fi; \
-	done
+	# Parallel across services, never within one: every service owns a Postgres schema and
+	# its fixtures truncate only its own tables, so two services cannot see or clobber each
+	# other's rows. Inside a service the fixtures do share a schema, which is why the
+	# fan-out is per service and pytest itself stays single-process.
+	#
+	# pytest's exit code 5 means "no tests collected", which is not a failure for a
+	# service that has none yet — hence `ok-empty`.
+	$(call fan_out,tests,ok-empty,uv run pytest tests -q -p no:cacheprovider)
 
 # The one suite where nothing is stubbed: six services, an outbox relay and an event
 # consumer, all started by the harness on ports the OS hands out, driven over real HTTP
