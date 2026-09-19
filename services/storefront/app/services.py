@@ -27,12 +27,15 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, cast
 
 from fastapi import Request
 from sqlalchemy import CursorResult, delete, func, insert, literal_column, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, selectors
@@ -149,6 +152,109 @@ async def record_demand(
 # --------------------------------------------------------------------- the store
 
 
+#: Which unique constraint fired, and what the merchant should be told about it. The platform's
+#: own `IntegrityError` handler turns any of these into an anonymous 409 — right for a surprise,
+#: useless for an expectable collision, because it names no field and a client cannot branch on
+#: it. These three are expectable, so each gets a name (ADR-0011 §5).
+_NAMED_CONFLICTS: dict[str, tuple[str, str, str]] = {
+    "uq_storefronts_slug": (
+        "slug_taken",
+        "slug",
+        "That store address is already in use. Store addresses are unique across the platform — "
+        "pick another.",
+    ),
+    "uq_storefronts_custom_domain": (
+        "custom_domain_taken",
+        "custom_domain",
+        "That domain has already been claimed. A domain can be claimed by one store at a time; "
+        "if it is yours, contact support — nothing here can prove ownership, which is why this "
+        "is settled by a person.",
+    ),
+    "uq_storefronts_organization_id": (
+        "storefront_exists",
+        "slug",
+        "This organization already has a storefront. Reload and edit the one that exists.",
+    ),
+}
+
+
+def _named_conflict(exc: IntegrityError) -> ConflictProblem | None:
+    """Turn a unique violation into a 409 that names the field, or return None to re-raise.
+
+    asyncpg carries `constraint_name` on the original exception; SQLAlchemy wraps it one or two
+    layers deep depending on the driver adapter, so both are checked and the statement text is
+    the last resort. An unrecognised constraint is deliberately **not** translated — it falls
+    through to the platform handler's anonymous 409 rather than being given a name this module
+    invented.
+    """
+    orig: Any = exc.orig
+    name = getattr(orig, "constraint_name", None) or getattr(
+        getattr(orig, "__cause__", None), "constraint_name", None
+    )
+    if name is None:
+        rendered = str(orig)
+        name = next((key for key in _NAMED_CONFLICTS if key in rendered), None)
+    if name is None:
+        return None
+    named = _NAMED_CONFLICTS.get(str(name))
+    if named is None:
+        return None
+    code, field, message = named
+    return domain.Conflicted(code, message, field=field)
+
+
+@asynccontextmanager
+async def _conflicts_are_named(session: AsyncSession) -> AsyncIterator[None]:
+    """Run the store write inside a savepoint, so a collision is a named 409 and not a 500.
+
+    The savepoint is what keeps the request's own transaction usable after the violation: the
+    statement that fired the constraint is rolled back to the savepoint, and the 409 is raised
+    from clean ground rather than from an aborted transaction that would fail again on the next
+    statement anything happened to run.
+
+    **The check is the constraint, not a SELECT first.** A "is this domain taken?" query before
+    the write would be a cross-tenant read — the colliding row belongs to another organization
+    and row-level security correctly hides it — and it would still race with a concurrent claim.
+    The unique index is the arbiter; this only gives its refusal a name.
+    """
+    try:
+        async with session.begin_nested():
+            yield
+    except IntegrityError as exc:
+        conflict = _named_conflict(exc)
+        if conflict is None:
+            raise
+        raise conflict from exc
+
+
+def _identity_snapshot(store: Storefront) -> dict[str, Any]:
+    """What the audit trail records before and after a store write."""
+    return {
+        "slug": store.slug,
+        "name": store.name,
+        "tagline": store.tagline,
+        "logo_text": store.logo_text,
+        "status": store.status,
+        "currency": store.currency,
+        "timezone": store.timezone,
+        "custom_domain": store.custom_domain,
+        "custom_domain_status": store.custom_domain_status,
+    }
+
+
+async def _forget_slug(*slugs: str | None) -> None:
+    """Drop the cached slug→store entries for these slugs.
+
+    Best effort, and honestly racy: the request's transaction has not committed yet, so a
+    concurrent anonymous check could repopulate an entry from the pre-commit row and keep it for
+    another TTL. The TTL bounds it either way — this only shortens the window ADR-0010 §13
+    already accepts ("a newly published store may be 404 for five minutes").
+    """
+    keys = {selectors.slug_cache_key(s) for s in slugs if s}
+    if keys:
+        await cache_delete(*keys)
+
+
 async def put_storefront(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -156,59 +262,72 @@ async def put_storefront(
     *,
     request: Request | None = None,
 ) -> Storefront:
-    """Create or update the organization's single storefront.
+    """Create or update the organization's single storefront — its **identity**.
 
-    **Publishing is audited as its own act.** A status change is what makes a store visible to
-    the internet — and, with it, that merchant's delivery map readable by anyone who knows the
-    slug — so `storefront.published` / `.unpublished` are separate audit actions rather than a
-    field inside a generic update row (ADR-0010 §14).
+    Three rules live here rather than in the schema, because each is about the row rather than
+    about the payload (ADR-0011):
+
+    * **The brand is trimmed and bounded before it is stored.** It is merchant-authored text
+      destined for a public page. It is *not* escaped here — output encoding is the renderer's.
+    * **The slug cannot change.** Every published link, the buyer's `localStorage` key and the
+      five-minute slug cache all key on it.
+    * **A custom domain is a stated intention.** Claiming one writes `custom_domain_status =
+      'unverified'` and nothing else happens: no request is served on it, and nothing in this
+      platform checks that the merchant owns it. Changing it resets the status, because a
+      verification that ever exists must not survive the value it verified.
+
+    **`status` is not on this payload at all**, so a settings save cannot put a store in front
+    of the internet. `publish_storefront` / `unpublish_storefront` are the only ways it moves.
     """
     # Refuse a timezone the server cannot resolve, in the merchant's words rather than as a
     # 500 six weeks later: a bad IANA name would silently produce promised dates in UTC, an
     # answer that is wrong by hours and looks perfectly well-formed.
     domain.today_in(payload.timezone, now=utcnow())
 
+    name = domain.clean_brand_text(payload.name, field="name", required=True)
+    tagline = domain.clean_brand_text(payload.tagline, field="tagline")
+    logo_text = domain.clean_brand_text(payload.logo_text, field="logo_text")
+    custom_domain = domain.normalise_custom_domain(payload.custom_domain)
+
     existing = await selectors.get_storefront(session, ctx)
     before: dict[str, Any] | None = None
-    old_slug: str | None = None
 
     if existing is None:
         store = Storefront(
             organization_id=ctx.organization_id,
             slug=payload.slug,
-            status=payload.status,
+            name=name or "",
+            tagline=tagline,
+            logo_text=logo_text,
+            # **A store is born `draft`, always.** Publishing is a deliberate, named act, and a
+            # creation payload that could arrive published would be the dropdown by another
+            # route (ADR-0011 §4).
+            status="draft",
             currency=payload.currency,
             timezone=payload.timezone,
+            custom_domain=custom_domain,
+            custom_domain_status="unverified" if custom_domain else None,
         )
         session.add(store)
         action = "storefront.created"
     else:
         store = existing
-        old_slug = store.slug
-        before = {
-            "slug": store.slug,
-            "status": store.status,
-            "currency": store.currency,
-            "timezone": store.timezone,
-        }
-        store.slug = payload.slug
-        store.status = payload.status
+        domain.assert_slug_is_unchanged(store.slug, payload.slug)
+        before = _identity_snapshot(store)
+        store.name = name or ""
+        store.tagline = tagline
+        store.logo_text = logo_text
         store.currency = payload.currency
         store.timezone = payload.timezone
+        if custom_domain != store.custom_domain:
+            store.custom_domain = custom_domain
+            # A verification attaches to a value, not to a row. The day one exists, keeping it
+            # across a change of domain would mean a merchant verifying one name and serving
+            # another — so the reset is written now, while it costs a line.
+            store.custom_domain_status = "unverified" if custom_domain else None
         action = "storefront.updated"
-        if before["status"] != payload.status:
-            action = (
-                "storefront.published"
-                if payload.status == "published"
-                else "storefront.unpublished"
-            )
 
-    after = {
-        "slug": store.slug,
-        "status": store.status,
-        "currency": store.currency,
-        "timezone": store.timezone,
-    }
+    domain_changed = before is None or before["custom_domain"] != store.custom_domain
     record_audit(
         session,
         AuditLog,
@@ -218,16 +337,105 @@ async def put_storefront(
         entity="storefront",
         entity_id=store.id,
         before=before,
-        after=after,
+        after=_identity_snapshot(store),
         request=request,
     )
-    # Best effort, and honestly racy: the request's transaction has not committed yet, so a
-    # concurrent anonymous check could repopulate the entry from the pre-commit row and keep it
-    # for another TTL. The TTL bounds it either way — this only shortens the window that
-    # ADR-0010 §13 already accepts ("a newly published store may be 404 for five minutes").
-    await cache_delete(*{selectors.slug_cache_key(s) for s in (old_slug, store.slug) if s})
+    if domain_changed and (store.custom_domain or (before and before["custom_domain"])):
+        # Its own row: a domain claim is the one field here that can be contested between two
+        # organizations, and support adjudicating one needs to see who claimed what and when
+        # without reading it out of a generic update's `after` blob.
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=ctx.organization_id,
+            actor_id=ctx.principal.sub,
+            action=(
+                "storefront.custom_domain.claimed"
+                if store.custom_domain
+                else "storefront.custom_domain.released"
+            ),
+            entity="storefront",
+            entity_id=store.id,
+            before={"custom_domain": before["custom_domain"]} if before else None,
+            after={
+                "custom_domain": store.custom_domain,
+                "custom_domain_status": store.custom_domain_status,
+                # Written into the trail rather than inferred later: at the time of this claim,
+                # nothing in the platform could verify or serve it.
+                "verified": False,
+                "served": False,
+            },
+            request=request,
+        )
+
+    async with _conflicts_are_named(session):
+        await session.flush()
+
+    await _forget_slug(store.slug)
     log.info(
         "storefront.store.saved",
+        organization_id=str(ctx.organization_id),
+        storefront_id=str(store.id),
+        action=action,
+        status=store.status,
+        custom_domain_claimed=bool(store.custom_domain),
+    )
+    return store
+
+
+async def set_store_status(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    store: Storefront,
+    *,
+    target: str,
+    request: Request | None = None,
+) -> Storefront:
+    """`draft ⇄ published`, and nothing else — the one transition a merchant may drive.
+
+    **This is the act that makes a store reachable by strangers**, and with it that merchant's
+    delivery map readable by anyone who knows the slug (ADR-0010 §4). It is a named transition
+    rather than a field on the settings form precisely so it cannot happen as a side effect of
+    saving a tagline.
+
+    `suspended` is refused in both directions by `domain.assert_publishable` /
+    `assert_unpublishable`: it belongs to the entitlement-lapse consumer ADR-0010 §4 describes
+    and does not own, and a merchant who could leave it would make that mechanism advisory.
+
+    Idempotent: publishing a published store is a no-op that still returns 200, because a
+    double-click on the one control in this product that has consequences should not be an
+    error.
+    """
+    if target == "published":
+        domain.assert_publishable(store.status)
+    else:
+        domain.assert_unpublishable(store.status)
+
+    if store.status == target:
+        return store
+
+    before = _identity_snapshot(store)
+    store.status = target
+    action = "storefront.published" if target == "published" else "storefront.unpublished"
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action=action,
+        entity="storefront",
+        entity_id=store.id,
+        before=before,
+        after=_identity_snapshot(store),
+        request=request,
+    )
+    await session.flush()
+    # Publishing has to clear the cache, and the *negative* entry is why: a 404 for this slug is
+    # cached for five minutes exactly like a hit, so without this a merchant publishes and then
+    # watches their own store stay invisible with nothing to show for it.
+    await _forget_slug(store.slug)
+    log.info(
+        "storefront.store.status_changed",
         organization_id=str(ctx.organization_id),
         storefront_id=str(store.id),
         action=action,

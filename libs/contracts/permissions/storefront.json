@@ -22,7 +22,7 @@
     {
       "action": "read",
       "default_scope": "ORG",
-      "description": "See the store's published identity \u2014 its slug, status, currency and timezone",
+      "description": "See the store's identity \u2014 its name, tagline, logo text, address, status, currency, timezone and custom-domain claim",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "store",
@@ -31,7 +31,7 @@
     {
       "action": "write",
       "default_scope": "ORG",
-      "description": "Change the store's identity, and publish or unpublish it \u2014 the act that makes a store visible to the internet",
+      "description": "Change the store's name, brand and settings, claim a custom domain, and publish or unpublish the store \u2014 the act that makes it visible to anyone",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "store",

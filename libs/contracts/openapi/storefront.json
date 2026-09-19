@@ -505,6 +505,7 @@
         "type": "object"
       },
       "StoreOut": {
+        "description": "The store's identity \u2014 **who the store is, not how it looks**.\n\nThe brand (`name`, `tagline`, `logo_text`) is here rather than in the theme document,\nbecause a store's name is its identity and not a property of the theme somebody picked\n(ADR-0011 \u00a72). The theme document \u2014 tokens, pages, sections \u2014 is a separate resource at\n`/api/v1/storefront/theme`, reserved by ADR-0011 \u00a73 and **not served by this service yet**.\n\nEvery string here is **merchant-authored text that will be rendered into a public page**.\nIt is stored trimmed, bounded and free of control characters; it is **not** HTML-escaped,\nand escaping it here would be wrong. Output encoding belongs to whatever renders the page.",
         "properties": {
           "created_at": {
             "format": "date-time",
@@ -524,11 +525,43 @@
                 "type": "null"
               }
             ],
+            "description": "The domain the merchant intends to use. **It is not an address the store is reachable at.** Nothing in this platform serves a custom domain \u2014 there is no ingress, no TLS termination and no host-based routing \u2014 so this records an intention and changes nothing about reachability.",
             "title": "Custom Domain"
+          },
+          "custom_domain_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unverified",
+                  "verified"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`unverified` whenever `custom_domain` is set, `null` when it is not. **Nothing can move it off `unverified` today**: verifying that a merchant owns a domain is DNS work nobody has done, and it is a precondition of ever serving one \u2014 serving a domain on the strength of a form submission is how one merchant takes another's traffic.",
+            "title": "Custom Domain Status"
           },
           "id": {
             "format": "uuid",
             "title": "Id",
+            "type": "string"
+          },
+          "logo_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo Text"
+          },
+          "name": {
+            "title": "Name",
             "type": "string"
           },
           "slug": {
@@ -536,6 +569,7 @@
             "type": "string"
           },
           "status": {
+            "description": "`draft` is invisible to buyers; `published` makes the anonymous serviceability check answer for this store. Both are reached only through `POST /storefront/store/publish` and `.../unpublish`. `suspended` is set by the platform and no merchant route can set or leave it.",
             "enum": [
               "draft",
               "published",
@@ -543,6 +577,17 @@
             ],
             "title": "Status",
             "type": "string"
+          },
+          "tagline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tagline"
           },
           "timezone": {
             "title": "Timezone",
@@ -557,10 +602,14 @@
         "required": [
           "id",
           "slug",
+          "name",
+          "tagline",
+          "logo_text",
           "status",
           "currency",
           "timezone",
           "custom_domain",
+          "custom_domain_status",
           "created_at",
           "updated_at"
         ],
@@ -569,12 +618,47 @@
       },
       "StorePut": {
         "additionalProperties": false,
-        "description": "Create-or-update the organization's single storefront.\n\nA PUT rather than a PATCH because there are four fields and a merchant editing a store's\nidentity is editing all of them at once on one form. `status` is on the same payload\ndeliberately: publishing is what makes a store visible to the internet, so it is audited as\n`storefront.published` / `.unpublished` rather than folded into a generic update row.",
+        "description": "Create or update the organization's single storefront.\n\nA PUT rather than a PATCH because a merchant editing a store's identity is editing one form,\nall of it at once. **`status` is deliberately not on this payload** (ADR-0011 \u00a74): a settings\nsave must not be able to put a store in front of the internet, so publishing is its own named\ntransition. A store is created `draft`, always.\n\n`slug` is required on create and must **match the stored value** on update \u2014 a rename is a\n409 `slug_immutable` rather than a field this payload silently ignores (ADR-0011 \u00a77).",
         "properties": {
           "currency": {
             "default": "INR",
             "pattern": "^[A-Z]{3}$",
             "title": "Currency",
+            "type": "string"
+          },
+          "custom_domain": {
+            "anyOf": [
+              {
+                "description": "The domain the merchant **intends** to use, stored lower-cased with no scheme, path or port. **Setting it records an intention and changes nothing about reachability**: no request is served on it, nothing here checks that the merchant owns it, and the stored status is `unverified` with no path off it. `null` or an empty string releases the claim. A domain another organization has already claimed is a 409 `custom_domain_taken`.",
+                "examples": [
+                  "shop.example.com"
+                ],
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Domain"
+          },
+          "logo_text": {
+            "anyOf": [
+              {
+                "description": "The header wordmark. `null` or an empty string clears it, and the renderer falls back to `name`.",
+                "maxLength": 12,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo Text"
+          },
+          "name": {
+            "description": "The store's name, as a buyer sees it. Trimmed and whitespace-collapsed before it is stored; blank after trimming is a 422 `name_required`. Stored verbatim otherwise \u2014 it is **not** HTML-escaped, and encoding it for output is the renderer's job.",
+            "maxLength": 80,
+            "title": "Name",
             "type": "string"
           },
           "slug": {
@@ -584,15 +668,18 @@
             "title": "Slug",
             "type": "string"
           },
-          "status": {
-            "default": "draft",
-            "enum": [
-              "draft",
-              "published",
-              "suspended"
+          "tagline": {
+            "anyOf": [
+              {
+                "description": "One line under the name. `null` or an empty string clears it.",
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Status",
-            "type": "string"
+            "title": "Tagline"
           },
           "timezone": {
             "default": "Asia/Kolkata",
@@ -603,7 +690,8 @@
           }
         },
         "required": [
-          "slug"
+          "slug",
+          "name"
         ],
         "title": "StorePut",
         "type": "object"
@@ -1715,7 +1803,7 @@
     },
     "/api/v1/storefront/store": {
       "get": {
-        "description": "`storefront.store.settings.read`, floored at ORG.",
+        "description": "`storefront.store.settings.read`, floored at ORG.\n\n**This is the identity row, not the theme document.** The two collided on this path: the\nSPA's `getStore()` called it expecting a `StoreDoc`. Identity stayed, because it is in the\npublished schema and both the delivery admin and the merchant surface read it; the theme\ndocument moved to `/api/v1/storefront/theme`, which ADR-0011 \u00a73 reserves and the\nstorefront-document ADR builds. Nothing serves that path yet.",
         "operationId": "read_store_api_v1_storefront_store_get",
         "responses": {
           "200": {
@@ -1729,13 +1817,13 @@
             "description": "Successful Response"
           }
         },
-        "summary": "The store's published identity",
+        "summary": "The store's identity \u2014 name, address, brand and status",
         "tags": [
           "storefront"
         ]
       },
       "put": {
-        "description": "`storefront.store.settings.write`, floored at ORG.\n\n**Publishing is the act that makes a store visible to the internet**, and with it that\nmerchant's delivery map readable by anyone who knows the slug. Accepted deliberately \u2014 a\nmerchant publishes both on their own website, and it is a shopfront sign \u2014 but it is not\nreversible once slugs are in circulation, and the UI has to say so on the control.\n\nA slug already taken by another organization is a 409 through the platform's integrity\nhandler, which deliberately does not echo the constraint name.",
+        "description": "`storefront.store.settings.write`, floored at ORG.\n\n**This route cannot publish a store.** `status` is not on the payload: a save that could put\na store in front of the internet as a side effect of editing a tagline is the failure a\ndropdown produces by default, so publishing is `POST /storefront/store/publish` and nothing\nelse (ADR-0011 \u00a74). A store created here is always `draft`.\n\n**The slug is immutable** once the store exists (ADR-0011 \u00a77): send the stored value back\nunchanged, or get a 409 `slug_immutable`. It is required rather than omittable because a\nfull-replacement payload that silently ignores a field is worse than one that refuses it.\n\n**Setting `custom_domain` records an intention and changes nothing about reachability.**\nNothing in this platform serves a custom domain \u2014 no ingress, no TLS termination, no\nhost-based routing \u2014 and nothing here verifies that the merchant owns the name. The response\nsays so: `custom_domain_status` is `unverified` and there is no path off it yet.",
         "operationId": "put_store_api_v1_storefront_store_put",
         "requestBody": {
           "content": {
@@ -1758,18 +1846,70 @@
             },
             "description": "Successful Response"
           },
+          "409": {
+            "description": "A named conflict. `errors[0].code` is one of `slug_immutable` (the store address cannot be changed), `slug_taken`, `custom_domain_taken` (another organization has claimed it \u2014 nothing about that organization is disclosed) or `storefront_exists`."
+          },
           "422": {
+            "description": "A rule refused it. `errors[0].code` is one of `name_required`, `name_too_long`, `name_invalid`, `tagline_too_long`, `tagline_invalid`, `logo_text_too_long`, `logo_text_invalid`, `custom_domain_invalid`, `custom_domain_too_long`, `custom_domain_reserved` or `timezone_invalid`."
+          }
+        },
+        "summary": "Create or update the store's identity and brand",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/store/publish": {
+      "post": {
+        "description": "`storefront.store.settings.write`, floored at ORG. **The act with consequences.**\n\nPublishing is what makes the anonymous serviceability check answer for this store, and with\nit makes that merchant's delivery map readable by anyone who knows the slug \u2014 a deliberate\ndisclosure, accepted because a merchant publishes both on their own website, and not\nreversible once the slug is in circulation (ADR-0010 \u00a74). It is its own endpoint, its own\naudit action and its own control in the UI for exactly that reason.\n\nIdempotent: publishing a published store returns 200 and changes nothing.\n\n**This does not put the store on a custom domain.** Nothing in this platform serves one.",
+        "operationId": "publish_store_api_v1_storefront_store_publish_post",
+        "responses": {
+          "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/StoreOut"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "This organization has no storefront yet."
+          },
+          "409": {
+            "description": "`errors[0].code` is `store_suspended`. A suspended store is suspended by the platform and cannot be published or unpublished from here."
           }
         },
-        "summary": "Create or update the store, and publish or unpublish it",
+        "summary": "Publish the store \u2014 make it reachable by anyone",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/store/unpublish": {
+      "post": {
+        "description": "`storefront.store.settings.write`, floored at ORG.\n\nThe store goes back to `draft` and the anonymous check 404s for it again \u2014 after the slug\ncache's five minutes, which is the same staleness ADR-0010 \u00a713 accepts in the other\ndirection. Idempotent.",
+        "operationId": "unpublish_store_api_v1_storefront_store_unpublish_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "This organization has no storefront yet."
+          },
+          "409": {
+            "description": "`errors[0].code` is `store_suspended`. A suspended store is suspended by the platform and cannot be published or unpublished from here."
+          }
+        },
+        "summary": "Unpublish the store \u2014 take it back to draft",
         "tags": [
           "storefront"
         ]

@@ -1,7 +1,13 @@
-"""Pure serviceability arithmetic. No I/O, no session, no settings, no clock of its own.
+"""Pure rules for the store's identity and its serviceability arithmetic. No I/O, no session,
+no settings, no clock of its own.
 
-Four things live here, and each is here because it is a real algorithm rather than a line of
-glue:
+Five things live here, and each is here because it is a real rule rather than a line of glue:
+
+0. **The store's identity** (ADR-0011) — brand text is trimmed, bounded and refused when it is
+   blank or unrenderable; a custom domain is parsed into a hostname or refused by name; the slug
+   is immutable; and `published` is reached only through a named transition. Note what is
+   *absent*: nothing here escapes anything for HTML, and nothing here verifies that a merchant
+   owns a domain. The first belongs to the renderer, the second does not exist.
 
 1. **Postal-code normalisation and validation.** One country, one validator, one entry in the
    map. Not generalised — a generalisation with one use case is a guess (ADR-0010 §2).
@@ -24,8 +30,13 @@ import re
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from app.models import POSTAL_CODE_LENGTH
-from platform_core.errors import ValidationProblem
+from app.models import (
+    LOGO_TEXT_LENGTH,
+    POSTAL_CODE_LENGTH,
+    STORE_NAME_LENGTH,
+    TAGLINE_LENGTH,
+)
+from platform_core.errors import ConflictProblem, ValidationProblem
 
 #: There is one country, so there is one entry. The column is already wide enough for a UK or
 #: Canadian code, so the second country is a line in this dict and a migration for nobody
@@ -79,6 +90,245 @@ class Rejected(ValidationProblem):
         self.code = code
         self.message = message
         self.lines = lines or []
+
+
+class Conflicted(ConflictProblem):
+    """Refused because something else already holds this value, or because the row's own state
+    forbids the change. A **409 with a name**, which is the whole point.
+
+    The platform's `IntegrityError` handler already turns a unique-constraint violation into a
+    409 — deliberately anonymous, because echoing a constraint name leaks schema detail to
+    whoever is probing. That is right for an unexpected collision and useless for an expected
+    one: "that conflicts with something that already exists" does not tell a merchant *which*
+    field to change, and a client cannot branch on it. So the two collisions this service can
+    actually have — a slug another organization holds, a custom domain another organization has
+    claimed — are caught by name and re-raised with a stable `code`, and nothing about the other
+    tenant is disclosed beyond the fact that the value is taken.
+
+    Same shape as `Rejected` on the wire: `errors[0].code` is the stable string, `detail` is
+    already a sentence. `problem_type` is set per instance so the `type` URI is distinct too.
+    """
+
+    def __init__(self, code: str, message: str, *, field: str) -> None:
+        super().__init__(message, errors=[{"field": field, "code": code, "message": message}])
+        self.code = code
+        self.field = field
+        self.problem_type = code.replace("_", "-")
+
+
+# --------------------------------------------------------------------- the store's identity
+
+#: Whitespace a merchant can paste but nobody can see. Collapsed to one ordinary space so
+#: "Verma   Traders" and "Verma Traders" are the same shop sign, and a pasted non-breaking space
+#: does not become a name that sorts and searches differently from the one on screen.
+_WHITESPACE = re.compile(r"\s+")
+
+#: C0 and C1 control characters, and the Unicode bidirectional overrides — checked **after**
+#: whitespace has been collapsed, so tabs and newlines are already gone. A merchant pasting a
+#: spreadsheet cell gets their name; a bidi override, which is a display-spoofing trick, is
+#: refused, and so is anything else that cannot be drawn.
+#:
+#: **This is not an HTML-escaping scheme and must not grow into one.** Output encoding belongs to
+#: whatever renders the page — the front end owns it, and doing it here would double-escape the
+#: day anything else reads this column (ADR-0011 §6).
+_UNPRINTABLE = re.compile(r"[\x00-\x1f\x7f-\x9f\u200e\u200f\u202a-\u202e\u2066-\u2069]")
+
+_BRAND_LIMITS = {
+    "name": STORE_NAME_LENGTH,
+    "tagline": TAGLINE_LENGTH,
+    "logo_text": LOGO_TEXT_LENGTH,
+}
+
+_REQUIRED_MESSAGES = {
+    "name": "Give the store a name — it is what a buyer sees, and it is not the theme's.",
+    "tagline": "Enter a tagline, or leave it empty.",
+    "logo_text": "Enter the logo text, or leave it empty.",
+}
+
+
+def collapse_whitespace(raw: str) -> str:
+    """Trim the ends and collapse every run of whitespace to one ordinary space.
+
+    Shared with `schemas`, which applies it **before** pydantic checks the length: a name that
+    fits but was pasted with a trailing space is a name that fits, and refusing it with "at most
+    80 characters" would be arguing with a merchant who is looking at 78 letters.
+    """
+    return _WHITESPACE.sub(" ", raw).strip()
+
+
+def clean_brand_text(raw: str | None, *, field: str, required: bool = False) -> str | None:
+    """Trim, collapse whitespace, refuse the unrenderable, and enforce the length.
+
+    **Empty after trimming is not a value.** For `name` it is a refusal — a store with a blank
+    name is a page with a blank header, and a row every admin surface has to invent a label for.
+    For `tagline` and `logo_text` it is `None`: a merchant who clears the box means "there isn't
+    one", and storing `''` would make "cleared" and "never set" two states that render
+    identically and compare differently.
+
+    The limit is checked **after** trimming, so trailing spaces cannot push a name that fits over
+    the edge, and it is the column's own limit rather than a second number — a string that passes
+    here cannot be truncated by the database.
+    """
+    limit = _BRAND_LIMITS[field]
+    if raw is None:
+        if required:
+            raise Rejected(f"{field}_required", _REQUIRED_MESSAGES[field], field=field)
+        return None
+    value = collapse_whitespace(raw)
+    if _UNPRINTABLE.search(value):
+        raise Rejected(
+            f"{field}_invalid",
+            "That contains characters that cannot be shown on a page. Remove them and try again.",
+            field=field,
+        )
+    if not value:
+        if required:
+            raise Rejected(f"{field}_required", _REQUIRED_MESSAGES[field], field=field)
+        return None
+    if len(value) > limit:
+        raise Rejected(
+            f"{field}_too_long",
+            f"That is {len(value)} characters; the limit is {limit}.",
+            field=field,
+        )
+    return value
+
+
+#: A hostname label: 1 to 63 characters, letters, digits and hyphens, never starting or ending
+#: with a hyphen. The same rule the column's check constraint states.
+_DOMAIN_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+#: RFC 1035's ceiling for a fully-qualified name. The column is two characters wider, so a later
+#: decision about internationalised domains is a change here rather than an ALTER.
+MAX_CUSTOM_DOMAIN_LENGTH = 253
+
+#: Characters that mean the merchant pasted a URL rather than typed a hostname, plus the two
+#: (`*`, `_`) that mean they typed something a Host header will never carry.
+_NOT_IN_A_HOSTNAME = "/\\ \t@:?#*_"
+
+#: Hostnames this platform will not let a merchant claim, **because nothing verifies ownership**
+#: (ADR-0011 §5). A claim is stored on the word of whoever typed it, so the one claim that must
+#: not be storable is the platform's own: an unverified row naming `api.opsgrids.com` is a squat
+#: that becomes live routing the day somebody builds host-based routing and trusts this column.
+#: Everything else — including another merchant's domain — is bounded by uniqueness and settled
+#: by verification, which is the thing that does not exist yet.
+RESERVED_DOMAIN_SUFFIXES = ("opsgrids.com", "opsgrids.dev", "opsgrids.local", "localhost")
+
+
+def normalise_custom_domain(raw: str | None) -> str | None:
+    """A hostname, lower-cased, or `None`. Raises `Rejected` on anything else.
+
+    **This validates a shape and nothing more.** It does not resolve the name, does not ask DNS
+    whether it exists, and above all does not establish that the merchant owns it — no code in
+    this platform does, and none is planned in this slice. What a merchant gets by setting this
+    is a stored intention (ADR-0011 §5).
+
+    Refused deliberately: a scheme (`https://…`), a path, a port, credentials, a wildcard, a
+    single label (`localhost`), an IP address, and any non-ASCII character — the last with a
+    message naming punycode, because silently accepting `köln.de` and storing a form no Host
+    header will ever carry is worse than asking for `xn--kln-sna.de`.
+    """
+    if raw is None:
+        return None
+    value = raw.strip().lower().rstrip(".")
+    if not value:
+        return None
+    if len(value) > MAX_CUSTOM_DOMAIN_LENGTH:
+        raise Rejected(
+            "custom_domain_too_long",
+            f"A domain name is at most {MAX_CUSTOM_DOMAIN_LENGTH} characters.",
+            field="custom_domain",
+        )
+    if not value.isascii():
+        raise Rejected(
+            "custom_domain_invalid",
+            "Enter the domain in its ASCII (punycode) form — for example xn--kln-sna.de rather "
+            "than köln.de. That is the form a browser actually sends.",
+            field="custom_domain",
+        )
+    if any(ch in value for ch in _NOT_IN_A_HOSTNAME):
+        raise Rejected(
+            "custom_domain_invalid",
+            "Enter the domain on its own — no https://, no path, no port, no wildcard. For "
+            "example shop.example.com.",
+            field="custom_domain",
+        )
+    labels = value.split(".")
+    if len(labels) < 2 or not all(_DOMAIN_LABEL.fullmatch(label) for label in labels):
+        raise Rejected(
+            "custom_domain_invalid",
+            "That does not look like a domain name. Use at least two parts, letters, digits and "
+            "hyphens only — for example shop.example.com.",
+            field="custom_domain",
+        )
+    if labels[-1].isdigit():
+        raise Rejected(
+            "custom_domain_invalid",
+            "Enter a domain name rather than an IP address.",
+            field="custom_domain",
+        )
+    if any(value == suffix or value.endswith(f".{suffix}") for suffix in RESERVED_DOMAIN_SUFFIXES):
+        raise Rejected(
+            "custom_domain_reserved",
+            "That domain belongs to the platform and cannot be claimed. Use a domain you control.",
+            field="custom_domain",
+        )
+    return value
+
+
+def assert_slug_is_unchanged(current: str, submitted: str) -> None:
+    """A slug is set once and never edited (ADR-0011 §7).
+
+    It is in every link a merchant has published, it is what an anonymous check names in its
+    request body, it keys the buyer's `localStorage`, and the slug→store lookup is cached for
+    five minutes — so a rename 404s every buyer for the length of that TTL, breaks every shared
+    link permanently, and frees the old name for somebody else to claim and inherit the traffic.
+    None of that is visible from the form, which is why the refusal is here rather than in a
+    warning dialog.
+
+    The settings form still **sends** the slug, because the payload is a full replacement and a
+    field that silently ignores what you send it is worse than one that refuses.
+    """
+    if submitted != current:
+        raise Conflicted(
+            "slug_immutable",
+            f"The store address {current!r} cannot be changed. It is in every link that has been "
+            "shared, and it is what a buyer's app asks for by name — renaming it would break "
+            "both, permanently. Ask support if you need it moved.",
+            field="slug",
+        )
+
+
+def _suspended() -> Conflicted:
+    return Conflicted(
+        "store_suspended",
+        "This store is suspended, so it cannot be published or unpublished from here. "
+        "Suspension is set by the platform, not by the store — contact support.",
+        field="status",
+    )
+
+
+def assert_publishable(status: str) -> None:
+    """`draft → published`, or `published → published`. Nothing else may reach `published`.
+
+    **Publishing is the act that puts a store in front of the internet** — and with it that
+    merchant's delivery map, readable by anyone who knows the slug — so it is its own named
+    transition rather than a value on a settings form. A save that can go live by accident is
+    the failure a dropdown produces by default (ADR-0011 §4).
+    """
+    if status == "suspended":
+        raise _suspended()
+
+
+def assert_unpublishable(status: str) -> None:
+    """`published → draft`, or `draft → draft`. A suspended store does not self-rescue.
+
+    `suspended` is the entitlement-lapse consumer's state (ADR-0010 §4), and that consumer is
+    still unowned. Letting a merchant leave the state would make the lapse mechanism advisory
+    the day somebody builds it, so both transitions refuse it by name.
+    """
+    if status == "suspended":
+        raise _suspended()
 
 
 # --------------------------------------------------------------------- postal codes

@@ -7,9 +7,10 @@ foreign keys, because only *cross-schema* ones are banned.
 Four tables, and what each is for:
 
 * **storefronts** — the product's identity row, and the only thing a stranger's request can
-  start from. This ADR finishes four of its columns (`slug`, `status`, `currency`, `timezone`);
-  the store document, theme, pages and catalogue are a later ADR's and are deliberately not
-  stubbed here.
+  start from. ADR-0010 finished `slug`, `status`, `currency` and `timezone`; ADR-0011 adds the
+  **brand** (`name`, `tagline`, `logo_text`) and makes `custom_domain` writable as a *stated
+  intention*. The store document, theme, pages and catalogue are still a later ADR's and are
+  deliberately not stubbed here.
 * **delivery_zones** — a named bag of postal codes plus the behaviour that applies to all of
   them: the mode, the promise, the (display-only) fee and minimum order value.
 * **zone_postal_codes** — one row per postal code. **One postal code maps to exactly one zone
@@ -51,6 +52,7 @@ from sqlalchemy import (
     String,
     Time,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -65,7 +67,24 @@ SCHEMA = "storefront"
 #: A store is invisible to the internet until it is `published`, so a merchant maps zones and
 #: uses the tester before any buyer can ask. `suspended` exists for the entitlement-lapse
 #: consumer ADR-0010 §4 names, describes, and explicitly does **not** build or own.
+#:
+#: **These are states, not a field a merchant types** (ADR-0011 §4). `draft ⇄ published` are the
+#: two a merchant may reach, and only through the named `publish` / `unpublish` transitions —
+#: never as a value on the settings form, because a settings save that can silently put a store
+#: in front of the internet is the failure a dropdown produces by default. `suspended` belongs
+#: to the entitlement-lapse consumer; no merchant-facing route can set it or leave it.
 STORE_STATUSES = ("draft", "published", "suspended")
+
+#: How far a claimed custom domain has got. **Only `unverified` is reachable today**, because
+#: nothing in this platform serves a custom domain: there is no ingress, no TLS termination and
+#: no host-based routing anywhere in the repository, and this column is read by nothing. The
+#: value is stored so a merchant reading their own settings cannot conclude their site is live
+#: (ADR-0011 §5).
+#:
+#: `verified` is in the enum from day one and refused by the writer, exactly as `SLOTTED` is in
+#: `ZONE_MODES`: the hosting slice that adds DNS verification is then a validation change and a
+#: new endpoint, not a migration against a table with live tenant rows.
+CUSTOM_DOMAIN_STATUSES = ("unverified", "verified")
 
 #: Named for what the **buyer does**, not for merchant marketing words like "quick" and
 #: "standard", which change and would then be either wrong in the enum or migrated in every
@@ -90,6 +109,23 @@ DEMAND_OUTCOMES = ("SERVED", "NO_MAPPING", "EXCLUDED", "ZONE_INACTIVE")
 #: rather than a migration (ADR-0010 §2). The validator itself is **not** generalised today.
 POSTAL_CODE_LENGTH = 16
 
+#: Brand text lengths. All three are **merchant-authored strings rendered into a public page**,
+#: so each is bounded here, in the column, and in the schema — a limit that exists only in
+#: pydantic is a limit a backfill walks past (ADR-0011 §6).
+#:
+#: The numbers are the renderer's, not round numbers: the header wordmark takes
+#: `logoText.slice(0, 3)` and the favicon takes two characters, so twelve is already generous
+#: for a wordmark and small enough that it cannot become a sentence. A store name is a shop
+#: sign, and a tagline is one line of copy under it.
+STORE_NAME_LENGTH = 80
+TAGLINE_LENGTH = 160
+LOGO_TEXT_LENGTH = 12
+
+#: 253 is the longest a fully-qualified domain name can be. The column is wider than the
+#: validator so a later internationalised-domain decision (store the punycode form, or store
+#: both) is a validator change rather than an ALTER on a live table.
+CUSTOM_DOMAIN_LENGTH = 255
+
 
 class Base(_Base):
     """Schema-scoped declarative base for this service."""
@@ -101,10 +137,17 @@ Base.metadata.schema = SCHEMA
 
 
 class Storefront(Base, TenantBase):
-    """One merchant's published store identity.
+    """One merchant's store identity — **who the store is**, never how it looks.
 
-    Four finished columns and one placeholder. The store document, theme, pages and catalogue
-    are the storefront-document ADR's, which **extends** this table rather than replacing it.
+    ADR-0011 moves the brand here. `name`, `tagline` and `logo_text` lived in `StoreDoc.brand`
+    on the front end, inside the *theme document* — which `adoptTheme` forks. A store's name is
+    its identity, not its styling, and a property of the theme a merchant happened to pick is a
+    property they can lose by picking another one. What is left in the theme document, once the
+    brand has gone, is genuinely a theme; it moves to `/api/v1/storefront/theme`, which is
+    reserved by ADR-0011 §3 and **owned and built by the storefront-document ADR, not here**.
+
+    The store document, pages and catalogue are still that ADR's, and it **extends** this table
+    rather than replacing it.
     """
 
     __tablename__ = "storefronts"
@@ -118,7 +161,24 @@ class Storefront(Base, TenantBase):
     #: Slugs are enumerable by anyone, deliberately and irreversibly: a merchant publishes both
     #: the slug and the delivery map on their own website to every visitor. It is a shopfront
     #: sign.
+    #:
+    #: **The slug is immutable once the row exists** (ADR-0011 §7). It is in every published
+    #: link, it is what an anonymous check names in its request body, it keys the buyer's
+    #: `localStorage`, and it is cached for five minutes — so a rename 404s every buyer for the
+    #: length of that TTL and breaks every link that was ever shared, permanently. The writer
+    #: refuses a change; this column stays plain because a later multi-store or
+    #: rename-with-redirect ADR is what should be allowed to relax it.
     slug: Mapped[str] = mapped_column(String(63), nullable=False)
+    #: The store's name — **the identity, not the theme's**. Required: a store with no name is a
+    #: page with a blank header, and every surface that lists stores has to invent a label.
+    name: Mapped[str] = mapped_column(String(STORE_NAME_LENGTH), nullable=False)
+    #: One line under the name. Null means the merchant has not written one; the renderer
+    #: decides what to show instead, and it is never this service's business.
+    tagline: Mapped[str | None] = mapped_column(String(TAGLINE_LENGTH))
+    #: The wordmark in the header. Null falls back to `name` **in the renderer** — stored null
+    #: rather than copied from the name, so a later name change does not leave a stale wordmark
+    #: nobody remembers typing.
+    logo_text: Mapped[str | None] = mapped_column(String(LOGO_TEXT_LENGTH))
     #: draft | published | suspended. The anonymous route 404s unless this is `published`.
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
     #: ISO-4217. Every `*_minor` amount on a zone is in this currency (ADR-0000 §8).
@@ -127,9 +187,21 @@ class Storefront(Base, TenantBase):
     #: Singapore looking at a Mumbai store must see the Mumbai answer, so the browser's timezone
     #: is never an input (ADR-0000 "Also settled").
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Asia/Kolkata")
-    #: Slice 2. Nullable, unindexed, and unread by anything in slice 1 — its unique partial
-    #: index lands with custom-domain resolution, per ADR-0010 §10's index-timing register.
-    custom_domain: Mapped[str | None] = mapped_column(String(255))
+    #: **A stated intention, not configuration that takes effect** (ADR-0011 §5).
+    #:
+    #: Nothing in this repository serves a custom domain: there is no ingress, no TLS
+    #: termination and no host-based routing, and no deployment at all — a merchant's store
+    #: exists at `localhost:4400/live` and nowhere else. Setting this records the domain the
+    #: merchant intends to use. It changes nothing about reachability, and `custom_domain_status`
+    #: is what stops a merchant concluding otherwise from reading their own settings back.
+    #:
+    #: Globally unique when present, across every tenant — see `__table_args__`.
+    custom_domain: Mapped[str | None] = mapped_column(String(CUSTOM_DOMAIN_LENGTH))
+    #: `unverified` whenever `custom_domain` is set, null whenever it is not. Nothing can move
+    #: it off `unverified` today, and that honest dead end is the point: **serving a domain
+    #: because somebody typed it into a form is how one merchant takes another's traffic**, so
+    #: verification is a precondition of ever serving one, and it does not exist yet.
+    custom_domain_status: Mapped[str | None] = mapped_column(String(16))
 
     __table_args__ = (
         # **The one index in this design that does not lead with the tenant column**, and the
@@ -151,6 +223,53 @@ class Storefront(Base, TenantBase):
         ),
         CheckConstraint("currency ~ '^[A-Z]{3}$'", name="currency_iso4217"),
         CheckConstraint("slug ~ '^[a-z0-9][a-z0-9-]{1,62}$'", name="slug_shape"),
+        # **A custom domain is claimed once, platform-wide.** Two tenants naming the same domain
+        # is the one collision this table can have across organizations, and it is settled here
+        # rather than by whoever writes the hosting slice: the loser gets a named 409
+        # (`custom_domain_taken`), not a 500 and not a second ambiguous row.
+        #
+        # Partial, because null is not a claim: every storefront that has named no domain would
+        # otherwise collide with every other one. Deliberately brought forward from ADR-0010
+        # §10's register, which put it in slice 2 — the register's condition was "with custom
+        # domains", and the field becomes merchant-writable here (ADR-0011 §5).
+        Index(
+            "uq_storefronts_custom_domain",
+            "custom_domain",
+            unique=True,
+            postgresql_where=text("custom_domain IS NOT NULL"),
+        ),
+        # Brand text is stored trimmed and non-blank, or not at all. `'   '` is not a tagline,
+        # and a value that differs from its own trimmed form is a value that renders with a gap
+        # nobody can see in the form they typed it into. The writer trims first; this is what
+        # makes it true for a backfill and a hand-written UPDATE as well.
+        CheckConstraint(
+            "length(name) > 0 AND name = btrim(name)",
+            name="name_is_trimmed",
+        ),
+        CheckConstraint(
+            "tagline IS NULL OR (length(tagline) > 0 AND tagline = btrim(tagline))",
+            name="tagline_is_trimmed",
+        ),
+        CheckConstraint(
+            "logo_text IS NULL OR (length(logo_text) > 0 AND logo_text = btrim(logo_text))",
+            name="logo_text_is_trimmed",
+        ),
+        # A domain is stored lower-cased, dot-separated, at least two labels, no scheme, no port
+        # and no path — the parser's rule written again where a backfill cannot skip it.
+        CheckConstraint(
+            "custom_domain IS NULL OR custom_domain ~ "
+            "'^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'",
+            name="custom_domain_shape",
+        ),
+        # The status exists **because** there is a domain, and only then. A domain with no
+        # status would read as verified to anyone writing the hosting slice; a status with no
+        # domain is a claim about nothing.
+        CheckConstraint(
+            "(custom_domain IS NULL AND custom_domain_status IS NULL)"
+            " OR (custom_domain IS NOT NULL"
+            " AND custom_domain_status IN ('unverified', 'verified'))",
+            name="custom_domain_status",
+        ),
     )
 
 

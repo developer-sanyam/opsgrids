@@ -38,6 +38,10 @@ ZONE_ID = uuid.uuid4()
 ROUTES: list[tuple[str, str, str]] = [
     ("GET", "/api/v1/storefront/store", STORE_READ),
     ("PUT", "/api/v1/storefront/store", STORE_WRITE),
+    # The two named transitions. `settings.write` rather than a fifth permission: publishing is
+    # the store's own setting with the largest consequence, not a different job (ADR-0011 §4).
+    ("POST", "/api/v1/storefront/store/publish", STORE_WRITE),
+    ("POST", "/api/v1/storefront/store/unpublish", STORE_WRITE),
     ("GET", "/api/v1/storefront/delivery/zones", ZONE_READ),
     ("POST", "/api/v1/storefront/delivery/zones", ZONE_WRITE),
     (
@@ -66,7 +70,7 @@ ROUTES: list[tuple[str, str, str]] = [
 ]
 
 _BODIES: dict[tuple[str, str], dict] = {
-    ("PUT", "/api/v1/storefront/store"): {"slug": "a-store"},
+    ("PUT", "/api/v1/storefront/store"): {"slug": "a-store", "name": "A Store"},
     ("POST", "/api/v1/storefront/delivery/zones"): {
         "code": "Z",
         "name": "Z",

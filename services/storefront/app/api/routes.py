@@ -99,14 +99,44 @@ async def info() -> ServiceInfo:
 # ------------------------------------------------------------------ the store
 
 
+#: Every named refusal the two store-identity routes can produce, written into the OpenAPI
+#: document rather than left in prose. **ADR-0010's errata record that an ADR describing a wire
+#: format without printing it cost a rebuild**; the same applies to a route's failure modes, and
+#: the generated document is the contract a client branches on.
+_STORE_WRITE_ERRORS: dict[int | str, dict[str, Any]] = {
+    409: {
+        "description": (
+            "A named conflict. `errors[0].code` is one of `slug_immutable` (the store address "
+            "cannot be changed), `slug_taken`, `custom_domain_taken` (another organization has "
+            "claimed it — nothing about that organization is disclosed) or `storefront_exists`."
+        )
+    },
+    422: {
+        "description": (
+            "A rule refused it. `errors[0].code` is one of `name_required`, `name_too_long`, "
+            "`name_invalid`, `tagline_too_long`, `tagline_invalid`, `logo_text_too_long`, "
+            "`logo_text_invalid`, `custom_domain_invalid`, `custom_domain_too_long`, "
+            "`custom_domain_reserved` or `timezone_invalid`."
+        )
+    },
+}
+
+
 @router.get(
     "/storefront/store",
     response_model=StoreOut,
-    summary="The store's published identity",
+    summary="The store's identity — name, address, brand and status",
     dependencies=[Entitled],
 )
 async def read_store(session: SessionDep, ctx: StoreRead) -> StoreOut:
-    """`storefront.store.settings.read`, floored at ORG."""
+    """`storefront.store.settings.read`, floored at ORG.
+
+    **This is the identity row, not the theme document.** The two collided on this path: the
+    SPA's `getStore()` called it expecting a `StoreDoc`. Identity stayed, because it is in the
+    published schema and both the delivery admin and the merchant surface read it; the theme
+    document moved to `/api/v1/storefront/theme`, which ADR-0011 §3 reserves and the
+    storefront-document ADR builds. Nothing serves that path yet.
+    """
     store = await selectors.get_storefront(session, ctx)
     if store is None:
         raise NotFoundProblem("This organization has no storefront yet.")
@@ -116,30 +146,99 @@ async def read_store(session: SessionDep, ctx: StoreRead) -> StoreOut:
 @router.put(
     "/storefront/store",
     response_model=StoreOut,
-    summary="Create or update the store, and publish or unpublish it",
+    summary="Create or update the store's identity and brand",
     dependencies=[Entitled],
+    responses=_STORE_WRITE_ERRORS,
 )
 async def put_store(
     payload: StorePut, session: SessionDep, ctx: StoreWrite, request: Request
 ) -> StoreOut:
     """`storefront.store.settings.write`, floored at ORG.
 
-    **Publishing is the act that makes a store visible to the internet**, and with it that
-    merchant's delivery map readable by anyone who knows the slug. Accepted deliberately — a
-    merchant publishes both on their own website, and it is a shopfront sign — but it is not
-    reversible once slugs are in circulation, and the UI has to say so on the control.
+    **This route cannot publish a store.** `status` is not on the payload: a save that could put
+    a store in front of the internet as a side effect of editing a tagline is the failure a
+    dropdown produces by default, so publishing is `POST /storefront/store/publish` and nothing
+    else (ADR-0011 §4). A store created here is always `draft`.
 
-    A slug already taken by another organization is a 409 through the platform's integrity
-    handler, which deliberately does not echo the constraint name.
+    **The slug is immutable** once the store exists (ADR-0011 §7): send the stored value back
+    unchanged, or get a 409 `slug_immutable`. It is required rather than omittable because a
+    full-replacement payload that silently ignores a field is worse than one that refuses it.
+
+    **Setting `custom_domain` records an intention and changes nothing about reachability.**
+    Nothing in this platform serves a custom domain — no ingress, no TLS termination, no
+    host-based routing — and nothing here verifies that the merchant owns the name. The response
+    says so: `custom_domain_status` is `unverified` and there is no path off it yet.
     """
     store = await services.put_storefront(session, ctx, payload, request=request)
-    await session.flush()
     # `updated_at` carries a SQL `onupdate`, so the ORM expires it after an UPDATE and reading it
     # would emit a lazy SELECT from outside the async driver's context. One explicit round trip
     # here is the house answer (`services/support`), and it means the response's timestamp is the
     # one actually stored rather than the one the row held before the write.
     await session.refresh(store)
     return StoreOut.model_validate(store)
+
+
+async def _transition(
+    session: AsyncSession, ctx: ScopeContext, *, target: str, request: Request
+) -> StoreOut:
+    store = await selectors.get_storefront(session, ctx)
+    if store is None:
+        raise NotFoundProblem("This organization has no storefront yet. Create the store first.")
+    store = await services.set_store_status(session, ctx, store, target=target, request=request)
+    await session.refresh(store)
+    return StoreOut.model_validate(store)
+
+
+#: Shared by both transitions: the only way either fails on a store that exists.
+_TRANSITION_ERRORS: dict[int | str, dict[str, Any]] = {
+    404: {"description": "This organization has no storefront yet."},
+    409: {
+        "description": (
+            "`errors[0].code` is `store_suspended`. A suspended store is suspended by the "
+            "platform and cannot be published or unpublished from here."
+        )
+    },
+}
+
+
+@router.post(
+    "/storefront/store/publish",
+    response_model=StoreOut,
+    summary="Publish the store — make it reachable by anyone",
+    dependencies=[Entitled],
+    responses=_TRANSITION_ERRORS,
+)
+async def publish_store(session: SessionDep, ctx: StoreWrite, request: Request) -> StoreOut:
+    """`storefront.store.settings.write`, floored at ORG. **The act with consequences.**
+
+    Publishing is what makes the anonymous serviceability check answer for this store, and with
+    it makes that merchant's delivery map readable by anyone who knows the slug — a deliberate
+    disclosure, accepted because a merchant publishes both on their own website, and not
+    reversible once the slug is in circulation (ADR-0010 §4). It is its own endpoint, its own
+    audit action and its own control in the UI for exactly that reason.
+
+    Idempotent: publishing a published store returns 200 and changes nothing.
+
+    **This does not put the store on a custom domain.** Nothing in this platform serves one.
+    """
+    return await _transition(session, ctx, target="published", request=request)
+
+
+@router.post(
+    "/storefront/store/unpublish",
+    response_model=StoreOut,
+    summary="Unpublish the store — take it back to draft",
+    dependencies=[Entitled],
+    responses=_TRANSITION_ERRORS,
+)
+async def unpublish_store(session: SessionDep, ctx: StoreWrite, request: Request) -> StoreOut:
+    """`storefront.store.settings.write`, floored at ORG.
+
+    The store goes back to `draft` and the anonymous check 404s for it again — after the slug
+    cache's five minutes, which is the same staleness ADR-0010 §13 accepts in the other
+    direction. Idempotent.
+    """
+    return await _transition(session, ctx, target="draft", request=request)
 
 
 # ------------------------------------------------------------------ zones

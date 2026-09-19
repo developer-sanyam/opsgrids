@@ -24,72 +24,8 @@ ZONES = "/api/v1/storefront/delivery/zones"
 IMPORT = "/api/v1/storefront/delivery/postal-codes/import"
 CHECK = "/api/v1/storefront/delivery/check"
 DEMAND = "/api/v1/storefront/delivery/demand"
-STORE = "/api/v1/storefront/store"
 
 CSV_HEADERS = {"content-type": "text/csv"}
-
-
-async def _audit_actions(session, org_id: uuid.UUID) -> list[str]:
-    rows = (
-        await session.execute(
-            select(AuditLog.action)
-            .where(AuditLog.organization_id == org_id)
-            .order_by(AuditLog.at.asc())
-        )
-    ).scalars()
-    return list(rows)
-
-
-class TestTheStore:
-    async def test_put_creates_then_updates_the_single_storefront(
-        self, client, as_principal, org_id: uuid.UUID, slug: str
-    ) -> None:
-        with as_principal(all_perms(org_id)):
-            created = await client.put(
-                STORE, json={"slug": slug, "status": "draft", "timezone": "Asia/Kolkata"}
-            )
-            published = await client.put(
-                STORE, json={"slug": slug, "status": "published", "timezone": "Asia/Kolkata"}
-            )
-            read = await client.get(STORE)
-
-        assert created.status_code == 200
-        assert created.json()["status"] == "draft"
-        assert published.json()["status"] == "published"
-        assert read.json()["id"] == created.json()["id"]
-
-    async def test_publishing_is_audited_as_its_own_act(
-        self, client, as_principal, session, org_id: uuid.UUID, slug: str
-    ) -> None:
-        """A status change is what makes a store visible to the internet — and with it that
-        merchant's delivery map readable by anyone who knows the slug. It is not a field inside a
-        generic update row (ADR-0010 §14)."""
-        with as_principal(all_perms(org_id)):
-            await client.put(STORE, json={"slug": slug, "status": "draft"})
-            await client.put(STORE, json={"slug": slug, "status": "published"})
-            await client.put(STORE, json={"slug": slug, "status": "draft"})
-
-        assert await _audit_actions(session, org_id) == [
-            "storefront.created",
-            "storefront.published",
-            "storefront.unpublished",
-        ]
-
-    async def test_an_unknown_timezone_is_refused_in_the_merchants_words(
-        self, client, as_principal, org_id: uuid.UUID, slug: str
-    ) -> None:
-        """A bad IANA name would silently produce promised dates in UTC — wrong by hours, and
-        perfectly well-formed."""
-        with as_principal(all_perms(org_id)):
-            response = await client.put(STORE, json={"slug": slug, "timezone": "Mars/Olympus_Mons"})
-        assert response.status_code == 422
-
-    async def test_an_unknown_field_is_refused(
-        self, client, as_principal, org_id: uuid.UUID, slug: str
-    ) -> None:
-        with as_principal(all_perms(org_id)):
-            response = await client.put(STORE, json={"slug": slug, "theme": "retail"})
-        assert response.status_code == 422
 
 
 class TestZones:

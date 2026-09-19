@@ -58,21 +58,45 @@ async def seed_store(
     org_id: uuid.UUID,
     slug: str,
     *,
+    name: str = "Verma Traders",
+    tagline: str | None = None,
+    logo_text: str | None = None,
     status: str = "published",
     currency: str = "INR",
     timezone: str = "Asia/Kolkata",
+    custom_domain: str | None = None,
 ) -> Storefront:
-    """Write a storefront on the BYPASSRLS role, committed, as the merchant already would have."""
+    """Write a storefront on the BYPASSRLS role, committed, as the merchant already would have.
+
+    `custom_domain` is seeded here rather than through the API in the tests that need another
+    organization to already hold a domain — which is the only way to reach the cross-tenant
+    collision, because the colliding row is invisible to the tenant that collides with it.
+    """
     store = Storefront(
         organization_id=org_id,
         slug=slug,
+        name=name,
+        tagline=tagline,
+        logo_text=logo_text,
         status=status,
         currency=currency,
         timezone=timezone,
+        custom_domain=custom_domain,
+        custom_domain_status="unverified" if custom_domain else None,
     )
     admin_session.add(store)
     await admin_session.commit()
     return store
+
+
+def store_payload(slug: str, **overrides: object) -> dict[str, object]:
+    """The smallest valid `PUT /storefront/store` body, plus whatever the test is testing.
+
+    `name` is required and `status` is **not a field** — publishing is its own transition
+    (ADR-0011 §4) — so a payload built by hand in twenty places would encode both rules twenty
+    times and drift from the schema the first time one of them changed.
+    """
+    return {"slug": slug, "name": "Verma Traders", **overrides}
 
 
 async def seed_zone(

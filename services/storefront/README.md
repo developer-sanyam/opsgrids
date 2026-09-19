@@ -2,7 +2,9 @@
 
 Part of the OpsGrids platform. Owns the `storefront` schema, port **8174**, product key
 **`storefront`**. Built by [ADR-0010](../../docs/adr/0010-delivery-serviceability-and-slots.md),
-slice 1.
+slice 1, and extended by
+[ADR-0011](../../docs/adr/0011-store-identity-brand-domain-and-publishing.md) (the store's brand,
+its custom-domain claim, and publishing as a named transition).
 
 ```bash
 make run SERVICE=storefront PORT=8174    # API
@@ -24,7 +26,7 @@ buyer catalogue, the cart and the order engine are each their own ADR.
 
 | Table | What it is |
 |---|---|
-| `storefronts` | The product's identity row: `slug`, `status`, `currency`, `timezone`. One per organization in slice 1. `custom_domain` is a slice-2 placeholder. |
+| `storefronts` | The product's identity row: `slug`, `name`, `tagline`, `logo_text`, `status`, `currency`, `timezone`, and a `custom_domain` **claim** with its `custom_domain_status`. One per organization. |
 | `delivery_zones` | A named set of postal codes plus the behaviour for all of them — mode, promise, and the **display-only** fee and minimum order value. |
 | `zone_postal_codes` | One row per postal code. `UNIQUE (organization_id, postal_code)`: one postal code, exactly one zone, no precedence rule. |
 | `serviceability_demand` | A daily counter — `(org, date, postal code, outcome, checks)` — not a log. The public endpoint is an unauthenticated write, so a row per check would be unbounded. |
@@ -44,7 +46,7 @@ buyer catalogue, the cart and the order engine are each their own ADR.
 nothing under row-level security, and every buyer in the world is told the store does not deliver
 to them — HTTP 200, no error, no log.
 
-## Three rules a change here must not break
+## Five rules a change here must not break
 
 1. **One chokepoint.** Every serviceability answer — public, merchant, and eventually order
    placement — is produced by `selectors.resolve_serviceability`, inside a tenant-bound
@@ -56,6 +58,22 @@ to them — HTTP 200, no error, no log.
 3. **Variables never go in a public path.** `GatewayPolicy.public_paths` is an exact-path
    frozenset and `full_path` excludes the query string, so `/public/store/{slug}` is not
    expressible. Every anonymous endpoint carries its variables in the query string or the body.
+4. **A settings save cannot publish a store.** `status` is not on `PUT /storefront/store` at all;
+   `POST /storefront/store/publish` and `.../unpublish` are the only ways it moves, and
+   `suspended` is refused in both directions (ADR-0011 §4).
+5. **A custom domain is a stated intention, never an address.** Nothing in this repository serves
+   one — there is no ingress, no TLS termination and no host-based routing — and nothing verifies
+   that a merchant owns the name they typed. `custom_domain_status` is `unverified` and there is
+   no path off it. **Verification is a precondition of ever serving a domain**, because serving
+   one on the strength of a form submission is how one merchant takes another's traffic
+   (ADR-0011 §5).
+
+## `/storefront/store` is the identity row. The theme document is `/storefront/theme`
+
+The SPA's `getStore()` called `/storefront/store` expecting the theme `StoreDoc`; this service
+answers it with the identity row. Identity kept the path — it is in the published schema and two
+surfaces read it — and the theme document moves to **`/api/v1/storefront/theme`**, which
+ADR-0011 §3 reserves and the storefront-document ADR builds. **Nothing serves that path yet.**
 
 ## Publishes
 

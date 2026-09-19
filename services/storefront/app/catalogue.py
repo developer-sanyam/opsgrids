@@ -130,16 +130,21 @@ STOREFRONT = PermissionCatalogue(
             "store",
             "settings",
             "read",
-            "See the store's published identity — its slug, status, currency and timezone",
+            "See the store's identity — its name, tagline, logo text, address, status, "
+            "currency, timezone and custom-domain claim",
             "ORG",
             "ORG",
         ),
+        # Publishing stays on this permission rather than getting a fifth: it is the store's own
+        # setting with the largest consequence, not a different job, and nobody has asked for an
+        # edit-the-brand-but-not-publish role (ADR-0011 §4). The trade, plainly: whoever can
+        # rename the store can put it in front of the internet.
         PermissionSpec(
             "store",
             "settings",
             "write",
-            "Change the store's identity, and publish or unpublish it — the act that makes a "
-            "store visible to the internet",
+            "Change the store's name, brand and settings, claim a custom domain, and publish or "
+            "unpublish the store — the act that makes it visible to anyone",
             "ORG",
             "ORG",
         ),

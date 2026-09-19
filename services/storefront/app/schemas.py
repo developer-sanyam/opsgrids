@@ -19,9 +19,38 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+
+from app import domain
+
+# The lengths are the column's, imported rather than repeated: a limit that disagrees with the
+# column is a 500 waiting for the first merchant who reaches it.
+from app.models import (
+    CUSTOM_DOMAIN_LENGTH,
+    LOGO_TEXT_LENGTH,
+    STORE_NAME_LENGTH,
+    TAGLINE_LENGTH,
+)
+
+
+def _collapsed(value: Any) -> Any:
+    """Trim and collapse a brand string **before** its length is checked.
+
+    Otherwise a name of exactly the limit, pasted with a trailing space, is refused with "at
+    most 80 characters" while the merchant is looking at 78 letters. `domain.clean_brand_text`
+    applies the same rule again on the way to the database — this one exists so the *published
+    limit* and the *stored limit* are the same number rather than two that differ by whatever
+    whitespace was in the paste buffer.
+    """
+    return domain.collapse_whitespace(value) if isinstance(value, str) else value
+
+
+#: Brand text as it arrives: trimmed, collapsed, then bounded by the column's own limit. The
+#: bound is in the OpenAPI document (`maxLength`) so a client can enforce it in the form rather
+#: than discovering it on submit.
+BrandText = Annotated[str, BeforeValidator(_collapsed)]
 
 #: Every mode the column's check constraint allows — including `SLOTTED`, which slice 1 will not
 #: store. **The type is deliberately permissive and `domain.assert_mode_is_available` is what
@@ -149,36 +178,147 @@ class DeliveryCheckIn(BaseModel):
 
 
 class StoreOut(BaseModel):
+    """The store's identity — **who the store is, not how it looks**.
+
+    The brand (`name`, `tagline`, `logo_text`) is here rather than in the theme document,
+    because a store's name is its identity and not a property of the theme somebody picked
+    (ADR-0011 §2). The theme document — tokens, pages, sections — is a separate resource at
+    `/api/v1/storefront/theme`, reserved by ADR-0011 §3 and **not served by this service yet**.
+
+    Every string here is **merchant-authored text that will be rendered into a public page**.
+    It is stored trimmed, bounded and free of control characters; it is **not** HTML-escaped,
+    and escaping it here would be wrong. Output encoding belongs to whatever renders the page.
+    """
+
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    #: Immutable once set (ADR-0011 §7). Changing it on a PUT is a 409 `slug_immutable`.
     slug: str
-    status: Literal["draft", "published", "suspended"]
+    #: The store's name. Always present and never blank.
+    name: str
+    tagline: str | None
+    #: The header wordmark. Null means the renderer falls back to `name` — this service does not
+    #: copy one into the other, so a later name change cannot leave a stale wordmark behind.
+    logo_text: str | None
+    status: Annotated[
+        Literal["draft", "published", "suspended"],
+        Field(
+            description=(
+                "`draft` is invisible to buyers; `published` makes the anonymous serviceability "
+                "check answer for this store. Both are reached only through "
+                "`POST /storefront/store/publish` and `.../unpublish`. `suspended` is set by the "
+                "platform and no merchant route can set or leave it."
+            )
+        ),
+    ]
     currency: str
     timezone: str
-    #: Slice 2. Always null today; present so the shape does not change when it lands.
-    custom_domain: str | None
+    custom_domain: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The domain the merchant intends to use. **It is not an address the store is "
+                "reachable at.** Nothing in this platform serves a custom domain — there is no "
+                "ingress, no TLS termination and no host-based routing — so this records an "
+                "intention and changes nothing about reachability."
+            )
+        ),
+    ]
+    custom_domain_status: Annotated[
+        Literal["unverified", "verified"] | None,
+        Field(
+            description=(
+                "`unverified` whenever `custom_domain` is set, `null` when it is not. **Nothing "
+                "can move it off `unverified` today**: verifying that a merchant owns a domain "
+                "is DNS work nobody has done, and it is a precondition of ever serving one — "
+                "serving a domain on the strength of a form submission is how one merchant "
+                "takes another's traffic."
+            )
+        ),
+    ]
     created_at: dt.datetime
     updated_at: dt.datetime
 
 
 class StorePut(BaseModel):
-    """Create-or-update the organization's single storefront.
+    """Create or update the organization's single storefront.
 
-    A PUT rather than a PATCH because there are four fields and a merchant editing a store's
-    identity is editing all of them at once on one form. `status` is on the same payload
-    deliberately: publishing is what makes a store visible to the internet, so it is audited as
-    `storefront.published` / `.unpublished` rather than folded into a generic update row.
+    A PUT rather than a PATCH because a merchant editing a store's identity is editing one form,
+    all of it at once. **`status` is deliberately not on this payload** (ADR-0011 §4): a settings
+    save must not be able to put a store in front of the internet, so publishing is its own named
+    transition. A store is created `draft`, always.
+
+    `slug` is required on create and must **match the stored value** on update — a rename is a
+    409 `slug_immutable` rather than a field this payload silently ignores (ADR-0011 §7).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     slug: Slug
-    status: Literal["draft", "published", "suspended"] = "draft"
+    #: Trimmed, whitespace-collapsed, and required. Blank-after-trimming is a 422
+    #: `name_required`, not an empty store name.
+    #: No `min_length`: a blank name is refused by `domain.clean_brand_text` with
+    #: `name_required` and a sentence, rather than by pydantic with "String should have at least
+    #: 1 character" — the same reason `SLOTTED` is refused by the writer and not by the type.
+    name: Annotated[
+        BrandText,
+        Field(
+            max_length=STORE_NAME_LENGTH,
+            description=(
+                "The store's name, as a buyer sees it. Trimmed and whitespace-collapsed before "
+                "it is stored; blank after trimming is a 422 `name_required`. Stored verbatim "
+                "otherwise — it is **not** HTML-escaped, and encoding it for output is the "
+                "renderer's job."
+            ),
+        ),
+    ]
+    tagline: (
+        Annotated[
+            BrandText,
+            Field(
+                max_length=TAGLINE_LENGTH,
+                description="One line under the name. `null` or an empty string clears it.",
+            ),
+        ]
+        | None
+    ) = None
+    logo_text: (
+        Annotated[
+            BrandText,
+            Field(
+                max_length=LOGO_TEXT_LENGTH,
+                description=(
+                    "The header wordmark. `null` or an empty string clears it, and the renderer "
+                    "falls back to `name`."
+                ),
+            ),
+        ]
+        | None
+    ) = None
     currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")] = "INR"
     #: IANA. Validated against the system's timezone database, because a bad one would produce a
     #: promised date that is wrong by hours and looks perfectly well-formed.
     timezone: Annotated[str, Field(min_length=1, max_length=64)] = "Asia/Kolkata"
+    custom_domain: (
+        Annotated[
+            str,
+            Field(
+                max_length=CUSTOM_DOMAIN_LENGTH,
+                description=(
+                    "The domain the merchant **intends** to use, stored lower-cased with no "
+                    "scheme, path or port. **Setting it records an intention and changes "
+                    "nothing about reachability**: no request is served on it, nothing here "
+                    "checks that the merchant owns it, and the stored status is `unverified` "
+                    "with no path off it. `null` or an empty string releases the claim. A "
+                    "domain another organization has already claimed is a 409 "
+                    "`custom_domain_taken`."
+                ),
+                examples=["shop.example.com"],
+            ),
+        ]
+        | None
+    ) = None
 
 
 # --------------------------------------------------------------------- zones
