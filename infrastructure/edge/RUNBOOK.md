@@ -526,10 +526,23 @@ Named here so nobody discovers them during an incident:
 
 - **No alerting and no pager.** Slice 2.
 - **No zero-downtime deploy.** Every deploy that changes a container restarts it.
-- **No RabbitMQ, no relay and no consumers.** The outbox tables grow and no domain event is
-  delivered anywhere. This is by omission — slice 1 publishes no event that anything consumes
-  — but it means `outbox` depth is not a health signal here, and a future service that *does*
-  need events must deploy a broker and a relay before it is switched on.
+- **No RabbitMQ, no relay and no consumers — and this breaks product activation.** An earlier
+  version of this paragraph said slice 1 publishes no event that anything consumes. That was
+  wrong. `product.activate()` publishes `core.product.activated`, and the **only** thing that
+  installs a product's roles into an organisation is `account`'s consumer of that event
+  (`services/account/app/consumers.py`). With no broker, a merchant can activate Storefront,
+  the entitlement check passes, and `STOREFRONT_ADMIN` / `STOREFRONT_STAFF` are never created
+  — so nobody can be granted `storefront.store.*` and every merchant route 403s. No log, no
+  alarm. The outbox row sits in `product.outbox` forever.
+
+  **Until a broker and `account`'s worker are deployed, activation is a two-step manual
+  procedure**: activate the product, then run `tools/wire_product.py <org> <product>` against
+  the box (it calls the same installer the consumer would). Do this for every org, every
+  product, every time — and treat `product.outbox` depth as the signal that you forgot.
+
+  Every other outbox also fills silently. `approval`, `subscription` and `storefront` have no
+  entrypoint that starts their relay at all (their `bin/cron` correctly runs a sweep, and
+  there is no `bin/relay`), so even with a broker those three would not publish.
 - **No merchant admin SPA on this box.** The edge serves the anonymous buyer bundle only. The
   API is reachable at `https://<EDGE_HOST>/api/…`; the merchant console is ADR-0001's and is
   served elsewhere.

@@ -1424,3 +1424,48 @@ brand-less store. No key version and no ops step.
 **5. The anonymous path is not entitlement-gated and cannot cheaply be.** A lapsed merchant
 keeps answering here. The consumer that would close it is still unowned — named in ADR-0010 and
 again in slice 3.
+
+### Errata, fourth pass — architectural review of the shipped edge (2026-09-20)
+
+**6. The on-demand TLS `ask` endpoint was never built.** The Caddyfile calls
+`{$TLS_ASK_URL}` and compose points it at
+`storefront:8000/api/v1/storefront/internal/tls-authorize`. No route serves that path;
+`services/storefront/app/api/` holds `routes.py` and `public.py` only. Caddy treats a non-2xx
+as "no", so **no hostname can obtain a certificate — not a custom domain, and not
+`<slug>.stores.opsgrids.com`.** The box would serve HTTPS redirects to an endpoint that cannot
+complete a handshake: a total outage the moment DNS points at it, and one `make edge-validate`
+cannot catch because the Caddyfile is syntactically valid. Slice 1 is not deployable until this
+route exists and answers `200` for every platform subdomain of a published store.
+
+**7. Slice 1's edge deploys no broker, and that silently breaks product activation.** §15
+reasoned that storefront publishes nothing anyone consumes, which was true of storefront and
+false of the box: `product` is one of the five deployed services, `product.activate()`
+publishes `core.product.activated`, and `account`'s consumer of that event is the only thing
+that installs a product's roles. The runbook now documents the manual `tools/wire_product.py`
+step this forces, but the correct fix is a broker plus `account`'s worker on the box.
+
+**8. `approval`, `subscription` and `storefront` cannot publish even with a broker.** The
+scaffold's three entrypoints are `bin/api`, `bin/worker`, `bin/cron`; the scaffold points
+`bin/cron` at the relay. Those three services correctly repointed `bin/cron` at a real sweep —
+which leaves `app/relay.py` with no entrypoint at all. A fourth entrypoint, `bin/relay`, belongs
+in the template.
+
+**9. The entitlement-lapse consumer has now been deferred by three ADRs** (0010 §4, 0011, this
+one). Three deferrals is a decision not to build it. `storefront/app/consumers.py` registers zero
+handlers; the fix is one handler binding `core.product.deactivated` and setting `status` to
+`suspended`, a state the CHECK constraint already allows. Until then a lapsed merchant keeps
+answering serviceability to the public internet and, once §5 works, keeps a certificate we
+renew on their behalf.
+
+**10. Connection-pool arithmetic on the one-VM edge exceeds Postgres's default.** Five services
+× (10 pool + 5 overflow) plus two directory engines plus every outbox engine reaches ~105
+connections against `max_connections = 100`. The first symptom is `FATAL: sorry, too many
+clients` on `auth` — nobody can log in. Set `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` in compose or
+raise `max_connections` with `shared_buffers` sized to match.
+
+**11. The reserved-IP premise (§1, §4) is unverified against the actual provider.** DNS is at
+Hostinger. Hostinger VPS does not offer floating IPs. If the box lands there, the address every
+merchant types into their apex A record changes when the VM is rebuilt — unrecoverable without
+contacting each of them. Confirm the provider before the first real domain points anywhere, and
+commit the intended zone as a file under `infrastructure/edge/` that `preflight.sh` diffs
+against live DNS.
