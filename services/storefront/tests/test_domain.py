@@ -176,3 +176,203 @@ class TestTheImportCsv:
     def test_an_empty_file_is_refused(self) -> None:
         with pytest.raises(domain.Rejected):
             domain.parse_import_csv("")
+
+
+SUFFIX = "stores.opsgrids.com"
+
+
+class TestTheHostABuyerArrivesOn:
+    """A hostname from the open internet, reduced to one comparable form or refused.
+
+    This is the only untrusted string on the bootstrap path and it becomes a Redis key, so the
+    two halves of the rule are tested together: what it *accepts* it also **bounds**, and what it
+    cannot parse it refuses at the boundary rather than carrying into a lookup.
+    """
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("merchant.com", "merchant.com"),
+            # `Host` is case-insensitive, and a browser will send whatever was typed.
+            ("MERCHANT.COM", "merchant.com"),
+            ("Merchant.Com", "merchant.com"),
+            # A fully-qualified name carries the root dot.
+            ("merchant.com.", "merchant.com"),
+            # A non-default port is appended to the Host header; it is not part of the name.
+            ("merchant.com:8443", "merchant.com"),
+            ("merchant.com.:443", "merchant.com"),
+            # Whatever the bundle read out of `location.hostname`, trimmed.
+            ("  merchant.com  ", "merchant.com"),
+            # The platform's own host, which is the common case.
+            ("greenleaf.stores.opsgrids.com", "greenleaf.stores.opsgrids.com"),
+            # U-label → A-label: the form the browser actually resolves and the form the
+            # column can hold, since `custom_domain_shape` is ASCII-only.
+            ("münchen.de", "xn--mnchen-3ya.de"),
+            ("日本.jp", "xn--wgv71a.jp"),
+            # Already punycode: idempotent, which matters because the value is a cache key.
+            ("xn--mnchen-3ya.de", "xn--mnchen-3ya.de"),
+        ],
+    )
+    def test_the_forms_a_browser_sends_normalise_to_one(self, raw: str, expected: str) -> None:
+        assert domain.normalise_request_host(raw) == expected
+
+    def test_normalising_is_idempotent(self) -> None:
+        """It has to be: the output is a cache key, and a value that normalises to a second
+        value the second time would write two entries for one store and invalidate one."""
+        once = domain.normalise_request_host("MÜNCHEN.de.:443")
+        assert domain.normalise_request_host(once) == once
+
+    @pytest.mark.parametrize(
+        ("raw", "code"),
+        [
+            ("", "host_required"),
+            ("   ", "host_required"),
+            # A pasted URL rather than a hostname.
+            ("https://merchant.com", "host_invalid"),
+            ("merchant.com/shop", "host_invalid"),
+            ("user@merchant.com", "host_invalid"),
+            ("mer chant.com", "host_invalid"),
+            ("*.merchant.com", "host_invalid"),
+            # A single label cannot be a store's address and cannot be claimed.
+            ("localhost", "host_invalid"),
+            ("merchant", "host_invalid"),
+            # No store is reached by address, and the edge issues no certificate for one.
+            ("198.51.100.7", "host_invalid"),
+            ("[::1]", "host_invalid"),
+            ("[2001:db8::1]:443", "host_invalid"),
+            ("::1", "host_invalid"),
+            # A port that is not a number is not a port.
+            ("merchant.com:https", "host_invalid"),
+            (":443", "host_invalid"),
+            # Shapes DNS itself refuses.
+            ("-merchant.com", "host_invalid"),
+            ("merchant-.com", "host_invalid"),
+            ("merchant..com", "host_invalid"),
+            (".merchant.com", "host_invalid"),
+            ("under_score.com", "host_invalid"),
+            (f"{'a' * 64}.com", "host_invalid"),
+            # The bound, checked before anything expensive runs.
+            (f"{'a' * 250}.com", "host_too_long"),
+        ],
+    )
+    def test_what_it_refuses_and_what_it_calls_the_refusal(self, raw: str, code: str) -> None:
+        """**Every one of these is a 422, not a 404.** "That is not an address" and "nothing is
+        published there" are different facts, exactly as a malformed postal code is distinct from
+        an unserved one — and a client that cannot tell them apart shows a buyer the wrong page.
+        """
+        with pytest.raises(domain.Rejected) as caught:
+            domain.normalise_request_host(raw)
+        assert caught.value.code == code
+        assert caught.value.errors[0]["field"] == "host"
+
+    def test_a_refusal_never_echoes_the_string_it_refused(self) -> None:
+        """The message is a sentence, not a mirror. Reflecting an attacker-supplied host into a
+        response body is how a problem document becomes an injection vector for whoever renders
+        it."""
+        with pytest.raises(domain.Rejected) as caught:
+            domain.normalise_request_host("<script>alert(1)</script>.com")
+        assert "script" not in caught.value.message
+
+    def test_a_reserved_suffix_is_not_refused_here(self) -> None:
+        """`RESERVED_DOMAIN_SUFFIXES` governs what a merchant may *claim*. The platform's own
+        subdomain is the most common host this function will ever see, and refusing it would
+        404 every store on the address it is permanently reachable at."""
+        assert domain.normalise_request_host("greenleaf.stores.opsgrids.com") == (
+            "greenleaf.stores.opsgrids.com"
+        )
+
+
+class TestTheTwoAddressesOfOneStore:
+    @pytest.mark.parametrize(
+        ("host", "expected"),
+        [
+            ("greenleaf.stores.opsgrids.com", "greenleaf"),
+            ("a-b-1.stores.opsgrids.com", "a-b-1"),
+            # Not the platform's space at all.
+            ("merchant.com", None),
+            ("greenleaf.stores.opsgrids.com.evil.com", None),
+            # The suffix itself is not a store.
+            ("stores.opsgrids.com", None),
+            # **Exactly one label.** A wildcard certificate covers one level, and `a.b` is a
+            # name no slug column can hold — reading it as a slug would turn an impossible
+            # value into a lookup that merely missed.
+            ("a.b.stores.opsgrids.com", None),
+            # A label that cannot be a slug misses without a query.
+            ("-bad.stores.opsgrids.com", None),
+            ("x.stores.opsgrids.com", None),
+        ],
+    )
+    def test_a_platform_host_is_split_back_into_its_slug(
+        self, host: str, expected: str | None
+    ) -> None:
+        assert domain.platform_slug(host, suffix=SUFFIX) == expected
+
+    def test_the_platform_host_round_trips(self) -> None:
+        built = domain.platform_host_for("greenleaf", suffix=SUFFIX)
+        assert built == "greenleaf.stores.opsgrids.com"
+        assert domain.platform_slug(built, suffix=SUFFIX) == "greenleaf"
+
+    @pytest.mark.parametrize(
+        ("host", "partner"),
+        [
+            ("merchant.com", "www.merchant.com"),
+            ("www.merchant.com", "merchant.com"),
+            ("shop.merchant.com", "www.shop.merchant.com"),
+        ],
+    )
+    def test_the_www_pair_is_purely_syntactic(self, host: str, partner: str) -> None:
+        """No Public Suffix List: a bundled list goes stale on somebody else's schedule, and the
+        residual it buys is named and small (ADR-0012 §2)."""
+        assert domain.www_partner(host) == partner
+
+
+class TestWhichAddressIsCanonical:
+    """ADR-0012 §8. The merchant's domain the moment it is live, the platform host otherwise —
+    and **the platform host again the moment the domain stops working**, because a canonical
+    pointer at a name that does not answer is a redirect into a hole."""
+
+    def test_a_store_with_no_domain_is_canonical_at_the_platform_host(self) -> None:
+        assert (
+            domain.canonical_host(
+                slug="greenleaf",
+                custom_domain=None,
+                custom_domain_status=None,
+                suffix=SUFFIX,
+            )
+            == "greenleaf.stores.opsgrids.com"
+        )
+
+    def test_a_live_domain_is_canonical(self) -> None:
+        assert (
+            domain.canonical_host(
+                slug="greenleaf",
+                custom_domain="merchant.com",
+                custom_domain_status="live",
+                suffix=SUFFIX,
+            )
+            == "merchant.com"
+        )
+
+    @pytest.mark.parametrize("status", ["unverified", "verified", "failing", "suspended"])
+    def test_every_state_short_of_live_leaves_the_platform_host_canonical(
+        self, status: str
+    ) -> None:
+        """`verified` is the cutover state — the claim is proved, the DNS has not landed yet —
+        and pointing a canonical link at it would aim search engines at a name that does not
+        resolve. `failing` is the same fact after the fact, which is exactly why the fallback
+        works: it only works if it is not also redirecting."""
+        assert (
+            domain.canonical_host(
+                slug="greenleaf",
+                custom_domain="merchant.com",
+                custom_domain_status=status,
+                suffix=SUFFIX,
+            )
+            == "greenleaf.stores.opsgrids.com"
+        )
+
+    def test_an_unverified_claim_is_not_a_status_that_serves(self) -> None:
+        """The list the host lookup filters on. `unverified` being absent is the important
+        entry: a claim is stored on the word of whoever typed it."""
+        assert "unverified" not in domain.SERVING_DOMAIN_STATUSES
+        assert "verified" in domain.SERVING_DOMAIN_STATUSES

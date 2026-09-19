@@ -9,6 +9,11 @@ Five things live here, and each is here because it is a real rule rather than a 
    *absent*: nothing here escapes anything for HTML, and nothing here verifies that a merchant
    owns a domain. The first belongs to the renderer, the second does not exist.
 
+0b. **The host a buyer arrives on** (ADR-0012) — an untrusted string from the open internet is
+   normalised to one comparable form or refused, a platform host is split back into its slug,
+   the `www` pair is derived, and one of a store's two addresses is named canonical. All of it
+   pure, because it runs before any query and decides what the cache key is allowed to be.
+
 1. **Postal-code normalisation and validation.** One country, one validator, one entry in the
    map. Not generalised — a generalisation with one use case is a guess (ADR-0010 §2).
 2. **The promise.** `DATE_OFFSET` resolves to a date *in the store's timezone*, because a buyer
@@ -29,6 +34,8 @@ import io
 import re
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import idna
 
 from app.models import (
     LOGO_TEXT_LENGTH,
@@ -274,6 +281,171 @@ def normalise_custom_domain(raw: str | None) -> str | None:
             field="custom_domain",
         )
     return value
+
+
+# --------------------------------------------------------------------- the host a buyer arrives on
+
+#: The `custom_domain_status` values at which a host is answered for (ADR-0012 §2).
+#:
+#: Only `verified` is reachable today: ADR-0011's check constraint allows `unverified` and
+#: `verified`, and the state machine that mints `live` and `failing` is the rest of ADR-0012
+#: slice 1. They are listed anyway, on ADR-0011's own precedent for putting `verified` in the
+#: constraint before anything could set it — the day the state machine lands, this tuple is
+#: already the right one and nobody has to remember to widen a filter that fails *quietly*.
+#:
+#: `unverified` is deliberately absent, and it is the important entry in this list: a claim is
+#: stored on the word of whoever typed it, so serving a host on an unverified claim is how one
+#: merchant takes another's traffic.
+SERVING_DOMAIN_STATUSES = ("verified", "live", "failing")
+
+#: The one status at which the merchant's own domain becomes canonical (ADR-0012 §8). A domain
+#: that is `verified` but not yet routed, or `failing`, leaves the platform host canonical — a
+#: canonical pointer at a name that does not currently answer is a redirect into a hole, and the
+#: platform host is the fallback that makes a DNS mistake recoverable.
+CANONICAL_DOMAIN_STATUS = "live"
+
+#: RFC 1035's ceiling, applied to the *request* host as well as to a claim.
+MAX_HOST_LENGTH = MAX_CUSTOM_DOMAIN_LENGTH
+
+
+def _bad_host(code: str, message: str) -> Rejected:
+    return Rejected(code, message, field="host")
+
+
+def normalise_request_host(raw: str) -> str:
+    """A hostname from the open internet, reduced to the one form everything else compares.
+
+    ────────────────────────────────────────────────────────────────────────────────────────
+    **This is the only untrusted string on this path, and it becomes a cache key.** Everything
+    below is about that: the value that leaves here is lower-cased ASCII, at most
+    `MAX_HOST_LENGTH` characters, at least two labels, and syntactically a hostname — so a
+    caller cannot mint a Redis key of arbitrary length or arbitrary shape, only one of at most
+    253 bounded bytes. A string that does not survive this is a **422 and never reaches Redis
+    or Postgres at all**, which is what keeps the cost of garbage at the boundary.
+    ────────────────────────────────────────────────────────────────────────────────────────
+
+    The steps are ADR-0012 §2's, in order: lower-case, strip the port, strip the trailing dot,
+    U-label → A-label. Each one exists because a browser really sends that form:
+    `Host` is case-insensitive, a non-default port is appended to it, a fully-qualified name
+    may carry a root dot, and an internationalised name is carried as punycode.
+
+    **Refused, with a 422 rather than a 404** — "that is not a hostname" and "nothing is
+    published there" are different facts, exactly as a malformed postal code is distinct from an
+    unserved one (ADR-0010 §4):
+
+    * a scheme, a path, credentials, a wildcard or whitespace — the marks of a pasted URL;
+    * a port that is not a number, and any bracketed or bare IPv6 literal;
+    * an IPv4 address, or anything whose last label is all digits — no store is reached by
+      address, and the edge issues no certificate for one;
+    * a single label (`localhost`) — it cannot be a store's address and cannot be claimed;
+    * anything `idna` refuses: an over-long label, an empty label, a leading or trailing hyphen,
+      a codepoint that has no A-label.
+
+    It does **not** refuse a reserved suffix. `RESERVED_DOMAIN_SUFFIXES` governs what a merchant
+    may *claim*; `<slug>.stores.opsgrids.com` is the platform's own host and is the single most
+    common value this function will ever see.
+    """
+    value = raw.strip()
+    if not value:
+        raise _bad_host("host_required", "Tell us which address you are on.")
+    if len(value) > MAX_HOST_LENGTH:
+        raise _bad_host("host_too_long", f"A hostname is at most {MAX_HOST_LENGTH} characters.")
+
+    value = value.lower()
+    if value.startswith("["):
+        # `[::1]:443`. Split before the port rule, because an IPv6 literal is all colons and
+        # would otherwise be read as a host with a nonsense port.
+        raise _bad_host("host_invalid", "That is an IP address rather than a store's address.")
+    if ":" in value:
+        value, _, port = value.rpartition(":")
+        if not port.isdigit() or not value:
+            raise _bad_host("host_invalid", "That is not a hostname.")
+    if value.endswith("."):
+        value = value[:-1]  # the root dot a fully-qualified name may carry
+
+    try:
+        # `uts46=True` folds case and width the same way a browser does before it resolves.
+        # Everything malformed lands here rather than in a hand-written regex: label length,
+        # empty labels, hyphens at a label's edge and codepoints with no A-label are one
+        # library's job, and a second opinion on any of them is a disagreement with DNS.
+        host = idna.encode(value, uts46=True).decode("ascii")
+    except (idna.IDNAError, UnicodeError) as exc:
+        raise _bad_host("host_invalid", "That is not a hostname.") from exc
+
+    if len(host) > MAX_HOST_LENGTH:
+        # Punycode is longer than what it encodes, so the bound is re-checked on the A-label.
+        raise _bad_host("host_too_long", f"A hostname is at most {MAX_HOST_LENGTH} characters.")
+    labels = host.split(".")
+    if len(labels) < 2:
+        raise _bad_host("host_invalid", "That is not a hostname.")
+    if labels[-1].isdigit():
+        raise _bad_host("host_invalid", "That is an IP address rather than a store's address.")
+    return host
+
+
+def platform_host_for(slug: str, *, suffix: str) -> str:
+    """`greenleaf` → `greenleaf.stores.opsgrids.com`. **Never retires** (ADR-0012 §8).
+
+    Links, QR codes and printed material outlive DNS changes, the merchant's own bookmark is
+    usually this one, and it is the fallback when a custom domain breaks. A design that 404s it
+    makes a DNS mistake unrecoverable except by us.
+    """
+    return f"{slug}.{suffix}"
+
+
+#: The slug shape, restated from `storefronts.slug_shape`. Here because the platform host is
+#: parsed before any query runs, and a label that cannot be a slug must miss without one.
+_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
+
+
+def platform_slug(host: str, *, suffix: str) -> str | None:
+    """`greenleaf.stores.opsgrids.com` → `greenleaf`; any other host → `None`.
+
+    **Exactly one label in front of the suffix**, and it has to be a slug. `a.b.stores.…` is not
+    a store — reading it as the slug `a.b` would make a name no slug column can hold look like a
+    lookup that merely missed, and a wildcard certificate covers one label deep anyway.
+    """
+    dotted = f".{suffix}"
+    if not host.endswith(dotted):
+        return None
+    label = host[: -len(dotted)]
+    return label if _SLUG.fullmatch(label) else None
+
+
+def www_partner(host: str) -> str:
+    """`merchant.com` ⇄ `www.merchant.com`. **Purely syntactic, and no Public Suffix List.**
+
+    The pair is served as a unit: a claim on the apex answers on `www`, and a claim on `www`
+    answers on the apex (ADR-0012 §2). A PSL is a bundled list that goes stale on somebody
+    else's schedule, and the residual it would buy is small and named: verification proved
+    control of the claimed name, not literally of its `www` sibling, and the two are under the
+    same zone operator in every case that occurs in practice.
+    """
+    return host[4:] if host.startswith("www.") else f"www.{host}"
+
+
+def canonical_host(
+    *,
+    slug: str,
+    custom_domain: str | None,
+    custom_domain_status: str | None,
+    suffix: str,
+) -> str:
+    """Which of a store's two addresses the page should point at (ADR-0012 §8).
+
+    The merchant's domain the moment it is `live` — they chose it, it is their brand, and two
+    hosts serving identical content split a search ranking between them. Before that, and again
+    the moment the domain stops working, the platform host: **`is_canonical` is computed from
+    the live state, so a suspended or failing domain makes the platform host canonical again by
+    itself.** The fallback only works if it is not also pointing at the broken name.
+
+    Slice 1 does not redirect. This value is what the buyer bundle puts in
+    `<link rel="canonical">`, and what every share link, "view your store" button and generated
+    QR code renders.
+    """
+    if custom_domain and custom_domain_status == CANONICAL_DOMAIN_STATUS:
+        return custom_domain
+    return platform_host_for(slug, suffix=suffix)
 
 
 def assert_slug_is_unchanged(current: str, submitted: str) -> None:

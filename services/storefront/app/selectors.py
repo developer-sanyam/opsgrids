@@ -24,9 +24,9 @@ input to it".
 **There is no server-side cache of an answer, deliberately.** The lookup is one unique-index
 probe on a table that fits in shared buffers; a Redis round trip is a network hop to avoid a
 memory read, and a TTL is the mechanism by which a merchant edits their map and watches nothing
-happen. The *slug* lookup **is** cached, and the contrast is the rule: cache the thing that
-crosses an engine boundary and never changes, not the thing that is cheap and changes on
-purpose (ADR-0010 §5, §12).
+happen. The *slug* and *host* lookups **are** cached, and the contrast is the rule: cache the
+thing that crosses an engine boundary and never changes, not the thing that is cheap and
+changes on purpose (ADR-0010 §5, §12; ADR-0012 §2).
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ import datetime as dt
 import json
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,19 +62,34 @@ log = get_logger("storefront.selectors")
 
 @dataclass(frozen=True, slots=True)
 class PublicStore:
-    """What the bypass reader is allowed to learn: **two ids and a status**. Nothing else.
+    """What the bypass reader is allowed to learn: **one row of `storefront.storefronts`**.
 
     A bypass buys *discovery only* (ADR-0002 §2). No delivery data, no postal codes, no writes,
     ever — the next statement runs on the ordinary NOBYPASSRLS role inside a tenant-bound
     transaction, so row-level security applies to the anonymous request exactly as it does to an
     authenticated one.
+
+    ADR-0012 widened this from two ids and a status to the identity row's public columns,
+    because the buyer's bootstrap renders the brand and has to name the canonical host. **The
+    surface did not widen**: it is still `storefront.storefronts` and still nothing else, which
+    is the thing ADR-0011 bought by keeping `custom_domain` on this table rather than in a side
+    table (ADR-0012 §2). One reader, one table, two lookups into it.
+
+    **Holding the brand here does not publish it.** The route decides what a stranger is shown,
+    and it shows nothing at all for a store that is not `published`.
     """
 
     organization_id: uuid.UUID
     storefront_id: uuid.UUID
+    slug: str
     status: str
     currency: str
     timezone: str
+    name: str
+    tagline: str | None
+    logo_text: str | None
+    custom_domain: str | None
+    custom_domain_status: str | None
 
     @property
     def is_published(self) -> bool:
@@ -81,7 +97,7 @@ class PublicStore:
 
 
 _MISS = "\0"
-"""Cached sentinel for "no such slug".
+"""Cached sentinel for "no such slug", and for "no store at that host".
 
 Negative results are cached at the same TTL as positive ones, which is the same five minutes
 ADR-0010 §13 already accepts for a newly published store. The alternative — caching hits only —
@@ -93,6 +109,111 @@ is the second saturation point the ADR names, on the path of every anonymous req
 def slug_cache_key(slug: str) -> str:
     """Public because the store writer invalidates it. One key shape, one place."""
     return f"storefront:slug:{slug}"
+
+
+def host_cache_key(host: str) -> str:
+    """The custom-domain lookup's key (ADR-0012 §2). Public for the same reason as the slug's.
+
+    **The host is already normalised and bounded by `domain.normalise_request_host` before it
+    reaches here**, and that is what makes an unauthenticated lookup safe to key a cache on: an
+    attacker can mint distinct hostnames, but each is at most 253 ASCII characters of hostname
+    shape, each entry expires in `store_host_cache_seconds`, and the gateway's anonymous limit
+    is 60 requests per minute per address. So one address can hold at most a few hundred keys of
+    a few hundred bytes resident at a time, and nothing a caller sends decides the key's size.
+    A string that is not a hostname is a 422 and never becomes a key at all.
+    """
+    return f"storefront:host:{host}"
+
+
+#: Every column the cached row carries. A cache entry written by an older build is missing the
+#: ones ADR-0012 added, and **treating that as a miss is the only correct reading**: a rolling
+#: deploy would otherwise answer a buyer from a record with no brand in it. Cheaper than a key
+#: version, and it needs no second key shape for an invalidation to remember.
+_CACHED_FIELDS = frozenset(
+    {
+        "organization_id",
+        "storefront_id",
+        "slug",
+        "status",
+        "currency",
+        "timezone",
+        "name",
+        "tagline",
+        "logo_text",
+        "custom_domain",
+        "custom_domain_status",
+    }
+)
+
+#: The columns the bypass reader selects — ADR-0012 §2's list, written once so the two lookups
+#: cannot drift into reading different halves of the same row.
+_PUBLIC_COLUMNS = (
+    Storefront.id,
+    Storefront.organization_id,
+    Storefront.slug,
+    Storefront.status,
+    Storefront.currency,
+    Storefront.timezone,
+    Storefront.name,
+    Storefront.tagline,
+    Storefront.logo_text,
+    Storefront.custom_domain,
+    Storefront.custom_domain_status,
+)
+
+
+def _public_store(row: Any) -> PublicStore:
+    return PublicStore(
+        organization_id=row.organization_id,
+        storefront_id=row.id,
+        slug=row.slug,
+        status=row.status,
+        currency=row.currency,
+        timezone=row.timezone,
+        name=row.name,
+        tagline=row.tagline,
+        logo_text=row.logo_text,
+        custom_domain=row.custom_domain,
+        custom_domain_status=row.custom_domain_status,
+    )
+
+
+def _encode(store: PublicStore) -> str:
+    return json.dumps(
+        {
+            "organization_id": str(store.organization_id),
+            "storefront_id": str(store.storefront_id),
+            "slug": store.slug,
+            "status": store.status,
+            "currency": store.currency,
+            "timezone": store.timezone,
+            "name": store.name,
+            "tagline": store.tagline,
+            "logo_text": store.logo_text,
+            "custom_domain": store.custom_domain,
+            "custom_domain_status": store.custom_domain_status,
+        }
+    )
+
+
+def _decode(cached: str) -> PublicStore | None:
+    """A cached row, or `None` when the entry predates a column this build needs."""
+    record = json.loads(cached)
+    if not record.keys() >= _CACHED_FIELDS:
+        return None
+    return PublicStore(
+        organization_id=uuid.UUID(record["organization_id"]),
+        storefront_id=uuid.UUID(record["storefront_id"]),
+        slug=record["slug"],
+        status=record["status"],
+        currency=record["currency"],
+        timezone=record["timezone"],
+        name=record["name"],
+        tagline=record["tagline"],
+        logo_text=record["logo_text"],
+        custom_domain=record["custom_domain"],
+        custom_domain_status=record["custom_domain_status"],
+    )
 
 
 async def resolve_public_store(session: AsyncSession, slug: str) -> PublicStore | None:
@@ -119,24 +240,13 @@ async def resolve_public_store(session: AsyncSession, slug: str) -> PublicStore 
     if cached == _MISS:
         return None
     if cached is not None:
-        record = json.loads(cached)
-        return PublicStore(
-            organization_id=uuid.UUID(record["organization_id"]),
-            storefront_id=uuid.UUID(record["storefront_id"]),
-            status=record["status"],
-            currency=record["currency"],
-            timezone=record["timezone"],
-        )
+        hit = _decode(cached)
+        if hit is not None:
+            return hit
 
     row = (
         await session.execute(
-            select(
-                Storefront.id,
-                Storefront.organization_id,
-                Storefront.status,
-                Storefront.currency,
-                Storefront.timezone,
-            ).where(Storefront.slug == slug, Storefront.deleted_at.is_(None))
+            select(*_PUBLIC_COLUMNS).where(Storefront.slug == slug, Storefront.deleted_at.is_(None))
         )
     ).one_or_none()
 
@@ -145,26 +255,89 @@ async def resolve_public_store(session: AsyncSession, slug: str) -> PublicStore 
         await cache_set(key, _MISS, ttl=ttl)
         return None
 
-    store = PublicStore(
-        organization_id=row.organization_id,
-        storefront_id=row.id,
-        status=row.status,
-        currency=row.currency,
-        timezone=row.timezone,
-    )
-    await cache_set(
-        key,
-        json.dumps(
-            {
-                "organization_id": str(store.organization_id),
-                "storefront_id": str(store.storefront_id),
-                "status": store.status,
-                "currency": store.currency,
-                "timezone": store.timezone,
-            }
-        ),
-        ttl=ttl,
-    )
+    store = _public_store(row)
+    await cache_set(key, _encode(store), ttl=ttl)
+    return store
+
+
+async def resolve_public_store_by_host(
+    session: AsyncSession, host: str, *, platform_suffix: str
+) -> PublicStore | None:
+    """Host → store, on the same BYPASSRLS **SELECT-only** reader (ADR-0012 §2).
+
+    ────────────────────────────────────────────────────────────────────────────────────────
+    **Both branches read `storefront.storefronts` and nothing else**, so ADR-0010 §4's
+    chokepoint sentence survives intact: the role holds SELECT on that one table and on nothing
+    else, and it still buys *discovery only*. That is a direct consequence of ADR-0011 putting
+    the domain on the identity row rather than in a side table, and it is the single best thing
+    that decision bought — a second table here would have meant a second grant on the path of
+    every anonymous request.
+    ────────────────────────────────────────────────────────────────────────────────────────
+
+    Two branches, and the first is not a special case of the second:
+
+    * `<slug>.stores.opsgrids.com` is parsed back to its slug and answered by
+      `resolve_public_store`, reusing the existing lookup **and its existing cache key**. The
+      platform host never retires (ADR-0012 §8), so this is the branch that has to keep working
+      when a custom domain breaks, and it has no dependency on any domain state at all.
+    * anything else is a claimed domain, matched against the claim **and its `www` partner**,
+      and only at a status that means the claim was proved: `SERVING_DOMAIN_STATUSES`. An
+      `unverified` claim is stored on the word of whoever typed it, and serving one is how a
+      merchant takes another merchant's traffic.
+
+    `host` is already normalised — lower-cased, port and root dot stripped, punycode — by
+    `domain.normalise_request_host`. Passing an un-normalised one would miss a row that exists,
+    which on this path reads as "there is no such store".
+
+    **Two rows can match**, if one store claims `merchant.com` and another claims
+    `www.merchant.com`: each is globally unique on its own, and the pair is a rule rather than a
+    constraint. The exact host wins, deterministically, and the collision is logged — a 500 here
+    would be a failure rendering as an absent store, which is the one thing this path must never
+    do.
+    """
+    slug = domain.platform_slug(host, suffix=platform_suffix)
+    if slug is not None:
+        return await resolve_public_store(session, slug)
+
+    key = host_cache_key(host)
+    cached = await cache_get(key)
+    if cached == _MISS:
+        return None
+    if cached is not None:
+        hit = _decode(cached)
+        if hit is not None:
+            return hit
+
+    partner = domain.www_partner(host)
+    rows = (
+        await session.execute(
+            select(*_PUBLIC_COLUMNS)
+            .where(
+                Storefront.custom_domain.in_([host, partner]),
+                Storefront.custom_domain_status.in_(domain.SERVING_DOMAIN_STATUSES),
+                Storefront.deleted_at.is_(None),
+            )
+            # The exact host first, so which store answers is decided by the query rather than
+            # by the order the two claims happened to be written in.
+            .order_by((Storefront.custom_domain == host).desc())
+            .limit(2)
+        )
+    ).all()
+
+    ttl = settings().store_host_cache_seconds
+    if not rows:
+        await cache_set(key, _MISS, ttl=ttl)
+        return None
+    if len(rows) > 1:
+        log.warning(
+            "storefront.public.host_claimed_twice",
+            host=host,
+            partner=partner,
+            served_storefront_id=str(rows[0].id),
+        )
+
+    store = _public_store(rows[0])
+    await cache_set(key, _encode(store), ttl=ttl)
     return store
 
 

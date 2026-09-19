@@ -54,6 +54,30 @@ class Settings(ServiceSettings):
     #: long, and the publish UI says so.
     store_slug_cache_seconds: int = 300
 
+    #: The same, for the custom-domain half of the host lookup (ADR-0012 §2). Its own key rather
+    #: than the slug's because the two are invalidated by different events — publishing moves the
+    #: slug entry, claiming or releasing a domain moves this one — and because a shared key would
+    #: mean a domain change flushing every buyer's slug lookup along with it.
+    #:
+    #: Its cost is also real and also stated: a just-removed domain may keep serving, and a newly
+    #: verified one may keep 404ing, for up to this long. Both windows are shorter than any DNS
+    #: propagation the merchant is already waiting on.
+    store_host_cache_seconds: int = 300
+
+    #: The subdomain space every store is permanently reachable under: a store with slug
+    #: `greenleaf` answers at `greenleaf.stores.opsgrids.com` (ADR-0012 §2, §8).
+    #:
+    #: **Configuration rather than a constant because it differs by environment**, and it is the
+    #: value both halves of the host round-trip read: `platform_slug` splits an incoming host on
+    #: it, and `canonical_host` builds the canonical address from it. Pinned as a default here
+    #: rather than set in the repository's single `.env`, for the same reason `db_directory_role`
+    #: is — `ServiceSettings` declares no `env_prefix`, so a key in that shared file is read by
+    #: every service in the platform.
+    #:
+    #: Getting it wrong is visible rather than silent: every platform-subdomain request stops
+    #: resolving and 404s, which is a failing smoke test rather than a wrong answer.
+    platform_host_suffix: str = "stores.opsgrids.com"
+
 
 def assert_directory_role_configured(cfg: Settings) -> None:
     """Refuse to start without the bypass reader the anonymous route depends on.

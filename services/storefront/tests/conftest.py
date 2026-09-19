@@ -15,10 +15,11 @@ thing worth proving is that the real BYPASSRLS role can read `storefront.storefr
 was actually granted that by `migrations/env.py`, and that everything after it is still policied.
 So the public tests drive the real two-engine path and commit for real.
 
-**`_clear_slug_cache`** empties the Redis entries the slug lookup caches. They are keyed by slug
-and live for five minutes, so without this a test that publishes a store would be answered from
-the entry a previous test's 404 wrote — which is the same staleness ADR-0010 §13 accepts in
-production and would be pure noise here.
+**`_clear_lookup_cache`** empties the Redis entries the slug and host lookups cache. They are
+keyed by slug and by hostname and live for five minutes, so without this a test that publishes a
+store or claims a domain would be answered from the entry a previous test's 404 wrote — which is
+the same staleness ADR-0010 §13 and ADR-0012 §2 accept in production and would be pure noise
+here.
 """
 
 from __future__ import annotations
@@ -143,15 +144,22 @@ async def engines() -> AsyncIterator[None]:
     await dispose_engine()
 
 
-async def _clear_slug_cache() -> None:
-    """Drop this service's cached slug entries. See the module docstring — the five-minute TTL
-    is correct in production and is pure cross-talk between tests.
+async def _clear_lookup_cache() -> None:
+    """Drop this service's cached slug **and host** entries. See the module docstring — the
+    five-minute TTL is correct in production and is pure cross-talk between tests.
+
+    Both key shapes, because both are negative-cached: a test that seeds a domain would
+    otherwise be answered from the `_MISS` a previous test's 404 wrote under the same host.
+    Hosts are not per-test unique the way slugs are — `merchant.com` reads better in a test than
+    a random string, and the alternative is every assertion carrying a UUID.
 
     Folded into the `client` fixture rather than standing on its own, so it cannot be ordered
     before `init_redis` or after `close_redis` by the order a test happens to name its fixtures.
     """
     redis = get_redis()
-    keys = [key async for key in redis.scan_iter(match="storefront:slug:*")]
+    keys: list[str] = []
+    for pattern in ("storefront:slug:*", "storefront:host:*"):
+        keys += [key async for key in redis.scan_iter(match=pattern)]
     if keys:
         await redis.delete(*keys)
 
@@ -171,7 +179,7 @@ async def client(session: AsyncSession, engines: None) -> AsyncIterator[AsyncCli
     `Event loop is closed`.
     """
     init_redis(settings().redis_url)
-    await _clear_slug_cache()
+    await _clear_lookup_cache()
 
     async def _session_override() -> AsyncIterator[AsyncSession]:
         yield session
@@ -180,7 +188,7 @@ async def client(session: AsyncSession, engines: None) -> AsyncIterator[AsyncCli
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
     app.dependency_overrides.clear()
-    await _clear_slug_cache()
+    await _clear_lookup_cache()
     await close_redis()
 
 

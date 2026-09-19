@@ -30,6 +30,13 @@ dependencies = [
     # .example and .invalid as special-use reserved domains — a .local seed once produced
     # an administrator account that could not log in. Use example.com (RFC 2606).
     "email-validator>=2.2",
+    # storefront-service normalises the hostname a buyer's browser arrived on before it becomes
+    # a lookup and a cache key (ADR-0012 §2). Already resolved as an httpx transitive; declared
+    # here because a direct import of a transitive dependency is a break waiting for whichever
+    # release drops it. IDNA2008 with UTS-46, rather than the stdlib's IDNA2003 `encodings.idna`
+    # — the two disagree on real names (`ß`, final sigma), and a hostname that encodes
+    # differently from the one the browser sent resolves to nothing.
+    "idna>=3.10",
 ]
 
 [dependency-groups]

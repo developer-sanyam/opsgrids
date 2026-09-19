@@ -1,4 +1,4 @@
-"""The anonymous buyer surface. **One route, and every line of it is load-bearing.**
+"""The anonymous buyer surface. **Two routes, and every line of both is load-bearing.**
 
 ────────────────────────────────────────────────────────────────────────────────────────────
 **This module contains no `try` and no `except`, and it must stay that way.**
@@ -17,14 +17,21 @@ does not reach them, and leaves. So the structure is the control — there is no
 against the module's own syntax tree rather than trusting this paragraph.
 ────────────────────────────────────────────────────────────────────────────────────────────
 
-**The path is exact, and it has no path variable — a standing constraint on the whole future
-buyer API.** `GatewayPolicy.public_paths` is an exact-path frozenset (`full_path in
+**The paths are exact, and neither has a path variable — a standing constraint on the whole
+future buyer API.** `GatewayPolicy.public_paths` is an exact-path frozenset (`full_path in
 policy.public_paths`), and `full_path` is `f"/api/{path}"` from the catch-all, so it excludes
 the query string. A public *prefix* is not configurable and `/public/store/{slug}` is not
 expressible at all. Every anonymous storefront endpoint must therefore carry its variables in
 the query string or the request body. The store slug travels in the body here for that reason,
-and the catalogue and store-document ADRs inherit the rule rather than rediscovering it against
-a route table they have already designed.
+the buyer's hostname travels in the next route's body for the same one, and the catalogue and
+store-document ADRs inherit the rule rather than rediscovering it against a route table they
+have already designed.
+
+**The order these two are called in is the order they are written in.** A browser lands on a
+hostname, asks `store-context` which store that is, and then asks `serviceability` about that
+store *by slug*. ADR-0010's wire format is unchanged by the second address existing, which is
+the whole reason the host is resolved once in a bootstrap rather than added as a field to every
+public endpoint (ADR-0012 §2).
 
 **Rate limiting belongs to the gateway, not here.** 60 requests per minute per client IP, on the
 public branch, before this service is reached (ADR-0010 §4). A second limiter in front of this
@@ -41,11 +48,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, selectors, services
+from app.config import settings
 from app.schemas import (
     FeesOut,
     PromiseOut,
     PublicServiceabilityIn,
+    PublicStoreContextIn,
     ServiceabilityOut,
+    StoreContextOut,
 )
 from app.selectors import ServiceabilityAnswer
 from platform_core.db import get_directory_session
@@ -165,3 +175,88 @@ async def check_serviceability(
 
     answer = await services.check_serviceability_for_store(store, postal_code)
     return answer_out(answer, currency=store.currency)
+
+
+@router.post(
+    "/storefront/public/store-context",
+    response_model=StoreContextOut,
+    summary="Which store is this address, and what is it called?",
+    responses={
+        404: {"description": "No published store at this address — and it says nothing more"},
+        422: {"description": "That is not a hostname — distinct from 'nothing is published there'"},
+        429: {"description": "Rate limited by the gateway; retry, never render an empty store"},
+        503: {"description": "Could not look it up; render as unavailable, never as 'no store'"},
+    },
+)
+async def store_context(
+    payload: PublicStoreContextIn,
+    directory: DirectorySession,
+) -> StoreContextOut:
+    """**No token, no account, no session** — the second thing a stranger may ask this platform.
+
+    A buyer's browser arrives at a hostname and needs to know which store it is looking at. The
+    bundle is identical for every merchant, so this is what turns `window.location.hostname`
+    into a slug, a brand and a canonical address (ADR-0012 §2).
+
+    Three steps, in this order and no other:
+
+    1. the host is normalised or refused — **a string that is not a hostname is a 422, never a
+       404**, because "that is not an address" and "nothing is published there" are different
+       facts, exactly as a malformed postal code is distinct from an unserved one;
+    2. it is resolved on the bypass reader, which reads one row of one table and buys *discovery
+       only* — the platform subdomain through the existing slug lookup, a custom domain only at
+       a status that means the claim was proved;
+    3. **anything that is not a published store is the same 404, with the same sentence.** An
+       unknown host, a `draft` store, a `suspended` store and an unverified claim are one answer
+       on the wire. Distinguishing them would hand a stranger an oracle for which domains are
+       connected to which stores and which tenants exist but are not live yet — exactly the
+       enumeration ADR-0011 §5's global uniqueness rule already makes tempting.
+
+    Nothing tenant-bound runs here, and that is not an omission: this route reads one identity
+    row and returns columns from it. There is no second query to open a transaction for, so
+    there is no place for row-level security to apply and nothing for it to protect. The moment
+    this payload grows something that is not on `storefronts` — the store document, a catalogue
+    — that stops being true, and the extension goes through `session_scope` exactly as
+    serviceability's does.
+
+    **Entitlement is not checked, and cannot cheaply be.** The gateway's public branch returns
+    before its entitlement gate. A merchant whose `storefront` entitlement lapses keeps
+    answering here until somebody unpublishes them; the consumer that would flip `status` to
+    `suspended` is ADR-0010 §4's, is still unowned, and is named again in ADR-0012 slice 3.
+    """
+    cfg = settings()
+    host = domain.normalise_request_host(payload.host)
+
+    store = await selectors.resolve_public_store_by_host(
+        directory, host, platform_suffix=cfg.platform_host_suffix
+    )
+    if store is None or not store.is_published:
+        # Loud in the log, silent on the wire. The status is here because "a merchant has
+        # published nothing" and "a hostname points at us and never will resolve" are two
+        # different operational problems behind one identical response, and only one of them is
+        # somebody's DNS. The buyer is told neither.
+        log.warning(
+            "storefront.public.host_unresolved",
+            host=host,
+            status=store.status if store is not None else None,
+        )
+        raise NotFoundProblem("No published store at this address.")
+
+    canonical = domain.canonical_host(
+        slug=store.slug,
+        custom_domain=store.custom_domain,
+        custom_domain_status=store.custom_domain_status,
+        suffix=cfg.platform_host_suffix,
+    )
+    return StoreContextOut(
+        store=store.slug,
+        # Verbatim, all three. Output encoding is the renderer's (ADR-0011 §6).
+        name=store.name,
+        tagline=store.tagline,
+        logo_text=store.logo_text,
+        currency=store.currency,
+        timezone=store.timezone,
+        canonical_host=canonical,
+        is_canonical=host == canonical,
+        checked_at=utcnow(),
+    )

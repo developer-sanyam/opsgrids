@@ -404,6 +404,23 @@
         "title": "PublicServiceabilityIn",
         "type": "object"
       },
+      "PublicStoreContextIn": {
+        "additionalProperties": false,
+        "description": "The first call a buyer's browser makes, before anything is rendered (ADR-0012 \u00a72).\n\n`host` is `window.location.hostname` \u2014 nothing else, and in particular not a value the\nbundle was built with. **The bundle is identical for every merchant**, which is what lets\none build serve `greenleaf.stores.opsgrids.com` and `merchant.com` without a config file\nper store.\n\nIt is bounded here at a hostname's own ceiling so an oversized body is refused by the schema\nbefore any code touches it; `domain.normalise_request_host` is what decides whether what is\ninside that bound is a hostname at all.",
+        "properties": {
+          "host": {
+            "maxLength": 253,
+            "minLength": 1,
+            "title": "Host",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host"
+        ],
+        "title": "PublicStoreContextIn",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -502,6 +519,76 @@
           "checked_at"
         ],
         "title": "ServiceabilityOut",
+        "type": "object"
+      },
+      "StoreContextOut": {
+        "description": "Which store this address is, and what it is called.\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n**This is the only public representation of ADR-0011's brand columns**, and the\nstorefront-document ADR extends *this* payload rather than adding a second one (ADR-0012\n\u00a711). A second bootstrap would mean two calls on the first-paint path and two shapes that\ndrift.\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n**`name`, `tagline` and `logo_text` are merchant-authored text, returned verbatim and\ndeliberately not escaped.** They are stored trimmed, bounded, single-line and free of\ncontrol characters and bidi overrides, and that is the whole of the sanitising this service\ndoes. Output encoding belongs to whatever renders the page \u2014 escaping here would\ndouble-escape the moment anything else read the column, and would still not protect a client\nthat injected the value as HTML (ADR-0011 \u00a76). **The buyer bundle owns escaping these three\nfields.**\n\nEvery field is always present. `tagline` and `logo_text` are nullable rather than absent, so\n\"the merchant has not written one\" is one state on the wire rather than two that compare\ndifferently. The renderer decides the fallback \u2014 `logo_text` falling back to `name` is its\ndecision and not a value this service copies.",
+        "properties": {
+          "canonical_host": {
+            "description": "The address this store should be linked to. The merchant's own domain once it is live, and the platform host otherwise \u2014 **including when a live domain starts failing**, so the canonical pointer never aims at a name that does not answer. Slice 1 does not redirect: this is what the bundle puts in `<link rel=\"canonical\">`.",
+            "title": "Canonical Host",
+            "type": "string"
+          },
+          "checked_at": {
+            "format": "date-time",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "is_canonical": {
+            "title": "Is Canonical",
+            "type": "boolean"
+          },
+          "logo_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo Text"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "store": {
+            "title": "Store",
+            "type": "string"
+          },
+          "tagline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tagline"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "store",
+          "name",
+          "tagline",
+          "logo_text",
+          "currency",
+          "timezone",
+          "canonical_host",
+          "is_canonical",
+          "checked_at"
+        ],
+        "title": "StoreContextOut",
         "type": "object"
       },
       "StoreOut": {
@@ -1796,6 +1883,50 @@
           }
         },
         "summary": "Does this store deliver to this postal code?",
+        "tags": [
+          "storefront (public)"
+        ]
+      }
+    },
+    "/api/v1/storefront/public/store-context": {
+      "post": {
+        "description": "**No token, no account, no session** \u2014 the second thing a stranger may ask this platform.\n\nA buyer's browser arrives at a hostname and needs to know which store it is looking at. The\nbundle is identical for every merchant, so this is what turns `window.location.hostname`\ninto a slug, a brand and a canonical address (ADR-0012 \u00a72).\n\nThree steps, in this order and no other:\n\n1. the host is normalised or refused \u2014 **a string that is not a hostname is a 422, never a\n   404**, because \"that is not an address\" and \"nothing is published there\" are different\n   facts, exactly as a malformed postal code is distinct from an unserved one;\n2. it is resolved on the bypass reader, which reads one row of one table and buys *discovery\n   only* \u2014 the platform subdomain through the existing slug lookup, a custom domain only at\n   a status that means the claim was proved;\n3. **anything that is not a published store is the same 404, with the same sentence.** An\n   unknown host, a `draft` store, a `suspended` store and an unverified claim are one answer\n   on the wire. Distinguishing them would hand a stranger an oracle for which domains are\n   connected to which stores and which tenants exist but are not live yet \u2014 exactly the\n   enumeration ADR-0011 \u00a75's global uniqueness rule already makes tempting.\n\nNothing tenant-bound runs here, and that is not an omission: this route reads one identity\nrow and returns columns from it. There is no second query to open a transaction for, so\nthere is no place for row-level security to apply and nothing for it to protect. The moment\nthis payload grows something that is not on `storefronts` \u2014 the store document, a catalogue\n\u2014 that stops being true, and the extension goes through `session_scope` exactly as\nserviceability's does.\n\n**Entitlement is not checked, and cannot cheaply be.** The gateway's public branch returns\nbefore its entitlement gate. A merchant whose `storefront` entitlement lapses keeps\nanswering here until somebody unpublishes them; the consumer that would flip `status` to\n`suspended` is ADR-0010 \u00a74's, is still unowned, and is named again in ADR-0012 slice 3.",
+        "operationId": "store_context_api_v1_storefront_public_store_context_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicStoreContextIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreContextOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No published store at this address \u2014 and it says nothing more"
+          },
+          "422": {
+            "description": "That is not a hostname \u2014 distinct from 'nothing is published there'"
+          },
+          "429": {
+            "description": "Rate limited by the gateway; retry, never render an empty store"
+          },
+          "503": {
+            "description": "Could not look it up; render as unavailable, never as 'no store'"
+          }
+        },
+        "summary": "Which store is this address, and what is it called?",
         "tags": [
           "storefront (public)"
         ]

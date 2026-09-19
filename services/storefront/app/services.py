@@ -255,6 +255,27 @@ async def _forget_slug(*slugs: str | None) -> None:
         await cache_delete(*keys)
 
 
+async def _forget_host(*domains: str | None) -> None:
+    """Drop the cached host→store entries for these domains **and their `www` partners**.
+
+    ADR-0012 §2: every transition that changes what a host resolves to deletes the host key in
+    the same transaction that writes the state. Without it, releasing a domain leaves it serving
+    a store for the length of the TTL, and *claiming* one leaves the negative entry a previous
+    buyer's 404 wrote.
+
+    Both members of the pair, because the lookup caches under the key it was *asked* about: a
+    buyer who arrived at `www.merchant.com` while the claim was on the apex has an entry under
+    the `www` key, and forgetting only the claimed value would leave it.
+
+    The platform host is not here on purpose — that branch reuses the slug key, which
+    `_forget_slug` already owns. One host, one invalidation, no key that two functions both
+    half-remember.
+    """
+    hosts = {h for value in domains if value for h in (value, domain.www_partner(value))}
+    if hosts:
+        await cache_delete(*(selectors.host_cache_key(h) for h in hosts))
+
+
 async def put_storefront(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -372,6 +393,9 @@ async def put_storefront(
         await session.flush()
 
     await _forget_slug(store.slug)
+    # Both the value being claimed and the one being released: a change has to stop the old
+    # domain serving *and* clear the negative entry that made the new one look unclaimed.
+    await _forget_host(store.custom_domain, before["custom_domain"] if before else None)
     log.info(
         "storefront.store.saved",
         organization_id=str(ctx.organization_id),
@@ -434,6 +458,10 @@ async def set_store_status(
     # cached for five minutes exactly like a hit, so without this a merchant publishes and then
     # watches their own store stay invisible with nothing to show for it.
     await _forget_slug(store.slug)
+    # And the host entry, for the same reason at the other address: `status` is on the cached
+    # row, so unpublishing a store that is live on its own domain has to stop that domain
+    # serving too. Both addresses answer, so both caches move together (ADR-0012 §2, §8).
+    await _forget_host(store.custom_domain)
     log.info(
         "storefront.store.status_changed",
         organization_id=str(ctx.organization_id),

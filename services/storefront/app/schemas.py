@@ -66,6 +66,12 @@ PromiseKind = Literal["DURATION", "DATE_OFFSET"]
 UnservedReason = Literal["no_mapping", "excluded", "zone_inactive"]
 
 Slug = Annotated[str, Field(min_length=2, max_length=63, pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")]
+#: A host as a browser reports it — **bounded, not validated, here**. Deliberately no pattern:
+#: the value may arrive with a port, a trailing dot or a U-label, all of which
+#: `domain.normalise_request_host` strips or converts, and all of which a regex would refuse
+#: with pydantic's wording instead of a sentence. The bound is RFC 1035's, so an oversized body
+#: is refused before any of that runs.
+Hostname = Annotated[str, Field(min_length=1, max_length=domain.MAX_HOST_LENGTH)]
 PostalCodeIn = Annotated[str, Field(min_length=1, max_length=24)]
 ZoneCode = Annotated[str, Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9._-]+$")]
 
@@ -164,6 +170,83 @@ class PublicServiceabilityIn(BaseModel):
 
     store: Slug
     postal_code: PostalCodeIn
+
+
+# --------------------------------------------------------------------- the buyer's bootstrap
+
+
+class PublicStoreContextIn(BaseModel):
+    """The first call a buyer's browser makes, before anything is rendered (ADR-0012 §2).
+
+    `host` is `window.location.hostname` — nothing else, and in particular not a value the
+    bundle was built with. **The bundle is identical for every merchant**, which is what lets
+    one build serve `greenleaf.stores.opsgrids.com` and `merchant.com` without a config file
+    per store.
+
+    It is bounded here at a hostname's own ceiling so an oversized body is refused by the schema
+    before any code touches it; `domain.normalise_request_host` is what decides whether what is
+    inside that bound is a hostname at all.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    host: Hostname
+
+
+class StoreContextOut(BaseModel):
+    """Which store this address is, and what it is called.
+
+    ────────────────────────────────────────────────────────────────────────────────────────
+    **This is the only public representation of ADR-0011's brand columns**, and the
+    storefront-document ADR extends *this* payload rather than adding a second one (ADR-0012
+    §11). A second bootstrap would mean two calls on the first-paint path and two shapes that
+    drift.
+    ────────────────────────────────────────────────────────────────────────────────────────
+
+    **`name`, `tagline` and `logo_text` are merchant-authored text, returned verbatim and
+    deliberately not escaped.** They are stored trimmed, bounded, single-line and free of
+    control characters and bidi overrides, and that is the whole of the sanitising this service
+    does. Output encoding belongs to whatever renders the page — escaping here would
+    double-escape the moment anything else read the column, and would still not protect a client
+    that injected the value as HTML (ADR-0011 §6). **The buyer bundle owns escaping these three
+    fields.**
+
+    Every field is always present. `tagline` and `logo_text` are nullable rather than absent, so
+    "the merchant has not written one" is one state on the wire rather than two that compare
+    differently. The renderer decides the fallback — `logo_text` falling back to `name` is its
+    decision and not a value this service copies.
+    """
+
+    #: The slug, and **what every subsequent call names the store by** — including ADR-0010's
+    #: `POST /public/serviceability`, whose body is unchanged by this ADR. Resolving the host
+    #: once in a bootstrap call is what keeps a `host` field off every other public endpoint.
+    store: str
+    name: str
+    tagline: str | None
+    logo_text: str | None
+    #: ISO-4217, for formatting prices the buyer is shown.
+    currency: str
+    #: IANA. The server computes dates in it; the browser's own zone is never an input.
+    timezone: str
+    canonical_host: Annotated[
+        str,
+        Field(
+            description=(
+                "The address this store should be linked to. The merchant's own domain once it "
+                "is live, and the platform host otherwise — **including when a live domain "
+                "starts failing**, so the canonical pointer never aims at a name that does not "
+                "answer. Slice 1 does not redirect: this is what the bundle puts in "
+                '`<link rel="canonical">`.'
+            )
+        ),
+    ]
+    #: Whether the host that was asked about *is* the canonical one. `false` is not an error and
+    #: not a redirect — both addresses serve, permanently — it is what lets the page render a
+    #: one-line banner and a correct canonical link.
+    is_canonical: bool
+    #: When the server answered. The bundle caches this in `sessionStorage` for the tab, so it is
+    #: one call per session rather than one per page view.
+    checked_at: dt.datetime
 
 
 class DeliveryCheckIn(BaseModel):

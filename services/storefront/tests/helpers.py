@@ -65,12 +65,18 @@ async def seed_store(
     currency: str = "INR",
     timezone: str = "Asia/Kolkata",
     custom_domain: str | None = None,
+    custom_domain_status: str | None = None,
 ) -> Storefront:
     """Write a storefront on the BYPASSRLS role, committed, as the merchant already would have.
 
     `custom_domain` is seeded here rather than through the API in the tests that need another
     organization to already hold a domain — which is the only way to reach the cross-tenant
     collision, because the colliding row is invisible to the tenant that collides with it.
+
+    `custom_domain_status` defaults to `unverified`, which is the only value a merchant route can
+    reach today. **A test that wants a host to actually resolve has to name `verified`**, and
+    that asymmetry is the point: ADR-0012's host lookup serves a proved claim and refuses a
+    stated one, so a claim seeded the ordinary way must be invisible to a stranger.
     """
     store = Storefront(
         organization_id=org_id,
@@ -82,7 +88,7 @@ async def seed_store(
         currency=currency,
         timezone=timezone,
         custom_domain=custom_domain,
-        custom_domain_status="unverified" if custom_domain else None,
+        custom_domain_status=(custom_domain_status or "unverified") if custom_domain else None,
     )
     admin_session.add(store)
     await admin_session.commit()

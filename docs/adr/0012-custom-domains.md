@@ -921,7 +921,7 @@ releases the old one and mints a new token; the response is the same shape.
 
 The refusals: a scheme, a port or a path; fewer than two labels; anything under `opsgrids.com` or
 `opsgrids.dev`; and a name that does not survive `idna` encoding. **A U-label is converted to its
-A-label before validation** — `münchen-shop.de` is stored as `xn--mnchen-shop-ekb.de` — because
+A-label before validation** — `münchen-shop.de` is stored as `xn--mnchen-shop-thb.de` — because
 ADR-0011's `custom_domain_shape` check constraint is ASCII-only and a merchant cannot be expected to
 punycode their own domain (§17).
 
@@ -1393,3 +1393,34 @@ row; a primary/redirect role per row. Explicitly a supersession, so that ADR-001
 retired on the record rather than worked around.
 
 **Does not do:** not built on speculation. One merchant with a country domain is the trigger.
+
+---
+
+## Errata — found while building slice 1 (2026-09-19)
+
+**1. The worked punycode example was wrong.** §11 printed `münchen-shop.de` as
+`xn--mnchen-shop-ekb.de`. The real IDNA2008/UTS-46 encoding is `xn--mnchen-shop-thb.de`,
+confirmed against the `idna` library. It was hand-written rather than generated, and corrected
+in place. **Anyone who had copied it into a fixture would have had a test that passed against
+the wrong string** — the merchant domain route is where that would have landed.
+
+**2. Two stores can claim opposite halves of one `www` pair.** `merchant.com` and
+`www.merchant.com` are separately unique, so the uniqueness constraint permits one organisation
+to hold each. §2 does not address it. A `.one_or_none()` here would have raised — and **a 500 on
+this path renders as an absent store, which is the one outcome this design exists to prevent**.
+The lookup therefore orders exact-host-first with `LIMIT 2`, serves the exact match
+deterministically, and logs `storefront.public.host_claimed_twice`.
+
+**3. The custom-domain branch is unreachable through any API today**, because ADR-0011's check
+constraint allows only `unverified | verified` and nothing moves it. The lookup filter is
+already written as §2 specifies (`verified`, `live`, `failing`), so the slice that lands the
+state machine changes no code on this path. Consequence: `canonical_host` cannot return a custom
+domain in production yet, which correctly leaves the platform host canonical per §8.
+
+**4. The cached public row widened.** A rolling deploy will meet cache entries written before
+the brand columns existed; a short record is treated as a miss rather than served as a
+brand-less store. No key version and no ops step.
+
+**5. The anonymous path is not entitlement-gated and cannot cheaply be.** A lapsed merchant
+keeps answering here. The consumer that would close it is still unowned — named in ADR-0010 and
+again in slice 3.

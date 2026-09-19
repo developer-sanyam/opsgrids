@@ -43,15 +43,24 @@ def test_unknown_route_returns_problem_json() -> None:
     assert "request_id" in response.json()
 
 
-def test_the_public_path_is_exactly_the_one_the_gateway_allows() -> None:
+#: The anonymous surface, in full. Two entries, and the list is written out rather than derived
+#: so that adding a third is a deliberate edit in two repositories' worth of policy rather than a
+#: route that quietly starts asking strangers for a token.
+PUBLIC_PATHS = {
+    "/api/v1/storefront/public/serviceability",
+    "/api/v1/storefront/public/store-context",
+}
+
+
+def test_the_public_paths_are_exactly_the_ones_the_gateway_allows() -> None:
     """The gateway matches `public_paths` **exactly**, against a `full_path` that excludes the
-    query string. If this path and `STOREFRONT_PUBLIC_PATHS` in `services/app-gateway` ever drift
-    apart, the buyer-facing check starts asking strangers for a token — with no error anywhere
-    but a 401 at the edge."""
+    query string. If these paths and `STOREFRONT_PUBLIC_PATHS` in `services/app-gateway` ever
+    drift apart, the buyer-facing surface starts asking strangers for a token — with no error
+    anywhere but a 401 at the edge."""
     paths = set(app.openapi()["paths"])
-    assert "/api/v1/storefront/public/serviceability" in paths
-    assert [p for p in paths if "/public/" in p] == ["/api/v1/storefront/public/serviceability"], (
-        "a second public path needs a matching entry in the gateway's STOREFRONT_PUBLIC_PATHS"
+    assert paths >= PUBLIC_PATHS
+    assert {p for p in paths if "/public/" in p} == PUBLIC_PATHS, (
+        "a new public path needs a matching entry in the gateway's STOREFRONT_PUBLIC_PATHS"
     )
 
 

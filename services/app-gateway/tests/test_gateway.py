@@ -356,6 +356,57 @@ class TestTheStorefrontBuyerSurface:
     """
 
     SERVICEABILITY = "/api/v1/storefront/public/serviceability"
+    #: The bootstrap a buyer's browser calls first: hostname in, store slug out (ADR-0012 §2).
+    #: It is on the same terms as the check above, which is the point — one mechanism, not two.
+    STORE_CONTEXT = "/api/v1/storefront/public/store-context"
+
+    async def test_the_store_context_bootstrap_is_reachable_with_no_token(
+        self, client: AsyncClient, upstream: EchoUpstream
+    ) -> None:
+        """**A stranger on a domain the platform does not own reaches this and nothing else.**
+        Nothing on a custom domain is authenticated and that is enforced by physics — ADR-0001
+        scopes the refresh cookie to `.opsgrids.com`, so it is simply never sent to
+        `merchant.com` — which makes this list the whole of that host's reachable API."""
+        response = await client.post(self.STORE_CONTEXT, json={"host": "merchant.com"})
+
+        assert response.status_code == 200
+        assert upstream.last["path"] == self.STORE_CONTEXT
+
+    async def test_the_bootstrap_forwards_no_identity_either(
+        self, client: AsyncClient, upstream: EchoUpstream
+    ) -> None:
+        """It resolves its own tenant from the host, on a bypass reader, and binds it itself —
+        so there must be nothing here for it to be tempted to trust."""
+        await client.post(self.STORE_CONTEXT, json={"host": "merchant.com"})
+
+        assert upstream.header("x-org-id") is None
+        assert upstream.header("x-perms") is None
+        assert upstream.header("x-internal-token") is None
+
+    async def test_the_bootstrap_is_limited_by_address_too(
+        self, client: AsyncClient, redis: FakeRedis
+    ) -> None:
+        """Two anonymous calls per session rather than one (ADR-0012 §2). Fleet-wide that is
+        nothing; **the number to watch is the per-IP limit under NAT** — an office or a mall's
+        wifi is a single address — which is why the response is cached in `sessionStorage` for
+        the tab rather than re-fetched per page view."""
+        await client.post(self.STORE_CONTEXT, json={"host": "merchant.com"})
+        assert any(k.startswith("rl:anon:") for k in redis.store)
+
+    async def test_a_redis_outage_on_the_bootstrap_is_503_and_never_an_empty_store(
+        self, client: AsyncClient, redis: FakeRedis
+    ) -> None:
+        """**Unknown is not no**, applied to a whole shop. `enforce_rate_limit` fails closed, so
+        a Redis outage takes the buyer surface down — down is a 503 the client renders as
+        unavailable. What it must never be is a well-formed answer saying this address has no
+        store, which is what a catch-and-answer anywhere on this path would produce."""
+        redis.fail = True
+
+        response = await client.post(self.STORE_CONTEXT, json={"host": "merchant.com"})
+
+        assert response.status_code == 503
+        assert response.headers["content-type"].startswith("application/problem+json")
+        assert "store" not in response.json()
 
     async def test_the_serviceability_check_is_reachable_with_no_token(
         self, client: AsyncClient, upstream: EchoUpstream
@@ -413,6 +464,10 @@ class TestTheStorefrontBuyerSurface:
         assert (
             await client.post(f"{self.SERVICEABILITY}/x", json={"store": "g"})
         ).status_code == 401
+        # The second entry buys nothing the first did not: still exact, still no path variable.
+        # A hostname is a variable, which is why it travels in the body.
+        assert (await client.post(f"{self.STORE_CONTEXT}/merchant.com")).status_code == 401
+        assert (await client.post("/api/v1/storefront/public/store-contexts")).status_code == 401
 
     async def test_the_merchant_surface_behind_it_still_needs_a_token(
         self, client: AsyncClient
@@ -457,9 +512,20 @@ class TestTheStorefrontBuyerSurface:
         from app.main import STOREFRONT_PUBLIC_PATHS, policy
         from platform_core.gateway import DEFAULT_PUBLIC_PATHS
 
-        assert "/api/v1/storefront/public/serviceability" in STOREFRONT_PUBLIC_PATHS
+        assert {self.SERVICEABILITY, self.STORE_CONTEXT} == STOREFRONT_PUBLIC_PATHS
         assert not (STOREFRONT_PUBLIC_PATHS & DEFAULT_PUBLIC_PATHS)
         assert policy.public_paths >= STOREFRONT_PUBLIC_PATHS
+
+    def test_the_bootstrap_shares_the_public_route_entry(self) -> None:
+        """One upstream, one entitlement-free prefix, two exact paths. The second public path
+        needs no route-table change at all — which is what the prefix split in `routes.json` was
+        for."""
+        from app.main import routes
+
+        entry = routes.resolve(self.STORE_CONTEXT)
+        assert entry is not None
+        assert entry.prefix == "/api/v1/storefront/public"
+        assert entry.product is None
 
 
 class TestUpstreamFailure:

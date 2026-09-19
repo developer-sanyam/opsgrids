@@ -32,7 +32,8 @@ from platform_core.gateway import (
 
 cfg = settings()
 
-#: The storefront's buyer surface (ADR-0010 §4). Lives **here, in the gateway service**, and is
+#: The storefront's buyer surface (ADR-0010 §4, ADR-0012 §2). Lives **here, in the gateway
+#: service**, and is
 #: unioned into the shared default below rather than being added to `DEFAULT_PUBLIC_PATHS` in
 #: `platform_core`: editing the library's frozenset would put one product's buyer surface into
 #: the one module both gateways read, and `admin-gateway` — which builds its own explicit set —
@@ -50,7 +51,20 @@ cfg = settings()
 #: **no entitlement check** — the public branch of the proxy returns before that gate. It does
 #: not mean the path is unauthenticated *by accident*; adding one is a deliberate decision about
 #: a route that has no principal to authorize.
-STOREFRONT_PUBLIC_PATHS = frozenset({"/api/v1/storefront/public/serviceability"})
+#:
+#: **Two entries, and the second is what a buyer's browser asks first.** `store-context` turns
+#: the hostname in the address bar into the store's slug, so a merchant on a domain they own
+#: gets served without the bundle carrying baked-in configuration (ADR-0012 §2). It is on the
+#: same terms as the first: an exact path, no path variable, the variable in the body, and the
+#: anonymous per-IP limit in front of it. Nothing on a custom domain is authenticated — the
+#: refresh cookie is scoped to `.opsgrids.com` and is simply never sent there — so this list is
+#: the whole of what a stranger on `merchant.com` may reach.
+STOREFRONT_PUBLIC_PATHS = frozenset(
+    {
+        "/api/v1/storefront/public/serviceability",
+        "/api/v1/storefront/public/store-context",
+    }
+)
 
 # Resolved relative to the service directory so `make run` and the container image agree.
 _routes_path = Path(cfg.routes_file)
