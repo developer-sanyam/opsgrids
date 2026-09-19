@@ -15,11 +15,11 @@ Three concerns, one schema:
   currency (ADR-0000 §8); no float ever touches money.
 * **contacts** — the people at those accounts. `phone` holds the **masked display form
   only** (`+91 98••• ••210`) — this read-only slice never accepts or stores a raw phone
-  number, mirroring employee-service's slice 1, which shipped the employment record and
-  deferred sensitive fields rather than store PII outside the sealed envelope. When a
-  write surface accepts real numbers it gains `phone_enc` + `phone_masked` via
-  `platform_core.pii.seal`, and this column becomes the mask. Work email stays plaintext:
-  it is business contact data the book exists to show, not personal PII.
+  number. `phone_enc` beside it holds the raw number sealed by `platform_core.pii.seal`,
+  which is what a messaging channel needs and what a masked string cannot provide. The pair
+  is the same shape employee-service uses for `personal_phone_enc`; only the mask column's
+  name differs, because `phone` was already this service's published contract. Work email
+  stays plaintext: it is business contact data the book exists to show, not personal PII.
 
 The SPA speaks in opaque ids, so the API's identity is the row UUID; uniqueness for seeds
 and humans comes from per-organization natural keys (`companies.name`, `contacts.email`,
@@ -31,7 +31,15 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Index,
+    LargeBinary,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -126,8 +134,23 @@ class Contact(Base, TenantBase):
     full_name: Mapped[str] = mapped_column(String(160), nullable=False)
     title: Mapped[str] = mapped_column(String(160), nullable=False, default="")
     email: Mapped[str] = mapped_column(String(254), nullable=False)
-    #: Masked display form only — never a raw number. See the module docstring.
+    #: The masked display form — never a raw number. This column plays the `<field>_masked`
+    #: role of the platform's sealed-envelope pattern; it keeps the name `phone` rather than
+    #: becoming `phone_masked` because it is already the contract the CRM's read surface and
+    #: its SPA speak, and renaming it would change what every existing reader receives.
     phone: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    #: The raw number, AES-256-GCM sealed by `platform_core.pii.seal` — the other half of the
+    #: pair, and the only place a contact's real phone number exists.
+    #:
+    #: It exists because a masked number cannot be messaged. WhatsApp, and every channel after
+    #: it, needs the actual digits, and the platform's answer to "sensitive data a machine must
+    #: read" is already written: seal it, mask it for display, and let exactly one audited path
+    #: open it. That path is `services.unmask_contact_phone` for a human who stepped up, and
+    #: `api/internal.py` for a service holding a token addressed to customer by name.
+    #:
+    #: NULL for every contact whose number was never supplied raw — which is all of them until
+    #: a write surface passes one, so the ordinary read behaviour is unchanged.
+    phone_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
 
     company_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True),

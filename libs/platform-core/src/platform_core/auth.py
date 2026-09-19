@@ -437,9 +437,18 @@ def require_service_token(request: Request) -> None:
     if not token:
         raise UnauthorizedProblem("Valid service token required")
     try:
-        verify_service_token(settings, token)
+        claims = verify_service_token(settings, token)
     except Exception as exc:  # PyJWTError and anything a malformed token provokes
         raise UnauthorizedProblem("Valid service token required") from exc
+
+    # The verified claims were previously discarded, which left an endpoint with no way to say
+    # *which* service called it. That matters where a service call is an audited act — opening
+    # a customer's sealed phone number, say — because an audit row attributing the read to
+    # "some service" is not an audit row. `iss` is the caller's service name and it is
+    # trustworthy here precisely because the signature and audience have just been checked;
+    # anything the caller merely asserts about itself in a header is not.
+    request.state.service_claims = claims
+    request.state.service_caller = str(claims.get("iss", "unknown-service"))
 
 
 __all__ = [

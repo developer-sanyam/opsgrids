@@ -151,6 +151,49 @@
         "title": "ContactOut",
         "type": "object"
       },
+      "ContactPhoneIn": {
+        "additionalProperties": false,
+        "description": "Set a contact's real number. The mask is derived from it, never supplied.",
+        "properties": {
+          "raw_phone": {
+            "maxLength": 40,
+            "minLength": 4,
+            "title": "Raw Phone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "raw_phone"
+        ],
+        "title": "ContactPhoneIn",
+        "type": "object"
+      },
+      "ContactPhoneRevealed": {
+        "description": "A contact's real number, revealed to a human who stepped up.\n\nReturned only by the dedicated unmask route, which requires the dangerous\n`read_sensitive` permission and a second factor, and which writes an audit row every time.\n`phone` is None when the contact has no sealed number.",
+        "properties": {
+          "contact_id": {
+            "title": "Contact Id",
+            "type": "string"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          }
+        },
+        "required": [
+          "contact_id",
+          "phone"
+        ],
+        "title": "ContactPhoneRevealed",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -460,6 +503,104 @@
           }
         },
         "summary": "One contact",
+        "tags": [
+          "customer"
+        ]
+      }
+    },
+    "/api/v1/contacts/{contact_id}/phone": {
+      "put": {
+        "description": "Seal a real number onto a contact and derive its mask.\n\nReturns the ordinary `ContactOut` \u2014 the masked form \u2014 so the write surface cannot be used\nas a read-back oracle for the number just supplied. Revealing it needs the separate\nstepped-up route below.",
+        "operationId": "set_contact_phone_api_v1_contacts__contact_id__phone_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Contact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactPhoneIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set a contact's real phone number",
+        "tags": [
+          "customer"
+        ]
+      }
+    },
+    "/api/v1/contacts/{contact_id}/phone:reveal": {
+      "post": {
+        "description": "The only public route that returns a real number.\n\nA POST rather than a GET on purpose: this has a side effect \u2014 it writes an\n`entity.sensitive_read` audit row \u2014 and it must never be cached, pre-fetched, logged in a\nquery string or replayed from browser history the way a GET can be.\n\nGuarded by the dangerous `read_sensitive` permission and a second factor, then re-scoped\nto this one contact. Filtering a list and forgetting the detail route is the named\nvulnerability this shape exists to avoid.",
+        "operationId": "reveal_contact_phone_api_v1_contacts__contact_id__phone_reveal_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Contact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactPhoneRevealed"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reveal a contact's real phone number (audited)",
         "tags": [
           "customer"
         ]
