@@ -197,3 +197,29 @@ def contact_out(contact: Contact) -> ContactOut:
         last_activity_at=contact.last_activity_at,
         created_at=contact.created_at,
     )
+
+
+async def get_contact_by_phone_index(
+    session: AsyncSession, org_id: uuid.UUID, phone_index: str
+) -> Contact | None:
+    """The contact holding this number, found without decrypting anything.
+
+    Org-scoped like every read here, so an inbound message on one tenant's number can only ever
+    match that tenant's contacts. Returns None when nobody holds it — the ordinary case for a
+    stranger messaging the business.
+
+    `scalars().first()` rather than `one_or_none()`: nothing stops two contacts in one
+    organization carrying the same number (a shared office line, a person listed twice), and a
+    lookup that raised on that would turn a data-quality wrinkle into a failed webhook. The
+    oldest match wins, deterministically.
+    """
+    stmt = (
+        select(Contact)
+        .where(
+            Contact.phone_index == phone_index,
+            Contact.organization_id == org_id,
+            Contact.deleted_at.is_(None),
+        )
+        .order_by(Contact.created_at.asc())
+    )
+    return (await session.execute(stmt)).scalars().first()

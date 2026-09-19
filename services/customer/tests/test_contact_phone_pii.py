@@ -317,3 +317,91 @@ async def test_another_tenants_sealed_number_is_invisible(session, admin_session
 
     rows = (await session.execute(select(Contact))).scalars().all()
     assert all(r.organization_id == org_id for r in rows)
+
+
+# --------------------------------------------------------------------- finding by number
+#
+# The inbound half: an arriving WhatsApp message carries a number, and the contact who sent it
+# has to be findable or every conversation creates a duplicate customer. The sealed column
+# cannot answer that — a fresh nonce per seal means there is no equality to match on — so the
+# blind index does, and these assert it matches without decrypting and without leaking.
+
+
+async def test_a_contact_is_findable_by_number(session, org_id, data) -> None:
+    from app.config import settings
+    from platform_core.pii import blind_index
+
+    write = ctx_for(org_id, WRITE, Scope.ORG)
+    async with session.begin():
+        await services.set_contact_phone(session, write, data["contact_a"], RAW)
+
+    index = blind_index(RAW, kind="phone", settings=settings())
+    found = await selectors.get_contact_by_phone_index(session, org_id, index)
+    assert found is not None
+    assert found.id == data["contact_a_id"]
+
+
+async def test_the_index_is_written_beside_the_sealed_value(session, org_id, data) -> None:
+    """Same statement, so the two cannot disagree — an index pointing at a number the row no
+    longer holds would match the wrong contact."""
+    write = ctx_for(org_id, WRITE, Scope.ORG)
+    async with session.begin():
+        contact = await services.set_contact_phone(session, write, data["contact_a"], RAW)
+    assert contact.phone_index is not None
+    assert contact.phone_enc is not None
+
+
+async def test_the_stored_index_is_not_the_number(session, org_id, data) -> None:
+    write = ctx_for(org_id, WRITE, Scope.ORG)
+    async with session.begin():
+        contact = await services.set_contact_phone(session, write, data["contact_a"], RAW)
+    assert contact.phone_index is not None
+    assert "7976603446" not in contact.phone_index
+    assert RAW not in contact.phone_index
+
+
+async def test_a_number_nobody_holds_finds_nothing(session, org_id, data) -> None:
+    """A stranger messaging the business. Ordinary, not an error."""
+    from app.config import settings
+    from platform_core.pii import blind_index
+
+    index = blind_index("+15550101234", kind="phone", settings=settings())
+    assert await selectors.get_contact_by_phone_index(session, org_id, index) is None
+
+
+async def test_the_lookup_cannot_cross_a_tenant(session, org_id, data) -> None:
+    """An inbound message on one tenant's number must only ever match that tenant's contacts,
+    or a conversation would attach to a stranger's customer record."""
+    from app.config import settings
+    from platform_core.pii import blind_index
+
+    write = ctx_for(org_id, WRITE, Scope.ORG)
+    async with session.begin():
+        await services.set_contact_phone(session, write, data["contact_a"], RAW)
+
+    index = blind_index(RAW, kind="phone", settings=settings())
+    assert await selectors.get_contact_by_phone_index(session, uuid.uuid4(), index) is None
+
+
+async def test_finding_a_contact_writes_no_sensitive_read(session, org_id, data) -> None:
+    """The reason the index is worth having. A *search* is not a read of somebody's number, so
+    matching must not produce the audit row that decrypting would — otherwise every inbound
+    message would log a PII access nobody performed."""
+    from app.config import settings
+    from platform_core.pii import blind_index
+
+    write = ctx_for(org_id, WRITE, Scope.ORG)
+    async with session.begin():
+        await services.set_contact_phone(session, write, data["contact_a"], RAW)
+
+    # Counted rather than cleared: `audit_logs` is append-only and the app role has no DELETE
+    # on it, which is the control working as intended. So the assertion is that the lookup adds
+    # nothing to whatever the write already recorded.
+    before = len((await session.execute(select(AuditLog))).scalars().all())
+
+    index = blind_index(RAW, kind="phone", settings=settings())
+    await selectors.get_contact_by_phone_index(session, org_id, index)
+
+    after = (await session.execute(select(AuditLog))).scalars().all()
+    assert len(after) == before
+    assert not [r for r in after if r.action == "entity.sensitive_read"]
