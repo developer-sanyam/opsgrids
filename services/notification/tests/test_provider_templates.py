@@ -198,11 +198,121 @@ def test_a_negative_position_is_refused() -> None:
 # --------------------------------------------------------------------- formats and status
 
 
-def test_named_format_refuses_rather_than_guessing() -> None:
-    """§43 of the brief, enforced in code: the send-side shape of a named parameter is not
-    published on any page consulted, so we refuse with an instruction instead of inventing it."""
-    with pytest.raises(domain.TemplateError, match="not supported yet"):
-        _build(parameter_format=domain.FORMAT_NAMED)
+# --------------------------------------------------------------------- named parameters
+#
+# The shape below was read off Meta's own send example:
+#
+#     "parameters": [{"type": "text", "parameter_name": "first_name", "text": "Jessica"}]
+#
+# Note the lowercase `"text"`. A third-party summary of the same feature showed it uppercase,
+# and following that would have been the `sub_type` bug a second time.
+
+
+def _named(**over: object) -> dict:
+    kwargs: dict = {
+        "template_name": "invoice_due_reminder",
+        "language": "en_US",
+        "parameter_format": domain.FORMAT_NAMED,
+        "variables": [
+            TemplateVariable(key="customer_name", parameter_name="customer_name", position=0),
+            TemplateVariable(key="invoice_number", parameter_name="invoice_number", position=1),
+        ],
+        "context": {"customer_name": "Priya", "invoice_number": "INV-9"},
+    }
+    kwargs.update(over)
+    return domain.build_template_payload(**kwargs)  # type: ignore[arg-type]
+
+
+def test_named_parameters_carry_their_name_and_a_lowercase_type() -> None:
+    payload = _named()
+    assert payload["components"][0]["parameters"] == [
+        {"type": "text", "parameter_name": "customer_name", "text": "Priya"},
+        {"type": "text", "parameter_name": "invoice_number", "text": "INV-9"},
+    ]
+
+
+def test_positional_parameters_carry_no_name() -> None:
+    """The two formats must not bleed into each other: an unexpected `parameter_name` on a
+    positional template is a field Meta did not ask for."""
+    payload = _build()
+    for param in payload["components"][0]["parameters"]:
+        assert "parameter_name" not in param
+
+
+def test_a_named_variable_without_a_name_is_refused() -> None:
+    """The quiet failure. Meta matches named parameters by label, so an unnamed one is simply
+    never filled — the customer reads a message with a hole in it and the send reports
+    success. Refused at build time instead."""
+    with pytest.raises(domain.TemplateError, match="no parameter_name"):
+        _named(
+            variables=[
+                TemplateVariable(key="customer_name", parameter_name="customer_name"),
+                TemplateVariable(key="invoice_number", position=1),
+            ]
+        )
+
+
+@pytest.mark.parametrize("bad", ["CustomerName", "customer name", "customer-name", "café"])
+def test_a_malformed_parameter_name_is_refused(bad: str) -> None:
+    """Meta's constraint: lowercase letters, digits and underscores."""
+    with pytest.raises(domain.TemplateError, match="not a valid Meta parameter name"):
+        domain.validate_named_variables([TemplateVariable(key="x", parameter_name=bad)])
+
+
+def test_two_variables_cannot_share_a_parameter_name() -> None:
+    """Meta matches by label, so a duplicate means one value silently overwrites the other."""
+    with pytest.raises(domain.TemplateError, match="share a parameter_name"):
+        domain.validate_named_variables(
+            [
+                TemplateVariable(key="a", parameter_name="amount"),
+                TemplateVariable(key="b", parameter_name="amount"),
+            ]
+        )
+
+
+def test_a_button_in_a_named_template_keeps_the_positional_shape() -> None:
+    """Meta publishes `parameter_name` for header and body and nothing for buttons, which are
+    identified by `index` regardless. Emitting an unverified name there would be inventing a
+    payload; omitting it leaves the shape Meta does document."""
+    payload = _named(
+        variables=[
+            TemplateVariable(key="customer_name", parameter_name="customer_name"),
+            TemplateVariable(key="pay_link", component=COMPONENT_BUTTON, button_index=0),
+        ],
+        context={"customer_name": "Priya", "pay_link": "https://pay.example/9"},
+    )
+    button = next(c for c in payload["components"] if c["type"] == "button")
+    assert button["parameters"] == [{"type": "text", "text": "https://pay.example/9"}]
+    assert "parameter_name" not in button["parameters"][0]
+
+
+def test_the_erp_vocabulary_maps_to_metas_names() -> None:
+    """The mapping layer end to end: the ERP writes dotted paths into its own event payloads,
+    Meta receives its own labels, and nothing outside the template row knows both."""
+    payload = _named(
+        variables=[
+            TemplateVariable(key="customer.full_name", parameter_name="customer_name"),
+            TemplateVariable(key="invoice.number", parameter_name="invoice_number"),
+            TemplateVariable(key="invoice.total", parameter_name="amount"),
+            TemplateVariable(key="invoice.due_on", parameter_name="due_date"),
+        ],
+        context={
+            "customer": {"full_name": "Priya Nair"},
+            "invoice": {"number": "INV-9", "total": 120000, "due_on": "2026-10-01"},
+        },
+    )
+    body = next(c for c in payload["components"] if c["type"] == "body")
+    assert body["parameters"] == [
+        {"type": "text", "parameter_name": "customer_name", "text": "Priya Nair"},
+        {"type": "text", "parameter_name": "invoice_number", "text": "INV-9"},
+        {"type": "text", "parameter_name": "amount", "text": "120000"},
+        {"type": "text", "parameter_name": "due_date", "text": "2026-10-01"},
+    ]
+
+
+def test_a_missing_value_still_refuses_in_named_format() -> None:
+    with pytest.raises(domain.TemplateError, match="No value for"):
+        _named(context={"customer_name": "Priya"})
 
 
 def test_an_unknown_format_is_refused() -> None:

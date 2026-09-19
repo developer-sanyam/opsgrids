@@ -59,9 +59,10 @@ class TemplateIn(BaseModel):
 class TemplateVariableIn(BaseModel):
     """One value a provider template expects.
 
-    `key` is our vocabulary — the same name a rule's payload path resolves — while `position`
-    is the provider's. Keeping both here is what lets the rest of the service speak one
-    language and confines the provider's ordering to this row.
+    `key` is our vocabulary — the dotted path a rule's payload resolves, the same name the ERP
+    writes as `{{customer_name}}`. The provider's side is `position` for a positional template
+    or `parameter_name` for a named one. Keeping both here is the mapping layer: the ERP speaks
+    one language and nothing outside this row has to know which form Meta wants.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -71,6 +72,9 @@ class TemplateVariableIn(BaseModel):
     position: int = Field(default=0, ge=0)
     button_index: int = Field(default=0, ge=0)
     kind: VariableKind = "text"
+    #: Meta's label for this placeholder. Required for a named-format template, ignored for a
+    #: positional one. Lowercase letters, digits and underscores — Meta's own constraint.
+    parameter_name: str = Field(default="", max_length=120, pattern=r"^[a-z0-9_]*$")
 
 
 class TemplateVariableOut(TemplateVariableIn):
