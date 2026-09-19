@@ -181,6 +181,20 @@ def test_a_provider_template_alone_is_coherent() -> None:
     )
 
 
+def test_a_rule_naming_two_recipient_sources_is_refused() -> None:
+    with pytest.raises(domain.RuleError, match="not several"):
+        domain.validate_rule(  # type: ignore[arg-type]
+            **_valid(recipient_contact_path="customer.contact_id")
+        )
+
+
+def test_a_contact_path_alone_is_coherent() -> None:
+    """The proactive-customer shape: the event names a contact, not an address."""
+    domain.validate_rule(  # type: ignore[arg-type]
+        **_valid(recipient_path=None, recipient_contact_path="customer.contact_id")
+    )
+
+
 # --------------------------------------------------------------------- the event catalogue
 
 

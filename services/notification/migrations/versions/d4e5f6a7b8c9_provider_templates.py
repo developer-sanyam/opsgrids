@@ -134,6 +134,22 @@ def downgrade() -> None:
     op.execute(f"DROP POLICY IF EXISTS tenant_isolation ON {SCHEMA}.provider_templates")
     op.drop_column("messages", "provider_template_payload", schema=SCHEMA)
     op.drop_column("messages", "provider_template_code", schema=SCHEMA)
+
+    # A rule that sends a provider template has no `template_code` — that is the whole point of
+    # making the column nullable on the way up. Restoring NOT NULL with such rows present fails,
+    # so they are removed first.
+    #
+    # This is data loss, and it is the honest consequence of removing the feature: a rule whose
+    # only wording came from a provider template cannot be expressed in the older schema at all,
+    # and leaving it behind with an invented `template_code` would be worse — a rule that fires
+    # and sends something nobody wrote.
+    #
+    # Written because the round-trip check runs against an empty database and therefore could
+    # not have caught it; it surfaced on a scratch database that had rules in it. A downgrade
+    # that only works when there is no data is not a rollback.
+    op.execute(
+        f"DELETE FROM {SCHEMA}.rules WHERE template_code IS NULL"
+    )
     op.alter_column("rules", "template_code", nullable=False, schema=SCHEMA)
     op.drop_column("rules", "provider_template_code", schema=SCHEMA)
     op.drop_table("provider_templates", schema=SCHEMA)

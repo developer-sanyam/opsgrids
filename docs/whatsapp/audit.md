@@ -56,10 +56,13 @@ Ordered by what blocks what, not by the brief's section order.
 
 ### Blockers that are not code
 
-**B1. Customers have no phone number.** As above. `platform_core.pii` already provides
-`seal()`/`mask()`, and `employee-service` already stores `personal_phone_enc`, so the pattern
-exists — but `customer-service` must gain a write surface, `phone_enc` + `phone_masked` columns,
-a migration, and a backfill path. Until then there is no customer to message.
+**B1. ~~Customers have no phone number.~~ — done.** `contacts.phone_enc` now holds the raw
+number sealed by `platform_core.pii.seal`, beside the existing masked `phone`. Two audited paths
+open it: a human with `crm.book.contact.read_sensitive` who has stepped up, and a service holding
+a token addressed to customer by name. Notification reaches a customer through the second
+(`app/targets.py`), so the automation engine never holds a key. No backfill was possible or
+needed — a mask cannot be reversed into a number, so every pre-existing contact simply has no
+sealed number until one is supplied.
 
 **B2. No WhatsApp Business Account.** No WABA, no phone number, no access token, no App Secret.
 Templates must be submitted to Meta and **approved by Meta** before they can be sent. That is

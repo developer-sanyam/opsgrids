@@ -765,6 +765,18 @@
             ],
             "title": "Provider Template Code"
           },
+          "recipient_contact_path": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipient Contact Path"
+          },
           "recipient_literal": {
             "anyOf": [
               {
@@ -863,6 +875,17 @@
             ],
             "title": "Provider Template Code"
           },
+          "recipient_contact_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipient Contact Path"
+          },
           "recipient_literal": {
             "anyOf": [
               {
@@ -911,6 +934,7 @@
           "category",
           "recipient_path",
           "recipient_literal",
+          "recipient_contact_path",
           "dedupe_key_path",
           "active",
           "created_at",

@@ -28,6 +28,7 @@ from typing import Any
 from app import domain, services
 from app.config import settings
 from app.models import ProcessedEvent
+from app.targets import TargetResolver, make_resolver
 from platform_core.db import assert_app_role, init_engine, session_scope
 from platform_core.events import EventConsumer, already_processed, mark_processed
 from platform_core.logging import get_logger
@@ -37,7 +38,7 @@ log = get_logger("notification.consumers")
 consumer = EventConsumer(amqp_url=settings().rabbitmq_url, queue_name="notification.events")
 
 
-async def fold(envelope: dict[str, Any]) -> None:
+async def fold(envelope: dict[str, Any], resolve_target: TargetResolver | None = None) -> None:
     """Run one event through this organization's rules, idempotently.
 
     The GUC is set per message (transaction-local), so the app role reads exactly this
@@ -54,7 +55,10 @@ async def fold(envelope: dict[str, Any]) -> None:
             log.info("event.redelivered", event_type=event_type, event_id=str(event_id))
             return
         staged = await services.apply_rules(
-            session, organization_id=organization_id, envelope=envelope
+            session,
+            organization_id=organization_id,
+            envelope=envelope,
+            resolve_target=resolve_target,
         )
         mark_processed(session, ProcessedEvent, event_id, event_type)
 
@@ -62,10 +66,19 @@ async def fold(envelope: dict[str, Any]) -> None:
         log.info("notification.staged", event_type=event_type, count=len(staged))
 
 
-def register() -> None:
-    """Bind every subscribable routing key to the one fold. Split out so tests can call it."""
+def register(resolve_target: TargetResolver | None = None) -> None:
+    """Bind every subscribable routing key to the one fold.
+
+    The target resolver is injected rather than imported, the way console injects its price
+    resolver: a rule that targets a contact needs an HTTP call to customer-service, and a test
+    should be able to substitute that without a network or a customer-service to talk to.
+    """
+
+    async def on_event(envelope: dict[str, Any]) -> None:
+        await fold(envelope, resolve_target)
+
     for event_type in domain.SUBSCRIBABLE_EVENTS:
-        consumer.on(event_type)(fold)
+        consumer.on(event_type)(on_event)
 
 
 async def main() -> None:
@@ -75,7 +88,7 @@ async def main() -> None:
     # row-level security can bind this role. Started on the admin or outbox DSN by
     # mistake, RLS would be silently inert — refuse outside local (ADR-0002).
     await assert_app_role(engine, environment=cfg.environment)
-    register()
+    register(make_resolver(cfg))
     await consumer.run()
 
 

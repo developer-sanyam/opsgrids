@@ -125,6 +125,15 @@ class Rule(Base, TenantBase):
     recipient_path: Mapped[str | None] = mapped_column(String(120))
     #: A fixed recipient, for notify-the-team rules.
     recipient_literal: Mapped[str | None] = mapped_column(String(254))
+    #: Dotted path to a **contact id** in the event payload. The recipient is then resolved by
+    #: asking customer-service for that contact's address on this channel — the only way to
+    #: reach a customer, because the CRM keeps their real number sealed and notification does
+    #: not hold the key.
+    #:
+    #: This is the path a proactive customer notification uses. `recipient_path` still serves
+    #: events that carry an address outright (a support ticket's requester email), and
+    #: `recipient_literal` the notify-the-team case.
+    recipient_contact_path: Mapped[str | None] = mapped_column(String(120))
     #: Dotted path to a value that makes this send unique. Optional.
     dedupe_key_path: Mapped[str | None] = mapped_column(String(120))
 

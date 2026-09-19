@@ -128,6 +128,7 @@ class RuleOut(BaseModel):
     category: str
     recipient_path: str | None
     recipient_literal: str | None
+    recipient_contact_path: str | None
     dedupe_key_path: str | None
     active: bool
     created_at: datetime
@@ -152,8 +153,13 @@ class RuleIn(BaseModel):
     template_code: str | None = Field(default=None, max_length=80)
     provider_template_code: str | None = Field(default=None, max_length=80)
     category: str = Field(default="operational", max_length=40)
+    #: Exactly one of these three. `recipient_path` takes an address straight from the event;
+    #: `recipient_literal` is a fixed address; `recipient_contact_path` names a **contact id**
+    #: in the event and has the address resolved from customer-service, which is the only way
+    #: to reach a customer whose number is sealed.
     recipient_path: str | None = Field(default=None, max_length=120)
     recipient_literal: str | None = Field(default=None, max_length=254)
+    recipient_contact_path: str | None = Field(default=None, max_length=120)
     dedupe_key_path: str | None = Field(default=None, max_length=120)
     active: bool = True
 
