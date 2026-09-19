@@ -149,9 +149,6 @@ jobs:
         run: |
           tools/shard-verify.sh 3
 
-      - name: Library tests
-        run: uv run pytest libs -q
-
       - name: OpenAPI contract
         # The committed documents in libs/contracts/openapi must match the code.
         # `make openapi` regenerates them.
@@ -280,6 +277,14 @@ jobs:
 
       - name: Service tests
         run: make test-shard
+
+      - name: Library tests
+        # Here rather than in the static job because they are not pure: `libs`' tenancy
+        # tests open a real session and assert on the transaction-local GUC, so they need
+        # Postgres. In the old single job they happened to run after migrations, which hid
+        # the dependency; moving them to a container-less job surfaced it immediately.
+        if: matrix.shard == 1
+        run: uv run pytest libs -q
 
       - name: Boot smoke
         # The real entrypoint — uvicorn, the lifespan, the pool, Redis — not the in-process
