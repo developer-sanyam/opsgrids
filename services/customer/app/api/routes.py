@@ -22,13 +22,20 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import scope, selectors
+from app import scope, selectors, services
 from app.config import settings
 from app.models import SCHEMA
-from app.schemas import CompanyOut, ContactOut, OwnerOut, ServiceInfo
+from app.schemas import (
+    CompanyOut,
+    ContactOut,
+    ContactPhoneIn,
+    ContactPhoneRevealed,
+    OwnerOut,
+    ServiceInfo,
+)
 from platform_core.auth import ScopeContext, require, require_product
 from platform_core.db import get_tenant_session
 from platform_core.errors import NotFoundProblem
@@ -49,6 +56,14 @@ Entitled = Depends(require_product("crm"))
 
 CompanyRead = Annotated[ScopeContext, Depends(require("crm.book.company.read"))]
 ContactRead = Annotated[ScopeContext, Depends(require("crm.book.contact.read"))]
+ContactWrite = Annotated[ScopeContext, Depends(require("crm.book.contact.write"))]
+#: Revealing a real phone number. The dangerous permission **and** a second factor, the
+#: same pairing employee-service requires to unmask an employee's personal details — an
+#: ordinary CRM session must not be a route to a customer's phone book.
+ContactUnmask = Annotated[
+    ScopeContext,
+    Depends(require("crm.book.contact.read_sensitive", amr={"otp"})),
+]
 
 
 @router.get("/customer/info", response_model=ServiceInfo, summary="What this service is")
@@ -141,3 +156,63 @@ async def read_contact(contact_id: uuid.UUID, session: SessionDep, ctx: ContactR
         raise NotFoundProblem("That contact is not part of this organization")
     ctx.assert_can_touch(owner_id=contact.owner_id)
     return selectors.contact_out(contact)
+
+
+@router.put(
+    "/contacts/{contact_id}/phone",
+    response_model=ContactOut,
+    summary="Set a contact's real phone number",
+    dependencies=[Entitled],
+)
+async def set_contact_phone(
+    contact_id: uuid.UUID,
+    payload: ContactPhoneIn,
+    session: SessionDep,
+    ctx: ContactWrite,
+    request: Request,
+) -> ContactOut:
+    """Seal a real number onto a contact and derive its mask.
+
+    Returns the ordinary `ContactOut` — the masked form — so the write surface cannot be used
+    as a read-back oracle for the number just supplied. Revealing it needs the separate
+    stepped-up route below.
+    """
+    contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+    if contact is None:
+        raise NotFoundProblem("That contact is not part of this organization")
+    ctx.assert_can_touch(owner_id=contact.owner_id)
+    contact = await services.set_contact_phone(
+        session, ctx, contact, payload.raw_phone, request=request
+    )
+    return selectors.contact_out(contact)
+
+
+@router.post(
+    "/contacts/{contact_id}/phone:reveal",
+    response_model=ContactPhoneRevealed,
+    status_code=status.HTTP_200_OK,
+    summary="Reveal a contact's real phone number (audited)",
+    dependencies=[Entitled],
+)
+async def reveal_contact_phone(
+    contact_id: uuid.UUID,
+    session: SessionDep,
+    ctx: ContactUnmask,
+    request: Request,
+) -> ContactPhoneRevealed:
+    """The only public route that returns a real number.
+
+    A POST rather than a GET on purpose: this has a side effect — it writes an
+    `entity.sensitive_read` audit row — and it must never be cached, pre-fetched, logged in a
+    query string or replayed from browser history the way a GET can be.
+
+    Guarded by the dangerous `read_sensitive` permission and a second factor, then re-scoped
+    to this one contact. Filtering a list and forgetting the detail route is the named
+    vulnerability this shape exists to avoid.
+    """
+    contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+    if contact is None:
+        raise NotFoundProblem("That contact is not part of this organization")
+    ctx.assert_can_touch(owner_id=contact.owner_id)
+    phone = await services.unmask_contact_phone(session, ctx, contact, request=request)
+    return ContactPhoneRevealed(contact_id=str(contact.id), phone=phone)

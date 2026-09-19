@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 # ------------------------------------------------------------------ vocabularies (match the SPA)
 
@@ -80,3 +80,45 @@ class ContactOut(BaseModel):
     owner_id: str
     last_activity_at: datetime | None
     created_at: datetime
+
+
+# --------------------------------------------------------------------- the real phone number
+#
+# Three shapes, deliberately separate from `ContactOut`. A raw number must never be reachable
+# by widening an existing response, so it has its own request, its own response and its own
+# route — and `ContactOut` is untouched, still carrying only the mask.
+
+
+class ContactPhoneIn(BaseModel):
+    """Set a contact's real number. The mask is derived from it, never supplied."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: E.164, with the country code. Validated and canonicalised server-side; a number
+    #: without a country code is refused rather than guessed at.
+    raw_phone: str = Field(min_length=4, max_length=40)
+
+
+class ContactPhoneRevealed(BaseModel):
+    """A contact's real number, revealed to a human who stepped up.
+
+    Returned only by the dedicated unmask route, which requires the dangerous
+    `read_sensitive` permission and a second factor, and which writes an audit row every time.
+    `phone` is None when the contact has no sealed number.
+    """
+
+    contact_id: str
+    phone: str | None
+
+
+class MessagingTargetOut(BaseModel):
+    """A contact's messaging address, for a service that is about to send to them.
+
+    The internal API's response, never the public one. `phone` is None when the contact has
+    no sealed number, which the caller must treat as "not messageable on this channel" rather
+    than as an error — a contact with no number is an ordinary state, not a fault.
+    """
+
+    contact_id: str
+    channel: str
+    phone: str | None
