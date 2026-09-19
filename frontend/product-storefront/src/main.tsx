@@ -9,6 +9,7 @@ import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
 import { RequireAuth } from "./auth/RequireAuth";
+import { DeliveryFallback } from "./delivery/DeliveryFallback";
 import { ComingSoonPage } from "./routes/ComingSoon";
 import { EditorFallback } from "./routes/EditorFallback";
 import { GalleryPage } from "./routes/Gallery";
@@ -23,6 +24,13 @@ import { StorefrontPage } from "./routes/Storefront";
  * therefore the one split point in this app; everything else is on the critical path anyway.
  */
 const EditorPage = lazy(() => import("./routes/editor"));
+
+/**
+ * The delivery admin is the app's second split point, for the same reason: a merchant editing
+ * their theme should not download a CSV reader, a postal-code parser and a demand table for a
+ * screen they may never open (ADR-0010 slice 1).
+ */
+const DeliveryPage = lazy(() => import("./delivery"));
 
 /**
  * The routed screens under the app shell.
@@ -49,6 +57,14 @@ const shellRoutes = [
     ),
   },
   { path: "store/*", element: <StorefrontPage /> },
+  {
+    path: "delivery",
+    element: (
+      <Suspense fallback={<DeliveryFallback />}>
+        <DeliveryPage />
+      </Suspense>
+    ),
+  },
   {
     path: "settings",
     element: (

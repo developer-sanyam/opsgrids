@@ -35,6 +35,25 @@ import { page, sec } from "./build";
 const SCRIM = "#17110C";
 
 /**
+ * The serviceability check, above the hero on the home page and above the piece on the detail
+ * page — the two places somebody decides whether to keep reading.
+ *
+ * The showroom's answer is a **date**, not a duration: a workshop quotes days, and the zone's
+ * `DATE_OFFSET` promise renders as "Arrives Wed 23 Sep". The date is resolved by the server in the
+ * *store's* timezone and rendered exactly as sent (ADR-0010 §3) — a buyer in Singapore reading a
+ * Jodhpur showroom's date shifted by a day is a support ticket nobody can diagnose.
+ *
+ * `idlePromiseText` is the claim the showroom makes before it knows where the buyer is; once it
+ * knows, the zone's own answer replaces it.
+ */
+const CHECK = {
+  storeSlug: "atelier",
+  idlePromiseText: "Delivered and assembled anywhere in India",
+  fieldLabel: "PIN code",
+  submitLabel: "Check",
+};
+
+/**
  * The footer, which is identical on all three routes.
  *
  * Written once and spread into each page's instance: a footer that differs between routes is a
@@ -90,7 +109,8 @@ export const atelier: Theme = {
   },
   pages: [
     page("atl-home", "/", "Home", [
-      sec("atl-hero", "hero", { x: 0, y: 0, w: 12, h: 11 }, {
+      sec("atl-delivery", "delivery-check", { x: 0, y: 0, w: 12, h: 3 }, { ...CHECK }),
+      sec("atl-hero", "hero", { x: 0, y: 3, w: 12, h: 11 }, {
         eyebrow: "Made by hand in Jodhpur since 1994",
         heading: "Furniture that outlives the room it was made for",
         body: "Solid teak, sheesham and rosewood, cut and joined by the same eleven people who have been here twenty years.",
@@ -109,7 +129,7 @@ export const atelier: Theme = {
         tone: "surface",
         bleed: true,
       }),
-      sec("atl-rooms", "collection-row", { x: 0, y: 11, w: 12, h: 5 }, {
+      sec("atl-rooms", "collection-row", { x: 0, y: 14, w: 12, h: 5 }, {
         heading: "Shop by room",
         item1Title: "Sofas & Seating",
         item1Image: "/img/cat-seating.svg",
@@ -127,7 +147,7 @@ export const atelier: Theme = {
         mobileColumns: 2,
         aspect: "wide",
       }),
-      sec("atl-rail-seating", "product-carousel", { x: 0, y: 16, w: 12, h: 9 }, {
+      sec("atl-rail-seating", "product-carousel", { x: 0, y: 19, w: 12, h: 9 }, {
         heading: "The Seating Collection",
         source: "category:seating",
         limit: 8,
@@ -139,7 +159,7 @@ export const atelier: Theme = {
         showBadge: false,
         priceNote: "inclusive",
       }),
-      sec("atl-band-timber", "image-with-text", { x: 0, y: 25, w: 12, h: 6 }, {
+      sec("atl-band-timber", "image-with-text", { x: 0, y: 28, w: 12, h: 6 }, {
         heading: "We buy the tree, not the plank",
         body: "Timber is bought standing, felled to our own schedule and air-dried for eighteen months before a saw touches it. It is the slowest part of the work and the only reason a joint still closes ten monsoons later.",
         caption: "The drying yard, Jodhpur",
@@ -151,7 +171,7 @@ export const atelier: Theme = {
         ctaHref: "/store/catalogue",
         bleed: true,
       }),
-      sec("atl-rail-dining", "product-carousel", { x: 0, y: 31, w: 12, h: 9 }, {
+      sec("atl-rail-dining", "product-carousel", { x: 0, y: 34, w: 12, h: 9 }, {
         heading: "The Dining Collection",
         source: "category:dining",
         limit: 8,
@@ -163,7 +183,7 @@ export const atelier: Theme = {
         showBadge: false,
         priceNote: "inclusive",
       }),
-      sec("atl-rail-beds", "product-carousel", { x: 0, y: 40, w: 12, h: 9 }, {
+      sec("atl-rail-beds", "product-carousel", { x: 0, y: 43, w: 12, h: 9 }, {
         heading: "Beds & Wardrobes",
         source: "category:beds",
         limit: 8,
@@ -175,7 +195,7 @@ export const atelier: Theme = {
         showBadge: false,
         priceNote: "inclusive",
       }),
-      sec("atl-band-hands", "image-with-text", { x: 0, y: 49, w: 12, h: 5 }, {
+      sec("atl-band-hands", "image-with-text", { x: 0, y: 52, w: 12, h: 5 }, {
         heading: "Eleven pairs of hands, one workshop",
         body: "Nothing here is assembled from a kit. A bed is cut, carved, fitted and finished by the same team, and the piece that arrives is the piece they photographed before it was wrapped.",
         caption: "Finishing bay, Jodhpur",
@@ -186,7 +206,7 @@ export const atelier: Theme = {
         ctaLabel: "",
         bleed: true,
       }),
-      sec("atl-rail-lighting", "product-carousel", { x: 0, y: 54, w: 12, h: 9 }, {
+      sec("atl-rail-lighting", "product-carousel", { x: 0, y: 57, w: 12, h: 9 }, {
         heading: "Lighting & Décor",
         source: "category:lighting",
         limit: 8,
@@ -198,7 +218,7 @@ export const atelier: Theme = {
         showBadge: false,
         priceNote: "inclusive",
       }),
-      sec("atl-closing", "rich-text", { x: 0, y: 63, w: 12, h: 5 }, {
+      sec("atl-closing", "rich-text", { x: 0, y: 66, w: 12, h: 5 }, {
         heading: "Made to order, delivered assembled",
         body: "Every piece is built after you order it, which is why a sofa takes three weeks and a wardrobe takes four.\n\nIt arrives assembled, carried in, placed where you want it and the packing taken away again. Nothing is left in a flat box on a landing.",
         size: "lg",
@@ -206,7 +226,7 @@ export const atelier: Theme = {
         tone: "surface",
         columns: 1,
       }),
-      sec("atl-footer", "footer-columns", { x: 0, y: 68, w: 12, h: 7 }, { ...FOOTER }),
+      sec("atl-footer", "footer-columns", { x: 0, y: 71, w: 12, h: 7 }, { ...FOOTER }),
     ]),
 
     page("atl-catalogue", "/catalogue", "The collection", [
@@ -291,7 +311,8 @@ export const atelier: Theme = {
     ]),
 
     page("atl-product", "/product", "A piece in detail", [
-      sec("atl-prd-hero", "hero", { x: 0, y: 0, w: 12, h: 9 }, {
+      sec("atl-prd-delivery", "delivery-check", { x: 0, y: 0, w: 12, h: 3 }, { ...CHECK }),
+      sec("atl-prd-hero", "hero", { x: 0, y: 3, w: 12, h: 9 }, {
         eyebrow: "Sofas & Seating",
         heading: "Kashmir Walnut Three-Seater Sofa",
         body: "A hand-carved walnut frame under linen upholstery, 198 cm across. Built to order in about three weeks.",
@@ -307,7 +328,7 @@ export const atelier: Theme = {
         tone: "surface",
         bleed: true,
       }),
-      sec("atl-prd-band", "image-with-text", { x: 0, y: 9, w: 12, h: 8 }, {
+      sec("atl-prd-band", "image-with-text", { x: 0, y: 12, w: 12, h: 8 }, {
         heading: "Carved, not pressed",
         body: "The chinar panel on the back of this frame is cut by hand from a single board. It takes one carver about nine days, and it is the reason no two of these sofas are quite identical.",
         caption: "Walnut carving, Srinagar",
@@ -316,7 +337,7 @@ export const atelier: Theme = {
         layout: "split",
         ctaLabel: "",
       }),
-      sec("atl-prd-specs", "feature-columns", { x: 0, y: 17, w: 12, h: 4 }, {
+      sec("atl-prd-specs", "feature-columns", { x: 0, y: 20, w: 12, h: 4 }, {
         heading: "What you are buying",
         columns: 3,
         item1Title: "Solid walnut",
@@ -328,7 +349,7 @@ export const atelier: Theme = {
         item4Title: "",
         item4Body: "",
       }),
-      sec("atl-prd-rail", "product-carousel", { x: 0, y: 21, w: 12, h: 9 }, {
+      sec("atl-prd-rail", "product-carousel", { x: 0, y: 24, w: 12, h: 9 }, {
         heading: "More from the Seating Collection",
         source: "category:seating",
         limit: 8,
@@ -340,7 +361,7 @@ export const atelier: Theme = {
         showBadge: false,
         priceNote: "inclusive",
       }),
-      sec("atl-prd-pairs", "product-carousel", { x: 0, y: 30, w: 12, h: 9 }, {
+      sec("atl-prd-pairs", "product-carousel", { x: 0, y: 33, w: 12, h: 9 }, {
         heading: "Pairs well with",
         source: "category:lighting",
         limit: 8,
@@ -352,7 +373,7 @@ export const atelier: Theme = {
         showBadge: false,
         priceNote: "inclusive",
       }),
-      sec("atl-prd-faq", "faq", { x: 0, y: 39, w: 12, h: 6 }, {
+      sec("atl-prd-faq", "faq", { x: 0, y: 42, w: 12, h: 6 }, {
         heading: "Before you order",
         q1: "How long does a made-to-order piece take?",
         a1: "Three weeks for seating, four for a bed or a wardrobe, and we confirm the week in writing before you pay anything.",
@@ -364,7 +385,7 @@ export const atelier: Theme = {
         a4: "Tell the crew at the door or us within 48 hours. We repair in your home where that is right, and replace where it is not.",
         openFirst: true,
       }),
-      sec("atl-prd-footer", "footer-columns", { x: 0, y: 45, w: 12, h: 7 }, { ...FOOTER }),
+      sec("atl-prd-footer", "footer-columns", { x: 0, y: 48, w: 12, h: 7 }, { ...FOOTER }),
     ]),
   ],
 };

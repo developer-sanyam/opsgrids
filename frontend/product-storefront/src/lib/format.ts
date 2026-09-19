@@ -11,8 +11,15 @@ const INR = new Intl.NumberFormat("en-IN", {
   maximumFractionDigits: 0,
 });
 
-/** ₹1,240 — whole rupees, Indian digit grouping. */
-export function formatMinor(minor: number, currency: Product["currency"] = "INR"): string {
+/**
+ * ₹1,240 — whole rupees, Indian digit grouping.
+ *
+ * The currency is a plain ISO string rather than `Product["currency"]`: the catalogue is INR-only
+ * today, but a storefront carries its own currency on the store row (ADR-0010 §1) and a delivery
+ * fee is quoted in that, not in the catalogue's. Widening the parameter is what makes the non-INR
+ * branch below reachable instead of dead.
+ */
+export function formatMinor(minor: number, currency: string = "INR"): string {
   if (currency !== "INR") {
     return new Intl.NumberFormat("en-IN", { style: "currency", currency, maximumFractionDigits: 0 })
       .format(minor / 100);

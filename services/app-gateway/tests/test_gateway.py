@@ -346,6 +346,122 @@ class TestPublicPaths:
         assert upstream.header("x-org-slug") is None
 
 
+class TestTheStorefrontBuyerSurface:
+    """The platform's first anonymous read of *tenant* data (ADR-0010).
+
+    Every other public path exists to produce a token. This one is a stranger asking a merchant's
+    store whether it delivers to their postal code, so the gateway is the component that decides
+    whether the buyer surface works at all — and a green unit suite inside storefront-service
+    proves nothing about that.
+    """
+
+    SERVICEABILITY = "/api/v1/storefront/public/serviceability"
+
+    async def test_the_serviceability_check_is_reachable_with_no_token(
+        self, client: AsyncClient, upstream: EchoUpstream
+    ) -> None:
+        response = await client.post(
+            self.SERVICEABILITY, json={"store": "greenleaf", "postal_code": "400050"}
+        )
+        assert response.status_code == 200
+        assert upstream.last["path"] == self.SERVICEABILITY
+
+    async def test_it_forwards_no_organization_and_no_permissions(
+        self, client: AsyncClient, upstream: EchoUpstream
+    ) -> None:
+        """The public branch returns before identity is resolved, so the service gets nothing to
+        trust — which is exactly why it resolves its own tenant from the slug in the body, on a
+        bypass reader, and binds it itself."""
+        await client.post(self.SERVICEABILITY, json={"store": "greenleaf", "postal_code": "400050"})
+        assert upstream.header("x-org-id") is None
+        assert upstream.header("x-perms") is None
+        assert upstream.header("x-internal-token") is None
+
+    async def test_it_is_limited_by_address_like_every_other_public_path(
+        self, client: AsyncClient, redis: FakeRedis
+    ) -> None:
+        """60 requests per minute per client IP. It throttles bulk enumeration of store slugs; it
+        does not prevent it, and no scheme that keeps the data usable by strangers could."""
+        await client.post(self.SERVICEABILITY, json={"store": "greenleaf", "postal_code": "400050"})
+        assert any(k.startswith("rl:anon:") for k in redis.store)
+
+    async def test_a_redis_outage_is_503_and_never_an_answer(
+        self, client: AsyncClient, redis: FakeRedis
+    ) -> None:
+        """**Unknown is not no** (ADR-0010 §13). `enforce_rate_limit` fails closed, which is
+        correct — an unverifiable limit on a public endpoint is an amplifier — and the
+        consequence is that a Redis outage takes the buyer-facing check *down*. Down is a 503 the
+        client renders as "couldn't check". What it must never be is a well-formed 200 saying the
+        shop does not deliver there, which is what a catch-and-answer anywhere on this path would
+        produce."""
+        redis.fail = True
+
+        response = await client.post(
+            self.SERVICEABILITY, json={"store": "greenleaf", "postal_code": "400050"}
+        )
+
+        assert response.status_code == 503
+        assert response.headers["content-type"].startswith("application/problem+json")
+        assert "serviceable" not in response.json()
+
+    async def test_the_public_path_is_exact_and_not_a_prefix(self, client: AsyncClient) -> None:
+        """`public_paths` is matched with `full_path in policy.public_paths`. A sibling under the
+        same `/public/` segment is **not** public, which is the property the whole anonymous
+        buyer API is designed around: variables travel in the query string or the body, never the
+        path."""
+        assert (await client.post("/api/v1/storefront/public/catalogue")).status_code == 401
+        assert (
+            await client.post(f"{self.SERVICEABILITY}/x", json={"store": "g"})
+        ).status_code == 401
+
+    async def test_the_merchant_surface_behind_it_still_needs_a_token(
+        self, client: AsyncClient
+    ) -> None:
+        assert (await client.get("/api/v1/storefront/delivery/zones")).status_code == 401
+        assert (await client.get("/api/v1/storefront/store")).status_code == 401
+
+    async def test_the_merchant_surface_needs_the_storefront_entitlement(
+        self, client: AsyncClient, mint
+    ) -> None:
+        """402, not 403: the caller's permissions are fine, the subscription is not."""
+        refused = await client.get(
+            "/api/v1/storefront/delivery/zones", headers=auth(mint(entitlements=["hrms"]))
+        )
+        allowed = await client.get(
+            "/api/v1/storefront/delivery/zones", headers=auth(mint(entitlements=["storefront"]))
+        )
+        assert refused.status_code == 402
+        assert allowed.status_code == 200
+
+    def test_the_public_route_entry_carries_no_product_key(self) -> None:
+        """Two entries on one upstream, and the split is the point. Longest prefix wins, so the
+        public entry resolves first and carries no `product` — making "the buyer surface is not
+        entitlement-gated" a fact in the route table rather than a consequence of statement
+        ordering inside the proxy. A product key there would be **inert**, because the public
+        branch returns before the entitlement check, and an inert guard that looks like a guard
+        is worse than none."""
+        from app.main import routes
+
+        public = routes.resolve("/api/v1/storefront/public/serviceability")
+        merchant = routes.resolve("/api/v1/storefront/delivery/zones")
+        assert public is not None and merchant is not None
+        assert public.prefix == "/api/v1/storefront/public"
+        assert public.product is None
+        assert merchant.product == "storefront"
+        assert public.upstream == merchant.upstream
+
+    def test_the_gateways_own_policy_carries_the_path_not_the_shared_library(self) -> None:
+        """Editing `DEFAULT_PUBLIC_PATHS` would put one product's buyer surface in the module
+        **both** gateways read, and `admin-gateway` builds its own explicit set. A two-line
+        change in this service is the right blast radius."""
+        from app.main import STOREFRONT_PUBLIC_PATHS, policy
+        from platform_core.gateway import DEFAULT_PUBLIC_PATHS
+
+        assert "/api/v1/storefront/public/serviceability" in STOREFRONT_PUBLIC_PATHS
+        assert not (STOREFRONT_PUBLIC_PATHS & DEFAULT_PUBLIC_PATHS)
+        assert policy.public_paths >= STOREFRONT_PUBLIC_PATHS
+
+
 class TestUpstreamFailure:
     async def test_an_unreachable_service_becomes_a_problem_document(
         self, client: AsyncClient, mint, monkeypatch: pytest.MonkeyPatch

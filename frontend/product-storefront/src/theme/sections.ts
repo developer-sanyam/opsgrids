@@ -15,6 +15,7 @@
 import { BLEED_SETTING } from "./schema";
 import type { SectionDef, SettingField, SettingValue } from "./schema";
 import { CMS_SECTION_DEFS } from "./sections.cms";
+import { DELIVERY_SECTION_DEFS } from "./sections.delivery";
 import { RETAIL_SECTION_DEFS } from "./sections.retail";
 import { PRODUCT_SOURCE_OPTIONS } from "./sources";
 
@@ -545,11 +546,12 @@ const CORE_SECTION_DEFS: SectionDef[] = [
   },
 ];
 
-/** The whole library: the original blocks, the retail four, then the content seven. */
+/** The whole library: the original blocks, the retail four, the content seven, the delivery one. */
 export const SECTION_DEFS: SectionDef[] = [
   ...CORE_SECTION_DEFS,
   ...RETAIL_SECTION_DEFS,
   ...CMS_SECTION_DEFS,
+  ...DELIVERY_SECTION_DEFS,
 ];
 
 /** Indexed by `type`, for the renderer and the editor's lookups. */

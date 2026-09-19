@@ -459,6 +459,121 @@ export function QuantityStepper({
   );
 }
 
+/* ---------------------------------- forms ---------------------------------- */
+
+/**
+ * A single-line text field on the buyer's surface: a real `<input>`, a real `<label>` tied to it,
+ * and its error tied to it by `aria-describedby`.
+ *
+ * It exists because three sections were about to hand-roll the same twelve style declarations —
+ * the announcement bar's search, the enquiry form's fields and the delivery check's postal code —
+ * and the third of those would have been the first one to get `aria-invalid` wrong.
+ *
+ * **An error is marked by weight, position and wording, never by a tint.** `ThemeTokens` names one
+ * accent and no semantic colour, so a red-for-danger does not exist to reach for: painting an
+ * error in the accent would read as "danger" in one theme and as "this is the brand" in the next.
+ * The border does move to `currentColor` weight-wise — it thickens — which is a non-colour signal
+ * that survives both a monochrome theme and a buyer who cannot distinguish the hues.
+ *
+ * `hideLabel` moves the label into the accessible name rather than hiding it with CSS: a promise
+ * bar has no room for "PIN code" stacked above a six-character field, and the control still has to
+ * be named. It does not drop the name — an `<input>` with no label is unusable by voice control.
+ */
+export function StoreField({
+  id,
+  label,
+  value,
+  onChange,
+  name,
+  error,
+  placeholder,
+  inputMode,
+  autoComplete,
+  maxLength,
+  hideLabel = false,
+  reserveError = false,
+  style,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  name?: string;
+  /** The message, already written. Present means the field is invalid. */
+  error?: string | null;
+  placeholder?: string;
+  inputMode?: "text" | "numeric";
+  autoComplete?: string;
+  maxLength?: number;
+  hideLabel?: boolean;
+  /**
+   * Hold the error's line whether or not there is an error in it.
+   *
+   * For a field inside page chrome — a bar across the top of a store — where the message appearing
+   * would otherwise push everything below it down under the buyer's thumb as they type. Off by
+   * default: inside a form that is already the whole column, the reserved line is dead space on
+   * every field that never errors.
+   */
+  reserveError?: boolean;
+  style?: CSSProperties;
+}) {
+  const errorId = `${id}-error`;
+  const invalid = typeof error === "string" && error !== "";
+
+  return (
+    <span style={{ display: "flex", flexDirection: "column", gap: step(0.25), minWidth: 0, ...style }}>
+      {hideLabel ? null : (
+        <label
+          htmlFor={id}
+          style={{ fontFamily: T.fontBody, fontSize: "0.75rem", fontWeight: 600, color: T.muted }}
+        >
+          {label}
+        </label>
+      )}
+      <input
+        id={id}
+        type="text"
+        {...(name ? { name } : {})}
+        {...(hideLabel ? { "aria-label": label } : {})}
+        {...(placeholder ? { placeholder } : {})}
+        {...(inputMode ? { inputMode } : {})}
+        {...(autoComplete ? { autoComplete } : {})}
+        {...(maxLength === undefined ? {} : { maxLength })}
+        {...(invalid ? { "aria-invalid": true, "aria-describedby": errorId } : {})}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        style={{
+          fontFamily: T.fontBody,
+          fontSize: "0.9375rem",
+          color: T.text,
+          background: T.bg,
+          border: `${invalid ? "2px" : "1px"} solid ${T.border}`,
+          borderRadius: T.radius,
+          padding: invalid ? `calc(${step(0.55)} - 1px) calc(${step(0.65)} - 1px)` : `${step(0.55)} ${step(0.65)}`,
+          minWidth: 0,
+          width: "100%",
+          boxSizing: "border-box",
+        }}
+      />
+      {invalid || reserveError ? (
+        <span
+          {...(invalid ? { id: errorId } : {})}
+          style={{
+            fontFamily: T.fontBody,
+            fontSize: "0.75rem",
+            fontWeight: 700,
+            color: T.text,
+            lineHeight: 1.35,
+            ...(reserveError ? { minHeight: "1.05rem" } : {}),
+          }}
+        >
+          {invalid ? error : null}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 /* --------------------------------- retail --------------------------------- */
 
 /**

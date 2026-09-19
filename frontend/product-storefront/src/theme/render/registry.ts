@@ -12,6 +12,7 @@ import { CategoryTiles } from "./CategoryTiles";
 import { CollectionRow } from "./CollectionRow";
 import { ContactBlock } from "./ContactBlock";
 import { CredentialStrip } from "./CredentialStrip";
+import { DeliveryCheck } from "./DeliveryCheck";
 import { EnquiryForm } from "./EnquiryForm";
 import { Faq } from "./Faq";
 import { FeatureColumns } from "./FeatureColumns";
@@ -63,6 +64,9 @@ export const SECTION_COMPONENTS: Record<string, SectionComponent> = {
   "card-deck": CardDeck,
   "credential-strip": CredentialStrip,
   video: VideoList,
+  /* The buyer's serviceability check. Declared in `sections.delivery.ts`; the same agreement test
+     keeps the two lists in step. */
+  "delivery-check": DeliveryCheck,
 };
 
 export function sectionComponent(type: string): SectionComponent | null {

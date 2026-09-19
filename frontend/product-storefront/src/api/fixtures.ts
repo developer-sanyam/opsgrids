@@ -560,3 +560,101 @@ export const RETAIL_CATEGORY_LIST: Category[] = RETAIL_CATEGORIES.map((c) => {
     image_url: art === undefined ? null : `/img/${art}.svg`,
   };
 });
+
+/* ------------------------------ serviceability ----------------------------- */
+
+/**
+ * The retail delivery map, as one merchant would have mapped it.
+ *
+ * Stands in for `storefront.zone_postal_codes` joined to `delivery_zones` (ADR-0010 §2) so the
+ * buyer's check has something to answer with while the service is unbuilt. Each row is a
+ * `ServiceabilityOut` minus the two fields the call itself supplies — the echoed postal code and
+ * `checked_at` — so a fixture answer and a real one are the same object in the same shape, and a
+ * schema change breaks this file at the type level rather than at runtime in front of a buyer.
+ *
+ * **The dates are constants, not `today + n`.** A fixture standing in for a server must not do the
+ * arithmetic the server owns: a promise date is resolved once, in the store's own timezone, and a
+ * fixture that recomputed it from the browser's clock would hide exactly the defect the renderer
+ * is written to avoid. They go stale, and that is the correct kind of wrong for sample data.
+ */
+export interface ServiceabilityFixture {
+  /** The verdict, stated rather than derived — it is the field the buyer's half classifies on. */
+  serviceable: boolean;
+  mode: "PROMISED" | "SLOTTED" | "UNSERVED";
+  reason: "no_mapping" | "excluded" | "zone_inactive" | null;
+  promise: { kind: "DURATION" | "DATE_OFFSET"; minutes?: number; date?: string } | null;
+  fees: {
+    currency: string;
+    delivery_fee_minor: number;
+    free_delivery_above_minor?: number;
+    min_order_minor?: number;
+    display_only?: boolean;
+  } | null;
+  buyer_note: string | null;
+}
+
+/** Paise throughout, like every other amount in this file. */
+const SERVED_QUICK = {
+  serviceable: true,
+  mode: "PROMISED",
+  reason: null,
+  fees: {
+    currency: "INR",
+    delivery_fee_minor: 2900,
+    free_delivery_above_minor: 49900,
+    min_order_minor: 9900,
+    display_only: true,
+  },
+  buyer_note: null,
+} as const;
+
+const SERVED_DATED = {
+  serviceable: true,
+  mode: "PROMISED",
+  reason: null,
+  fees: { currency: "INR", delivery_fee_minor: 0, display_only: true },
+  buyer_note: "Delivered and assembled by our own crew.",
+} as const;
+
+/** Keyed by normalised postal code. Anything absent is `no_mapping` — never mapped, not refused. */
+export const SERVICEABILITY_ZONES: Record<string, ServiceabilityFixture> = {
+  /* The dark-store pincodes the QuickCart theme already names in its own copy. */
+  "400072": { ...SERVED_QUICK, promise: { kind: "DURATION", minutes: 11 } },
+  "400050": { ...SERVED_QUICK, promise: { kind: "DURATION", minutes: 25 } },
+  "400601": { ...SERVED_QUICK, promise: { kind: "DURATION", minutes: 95 } },
+  /* Upcountry: a courier, promised as a date. The furniture store's normal case. */
+  "421302": { ...SERVED_DATED, promise: { kind: "DATE_OFFSET", date: "2026-09-23" } },
+  "342001": { ...SERVED_DATED, promise: { kind: "DATE_OFFSET", date: "2026-09-25" } },
+  /* Mapped and deliberately excluded. Its `mode` is `UNSERVED` — the same `mode` an unmapped code
+     comes back with, which is exactly why the two are told apart by `reason` and not by `mode`.
+     The merchant's demand report is far more useful for being able to tell them apart. */
+  "194101": {
+    serviceable: false,
+    mode: "UNSERVED",
+    reason: "excluded",
+    promise: null,
+    fees: null,
+    buyer_note: null,
+  },
+  /* The third refusal, and the only temporary one: the zone exists and is switched off. Here so
+     that its wording is reachable in a browser rather than only in a test. */
+  "590001": {
+    serviceable: false,
+    mode: "UNSERVED",
+    reason: "zone_inactive",
+    promise: null,
+    fees: null,
+    buyer_note: null,
+  },
+};
+
+/**
+ * The one pincode fixtures refuse to answer for, so "couldn't check" is reachable in the editor
+ * and in a browser without unplugging anything.
+ *
+ * That state is the hardest of the three to get in front of a reviewer and the most expensive to
+ * get wrong: it is what a transient Redis outage produces in real operation — the gateway's rate
+ * limiter fails closed (ADR-0010 §13) — and what a naive implementation renders as "we don't
+ * deliver here".
+ */
+export const SERVICEABILITY_FAULT_CODE = "999999";

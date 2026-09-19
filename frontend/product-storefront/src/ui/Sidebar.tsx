@@ -7,6 +7,7 @@ import {
   MonitorIcon,
   SettingsIcon,
   Sidebar as SidebarShell,
+  TruckIcon,
 } from "@opsgrids/ui";
 import type { NavEntry, NavGroup } from "@opsgrids/ui";
 import { CONSOLE_STORE_BASE, LIVE_BASE } from "@/routes/live/liveRoutes";
@@ -43,6 +44,10 @@ const GROUPS: NavGroup[] = [
     items: [
       { to: "/", label: "Themes", icon: LayoutIcon, end: true },
       { to: "/editor", label: "Editor", icon: BoxIcon },
+      // The delivery admin shipped reachable by URL only, which is the same as not shipping it:
+      // zones, the postal-code map and the demand report are a merchant's screen, not a deep link
+      // somebody hands them. The label matches the screen's own `PageHeader` title.
+      { to: "/delivery", label: "Delivery", icon: TruckIcon },
     ],
   },
   {

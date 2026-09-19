@@ -32,6 +32,26 @@ from platform_core.gateway import (
 
 cfg = settings()
 
+#: The storefront's buyer surface (ADR-0010 §4). Lives **here, in the gateway service**, and is
+#: unioned into the shared default below rather than being added to `DEFAULT_PUBLIC_PATHS` in
+#: `platform_core`: editing the library's frozenset would put one product's buyer surface into
+#: the one module both gateways read, and `admin-gateway` — which builds its own explicit set —
+#: would then be carrying a product concern it has no use for. A two-line change in the gateway
+#: *service* is the right blast radius.
+#:
+#: **Exact match, and that is a constraint on the whole future buyer API rather than a quirk of
+#: this route.** `build_gateway` tests `full_path in policy.public_paths`, and `full_path` is
+#: `f"/api/{path}"` from the `{path:path}` catch-all — so it excludes the query string, a public
+#: *prefix* is not configurable, and a public path with a path parameter is not expressible at
+#: all. Every anonymous storefront endpoint must therefore carry its variables in the query
+#: string or the request body; the store slug travels in the body here for exactly that reason.
+#:
+#: Being on this list means: no token required, limited by client IP rather than by caller, and
+#: **no entitlement check** — the public branch of the proxy returns before that gate. It does
+#: not mean the path is unauthenticated *by accident*; adding one is a deliberate decision about
+#: a route that has no principal to authorize.
+STOREFRONT_PUBLIC_PATHS = frozenset({"/api/v1/storefront/public/serviceability"})
+
 # Resolved relative to the service directory so `make run` and the container image agree.
 _routes_path = Path(cfg.routes_file)
 if not _routes_path.is_absolute():
@@ -41,7 +61,7 @@ routes = RouteTable.from_file(_routes_path)
 
 policy = GatewayPolicy(
     audience=cfg.audience,
-    public_paths=DEFAULT_PUBLIC_PATHS,
+    public_paths=DEFAULT_PUBLIC_PATHS | STOREFRONT_PUBLIC_PATHS,
     rate_limit=cfg.rate_limit_per_minute,
     anonymous_rate_limit=cfg.anonymous_rate_limit_per_minute,
     upstream_timeout=cfg.upstream_timeout_seconds,

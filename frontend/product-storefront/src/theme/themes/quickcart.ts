@@ -50,6 +50,29 @@ const BAR = {
 };
 
 /**
+ * The serviceability check that sits under the bar on every route.
+ *
+ * `storeSlug` is the store's published handle, and it is what makes this a real check rather than
+ * a decoration: the buyer's request names the store in its body, because the gateway's public path
+ * list is exact-match and cannot carry a path parameter (ADR-0010 §4).
+ *
+ * `idlePromiseText` repeats `BAR.promiseText` on purpose, and the repetition is the design. Before
+ * a buyer says where they are, the store shows the merchant's own store-wide claim; once they have
+ * an answer, their zone's promise replaces it (ADR-0010 §15). Two promises on one screen is a real
+ * ambiguity, and this is the rule that resolves it: the merchant's copy is the default, the zone's
+ * answer is the truth.
+ */
+const CHECK = {
+  storeSlug: "quickcart",
+  /* Empty on purpose: the bar directly above already carries `promiseText`, and the same sentence
+     twice on one screen reads as a bug rather than as emphasis. The prompt below it does the work
+     until the buyer has an answer, and their zone's answer then replaces both. */
+  idlePromiseText: "",
+  promptText: "Delivering to your PIN code? Check before you shop.",
+  submitLabel: "Check",
+};
+
+/**
  * The footer, which is identical on all three routes.
  *
  * Written once for the same reason as the bar. Every link points at one of the store's three real
@@ -114,7 +137,8 @@ export const quickcart: Theme = {
         ...BAR,
         searchPlaceholder: 'Search for "atta"',
       }),
-      sec("qc-hero", "hero", { x: 0, y: 2, w: 12, h: 8 }, {
+      sec("qc-delivery", "delivery-check", { x: 0, y: 2, w: 12, h: 3 }, { ...CHECK }),
+      sec("qc-hero", "hero", { x: 0, y: 5, w: 12, h: 8 }, {
         eyebrow: "Now serving Mumbai, Thane and Navi Mumbai",
         heading: "The weekly shop, at the door before the kettle boils",
         body: "Two thousand everyday lines from the brands your kitchen already runs on, picked and packed in minutes.",
@@ -126,7 +150,7 @@ export const quickcart: Theme = {
         tone: "surface",
         align: "left",
       }),
-      sec("qc-cats", "category-tiles", { x: 0, y: 10, w: 12, h: 6 }, {
+      sec("qc-cats", "category-tiles", { x: 0, y: 13, w: 12, h: 6 }, {
         heading: "Shop by category",
         style: "compact",
         aspect: "square",
@@ -137,7 +161,7 @@ export const quickcart: Theme = {
         showCount: true,
         tint: MARIGOLD,
       }),
-      sec("qc-rail-staples", "product-carousel", { x: 0, y: 16, w: 12, h: 7 }, {
+      sec("qc-rail-staples", "product-carousel", { x: 0, y: 19, w: 12, h: 7 }, {
         heading: "Atta, rice and dal",
         source: "category:staples",
         limit: 8,
@@ -148,7 +172,7 @@ export const quickcart: Theme = {
         cardStyle: "compact",
         priceNote: "inclusive",
       }),
-      sec("qc-stores", "collection-row", { x: 0, y: 23, w: 12, h: 5 }, {
+      sec("qc-stores", "collection-row", { x: 0, y: 26, w: 12, h: 5 }, {
         heading: "Shop by store",
         item1Title: "Grocery & Kitchen",
         item1Image: "/img/cat-staples.svg",
@@ -172,7 +196,7 @@ export const quickcart: Theme = {
         // A swipeable row on a phone: the fourth tile peeks, so it is obvious there is more.
         scroll: true,
       }),
-      sec("qc-rail-dairy", "product-carousel", { x: 0, y: 28, w: 12, h: 7 }, {
+      sec("qc-rail-dairy", "product-carousel", { x: 0, y: 31, w: 12, h: 7 }, {
         heading: "Dairy, bread and eggs",
         source: "category:dairy",
         limit: 8,
@@ -182,7 +206,7 @@ export const quickcart: Theme = {
         cardStyle: "compact",
         priceNote: "inclusive",
       }),
-      sec("qc-rail-snacks", "product-carousel", { x: 0, y: 35, w: 12, h: 7 }, {
+      sec("qc-rail-snacks", "product-carousel", { x: 0, y: 38, w: 12, h: 7 }, {
         heading: "Snacks and namkeen",
         source: "category:snacks",
         limit: 8,
@@ -192,7 +216,7 @@ export const quickcart: Theme = {
         cardStyle: "compact",
         priceNote: "inclusive",
       }),
-      sec("qc-promo", "promo-banner", { x: 0, y: 42, w: 12, h: 8 }, {
+      sec("qc-promo", "promo-banner", { x: 0, y: 45, w: 12, h: 8 }, {
         eyebrow: "This week",
         heading: "Monsoon essentials, delivered",
         body: "Chai, biscuits and everything else that makes a wet Tuesday bearable.",
@@ -214,7 +238,7 @@ export const quickcart: Theme = {
         tile4Href: "/store/catalogue?category=beverages",
         bleed: true,
       }),
-      sec("qc-rail-beverages", "product-carousel", { x: 0, y: 50, w: 12, h: 7 }, {
+      sec("qc-rail-beverages", "product-carousel", { x: 0, y: 53, w: 12, h: 7 }, {
         heading: "Tea, coffee and cold drinks",
         source: "category:beverages",
         limit: 8,
@@ -224,7 +248,7 @@ export const quickcart: Theme = {
         cardStyle: "compact",
         priceNote: "inclusive",
       }),
-      sec("qc-rail-fresh", "product-carousel", { x: 0, y: 57, w: 12, h: 7 }, {
+      sec("qc-rail-fresh", "product-carousel", { x: 0, y: 60, w: 12, h: 7 }, {
         heading: "Fruit and vegetables",
         source: "category:fresh",
         limit: 8,
@@ -234,14 +258,14 @@ export const quickcart: Theme = {
         cardStyle: "compact",
         priceNote: "inclusive",
       }),
-      sec("qc-wordmark", "rich-text", { x: 0, y: 64, w: 12, h: 2 }, {
+      sec("qc-wordmark", "rich-text", { x: 0, y: 67, w: 12, h: 2 }, {
         heading: "quickcart",
         body: "Eleven minutes, most days. Eighteen on a bad one, and we will say so before you pay.",
         size: "display",
         align: "center",
         tone: "none",
       }),
-      sec("qc-footer", "footer-columns", { x: 0, y: 66, w: 12, h: 6 }, {
+      sec("qc-footer", "footer-columns", { x: 0, y: 69, w: 12, h: 6 }, {
         ...FOOTER,
       }),
     ]),
@@ -251,7 +275,8 @@ export const quickcart: Theme = {
         ...BAR,
         searchPlaceholder: 'Search for "atta"',
       }),
-      sec("qc-cat-hero", "hero", { x: 0, y: 2, w: 12, h: 8 }, {
+      sec("qc-cat-delivery", "delivery-check", { x: 0, y: 2, w: 12, h: 3 }, { ...CHECK }),
+      sec("qc-cat-hero", "hero", { x: 0, y: 5, w: 12, h: 8 }, {
         eyebrow: "Catalogue",
         heading: "Everything on the shelf today",
         body: "Prices are what you pay at the door, inclusive of GST. Stock is the live position at your nearest store.",
@@ -260,7 +285,7 @@ export const quickcart: Theme = {
         image: "/img/cat-household.svg",
         tone: "surface",
       }),
-      sec("qc-cat-tiles", "category-tiles", { x: 0, y: 10, w: 12, h: 6 }, {
+      sec("qc-cat-tiles", "category-tiles", { x: 0, y: 13, w: 12, h: 6 }, {
         heading: "Jump to an aisle",
         style: "compact",
         aspect: "square",
@@ -270,7 +295,7 @@ export const quickcart: Theme = {
         showBlurb: false,
         tint: MARIGOLD,
       }),
-      sec("qc-cat-staples", "product-grid", { x: 0, y: 16, w: 12, h: 16 }, {
+      sec("qc-cat-staples", "product-grid", { x: 0, y: 19, w: 12, h: 16 }, {
         heading: "Atta, rice and dal",
         source: "category:staples",
         limit: 8,
@@ -281,7 +306,7 @@ export const quickcart: Theme = {
         priceNote: "inclusive",
         cardStyle: "detail",
       }),
-      sec("qc-cat-household", "product-grid", { x: 0, y: 32, w: 12, h: 15 }, {
+      sec("qc-cat-household", "product-grid", { x: 0, y: 35, w: 12, h: 15 }, {
         heading: "Cleaning and household",
         source: "category:household",
         limit: 8,
@@ -292,7 +317,7 @@ export const quickcart: Theme = {
         priceNote: "inclusive",
         cardStyle: "detail",
       }),
-      sec("qc-cat-rail", "product-carousel", { x: 0, y: 47, w: 12, h: 7 }, {
+      sec("qc-cat-rail", "product-carousel", { x: 0, y: 50, w: 12, h: 7 }, {
         heading: "Snacks and namkeen",
         source: "category:snacks",
         limit: 8,
@@ -302,7 +327,7 @@ export const quickcart: Theme = {
         cardStyle: "compact",
         priceNote: "inclusive",
       }),
-      sec("qc-cat-footer", "footer-columns", { x: 0, y: 54, w: 12, h: 6 }, {
+      sec("qc-cat-footer", "footer-columns", { x: 0, y: 57, w: 12, h: 6 }, {
         ...FOOTER,
       }),
     ]),
@@ -312,7 +337,8 @@ export const quickcart: Theme = {
         ...BAR,
         searchPlaceholder: 'Search for "milk"',
       }),
-      sec("qc-prd-hero", "hero", { x: 0, y: 2, w: 12, h: 8 }, {
+      sec("qc-prd-delivery", "delivery-check", { x: 0, y: 2, w: 12, h: 3 }, { ...CHECK }),
+      sec("qc-prd-hero", "hero", { x: 0, y: 5, w: 12, h: 8 }, {
         eyebrow: "Dairy, bread and eggs",
         heading: "Amul Taaza Toned Milk",
         body: "Homogenised toned milk, 3% fat. Kept at 4°C from the dairy to the door, and dated the morning it reaches you.",
@@ -324,7 +350,7 @@ export const quickcart: Theme = {
         tone: "surface",
         align: "left",
       }),
-      sec("qc-prd-band", "image-with-text", { x: 0, y: 10, w: 12, h: 9 }, {
+      sec("qc-prd-band", "image-with-text", { x: 0, y: 13, w: 12, h: 9 }, {
         heading: "Cold chain, all the way to the lift",
         body: "Milk, curd and paneer travel in an insulated box with a gel pack from the store to your door, and the rider is not allowed to leave them outside.",
         caption: "Sakinaka dark store",
@@ -333,7 +359,7 @@ export const quickcart: Theme = {
         layout: "split",
         ctaLabel: "",
       }),
-      sec("qc-prd-rail", "product-carousel", { x: 0, y: 19, w: 12, h: 7 }, {
+      sec("qc-prd-rail", "product-carousel", { x: 0, y: 22, w: 12, h: 7 }, {
         heading: "More from the dairy aisle",
         source: "category:dairy",
         limit: 8,
@@ -343,7 +369,7 @@ export const quickcart: Theme = {
         cardStyle: "compact",
         priceNote: "inclusive",
       }),
-      sec("qc-prd-together", "product-carousel", { x: 0, y: 26, w: 12, h: 7 }, {
+      sec("qc-prd-together", "product-carousel", { x: 0, y: 29, w: 12, h: 7 }, {
         heading: "Usually added with it",
         source: "category:staples",
         limit: 8,
@@ -353,7 +379,7 @@ export const quickcart: Theme = {
         cardStyle: "compact",
         priceNote: "inclusive",
       }),
-      sec("qc-prd-faq", "faq", { x: 0, y: 33, w: 12, h: 6 }, {
+      sec("qc-prd-faq", "faq", { x: 0, y: 36, w: 12, h: 6 }, {
         heading: "Delivery questions",
         q1: "What happens if something is out of stock when you pick it?",
         a1: "The rider calls before they leave the store. You choose a replacement or drop the line, and the refund is back on the same method within a day.",
@@ -365,7 +391,7 @@ export const quickcart: Theme = {
         a4: "Tell the rider at the door, or raise it within two hours. Anything perishable is refunded rather than collected.",
         openFirst: true,
       }),
-      sec("qc-prd-footer", "footer-columns", { x: 0, y: 39, w: 12, h: 6 }, {
+      sec("qc-prd-footer", "footer-columns", { x: 0, y: 42, w: 12, h: 6 }, {
         ...FOOTER,
       }),
     ]),

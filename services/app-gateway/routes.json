@@ -10,7 +10,16 @@
     "",
     "The scheduler, eventbridge and config services carry no gateway prefix on purpose:",
     "they are consumed service-to-service (cron fan-out, the event bus, runtime config)",
-    "and are never reachable from a customer request."
+    "and are never reachable from a customer request.",
+    "",
+    "The storefront pair is two entries on one upstream, and the split is deliberate (ADR-0010",
+    "§4). Longest prefix wins, so `/api/v1/storefront/public` resolves first and carries **no**",
+    "`product` key: the anonymous buyer surface is not entitlement-gated. The proxy's public",
+    "branch returns before the entitlement check anyway, so a product key there would be inert —",
+    "and an inert guard that looks like a guard is worse than none. Splitting the entry makes",
+    "that a fact in this table instead of a consequence of statement ordering in the gateway.",
+    "The public path itself is exact-matched from `STOREFRONT_PUBLIC_PATHS` in the gateway's",
+    "own `app/main.py`; a prefix here does not make anything public."
   ],
   "routes": [
     { "prefix": "/api/v1/auth", "upstream": "http://localhost:8110" },
@@ -66,6 +75,9 @@
     { "prefix": "/api/v1/projects-workspace", "upstream": "http://localhost:8170", "product": "projects" },
     { "prefix": "/api/v1/finance", "upstream": "http://localhost:8171", "product": "finance" },
     { "prefix": "/api/v1/operations", "upstream": "http://localhost:8172", "product": "operations" },
-    { "prefix": "/api/v1/itsm", "upstream": "http://localhost:8173", "product": "itsm" }
+    { "prefix": "/api/v1/itsm", "upstream": "http://localhost:8173", "product": "itsm" },
+
+    { "prefix": "/api/v1/storefront/public", "upstream": "http://localhost:8174" },
+    { "prefix": "/api/v1/storefront", "upstream": "http://localhost:8174", "product": "storefront" }
   ]
 }

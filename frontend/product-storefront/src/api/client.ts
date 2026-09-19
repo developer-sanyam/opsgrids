@@ -22,7 +22,14 @@ import {
 import { adoptTheme as forkTheme, resolveMode } from "@/theme/store";
 import type { StoreDoc, Theme } from "@/theme/schema";
 import { quickcart, suggestedBrand, themeByKey, THEMES } from "@/theme/themes";
-import { CATEGORY_LIST, PRODUCTS, RETAIL_CATEGORY_LIST, RETAIL_PRODUCTS } from "./fixtures";
+import {
+  CATEGORY_LIST,
+  PRODUCTS,
+  RETAIL_CATEGORY_LIST,
+  RETAIL_PRODUCTS,
+  SERVICEABILITY_FAULT_CODE,
+  SERVICEABILITY_ZONES,
+} from "./fixtures";
 import type { Asset, Category, Page, Product, StoreResponse } from "./types";
 
 /** Default source. Fixtures unless `VITE_USE_FIXTURES=false` pins the app to the live gateway.
@@ -184,6 +191,193 @@ export async function submitEnquiry(input: EnquiryInput): Promise<EnquiryReceipt
     return settle({ id: `enq-${Date.now().toString(36)}`, received_at: new Date().toISOString() }, 480);
   }
   return apiRequest<EnquiryReceipt>(`/storefront/enquiries`, { method: "POST", body: input });
+}
+
+/* ----------------------------- serviceability ----------------------------- */
+
+/**
+ * "Do you deliver to me?", asked by somebody with no token, no account and no session.
+ *
+ * `POST /api/v1/storefront/public/serviceability` (ADR-0010 §4). Three things about the shape are
+ * decisions rather than style, and each is load-bearing:
+ *
+ * - **The store slug travels in the body, not the path.** The gateway's `public_paths` is an
+ *   exact-match frozenset, so a public route with a path parameter is not expressible at all. Every
+ *   anonymous storefront endpoint must put its variables in the query string or the body, and that
+ *   is a standing constraint on the whole buyer API rather than a quirk of this call.
+ * - **No bearer token, and a 401 here must not sign anybody out.** This is the one call in the app
+ *   that is deliberately anonymous; routing it through `apiRequest` would attach the merchant's
+ *   token and trip the global unauthorized handler, bouncing a merchant out of the editor because
+ *   a *buyer's* request was refused.
+ * - **It is a POST that cannot be cached**, because the server counts the check in the same
+ *   transaction as the read (§7). That is the price of the merchant's demand report and it is paid
+ *   knowingly.
+ *
+ * `PublicServiceabilityIn` in the published schema.
+ */
+export interface ServiceabilityRequest {
+  store: string;
+  postal_code: string;
+}
+
+/**
+ * ADR-0010 §3. The same three unions the merchant's admin declares in `src/delivery/types.ts`,
+ * under the same names, because they are the same enums off the same schema — one codegen run
+ * collapses the two declarations into an import rather than a redesign.
+ */
+export type ZoneMode = "PROMISED" | "SLOTTED" | "UNSERVED";
+export type PromiseKind = "DURATION" | "DATE_OFFSET";
+/** Why a postal code is not served. Three distinct facts on purpose (§3), not one "no". */
+export type UnservedReason = "no_mapping" | "excluded" | "zone_inactive";
+
+/**
+ * `PromiseOut` — when it arrives. Exactly one of `minutes` / `date` is populated.
+ *
+ * **`date` is resolved on the server, in the store's timezone, with the cutoff already applied**
+ * (§3). The client renders it and never computes it: no offset is added here, no cutoff is
+ * evaluated, and the string is never handed to a formatter that would re-read it in the buyer's
+ * own zone. Neither field is `required` in the schema, so both are read rather than assumed.
+ */
+export interface PromiseOut {
+  kind: PromiseKind;
+  minutes?: number | null;
+  /** `YYYY-MM-DD`, already resolved in the store's timezone. */
+  date?: string | null;
+}
+
+/**
+ * `FeesOut` — **display values, and never the numbers charged** (§8).
+ *
+ * Integer minor units of `currency` (ADR-0000 §8). Slice 1 has no cart and no pricing engine;
+ * when one lands it recomputes the total from its own state and this stops being authoritative.
+ * They go on the card and are totalled into nothing.
+ *
+ * Only `currency` and `delivery_fee_minor` are `required`. `min_order_minor` and `display_only`
+ * carry server-side defaults (`0` and `true`) and may be absent from the body.
+ */
+export interface FeesOut {
+  currency: string;
+  delivery_fee_minor: number;
+  free_delivery_above_minor?: number | null;
+  min_order_minor?: number;
+  display_only?: boolean;
+}
+
+/**
+ * `ServiceabilityOut` — the answer to "do you deliver to me?".
+ *
+ * **Transcribed from `libs/contracts/openapi/storefront.json`, and pinned to it by
+ * `serviceability.contract.test.ts`**, which reads that file and compares property names and the
+ * `required` set against this declaration. It is written that way because the alternative was
+ * tried: this interface was first *guessed* from ADR-0010's prose — the ADR prints no response
+ * body — and carried three fields the service has never sent (`outcome`, `promise_date`, a
+ * top-level `currency`). A test that restates a hand-written type would have agreed with every one
+ * of them. Only reading the published schema catches it.
+ *
+ * **Four fields are `required`** — `postal_code`, `serviceable`, `mode`, `checked_at`. The other
+ * four are optional *and* nullable in the schema, so they are optional here too and every read
+ * goes through a `??`.
+ *
+ * **`serviceable` is the verdict; `mode` is what kind of served it is.** See `classifyAnswer`.
+ *
+ * **There is no `UNKNOWN` on the wire, deliberately** (§13). The server never returns an outcome it
+ * did not compute: a check that fails is a non-2xx problem+json, and "couldn't check" is the
+ * client's rendering of that. It lives in `ServiceabilityState`, not here.
+ */
+export interface ServiceabilityOut {
+  /** The normalised code the server matched, echoed back. */
+  postal_code: string;
+  /** The verdict. Everything the buyer is told branches off this first. */
+  serviceable: boolean;
+  /** Required and never null — `UNSERVED` for all three refusals, not absent. */
+  mode: ZoneMode;
+  checked_at: string;
+  /** Which refusal, when not served. Null when served. */
+  reason?: UnservedReason | null;
+  promise?: PromiseOut | null;
+  fees?: FeesOut | null;
+  buyer_note?: string | null;
+}
+
+/**
+ * The client's own budget, past the server's 2-second one (§13) so a slow-but-working check is
+ * never cut off here first. There are no retries on this path — every operation behind it is a
+ * single short statement, and the buyer's own retry button is the honest place for one.
+ */
+const SERVICEABILITY_TIMEOUT_MS = 8_000;
+
+/** Turn a fixture row into the answer shape the wire uses. */
+function fixtureAnswer(code: string): ServiceabilityOut {
+  const zone = SERVICEABILITY_ZONES[code];
+  /* `checked_at` is the moment the check ran, which for a fixture is now. It is the one date in
+     this path the client may produce, because it is not a promise: nothing renders it. */
+  const checked_at = new Date().toISOString();
+  if (zone === undefined) {
+    return {
+      postal_code: code,
+      serviceable: false,
+      /* No zone matched — and the answer still carries `mode: "UNSERVED"`, exactly as the service
+         does. It is the same `mode` a deliberately excluded code gets, which is why `reason` and
+         not `mode` is what tells the two apart. */
+      mode: "UNSERVED",
+      reason: "no_mapping",
+      promise: null,
+      fees: null,
+      buyer_note: null,
+      checked_at,
+    };
+  }
+  return { postal_code: code, checked_at, ...zone };
+}
+
+/**
+ * Ask whether the store delivers to a postal code.
+ *
+ * **Every failure throws.** The caller renders a throw as "we couldn't check", never as "we don't
+ * deliver here" — see the rule at the top of `lib/serviceability.ts`. Nothing in here converts a
+ * transport failure into an answer, which is the single most important property of this function:
+ * a not-serviceable can only ever come from a server that computed one. A body that will not parse
+ * throws out of `res.json()` for the same reason and lands in the same place.
+ */
+export async function checkServiceability(input: ServiceabilityRequest): Promise<ServiceabilityOut> {
+  const code = input.postal_code.toUpperCase().replace(/[^0-9A-Z]/g, "");
+
+  if (USE_FIXTURES) {
+    if (code === SERVICEABILITY_FAULT_CODE) {
+      await settle(null, 400);
+      throw new ApiError(503, "The delivery check isn't responding.", null);
+    }
+    return settle(fixtureAnswer(code), 420);
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SERVICEABILITY_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/storefront/public/serviceability`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ store: input.store, postal_code: code }),
+      signal: controller.signal,
+    });
+  } catch {
+    // A timeout and a dead network are the same fact to a buyer: we do not know yet.
+    throw new ApiError(0, "Couldn't reach the delivery check.", null);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!res.ok) {
+    /* No `notifyUnauthorized` on any status. This request carries no session, so a refusal here
+       says nothing about the merchant's own. */
+    const problem = await res
+      .json()
+      .then((body: ProblemJson) => body)
+      .catch(() => null);
+    throw new ApiError(res.status, problem?.detail ?? `The delivery check failed (${res.status}).`, problem);
+  }
+
+  return (await res.json()) as ServiceabilityOut;
 }
 
 /* --------------------------------- assets --------------------------------- */

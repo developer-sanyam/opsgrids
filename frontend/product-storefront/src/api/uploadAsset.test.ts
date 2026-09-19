@@ -33,7 +33,7 @@ const ASSET: Asset = {
   size_bytes: 204_800,
   width: 2560,
   height: 1440,
-  checksum_sha256: "b1946ac92492d2347c6235b4d2611184e0d0b5b5a4b3f9d2c7a1e8f06d4c3b2a",
+  checksum_sha256: "b1946ac92492d2347c6235b4d2611184e0d0b5b5a4b3f9d2c7a1e8f06d4c3b2a", // pragma: allowlist secret — a content digest, not a credential
   original_filename: "shopfront.jpg",
   uploaded_by_user_id: "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f",
   created_at: "2026-09-19T09:30:00Z",

@@ -22,6 +22,10 @@ CREATE EXTENSION IF NOT EXISTS citext;       -- email is case-insensitive and gl
 --                     bound. BYPASSRLS, SELECT-only on `product.activations` and
 --                     `product.products`. Its own role rather than opsgrids_directory because a
 --                     bypass reader is granted only its own service's named tables.
+--   opsgrids_storefront_directory
+--                     the anonymous store-slug lookup the buyer-facing serviceability check
+--                     makes before any tenant is bound (ADR-0010). BYPASSRLS, SELECT-only on
+--                     `storefront.storefronts`. Its own role for the same reason as above.
 --   opsgrids_outbox     the outbox relay and the outbox-lag probe. BYPASSRLS, SELECT and
 --                     UPDATE on each service's `outbox` and nothing else.
 --
@@ -105,7 +109,9 @@ BEGIN
     -- Commerce
     'opsgrids_catalog', 'opsgrids_billing', 'opsgrids_metering', 'opsgrids_subscription', 'opsgrids_console', 'opsgrids_payment',
     -- Product lines (skeletons)
-    'opsgrids_projects', 'opsgrids_finance', 'opsgrids_operations', 'opsgrids_itsm'
+    'opsgrids_projects', 'opsgrids_finance', 'opsgrids_operations', 'opsgrids_itsm',
+    -- Storefront (ADR-0010)
+    'opsgrids_storefront'
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L NOBYPASSRLS', r, 'opsgrids');
@@ -127,7 +133,8 @@ GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
      opsgrids_document, opsgrids_notification, opsgrids_scheduler,
      opsgrids_eventbridge, opsgrids_config, opsgrids_catalog, opsgrids_billing, opsgrids_metering, opsgrids_subscription,
      opsgrids_console, opsgrids_payment, opsgrids_approval,
-     opsgrids_projects, opsgrids_finance, opsgrids_operations, opsgrids_itsm;
+     opsgrids_projects, opsgrids_finance, opsgrids_operations, opsgrids_itsm,
+     opsgrids_storefront;
 
 -- The directory reader (ADR-0002, "the cross-tenant reader").
 --
@@ -186,6 +193,36 @@ END
 $$;
 GRANT CONNECT ON DATABASE opsgrids TO opsgrids_console_directory;
 GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO opsgrids_console_directory;
+
+-- The storefront's public reader (ADR-0010 §4, ADR-0002 §2).
+--
+-- The platform's first anonymous read of tenant data. A buyer with no token, no account and no
+-- session asks whether a store delivers to their postal code; the store is named by a slug in
+-- the request body, and the organization behind that slug has to be resolved *before* any
+-- tenant-bound transaction can be opened -- which is to say before row-level security can
+-- protect anything. On the application role that lookup matches zero rows, silently, and every
+-- buyer in the world is told the store does not deliver to them.
+--
+-- BYPASSRLS, and SELECT-only on `storefront.storefronts` and nothing else: it returns two ids
+-- and a status, and every statement after it runs tenant-bound on opsgrids_storefront. A separate
+-- role from opsgrids_directory, opsgrids_product_directory and opsgrids_console_directory because
+-- each bypass reader is confined to its own service's named tables -- least privilege inside the
+-- bypass. Table grants are applied by storefront's `migrations/env.py`, because the table does
+-- not exist when this file runs.
+--
+-- **Leaving this role unconfigured is the worst failure in ADR-0010's design**, because it is
+-- silent: `get_directory_session` falls back to the ordinary session, the answer is a well-formed
+-- HTTP 200 saying "not served", and nothing is logged. storefront-service asserts the role at
+-- startup and refuses to boot without it.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'opsgrids_storefront_directory') THEN
+    CREATE ROLE opsgrids_storefront_directory LOGIN PASSWORD 'opsgrids' NOINHERIT BYPASSRLS;
+  END IF;
+END
+$$;
+GRANT CONNECT ON DATABASE opsgrids TO opsgrids_storefront_directory;
+GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology TO opsgrids_storefront_directory;
 
 -- The outbox relay (ADR-0002 §2, "The outbox relay must run BYPASSRLS").
 --
