@@ -1,0 +1,53 @@
+# Measured test duration per service, in seconds — the weights the shard balancer uses.
+#
+# Sharding by position put finance (112s) and account (72s) in the same shard while
+# another held eleven services totalling under a minute. Test *file* counts are nearly
+# even (59/56/42), so they are a useless proxy; duration is what matters and duration
+# has to be measured.
+#
+# Taken on 2026-09-19 by running each service's suite alone against a freshly migrated
+# database. Absolute values are machine-specific and do not need to be accurate — only
+# their ratios matter, because the balancer is comparing shards against each other.
+#
+# To refresh, with infrastructure up and migrations applied:
+#
+#   for s in $(ls services); do \
+#     t0=$(date +%s); (cd services/$s && uv run pytest tests -q -p no:cacheprovider >/dev/null 2>&1); \
+#     echo "$s $(($(date +%s)-t0))"; done > tools/shard-weights.txt
+#
+# A service missing from this file is assumed to be light. That is the safe direction:
+# a new service is small until measured, and shard-verify still guarantees it runs.
+
+account 72
+activity 1
+admin-gateway 0
+app-gateway 1
+attendance 12
+auth 44
+billing 10
+catalog 9
+config 1
+console 5
+customer 8
+deal 11
+document 1
+employee 12
+eventbridge 1
+finance 112
+itsm 10
+lead 1
+marketing 9
+metering 4
+notification 11
+operations 11
+payment 8
+pipeline 1
+product 7
+project 11
+projects 9
+quotation 1
+scheduler 1
+standup 6
+subscription 17
+support 13
+timesheet 17
