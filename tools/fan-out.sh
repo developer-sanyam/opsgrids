@@ -70,12 +70,26 @@ fi
 
 root=$(pwd)
 
-services=$(
-  for dir in "$root"/services/*/; do
-    svc=$(basename "$dir")
-    [ -e "$root/services/$svc/$require" ] && printf '%s\n' "$svc"
-  done
-)
+# A shard supplies its own service list on stdin (see tools/shard.sh); otherwise every
+# service carrying `require` is processed.
+if [ ! -t 0 ]; then
+  # A shard hands over every service it owns; the `require` filter still applies, which is
+  # what lets one partition drive mypy, pytest and alembic even though not every service
+  # has an `app`, a `tests/` or an `alembic.ini`.
+  services=$(
+    while read -r svc; do
+      [ -n "$svc" ] || continue
+      [ -e "$root/services/$svc/$require" ] && printf '%s\n' "$svc"
+    done
+  )
+else
+  services=$(
+    for dir in "$root"/services/*/; do
+      svc=$(basename "$dir")
+      [ -e "$root/services/$svc/$require" ] && printf '%s\n' "$svc"
+    done
+  )
+fi
 
 [ -n "$services" ] || exit 0
 

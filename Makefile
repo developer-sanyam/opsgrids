@@ -170,6 +170,32 @@ test: test-libs test-services ## Everything CI runs
 test-libs: ## Shared library tests
 	uv run pytest libs
 
+.PHONY: test-shard
+test-shard: ## Tests for one shard of services: make test-shard SHARD=1 SHARDS=3
+	# CI splits the service tests across jobs rather than across processes, because on a
+	# 2-vCPU runner a second process makes both slower (see .github/workflows/ci.yml). Each
+	# shard gets its own runner and its own database, so the parallelism is real capacity.
+	@test -n "$(SHARD)" || (echo "SHARD= is required" && exit 1)
+	@test -n "$(SHARDS)" || (echo "SHARDS= is required" && exit 1)
+	@tools/shard-verify.sh $(SHARDS)
+	@tools/shard.sh $(SHARD) $(SHARDS) \
+	  | tools/fan-out.sh $(JOBS) tests ok-empty uv run pytest tests -q -p no:cacheprovider
+
+.PHONY: migration-check-shard
+migration-check-shard: ## Model/migration drift for one shard: SHARD=1 SHARDS=3
+	@test -n "$(SHARD)" || (echo "SHARD= is required" && exit 1)
+	@test -n "$(SHARDS)" || (echo "SHARDS= is required" && exit 1)
+	@tools/shard.sh $(SHARD) $(SHARDS) \
+	  | tools/fan-out.sh $(JOBS) alembic.ini strict uv run alembic check
+
+.PHONY: migration-shard
+migration-shard: ## Migration round-trip for one shard: make migration-shard SHARD=1 SHARDS=3
+	@test -n "$(SHARD)" || (echo "SHARD= is required" && exit 1)
+	@test -n "$(SHARDS)" || (echo "SHARDS= is required" && exit 1)
+	@tools/shard-verify.sh $(SHARDS)
+	@tools/shard.sh $(SHARD) $(SHARDS) \
+	  | tools/fan-out.sh $(JOBS) alembic.ini strict $(CURDIR)/tools/roundtrip.sh
+
 .PHONY: test-services
 test-services: ## Each service in its own process
 	# Parallel across services, never within one: every service owns a Postgres schema and

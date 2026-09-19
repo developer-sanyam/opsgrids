@@ -79,29 +79,97 @@ jobs:
           echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
           echo "backend=$backend frontend=$frontend"
 
-  backend:
-    name: Backend — lint, types, tests
+  # The backend was one job of thirteen serial steps and 637s — the whole pipeline's
+  # critical path. It is now three, because of a measurement: on a 2-vCPU runner, running
+  # two processes made each three times slower and the step lost outright. The way to
+  # parallelise on hardware that small is another runner, not another process — so the work
+  # is split across jobs, each with its own machine and its own database, and `JOBS: 1`
+  # keeps every job serial inside itself.
+
+  static:
+    name: Backend — lint, types, contracts
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.backend == 'true'
-
     env:
-      # Serial, deliberately, and this is the interesting number in the whole file.
-      #
-      # The per-service fan-outs in the Makefile are a large win on a developer machine —
-      # `typecheck-services` goes from 200s to 46s on eight cores. On this runner they are a
-      # *regression*, and the measurement is unambiguous: with `JOBS=2` (its core count) the
-      # type-check step went from 219s to 327s. Completion timestamps came in pairs separated
-      # by 18s gaps, so concurrency was exactly 2 and each mypy took 18s — against 6s when it
-      # had the machine to itself. Two at a time, each three times slower, is arithmetic that
-      # loses.
-      #
-      # A GitHub-hosted standard runner has 2 vCPUs, and mypy --strict with the pydantic
-      # plugin is not a job that shares one. `JOBS=1` here keeps CI on the fast path and
-      # leaves the fan-out available where there are cores to use it.
-      #
-      # Revisit if this repository moves to larger runners: at 4+ cores the fan-out wins.
       JOBS: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen
+
+      # The single largest win in the pipeline: 219s to 14s, measured. `mypy --strict` with
+      # the pydantic plugin costs ~6s per service cold and ~0.3s incrementally, and nothing
+      # cached `.mypy_cache`, so every run re-analysed code that had not changed.
+      #
+      # Keyed on uv.lock, which pins the mypy version — an upgrade must not read a cache the
+      # previous version wrote. The rolling `github.sha` suffix saves a fresh entry each run
+      # while `restore-keys` recovers the most recent compatible one. mypy validates its own
+      # cache per file, so a partial hit recomputes that file rather than trusting it.
+      - name: Restore mypy caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            .mypy_cache
+            services/*/.mypy_cache
+          key: mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
+          restore-keys: |
+            mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-
+            mypy-${{ runner.os }}-
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Hygiene
+        # No skipped tests, debugger calls, print() or bare noqa. A skipped test is a
+        # test that does not run, and a green build does not say so.
+        run: make hygiene
+
+      - name: Dependency boundaries
+        # import-linter per service: the layering in CLAUDE.md, and no import cycles.
+        run: make boundaries
+
+      - name: Type check
+        # libs, every service, and the tooling. `mypy libs services` cannot run at all —
+        # each service exposes a top-level `app`, so they must be checked one process at
+        # a time.
+        run: make typecheck-libs typecheck-services typecheck-tools
+
+      - name: Shard arithmetic
+        # Asserts the shards below partition the service list exactly. The failure this
+        # prevents is silent: a miscount does not break a build, it drops a service's tests
+        # and leaves the pipeline green while nothing checks that service.
+        run: |
+          tools/shard-verify.sh 3
+
+      - name: Library tests
+        run: uv run pytest libs -q
+
+      - name: OpenAPI contract
+        # The committed documents in libs/contracts/openapi must match the code.
+        # `make openapi` regenerates them.
+        run: make openapi-check
+
+  migrations:
+    name: Backend — migrations ${{ matrix.shard }}/3
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      JOBS: 1
+      SHARD: ${{ matrix.shard }}
+      SHARDS: 3
 
     services:
       postgres:
@@ -131,78 +199,93 @@ jobs:
 
       - run: uv sync --frozen
 
-      # The single largest win available. `mypy --strict` with the pydantic plugin costs about
-      # 6.5s from cold and 0.3s incrementally for one service; across libs, tools and
-      # thirty-odd services that is the difference between ~220s and a handful. Nothing cached
-      # these before, so every run paid full price for code that had not changed.
-      #
-      # Keyed on the lockfile, which pins the mypy version — a mypy upgrade must not read a
-      # cache written by the previous one. The rolling `github.sha` suffix makes each run save
-      # a fresh entry while `restore-keys` recovers the most recent compatible one. mypy
-      # validates its own cache per file, so a partial hit degrades to recomputing that file
-      # rather than trusting stale results.
-      - name: Restore mypy caches
-        uses: actions/cache@v4
+      - name: Bootstrap extensions and roles
+        run: |
+          PGPASSWORD=opsgrids psql -h localhost -U opsgrids -d opsgrids \
+            -f tools/dev-bootstrap/init-db.sql
+
+      - name: Migrations round-trip
+        # upgrade head → downgrade base → upgrade head, for this shard's services. A
+        # downgrade() that does not revert is found here, not during a rollback. Leaves the
+        # shard's schemas at head, which is what the drift check below needs.
+        run: make migration-shard
+
+      - name: Models match migrations
+        # Fails if someone changed a model without generating a migration.
+        run: make migration-check-shard
+
+  tests:
+    name: Backend — tests ${{ matrix.shard }}/3
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    strategy:
+      # Every shard reports. One shard failing must not hide another's result — the same
+      # reason the per-service fan-out runs every service before returning non-zero.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      JOBS: 1
+      SHARD: ${{ matrix.shard }}
+      SHARDS: 3
+
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: opsgrids
+          POSTGRES_PASSWORD: opsgrids
+          POSTGRES_DB: opsgrids
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U opsgrids -d opsgrids"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          path: |
-            .mypy_cache
-            services/*/.mypy_cache
-          key: mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
-          restore-keys: |
-            mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-
-            mypy-${{ runner.os }}-
+          enable-cache: true
+
+      - run: uv sync --frozen
 
       - name: Bootstrap extensions and roles
         run: |
           PGPASSWORD=opsgrids psql -h localhost -U opsgrids -d opsgrids \
             -f tools/dev-bootstrap/init-db.sql
 
-      - name: Lint
-        run: |
-          uv run ruff check .
-          uv run ruff format --check .
-
-      - name: Hygiene
-        # No skipped tests, debugger calls, print() or bare noqa. A skipped test is a
-        # test that does not run, and a green build does not say so.
-        run: make hygiene
-
-      - name: Dependency boundaries
-        # import-linter per service: the layering in CLAUDE.md, and no import cycles.
-        run: make boundaries
-
-      - name: Type check
-        # libs, every service, and the tooling. `mypy libs services` cannot run at all —
-        # each service exposes a top-level `app`, so they must be checked one process at
-        # a time.
-        run: make typecheck-libs typecheck-services typecheck-tools
-
       - name: Apply migrations
+        # Every schema, not just this shard's — and that is not laziness, it is a
+        # correctness requirement found by trying the other way.
+        #
+        # Several services carry negative-authz tests that deliberately read *across* a
+        # schema boundary to prove they cannot: account asserts its role is refused on
+        # `auth.credentials`, console and product assert the same for their readers. With
+        # only the shard's own schemas migrated, those queries fail with "relation does not
+        # exist" instead of "permission denied" — the regex misses, the test fails, and had
+        # it been written less strictly it would have *passed* while proving nothing. A test
+        # that a table is unreachable is worthless if the table is absent.
+        #
+        # So the shard splits the tests, not the schema.
         run: make migrate
 
-      - name: Models match migrations
-        # Fails if someone changed a model without generating a migration.
-        run: make migration-check
-
-      - name: Migrations round-trip
-        # upgrade head → downgrade base → upgrade head. A downgrade() that does not
-        # revert is found here, not during a rollback.
-        run: make migration-roundtrip
-
-      - name: Library tests
-        run: uv run pytest libs -q
-
       - name: Service tests
-        run: make test-services
-
-      - name: OpenAPI contract
-        # The committed documents in libs/contracts/openapi must match the code.
-        # `make openapi` regenerates them.
-        run: make openapi-check
+        run: make test-shard
 
       - name: Boot smoke
-        # The real entrypoint — uvicorn, the lifespan, the pool, Redis — not the
-        # in-process app the tests build. Polls /health and /health/ready.
+        # The real entrypoint — uvicorn, the lifespan, the pool, Redis — not the in-process
+        # app the tests build. Polls /health and /health/ready. One shard is enough: it
+        # exercises the entrypoint, which is identical across services.
+        if: matrix.shard == 1
         run: make smoke
 
   supply-chain:
