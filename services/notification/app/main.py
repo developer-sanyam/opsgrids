@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.api.routes import router
+from app.api.webhooks import router as webhooks_router
 from app.config import settings
 from app.models import OutboxEvent
 from platform_core.app import create_app
@@ -17,3 +18,7 @@ app = create_app(
     # engine so it is not blind to the rows the app role cannot see.
     outbox_model=OutboxEvent,
 )
+
+# Meta's webhooks, mounted at the root rather than under `/api/v1`: this is the provider's
+# endpoint, not public API, and it authenticates by signature rather than by token.
+app.include_router(webhooks_router)

@@ -37,6 +37,7 @@ from platform_core.db import TENANT_GUC, get_session
 
 #: Every table here is tenant-scoped or global-and-empty, so all are safe to truncate.
 TENANT_TABLES = (
+    "provider_accounts",
     "deliveries",
     "messages",
     "rules",

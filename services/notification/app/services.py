@@ -48,6 +48,8 @@ log = get_logger("notification.services")
 EVT_MESSAGE_QUEUED = "notification.delivery.message.queued"
 EVT_MESSAGE_SENT = "notification.delivery.message.sent"
 EVT_MESSAGE_FAILED = "notification.delivery.message.failed"
+EVT_MESSAGE_DELIVERED = "notification.delivery.message.delivered"
+EVT_MESSAGE_READ = "notification.delivery.message.read"
 
 #: What the consumer stamps on rows it creates. A notification staged by an automation was not
 #: created by a person, and recording one would be a lie in the audit trail.
@@ -889,3 +891,95 @@ async def record_failure(
             },
             actor={"type": "system", "id": SYSTEM_ACTOR},
         )
+
+
+# --------------------------------------------------------------------- provider receipts
+
+
+async def fold_status(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    provider_message_id: str,
+    status: str,
+    occurred_at: datetime,
+    error_code: str | None = None,
+    error_detail: str | None = None,
+) -> Message | None:
+    """Apply one provider receipt to the message it concerns.
+
+    Returns None when there is nothing to apply, which covers two ordinary cases and is not a
+    failure in either:
+
+      * **No such message.** A receipt for something this organization did not send — a message
+        sent before this system existed, or from another tool on the same number. Recording it
+        against nothing would invent a message.
+      * **No progress.** Receipts arrive out of order, so a `delivered` can follow a `read`.
+        `domain.advances` is what keeps the fold monotonic; without it a message would report
+        as less delivered than it is, and the inbox would lie.
+
+    Publishes an event on real progress so anything downstream — analytics, a projection — can
+    react without polling the messages table.
+    """
+    message = await selectors.get_message_by_provider_id(
+        session, organization_id, provider_message_id
+    )
+    if message is None:
+        log.info(
+            "notification.receipt.unknown_message",
+            provider_message_id=provider_message_id,
+            status=status,
+        )
+        return None
+
+    if not domain.advances(message.state, status):
+        log.info(
+            "notification.receipt.not_progress",
+            provider_message_id=provider_message_id,
+            current=message.state,
+            incoming=status,
+        )
+        return None
+
+    message.state = status
+    message.updated_by = SYSTEM_ACTOR
+    if status == domain.STATE_DELIVERED:
+        message.delivered_at = occurred_at
+    elif status == domain.STATE_READ:
+        message.read_at = occurred_at
+        # A read implies delivery. Meta does not always send both, and a message shown as read
+        # but never delivered is a gap an operator would have to explain.
+        if message.delivered_at is None:
+            message.delivered_at = occurred_at
+    elif status == domain.STATE_FAILED:
+        message.provider_error_code = error_code
+        message.provider_error_detail = error_detail
+        message.last_error = error_detail or f"provider reported {error_code or 'failure'}"
+
+    await session.flush()
+
+    event = {
+        domain.STATE_DELIVERED: EVT_MESSAGE_DELIVERED,
+        domain.STATE_READ: EVT_MESSAGE_READ,
+        domain.STATE_FAILED: EVT_MESSAGE_FAILED,
+    }.get(status)
+    if event is not None:
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=organization_id,
+            event_type=event,
+            aggregate_type="message",
+            aggregate_id=message.id,
+            payload={
+                "organization_id": str(organization_id),
+                "message_id": str(message.id),
+                "channel": message.channel,
+                "status": status,
+                # Never `to_address`: a delivery receipt is not a reason to put a customer's
+                # phone number into an event payload every consumer can read.
+                "rule_code": message.rule_code,
+            },
+            actor={"type": "system", "id": SYSTEM_ACTOR},
+        )
+    return message
