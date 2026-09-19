@@ -1,0 +1,277 @@
+# The production edge — one Linux VM, ADR-0012 §1.
+#
+# Everything that serves a merchant's own domain runs here: Caddy, Postgres+PostGIS, Redis and
+# the five service containers slice 1 needs (auth, account, product, app-gateway, storefront)
+# plus storefront's scheduled sweep. The other thirty services are not deployed, and that is
+# the point.
+#
+# Read `RUNBOOK.md` before touching this file on a box that is serving. Once one real domain
+# points at this address there is a production and there is no second box.
+#
+# Parity rules that are not style preferences:
+#   * The Postgres and Redis images are the ones `tools/dev-bootstrap/compose.yml` uses.
+#     PostGIS, SKIP LOCKED and ON CONFLICT are load-bearing in the domain; a different engine
+#     version here is a bug you find in production.
+#   * Nothing but Caddy publishes a port. Postgres and Redis are reachable on the compose
+#     network and nowhere else — a published 5432 on a public IP is the shortest path from
+#     "we have a production" to "we had a production".
+#   * Every value that differs between boxes is an ${ENV_VAR} read from `.env`, which lives on
+#     the box and is never committed. See `.env.example` for the full list; `preflight.sh`
+#     refuses to deploy when one is missing or still a placeholder.
+#
+# Commands are in the Makefile (`make deploy`, `make edge-*`). Do not run `docker compose up`
+# by hand on the box without reading the runbook's "a failed build must not take the site
+# down" section — the deploy builds first and swaps second on purpose.
+
+name: opsgrids-edge
+
+# Docker's json-file driver grows without limit, and this box has 80 GB and no log shipping
+# (slice 2). An unrotated container log is the most likely reason this VM runs out of disk.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '5'
+
+# What every Python service needs to be itself in production. Per-service additions sit in the
+# service's own `environment:` block below.
+#
+# DATABASE_URL carries the *shared* application password and a username that each service
+# immediately rewrites to its own role (`ServiceSettings.dsn_as`, and every service pins its
+# own `db_app_role`). That is the same arrangement development uses. The alternative — a DSN
+# per service with a password per role — is a deployment system, and this is one VM.
+x-service-env: &service-env
+  ENVIRONMENT: production
+  DEBUG: 'false'
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_JSON: 'true'
+  DATABASE_URL: postgresql+asyncpg://opsgrids_app:${OPSGRIDS_DB_PASSWORD}@postgres:5432/opsgrids
+  REDIS_URL: redis://redis:6379/0
+  # No RabbitMQ is deployed in slice 1. Nothing here connects to it: the relay and the
+  # consumers are not run. See the runbook's "known gaps" — the outbox tables grow and no
+  # domain event is delivered to anything, by omission rather than by failure.
+  JWKS_URL: http://auth:8000/.well-known/jwks.json
+  JWT_ISSUER: ${JWT_ISSUER}
+  JWT_KID: ${JWT_KID}
+  INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN}
+  PII_ENCRYPTION_KEY: ${PII_ENCRYPTION_KEY}
+  PII_DECRYPT_KEYS: ${PII_DECRYPT_KEYS:-}
+  APP_BASE_URL: ${APP_BASE_URL}
+  CORS_ORIGINS: ${CORS_ORIGINS}
+  ACCOUNT_SERVICE_URL: http://account:8000
+  PRODUCT_SERVICE_URL: http://product:8000
+  SENTRY_DSN: ${SENTRY_DSN:-}
+
+x-service-common: &service-common
+  restart: unless-stopped
+  logging: *logging
+  security_opt:
+    - no-new-privileges:true
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  # ---------------------------------------------------------------- the edge
+  caddy:
+    image: caddy:2.10.0-alpine
+    restart: unless-stopped
+    logging: *logging
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp' # HTTP/3. Harmless if the provider firewall drops it.
+    environment:
+      # Caddy substitutes {$NAME} at config-load time. The ask endpoint is the one gate on
+      # certificate issuance (ADR-0012 §5) and is reached on the compose network, never
+      # through the gateway — the gateway's anonymous limiter fails closed, and a Redis
+      # outage must not also stop certificate issuance.
+      ACME_EMAIL: ${ACME_EMAIL}
+      TLS_ASK_URL: http://storefront:8000/api/v1/storefront/internal/tls-authorize
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # The buyer bundle. Published by `make edge-web`, which builds on a laptop and rsyncs a
+      # release directory, then swaps a symlink — so a failed frontend build never reaches the
+      # box and a bad bundle is one symlink away from being undone (runbook, "roll back").
+      - ${EDGE_WEB_ROOT:-/srv/opsgrids/web}:/srv/web:ro
+      # Every certificate, every private key and the ACME account key. Losing this volume is
+      # survivable and expensive (ADR-0012 §5): every name re-issues on its next handshake.
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - front
+    healthcheck:
+      # Plain HTTP on the loopback, so this answers "is the process serving" without dragging
+      # TLS or DNS into it. `/_edge/health` is defined in the Caddyfile's http:// block.
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1/_edge/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ---------------------------------------------------------------- datastores
+  postgres:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: opsgrids
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: opsgrids
+      # Read by the init script below, on first boot only.
+      OPSGRIDS_DB_PASSWORD: ${OPSGRIDS_DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # The same role and extension bootstrap development uses — one file, so the roles a
+      # service pins in its own config exist here too. It hardcodes a development password for
+      # every role, which is why 30-role-passwords.sh runs immediately after it.
+      - ../../tools/dev-bootstrap/init-db.sql:/docker-entrypoint-initdb.d/20-init.sql:ro
+      - ./postgres-init/30-role-passwords.sh:/docker-entrypoint-initdb.d/30-role-passwords.sh:ro
+    shm_size: '256mb'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U opsgrids -d opsgrids']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks:
+      - back
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    logging: *logging
+    # Append-only because the rate limiter and the 300-second host cache are cheap to lose but
+    # annoying to lose at the same time as everything else. maxmemory keeps a runaway key space
+    # from competing with Postgres for the box's 8 GB.
+    command:
+      [
+        'redis-server',
+        '--appendonly',
+        'yes',
+        '--maxmemory',
+        '256mb',
+        '--maxmemory-policy',
+        'allkeys-lru',
+      ]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 20
+    networks:
+      - back
+
+  # ---------------------------------------------------------------- services
+  # Each image holds exactly one service's code on top of a shared .venv layer: `import app`
+  # is ambiguous across services, so one image can only ever hold one of them.
+  auth:
+    <<: *service-common
+    build:
+      context: ../..
+      dockerfile: services/auth/Dockerfile
+    environment:
+      <<: *service-env
+      # The only private signing key in the platform. It is a file on the box, mounted
+      # read-only, and it is never in the image, the repository or an environment variable.
+      JWT_PRIVATE_KEY_PATH: /run/secrets/jwt-ed25519.pem
+    volumes:
+      - ${JWT_PRIVATE_KEY_HOST_PATH}:/run/secrets/jwt-ed25519.pem:ro
+    networks:
+      - back
+
+  account:
+    <<: *service-common
+    build:
+      context: ../..
+      dockerfile: services/account/Dockerfile
+    environment:
+      <<: *service-env
+      # Without this, `load_product_manifest` walks up looking for the repository layout,
+      # finds none inside the image, and returns None — so activating a product registers no
+      # roles and nothing errors. A silent nothing, the same shape as the directory role.
+      PERMISSION_MANIFEST_DIR: /opt/opsgrids/permissions
+    volumes:
+      - ../../libs/contracts/permissions:/opt/opsgrids/permissions:ro
+    networks:
+      - back
+
+  product:
+    <<: *service-common
+    build:
+      context: ../..
+      dockerfile: services/product/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  storefront:
+    <<: *service-common
+    build:
+      context: ../..
+      dockerfile: services/storefront/Dockerfile
+    environment:
+      <<: *service-env
+      STORE_SLUG_CACHE_SECONDS: ${STORE_SLUG_CACHE_SECONDS:-300}
+    networks:
+      # `front` as well as `back`: Caddy calls this container directly for the on-demand TLS
+      # ask endpoint, deliberately bypassing the gateway (ADR-0012 §5).
+      - front
+      - back
+
+  # The sweep (ADR-0012 §6). Its own process, because a poll loop must not share a pool with
+  # request traffic — and its own container so `docker compose ps` answers "is anything
+  # checking the domains" without reading code.
+  #
+  # `bin/cron` runs `python -m app.cron`. If that module is not in the image the container
+  # exits non-zero and keeps exiting, which is the intended failure: the alternative — the
+  # scaffold's `python -m app.relay` — is a process that looks healthy while no domain is ever
+  # checked and nothing errors.
+  storefront-cron:
+    <<: *service-common
+    build:
+      context: ../..
+      dockerfile: services/storefront/Dockerfile
+    command: ['./bin/cron']
+    environment:
+      <<: *service-env
+      STORE_SLUG_CACHE_SECONDS: ${STORE_SLUG_CACHE_SECONDS:-300}
+    # No healthcheck: the image's is an HTTP probe against a port this process does not open.
+    healthcheck:
+      disable: true
+    networks:
+      - front # the certificate probe handshakes against Caddy with SNI set (ADR-0012 §6)
+      - back
+
+  app-gateway:
+    <<: *service-common
+    build:
+      context: ../..
+      dockerfile: services/app-gateway/Dockerfile
+    environment:
+      <<: *service-env
+      # The committed `services/app-gateway/routes.json` points every upstream at localhost,
+      # which is correct for development and wrong in a container. `routes.prod.json` names
+      # the five services that are actually deployed and nothing else, so a request for an
+      # undeployed product is a 404 from the gateway rather than a hung connection.
+      ROUTES_FILE: /opt/opsgrids/routes.prod.json
+    volumes:
+      - ./routes.prod.json:/opt/opsgrids/routes.prod.json:ro
+    networks:
+      - front
+      - back
+
+networks:
+  # Caddy reaches the gateway and storefront. It has no route to Postgres or Redis, and
+  # neither does anything else outside `back`.
+  front:
+  back:
+
+volumes:
+  caddy_data:
+  caddy_config:
+  postgres_data:
+  redis_data:

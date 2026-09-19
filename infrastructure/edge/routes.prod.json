@@ -1,0 +1,40 @@
+{
+  "$comment": [
+    "The gateway route table for the edge VM (ADR-0012 §1). Mounted at",
+    "/opt/opsgrids/routes.prod.json and selected with ROUTES_FILE.",
+    "",
+    "It is a separate file from services/app-gateway/routes.json rather than an edit to it,",
+    "for two reasons. Every upstream in the committed table is http://localhost:<port>, which",
+    "is correct for `make run` and meaningless inside a container. And only five services are",
+    "deployed — a prefix pointing at a service that is not running is a hung connection and a",
+    "504, where a prefix that is absent is an immediate 404 from the gateway that names the",
+    "path. A 404 for a product nobody deployed is the honest answer.",
+    "",
+    "The semantics are the committed table's, unchanged: longest prefix wins, `product` names",
+    "the entitlement a request needs, and the storefront pair is split so the anonymous buyer",
+    "surface carries no `product` key. A prefix here does not make anything public — the",
+    "public paths are an exact-match frozenset in the gateway's own app/main.py.",
+    "",
+    "When a service is added to compose.prod.yml, it is added here. When a route is added to",
+    "the committed table for a service that is deployed, it must be added here too — nothing",
+    "checks that for you, and the symptom is a 404 on a route that works locally."
+  ],
+  "routes": [
+    { "prefix": "/api/v1/auth", "upstream": "http://auth:8000" },
+
+    { "prefix": "/api/v1/organization", "upstream": "http://account:8000" },
+    { "prefix": "/api/v1/org-units", "upstream": "http://account:8000" },
+    { "prefix": "/api/v1/locations", "upstream": "http://account:8000" },
+    { "prefix": "/api/v1/members", "upstream": "http://account:8000" },
+    { "prefix": "/api/v1/roles", "upstream": "http://account:8000" },
+    { "prefix": "/api/v1/permissions", "upstream": "http://account:8000" },
+    { "prefix": "/api/v1/invitations", "upstream": "http://account:8000" },
+    { "prefix": "/api/v1/account", "upstream": "http://account:8000" },
+
+    { "prefix": "/api/v1/products", "upstream": "http://product:8000" },
+    { "prefix": "/api/v1/marketplace", "upstream": "http://product:8000" },
+
+    { "prefix": "/api/v1/storefront/public", "upstream": "http://storefront:8000" },
+    { "prefix": "/api/v1/storefront", "upstream": "http://storefront:8000", "product": "storefront" }
+  ]
+}

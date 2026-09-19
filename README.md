@@ -66,7 +66,7 @@ libs/platform-core   app factory, auth, DB+RLS, outbox, errors, audit, money
 libs/contracts    JSON Schema for every event and API
 frontend/         product SPAs and consoles
 integrations/     partner and per-customer integrations
-infrastructure/   Helm + kustomize
+infrastructure/   the edge VM: compose, Caddy, the runbook (ADR-0012). Not Helm, not kustomize
 tools/            dev-bootstrap, generators, seeds
 ```
 
@@ -95,3 +95,28 @@ Redis `6380`, RabbitMQ `5673`, MinIO `9100`, MailHog `1026`.
 - **Relays and consumers need `BYPASSRLS`.** Otherwise event processing stops silently.
 - **Balances are derived, never stored.** Ledgers are append-only; a correction is a reversing row.
 - **A UI gate is not enforcement.** Every paid endpoint carries a server-side entitlement check.
+
+## Deploying
+
+There is one deployment: a single Linux VM serving merchants' storefronts on their own domains
+(ADR-0012). It is deployed over ssh from a laptop — no registry, no CI deploy job — so every
+command names its target explicitly and refuses to run against a box that does not agree it is
+the one you meant. **Read [`infrastructure/edge/RUNBOOK.md`](infrastructure/edge/RUNBOOK.md)
+before the first one**: standing the box up, rolling back, restoring, and what to check when
+something is broken.
+
+```bash
+make deploy       HOST=deploy@<ip> CONFIRM=edge.opsgrids.com [REF=origin/main]  # the deploy
+make edge-preflight HOST=… CONFIRM=…    # every check a deploy runs, changing nothing
+make edge-validate  HOST=… CONFIRM=…    # load the Caddyfile with the pinned Caddy; restart nothing
+make edge-status    HOST=… CONFIRM=…    # what is running, which ref, how much disk
+make edge-logs      HOST=… CONFIRM=… [SERVICE=caddy] [TAIL=200]
+make edge-rollback  HOST=… CONFIRM=… [TO=<sha>]   # redeploy the last ref that actually served
+make edge-web       HOST=… CONFIRM=… [PLACEHOLDER=1]   # build the buyer bundle here, ship it
+make edge-web-rollback HOST=… CONFIRM=…  # point the edge back at the previous bundle (a symlink)
+make edge-releases  HOST=… CONFIRM=…     # which bundles are on the box, which one is live
+make edge-backup    HOST=… CONFIRM=…     # run the nightly dump + certificate archive now
+```
+
+A deploy builds before it recreates, so **a failed build leaves the running site untouched** —
+but the recreate is a few seconds of downtime, not zero, and there is no second box.

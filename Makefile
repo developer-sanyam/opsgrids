@@ -346,3 +346,86 @@ openapi-check: ## Fail if a committed OpenAPI document or permission manifest is
 
 .PHONY: gate
 gate: check audit licenses secrets hygiene boundaries openapi-check migration-roundtrip smoke ## The whole quality gate — everything CI runs
+
+# ---------------------------------------------------------------- the edge (ADR-0012)
+# One Linux VM, Docker Compose and Caddy. Deploys are `ssh` from a laptop with the engineer's
+# own key — no registry, no CI deploy job, no GitHub secret (ADR-0012 §1). That is a
+# deliberate simplification and it makes "deployed by accident" the risk to design against, so
+# every target below:
+#
+#   * requires HOST= — an ssh target you type. There is no default and no fallback;
+#   * requires CONFIRM= — which must equal the EDGE_HOST the box records in its own .env, so
+#     aiming at the wrong machine fails on the first ssh, before anything is fetched or built;
+#   * deploys a pushed REF, never your working tree.
+#
+# Everything these targets do on the box is in infrastructure/edge/remote.sh, which ships with
+# the commit being deployed. Read infrastructure/edge/RUNBOOK.md before the first one.
+EDGE_REPO ?= /srv/opsgrids/repo
+REF       ?= origin/main
+EDGE_SSH   = ssh -o BatchMode=yes $(HOST) $(EDGE_REPO)/infrastructure/edge/remote.sh
+
+.PHONY: edge-guard
+edge-guard:
+	@test -n "$(HOST)" || (echo "HOST= is required. Name the box: HOST=deploy@203.0.113.7" && exit 1)
+	@test -n "$(CONFIRM)" || (echo "CONFIRM= is required. It must match the box's EDGE_HOST: CONFIRM=edge.opsgrids.com" && exit 1)
+	@$(EDGE_SSH) assert-host $(CONFIRM)
+
+.PHONY: deploy
+deploy: ## Deploy the edge: make deploy HOST=deploy@host CONFIRM=edge.opsgrids.com [REF=origin/main]
+	# preflight → build → caddy validate → migrate → up → health, in that order, and the
+	# first three change nothing. A build that fails leaves the running site untouched; the
+	# recreate at `up` is a few seconds of downtime, not zero. See the runbook.
+	@test -n "$(HOST)" || (echo "HOST= is required. Name the box: HOST=deploy@203.0.113.7" && exit 1)
+	@test -n "$(CONFIRM)" || (echo "CONFIRM= is required. It must match the box's EDGE_HOST" && exit 1)
+	EDGE_REPO=$(EDGE_REPO) infrastructure/edge/ssh-deploy.sh $(HOST) $(CONFIRM) $(REF) deploy
+
+.PHONY: edge-rollback
+edge-rollback: edge-guard ## Redeploy the previous good ref: make edge-rollback HOST=… CONFIRM=… [TO=<sha>]
+	@ref="$(TO)"; \
+	 if [ -z "$$ref" ]; then ref=$$($(EDGE_SSH) previous-ref); fi; \
+	 echo "rolling back to $$ref"; \
+	 EDGE_REPO=$(EDGE_REPO) infrastructure/edge/ssh-deploy.sh $(HOST) $(CONFIRM) "$$ref" deploy
+
+.PHONY: edge-preflight
+edge-preflight: edge-guard ## Check the box is deployable without changing anything: HOST=… CONFIRM=…
+	@$(EDGE_SSH) preflight
+
+.PHONY: edge-validate
+edge-validate: ## Load the Caddyfile at REF with the pinned Caddy, restart nothing: HOST=… CONFIRM=…
+	@test -n "$(HOST)" || (echo "HOST= is required" && exit 1)
+	@test -n "$(CONFIRM)" || (echo "CONFIRM= is required" && exit 1)
+	EDGE_REPO=$(EDGE_REPO) infrastructure/edge/ssh-deploy.sh $(HOST) $(CONFIRM) $(REF) validate
+
+.PHONY: edge-status
+edge-status: edge-guard ## What is running, which ref, how much disk: HOST=… CONFIRM=…
+	@$(EDGE_SSH) status
+
+.PHONY: edge-logs
+edge-logs: edge-guard ## Tail the edge logs: make edge-logs HOST=… CONFIRM=… [SERVICE=caddy] [TAIL=200]
+	@$(EDGE_SSH) logs $(or $(TAIL),200) $(SERVICE)
+
+.PHONY: edge-backup
+edge-backup: edge-guard ## Run the nightly backup now (dump + certificates, off-box): HOST=… CONFIRM=…
+	@$(EDGE_SSH) backup
+
+# The buyer bundle is built here and shipped, not built on the box: the root .dockerignore
+# keeps `frontend` out of every image build context, and shipping only a bundle that compiled
+# is what stops a failed frontend build from breaking a merchant's shop.
+.PHONY: edge-web
+edge-web: ## Build and publish the buyer bundle: make edge-web HOST=… CONFIRM=… [PLACEHOLDER=1]
+	@test -n "$(HOST)" || (echo "HOST= is required" && exit 1)
+	@test -n "$(CONFIRM)" || (echo "CONFIRM= is required" && exit 1)
+	EDGE_REPO=$(EDGE_REPO) PLACEHOLDER=$(PLACEHOLDER) \
+	  infrastructure/edge/publish-web.sh publish $(HOST) $(CONFIRM)
+
+.PHONY: edge-web-rollback
+edge-web-rollback: ## Point the edge back at the previous bundle (one symlink): HOST=… CONFIRM=…
+	@test -n "$(HOST)" || (echo "HOST= is required" && exit 1)
+	@test -n "$(CONFIRM)" || (echo "CONFIRM= is required" && exit 1)
+	EDGE_REPO=$(EDGE_REPO) infrastructure/edge/publish-web.sh rollback $(HOST) $(CONFIRM)
+
+.PHONY: edge-releases
+edge-releases: ## Which bundles are on the box and which one is live: HOST=… CONFIRM=…
+	@test -n "$(HOST)" || (echo "HOST= is required" && exit 1)
+	@test -n "$(CONFIRM)" || (echo "CONFIRM= is required" && exit 1)
+	EDGE_REPO=$(EDGE_REPO) infrastructure/edge/publish-web.sh releases $(HOST) $(CONFIRM)

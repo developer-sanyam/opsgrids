@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Not serving a store</title>
+    <style>
+      body {
+        font: 16px/1.6 system-ui, sans-serif;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        min-height: 100vh;
+        color: #1c1c1c;
+        background: #fafafa;
+      }
+      main {
+        max-width: 34rem;
+        padding: 2rem;
+      }
+      h1 {
+        font-size: 1.25rem;
+        margin: 0 0 1rem;
+      }
+      code {
+        background: #eee;
+        padding: 0.1rem 0.3rem;
+        border-radius: 3px;
+      }
+      p {
+        margin: 0 0 1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>This address is not serving a store.</h1>
+      <p>
+        TLS, DNS and the platform API on this address are working — this page is proof of that.
+        What is missing is the buyer bundle: no storefront has been published to this edge yet.
+      </p>
+      <p>
+        <strong>If you are a shopper:</strong> the shop you were looking for is not here. Nothing
+        is wrong with your connection.
+      </p>
+      <p>
+        <strong>If you run this platform:</strong> this is the committed placeholder from
+        <code>infrastructure/edge/web-placeholder/</code>, published with
+        <code>PLACEHOLDER=1</code>. Publish the real bundle with
+        <code>make edge-web HOST=… CONFIRM=…</code> once the buyer entry point exists. See
+        <code>infrastructure/edge/RUNBOOK.md</code>.
+      </p>
+    </main>
+  </body>
+</html>
