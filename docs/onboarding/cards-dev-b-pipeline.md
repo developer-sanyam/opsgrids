@@ -324,7 +324,7 @@ Two role templates. **Copy `code`, `name` and `is_default` character for charact
 character, `make openapi` stops with an error naming the field you disagreed on:
 
 ```python
-[
+SALESCRM_PIPELINES_ROLE_TEMPLATES: list[RoleTemplate] = [
     RoleTemplate(
         code="SALESCRM_ADMIN",
         name="Sales administrator",

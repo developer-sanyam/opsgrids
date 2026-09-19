@@ -19,8 +19,10 @@ def test_health_reports_this_service() -> None:
 
 
 def test_info_is_mounted_under_the_versioned_prefix() -> None:
+    # Plural, matching the prefix the gateway already publishes (`/api/v1/notifications`).
+    # The scaffold's singular path never resolved through the gateway.
     with TestClient(app) as client:
-        response = client.get("/api/v1/notification/info")
+        response = client.get("/api/v1/notifications/info")
     assert response.status_code == 200
     assert response.json()["schema_name"] == "notification"
 
@@ -28,7 +30,7 @@ def test_info_is_mounted_under_the_versioned_prefix() -> None:
 def test_unknown_route_returns_problem_json() -> None:
     # Every failure in the platform has the same shape, including 404s.
     with TestClient(app) as client:
-        response = client.get("/api/v1/notification/nope")
+        response = client.get("/api/v1/notifications/nope")
     assert response.status_code == 404
     assert response.headers["content-type"].startswith("application/problem+json")
     assert "request_id" in response.json()

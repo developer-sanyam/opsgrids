@@ -311,7 +311,7 @@ role codes in a different service, and the build hard-fails if the two of you di
 `name` or `is_default` of a shared template:
 
 ```python
-[
+SALESCRM_LEADS_ROLE_TEMPLATES: list[RoleTemplate] = [
     RoleTemplate(
         code="SALESCRM_ADMIN",
         name="Sales administrator",

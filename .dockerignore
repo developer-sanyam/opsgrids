@@ -1,0 +1,49 @@
+# What never belongs in a build context.
+#
+# There was no .dockerignore, so every `docker build` tarred the entire working tree and
+# handed it to the daemon: a virtualenv, two node_modules trees and the git history, none of
+# which any Dockerfile copies. On this repository that is well over half a gigabyte per
+# build, before counting developer worktrees.
+#
+# It also cost cache hits. BuildKit fingerprints the context, so a file the image never
+# contained — a local .env, a stray .pyc, a test run's .pytest_cache — still invalidated
+# layers and forced `uv sync` to run again.
+#
+# Nothing here changes what ends up in an image. The Dockerfiles copy named paths
+# (`pyproject.toml`, `uv.lock`, `libs/`, `services/<name>/`), so this only stops the daemon
+# being sent files it was going to ignore anyway.
+
+# Version control and agent scratch space.
+.git
+.gitignore
+.claude
+
+# Python environments and caches.
+.venv
+**/__pycache__
+**/*.py[cod]
+**/.mypy_cache
+**/.pytest_cache
+**/.ruff_cache
+
+# Node. No service image contains any frontend code.
+**/node_modules
+**/.next
+**/dist
+frontend
+
+# Secrets and local configuration. A real .env must never reach the daemon, let alone a
+# layer; `.env.example` is committed and carries no values.
+.env
+.env.*
+!.env.example
+
+# Local infrastructure and tooling output.
+tools/dev-bootstrap/keys
+*.log
+.DS_Store
+
+# Documentation and CI definitions — read by humans and GitHub, never by a runtime image.
+docs
+.github
+e2e

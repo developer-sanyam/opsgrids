@@ -62,7 +62,7 @@
     { "prefix": "/api/v1/quotations", "upstream": "http://localhost:8143", "product": "pulseboard" },
 
     { "prefix": "/api/v1/documents", "upstream": "http://localhost:8150", "max_body_bytes": 6291456 },
-    { "prefix": "/api/v1/notifications", "upstream": "http://localhost:8151" },
+    { "prefix": "/api/v1/notifications", "upstream": "http://localhost:8151", "product": "notification" },
     { "prefix": "/api/v1/approvals", "upstream": "http://localhost:8152" },
 
     { "prefix": "/api/v1/billing", "upstream": "http://localhost:8160" },

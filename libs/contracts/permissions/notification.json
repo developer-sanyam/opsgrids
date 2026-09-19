@@ -1,0 +1,118 @@
+{
+  "manifest_version": 1,
+  "permissions": [
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "Read what was sent, to whom, and whether it arrived",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "delivery",
+      "resource": "message"
+    },
+    {
+      "action": "send",
+      "default_scope": "ORG",
+      "description": "Send a message directly, outside any rule",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "delivery",
+      "resource": "message"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Record or lift a recipient's suppression",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "delivery",
+      "resource": "preference"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See the message templates and the automation rules",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "delivery",
+      "resource": "template"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Author templates and the rules that fire them",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "delivery",
+      "resource": "template"
+    }
+  ],
+  "product": "notification",
+  "role_templates": [
+    {
+      "code": "NOTIFICATION_ADMIN",
+      "cross_product": false,
+      "description": "Runs what the organization sends: templates, rules, suppression, and the delivery record. Built from the notification catalogue alone.",
+      "grants": [
+        {
+          "code": "notification.delivery.message.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "notification.delivery.message.send",
+          "scope": "ORG"
+        },
+        {
+          "code": "notification.delivery.preference.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "notification.delivery.template.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "notification.delivery.template.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": true,
+      "is_default": false,
+      "name": "Notification administrator"
+    },
+    {
+      "code": "NOTIFICATION_AUTHOR",
+      "cross_product": false,
+      "description": "Writes templates and rules without reading the delivered messages \u2014 authoring an automation is not the same job as reading a customer's payslip email.",
+      "grants": [
+        {
+          "code": "notification.delivery.template.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "notification.delivery.template.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": true,
+      "name": "Notification author"
+    },
+    {
+      "code": "NOTIFICATION_VIEWER",
+      "cross_product": false,
+      "description": "Read-only visibility into templates and rules. No message bodies.",
+      "grants": [
+        {
+          "code": "notification.delivery.template.read",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "Notification viewer"
+    }
+  ],
+  "sources": [
+    "notification"
+  ]
+}
