@@ -305,7 +305,7 @@ reason is unchanged.
 ### 3. Verification: a TXT record with a per-claim token, checked before anything is served
 
 ```
-_opsgrids-challenge.merchant.com.   TXT   "opsgrids-domain-verification=4f9c8b1d2e3a4b5c6d7e8f9012345678"
+_opsgrids-challenge.merchant.com.   TXT   "opsgrids-domain-verification=<32-hex-token>"
 ```
 
 The token is `secrets.token_hex(16)` — 32 hex characters, 128 bits — minted per claim and stored on
@@ -526,7 +526,7 @@ certificate instead of a two-to-five-second wait.
 ```
 Ownership check failed 3 minutes ago. Next check at 11:12.
   We looked for a TXT record at: _opsgrids-challenge.merchant.com
-  We expected the value:         opsgrids-domain-verification=4f9c8b1d2e3a4b5c6d7e8f9012345678
+  We expected the value:         opsgrids-domain-verification=<32-hex-token>
   What we found:                 v=spf1 include:_spf.google.com ~all
 ```
 
@@ -769,7 +769,7 @@ Claimed, unverified — **200**:
   "verification": {
     "record_type": "TXT",
     "name": "_opsgrids-challenge.merchant.com",
-    "value": "opsgrids-domain-verification=4f9c8b1d2e3a4b5c6d7e8f9012345678",
+    "value": "opsgrids-domain-verification=<32-hex-token>",
     "issued_at": "2026-09-19T11:02:14Z",
     "claim_expires_at": "2026-10-03T11:02:14Z"
   },
@@ -825,7 +825,7 @@ design exists to make legible — **200** (`checks` only):
     "last_checked_at": "2026-09-19T11:12:04Z",
     "next_check_at": "2026-09-20T11:12:04Z",
     "code": null,
-    "detail": "Found opsgrids-domain-verification=4f9c8b1d2e3a4b5c6d7e8f9012345678"
+    "detail": "Found opsgrids-domain-verification=<32-hex-token>"
   },
   "routing": {
     "state": "failing",
@@ -857,7 +857,7 @@ Live — **200** (`status` and `checks` only; `verification` is still present an
       "last_checked_at": "2026-09-19T03:14:00Z",
       "next_check_at": "2026-09-20T03:14:00Z",
       "code": null,
-      "detail": "Found opsgrids-domain-verification=4f9c8b1d2e3a4b5c6d7e8f9012345678"
+      "detail": "Found opsgrids-domain-verification=<32-hex-token>"
     },
     "routing": {
       "state": "ok",
