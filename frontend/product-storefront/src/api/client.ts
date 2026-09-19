@@ -32,6 +32,27 @@ import {
 } from "./fixtures";
 import type { Asset, Category, Page, Product, StoreResponse } from "./types";
 
+/**
+ * The buyer's bootstrap — "which shop is this address?" (ADR-0012 §2).
+ *
+ * **Implemented in `./storeContext`, not here, and that is load-bearing.** This module imports
+ * `@opsgrids/client`, the theme library and the fixture catalogue; the buyer bundle must carry
+ * none of the three. Re-exported so the console reaches it through `@/api` like everything else,
+ * while `src/buyer/*` imports `@/api/storeContext` directly and pulls in nothing above this line.
+ */
+export {
+  currentHost,
+  loadStoreContext,
+  readCachedStoreContext,
+  StoreContextError,
+  STOREFRONT_API_BASE,
+} from "./storeContext";
+export type {
+  PublicStoreContextIn,
+  StoreContextFailure,
+  StoreContextOut,
+} from "./storeContext";
+
 /** Default source. Fixtures unless `VITE_USE_FIXTURES=false` pins the app to the live gateway.
  *  Dev builds only: `import.meta.env.DEV` compiles to `false` in production, so a stray
  *  CI/production env var can never ship fixture mode — an app rendering fabricated data

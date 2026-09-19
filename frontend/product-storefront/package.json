@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite --port 4400 --strictPort",
     "build": "tsc --noEmit && vite build",
+    "build:buyer": "tsc --noEmit && vite build --mode buyer",
     "preview": "vite preview --port 4400 --strictPort",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",

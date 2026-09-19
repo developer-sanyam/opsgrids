@@ -4,9 +4,31 @@ The themed B2B storefront: a merchant activates it, adopts a theme, edits their 
 buy from the result.
 
 ```bash
-pnpm dev        # http://localhost:4400
+pnpm dev          # http://localhost:4400 — console at /, buyer bundle at /buyer.html
 pnpm typecheck && pnpm lint && pnpm test && pnpm build
+pnpm build:buyer  # the second entry → dist-buyer/index.html
 ```
+
+## Two bundles, one app
+
+| Entry | Output | Who sees it |
+|---|---|---|
+| `index.html` → `src/main.tsx` | `dist/` | The **merchant's console** — gallery, editor, delivery admin, `/store` preview, `/live`. |
+| `buyer.html` → `src/main.buyer.tsx` | `dist-buyer/` | The **buyer's shop**, served by Caddy on a merchant's own domain (ADR-0012 §2). |
+
+**The buyer bundle contains no auth code, and that is not an optimisation.** ADR-0001 scopes the
+refresh cookie to `.opsgrids.com`, so on `merchant.com` a session cannot exist: `RequireAuth`
+would redirect to a sign-in page that cannot help, and the auth client would be dead weight on the
+first-paint path with an XSS surface and nothing to gain. That is why this is a second entry point
+and not a route. `src/buyer/*` may import `@/api/storeContext`, `@opsgrids/ui` and the theme
+renderer — **never `@/api/client`**, which reaches `@opsgrids/client`, the theme library and the
+fixture catalogue.
+
+It learns its store from one call — `POST /api/v1/storefront/public/store-context` with
+`{ "host": window.location.hostname }` — cached in `sessionStorage` for the tab, because the
+anonymous limit is 60/min **per IP** and an office is one IP. **A 404 renders as "there's no shop
+at this address" with no retry; everything else renders as "we can't load this shop right now"
+with one.** Collapsing the two is the defect this surface exists to prevent.
 
 ## Environment
 

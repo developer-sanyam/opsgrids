@@ -7,7 +7,8 @@ import tseslint from "typescript-eslint";
 // Self-contained flat config. opsgrids-config is meant to ship a shared eslint preset
 // (ADR-0001); until that lands, this app carries its own and graduates later.
 export default tseslint.config(
-  { ignores: ["dist", "node_modules"] },
+  // `dist-buyer` is the second Vite output (ADR-0012 §2) and is built output like `dist`.
+  { ignores: ["dist", "dist-buyer", "node_modules"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],
