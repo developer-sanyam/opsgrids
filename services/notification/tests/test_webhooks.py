@@ -16,7 +16,11 @@ import pytest
 
 from app import webhooks
 
-SECRET = "an-app-secret"
+# Named with the repository's `ci-only-` prefix, which the secret scanner's exclude
+# pattern recognises. A pragma would silence the finding; the prefix makes the string
+# self-evidently not a credential, which is the better answer to a scanner that is right
+# to be suspicious of a variable called SECRET.
+SECRET = "ci-only-app-secret"
 
 
 def _sign(body: bytes, secret: str = SECRET) -> str:
@@ -74,7 +78,7 @@ def test_a_tampered_body_is_refused() -> None:
 
 def test_a_signature_from_the_wrong_secret_is_refused() -> None:
     body = json.dumps(_status_payload()).encode()
-    assert not webhooks.verify_signature(body, _sign(body, "someone-elses-secret"), SECRET)
+    assert not webhooks.verify_signature(body, _sign(body, "ci-only-wrong-secret"), SECRET)
 
 
 @pytest.mark.parametrize("header", [None, "", "sha256=", "deadbeef", "sha1=deadbeef"])
