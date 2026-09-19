@@ -26,8 +26,39 @@ CHANNELS: Final[tuple[str, ...]] = ("email", "whatsapp")
 STATE_PENDING: Final = "pending"
 STATE_SENDING: Final = "sending"
 STATE_SENT: Final = "sent"
+STATE_DELIVERED: Final = "delivered"
+STATE_READ: Final = "read"
 STATE_FAILED: Final = "failed"
 STATE_SUPPRESSED: Final = "suppressed"
+
+#: How far a message has got, low to high. Receipts arrive out of order — Meta batches them and
+#: the network reorders them — so a `delivered` arriving after a `read` must not walk the state
+#: backwards and report a message as less delivered than it is. Comparing ranks is what makes
+#: the fold monotonic; ignoring order would make the inbox lie.
+_PROGRESS: Final[dict[str, int]] = {
+    STATE_PENDING: 0,
+    STATE_SENDING: 1,
+    STATE_SENT: 2,
+    STATE_DELIVERED: 3,
+    STATE_READ: 4,
+}
+
+
+def advances(current: str, incoming: str) -> bool:
+    """Does `incoming` represent progress on a message currently in `current`?
+
+    `failed` is deliberately outside the ladder. A message can fail after being sent — Meta
+    reports both — and a failure is worth recording whatever came before it, so it always
+    advances. What never advances is a receipt for a message already `failed` or `suppressed`:
+    those are terminal, and a late `delivered` on a suppressed message means we have confused
+    two messages, not that the suppressed one arrived.
+    """
+    if current in (STATE_FAILED, STATE_SUPPRESSED):
+        return False
+    if incoming == STATE_FAILED:
+        return True
+    return _PROGRESS.get(incoming, -1) > _PROGRESS.get(current, -1)
+
 
 #: Suppresses every category for a recipient on a channel.
 CATEGORY_ALL: Final = "*"

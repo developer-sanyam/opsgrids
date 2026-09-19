@@ -8,10 +8,19 @@ rather than returning something plausible.
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from platform_core.config import ServiceSettings
-from platform_core.pii import PII_KINDS, PiiError, mask, open_sealed, seal
+from platform_core.pii import (
+    PII_KINDS,
+    PiiError,
+    blind_index,
+    mask,
+    open_sealed,
+    seal,
+)
 
 
 def _settings(
@@ -143,3 +152,71 @@ class TestTampering:
         wrong_version = bytes([0xFF]) + ciphertext[1:]
         with pytest.raises(PiiError):
             open_sealed(wrong_version, settings=settings)
+
+
+class TestBlindIndex:
+    """Finding a sealed value without decrypting it.
+
+    The property that matters is a pair: deterministic enough to look up, keyed enough not to be
+    reversible. Each test below breaks one half of that pair if the implementation is wrong.
+    """
+
+    def test_the_same_value_indexes_the_same_way(self) -> None:
+        """Without this there is no lookup at all."""
+        settings = _settings()
+        a = blind_index("+917976603446", kind="phone", settings=settings)
+        b = blind_index("+917976603446", kind="phone", settings=settings)
+        assert a == b
+
+    def test_different_values_index_differently(self) -> None:
+        settings = _settings()
+        a = blind_index("+917976603446", kind="phone", settings=settings)
+        b = blind_index("+917976603447", kind="phone", settings=settings)
+        assert a != b
+
+    def test_the_index_does_not_contain_the_value(self) -> None:
+        index = blind_index("+917976603446", kind="phone", settings=_settings())
+        assert "7976603446" not in index
+        assert "+91" not in index
+
+    def test_the_index_is_not_an_unkeyed_hash(self) -> None:
+        """The whole security argument. A phone number is a ten-digit space, so an unkeyed
+        digest of one is reversible by brute force in seconds — publishing such a column would
+        be publishing the numbers. This asserts the key is actually mixed in."""
+        value = "+917976603446"
+        index = blind_index(value, kind="phone", settings=_settings())
+        assert index != hashlib.sha256(value.encode()).hexdigest()
+        assert index != hashlib.sha256(f"phone:{value}".encode()).hexdigest()
+
+    def test_a_different_key_gives_a_different_index(self) -> None:
+        """Which is also why rotating the key invalidates stored indices — documented on the
+        function, asserted here so nobody assumes otherwise."""
+        one = blind_index("+917976603446", kind="phone", settings=_settings())
+        two = blind_index(
+            "+917976603446", kind="phone", settings=_settings(key="another-passphrase")
+        )
+        assert one != two
+
+    def test_kinds_are_separated(self) -> None:
+        """Two kinds holding an identical string still index differently, so an index cannot be
+        matched across columns that happen to share a value."""
+        settings = _settings()
+        assert blind_index("same", kind="phone", settings=settings) != blind_index(
+            "same", kind="email", settings=settings
+        )
+
+    def test_the_index_key_is_not_the_encryption_key(self) -> None:
+        """Domain separation: two HKDF contexts over one passphrase, so a weakness found in one
+        derivation does not hand over the other."""
+        settings = _settings()
+        sealed, _ = seal("+917976603446", kind="phone", settings=settings)
+        index = blind_index("+917976603446", kind="phone", settings=settings)
+        assert bytes.fromhex(index) not in sealed
+
+    def test_rotation_does_not_rescue_a_stale_index(self) -> None:
+        """`pii_decrypt_keys` keeps decryption working across a rotation; lookup has no such
+        fallback, because an index is derived from the current key alone. A rotation plan has
+        to rebuild them, and this is the assertion that says so."""
+        old = blind_index("+917976603446", kind="phone", settings=_settings(key="old-key"))
+        rotated = _settings(key="new-key", decrypt=["old-key"])
+        assert blind_index("+917976603446", kind="phone", settings=rotated) != old

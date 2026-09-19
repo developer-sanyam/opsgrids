@@ -122,3 +122,24 @@ class MessagingTargetOut(BaseModel):
     contact_id: str
     channel: str
     phone: str | None
+
+
+class ContactResolveIn(BaseModel):
+    """Find the contact holding a phone number.
+
+    The number travels in a **body**, never a query string. A query string is recorded in
+    access logs, proxy logs and browser history; a customer's phone number has no business in
+    any of them, and the endpoint would otherwise leak exactly what the sealed column exists
+    to protect.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    phone: str = Field(min_length=4, max_length=40)
+
+
+class ContactResolveOut(BaseModel):
+    """Only the id. Returning any part of the contact would make this a read-around for the
+    permission-guarded routes, and the caller already has the number it asked with."""
+
+    contact_id: str | None

@@ -16,7 +16,15 @@ from typing import Any
 from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Delivery, Message, Preference, ProviderTemplate, Rule, Template
+from app.models import (
+    Delivery,
+    Message,
+    Preference,
+    ProviderAccount,
+    ProviderTemplate,
+    Rule,
+    Template,
+)
 from platform_core.auth import ScopeContext
 
 
@@ -226,5 +234,34 @@ async def get_provider_template(
         ProviderTemplate.channel == channel,
         ProviderTemplate.organization_id == org_id,
         ProviderTemplate.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_message_by_provider_id(
+    session: AsyncSession, org_id: uuid.UUID, provider_message_id: str
+) -> Message | None:
+    """The message a provider receipt is about. Org-scoped like every read here."""
+    stmt = select(Message).where(
+        Message.provider_message_id == provider_message_id,
+        Message.organization_id == org_id,
+        Message.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def account_for_phone_number(
+    session: AsyncSession, phone_number_id: str
+) -> ProviderAccount | None:
+    """Which organization owns the number a webhook arrived on.
+
+    **Deliberately not org-scoped**, because the organization is what this resolves — it is the
+    lookup that happens before a tenant is known. It must therefore run on the directory
+    session (SELECT-only, BYPASSRLS), never the tenant-bound one, and the caller binds the
+    organization it returns before touching anything else.
+    """
+    stmt = select(ProviderAccount).where(
+        ProviderAccount.phone_number_id == phone_number_id,
+        ProviderAccount.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()

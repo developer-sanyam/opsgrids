@@ -44,6 +44,8 @@ a wrong key fails to verify rather than returning garbage.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from collections.abc import Callable
 
 from cryptography.exceptions import InvalidTag
@@ -62,6 +64,10 @@ _KEY_LEN = 32  # AES-256.
 #: could never reproduce the key that sealed an existing row. Distinct from any other HKDF use
 #: on the same secret so the derived keys cannot collide with them.
 _HKDF_INFO = b"opsgrids.pii.aes256gcm.v1"
+#: A *different* context for the blind-index key, so the lookup key and the encryption key are
+#: independent derivations of the same passphrase. Domain separation: a weakness found in one
+#: must not hand over the other.
+_HKDF_INFO_INDEX = b"opsgrids.pii.blindindex.v1"
 
 BULLET = "•"  # • — the masking glyph, one constant so every mask reads the same.
 
@@ -127,6 +133,49 @@ def open_sealed(ciphertext: bytes, *, settings: ServiceSettings) -> str:
             continue
         return plaintext.decode("utf-8")
     raise PiiError("No configured key could open this value")
+
+
+def _derive_index_key(passphrase: str) -> bytes:
+    """The blind-index key. Same passphrase as encryption, different HKDF context."""
+    hkdf = HKDF(algorithm=hashes.SHA256(), length=_KEY_LEN, salt=None, info=_HKDF_INFO_INDEX)
+    return hkdf.derive(passphrase.encode("utf-8"))
+
+
+def blind_index(plaintext: str, *, kind: str, settings: ServiceSettings) -> str:
+    """A deterministic, keyed token for finding a sealed value without decrypting it.
+
+    `seal` uses a fresh nonce per call — deliberately, so equal ciphertext cannot reveal that
+    two rows hold the same value. The cost is that sealed columns are unsearchable, and some
+    questions genuinely need to be asked of them: an inbound WhatsApp message arrives carrying
+    a phone number, and *which contact is this* has to be answerable or every conversation
+    creates a duplicate customer.
+
+    So this returns `HMAC-SHA256(key, "<kind>:<plaintext>")` as hex. Deterministic, so an exact
+    lookup is one indexed query; keyed, so it is not reversible; and it decrypts nothing, so
+    finding a match reads no PII and writes no sensitive-read audit rows.
+
+    **The key is the entire security of this.** A phone number is a ten-digit space: an
+    *unkeyed* hash of one is reversible by brute force in seconds, and publishing such a column
+    would be publishing the numbers. With the key it is not, and an attacker holding the key
+    could decrypt the sealed column anyway — so the index adds no exposure that the ciphertext
+    beside it does not already carry.
+
+    What it does add, honestly: equality. Anyone who can read the column learns which rows hold
+    the same value, which `seal` was specifically arranged not to reveal. For a phone number
+    that is a deliberate trade — matching an inbound message *is* an equality question — and it
+    is why this is a separate, opt-in function rather than something `seal` returns by default.
+
+    `kind` is mixed into the message so two kinds holding an identical string still index
+    differently.
+
+    Rotation: the index is derived from the current key only, so rotating `pii_encryption_key`
+    invalidates every stored index and they must be rebuilt from the sealed values. Decryption
+    survives rotation through `pii_decrypt_keys`; lookup does not, and a rotation plan has to
+    say so.
+    """
+    key = _derive_index_key(settings.pii_encryption_key.get_secret_value())
+    message = f"{kind}:{plaintext}".encode()
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
 
 
 def _random_nonce() -> bytes:

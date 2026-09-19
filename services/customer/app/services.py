@@ -34,7 +34,7 @@ from platform_core.audit import record_audit, record_sensitive_read
 from platform_core.auth import ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
 from platform_core.events import publish_event
-from platform_core.pii import open_sealed, seal
+from platform_core.pii import blind_index, open_sealed, seal
 
 # Event names. `crm.*` because these are the product's own, not the platform's.
 EVT_COMPANY_CREATED = "crm.book.company.created"
@@ -208,9 +208,12 @@ async def create_contact(
         raise NotFoundProblem("That company is not part of this organization")
 
     phone_enc: bytes | None = None
+    phone_index: str | None = None
     if raw_phone is not None:
         raw = _canonical_e164(raw_phone)
-        phone_enc, phone = seal(raw, kind="phone", settings=settings())
+        cfg = settings()
+        phone_enc, phone = seal(raw, kind="phone", settings=cfg)
+        phone_index = blind_index(raw, kind="phone", settings=cfg)
 
     contact = Contact(
         organization_id=ctx.organization_id,
@@ -220,6 +223,7 @@ async def create_contact(
         email=email,
         phone=phone,
         phone_enc=phone_enc,
+        phone_index=phone_index,
         company_id=company.id,
         status=status,
         owner_id=owner_id,
@@ -329,11 +333,15 @@ async def set_contact_phone(
     caller who can see the audit trail must not be able to read the phone book out of it.
     """
     raw = _canonical_e164(raw_phone)
-    ciphertext, masked = seal(raw, kind="phone", settings=settings())
+    cfg = settings()
+    ciphertext, masked = seal(raw, kind="phone", settings=cfg)
 
     before = contact.phone
     contact.phone_enc = ciphertext
     contact.phone = masked
+    # Written in the same statement as the sealed value, so the two can never disagree — an
+    # index pointing at a number the row no longer holds would match the wrong contact.
+    contact.phone_index = blind_index(raw, kind="phone", settings=cfg)
     contact.updated_by = str(ctx.principal.sub)
     await session.flush()
 
