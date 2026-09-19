@@ -480,7 +480,6 @@ auto-accepts an IMS document.
 One standalone app per surface (ADR-0001). A customer who bought only CRM downloads only CRM.
 
 ```
-opsgrids-website     marketing — public, SEO-critical      Next.js 16
 opsgrids-internal    operator console (staff, cross-tenant) Vite · React
 product-*          nine product apps                      Vite · React
 opsgrids-ui          the design system every app imports

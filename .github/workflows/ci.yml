@@ -363,7 +363,6 @@ jobs:
       - name: Restore Next.js build cache
         uses: actions/cache@v4
         with:
-          path: frontend/opsgrids-website/.next/cache
           key: next-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}-${{ github.sha }}
           restore-keys: |
             next-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}-

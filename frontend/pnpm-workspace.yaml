@@ -6,7 +6,6 @@ packages:
   - "opsgrids-client"
 
   # One application per surface.
-  - "opsgrids-website"
   - "opsgrids-dashboard"
   - "opsgrids-admin"
   - "opsgrids-internal"

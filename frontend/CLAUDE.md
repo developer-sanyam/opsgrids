@@ -10,7 +10,6 @@ a prototype.
 ## Layout
 
 ```
-opsgrids-website      Marketing — public, SEO-critical, mostly static   Next.js
 opsgrids-dashboard    The ecosystem home after sign-in                  Vite · React
 opsgrids-admin        Customer administration                           Vite · React
 opsgrids-internal     OpsGrids staff console                              Vite · React

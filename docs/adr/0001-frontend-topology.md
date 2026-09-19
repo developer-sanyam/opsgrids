@@ -9,7 +9,7 @@ standalone on every platform. They share code through packages, not through a mo
 
 ```
 frontend/
-├── opsgrids-website        Marketing site — every product, pricing, docs      Next.js 16 · SSG
+├── opsgrids-website        REMOVED 2026-09-19 — see the amendment at the end of this file
 ├── opsgrids-dashboard      The ecosystem dashboard: what you land on after login   Vite · React
 ├── opsgrids-admin          Customer administration — users, teams, roles, billing  Vite · React
 ├── opsgrids-internal       OpsGrids staff console — every organization, overrides     Vite · React
@@ -107,3 +107,34 @@ One app per product per platform, sharing a module (`android/shared`, `ios/OpsGr
 carries auth, the API client and the design tokens. The reference architecture ships separate
 consumer, admin, delivery and picking apps for exactly this reason: a warehouse app and a
 sales app have nothing in common but the account.
+
+---
+
+## Amendment — the marketing site leaves the monorepo (2026-09-19)
+
+`frontend/opsgrids-website` is removed. The marketing site now lives in its own repository,
+**developer-sanyam/opsgrids-marketing-website**, and deploys to Vercel on `opsgrids.com`.
+
+**Why it is the one surface that should not be here.** Every other app under `frontend/` is
+signed-in, ships behind the gateway, and shares `opsgrids-ui` and `opsgrids-client`. The
+marketing site does none of that: it has no session, calls no API, imports neither package, and
+its release cadence is a marketing decision rather than a platform one. Keeping it in the
+workspace meant a copy change waited on the platform's CI, and the platform's CI carried a
+Next.js build that nothing else depended on — it was the step that failed the frontend gate on a
+Node version the rest of the workspace does not use.
+
+**What this does not change.** The rule that an app may not fork a component into itself still
+holds for every app that remains. The marketing site is outside the design system by nature: it
+is a public brochure, not a console surface, and it reads the Console's tokens as *values* — the
+same violet, ground and Manrope — rather than importing the package.
+
+**Consequences.**
+
+- `frontend/pnpm-workspace.yaml` no longer lists it, and `make frontend` no longer builds it.
+- The CI cache entry for its `.next` directory is gone.
+- `docs/existing-theme-features.md` and `docs/subcategory-filter-plan.md` describe the removed
+  app and are now historical; neither names anything that still exists.
+- The old `src/content/products.ts` is gone with it. It was the marketing catalogue's source of
+  truth and it carried claims that have since been corrected — notably a CRM pipeline that is an
+  empty scaffold. The new site's copy was rewritten against what is actually built, per product,
+  with an explicit "not yet" column.

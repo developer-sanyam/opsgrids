@@ -95,7 +95,6 @@ Two more, in rough order of how likely they are to catch you:
 
 ```bash
 cd frontend && pnpm install
-pnpm --filter opsgrids-website dev     # http://localhost:4300
 ```
 
 The marketing site is the only frontend that exists. `opsgrids-ui` and `opsgrids-client` are
