@@ -50,11 +50,17 @@ from app.services import EVT_REQUEST_DECIDED
 from platform_core.auth import Principal, get_principal
 from platform_core.db import TENANT_GUC, dispose_engine, init_engine
 from platform_core.events import build_envelope
+from platform_core.testing import cross_service_schema_lock
 from tests.helpers import envelope_from_outbox_row, principal_for, seed_person
 
 pytestmark = pytest.mark.integration
 
 ATTENDANCE_DIR = Path(__file__).resolve().parents[2] / "attendance"
+
+#: `services/attendance/app/models.py::SCHEMA`. Named as a literal rather than imported because
+#: importing it would pull attendance's `app` into this process, which is the one thing this
+#: module exists to avoid.
+ATTENDANCE_SCHEMA = "attendance"
 
 
 # --------------------------------------------------------------------- subprocess plumbing
@@ -139,9 +145,34 @@ def _apply_decisions(envelopes: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 @pytest.fixture(autouse=True)
-async def _engine() -> Any:
+async def _attendance_schema_lock() -> Any:
+    """Exclusive use of the **attendance** schema for the duration of each test here.
+
+    This module is the exception to the rule that makes `make test-services` parallelisable:
+    every other service's suite truncates and writes only its own schema, but this one drives
+    attendance's real write and consume paths through `tests/regularization_cli.py`, so its rows
+    live in attendance's schema — and `services/attendance/tests/conftest.py` opens each of its
+    own tests by truncating exactly those tables. Run concurrently, as the fan-out does, each
+    side pulls rows out from under the other: `'NoneType' object is not subscriptable`,
+    `list index out of range`, a non-zero CLI exit, and a `TRUNCATE` deadlocking on our reads.
+
+    Attendance's `session` fixture takes the same lock, so the two suites serialise against each
+    other and nothing else. See `platform_core.testing` for the lock itself.
+    """
+    async with cross_service_schema_lock(
+        approval_settings().app_dsn, ATTENDANCE_SCHEMA, holder=f"{__name__} (approval)"
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+async def _engine(_attendance_schema_lock: Any) -> Any:
     """The consumers open their own `session_scope`, which needs the process engine initialised
-    — the app lifespan does this in production; here the fixture stands in for it."""
+    — the app lifespan does this in production; here the fixture stands in for it.
+
+    Depends on `_attendance_schema_lock` only for ordering: the lock is taken before anything
+    else in this module reaches the database, and released after everything else has let go.
+    """
     init_engine(approval_settings())
     yield
     await dispose_engine()

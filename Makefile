@@ -172,10 +172,32 @@ test-libs: ## Shared library tests
 
 .PHONY: test-services
 test-services: ## Each service in its own process
-	# Parallel across services, never within one: every service owns a Postgres schema and
-	# its fixtures truncate only its own tables, so two services cannot see or clobber each
-	# other's rows. Inside a service the fixtures do share a schema, which is why the
-	# fan-out is per service and pytest itself stays single-process.
+	# Parallel across services, never within one. Inside a service the fixtures share a
+	# schema, which is why the fan-out is per service and pytest itself stays single-process.
+	#
+	# Across services it is parallel because each one owns a Postgres schema — *except where a
+	# test deliberately crosses a service boundary*, which two do. They are not an accident to
+	# be removed: they are the only tests that prove the two halves of a slice actually fit.
+	#
+	#   services/approval/tests/test_attendance_round_trip.py    -> the `attendance` schema
+	#   services/approval/tests/test_cross_service_contract.py   -> the `employee` schema
+	#
+	# Each drives the other service's real write and consume paths through a subprocess helper
+	# in that service's own `tests/`, so it holds live rows in a schema it does not own — while
+	# that service's own `session` fixture opens every one of its tests by truncating exactly
+	# those tables. Scheduled at the same time, each deletes rows the other is mid-way through
+	# using, and the failures read like broken logic rather than like a scheduling bug.
+	#
+	# So each of those two modules, and the `session` fixture of the service it reaches into,
+	# take a Postgres advisory lock named for the schema they contend for
+	# (`platform_core.testing.cross_service_schema_lock`). Each pair serialises against itself
+	# and nothing else; the other ~32 services stay fully parallel.
+	#
+	# The rule for a new service: fan-out safety comes from a suite touching only its own
+	# schema. If a test reaches into a sibling's schema — directly, or through that sibling's
+	# test helper — it must take the same lock on that sibling's schema, and the sibling's
+	# truncating fixture must take it too. Nothing detects this for you; it shows up as a
+	# flake.
 	#
 	# pytest's exit code 5 means "no tests collected", which is not a failure for a
 	# service that has none yet — hence `ok-empty`.

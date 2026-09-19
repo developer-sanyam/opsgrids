@@ -42,7 +42,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = 'c71a5e0f4b82'
+revision: str = 'c71a5e0f4b82'  # pragma: allowlist secret — an alembic revision id
 down_revision: str | None = '8873b3d3c312'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

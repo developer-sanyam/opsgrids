@@ -41,7 +41,17 @@ from app.schemas import CheckInIn
 from platform_core import cache
 from platform_core.auth import Scope
 from platform_core.db import TENANT_GUC, get_session
+from platform_core.testing import cross_service_schema_lock
 from tests.helpers import FakeRedis, ctx_for
+
+#: This suite is not parallel-safe against `services/approval/tests/test_attendance_round_trip.py`,
+#: which drives attendance's real write and consume paths through `tests/regularization_cli.py`
+#: and therefore holds live rows in *this* schema while it runs. The `TRUNCATE` below would
+#: delete them mid-test — and its `AccessExclusiveLock` deadlocks against that module's open
+#: reads. `make test-services` runs the two services concurrently, so the two suites take this
+#: advisory lock against each other; see `platform_core.testing`. Every other service is
+#: untouched and stays fully parallel.
+CROSS_SERVICE_LOCK_HOLDER = "services/attendance/tests"
 
 #: Every table here is tenant-scoped or global-and-empty, so all are safe to truncate. CASCADE
 #: because `attendance_records` carries a foreign key into `shifts`, and `regularization_requests`
@@ -90,25 +100,34 @@ async def session(org_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
 
     Pointing this at the admin or superuser DSN would make row-level security invisible here and
     every isolation assertion a false pass — the failure ADR-0002 calls worse than no test.
+
+    The whole fixture — the truncation *and* the test that runs under it — is wrapped in the
+    cross-service advisory lock (see `CROSS_SERVICE_LOCK_HOLDER` above). Locking only the
+    `TRUNCATE` would not be enough: the rows this test then writes are in the same schema the
+    sibling suite is reading, so the exclusion has to last as long as the test does. It is held
+    per test rather than for the whole session so the two suites interleave at test granularity
+    instead of one waiting out the other end to end. Every database-touching test in this
+    service reaches the database through this fixture, so this is the one place it belongs.
     """
     cfg = settings()
     tables = ", ".join(f'"{SCHEMA}"."{t}"' for t in TENANT_TABLES)
 
-    admin = create_async_engine(cfg.admin_dsn, connect_args=_connect_args())
-    async with admin.begin() as conn:
-        await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
-    await admin.dispose()
+    async with cross_service_schema_lock(cfg.app_dsn, SCHEMA, holder=CROSS_SERVICE_LOCK_HOLDER):
+        admin = create_async_engine(cfg.admin_dsn, connect_args=_connect_args())
+        async with admin.begin() as conn:
+            await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
+        await admin.dispose()
 
-    engine = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
-    maker = async_sessionmaker(engine, expire_on_commit=False)
-    async with maker() as s:
+        engine = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as s:
 
-        @event.listens_for(s.sync_session, "after_begin")
-        def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
-            connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
+            @event.listens_for(s.sync_session, "after_begin")
+            def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+                connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
 
-        yield s
-    await engine.dispose()
+            yield s
+        await engine.dispose()
 
 
 @pytest_asyncio.fixture

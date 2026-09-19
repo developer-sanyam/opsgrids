@@ -52,10 +52,16 @@ from app.consumers import _apply_hierarchy_event
 from app.employee_client import HttpHierarchySource
 from platform_core.db import dispose_engine, init_engine
 from platform_core.events import build_envelope
+from platform_core.testing import cross_service_schema_lock
 
 pytestmark = pytest.mark.integration
 
 EMPLOYEE_DIR = Path(__file__).resolve().parents[2] / "employee"
+
+#: `services/employee/app/models.py::SCHEMA`. Named as a literal rather than imported because
+#: importing it would pull employee's `app` into this process, which is the one thing this
+#: module exists to avoid.
+EMPLOYEE_SCHEMA = "employee"
 
 # --------------------------------------------------------------------- subprocess plumbing
 
@@ -144,9 +150,34 @@ async def _stored_node(
 
 
 @pytest.fixture(autouse=True)
-async def _engine() -> Any:
+async def _employee_schema_lock() -> Any:
+    """Exclusive use of the **employee** schema for the duration of each test here.
+
+    Same exception, same reason, as `test_attendance_round_trip.py`: every other service's suite
+    truncates and writes only its own schema, but this one drives employee's real write path and
+    its real `/internal/v1/hierarchy` route through `tests/emit_events.py`, `bump_employee.py`
+    and `serve_hierarchy.py`, so its rows live in employee's schema — and
+    `services/employee/tests/conftest.py` opens each of its own tests by truncating exactly
+    those tables. Run concurrently, as the fan-out does, each side pulls rows out from under the
+    other: a subprocess helper exiting non-zero, a backfill snapshot that has gone empty.
+
+    Employee's `session` fixture takes the same lock, so the two suites serialise against each
+    other and nothing else. See `platform_core.testing` for the lock itself.
+    """
+    async with cross_service_schema_lock(
+        approval_settings().app_dsn, EMPLOYEE_SCHEMA, holder=f"{__name__} (approval)"
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+async def _engine(_employee_schema_lock: Any) -> Any:
     """The consumer and the backfill both write through `session_scope`, which needs the
-    process engine initialised — the app lifespan does this in production."""
+    process engine initialised — the app lifespan does this in production.
+
+    Depends on `_employee_schema_lock` only for ordering: the lock is taken before anything else
+    in this module reaches the database, and released after everything else has let go.
+    """
     init_engine(approval_settings())
     yield
     await dispose_engine()
