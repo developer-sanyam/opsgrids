@@ -70,6 +70,14 @@ describe("the storefront sidebar", () => {
    * store document instead: the preview screen's own page switcher, and the store's nav inside
    * the frame. What the sidebar owes is the way in.
    */
+  it("offers the delivery admin, which shipped reachable only by typing its URL", () => {
+    renderSidebar();
+
+    // Zones, the postal-code map and the demand report are a merchant's screen. A screen with no
+    // way in is a screen that does not exist, however well it works once you are on it.
+    expect(linkTo("/delivery").textContent).toContain("Delivery");
+  });
+
   it("holds an entry into the preview, not a copy of the store's page list", () => {
     renderSidebar();
 

@@ -990,3 +990,38 @@ answer, and `denied` as hide — because hiding on `unknown` would hide the enti
 from a merchant holding every grant. Correct given the constraint, but `denied` can never arrive
 until `src/auth/AuthProvider.tsx` mounts the provider. **Authorization is server-side regardless;
 this only affects whether the UI hides a control it was going to be refused anyway.**
+
+### Errata, third pass — found during reconciliation (2026-09-19)
+
+**11. Section 15 sends the reader to the wrong module.** It says `src/delivery/` owns the buyer's
+call, the four render states and the localStorage key. It does not: `src/delivery/` is the
+*merchant admin*. The buyer's half is `src/lib/serviceability.ts` plus
+`src/theme/render/DeliveryCheck.tsx`. **This misdirection is roughly how the contract drift
+happened** — corrected here so the next contributor is not sent to the wrong place.
+
+**12. Section 3 should state what broke us.** `mode` is **required and never null**, and
+`UNSERVED` covers all three refusal reasons. The opposite assumption — that an unmapped code
+returns `mode: null` — is exactly what the buyer half guessed, and a client that switches on
+`mode` cannot tell "we have not reached your area yet" from "we deliberately excluded it".
+Classify on `serviceable`, then branch on `reason`.
+
+**13. `src/delivery/types.ts` over-declares required-ness.** `PromiseOut.minutes`/`date`,
+`FeesOut.free_delivery_above_minor`/`min_order_minor` and the `MerchantServiceabilityOut`
+nullables are declared required, but the schema's `required` lists are only `kind`,
+`currency` + `delivery_fee_minor`, and the four on the buyer's shape. A body omitting
+`min_order_minor` (server-side default 0) would typecheck-lie. The contract test added for the
+buyer half is the pattern to extend here.
+
+**14. The buyer's field is India-only.** The schema accepts a 24-character postal code and any
+slug matching `^[a-z0-9][a-z0-9-]{1,62}$`; the buyer field caps at 10 and validates the six-digit
+Indian form. Deliberate — mirror, not replace — but a non-India storefront would be refused
+*client-side* before the server saw it. Name this when slice 2 widens beyond India.
+
+**15. `SLOTTED` is in the schema enum but the zone writer refuses it in slice 1**, so the
+"Delivery windows are shown at checkout." path should be unreachable live today. Worth confirming
+against the service rather than assuming.
+
+**Copy decision worth review:** the refusal headline keeps "…yet" only for `no_mapping` and the
+unrecognised case. `excluded` drops it, because **"yet" for an area the merchant deliberately
+excluded is a promise nobody intends to keep**; `zone_inactive` reads "right now". A zone's own
+`buyer_note` still overrides all three.
