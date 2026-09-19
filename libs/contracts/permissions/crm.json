@@ -29,6 +29,15 @@
       "resource": "contact"
     },
     {
+      "action": "read_sensitive",
+      "default_scope": "OWN",
+      "description": "Reveal a contact's real phone number, audited",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "book",
+      "resource": "contact"
+    },
+    {
       "action": "write",
       "default_scope": "OWN",
       "description": "Create and update contacts",
@@ -91,6 +100,10 @@
         },
         {
           "code": "crm.book.contact.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "crm.book.contact.read_sensitive",
           "scope": "ORG"
         },
         {

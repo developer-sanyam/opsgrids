@@ -765,6 +765,18 @@
             ],
             "title": "Provider Template Code"
           },
+          "recipient_contact_path": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipient Contact Path"
+          },
           "recipient_literal": {
             "anyOf": [
               {
@@ -863,6 +875,17 @@
             ],
             "title": "Provider Template Code"
           },
+          "recipient_contact_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipient Contact Path"
+          },
           "recipient_literal": {
             "anyOf": [
               {
@@ -911,6 +934,7 @@
           "category",
           "recipient_path",
           "recipient_literal",
+          "recipient_contact_path",
           "dedupe_key_path",
           "active",
           "created_at",
@@ -1096,7 +1120,7 @@
       },
       "TemplateVariableIn": {
         "additionalProperties": false,
-        "description": "One value a provider template expects.\n\n`key` is our vocabulary \u2014 the same name a rule's payload path resolves \u2014 while `position`\nis the provider's. Keeping both here is what lets the rest of the service speak one\nlanguage and confines the provider's ordering to this row.",
+        "description": "One value a provider template expects.\n\n`key` is our vocabulary \u2014 the dotted path a rule's payload resolves, the same name the ERP\nwrites as `{{customer_name}}`. The provider's side is `position` for a positional template\nor `parameter_name` for a named one. Keeping both here is the mapping layer: the ERP speaks\none language and nothing outside this row has to know which form Meta wants.",
         "properties": {
           "button_index": {
             "default": 0,
@@ -1127,6 +1151,13 @@
               "payload"
             ],
             "title": "Kind",
+            "type": "string"
+          },
+          "parameter_name": {
+            "default": "",
+            "maxLength": 120,
+            "pattern": "^[a-z0-9_]*$",
+            "title": "Parameter Name",
             "type": "string"
           },
           "position": {
@@ -1174,6 +1205,13 @@
               "payload"
             ],
             "title": "Kind",
+            "type": "string"
+          },
+          "parameter_name": {
+            "default": "",
+            "maxLength": 120,
+            "pattern": "^[a-z0-9_]*$",
+            "title": "Parameter Name",
             "type": "string"
           },
           "position": {

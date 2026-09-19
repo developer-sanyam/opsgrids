@@ -59,9 +59,10 @@ class TemplateIn(BaseModel):
 class TemplateVariableIn(BaseModel):
     """One value a provider template expects.
 
-    `key` is our vocabulary — the same name a rule's payload path resolves — while `position`
-    is the provider's. Keeping both here is what lets the rest of the service speak one
-    language and confines the provider's ordering to this row.
+    `key` is our vocabulary — the dotted path a rule's payload resolves, the same name the ERP
+    writes as `{{customer_name}}`. The provider's side is `position` for a positional template
+    or `parameter_name` for a named one. Keeping both here is the mapping layer: the ERP speaks
+    one language and nothing outside this row has to know which form Meta wants.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -71,6 +72,9 @@ class TemplateVariableIn(BaseModel):
     position: int = Field(default=0, ge=0)
     button_index: int = Field(default=0, ge=0)
     kind: VariableKind = "text"
+    #: Meta's label for this placeholder. Required for a named-format template, ignored for a
+    #: positional one. Lowercase letters, digits and underscores — Meta's own constraint.
+    parameter_name: str = Field(default="", max_length=120, pattern=r"^[a-z0-9_]*$")
 
 
 class TemplateVariableOut(TemplateVariableIn):
@@ -128,6 +132,7 @@ class RuleOut(BaseModel):
     category: str
     recipient_path: str | None
     recipient_literal: str | None
+    recipient_contact_path: str | None
     dedupe_key_path: str | None
     active: bool
     created_at: datetime
@@ -152,8 +157,13 @@ class RuleIn(BaseModel):
     template_code: str | None = Field(default=None, max_length=80)
     provider_template_code: str | None = Field(default=None, max_length=80)
     category: str = Field(default="operational", max_length=40)
+    #: Exactly one of these three. `recipient_path` takes an address straight from the event;
+    #: `recipient_literal` is a fixed address; `recipient_contact_path` names a **contact id**
+    #: in the event and has the address resolved from customer-service, which is the only way
+    #: to reach a customer whose number is sealed.
     recipient_path: str | None = Field(default=None, max_length=120)
     recipient_literal: str | None = Field(default=None, max_length=254)
+    recipient_contact_path: str | None = Field(default=None, max_length=120)
     dedupe_key_path: str | None = Field(default=None, max_length=120)
     active: bool = True
 

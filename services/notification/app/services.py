@@ -32,6 +32,7 @@ from app.models import (
     Rule,
     Template,
 )
+from app.targets import TargetResolver
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
@@ -151,7 +152,15 @@ async def upsert_provider_template(
         raise ValidationProblem(f"{parameter_format!r} is not a template parameter format")
 
     try:
-        domain.validate_template_variables([domain.TemplateVariable(**v) for v in variables])
+        parsed = [domain.TemplateVariable(**v) for v in variables]
+        if parameter_format == domain.FORMAT_NAMED:
+            # A positional template is wrong loudly — values land in the wrong placeholders. A
+            # named one is wrong quietly: Meta matches on the label, so a missing or misspelled
+            # name leaves that placeholder unfilled and the send still reports success. Caught
+            # here rather than by a customer reading a message with a hole in it.
+            domain.validate_named_variables(parsed)
+        else:
+            domain.validate_template_variables(parsed)
     except (domain.TemplateError, TypeError) as exc:
         raise ValidationProblem(str(exc)) from exc
 
@@ -208,6 +217,7 @@ async def upsert_rule(
     category: str = "operational",
     recipient_path: str | None = None,
     recipient_literal: str | None = None,
+    recipient_contact_path: str | None = None,
     dedupe_key_path: str | None = None,
     active: bool = True,
     request: Request | None = None,
@@ -224,6 +234,7 @@ async def upsert_rule(
             event_type=event_type,
             recipient_path=recipient_path,
             recipient_literal=recipient_literal,
+            recipient_contact_path=recipient_contact_path,
             template_code=template_code,
             provider_template_code=provider_template_code,
         )
@@ -264,6 +275,7 @@ async def upsert_rule(
     rule.category = category
     rule.recipient_path = recipient_path
     rule.recipient_literal = recipient_literal
+    rule.recipient_contact_path = recipient_contact_path
     rule.dedupe_key_path = dedupe_key_path
     rule.active = active
     await session.flush()
@@ -429,6 +441,7 @@ async def apply_rules(
     *,
     organization_id: uuid.UUID,
     envelope: dict[str, Any],
+    resolve_target: TargetResolver | None = None,
 ) -> list[Message]:
     """**The automation engine.** Fold one inbound event into whatever it was configured to send.
 
@@ -450,29 +463,16 @@ async def apply_rules(
     staged: list[Message] = []
 
     for rule in rules:
-        raw_recipient = (
-            rule.recipient_literal
-            if rule.recipient_literal
-            else domain.resolve_path(payload, rule.recipient_path or "")
+        to_address = await _recipient_for(
+            rule,
+            payload,
+            organization_id=organization_id,
+            resolve_target=resolve_target,
         )
-        if raw_recipient is None or not str(raw_recipient).strip():
-            log.info(
-                "notification.rule.no_recipient",
-                rule=rule.code,
-                event_type=event_type,
-                path=rule.recipient_path,
-            )
-            continue
-
-        try:
-            to_address = domain.normalize_recipient(rule.channel, str(raw_recipient))
-        except domain.RuleError as exc:
-            log.warning(
-                "notification.rule.bad_recipient",
-                rule=rule.code,
-                event_type=event_type,
-                error=str(exc),
-            )
+        if to_address is None:
+            # Logged inside `_recipient_for` with the reason. A rule that cannot reach anyone
+            # on this event is an ordinary outcome, not a fault — most events do not concern
+            # most rules.
             continue
 
         wording = await _wording_for(session, organization_id, rule, payload)
@@ -508,6 +508,85 @@ async def apply_rules(
             staged.append(message)
 
     return staged
+
+
+async def _recipient_for(
+    rule: Rule,
+    payload: dict[str, Any],
+    *,
+    organization_id: uuid.UUID,
+    resolve_target: TargetResolver | None,
+) -> str | None:
+    """Who this rule will message on this event, or None with the reason logged.
+
+    Three sources, and the rule names exactly one:
+
+      `recipient_literal`       a fixed address — the notify-the-team case.
+      `recipient_path`          an address carried in the event, such as a ticket requester's
+                                email. Whatever the producer put there.
+      `recipient_contact_path`  a **contact id** carried in the event. The address is then
+                                resolved by asking customer-service, because a customer's real
+                                number is sealed and this service holds no key.
+
+    `TargetUnavailable` is deliberately **not** caught. A contact with no number is a skip; a
+    customer-service that cannot answer is a notification still owed, so the exception travels
+    up to the consumer, the message is nacked and the broker redelivers. Swallowing it here
+    would turn a transient outage into silently unsent mail.
+    """
+    if rule.recipient_contact_path:
+        if resolve_target is None:
+            # A rule configured to target a contact in a process wired without a resolver.
+            # Refusing loudly beats silently sending nothing, because the absence would look
+            # exactly like "no rule matched".
+            log.error(
+                "notification.rule.no_target_resolver",
+                rule=rule.code,
+                path=rule.recipient_contact_path,
+            )
+            return None
+
+        contact_id = domain.resolve_path(payload, rule.recipient_contact_path)
+        if contact_id is None or not str(contact_id).strip():
+            log.info(
+                "notification.rule.no_contact_in_event",
+                rule=rule.code,
+                path=rule.recipient_contact_path,
+            )
+            return None
+
+        address = await resolve_target(str(organization_id), str(contact_id), rule.channel)
+        if address is None:
+            log.info(
+                "notification.rule.contact_has_no_address",
+                rule=rule.code,
+                channel=rule.channel,
+            )
+            return None
+        raw_recipient: Any = address
+    elif rule.recipient_literal:
+        raw_recipient = rule.recipient_literal
+    else:
+        raw_recipient = domain.resolve_path(payload, rule.recipient_path or "")
+        if raw_recipient is None or not str(raw_recipient).strip():
+            log.info(
+                "notification.rule.no_recipient",
+                rule=rule.code,
+                path=rule.recipient_path,
+            )
+            return None
+
+    try:
+        # Normalised even when it came from customer-service, which already canonicalises it.
+        # Two services agreeing by construction is better than one trusting the other.
+        return domain.normalize_recipient(rule.channel, str(raw_recipient))
+    except domain.RuleError as exc:
+        log.warning(
+            "notification.rule.bad_recipient",
+            rule=rule.code,
+            channel=rule.channel,
+            error=str(exc),
+        )
+        return None
 
 
 async def _wording_for(

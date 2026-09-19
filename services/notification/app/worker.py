@@ -19,6 +19,7 @@ import asyncio
 
 from app import consumers, dispatcher
 from app.config import settings
+from app.targets import make_resolver as make_target_resolver
 from app.transports import build as build_transports
 from platform_core.db import assert_app_role, init_engine
 from platform_core.logging import get_logger
@@ -34,7 +35,7 @@ async def main() -> None:
     # RLS would be silently inert — refuse outside local (ADR-0002).
     await assert_app_role(engine, environment=cfg.environment)
 
-    consumers.register()
+    consumers.register(make_target_resolver(cfg))
     # Raises rather than downgrading to `log` when a real transport is named without
     # credentials, so a misconfigured deploy fails here instead of going quiet.
     dispatcher.register(build_transports(cfg), cfg)

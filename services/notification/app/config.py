@@ -47,6 +47,13 @@ class Settings(ServiceSettings):
     whatsapp_access_token: SecretStr | None = None
     whatsapp_timeout_seconds: float = 10.0
 
+    # ----------------------------------------------------------------- customer targeting
+    #: Where to ask for a contact's messaging address. Notification never decrypts a phone
+    #: number itself — customer-service owns the data and the key, and answers over its
+    #: internal API under a token addressed to it by name.
+    customer_internal_url: str = "http://localhost:8130"
+    customer_timeout_seconds: float = 5.0
+
     # ----------------------------------------------------------------- dispatcher
     #: Rows claimed per dispatcher pass.
     dispatch_batch_size: int = 50

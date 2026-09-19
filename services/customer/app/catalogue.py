@@ -112,6 +112,20 @@ CRM_BOOK = PermissionCatalogue(
         PermissionSpec("book", "company", "write", "Create and update companies", "OWN"),
         PermissionSpec("book", "contact", "read", "See contacts", "OWN"),
         PermissionSpec("book", "contact", "write", "Create and update contacts", "OWN"),
+        # Reading a contact's real phone number, as opposed to the masked hint every other
+        # read returns. Classified dangerous and stepped up at the route (`amr={"otp"}`),
+        # exactly as employee-service treats `read_sensitive`: the ordinary CRM permission
+        # must not be a route to a customer's personal number, and every unmask writes an
+        # `entity.sensitive_read` audit row naming the field but never its value.
+        PermissionSpec(
+            "book",
+            "contact",
+            "read_sensitive",
+            "Reveal a contact's real phone number, audited",
+            "OWN",
+            "ORG",
+            is_dangerous=True,
+        ),
     ],
 )
 

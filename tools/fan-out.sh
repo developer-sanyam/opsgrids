@@ -27,7 +27,9 @@
 # unreadable. A service's output is printed in full only when it fails, and every service is
 # still attempted, so one failure reports the others' results instead of hiding them.
 #
-# usage: fan-out.sh <jobs> <require> <ok-empty|strict> <command...>
+# usage: fan-out.sh [--stdin] <jobs> <require> <ok-empty|strict> <command...>
+#
+#   --stdin   read the service list from stdin instead of scanning services/
 #
 #   jobs      how many services to process at once; 1 is strictly serial
 #   require   a path that must exist inside services/<name> or the service is skipped
@@ -64,6 +66,12 @@ if [ "${1:-}" = "--one" ]; then
 fi
 
 # ------------------------------------------------------------------ the fan-out
+from_stdin=no
+if [ "${1:-}" = "--stdin" ]; then
+  from_stdin=yes
+  shift
+fi
+
 jobs=${1:?jobs}
 require=${2:?require}
 ok_empty=${3:?ok-empty}
@@ -76,12 +84,36 @@ fi
 
 root=$(pwd)
 
-services=$(
-  for dir in "$root"/services/*/; do
-    svc=$(basename "$dir")
-    [ -e "$root/services/$svc/$require" ] && printf '%s\n' "$svc"
-  done
-)
+# Where the service list comes from. `--stdin` means a shard is piping one in (see
+# tools/shard.sh); otherwise every service carrying `require` is processed.
+#
+# This is an explicit flag and not `[ ! -t 0 ]`, which is the bug that shipped: stdin is not
+# a terminal inside a make recipe or a CI step *even when nothing is piped*, so the TTY test
+# read an empty list, processed no services and exited 0. `make migrate` reported success
+# having created no schemas, and the failure surfaced two steps later as
+# `schema "account" does not exist`. A silent no-op that passes is worse than a crash.
+if [ "$from_stdin" = "yes" ]; then
+  # A shard hands over every service it owns; the `require` filter still applies, which is
+  # what lets one partition drive mypy, pytest and alembic even though not every service
+  # has an `app`, a `tests/` or an `alembic.ini`.
+  services=$(
+    while read -r svc; do
+      [ -n "$svc" ] || continue
+      [ -e "$root/services/$svc/$require" ] && printf '%s\n' "$svc"
+    done
+  )
+  if [ -z "$services" ]; then
+    echo "fan-out.sh: --stdin given but no services were piped in" >&2
+    exit 2
+  fi
+else
+  services=$(
+    for dir in "$root"/services/*/; do
+      svc=$(basename "$dir")
+      [ -e "$root/services/$svc/$require" ] && printf '%s\n' "$svc"
+    done
+  )
+fi
 
 [ -n "$services" ] || exit 0
 
