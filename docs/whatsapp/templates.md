@@ -97,19 +97,62 @@ not leave a hole — it shifts every later value one place earlier, so `{{3}}` r
 customer, in a channel they trust. That is why positions must be contiguous from zero and why it
 is refused at authoring rather than reported later.
 
-## Named parameters are not supported yet
+## Named parameters
 
 Meta templates may declare **named** parameters (`{{customer_name}}`) instead of positional
-(`{{1}}`). Registering one is allowed here; **sending it is refused** with an explicit error.
+(`{{1}}`). Both are supported, and the difference is confined to the template row.
 
-The reason is deliberate. Meta's documentation establishes that named parameters exist and how
-they are declared *at template creation*, but the shape a named parameter takes in the **send**
-payload is not published on any page we consulted. Guessing it has two outcomes: the send is
-rejected, or — far worse — it is accepted with values landing in the wrong placeholders. So a
-named template fails loudly with an instruction rather than being sent on a guess.
+The mapping layer is the template's `variables`:
 
-To finish it: confirm the send-side named-parameter object against Meta's reference, then extend
-`domain.build_template_payload`. The test that pins the refusal will tell you where.
+| Field | Whose name | Used by |
+|---|---|---|
+| `key` | **ours** — the dotted path a rule's payload resolves | both formats |
+| `position` | Meta's — order within the component | positional only |
+| `parameter_name` | Meta's — the label | named only |
+
+So the ERP writes `{{invoice_number}}` against its own event payloads and Meta receives either
+`BODY` parameter 1 or `parameter_name: "invoice_number"`. Nothing outside the template row knows
+which form the provider wanted.
+
+A named send looks like this, and the field names were read off Meta's own example:
+
+```json
+"parameters": [
+  { "type": "text", "parameter_name": "customer_name",  "text": "Priya Nair" },
+  { "type": "text", "parameter_name": "invoice_number", "text": "INV-9" }
+]
+```
+
+Note the **lowercase** `"text"`. A third-party summary of the same feature showed it uppercase;
+following that would have produced a payload Meta rejects, which is the `sub_type` mistake a
+second time. The rule stands: field names come from Meta's pages or they do not get written.
+
+### What each format validates, and why they differ
+
+| Format | Checked | Failure it prevents |
+|---|---|---|
+| positional | positions unique and contiguous from zero | Meta fills in order, so a gap shifts every later value into the wrong placeholder — a message that sends successfully carrying the wrong data |
+| named | every non-button variable has a valid, unique `parameter_name` | Meta matches by label, so a missing or misspelled name leaves that placeholder **unfilled** while the send reports success |
+
+The two failure modes are opposites, which is why the validators are separate. A positional
+template is wrong loudly; a named one is wrong quietly. Applying the positional checks to a named
+template would also be wrong in a smaller way — named values may arrive in any order, so
+requiring contiguous positions would force an operator to invent numbers that mean nothing.
+
+### Buttons
+
+Button parameters keep the positional shape in **both** formats:
+
+```json
+{ "type": "button", "sub_type": "url", "index": "0",
+  "parameters": [{ "type": "text", "text": "9" }] }
+```
+
+Meta publishes `parameter_name` for header and body components and publishes no named form for a
+button, which `index` already identifies unambiguously. Emitting an unverified `parameter_name`
+there would be inventing a payload; omitting it leaves the shape Meta does document. If that
+turns out to be wrong the 4xx is classified permanent and visible, rather than silently filling
+the wrong button.
 
 ## What a message records
 

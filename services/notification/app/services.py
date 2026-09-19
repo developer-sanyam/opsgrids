@@ -152,7 +152,15 @@ async def upsert_provider_template(
         raise ValidationProblem(f"{parameter_format!r} is not a template parameter format")
 
     try:
-        domain.validate_template_variables([domain.TemplateVariable(**v) for v in variables])
+        parsed = [domain.TemplateVariable(**v) for v in variables]
+        if parameter_format == domain.FORMAT_NAMED:
+            # A positional template is wrong loudly — values land in the wrong placeholders. A
+            # named one is wrong quietly: Meta matches on the label, so a missing or misspelled
+            # name leaves that placeholder unfilled and the send still reports success. Caught
+            # here rather than by a customer reading a message with a hole in it.
+            domain.validate_named_variables(parsed)
+        else:
+            domain.validate_template_variables(parsed)
     except (domain.TemplateError, TypeError) as exc:
         raise ValidationProblem(str(exc)) from exc
 

@@ -405,12 +405,22 @@ class TemplateError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class TemplateVariable:
-    """One value a template expects.
+    """One value a template expects — and the mapping between our name for it and Meta's.
 
-    `key` is our own vocabulary — the same `{{placeholder}}` name a rule's payload path resolves
-    — so the rest of the service keeps speaking one language. `position` is Meta's: the order the
-    parameter appears within its component. `button_index` identifies which button, and is only
-    meaningful for `COMPONENT_BUTTON`.
+    `key` is our own vocabulary: the dotted path a rule's payload resolves, the same name the
+    ERP writes as `{{customer_name}}`. The rest of the service only ever speaks this.
+
+    The provider's side of the mapping is the other two fields, and which one matters depends on
+    how the template was registered with Meta:
+
+      positional templates  `position` — the order the parameter appears within its component.
+      named templates       `parameter_name` — Meta's own label for the placeholder.
+
+    Keeping both here is the mapping layer. It means the ERP can say `{{invoice_number}}` while
+    Meta receives either `BODY` parameter 1 or `parameter_name: "invoice_number"`, and nothing
+    outside this row has to know which.
+
+    `button_index` identifies which button, and is only meaningful for `COMPONENT_BUTTON`.
     """
 
     key: str
@@ -419,20 +429,32 @@ class TemplateVariable:
     button_index: int = 0
     #: `text` | `payload`. Media parameters are out of scope until document-service exists.
     kind: str = "text"
+    #: Meta's label for this placeholder, required for a named-format template and ignored for a
+    #: positional one. Lowercase and underscores only — Meta's own constraint.
+    parameter_name: str = ""
 
 
-def validate_template_variables(variables: list[TemplateVariable]) -> None:
-    """Refuse a variable set that could not produce a well-formed payload.
-
-    Checked at authoring time rather than at send time, because a malformed template is an
-    operator's mistake and discovering it when the invoice reminder fails to arrive is far too
-    late. Meta rejects the whole message, so one bad position loses every parameter with it.
-    """
+def _validate_components(variables: list[TemplateVariable]) -> None:
+    """Checks that hold for either format: a real component, a sane position."""
     for var in variables:
         if var.component not in (COMPONENT_BODY, COMPONENT_HEADER, COMPONENT_BUTTON):
             raise TemplateError(f"{var.component!r} is not a template component")
         if var.position < 0:
             raise TemplateError(f"{var.key!r} has a negative position")
+
+
+def validate_template_variables(variables: list[TemplateVariable]) -> None:
+    """Refuse a **positional** variable set that could not produce a well-formed payload.
+
+    Checked at authoring time rather than at send time, because a malformed template is an
+    operator's mistake and discovering it when the invoice reminder fails to arrive is far too
+    late. Meta rejects the whole message, so one bad position loses every parameter with it.
+
+    Only for positional templates. A named template is matched by label and its values may
+    arrive in any order, so requiring unique contiguous positions there would force an operator
+    to invent numbers that mean nothing — see `validate_named_variables`.
+    """
+    _validate_components(variables)
 
     seen: set[tuple[str, int, int]] = set()
     for var in variables:
@@ -460,6 +482,47 @@ def validate_template_variables(variables: list[TemplateVariable]) -> None:
             )
 
 
+#: Meta's constraint on a named placeholder: lowercase letters, digits and underscores.
+_PARAMETER_NAME = re.compile(r"^[a-z0-9_]+$")
+
+
+def validate_named_variables(variables: list[TemplateVariable]) -> None:
+    """Refuse a named-format template whose mapping to Meta is incomplete or malformed.
+
+    A positional template is wrong loudly — values land in the wrong placeholders. A named
+    template is wrong quietly: Meta matches on the label, so a missing or misspelled
+    `parameter_name` means that placeholder is simply never filled, and the customer reads a
+    message with a hole in it while the send reports success. That is the failure this refuses.
+
+    Deliberately says nothing about `position`. Named values may arrive in any order, so the
+    positional checks do not apply and enforcing them would demand meaningless numbers.
+    """
+    _validate_components(variables)
+
+    for var in variables:
+        if var.component == COMPONENT_BUTTON:
+            # Buttons are identified by index in both formats; a name is neither required nor
+            # published for them.
+            continue
+        if not var.parameter_name:
+            raise TemplateError(
+                f"{var.key!r} has no parameter_name, which a named-format template requires — "
+                "Meta matches these by label, so an unnamed one is never filled"
+            )
+        if not _PARAMETER_NAME.match(var.parameter_name):
+            raise TemplateError(
+                f"{var.parameter_name!r} is not a valid Meta parameter name: lowercase "
+                "letters, digits and underscores only"
+            )
+
+    named = [v.parameter_name for v in variables if v.component != COMPONENT_BUTTON]
+    duplicates = {n for n in named if named.count(n) > 1}
+    if duplicates:
+        raise TemplateError(
+            "two variables share a parameter_name: " + ", ".join(sorted(duplicates))
+        )
+
+
 def build_template_payload(
     *,
     template_name: str,
@@ -477,18 +540,15 @@ def build_template_payload(
     than being silently sent as positional and rejected — or worse, accepted with the values in
     the wrong placeholders.
     """
-    if parameter_format == FORMAT_NAMED:
-        raise TemplateError(
-            "Named-parameter templates are not supported yet: the send-side payload shape for a "
-            "named parameter is not published in the documentation consulted, and guessing it "
-            "risks delivering values in the wrong placeholders. Re-create the template with "
-            "positional parameters, or confirm the named send shape against Meta's reference and "
-            "implement it here."
-        )
-    if parameter_format != FORMAT_POSITIONAL:
+    if parameter_format not in (FORMAT_POSITIONAL, FORMAT_NAMED):
         raise TemplateError(f"{parameter_format!r} is not a template parameter format")
 
-    validate_template_variables(variables)
+    # Each format has its own coherence rules and they are not interchangeable: positional
+    # cares about order, named cares about labels.
+    if parameter_format == FORMAT_NAMED:
+        validate_named_variables(variables)
+    else:
+        validate_template_variables(variables)
 
     missing = [v.key for v in variables if resolve_path(context, v.key) is None]
     if missing:
@@ -496,6 +556,7 @@ def build_template_payload(
         # is a message the customer reads with a hole in it.
         raise TemplateError(f"No value for: {', '.join(sorted(set(missing)))}")
 
+    named = parameter_format == FORMAT_NAMED
     components: list[dict[str, Any]] = []
 
     for component in (COMPONENT_HEADER, COMPONENT_BODY):
@@ -506,7 +567,7 @@ def build_template_payload(
             components.append(
                 {
                     "type": component,
-                    "parameters": [_parameter(v, context) for v in params],
+                    "parameters": [_parameter(v, context, named=named) for v in params],
                 }
             )
 
@@ -527,6 +588,13 @@ def build_template_payload(
                 # A string, matching Meta's published example rather than the integer it looks
                 # like it should be.
                 "index": str(button_index),
+                # Button parameters stay in the positional shape even for a named template.
+                # Meta publishes `parameter_name` for header and body; it publishes no named
+                # form for a button, and `index` already identifies which button this is
+                # unambiguously. Emitting an unverified `parameter_name` here would be
+                # inventing a payload; omitting it leaves the shape Meta does document. If Meta
+                # refuses it the 4xx is classified permanent and visible, rather than silently
+                # filling the wrong button.
                 "parameters": [_parameter(v, context) for v in params],
             }
         )
@@ -538,12 +606,23 @@ def build_template_payload(
     }
 
 
-def _parameter(var: TemplateVariable, context: dict[str, Any]) -> dict[str, Any]:
-    """One parameter object. `payload` carries an opaque value; everything else is text."""
+def _parameter(
+    var: TemplateVariable, context: dict[str, Any], *, named: bool = False
+) -> dict[str, Any]:
+    """One parameter object. `payload` carries an opaque value; everything else is text.
+
+    For a named-format template Meta expects `parameter_name` beside the value, and the `type`
+    stays lowercase `"text"` — read off Meta's own send example, which matters because a
+    third-party summary of the same feature showed it uppercase. Getting that wrong is the
+    `sub_type` bug again.
+    """
     value = str(resolve_path(context, var.key))
     if var.kind == "payload":
         return {"type": "payload", "payload": value}
-    return {"type": "text", "text": value}
+    param: dict[str, Any] = {"type": "text", "text": value}
+    if named:
+        param["parameter_name"] = var.parameter_name
+    return param
 
 
 def template_is_sendable(status: str) -> bool:
