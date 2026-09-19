@@ -32,12 +32,14 @@ from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
-from app.schemas import MessagingTargetOut
+from app.config import settings
+from app.schemas import ContactResolveIn, ContactResolveOut, MessagingTargetOut
 from platform_core.auth import require_service_token
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
 from platform_core.errors import NotFoundProblem, ValidationProblem
 from platform_core.logging import get_logger
+from platform_core.pii import blind_index
 
 log = get_logger("customer.internal")
 
@@ -124,3 +126,50 @@ async def messaging_target(
         resolved=phone is not None,
     )
     return MessagingTargetOut(contact_id=str(contact_id), channel=channel, phone=phone)
+
+
+@router.post(
+    "/organizations/{organization_id}/contacts:resolve",
+    response_model=ContactResolveOut,
+    status_code=status.HTTP_200_OK,
+    summary="Which contact holds this phone number",
+)
+async def resolve_contact(
+    organization_id: uuid.UUID,
+    payload: ContactResolveIn,
+    session: SessionDep,
+    request: Request,
+) -> ContactResolveOut:
+    """The reverse of a messaging target: a number in, a contact id out.
+
+    It exists so an inbound WhatsApp message can be attached to the customer who sent it
+    rather than creating a duplicate. The match is made on the keyed blind index — no sealed
+    value is decrypted, so this reads no PII and writes no sensitive-read audit row. That is
+    the point of the index: a *search* is not a read of somebody's number.
+
+    POST rather than GET because the number is in the body. A query string is recorded in
+    access logs, proxy logs and browser history, and a customer's phone number has no business
+    in any of them.
+
+    A number nobody holds returns `contact_id: null` with a 200 — a stranger messaging the
+    business is ordinary, not an error.
+    """
+    try:
+        canonical = services._canonical_e164(payload.phone)
+    except ValidationProblem:
+        # Not a messageable number, so it cannot be anyone's. Answered rather than refused:
+        # the caller is a webhook handler and a 422 would make it retry something that will
+        # never succeed.
+        log.info("customer.resolve.not_e164")
+        return ContactResolveOut(contact_id=None)
+
+    index = blind_index(canonical, kind="phone", settings=settings())
+
+    async with session.begin():
+        await _bind(session, organization_id, request)
+        contact = await selectors.get_contact_by_phone_index(session, organization_id, index)
+
+    # Never the number, and not the index either — it is a stable identifier derived from a
+    # phone number, so a log full of them is a log that correlates customers across lines.
+    log.info("customer.resolve.done", matched=contact is not None)
+    return ContactResolveOut(contact_id=str(contact.id) if contact else None)

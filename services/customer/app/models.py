@@ -151,6 +151,24 @@ class Contact(Base, TenantBase):
     #: NULL for every contact whose number was never supplied raw — which is all of them until
     #: a write surface passes one, so the ordinary read behaviour is unchanged.
     phone_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    #: A keyed blind index of the same number — `platform_core.pii.blind_index`.
+    #:
+    #: It exists because `seal` uses a fresh nonce per call, so the sealed column cannot be
+    #: searched: the same number encrypts differently every time and there is no equality to
+    #: match on. An inbound WhatsApp message arrives carrying a phone number, and *which
+    #: contact is this* has to be answerable or every conversation creates a duplicate
+    #: customer.
+    #:
+    #: Deterministic and keyed, so a lookup is one indexed query and nothing is decrypted —
+    #: which also means finding a match reads no PII and writes no sensitive-read audit row.
+    #: The key is what makes it safe: a phone number is a ten-digit space, so an *unkeyed*
+    #: digest of one would be reversible by brute force.
+    #:
+    #: What it does concede is equality — anyone who can read this column learns which
+    #: contacts share a number, which `seal` was arranged not to reveal. For a phone number
+    #: that is the deliberate trade, because matching an inbound message *is* an equality
+    #: question.
+    phone_index: Mapped[str | None] = mapped_column(String(64))
 
     company_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True),
@@ -169,6 +187,9 @@ class Contact(Base, TenantBase):
         Index("ix_contacts_org_company", "organization_id", "company_id"),
         Index("ix_contacts_org_status", "organization_id", "status"),
         Index("ix_contacts_org_owner", "organization_id", "owner_id"),
+        # The inbound-message lookup: which contact holds this number. Leads with the tenant
+        # column like every index here, because the RLS policy qual is ANDed into the query.
+        Index("ix_contacts_org_phone_index", "organization_id", "phone_index"),
     )
 
 
