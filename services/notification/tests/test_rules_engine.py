@@ -383,3 +383,163 @@ async def test_a_template_with_a_position_gap_is_refused_at_authoring(session, o
                 ],
                 preview_text="",
             )
+
+
+# --------------------------------------------------------------------- targeting a customer
+
+
+async def _seed_contact_rule(session, org_id) -> None:
+    """A WhatsApp template and a rule that targets a *contact id* carried in the event."""
+    write = ctx_for(org_id, "notification.delivery.template.write", Scope.ORG)
+    async with session.begin():
+        await services.upsert_provider_template(
+            session,
+            write,
+            code="invoice_due_wa",
+            channel="whatsapp",
+            provider_name="invoice_due_reminder",
+            language="en_US",
+            category="utility",
+            parameter_format="positional",
+            status="approved",
+            status_reason=None,
+            variables=[{"key": "number", "component": "body", "position": 0}],
+            preview_text="Invoice {{1}} is due.",
+        )
+        await services.upsert_rule(
+            session,
+            write,
+            code="remind_invoice_wa",
+            event_type="finance.billing.invoice.issued",
+            channel="whatsapp",
+            provider_template_code="invoice_due_wa",
+            recipient_contact_path="customer.contact_id",
+        )
+
+
+def _invoice_event(org_id: uuid.UUID) -> dict:
+    return envelope_for(
+        org_id,
+        "finance.billing.invoice.issued",
+        {"number": "INV-9", "customer": {"contact_id": "c0ffee"}},
+    )
+
+
+async def test_a_rule_targets_a_customer_through_the_resolver(session, org_id) -> None:
+    """The seam Phase 0 unblocked: the event carries a contact id, never a phone number, and
+    the address is resolved by the service that owns it."""
+    await _seed_contact_rule(session, org_id)
+
+    async def resolver(org: str, contact: str, channel: str) -> str | None:
+        assert contact == "c0ffee"
+        assert channel == "whatsapp"
+        return "+917976603446"
+
+    async with session.begin():
+        staged = await services.apply_rules(
+            session,
+            organization_id=org_id,
+            envelope=_invoice_event(org_id),
+            resolve_target=resolver,
+        )
+
+    assert len(staged) == 1
+    assert staged[0].to_address == "+917976603446"
+    assert staged[0].channel == "whatsapp"
+
+
+async def test_a_contact_with_no_address_stages_nothing(session, org_id) -> None:
+    await _seed_contact_rule(session, org_id)
+
+    async def resolver(org: str, contact: str, channel: str) -> str | None:
+        return None
+
+    async with session.begin():
+        staged = await services.apply_rules(
+            session,
+            organization_id=org_id,
+            envelope=_invoice_event(org_id),
+            resolve_target=resolver,
+        )
+    assert staged == []
+
+
+async def test_an_unavailable_customer_service_propagates(session, org_id) -> None:
+    """Deliberately not swallowed. A notification is still owed, so the exception must reach
+    the consumer, which nacks and lets the broker redeliver. Turning this into a skip would
+    make a transient outage into silently unsent mail."""
+    from app.targets import TargetUnavailable
+
+    await _seed_contact_rule(session, org_id)
+
+    async def resolver(org: str, contact: str, channel: str) -> str | None:
+        raise TargetUnavailable("customer-service is down")
+
+    with pytest.raises(TargetUnavailable):
+        async with session.begin():
+            await services.apply_rules(
+                session,
+                organization_id=org_id,
+                envelope=_invoice_event(org_id),
+                resolve_target=resolver,
+            )
+
+
+async def test_a_contact_rule_without_a_resolver_stages_nothing(session, org_id) -> None:
+    """A process wired without a resolver refuses loudly rather than looking like "no rule
+    matched" — the absence would otherwise be indistinguishable from correct behaviour."""
+    await _seed_contact_rule(session, org_id)
+
+    async with session.begin():
+        staged = await services.apply_rules(
+            session, organization_id=org_id, envelope=_invoice_event(org_id)
+        )
+    assert staged == []
+
+
+async def test_an_event_without_the_contact_id_stages_nothing(session, org_id) -> None:
+    await _seed_contact_rule(session, org_id)
+
+    async def resolver(org: str, contact: str, channel: str) -> str | None:  # pragma: no cover
+        raise AssertionError("must not be asked when the event carries no contact")
+
+    event = envelope_for(org_id, "finance.billing.invoice.issued", {"number": "INV-9"})
+    async with session.begin():
+        staged = await services.apply_rules(
+            session, organization_id=org_id, envelope=event, resolve_target=resolver
+        )
+    assert staged == []
+
+
+async def test_a_resolved_address_is_still_normalised(session, org_id) -> None:
+    """Customer-service canonicalises on write, and this normalises again on read. Two
+    services agreeing by construction beats one trusting the other."""
+    await _seed_contact_rule(session, org_id)
+
+    async def resolver(org: str, contact: str, channel: str) -> str | None:
+        return "+91 79766-03446"
+
+    async with session.begin():
+        staged = await services.apply_rules(
+            session,
+            organization_id=org_id,
+            envelope=_invoice_event(org_id),
+            resolve_target=resolver,
+        )
+    assert staged[0].to_address == "+917976603446"
+
+
+async def test_a_resolved_address_that_is_not_messageable_stages_nothing(session, org_id) -> None:
+    await _seed_contact_rule(session, org_id)
+
+    async def resolver(org: str, contact: str, channel: str) -> str | None:
+        return "7976603446"  # no country code
+
+    async with session.begin():
+        staged = await services.apply_rules(
+            session,
+            organization_id=org_id,
+            envelope=_invoice_event(org_id),
+            resolve_target=resolver,
+        )
+    assert staged == []

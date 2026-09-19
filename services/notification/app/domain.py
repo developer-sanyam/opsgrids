@@ -261,6 +261,7 @@ def validate_rule(
     event_type: str,
     recipient_path: str | None,
     recipient_literal: str | None,
+    recipient_contact_path: str | None = None,
     template_code: str | None = None,
     provider_template_code: str | None = None,
 ) -> None:
@@ -282,10 +283,20 @@ def validate_rule(
             f"{event_type!r} is not an event this service subscribes to. "
             "See SUBSCRIBABLE_EVENTS for the routing keys the platform publishes."
         )
-    if recipient_path and recipient_literal:
-        raise RuleError("A rule sets recipient_path or recipient_literal, not both")
-    if not recipient_path and not recipient_literal:
-        raise RuleError("A rule needs a recipient: recipient_path or recipient_literal")
+    # Three ways to say who to message, and exactly one of them. Two would be ambiguous about
+    # which wins; none leaves a rule that fires and reaches nobody.
+    sources = [
+        ("recipient_path", recipient_path),
+        ("recipient_literal", recipient_literal),
+        ("recipient_contact_path", recipient_contact_path),
+    ]
+    given = [name for name, value in sources if value]
+    if len(given) > 1:
+        raise RuleError("A rule names one recipient source, not several: got " + ", ".join(given))
+    if not given:
+        raise RuleError(
+            "A rule needs a recipient: recipient_path, recipient_literal or recipient_contact_path"
+        )
     if recipient_literal:
         # Validated now so a literal typo is a 422 on the rule, not a failed send later.
         normalize_recipient(channel, recipient_literal)
