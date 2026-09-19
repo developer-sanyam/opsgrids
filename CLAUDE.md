@@ -14,7 +14,8 @@ libs/platform-core   the shared library every service depends on
 libs/contracts    JSON Schema for every event and API — the polyglot contract
 frontend/         product SPAs, admin console, super-admin console
 integrations/     per-partner and per-customer integration services
-infrastructure/   Helm charts, kustomize overlays
+infrastructure/   the production edge: compose, Caddy, runbook (ADR-0012). Not Helm/kustomize —
+                  production is one VM, chosen deliberately over a cluster nobody operates.
 tools/            dev-bootstrap, generators, seeds
 docs/adr/         architecture decision records
 ```
