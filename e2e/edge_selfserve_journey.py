@@ -14,18 +14,15 @@ the transport is `log` until SMTP exists, so the inbox is the notification.messa
 from __future__ import annotations
 
 import json
-import re
-import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path
 
 import httpx
+from edge_lib import API, box, read_reset_token
+from edge_lib import login as _login
 
-API = "https://api.opsgrids.com"
-BOX = "deploy@20.219.18.84"
-COMPOSE = "cd /srv/opsgrids/repo/infrastructure/edge && docker compose -f compose.prod.yml --env-file .env"
 RUN = uuid.uuid4().hex[:6]
 EMAIL = f"buyer-{RUN}@example.com"
 SLUG = f"buyer-{RUN}"
@@ -39,30 +36,12 @@ def step(name: str, ok: bool, detail: str = "") -> None:
     print(f"{'PASS' if ok else 'FAIL'}  {name}  {detail}")
 
 
-def box(sql: str) -> str:
-    cmd = f'{COMPOSE} exec -T postgres psql -U opsgrids -d opsgrids -Atc "{sql}"'
-    out = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", BOX, cmd], capture_output=True, text=True, timeout=60
-    )
-    return out.stdout.strip()
-
-
 def login(c: httpx.Client) -> str:
-    r = c.post("/api/v1/auth/login", json={"email": EMAIL, "password": PASSWORD})
-    if r.status_code != 200:
-        step("login", False, f"{r.status_code} {r.text[:160]}")
+    try:
+        return _login(c, EMAIL, PASSWORD)
+    except RuntimeError as exc:
+        step("login", False, str(exc))
         sys.exit(1)
-    body = r.json()
-    if body.get("access_token"):
-        return body["access_token"]
-    r2 = c.post(
-        "/api/v1/auth/select-org",
-        json={
-            "pre_auth_token": body["pre_auth_token"],
-            "organization_id": body["organizations"][0]["organization_id"],
-        },
-    )
-    return r2.json()["access_token"]
 
 
 def main() -> None:
@@ -88,21 +67,12 @@ def main() -> None:
     # ---------------------------------------------------------------- 2. the set-password link, from the "inbox"
     r = c.post("/api/v1/auth/password/forgot", json={"email": EMAIL})
     step("2a request the set-password link", r.status_code == 202, str(r.status_code))
-    body = ""
-    for _ in range(30):
-        body = box(
-            f"select body from notification.messages where to_address = '{EMAIL}' and state = 'sent' order by created_at desc limit 1"
-        )
-        if "reset-password?token=" in body:
-            break
-        time.sleep(1)
-    match = re.search(r"reset-password\?token=([A-Za-z0-9_\-]+)", body)
+    token, body = read_reset_token(EMAIL)
     step(
         "2b the email rendered by the platform rule carries the link",
-        match is not None,
+        token != "",
         f"{len(body)} bytes",
     )
-    token = match.group(1) if match else ""
     r = c.post("/api/v1/auth/password/reset", json={"token": token, "new_password": PASSWORD})
     step("2c set the password from the link", r.status_code == 204, str(r.status_code))
     r = c.post("/api/v1/auth/password/reset", json={"token": token, "new_password": PASSWORD + "x"})
