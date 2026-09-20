@@ -75,11 +75,32 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || inputs.ref || github.sha }}
-          fetch-depth: 2
+          # Full history: the plan diffs against whatever ref the box last served, however old.
+          fetch-depth: 0
       - id: sha
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      # Ask the box what it has. A commit that never deployed — CI cancelled a superseded run,
+      # a deploy failed, two commits landed together — is then still part of the next plan.
+      # Any failure here leaves BASE empty, and an empty base deploys everything.
+      - id: base
+        if: github.event_name == 'workflow_run'
+        env:
+          EDGE_SSH_KEY: ${{ secrets.EDGE_SSH_KEY }}
+          EDGE_KNOWN_HOSTS: ${{ secrets.EDGE_KNOWN_HOSTS }}
+          EDGE_SSH_TARGET: ${{ vars.EDGE_SSH_TARGET }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$EDGE_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$EDGE_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          base=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 "$EDGE_SSH_TARGET" \
+            /srv/opsgrids/repo/infrastructure/edge/remote.sh last-good-ref 2>/dev/null | grep -E '^[0-9a-f]{40}$' | head -1 || true)
+          rm -f ~/.ssh/id_ed25519
+          echo "box last served: ${base:-unknown}"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
       - id: plan
         env:
+          BASE: ${{ steps.base.outputs.base }}
           MODE: ${{ github.event_name == 'workflow_run' && 'diff' || 'all' }}
           # format() first: a bare boolean `false` would fall through the `&& … ||` idiom to 'true'.
           WANT_SERVICES: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.services) || 'true' }}

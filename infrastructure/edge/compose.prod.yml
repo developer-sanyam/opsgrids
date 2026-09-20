@@ -50,13 +50,17 @@ x-service-env: &service-env
   # The broker (ADR-0013 §5). Every service's relay publishes its outbox here and every
   # consumer reads from it; this is what makes activation install roles without a human.
   RABBITMQ_URL: amqp://opsgrids:${RABBITMQ_PASSWORD}@rabbitmq:5672/
-  # ~50 processes share one Postgres with every product profile on. The library default
-  # (10 + 5 per process) would want ~750 connections; 5 + 2 wants ~350, under the 400 the
-  # postgres service is started with.
+  # ~35 processes share one Postgres with every product profile on, and an API holds up to
+  # three engines (app, outbox, directory). Pools fill lazily, so idle is a fraction of this,
+  # but the ceiling is what a spike reaches: 3 + 2 keeps it near the 400 Postgres allows, where
+  # the library default (10 + 5) would want well over a thousand.
   # glibc gives every thread its own malloc arena; across ~50 mostly idle Python processes
   # that is resident memory this box swaps for. Two arenas cost nothing measurable here.
   MALLOC_ARENA_MAX: '2'
-  DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+  # glibc's trim threshold ratchets up to 128 MB, so a long-lived idle process never gives back
+  # what it grew importing and serving its first burst. Pinned, free() returns it to the kernel.
+  MALLOC_TRIM_THRESHOLD_: '131072'
+  DB_POOL_SIZE: ${DB_POOL_SIZE:-3}
   DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-2}
   JWKS_URL: http://auth:8000/.well-known/jwks.json
   JWT_ISSUER: ${JWT_ISSUER}
@@ -87,7 +91,8 @@ x-service-common: &service-common
         import socket, sys
         s = socket.create_connection(("127.0.0.1", 8000), 3)
         s.sendall(b"GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n")
-        sys.exit(0 if b" 200 " in s.recv(64) else 1)
+        s.settimeout(3)
+        sys.exit(0 if b" 200 " in s.recv(128) else 1)
     interval: 60s
     timeout: 5s
     retries: 3
@@ -95,13 +100,17 @@ x-service-common: &service-common
     start_interval: 5s
   security_opt:
     - no-new-privileges:true
+  # Not rabbitmq: an API publishes by writing an outbox row and never speaks AMQP, so making
+  # every API wait on the broker only meant a broker that would not boot took the whole
+  # platform down with it. The processes that do speak AMQP depend on it below.
   depends_on:
     postgres:
       condition: service_healthy
     redis:
       condition: service_healthy
-    rabbitmq:
-      condition: service_healthy
+  # A fuse, not a budget: with no limit anywhere the kernel picks the out-of-memory victim, and
+  # the largest process on this box is Postgres. An API here idles at 70–100 MB.
+  mem_limit: 320m
 
 # A background process of a service: a consumer (`bin/worker`), an outbox relay (`bin/relay`)
 # or a sweep (`bin/cron`). Same image as the API, no port, and the image's HTTP healthcheck
@@ -111,6 +120,14 @@ x-background: &background
   <<: *service-common
   healthcheck:
     disable: true
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+  mem_limit: 256m
   networks:
     - back
 
@@ -179,7 +196,19 @@ services:
     # ~25 client processes (ADR-0012 erratum 10): the default 100 connections is exceeded the
     # moment the workers start, and the first symptom is "FATAL: sorry, too many clients" on
     # auth — nobody can log in. shared_buffers sized for the box, not for the connection count.
-    command: ['postgres', '-c', 'max_connections=400', '-c', 'shared_buffers=256MB']
+    # Two cores: a parallel sequential scan is contention, not speed, and every parallel worker
+    # multiplies work_mem. shared_buffers stays small on purpose — the box has no RAM to spare.
+    command:
+      [
+        'postgres',
+        '-c', 'max_connections=400',
+        '-c', 'shared_buffers=256MB',
+        '-c', 'work_mem=4MB',
+        '-c', 'maintenance_work_mem=64MB',
+        '-c', 'max_parallel_workers_per_gather=0',
+        '-c', 'max_parallel_workers=2',
+        '-c', 'autovacuum_max_workers=2',
+      ]
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U opsgrids -d opsgrids']
       interval: 30s
@@ -195,7 +224,10 @@ services:
     # channel and queue every five seconds to feed a UI nobody opens, and with ~35 clients on
     # a 2-vCPU box that sampling was the largest single consumer of CPU. `rabbitmqctl` inside
     # the container answers everything the UI did.
-    image: rabbitmq:3-alpine
+    # Pinned to the patch: the data volume outlives the container, RabbitMQ refuses to boot across
+    # a minor version without the old version's feature flags enabled, and it cannot be downgraded
+    # at all — a floating tag turns a routine deploy into an upgrade nobody planned.
+    image: rabbitmq:3.13.7-alpine
     restart: unless-stopped
     logging: *logging
     environment:
@@ -232,7 +264,7 @@ services:
         '--appendonly',
         'yes',
         '--maxmemory',
-        '256mb',
+        '64mb',
         '--maxmemory-policy',
         'allkeys-lru',
       ]
