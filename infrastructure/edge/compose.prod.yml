@@ -610,7 +610,8 @@ services:
     cap_add:
       - NET_BIND_SERVICE
     healthcheck:
-      test: ['CMD-SHELL', 'ss --listening --tcp | grep -P "tcp.+:smtp" || exit 1']
+      # `ss --tcp` prints no Netid column, so the line reads `LISTEN … :smtp`, not `tcp … :smtp`.
+      test: ['CMD-SHELL', 'ss --listening --tcp | grep -q ":smtp" || exit 1']
       interval: 30s
       timeout: 5s
       retries: 3

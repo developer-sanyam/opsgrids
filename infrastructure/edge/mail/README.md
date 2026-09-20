@@ -53,7 +53,7 @@ $C logs --tail 200 mailserver | grep -iE "warning|error|deferred"
 
 In the box's `.env`: `EMAIL_TRANSPORT=smtp`, `SMTP_HOST=mailserver`, `SMTP_PORT=587`,
 `SMTP_USE_TLS=true`, `SMTP_USERNAME=no-reply@opsgrids.com`, `SMTP_PASSWORD=<that mailbox's
-password>`, `EMAIL_FROM=no-reply@opsgrids.com`; then recreate `notification`,
+password>` <!-- pragma: allowlist secret: a placeholder in prose -->, `EMAIL_FROM=no-reply@opsgrids.com`; then recreate `notification`,
 `notification-worker` and `notification-relay`. `SPOOF_PROTECTION=1` means a login may only send
 as itself, so `EMAIL_FROM` must be the mailbox the platform logs in as.
 
