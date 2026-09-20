@@ -91,7 +91,12 @@ services:
       ACME_EMAIL: ${ACME_EMAIL}
       TLS_ASK_URL: http://storefront:8000/api/v1/storefront/internal/tls-authorize
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # A directory, not the file. A single-file bind mount follows the *inode*: when a
+      # checkout replaces the file, the container keeps reading the old one, and a deploy
+      # that changed only the Caddyfile reloaded exactly what was already running (found on
+      # the first deploy). The directory holds nothing but the Caddyfile, so nothing else is
+      # exposed by mounting it.
+      - ./caddy:/etc/caddy:ro
       # The buyer bundle. Published by `make edge-web`, which builds on a laptop and rsyncs a
       # release directory, then swaps a symlink — so a failed frontend build never reaches the
       # box and a bad bundle is one symlink away from being undone (runbook, "roll back").

@@ -23,7 +23,8 @@ merchant asking about uptime in a contract, or roughly 200 custom domains.
 - `edge/.env.example` — every key the box needs. Committed with no secret values; the real file
   lives only on the VM.
 - `edge/compose.prod.yml` — what runs.
-- `edge/Caddyfile` — TLS, on-demand issuance and the one gate on it.
+- `edge/caddy/Caddyfile` — TLS, on-demand issuance and the one gate on it. In its own
+  directory because the directory, not the file, is what compose mounts.
 
 ## The commands
 

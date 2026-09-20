@@ -1516,6 +1516,13 @@ the catch-all `https://` site is installed ahead of the explicit `http://` block
 `/_edge/health` on port 80 answered 308 and the healthcheck followed it into TLS. Fixed with
 `auto_https disable_redirects`; the `http://` block already writes the redirect.
 
+Two more things surfaced while fixing it. The Caddyfile was bind-mounted *as a file*, and a
+file bind mount follows the inode — after `git checkout` replaced it, the container still read
+the old one, so the fix deployed nothing until the mount became the directory
+(`edge/caddy/`). And `docker compose up` never reloads Caddy for a Caddyfile-only change, so
+`remote.sh up` now ends with a graceful `caddy reload`. Neither was in §17's list of things to
+verify, and both are the kind that only a deploy finds.
+
 **15. The sweep in §6 was never built.** `storefront-cron` exits 78 in a loop, as `bin/cron`
 was written to. It is now behind the `sweep` compose profile and not started. Consequence,
 stated for the record: **no merchant custom domain can reach `verified` on this box**, so

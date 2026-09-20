@@ -86,6 +86,14 @@ migrate() {
 up() {
 	log "recreating containers (brief downtime for anything that changed)"
 	"${COMPOSE[@]}" up -d --remove-orphans
+	# The Caddyfile arrives through a bind mount (of its directory — a file mount follows the
+	# inode and keeps serving the pre-checkout file), so editing it changes nothing compose
+	# can see: `up` leaves the container, and the config it loaded at start, exactly as it
+	# was. A deploy that only touched the Caddyfile used to deploy nothing. `caddy reload` is
+	# graceful: the new config is validated, then swapped in with no dropped connection, so
+	# unlike the recreate above this step costs no downtime.
+	log "reloading Caddy with the Caddyfile from this ref (graceful, no downtime)"
+	"${COMPOSE[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 }
 
 health() {
