@@ -35,8 +35,11 @@ esac
 # Key names come from the committed example, so adding a key there is what makes it required.
 # Values are never printed — only names.
 required=$(sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' .env.example)
-# Keys that are allowed to be empty, each for a stated reason.
-optional_empty="PII_DECRYPT_KEYS SENTRY_DSN BACKUP_S3_ENDPOINT"
+# Keys that are allowed to be empty, each for a stated reason. The two backup credentials are
+# allowed empty *together* and warned about loudly below: a box can be stood up before an
+# off-box bucket exists, and `backup.sh` still takes the local dump and exits non-zero until
+# one is configured — so the gap shows up in cron's mail every night rather than nowhere.
+optional_empty="PII_DECRYPT_KEYS SENTRY_DSN BACKUP_S3_ENDPOINT BACKUP_S3_ACCESS_KEY_ID BACKUP_S3_SECRET_ACCESS_KEY"
 
 # shellcheck disable=SC1091  # .env is data, generated on the box from .env.example
 set -a
@@ -76,6 +79,16 @@ done
 	bad "missing or empty in .env:$missing"
 [ -z "$placeholder" ] && ok "no placeholder values" ||
 	bad "still carrying a placeholder value:$placeholder"
+
+if [ -z "${BACKUP_S3_ACCESS_KEY_ID:-}" ] && [ -z "${BACKUP_S3_SECRET_ACCESS_KEY:-}" ]; then
+	echo "  warn  BACKUP_S3_ACCESS_KEY_ID/SECRET are empty: NO OFF-BOX BACKUP. The nightly dump" >&2
+	echo "        stays on this disk, next to the database it backs up. Configure a bucket" >&2
+	echo "        (RUNBOOK.md, 'restore from backup') before there is data worth keeping." >&2
+elif [ -z "${BACKUP_S3_ACCESS_KEY_ID:-}" ] || [ -z "${BACKUP_S3_SECRET_ACCESS_KEY:-}" ]; then
+	bad "one of BACKUP_S3_ACCESS_KEY_ID / BACKUP_S3_SECRET_ACCESS_KEY is set and the other is empty"
+else
+	ok "off-box backup credentials present"
+fi
 
 # ---------------------------------------------------------------- the signing key
 if [ -n "${JWT_PRIVATE_KEY_HOST_PATH:-}" ] && [ -f "$JWT_PRIVATE_KEY_HOST_PATH" ]; then

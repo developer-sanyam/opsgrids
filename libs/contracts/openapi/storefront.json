@@ -783,6 +783,29 @@
         "title": "StorePut",
         "type": "object"
       },
+      "TlsAuthorizeOut": {
+        "description": "The edge may obtain a certificate for `host` (ADR-0012 \u00a75). Only ever a 200 body.\n\n`host` is the normalised name the decision was made for, so a human with curl can see what\nCaddy's SNI was reduced to. `reason` says which of the two allowed kinds it was \u2014 a listed\nplatform host or a published store's name \u2014 and nothing about the store: this is answered\nto Caddy, and the name was chosen by whoever pointed DNS at us.",
+        "properties": {
+          "host": {
+            "title": "Host",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "platform",
+              "store"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host",
+          "reason"
+        ],
+        "title": "TlsAuthorizeOut",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -1841,6 +1864,46 @@
         "summary": "What this service is",
         "tags": [
           "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/internal/tls-authorize": {
+      "get": {
+        "description": "Caddy's `ask` (ADR-0012 \u00a75). 200 allows issuance for exactly this name; 403 refuses.\n\nThe order is the cheap answer first: a platform host needs no lookup at all. Everything\nelse is one read of `storefront.storefronts` on the SELECT-only bypass reader, which is the\nsame read the buyer's bootstrap makes \u2014 so \"would we serve this host\" and \"may this host\nhave a certificate\" are one decision made in one place.",
+        "operationId": "tls_authorize_api_v1_storefront_internal_tls_authorize_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "maxLength": 253,
+              "title": "Domain",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TlsAuthorizeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "No \u2014 not a platform host and no published store answers there"
+          },
+          "422": {
+            "description": "That is not a hostname; the edge treats this as no"
+          }
+        },
+        "summary": "May the edge obtain a certificate for this hostname?",
+        "tags": [
+          "storefront (internal)"
         ]
       }
     },

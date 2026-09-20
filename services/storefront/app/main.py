@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from app.api.internal import router as internal_router
 from app.api.public import router as public_router
 from app.api.routes import router
 from app.config import assert_directory_role_configured, settings
@@ -41,7 +42,7 @@ app = create_app(
         "did not compute. Behind the public route, the merchant configures zones, maps postal "
         "codes, imports them in bulk, tests one, and reads which postal codes were turned away."
     ),
-    routers=[router, public_router],
+    routers=[router, public_router, internal_router],
     on_startup=_startup,
     # Redis is a declared dependency because the store-slug lookup is cached in it (ADR-0010
     # §12) — the cache degrades to a query and is never fatal — and because the gateway's

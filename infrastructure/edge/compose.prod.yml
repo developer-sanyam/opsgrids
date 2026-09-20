@@ -216,6 +216,9 @@ services:
     environment:
       <<: *service-env
       STORE_SLUG_CACHE_SECONDS: ${STORE_SLUG_CACHE_SECONDS:-300}
+      # The platform's own hostnames the ask endpoint may say yes to. A store answers for
+      # itself; these names are nobody's store and would otherwise never get a certificate.
+      TLS_PLATFORM_HOSTS: ${TLS_PLATFORM_HOSTS}
     networks:
       # `front` as well as `back`: Caddy calls this container directly for the on-demand TLS
       # ask endpoint, deliberately bypassing the gateway (ADR-0012 §5).

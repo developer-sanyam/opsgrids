@@ -78,6 +78,19 @@ class Settings(ServiceSettings):
     #: resolving and 404s, which is a failing smoke test rather than a wrong answer.
     platform_host_suffix: str = "stores.opsgrids.com"
 
+    #: The platform's own hostnames the edge may hold a certificate for — `edge.opsgrids.com`,
+    #: `api.opsgrids.com` — comma-separated, exact, already-normalised. Caddy issues on demand
+    #: and asks `/storefront/internal/tls-authorize` before every new name (ADR-0012 §5); a
+    #: store answers for itself through the host lookup, but the platform's names are nobody's
+    #: store, so without this list the edge could never obtain its own certificate. Empty by
+    #: default because the list differs by environment, and an empty list refuses rather than
+    #: allows: a name that is not here and not a published store gets no certificate.
+    tls_platform_hosts: str = ""
+
+    @property
+    def tls_platform_host_set(self) -> frozenset[str]:
+        return frozenset(h.strip().lower() for h in self.tls_platform_hosts.split(",") if h.strip())
+
 
 def assert_directory_role_configured(cfg: Settings) -> None:
     """Refuse to start without the bypass reader the anonymous route depends on.

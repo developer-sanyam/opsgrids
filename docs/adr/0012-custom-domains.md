@@ -994,16 +994,25 @@ code from an unserved one.
 
 ```
 HTTP/1.1 200 OK
-Content-Length: 0
+Content-Type: application/json
+
+{"host": "greenleaf.stores.opsgrids.com", "reason": "store"}
 ```
 
 ```
 HTTP/1.1 403 Forbidden
-Content-Length: 0
+Content-Type: application/problem+json
+
+{"title": "Forbidden", "status": 403, "detail": "No published store answers at this name."}
 ```
 
-Caddy reads the status and nothing else. `domain` is the query-parameter name **because that is what
-Caddy appends**; it is not ours to choose.
+Caddy reads the status and nothing else. The bodies exist for a human with curl: `host` is the
+name the decision was made for after normalisation, and `reason` is `platform` (the name is in
+`TLS_PLATFORM_HOSTS`) or `store` (a published store answers there). The 403 says nothing about
+*why* — an unverified claim, a draft store and a name nobody claimed are one sentence, for the
+same reason the buyer's bootstrap makes them one. `domain` is the query-parameter name
+**because that is what Caddy appends**; it is not ours to choose. As built (2026-09-20), the
+route is `services/storefront/app/api/internal.py`.
 
 #### What the edge serves on a host that resolves to nothing
 
@@ -1436,6 +1445,14 @@ as "no", so **no hostname can obtain a certificate — not a custom domain, and 
 complete a handshake: a total outage the moment DNS points at it, and one `make edge-validate`
 cannot catch because the Caddyfile is syntactically valid. Slice 1 is not deployable until this
 route exists and answers `200` for every platform subdomain of a published store.
+
+*Resolved, 2026-09-20, on the first deploy.* `app/api/internal.py` serves the route through the
+same bypass reader, cache and published-store test as the buyer's bootstrap, and adds one
+setting the review missed: `TLS_PLATFORM_HOSTS`, the platform's own names (`edge.`, `api.`),
+which are nobody's store and would otherwise never get a certificate either. The list is
+exact, not a suffix, and empty means refuse. Sixteen tests in
+`tests/test_internal_tls_authorize.py`; the gateway's policy test now also asserts the path is
+not public through the edge.
 
 **7. Slice 1's edge deploys no broker, and that silently breaks product activation.** §15
 reasoned that storefront publishes nothing anyone consumes, which was true of storefront and

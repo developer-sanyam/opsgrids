@@ -193,6 +193,19 @@ class PublicStoreContextIn(BaseModel):
     host: Hostname
 
 
+class TlsAuthorizeOut(BaseModel):
+    """The edge may obtain a certificate for `host` (ADR-0012 §5). Only ever a 200 body.
+
+    `host` is the normalised name the decision was made for, so a human with curl can see what
+    Caddy's SNI was reduced to. `reason` says which of the two allowed kinds it was — a listed
+    platform host or a published store's name — and nothing about the store: this is answered
+    to Caddy, and the name was chosen by whoever pointed DNS at us.
+    """
+
+    host: str
+    reason: Literal["platform", "store"]
+
+
 class StoreContextOut(BaseModel):
     """Which store this address is, and what it is called.
 

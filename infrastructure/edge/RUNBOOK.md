@@ -79,10 +79,15 @@ record terminates TLS at Cloudflare and our ACME challenge never arrives.
 | Name | Type | Value |
 |---|---|---|
 | `edge.opsgrids.com` | A | the reserved IP |
+| `api.opsgrids.com` | A | the reserved IP — the gateway answers `/api/*` on every host this box serves |
 | `*.stores.opsgrids.com` | A | the reserved IP |
-| `edge.opsgrids.com`, `*.stores.opsgrids.com` | AAAA | the VM's IPv6, if it has one |
+| `edge.opsgrids.com`, `api.opsgrids.com`, `*.stores.opsgrids.com` | AAAA | the VM's IPv6, if it has one |
 
-`opsgrids.com`, `app.`, `api.` and `auth.` are ADR-0001's and are not touched here.
+`opsgrids.com` (the marketing site, on Vercel), `app.` and `auth.` are ADR-0001's and are not
+touched here. **Every platform name in this table must also be in `TLS_PLATFORM_HOSTS`** in the
+box's `.env`, except the wildcard: a store's own subdomain is authorised by the store lookup,
+but `edge.` and `api.` are nobody's store, and the issuance gate refuses any name it cannot
+account for.
 
 ### 3. Docker, and a user to deploy as
 
@@ -141,8 +146,14 @@ chmod 600 /srv/opsgrids/secrets/jwt-ed25519.pem
 ```
 
 Then edit `.env`: fill every empty value, set `EDGE_HOST` to this box's name, `EDGE_RESERVED_IP`
-to the real address, and `ACME_EMAIL` to **an inbox a human reads** — in slice 1 Let's
-Encrypt's expiry warning is the only unsolicited notification that exists.
+to the real address, `TLS_PLATFORM_HOSTS` to every platform name from the DNS table above
+(comma-separated, no wildcard), and `ACME_EMAIL` to **an inbox a human reads** — in slice 1
+Let's Encrypt's expiry warning is the only unsolicited notification that exists.
+
+`BACKUP_S3_ACCESS_KEY_ID` and `BACKUP_S3_SECRET_ACCESS_KEY` may both be left empty to stand the
+box up before a bucket exists. Preflight warns in capitals and `backup.sh` exits non-zero every
+night until they are set; that is the reminder, and it stops being acceptable the day the first
+real store is published.
 
 **Which values must be fresh, and which must never be reused:**
 

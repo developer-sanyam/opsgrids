@@ -515,6 +515,11 @@ class TestTheStorefrontBuyerSurface:
         assert {self.SERVICEABILITY, self.STORE_CONTEXT} == STOREFRONT_PUBLIC_PATHS
         assert not (STOREFRONT_PUBLIC_PATHS & DEFAULT_PUBLIC_PATHS)
         assert policy.public_paths >= STOREFRONT_PUBLIC_PATHS
+        # The certificate-issuance gate is reached by Caddy on the compose network and by
+        # nothing else (ADR-0012 §5). Through the gateway it is a bearer-token route like any
+        # other under /storefront — a stranger who could reach it could ask whether a domain
+        # is connected to a store, which is the enumeration the public routes refuse to be.
+        assert "/api/v1/storefront/internal/tls-authorize" not in policy.public_paths
 
     def test_the_bootstrap_shares_the_public_route_entry(self) -> None:
         """One upstream, one entitlement-free prefix, two exact paths. The second public path
