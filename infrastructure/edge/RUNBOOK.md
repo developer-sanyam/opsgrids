@@ -275,6 +275,31 @@ What happens, in order, and what each step protects:
 8. **health** — every container running and healthy within 120 s, or the deploy reports a
    failure and leaves the decision to you.
 
+### Deploying from the pipeline
+
+`.github/workflows/deploy.yml` runs the same two scripts a laptop does — `ssh-deploy.sh` for the
+services and `publish-web.sh` for the app bundles — so everything above still holds. It has three
+ways in:
+
+| Trigger | Deploys |
+|---|---|
+| CI finishes green on `main` | that commit, and only what it changed (`ci-plan.sh`): the services if anything outside `frontend/`, `docs/` and `e2e/` changed; each app whose package changed; every app if a shared front-end package or the lockfile changed |
+| a push to a `deploy/**` branch | that branch head, everything — what `REF=origin/<branch>` was for. CI has **not** vouched for it |
+| **Run workflow** in the Actions tab | any ref, with `services` and `apps` to narrow it. **A rollback is a run whose `ref` is an earlier sha** |
+
+One deploy runs at a time and a running one is never cancelled. The app bundles publish after
+the services, three at a time, built on the runner — the box only receives files.
+
+It needs two secrets and two variables in the repository settings: `EDGE_SSH_KEY` (the private
+half of a key pair in the `deploy` user's `authorized_keys`; give the pipeline its own pair so it
+can be revoked without locking a person out), `EDGE_KNOWN_HOSTS` (the box's host key line, so the
+runner refuses an impostor), `EDGE_SSH_TARGET` (`deploy@<ip>`) and `EDGE_CONFIRM_HOST` (the box's
+`EDGE_HOST` — the same interlock `CONFIRM=` is). The jobs run in the `production` environment;
+add a required reviewer there if a human should approve each deploy.
+
+What the pipeline does **not** do: edit the box's `.env`, change a product's catalogue `status`,
+or touch DNS. Those are the deployment's own data and stay a person's decision.
+
 ### Roll back a bad deploy
 
 **The application:**

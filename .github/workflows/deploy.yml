@@ -1,0 +1,159 @@
+name: Deploy
+
+# Ships what CI proved. The steps are the ones a laptop runs with `make deploy` and
+# `make edge-web` (infrastructure/edge/RUNBOOK.md) — the pipeline adds no second way to deploy,
+# it removes the laptop. The box still builds its own images and still refuses a wrong host, a
+# dirty checkout, a missing secret or a catalogue that sells a product no service runs for.
+#
+# Three ways in:
+#   * CI finishing green on `main`            → deploy that commit, only what it changed
+#   * a push to a `deploy/**` branch          → deploy that branch head, everything. The escape
+#                                               hatch `make deploy REF=origin/<branch>` used to be.
+#   * Run workflow (workflow_dispatch)        → deploy any ref, optionally narrowed. A rollback
+#                                               is a run with `ref` set to an earlier sha.
+#
+# Needs, in the repository settings:
+#   secrets  EDGE_SSH_KEY        private key of a key pair the box's `deploy` user trusts
+#            EDGE_KNOWN_HOSTS    the box's host key line(s), from `ssh-keyscan -t ed25519 <ip>`
+#   vars     EDGE_SSH_TARGET     e.g. deploy@20.219.18.84
+#            EDGE_CONFIRM_HOST   the box's EDGE_HOST, e.g. edge.opsgrids.com (the interlock)
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  push:
+    branches: ['deploy/**']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or sha to deploy
+        default: main
+        required: true
+      services:
+        description: Deploy the services (build, migrate, recreate)
+        type: boolean
+        default: true
+      apps:
+        description: 'App bundles to publish: all, none, or a comma-separated list'
+        default: all
+        required: true
+
+# One deploy at a time, and never cancel one half way: a cancelled `up` is a half-recreated box.
+concurrency:
+  group: deploy-edge
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan
+    # A red CI run deploys nothing. The other two triggers are a person's explicit decision.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+      services: ${{ steps.plan.outputs.services }}
+      apps: ${{ steps.plan.outputs.apps }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || inputs.ref || github.sha }}
+          fetch-depth: 2
+      - id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - id: plan
+        env:
+          MODE: ${{ github.event_name == 'workflow_run' && 'diff' || 'all' }}
+          # format() first: a bare boolean `false` would fall through the `&& … ||` idiom to 'true'.
+          WANT_SERVICES: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.services) || 'true' }}
+          WANT_APPS: ${{ github.event_name == 'workflow_dispatch' && inputs.apps || 'all' }}
+        run: infrastructure/edge/ci-plan.sh "$MODE" "$WANT_SERVICES" "$WANT_APPS"
+
+  services:
+    name: Services
+    needs: plan
+    if: needs.plan.outputs.services == 'true'
+    runs-on: ubuntu-latest
+    # The `production` environment is where a required reviewer goes, if one is ever wanted.
+    environment: production
+    # The box builds its images on two cores. A cold build of every service is ~25 minutes.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - name: SSH identity for the edge
+        env:
+          EDGE_SSH_KEY: ${{ secrets.EDGE_SSH_KEY }}
+          EDGE_KNOWN_HOSTS: ${{ secrets.EDGE_KNOWN_HOSTS }}
+        run: |
+          test -n "$EDGE_SSH_KEY" || { echo "::error::secret EDGE_SSH_KEY is not set"; exit 1; }
+          test -n "$EDGE_KNOWN_HOSTS" || { echo "::error::secret EDGE_KNOWN_HOSTS is not set"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$EDGE_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$EDGE_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # Keepalives: the build prints nothing for minutes, and an idle session is dropped.
+          printf 'Host *\n  StrictHostKeyChecking yes\n  ServerAliveInterval 30\n  ServerAliveCountMax 120\n' > ~/.ssh/config
+      - name: Deploy ${{ needs.plan.outputs.sha }}
+        env:
+          EDGE_SSH_TARGET: ${{ vars.EDGE_SSH_TARGET }}
+          EDGE_CONFIRM_HOST: ${{ vars.EDGE_CONFIRM_HOST }}
+        run: |
+          infrastructure/edge/ssh-deploy.sh "$EDGE_SSH_TARGET" "$EDGE_CONFIRM_HOST" "${{ needs.plan.outputs.sha }}" deploy
+      - name: The edge answers
+        env:
+          EDGE_CONFIRM_HOST: ${{ vars.EDGE_CONFIRM_HOST }}
+        run: curl --fail --silent --show-error --retry 6 --retry-delay 10 --retry-all-errors -o /dev/null "https://$EDGE_CONFIRM_HOST/_edge/health"
+
+  apps:
+    name: App (${{ matrix.app }})
+    needs: [plan, services]
+    # After the services, so the box is not building images and receiving bundles at once;
+    # still runs when the services job had nothing to do.
+    if: >-
+      always() && needs.plan.result == 'success' && needs.plan.outputs.apps != '[]' &&
+      (needs.services.result == 'success' || needs.services.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        app: ${{ fromJSON(needs.plan.outputs.apps) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: SSH identity for the edge
+        env:
+          EDGE_SSH_KEY: ${{ secrets.EDGE_SSH_KEY }}
+          EDGE_KNOWN_HOSTS: ${{ secrets.EDGE_KNOWN_HOSTS }}
+        run: |
+          test -n "$EDGE_SSH_KEY" || { echo "::error::secret EDGE_SSH_KEY is not set"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$EDGE_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$EDGE_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host *\n  StrictHostKeyChecking yes\n  ServerAliveInterval 30\n' > ~/.ssh/config
+      # Builds on the runner, not the box: a bundle that does not compile never leaves here.
+      - name: Build and publish ${{ matrix.app }}
+        env:
+          APP: ${{ matrix.app }}
+          EDGE_SSH_TARGET: ${{ vars.EDGE_SSH_TARGET }}
+          EDGE_CONFIRM_HOST: ${{ vars.EDGE_CONFIRM_HOST }}
+        run: infrastructure/edge/publish-web.sh publish "$EDGE_SSH_TARGET" "$EDGE_CONFIRM_HOST"
