@@ -45,6 +45,8 @@ optional_empty="PII_DECRYPT_KEYS SENTRY_DSN BACKUP_S3_ENDPOINT BACKUP_S3_ACCESS_
 # below. WhatsApp is optional until a Meta app exists. COMPOSE_PROFILES empty means core only.
 optional_empty="$optional_empty SMTP_HOST SMTP_USERNAME SMTP_PASSWORD RAZORPAY_KEY_ID RAZORPAY_KEY_SECRET"
 optional_empty="$optional_empty WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN WHATSAPP_PHONE_NUMBER_ID WHATSAPP_ACCESS_TOKEN COMPOSE_PROFILES"
+# The mail relay: empty means "no outbound to other domains yet", warned about below.
+optional_empty="$optional_empty RELAY_HOST RELAY_USER RELAY_PASSWORD"
 
 # shellcheck disable=SC1091  # .env is data, generated on the box from .env.example
 set -a
@@ -129,6 +131,16 @@ if [ "${EMAIL_TRANSPORT:-log}" = "log" ]; then
 else
 	ok "email transport: $EMAIL_TRANSPORT"
 fi
+case ",${COMPOSE_PROFILES:-}," in
+*",mail,"*)
+	if [ -z "${RELAY_HOST:-}" ] || [ -z "${RELAY_USER:-}" ]; then
+		echo "  warn  mail profile is on but RELAY_* is empty: mail to other domains is DEFERRED." >&2
+		echo "        Port 25 is blocked outbound here; set RELAY_HOST/RELAY_USER/RELAY_PASSWORD." >&2
+	else
+		ok "mail relay configured ($RELAY_HOST)"
+	fi
+	;;
+esac
 if [ -z "${RAZORPAY_KEY_ID:-}" ]; then
 	echo "  warn  RAZORPAY_KEY_ID empty: payments are inert. Trials end in past_due, never active." >&2
 else
