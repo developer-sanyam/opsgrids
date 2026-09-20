@@ -59,7 +59,7 @@ rollback)
       current=\$(basename \"\$(readlink -f '$web_root/current')\")
       previous=\$(ls -1 | sort | grep -v \"^\$current\$\" | tail -1)
       if [ -z \"\$previous\" ]; then echo 'no previous release to roll back to' >&2; exit 1; fi
-      ln -sfn '$web_root/releases/'\"\$previous\" '$web_root/current.tmp'
+      ln -sfn \"releases/\$previous\" '$web_root/current.tmp'   # relative: see publish below
       mv -T '$web_root/current.tmp' '$web_root/current'
       echo \"rolled back: \$current -> \$previous\""
 	echo "Caddy serves through the symlink; no restart was needed and none should be done."
@@ -127,9 +127,14 @@ echo "shipping to $release"
 ssh_box "mkdir -p '$web_root/releases'"
 rsync -az --delete -e 'ssh -o BatchMode=yes' "$source_dir/" "$host:$release/"
 
+# The link is RELATIVE (`releases/<stamp>`, not `$web_root/releases/<stamp>`). Caddy reads the
+# web root through a bind mount at a different path (`/srv/web`), and an absolute link to the
+# host's path is a dangling symlink inside the container: every store answered the edge's
+# "not serving a store" page while the bundle sat published on disk. Found on the first
+# end-to-end run.
 ssh_box "set -euo pipefail
   test -f '$release/index.html'
-  ln -sfn '$release' '$web_root/current.tmp'
+  ln -sfn 'releases/$stamp' '$web_root/current.tmp'
   mv -T '$web_root/current.tmp' '$web_root/current'
   echo \"current -> \$(readlink -f '$web_root/current')\"
   # Keep the five most recent releases. Rolling back needs at least two; keeping everything is
