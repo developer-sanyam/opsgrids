@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Deal, DealStage } from "@/api/types";
+import { useDirectory } from "@/data/directoryContext";
 import { companyName, ownerName } from "@/data/lookups";
 import { STAGES } from "@/data/stages";
 import { Avatar, CalendarIcon, GripIcon, cn } from "@opsgrids/ui";
@@ -16,6 +17,7 @@ interface DealCardProps {
 
 /** One pipeline card: company, deal name, value, owner avatar and close date, with a drag grip. */
 function DealCard({ deal, dragging, onDragStart, onDragEnd }: DealCardProps) {
+  const { owners, companies } = useDirectory();
   return (
     <Link
       to={`/deals/${deal.id}`}
@@ -31,7 +33,7 @@ function DealCard({ deal, dragging, onDragStart, onDragEnd }: DealCardProps) {
       <div className="flex items-start gap-2">
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="truncate text-xs font-semibold text-muted">
-            {companyName(deal.company_id)}
+            {companyName(companies, deal.company_id)}
           </span>
           <span className="truncate text-sm font-bold text-ink">{deal.name}</span>
         </div>
@@ -50,8 +52,8 @@ function DealCard({ deal, dragging, onDragStart, onDragEnd }: DealCardProps) {
 
       <div className="mt-3 flex items-center justify-between gap-2 border-t border-line pt-2.5">
         <span className="inline-flex items-center gap-1.5 min-w-0">
-          <Avatar name={ownerName(deal.owner_id)} size="sm" />
-          <span className="truncate text-xs font-medium text-muted">{ownerName(deal.owner_id)}</span>
+          <Avatar name={ownerName(owners, deal.owner_id)} size="sm" />
+          <span className="truncate text-xs font-medium text-muted">{ownerName(owners, deal.owner_id)}</span>
         </span>
         <span className="tnum text-[0.7rem] font-semibold text-faint">{deal.probability}%</span>
       </div>

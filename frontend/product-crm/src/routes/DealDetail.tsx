@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 
 import { getDeal, listActivities } from "@/api/client";
 import type { Contact } from "@/api/types";
+import { useDirectory } from "@/data/directoryContext";
 import {
   companyById,
   contactById,
@@ -77,6 +78,7 @@ export function DealDetailPage() {
   const { id = "" } = useParams();
   const deal = useAsync(useCallback(() => getDeal(id), [id]), [id]);
   const activities = useAsync(useCallback(() => listActivities({ dealId: id }), [id]), [id]);
+  const { owners, companies, contacts } = useDirectory();
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -98,11 +100,11 @@ export function DealDetailPage() {
       {deal.status === "success"
         ? (() => {
             const d = deal.data;
-            const company = companyById(d.company_id);
-            const owner = ownerById(d.owner_id);
-            const primary = contactById(d.primary_contact_id);
+            const company = companyById(companies, d.company_id);
+            const owner = ownerById(owners, d.owner_id);
+            const primary = contactById(contacts, d.primary_contact_id);
             const companyContacts = company
-              ? contactsForCompany(company.id).filter((c) => c.id !== primary?.id)
+              ? contactsForCompany(contacts, company.id).filter((c) => c.id !== primary?.id)
               : [];
 
             return (

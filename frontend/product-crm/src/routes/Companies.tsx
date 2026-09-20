@@ -2,7 +2,8 @@ import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { listCompanies } from "@/api/client";
-import type { Company, CompanyStatus } from "@/api/types";
+import type { Company, CompanyStatus, Owner } from "@/api/types";
+import { useDirectory } from "@/data/directoryContext";
 import { contactsForCompany, ownerName } from "@/data/lookups";
 import { formatMoneyCompact } from "@/lib/format";
 import { useAsync } from "@opsgrids/client";
@@ -34,7 +35,8 @@ const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
 
 const NO_COMPANIES: Company[] = [];
 
-const columns: Column<Company>[] = [
+function buildColumns(owners: Owner[]): Column<Company>[] {
+  return [
   {
     key: "name",
     header: "Company",
@@ -85,8 +87,8 @@ const columns: Column<Company>[] = [
     headerClassName: "hidden sm:table-cell",
     render: (c) => (
       <span className="inline-flex items-center gap-2 min-w-0">
-        <Avatar name={ownerName(c.owner_id)} size="sm" />
-        <span className="truncate text-sm text-ink-soft">{ownerName(c.owner_id)}</span>
+        <Avatar name={ownerName(owners, c.owner_id)} size="sm" />
+        <span className="truncate text-sm text-ink-soft">{ownerName(owners, c.owner_id)}</span>
       </span>
     ),
   },
@@ -100,15 +102,18 @@ const columns: Column<Company>[] = [
       </span>
     ),
   },
-];
+  ];
+}
 
 export function CompaniesPage() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [sort, setSort] = useState<Sort>("name");
+  const { owners, contacts } = useDirectory();
 
   const loader = useCallback(() => listCompanies({ search, status }), [search, status]);
   const companies = useAsync(loader, [search, status]);
+  const columns = useMemo(() => buildColumns(owners), [owners]);
 
   const rows = useMemo(() => {
     const items = companies.status === "success" ? companies.data.items : NO_COMPANIES;
@@ -116,9 +121,13 @@ export function CompaniesPage() {
     if (sort === "name") sorted.sort((a, b) => a.name.localeCompare(b.name));
     else if (sort === "revenue")
       sorted.sort((a, b) => b.annual_revenue_minor - a.annual_revenue_minor);
-    else sorted.sort((a, b) => contactsForCompany(b.id).length - contactsForCompany(a.id).length);
+    else
+      sorted.sort(
+        (a, b) =>
+          contactsForCompany(contacts, b.id).length - contactsForCompany(contacts, a.id).length,
+      );
     return sorted;
-  }, [companies, sort]);
+  }, [companies, sort, contacts]);
 
   const total = companies.status === "success" ? companies.data.total : 0;
 

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
-import { getOwners, listDeals } from "@/api/client";
-import type { Deal, DealStage, Owner } from "@/api/types";
+import { listDeals } from "@/api/client";
+import type { Company, Deal, DealStage } from "@/api/types";
 import { dealsByStage } from "@/data/derive";
+import { useDirectory } from "@/data/directoryContext";
 import { companyName } from "@/data/lookups";
 import { STAGES } from "@/data/stages";
 import { HandshakeIcon, KanbanIcon, LayoutIcon, PlusIcon, cn } from "@opsgrids/ui";
@@ -34,9 +35,9 @@ const STAGE_FILTERS: { value: StageFilter; label: string }[] = [
 ];
 
 const NO_DEALS: Deal[] = [];
-const NO_OWNERS: Owner[] = [];
 
-const listColumns: Column<Deal>[] = [
+function buildListColumns(companies: Company[]): Column<Deal>[] {
+  return [
   {
     key: "name",
     header: "Deal",
@@ -48,7 +49,7 @@ const listColumns: Column<Deal>[] = [
         >
           {d.name}
         </Link>
-        <span className="text-xs text-muted">{companyName(d.company_id)}</span>
+        <span className="text-xs text-muted">{companyName(companies, d.company_id)}</span>
       </div>
     ),
   },
@@ -81,7 +82,8 @@ const listColumns: Column<Deal>[] = [
     headerClassName: "hidden lg:table-cell",
     render: (d) => <span className="tnum text-muted">{d.probability}%</span>,
   },
-];
+  ];
+}
 
 export function DealsPage() {
   const [searchParams] = useSearchParams();
@@ -90,13 +92,13 @@ export function DealsPage() {
   const [stage, setStage] = useState<StageFilter>("all");
   const [ownerId, setOwnerId] = useState<string | "all">("all");
   const [view, setView] = useState<View>("board");
+  const { owners: ownerOptions, companies } = useDirectory();
 
   useEffect(() => {
     const q = searchParams.get("q");
     if (q !== null) setSearch(q);
   }, [searchParams]);
 
-  const owners = useAsync(getOwners, []);
   const loader = useCallback(() => listDeals({ search, stage, ownerId }), [search, stage, ownerId]);
   const deals = useAsync(loader, [search, stage, ownerId]);
 
@@ -105,7 +107,7 @@ export function DealsPage() {
     [deals],
   );
   const groups = useMemo(() => dealsByStage(items), [items]);
-  const ownerOptions = owners.status === "success" ? owners.data : NO_OWNERS;
+  const listColumns = useMemo(() => buildListColumns(companies), [companies]);
   const total = items.length;
 
   return (

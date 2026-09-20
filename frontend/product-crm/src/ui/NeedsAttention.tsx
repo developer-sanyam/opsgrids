@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 
 import type { AttentionItem } from "@/api/types";
+import { useDirectory } from "@/data/directoryContext";
 import { companyName } from "@/data/lookups";
 import {
   AlertTriangleIcon,
@@ -27,6 +28,7 @@ const REASON_META: Record<
  * have gone quiet — each a link to the deal, with a reason chip and the value. Most urgent first.
  */
 export function NeedsAttention({ items }: { items: AttentionItem[] }) {
+  const { companies } = useDirectory();
   if (items.length === 0) {
     return (
       <EmptyState
@@ -53,7 +55,7 @@ export function NeedsAttention({ items }: { items: AttentionItem[] }) {
               </span>
               <div className="flex min-w-0 flex-1 flex-col leading-tight">
                 <span className="truncate text-sm font-bold text-ink">{deal.name}</span>
-                <span className="truncate text-xs text-muted">{companyName(deal.company_id)}</span>
+                <span className="truncate text-xs text-muted">{companyName(companies, deal.company_id)}</span>
               </div>
               <div className="hidden shrink-0 sm:block">
                 <OwnerBadge ownerId={deal.owner_id} compact />
