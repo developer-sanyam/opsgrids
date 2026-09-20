@@ -47,9 +47,13 @@ x-service-env: &service-env
   LOG_JSON: 'true'
   DATABASE_URL: postgresql+asyncpg://opsgrids_app:${OPSGRIDS_DB_PASSWORD}@postgres:5432/opsgrids
   REDIS_URL: redis://redis:6379/0
-  # No RabbitMQ is deployed in slice 1. Nothing here connects to it: the relay and the
-  # consumers are not run. See the runbook's "known gaps" — the outbox tables grow and no
-  # domain event is delivered to anything, by omission rather than by failure.
+  # The broker (ADR-0013 §5). Every service's relay publishes its outbox here and every
+  # consumer reads from it; this is what makes activation install roles without a human.
+  RABBITMQ_URL: amqp://opsgrids:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+  # ~25 processes share one Postgres. The library default (10 + 5 per process) would want
+  # ~375 connections; 5 + 2 wants ~175, under the 300 the postgres service is started with.
+  DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+  DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-2}
   JWKS_URL: http://auth:8000/.well-known/jwks.json
   JWT_ISSUER: ${JWT_ISSUER}
   JWT_KID: ${JWT_KID}
@@ -72,6 +76,19 @@ x-service-common: &service-common
       condition: service_healthy
     redis:
       condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+
+# A background process of a service: a consumer (`bin/worker`), an outbox relay (`bin/relay`)
+# or a sweep (`bin/cron`). Same image as the API, no port, and the image's HTTP healthcheck
+# disabled because there is nothing listening — `docker compose ps` shows `running`, and the
+# outbox depth (runbook, "the outbox fills") is the health signal that matters.
+x-background: &background
+  <<: *service-common
+  healthcheck:
+    disable: true
+  networks:
+    - back
 
 services:
   # ---------------------------------------------------------------- the edge
@@ -135,8 +152,31 @@ services:
       - ../../tools/dev-bootstrap/init-db.sql:/docker-entrypoint-initdb.d/20-init.sql:ro
       - ./postgres-init/30-role-passwords.sh:/docker-entrypoint-initdb.d/30-role-passwords.sh:ro
     shm_size: '256mb'
+    # ~25 client processes (ADR-0012 erratum 10): the default 100 connections is exceeded the
+    # moment the workers start, and the first symptom is "FATAL: sorry, too many clients" on
+    # auth — nobody can log in. shared_buffers sized for the box, not for the connection count.
+    command: ['postgres', '-c', 'max_connections=300', '-c', 'shared_buffers=256MB']
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U opsgrids -d opsgrids']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks:
+      - back
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      RABBITMQ_DEFAULT_USER: opsgrids
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    # No published port: the management UI stays on the compose network. Tunnel to it when
+    # needed: ssh -L 15672:localhost:15672 … then `docker compose exec rabbitmq` is simpler.
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
       interval: 10s
       timeout: 5s
       retries: 20
@@ -175,6 +215,7 @@ services:
   # is ambiguous across services, so one image can only ever hold one of them.
   auth:
     <<: *service-common
+    image: opsgrids-edge/auth
     build:
       context: ../..
       dockerfile: services/auth/Dockerfile
@@ -190,6 +231,7 @@ services:
 
   account:
     <<: *service-common
+    image: opsgrids-edge/account
     build:
       context: ../..
       dockerfile: services/account/Dockerfile
@@ -206,6 +248,7 @@ services:
 
   product:
     <<: *service-common
+    image: opsgrids-edge/product
     build:
       context: ../..
       dockerfile: services/product/Dockerfile
@@ -215,6 +258,7 @@ services:
 
   storefront:
     <<: *service-common
+    image: opsgrids-edge/storefront
     build:
       context: ../..
       dockerfile: services/storefront/Dockerfile
@@ -250,9 +294,7 @@ services:
   storefront-cron:
     <<: *service-common
     profiles: ['sweep']
-    build:
-      context: ../..
-      dockerfile: services/storefront/Dockerfile
+    image: opsgrids-edge/storefront
     command: ['./bin/cron']
     environment:
       <<: *service-env
@@ -266,6 +308,7 @@ services:
 
   app-gateway:
     <<: *service-common
+    image: opsgrids-edge/app-gateway
     build:
       context: ../..
       dockerfile: services/app-gateway/Dockerfile
@@ -282,6 +325,235 @@ services:
       - front
       - back
 
+  # ---------------------------------------------------------------- core: workers and relays
+  # ADR-0013 §5. A worker only where the service has event handlers (auth, catalog, billing,
+  # metering, operations and storefront have none today); a relay for every outbox, so nothing
+  # a service publishes sits in its table forever. Each reuses its API's image by name — the
+  # build step builds each image once, and `up` finds it locally.
+  auth-relay:
+    <<: *background
+    image: opsgrids-edge/auth
+    command: ['./bin/relay']
+    environment:
+      <<: *service-env
+      JWT_PRIVATE_KEY_PATH: /run/secrets/jwt-ed25519.pem
+    volumes:
+      - ${JWT_PRIVATE_KEY_HOST_PATH}:/run/secrets/jwt-ed25519.pem:ro
+
+  account-worker:
+    <<: *background
+    image: opsgrids-edge/account
+    command: ['./bin/worker']
+    environment:
+      <<: *service-env
+      PERMISSION_MANIFEST_DIR: /opt/opsgrids/permissions
+    volumes:
+      - ../../libs/contracts/permissions:/opt/opsgrids/permissions:ro
+
+  account-relay:
+    <<: *background
+    image: opsgrids-edge/account
+    command: ['./bin/relay']
+    environment: *service-env
+
+  product-worker:
+    <<: *background
+    image: opsgrids-edge/product
+    command: ['./bin/worker']
+    environment: *service-env
+
+  product-relay:
+    <<: *background
+    image: opsgrids-edge/product
+    command: ['./bin/relay']
+    environment: *service-env
+
+  storefront-relay:
+    <<: *background
+    image: opsgrids-edge/storefront
+    command: ['./bin/relay']
+    environment:
+      <<: *service-env
+      STORE_SLUG_CACHE_SECONDS: ${STORE_SLUG_CACHE_SECONDS:-300}
+
+  # ---------------------------------------------------------------- commerce (ADR-0004)
+  catalog:
+    <<: *service-common
+    image: opsgrids-edge/catalog
+    build:
+      context: ../..
+      dockerfile: services/catalog/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  catalog-relay:
+    <<: *background
+    image: opsgrids-edge/catalog
+    command: ['./bin/relay']
+    environment: *service-env
+
+  subscription:
+    <<: *service-common
+    image: opsgrids-edge/subscription
+    build:
+      context: ../..
+      dockerfile: services/subscription/Dockerfile
+    environment:
+      <<: *service-env
+      CATALOG_SERVICE_URL: http://catalog:8000
+    networks:
+      - back
+
+  subscription-worker:
+    <<: *background
+    image: opsgrids-edge/subscription
+    command: ['./bin/worker']
+    environment:
+      <<: *service-env
+      CATALOG_SERVICE_URL: http://catalog:8000
+
+  # The dunning sweep (ADR-0005), and from slice 4 the trial-end sweep (ADR-0013 §6).
+  subscription-cron:
+    <<: *background
+    image: opsgrids-edge/subscription
+    command: ['./bin/cron']
+    environment:
+      <<: *service-env
+      CATALOG_SERVICE_URL: http://catalog:8000
+
+  subscription-relay:
+    <<: *background
+    image: opsgrids-edge/subscription
+    command: ['./bin/relay']
+    environment: *service-env
+
+  billing:
+    <<: *service-common
+    image: opsgrids-edge/billing
+    build:
+      context: ../..
+      dockerfile: services/billing/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  billing-relay:
+    <<: *background
+    image: opsgrids-edge/billing
+    command: ['./bin/relay']
+    environment: *service-env
+
+  metering:
+    <<: *service-common
+    image: opsgrids-edge/metering
+    build:
+      context: ../..
+      dockerfile: services/metering/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  metering-relay:
+    <<: *background
+    image: opsgrids-edge/metering
+    command: ['./bin/relay']
+    environment: *service-env
+
+  # Inert without Razorpay keys, by design (payment/app/config.py): every charge path runs and
+  # nothing reaches the network. The webhook secret must still be a real value — production
+  # refuses the dev-only default — so it is generated on the box like every other secret.
+  payment:
+    <<: *service-common
+    image: opsgrids-edge/payment
+    build:
+      context: ../..
+      dockerfile: services/payment/Dockerfile
+    environment: &payment-env
+      <<: *service-env
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET}
+    networks:
+      - back
+
+  payment-worker:
+    <<: *background
+    image: opsgrids-edge/payment
+    command: ['./bin/worker']
+    environment: *payment-env
+
+  payment-relay:
+    <<: *background
+    image: opsgrids-edge/payment
+    command: ['./bin/relay']
+    environment: *payment-env
+
+  # ---------------------------------------------------------------- notification (platform)
+  # Email is what turns a signup into a password (ADR-0013 §3) and a trial's end into a
+  # warning. `EMAIL_TRANSPORT=log` renders and records every message and sends nothing — the
+  # honest state until SMTP credentials exist, and preflight says so in capitals.
+  notification:
+    <<: *service-common
+    image: opsgrids-edge/notification
+    build:
+      context: ../..
+      dockerfile: services/notification/Dockerfile
+    environment: &notification-env
+      <<: *service-env
+      EMAIL_TRANSPORT: ${EMAIL_TRANSPORT:-log}
+      EMAIL_FROM: ${EMAIL_FROM}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      WHATSAPP_TRANSPORT: ${WHATSAPP_TRANSPORT:-log}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      # customer-service is not deployed; the phone lookup answers unavailable, not wrong.
+      CUSTOMER_INTERNAL_URL: http://customer:8000
+    networks:
+      - back
+
+  # notification's `bin/worker` runs its two consumers (events → messages, and the dispatcher)
+  # in one process; see services/notification/app/worker.py.
+  notification-worker:
+    <<: *background
+    image: opsgrids-edge/notification
+    command: ['./bin/worker']
+    environment: *notification-env
+
+  notification-relay:
+    <<: *background
+    image: opsgrids-edge/notification
+    command: ['./bin/relay']
+    environment: *notification-env
+
+  # ---------------------------------------------------------------- products behind profiles
+  # One profile per sellable product (ADR-0013 §5). COMPOSE_PROFILES in the box's .env turns a
+  # profile on; the catalogue's `status` says whether the product is sold; preflight refuses a
+  # deploy where the two disagree. `operations` is the Inventory product.
+  operations:
+    <<: *service-common
+    profiles: ['inventory']
+    image: opsgrids-edge/operations
+    build:
+      context: ../..
+      dockerfile: services/operations/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  operations-relay:
+    <<: *background
+    profiles: ['inventory']
+    image: opsgrids-edge/operations
+    command: ['./bin/relay']
+    environment: *service-env
+
 networks:
   # Caddy reaches the gateway and storefront. It has no route to Postgres or Redis, and
   # neither does anything else outside `back`.
@@ -293,3 +565,4 @@ volumes:
   caddy_config:
   postgres_data:
   redis_data:
+  rabbitmq_data:

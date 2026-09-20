@@ -40,6 +40,11 @@ required=$(sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' .env.example)
 # off-box bucket exists, and `backup.sh` still takes the local dump and exits non-zero until
 # one is configured — so the gap shows up in cron's mail every night rather than nowhere.
 optional_empty="PII_DECRYPT_KEYS SENTRY_DSN BACKUP_S3_ENDPOINT BACKUP_S3_ACCESS_KEY_ID BACKUP_S3_SECRET_ACCESS_KEY"
+# Email and payments may be unconfigured on a box that is being stood up: the services are
+# inert without them (notification logs, payment reaches no network) and each is warned about
+# below. WhatsApp is optional until a Meta app exists. COMPOSE_PROFILES empty means core only.
+optional_empty="$optional_empty SMTP_HOST SMTP_USERNAME SMTP_PASSWORD RAZORPAY_KEY_ID RAZORPAY_KEY_SECRET"
+optional_empty="$optional_empty WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN WHATSAPP_PHONE_NUMBER_ID WHATSAPP_ACCESS_TOKEN COMPOSE_PROFILES"
 
 # shellcheck disable=SC1091  # .env is data, generated on the box from .env.example
 set -a
@@ -116,6 +121,58 @@ inodes=$(df -Pi . | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
 [ "${inodes:-0}" -lt 90 ] && ok "inodes ${inodes}% used" || bad "inodes ${inodes}% used"
 
 docker info >/dev/null 2>&1 && ok "docker daemon responding" || bad "docker daemon not responding"
+
+# ---------------------------------------------------------------- what this box sells
+if [ "${EMAIL_TRANSPORT:-log}" = "log" ]; then
+	echo "  warn  EMAIL_TRANSPORT=log: NO EMAIL IS SENT. A signup cannot set a password and a" >&2
+	echo "        trial cannot be warned. Set EMAIL_TRANSPORT=smtp and the SMTP_* values." >&2
+else
+	ok "email transport: $EMAIL_TRANSPORT"
+fi
+if [ -z "${RAZORPAY_KEY_ID:-}" ]; then
+	echo "  warn  RAZORPAY_KEY_ID empty: payments are inert. Trials end in past_due, never active." >&2
+else
+	ok "payment provider keys present"
+fi
+
+# The catalogue says which products are sold; COMPOSE_PROFILES says which product services
+# run. They must agree (ADR-0013 §5): an `available` product with no service behind it is a
+# 504 the customer finds. Only checkable once Postgres exists — on the first deploy it does
+# not, and the row comes from a migration that has not run yet.
+profile_for() {
+	case "$1" in
+	operations) echo inventory ;;
+	storefront) echo storefront ;;
+	*) echo "" ;;
+	esac
+}
+if docker compose -f compose.prod.yml --env-file .env ps --status running postgres 2>/dev/null | grep -q postgres; then
+	available=$(docker compose -f compose.prod.yml --env-file .env exec -T postgres \
+		psql -U opsgrids -d opsgrids -Atc "select key from product.products where status = 'available' and not is_platform" 2>/dev/null || true)
+	enabled=",${COMPOSE_PROFILES:-},"
+	sold_unserved=""
+	for key in $available; do
+		profile=$(profile_for "$key")
+		[ -n "$profile" ] || continue
+		case "$enabled" in
+		*",$profile,"*) ;;
+		*) sold_unserved="$sold_unserved $key(profile:$profile)" ;;
+		esac
+	done
+	[ -z "$sold_unserved" ] && ok "every product the catalogue sells has its service profile enabled" ||
+		bad "sold in the catalogue but no service will run for it:$sold_unserved — add the profile to COMPOSE_PROFILES or set the product to 'soon'"
+	for profile in $(echo "${COMPOSE_PROFILES:-}" | tr ',' ' '); do
+		key=""
+		case "$profile" in inventory) key=operations ;; storefront) key=storefront ;; esac
+		[ -n "$key" ] || continue
+		case " $available " in
+		*" $key "*) ;;
+		*) echo "  warn  profile '$profile' runs but the catalogue does not sell '$key' yet (status is not 'available')" >&2 ;;
+		esac
+	done
+else
+	echo "  warn  Postgres not running yet: the catalogue/profile agreement check is skipped on this deploy" >&2
+fi
 
 # ---------------------------------------------------------------- the web root
 web_root="${EDGE_WEB_ROOT:-/srv/opsgrids/web}"

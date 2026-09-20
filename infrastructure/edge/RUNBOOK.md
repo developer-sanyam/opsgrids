@@ -537,7 +537,13 @@ Named here so nobody discovers them during an incident:
 
 - **No alerting and no pager.** Slice 2.
 - **No zero-downtime deploy.** Every deploy that changes a container restarts it.
-- **No RabbitMQ, no relay and no consumers — and this breaks product activation.** An earlier
+- **Resolved 2026-09-20 (ADR-0013 slice 1): RabbitMQ, a relay per outbox and the consumers now
+  run on this box**, so activation installs a product's roles by event and
+  `tools/wire_product.py` is a repair tool again, not a step. The paragraph below is kept as
+  the record of why. What is still true: services *not* deployed here (employee, customer,
+  approval, …) publish nothing and consume nothing, and a product behind a disabled compose
+  profile is exactly as absent as before.
+- *(historical)* **No RabbitMQ, no relay and no consumers — and this breaks product activation.** An earlier
   version of this paragraph said slice 1 publishes no event that anything consumes. That was
   wrong. `product.activate()` publishes `core.product.activated`, and the **only** thing that
   installs a product's roles into an organisation is `account`'s consumer of that event

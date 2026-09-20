@@ -57,6 +57,12 @@ class ServiceSettings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        # An empty variable is "not configured", not "configured to the empty string". A
+        # compose file cannot leave a variable undefined when its value in `.env` is blank —
+        # `${RAZORPAY_KEY_ID:-}` still defines it — and `razorpay_key_id: str | None` read
+        # `""` as a key, at which point the provider believed it could reach the network.
+        # Every optional secret in the platform is typed `| None` on exactly that promise.
+        env_ignore_empty=True,
     )
 
     # --- identity of this process -------------------------------------------------

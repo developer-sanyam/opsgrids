@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# The outbox relay: reads this service's outbox on the BYPASSRLS outbox role and publishes to
+# the broker. Its own process, always — a relay that shares a process with the API loses
+# events when the API restarts, and one that hides behind bin/cron is not started when cron is
+# something else (ADR-0012 erratum 8).
+exec python -m app.relay
