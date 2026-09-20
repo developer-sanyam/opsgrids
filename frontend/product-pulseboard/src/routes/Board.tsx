@@ -1,11 +1,23 @@
 import { useCallback } from "react";
 
-import { getTasks } from "@/api/client";
+import { getPeople, getProjects, getTasks } from "@/api/client";
+import type { Person, Project, Task } from "@/api/types";
 import { useAsync } from "@opsgrids/client";
 import { Card, ErrorState, KanbanBoard, PageHeader, Skeleton, TASK_STATUS_META } from "@/ui";
 import { ColumnsIcon } from "@opsgrids/ui";
 
 const COLUMN_ORDER = ["backlog", "in_progress", "review", "done"] as const;
+
+interface BoardData {
+  tasks: Task[];
+  people: Person[];
+  projects: Project[];
+}
+
+async function loadBoard(): Promise<BoardData> {
+  const [tasks, people, projects] = await Promise.all([getTasks(), getPeople(), getProjects()]);
+  return { tasks, people, projects };
+}
 
 /** The four column headers previewed while the board loads, so nothing shifts on resolve. */
 function BoardSkeleton() {
@@ -27,8 +39,8 @@ function BoardSkeleton() {
 }
 
 export function BoardPage() {
-  const tasks = useAsync(useCallback(getTasks, []), []);
-  const total = tasks.status === "success" ? tasks.data.length : 0;
+  const state = useAsync(useCallback(loadBoard, []), []);
+  const total = state.status === "success" ? state.data.tasks.length : 0;
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -49,13 +61,15 @@ export function BoardPage() {
         readers.
       </p>
 
-      {tasks.status === "loading" ? <BoardSkeleton /> : null}
-      {tasks.status === "error" ? (
+      {state.status === "loading" ? <BoardSkeleton /> : null}
+      {state.status === "error" ? (
         <Card className="p-6">
-          <ErrorState message={tasks.error.message} />
+          <ErrorState message={state.error.message} />
         </Card>
       ) : null}
-      {tasks.status === "success" ? <KanbanBoard tasks={tasks.data} /> : null}
+      {state.status === "success" ? (
+        <KanbanBoard tasks={state.data.tasks} people={state.data.people} projects={state.data.projects} />
+      ) : null}
     </div>
   );
 }

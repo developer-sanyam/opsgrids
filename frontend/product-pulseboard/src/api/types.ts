@@ -23,7 +23,10 @@ export interface Person {
 
 /**
  * A client engagement. `progress_pct` is 0–100; `budget_minor` and `spent_minor` are integer
- * minor units of `currency`; `owner_id` references a `Person`.
+ * minor units of `currency`; `owner_id` references a `Person`. `owner_id`, `start_date` and
+ * `due_date` are nullable — the project service stores them as optional columns, so an
+ * engagement without an assigned owner or a set date is a real, representable state, not an
+ * error.
  */
 export interface Project {
   id: string;
@@ -35,9 +38,9 @@ export interface Project {
   budget_minor: number;
   spent_minor: number;
   currency: string;
-  owner_id: string;
-  start_date: string;
-  due_date: string;
+  owner_id: string | null;
+  start_date: string | null;
+  due_date: string | null;
   billable: boolean;
   open_tasks: number;
 }

@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
-import { listProjects } from "@/api/client";
-import type { Project, ProjectStatus } from "@/api/types";
-import { personName } from "@/data/people";
+import { getPeople, listProjects } from "@/api/client";
+import type { Person, Project, ProjectStatus } from "@/api/types";
 import { ChevronDown, CloseIcon, LayersIcon, cn } from "@opsgrids/ui";
 import { formatDate, formatMoney } from "@/lib/format";
 import { useAsync } from "@opsgrids/client";
@@ -83,7 +82,15 @@ function SortHeader({
 }
 
 /** The drill-down: a right-hand drawer with the full picture for one project. */
-function ProjectDrawer({ project, onClose }: { project: Project; onClose: () => void }) {
+function ProjectDrawer({
+  project,
+  ownerName,
+  onClose,
+}: {
+  project: Project;
+  ownerName: string;
+  onClose: () => void;
+}) {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
@@ -162,8 +169,8 @@ function ProjectDrawer({ project, onClose }: { project: Project; onClose: () => 
             <div className="flex flex-col gap-1">
               <dt className="text-xs font-medium text-muted">Owner</dt>
               <dd className="flex items-center gap-2 font-semibold text-ink">
-                <Avatar name={personName(project.owner_id)} size="xs" />
-                {personName(project.owner_id)}
+                <Avatar name={ownerName} size="xs" />
+                {ownerName}
               </dd>
             </div>
             <div className="flex flex-col gap-1">
@@ -204,6 +211,24 @@ export function ProjectsPage() {
 
   const loader = useCallback(() => listProjects({ search, status }), [search, status]);
   const projects = useAsync(loader, [search, status]);
+
+  // The roster doesn't depend on the search or status filter, so it loads once, separately —
+  // no point re-fetching everyone's name on every keystroke.
+  const peopleState = useAsync(useCallback(getPeople, []), []);
+  const personById = useMemo(
+    () =>
+      new Map<string, Person>(
+        (peopleState.status === "success" ? peopleState.data : []).map((p) => [p.id, p]),
+      ),
+    [peopleState],
+  );
+  const ownerName = useCallback(
+    (id: string | null): string => {
+      if (id === null) return "Unassigned";
+      return personById.get(id)?.name ?? "Unknown";
+    },
+    [personById],
+  );
 
   const items = useMemo(
     () => (projects.status === "success" ? projects.data : NO_PROJECTS),
@@ -300,8 +325,8 @@ export function ProjectsPage() {
       headerClassName: "hidden sm:table-cell",
       render: (p) => (
         <span className="inline-flex items-center gap-2 text-ink-soft">
-          <Avatar name={personName(p.owner_id)} size="xs" />
-          <span className="hidden xl:inline">{personName(p.owner_id)}</span>
+          <Avatar name={ownerName(p.owner_id)} size="xs" />
+          <span className="hidden xl:inline">{ownerName(p.owner_id)}</span>
         </span>
       ),
     },
@@ -367,7 +392,13 @@ export function ProjectsPage() {
         ) : null}
       </Card>
 
-      {selected ? <ProjectDrawer project={selected} onClose={() => setSelected(null)} /> : null}
+      {selected ? (
+        <ProjectDrawer
+          project={selected}
+          ownerName={ownerName(selected.owner_id)}
+          onClose={() => setSelected(null)}
+        />
+      ) : null}
     </div>
   );
 }

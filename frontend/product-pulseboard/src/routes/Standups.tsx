@@ -1,18 +1,33 @@
 import { useCallback, useMemo } from "react";
 
-import { getStandups, TODAY } from "@/api/client";
+import { getPeople, getStandups, TODAY } from "@/api/client";
+import type { Person, StandupEntry } from "@/api/types";
 import { formatDate } from "@/lib/format";
 import { useAsync } from "@opsgrids/client";
 import { Card, EmptyState, ErrorState, PageHeader, Skeleton, StandupList } from "@/ui";
 import { AlertTriangleIcon, CheckCircleIcon, MessageSquareIcon } from "@opsgrids/ui";
 
+interface StandupsData {
+  entries: StandupEntry[];
+  people: Person[];
+}
+
+async function loadStandups(): Promise<StandupsData> {
+  const [entries, people] = await Promise.all([getStandups(TODAY), getPeople()]);
+  return { entries, people };
+}
+
 export function StandupsPage() {
-  const standups = useAsync(useCallback(() => getStandups(TODAY), []), []);
+  const standups = useAsync(useCallback(loadStandups, []), []);
 
   const stats = useMemo(() => {
     if (standups.status !== "success") return null;
-    const blocked = standups.data.filter((s) => s.blockers !== null).length;
-    return { total: standups.data.length, blocked, clear: standups.data.length - blocked };
+    const blocked = standups.data.entries.filter((s) => s.blockers !== null).length;
+    return {
+      total: standups.data.entries.length,
+      blocked,
+      clear: standups.data.entries.length - blocked,
+    };
   }, [standups]);
 
   return (
@@ -76,8 +91,8 @@ export function StandupsPage() {
         </Card>
       ) : null}
       {standups.status === "success" ? (
-        standups.data.length > 0 ? (
-          <StandupList entries={standups.data} />
+        standups.data.entries.length > 0 ? (
+          <StandupList entries={standups.data.entries} people={standups.data.people} />
         ) : (
           <Card className="p-6">
             <EmptyState

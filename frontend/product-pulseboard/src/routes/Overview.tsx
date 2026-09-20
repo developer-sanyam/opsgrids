@@ -5,7 +5,6 @@ import { Link, useNavigate } from "react-router-dom";
 import { getPeople, getProjects, getTasks, getTimesheets, WEEK_DATES, TODAY } from "@/api/client";
 import type { Person, Project, Task, TimesheetRow } from "@/api/types";
 import { useAuth } from "@opsgrids/client";
-import { PEOPLE } from "@/data/people";
 import {
   activeProjects,
   needsAttention,
@@ -349,7 +348,7 @@ export function OverviewPage() {
                   <dt className="inline-flex items-center gap-1.5 text-xs text-muted">
                     <UsersIcon className="size-3.5" /> People on team
                   </dt>
-                  <dd className="tnum text-lg font-bold text-ink">{PEOPLE.length}</dd>
+                  <dd className="tnum text-lg font-bold text-ink">{state.data.people.length}</dd>
                 </div>
               </dl>
             </div>
