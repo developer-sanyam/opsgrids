@@ -356,6 +356,12 @@ services:
       # the five services that are actually deployed and nothing else, so a request for an
       # undeployed product is a 404 from the gateway rather than a hung connection.
       ROUTES_FILE: /opt/opsgrids/routes.prod.json
+      # The gateway reads the route table once, at start, and the table arrives through a bind
+      # mount — so an edit to it changes nothing compose can see, `up` leaves the container
+      # alone, and a deploy that only added a product's routes used to deploy nothing: the
+      # product's app answered "No route for /api/v1/…" until something else forced a
+      # recreate. `remote.sh` exports the file's hash; a changed table is a changed container.
+      ROUTES_SHA: ${ROUTES_SHA:-unset}
     volumes:
       - ./routes.prod.json:/opt/opsgrids/routes.prod.json:ro
     networks:
@@ -601,6 +607,42 @@ services:
   # pipeline, activity, quotation) are deliberately absent: a prefix that is not routed is an
   # honest 404, a service that answers only /info is a 404 dressed as a product.
   # ---------------------------------------------------------------- OpsGrids People (profile `hrms`)
+  # The approval engine is core, not an HRMS feature — but People is the only product on this
+  # box that routes requests through it (attendance regularisation, and the app's approvals
+  # screens), so it runs when People does. Its worker keeps the reporting-line copy current
+  # from employee events; its cron is the SLA escalation sweep.
+  approval:
+    <<: *service-common
+    profiles: ['hrms']
+    image: opsgrids-edge/approval
+    build:
+      context: ../..
+      dockerfile: services/approval/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  approval-relay:
+    <<: *background
+    profiles: ['hrms']
+    image: opsgrids-edge/approval
+    command: ['./bin/relay']
+    environment: *service-env
+
+  approval-worker:
+    <<: *background
+    profiles: ['hrms']
+    image: opsgrids-edge/approval
+    command: ['./bin/worker']
+    environment: *service-env
+
+  approval-cron:
+    <<: *background
+    profiles: ['hrms']
+    image: opsgrids-edge/approval
+    command: ['./bin/cron']
+    environment: *service-env
+
   employee:
     <<: *service-common
     profiles: ['hrms']

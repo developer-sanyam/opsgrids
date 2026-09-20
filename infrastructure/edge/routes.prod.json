@@ -58,6 +58,7 @@
     { "prefix": "/api/v1/notifications", "upstream": "http://notification:8000", "product": "notification" },
     { "prefix": "/api/v1/webhooks/whatsapp", "upstream": "http://notification:8000" },
 
+    { "prefix": "/api/v1/approvals", "upstream": "http://approval:8000" },
     { "prefix": "/api/v1/employees", "upstream": "http://employee:8000", "product": "hrms" },
     { "prefix": "/api/v1/attendance", "upstream": "http://attendance:8000", "product": "hrms" },
     { "prefix": "/api/v1/shifts", "upstream": "http://attendance:8000", "product": "hrms" },

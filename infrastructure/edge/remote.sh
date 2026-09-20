@@ -29,11 +29,16 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 COMPOSE=(docker compose -f compose.prod.yml --env-file .env)
+
+# What the gateway's container is keyed on (see ROUTES_SHA in compose.prod.yml): the content of
+# the route table at this ref. Exported so every compose call below renders the same value.
+ROUTES_SHA=$(sha256sum routes.prod.json | cut -c1-16)
+export ROUTES_SHA
 STATE_DIR="${EDGE_STATE_DIR:-/srv/opsgrids/state}"
 # Every service that owns a schema. Migrated in this order, but only the ones compose will
 # actually run — a product behind a disabled profile (ADR-0013 §5) is skipped, and picked up
 # on the deploy that enables it.
-SERVICES_WITH_SCHEMA=(auth account product catalog subscription billing metering payment notification storefront operations employee attendance customer deal project timesheet standup projects support marketing finance itsm)
+SERVICES_WITH_SCHEMA=(auth account product catalog subscription billing metering payment notification storefront operations approval employee attendance customer deal project timesheet standup projects support marketing finance itsm)
 
 # The services compose will run for this box: honours COMPOSE_PROFILES from .env.
 configured_services() {
