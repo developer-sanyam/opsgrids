@@ -102,7 +102,10 @@ migrate() {
 
 up() {
 	log "recreating containers (brief downtime for anything that changed)"
-	"${COMPOSE[@]}" up -d --remove-orphans
+	# Four at a time. Unbounded, a deploy that touches the shared environment starts every
+	# container at once, and ~59 Python interpreters importing SQLAlchemy on two cores is a
+	# load average of 7 and health checks timing out for no reason but the stampede.
+	COMPOSE_PARALLEL_LIMIT=4 "${COMPOSE[@]}" up -d --remove-orphans
 	# The Caddyfile arrives through a bind mount (of its directory — a file mount follows the
 	# inode and keeps serving the pre-checkout file), so editing it changes nothing compose
 	# can see: `up` leaves the container, and the config it loaded at start, exactly as it

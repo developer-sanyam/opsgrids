@@ -53,6 +53,9 @@ x-service-env: &service-env
   # ~50 processes share one Postgres with every product profile on. The library default
   # (10 + 5 per process) would want ~750 connections; 5 + 2 wants ~350, under the 400 the
   # postgres service is started with.
+  # glibc gives every thread its own malloc arena; across ~50 mostly idle Python processes
+  # that is resident memory this box swaps for. Two arenas cost nothing measurable here.
+  MALLOC_ARENA_MAX: '2'
   DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
   DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-2}
   JWKS_URL: http://auth:8000/.well-known/jwks.json
@@ -70,6 +73,26 @@ x-service-env: &service-env
 x-service-common: &service-common
   restart: unless-stopped
   logging: *logging
+  # Replaces the image's HEALTHCHECK, which imports urllib (and with it ssl, email, http) in a
+  # fresh interpreter every 30 s in each of ~24 API containers. `-S` skips site initialisation
+  # and a raw socket needs no imports worth the name; once a minute is plenty for a process
+  # that `restart: unless-stopped` already brings back. `start_interval` keeps startup quick.
+  healthcheck:
+    test:
+      - CMD
+      - python
+      - -S
+      - -c
+      - |
+        import socket, sys
+        s = socket.create_connection(("127.0.0.1", 8000), 3)
+        s.sendall(b"GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n")
+        sys.exit(0 if b" 200 " in s.recv(64) else 1)
+    interval: 60s
+    timeout: 5s
+    retries: 3
+    start_period: 90s
+    start_interval: 5s
   security_opt:
     - no-new-privileges:true
   depends_on:
@@ -159,28 +182,37 @@ services:
     command: ['postgres', '-c', 'max_connections=400', '-c', 'shared_buffers=256MB']
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U opsgrids -d opsgrids']
-      interval: 10s
+      interval: 30s
       timeout: 5s
-      retries: 20
+      retries: 5
+      start_period: 120s
+      start_interval: 3s
     networks:
       - back
 
   rabbitmq:
-    image: rabbitmq:3-management-alpine
+    # The plain image, not `-management`: the management plugin samples every connection,
+    # channel and queue every five seconds to feed a UI nobody opens, and with ~35 clients on
+    # a 2-vCPU box that sampling was the largest single consumer of CPU. `rabbitmqctl` inside
+    # the container answers everything the UI did.
+    image: rabbitmq:3-alpine
     restart: unless-stopped
     logging: *logging
     environment:
       RABBITMQ_DEFAULT_USER: opsgrids
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
-    # No published port: the management UI stays on the compose network. Tunnel to it when
-    # needed: ssh -L 15672:localhost:15672 … then `docker compose exec rabbitmq` is simpler.
+    # No published port. To look inside: `docker compose exec rabbitmq rabbitmqctl list_queues`.
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
-      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
-      interval: 10s
+      # A TCP check on the AMQP port. `rabbitmq-diagnostics ping` starts a second Erlang VM
+      # for every probe — about a second of CPU, which at a 10 s interval was a standing tax.
+      test: ['CMD-SHELL', 'nc -z 127.0.0.1 5672']
+      interval: 30s
       timeout: 5s
-      retries: 20
+      retries: 5
+      start_period: 120s
+      start_interval: 3s
     networks:
       - back
 
@@ -205,9 +237,11 @@ services:
       - redis_data:/data
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
-      interval: 10s
+      interval: 30s
       timeout: 3s
-      retries: 20
+      retries: 5
+      start_period: 60s
+      start_interval: 3s
     networks:
       - back
 
