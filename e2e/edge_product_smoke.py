@@ -18,7 +18,6 @@ ends with a PASS/FAIL table; the process exits non-zero if any product failed.
 
 from __future__ import annotations
 
-# ruff: noqa: E501 — a one-line-per-step script; several lines (URLs, SQL, permission codes)
 # read best unwrapped.
 import argparse
 import contextlib
@@ -151,8 +150,17 @@ def _api_steps(
             "email": email,
         },
     )
-    org_id = r.json().get("organization_id") if r.headers.get("content-type", "").startswith("application/json") else None
-    _require(log, "1a sign up (public)", r.status_code == 201, f"{r.status_code} org={(org_id or '?')[:8]}")
+    org_id = (
+        r.json().get("organization_id")
+        if r.headers.get("content-type", "").startswith("application/json")
+        else None
+    )
+    _require(
+        log,
+        "1a sign up (public)",
+        r.status_code == 201,
+        f"{r.status_code} org={(org_id or '?')[:8]}",
+    )
 
     r = c.post("/api/v1/auth/password/forgot", json={"email": email})
     _require(log, "1b request the set-password link", r.status_code == 202, str(r.status_code))
@@ -241,7 +249,9 @@ def _api_steps(
     )
 
     r = c.get("/api/v1/roles", headers=h)
-    roles = [role for role in r.json() if role.get("product") == key] if r.status_code == 200 else []
+    roles = (
+        [role for role in r.json() if role.get("product") == key] if r.status_code == 200 else []
+    )
     _require(
         log,
         "3b the product's roles are installed in the organisation",
