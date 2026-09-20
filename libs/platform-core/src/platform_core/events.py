@@ -129,6 +129,14 @@ class OutboxRelay:
     every organization's events in one loop. Run it as `opsgrids_outbox` (BYPASSRLS, SELECT and
     UPDATE on `outbox` only), through `get_outbox_sessionmaker`; as the app role it selects
     nothing, logs nothing and loops while the outbox fills.
+
+    An idle relay backs off: production runs many of these processes on a small box, and a
+    quiet platform must not turn into a constant stream of empty `SELECT`s. Each empty pass
+    doubles the sleep, capped at ``max_idle_interval``, and any pass that publishes at least
+    one row resets it to ``poll_interval`` so a backlog still drains at full speed. The price
+    is latency: the first event after a quiet period can wait up to ``max_idle_interval``
+    before the next poll picks it up. That is the trade for not issuing dozens of idle
+    queries a second.
     """
 
     def __init__(
@@ -142,6 +150,7 @@ class OutboxRelay:
         poll_interval: float = 1.0,
         max_attempts: int = 50,
         max_backoff: float = 60.0,
+        max_idle_interval: float = 5.0,
     ) -> None:
         self._amqp_url = amqp_url
         self._outbox_cls = outbox_cls
@@ -151,6 +160,7 @@ class OutboxRelay:
         self._poll_interval = poll_interval
         self._max_attempts = max_attempts
         self._max_backoff = max_backoff
+        self._max_idle_interval = max_idle_interval
         self._stop = False
 
     def stop(self) -> None:
@@ -167,6 +177,10 @@ class OutboxRelay:
             )
             log.info("outbox.relay.started", producer=self._producer)
             backoff = self._poll_interval
+            # Below poll_interval, max() clamps this to poll_interval every pass — i.e. no
+            # idle backoff at all, which is how a caller opts back into the old behaviour.
+            idle_cap = max(self._max_idle_interval, self._poll_interval)
+            idle = self._poll_interval
             while not self._stop:
                 published, failed = await self._drain(exchange)
                 if failed:
@@ -174,12 +188,20 @@ class OutboxRelay:
                     # burns one of every failing row's attempts, so without spacing a
                     # seconds-long outage used to exhaust all of them and abandon the rows
                     # for good. Exponential, capped, and reset by the first clean pass.
+                    # Independent of the idle backoff below: a failing pass is not an empty
+                    # one, so it neither grows nor resets `idle`.
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, self._max_backoff)
                     continue
                 backoff = self._poll_interval
                 if published == 0:
-                    await asyncio.sleep(self._poll_interval)
+                    # Exponential idle backoff: doubles each consecutive empty pass, capped
+                    # at idle_cap. A row published resets it below without touching this
+                    # branch, so the next quiet spell starts cold at poll_interval again.
+                    await asyncio.sleep(idle)
+                    idle = min(idle * 2, idle_cap)
+                else:
+                    idle = self._poll_interval
 
     async def _drain(self, exchange: aio_pika.abc.AbstractExchange) -> tuple[int, int]:
         """One pass over the claimable backlog. Returns ``(published, failed)``.
