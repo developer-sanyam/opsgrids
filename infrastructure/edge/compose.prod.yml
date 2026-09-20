@@ -256,8 +256,10 @@ services:
     networks:
       - back
 
+  # The Storefront product: profile `storefront` (ADR-0013 §5), like every sellable product.
   storefront:
     <<: *service-common
+    profiles: ['storefront']
     image: opsgrids-edge/storefront
     build:
       context: ../..
@@ -370,6 +372,7 @@ services:
 
   storefront-relay:
     <<: *background
+    profiles: ['storefront']
     image: opsgrids-edge/storefront
     command: ['./bin/relay']
     environment:
