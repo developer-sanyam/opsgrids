@@ -104,6 +104,20 @@ set-password link: an address that cannot receive it never gets a password.
 Refused: a signup route in auth-service (it would have to write another service's schema), and
 returning a session on signup (an unverified address with a live token).
 
+**Which role writes the new organisation.** ADR-0002's RLS migration says bringing an
+organisation into existence "runs as the admin role" because a tenant cannot name a GUC for an
+id that does not exist yet. That is a convention, not a mechanism: the policy is `id =
+current_org()` and the GUC is a string. Sign-up therefore generates the id first, binds the
+transaction to it, and writes on the ordinary NOBYPASSRLS app role — every row it creates
+(organisation, roles, membership, audit, outbox) carries that id and passes `WITH CHECK`, and
+nothing else is reachable. A public route running as the BYPASSRLS admin would be the wider
+blast radius, on the one endpoint that is open to the internet. The duplicate checks (slug, email)
+run first on the SELECT-only directory session, because under the new tenant's binding the
+policied `organizations` table cannot show a clash — it would surface as a unique violation.
+notification's rules are per tenant and auth publishes credential events under the nil UUID, so
+a seeded **platform tenant** (nil id) owns the reset-email rule and template; auth includes a
+ready `reset_url` in the event so the template never learns a hostname.
+
 ### 4. Two customer apps, both static, both on the edge
 
 ADR-0001's `opsgrids-dashboard` is created: sign up, sign in, the marketplace (every `available`

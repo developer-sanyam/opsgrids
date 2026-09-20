@@ -39,7 +39,7 @@ import pytest
 import pytest_asyncio
 from fastapi.routing import APIRoute, iter_route_contexts
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app import services
@@ -165,6 +165,11 @@ ALLOW_LIST: dict[Route, str] = {
     ("POST", f"{PREFIX}/invitations/accept"): (
         "The token is the credential and the body names no organization. Swept by asserting "
         "that an A token presented through a B-bound request does not find A's invitation."
+    ),
+    ("POST", f"{PREFIX}/account/signup"): (
+        "Public sign-up names no organization: it creates one, bound to an id generated "
+        "before the row exists (ADR-0013 §3). Swept by asserting that a sign-up made through "
+        "a B-bound request writes nothing into A or B and lands in a third organization."
     ),
 }
 
@@ -514,6 +519,53 @@ class TestTheExemptRoutes:
         assert seen_by_a.json() == seen_by_b.json(), (
             "the permission catalogue differs between organizations; it is global by design"
         )
+
+    async def test_a_signup_through_a_tenant_b_request_touches_neither_a_nor_b(
+        self,
+        tenant_a: TenantA,
+        tenant_b: Principal,
+        as_tenant_b: AsyncClient,
+        admin_session: AsyncSession,
+    ) -> None:
+        """Sign-up names no organization and is bound to the id it generates (ADR-0013 §3).
+
+        Made through a request bound to B, it must not write into B — the route never reads
+        the caller's tenant — and cannot reach A. The proof is a third organization with
+        exactly one membership, and two snapshots that did not move.
+        """
+        run = uuid.uuid4().hex[:8]
+        before_a = await _snapshot(admin_session, tenant_a.org_id)
+        before_b = await _snapshot(admin_session, tenant_b.organization_id)
+
+        response = await as_tenant_b.post(
+            f"{PREFIX}/account/signup",
+            json={
+                "organization_name": "Third Party",
+                "slug": f"third-{run}",
+                "full_name": "Third Owner",
+                "email": f"third-{run}@example.com",
+            },
+        )
+
+        assert response.status_code == 201, response.text
+        new_org = uuid.UUID(response.json()["organization_id"])
+        assert new_org not in {tenant_a.org_id, tenant_b.organization_id}
+        assert await _snapshot(admin_session, tenant_a.org_id) == before_a, (
+            "a sign-up through a B-bound request changed tenant A"
+        )
+        assert await _snapshot(admin_session, tenant_b.organization_id) == before_b, (
+            "a sign-up through a B-bound request changed tenant B"
+        )
+        members = (
+            (
+                await admin_session.execute(
+                    select(Membership).where(Membership.organization_id == new_org)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(members) == 1 and members[0].is_owner is True
 
     async def test_a_tenant_a_invitation_token_presented_through_a_tenant_b_request_finds_nothing(
         self, tenant_a: TenantA, as_tenant_b: AsyncClient, admin_session: AsyncSession

@@ -48,6 +48,7 @@ from app.schemas import (
     OrganizationPatch,
     OrgUnitIn,
     RoleIn,
+    SignupIn,
 )
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
@@ -107,11 +108,16 @@ async def create_organization(
     *,
     actor_user_id: uuid.UUID | None,
     request: Request | None = None,
+    organization_id: uuid.UUID | None = None,
 ) -> Organization:
     """Create a customer.
 
     Not scoped by an organization — this is the one write that brings one into existence,
     so it is guarded by platform staff rather than by `require(...)`.
+
+    `organization_id` lets sign-up (ADR-0013 §3) name the id *before* the row exists, so the
+    transaction can be bound to it and the write can run on the app role under the ordinary
+    policy. Every other caller leaves it None and runs as the admin role.
     """
     if await selectors.slug_taken(session, payload.slug):
         raise ConflictProblem(f"The address {payload.slug!r} is already taken")
@@ -122,6 +128,8 @@ async def create_organization(
         trial_ends_at=datetime.now(UTC) + timedelta(days=14),
         created_by=str(actor_user_id) if actor_user_id else "system",
     )
+    if organization_id is not None:
+        org.id = organization_id
     session.add(org)
     await session.flush()
 
@@ -200,6 +208,60 @@ async def update_organization(
 
 
 # --------------------------------------------------------------------- structure
+
+
+async def signup(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    payload: SignupIn,
+    request: Request | None = None,
+) -> Membership:
+    """A stranger becomes an organisation's owner (ADR-0013 §3).
+
+    Runs inside a transaction already bound to `organization_id` — the id the route generated
+    before opening it — on the ordinary app role. The organisation is created *with* that id,
+    so every row this writes (organisation, core roles, user, membership, audit, outbox) passes
+    the tenant policy's `WITH CHECK`, and no other organisation's rows are reachable at all.
+
+    `ORG_OWNER` is held *and* `is_owner` is set: holding the role is what gates role
+    administration, `is_owner` is what product activation's "grant the admin role to the
+    owners" selects on. A membership with one and not the other is the demo-seed defect
+    `tools/demo/promote_owner.py` exists to repair, and it is not repeated here.
+
+    No credential is created. The owner's password arrives through the reset-link path once
+    the address has proved it can receive mail.
+    """
+    org = await create_organization(
+        session,
+        OrganizationIn(name=payload.organization_name, slug=payload.slug),
+        actor_user_id=None,
+        request=request,
+        organization_id=organization_id,
+    )
+    membership = await add_member(
+        session,
+        org_id=org.id,
+        email=payload.email,
+        full_name=payload.full_name,
+        actor_user_id=None,
+        role_codes=["ORG_OWNER"],
+        request=request,
+    )
+    membership.is_owner = True
+    await session.flush()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=org.id,
+        actor_id=membership.user_id,
+        action="org.signed_up",
+        entity="organization",
+        entity_id=org.id,
+        after={"slug": org.slug, "owner_email": payload.email},
+        request=request,
+    )
+    return membership
 
 
 async def create_org_unit(

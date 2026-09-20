@@ -521,6 +521,16 @@ class TestTheStorefrontBuyerSurface:
         # is connected to a store, which is the enumeration the public routes refuse to be.
         assert "/api/v1/storefront/internal/tls-authorize" not in policy.public_paths
 
+    def test_signup_is_public_and_nothing_else_under_account_is(self) -> None:
+        """ADR-0013 §3: a stranger may create an organisation and may not read one. The
+        sibling routes under /account are ordinary tenant endpoints and stay behind a token."""
+        from app.main import ACCOUNT_PUBLIC_PATHS, policy
+
+        assert {"/api/v1/account/signup"} == ACCOUNT_PUBLIC_PATHS
+        assert policy.public_paths >= ACCOUNT_PUBLIC_PATHS
+        assert "/api/v1/account" not in policy.public_paths
+        assert "/api/v1/organization" not in policy.public_paths
+
     def test_the_bootstrap_shares_the_public_route_entry(self) -> None:
         """One upstream, one entitlement-free prefix, two exact paths. The second public path
         needs no route-table change at all — which is what the prefix split in `routes.json` was

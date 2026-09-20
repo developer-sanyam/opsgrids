@@ -92,6 +92,29 @@ class OrganizationOut(BaseModel):
 # --------------------------------------------------------------------- structure
 
 
+class SignupIn(BaseModel):
+    """A stranger creating an organisation and becoming its owner (ADR-0013 §3).
+
+    **No password.** The owner sets one through the reset-link flow after proving the address
+    receives mail; a payload with a password here would be a credential held by a service that
+    has no business holding one, on an address nobody has verified.
+    """
+
+    organization_name: str = Field(min_length=1, max_length=200)
+    slug: Slug
+    full_name: str = Field(min_length=1, max_length=200)
+    email: EmailStr
+
+
+class SignupOut(BaseModel):
+    organization_id: uuid.UUID
+    slug: str
+    email: str
+    #: Always the same sentence. What the dashboard shows next, and a reminder that the answer
+    #: to "did that work?" is in the inbox, not in this body.
+    next_step: str = "Check your inbox for the link that sets your password."
+
+
 class OrgUnitIn(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     code: Code

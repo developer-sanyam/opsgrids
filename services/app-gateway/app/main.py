@@ -66,6 +66,12 @@ STOREFRONT_PUBLIC_PATHS = frozenset(
     }
 )
 
+#: Sign-up (ADR-0013 §3): the one write a stranger may make, on the same terms as the storefront
+#: pair — an exact path, no path variable, the anonymous per-IP limit in front of it. It creates
+#: an organisation and its owner and nothing else; the password comes later, by link, through
+#: `password/forgot`, which is already public above.
+ACCOUNT_PUBLIC_PATHS = frozenset({"/api/v1/account/signup"})
+
 # Resolved relative to the service directory so `make run` and the container image agree.
 _routes_path = Path(cfg.routes_file)
 if not _routes_path.is_absolute():
@@ -75,7 +81,7 @@ routes = RouteTable.from_file(_routes_path)
 
 policy = GatewayPolicy(
     audience=cfg.audience,
-    public_paths=DEFAULT_PUBLIC_PATHS | STOREFRONT_PUBLIC_PATHS,
+    public_paths=DEFAULT_PUBLIC_PATHS | STOREFRONT_PUBLIC_PATHS | ACCOUNT_PUBLIC_PATHS,
     rate_limit=cfg.rate_limit_per_minute,
     anonymous_rate_limit=cfg.anonymous_rate_limit_per_minute,
     upstream_timeout=cfg.upstream_timeout_seconds,
