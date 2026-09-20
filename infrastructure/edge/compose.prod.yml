@@ -557,68 +557,6 @@ services:
     command: ['./bin/relay']
     environment: *service-env
 
-  # ---------------------------------------------------------------- mail (profile `mail`)
-  # The platform's own mail server for @opsgrids.com: mailboxes, IMAP, inbound on 25, and the
-  # submission port the notification service sends through. docker-mailserver (Postfix,
-  # Dovecot, Rspamd with DKIM), pinned. Sized for a 4 GB box: antivirus off, fail2ban off (it
-  # would need NET_ADMIN), a hard memory cap. Azure blocks outbound port 25 on this
-  # subscription, so every message to another domain leaves through RELAY_* (a free relay);
-  # mail between @opsgrids.com mailboxes never leaves the box.
-  #
-  # TLS is Caddy's certificate for mail.opsgrids.com, read from Caddy's data volume: the
-  # host is in TLS_PLATFORM_HOSTS, so the first HTTPS request to it makes Caddy obtain the
-  # certificate and renew it forever after. The mail server watches the files and reloads.
-  mailserver:
-    image: ghcr.io/docker-mailserver/docker-mailserver:15
-    profiles: ['mail']
-    hostname: mail.opsgrids.com
-    restart: unless-stopped
-    logging: *logging
-    mem_limit: 1g
-    stop_grace_period: 1m
-    ports:
-      - '25:25'
-      - '587:587'
-      - '993:993'
-    environment:
-      ENABLE_RSPAMD: 1
-      ENABLE_OPENDKIM: 0
-      ENABLE_OPENDMARC: 0
-      ENABLE_POLICYD_SPF: 0
-      ENABLE_CLAMAV: 0
-      ENABLE_AMAVIS: 0
-      ENABLE_FAIL2BAN: 0
-      RSPAMD_LEARN: 1
-      RSPAMD_GREYLISTING: 0
-      SPOOF_PROTECTION: 1
-      PERMIT_DOCKER: none
-      POSTMASTER_ADDRESS: ${MAIL_POSTMASTER:-postmaster@opsgrids.com}
-      SSL_TYPE: manual
-      SSL_CERT_PATH: /certs/caddy/certificates/${CADDY_ACME_DIR:-acme-v02.api.letsencrypt.org-directory}/mail.opsgrids.com/mail.opsgrids.com.crt
-      SSL_KEY_PATH: /certs/caddy/certificates/${CADDY_ACME_DIR:-acme-v02.api.letsencrypt.org-directory}/mail.opsgrids.com/mail.opsgrids.com.key
-      RELAY_HOST: ${RELAY_HOST:-}
-      RELAY_PORT: ${RELAY_PORT:-587}
-      RELAY_USER: ${RELAY_USER:-}
-      RELAY_PASSWORD: ${RELAY_PASSWORD:-}
-    volumes:
-      - mail_data:/var/mail
-      - mail_state:/var/mail-state
-      - mail_logs:/var/log/mail
-      - ./mail/config:/tmp/docker-mailserver
-      - caddy_data:/certs:ro
-      - /etc/localtime:/etc/localtime:ro
-    cap_add:
-      - NET_BIND_SERVICE
-    healthcheck:
-      # `ss --tcp` prints no Netid column, so the line reads `LISTEN … :smtp`, not `tcp … :smtp`.
-      test: ['CMD-SHELL', 'ss --listening --tcp | grep -q ":smtp" || exit 1']
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 90s
-    networks:
-      - back
-
 networks:
   # Caddy reaches the gateway and storefront. It has no route to Postgres or Redis, and
   # neither does anything else outside `back`.
@@ -631,6 +569,3 @@ volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
-  mail_data:
-  mail_state:
-  mail_logs:
