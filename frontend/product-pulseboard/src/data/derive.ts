@@ -118,7 +118,7 @@ export function needsAttention(
       severity = "over_budget";
       const over = Math.round(((p.spent_minor - p.budget_minor) / p.budget_minor) * 100);
       reason = `Over budget by ${over}% — spend has passed the approved budget`;
-    } else if (p.due_date < today) {
+    } else if (p.due_date !== null && p.due_date < today) {
       severity = "overdue";
       reason = "Past its due date and still open";
     } else if (p.status === "at_risk") {

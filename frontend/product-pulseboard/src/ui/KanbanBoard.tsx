@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { Task, TaskStatus } from "@/api/types";
-import { personName } from "@/data/people";
-import { PROJECTS } from "@/api/fixtures";
+import type { Person, Project, Task, TaskStatus } from "@/api/types";
 import { Avatar, GripIcon, MoreHorizontalIcon, Tag, cn } from "@opsgrids/ui";
 import { formatHours } from "@/lib/format";
 import { PriorityPill } from "./StatusPill";
@@ -10,11 +8,11 @@ import { TASK_STATUS_META } from "./statusMeta";
 
 const COLUMNS: TaskStatus[] = ["backlog", "in_progress", "review", "done"];
 
-const PROJECT_CODE = new Map(PROJECTS.map((p) => [p.id, p.code]));
-
 /** A single board card. Draggable for pointer users; a move menu covers the keyboard path. */
 function TaskCard({
   task,
+  assigneeName,
+  projectCode,
   menuOpen,
   onToggleMenu,
   onMove,
@@ -23,6 +21,8 @@ function TaskCard({
   dragging,
 }: {
   task: Task;
+  assigneeName: string;
+  projectCode: string;
   menuOpen: boolean;
   onToggleMenu: () => void;
   onMove: (to: TaskStatus) => void;
@@ -104,11 +104,11 @@ function TaskCard({
 
       <div className="flex items-center justify-between border-t border-line pt-2.5">
         <span className="inline-flex items-center gap-1.5 text-xs text-muted">
-          <Avatar name={personName(task.assignee_id)} size="xs" />
-          <span className="truncate max-w-[8rem]">{personName(task.assignee_id)}</span>
+          <Avatar name={assigneeName} size="xs" />
+          <span className="truncate max-w-[8rem]">{assigneeName}</span>
         </span>
         <span className="flex items-center gap-2 text-xs font-semibold text-faint tnum">
-          <span>{PROJECT_CODE.get(task.project_id) ?? "—"}</span>
+          <span>{projectCode}</span>
           <span className="rounded-full bg-ground px-2 py-0.5 text-ink-soft">
             {formatHours(task.estimate_hours)}
           </span>
@@ -123,13 +123,37 @@ function TaskCard({
  * on narrow screens. Cards drag between columns for pointer users; every card also carries a
  * keyboard-reachable "Move to" menu, and each move is announced to assistive tech.
  */
-export function KanbanBoard({ tasks: seed }: { tasks: Task[] }) {
+export function KanbanBoard({
+  tasks: seed,
+  people,
+  projects,
+}: {
+  tasks: Task[];
+  people: Person[];
+  projects: Project[];
+}) {
   const [tasks, setTasks] = useState<Task[]>(seed);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overCol, setOverCol] = useState<TaskStatus | null>(null);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [announce, setAnnounce] = useState("");
   const boardRef = useRef<HTMLDivElement>(null);
+
+  const assigneeNameById = useMemo(
+    () => new Map(people.map((p) => [p.id, p.name])),
+    [people],
+  );
+  const projectCodeById = useMemo(
+    () => new Map(projects.map((p) => [p.id, p.code])),
+    [projects],
+  );
+  function assigneeName(id: string | null): string {
+    if (id === null) return "Unassigned";
+    return assigneeNameById.get(id) ?? "Unknown";
+  }
+  function projectCode(id: string): string {
+    return projectCodeById.get(id) ?? "—";
+  }
 
   useEffect(() => {
     if (menuFor === null) return;
@@ -210,6 +234,8 @@ export function KanbanBoard({ tasks: seed }: { tasks: Task[] }) {
                   <TaskCard
                     key={task.id}
                     task={task}
+                    assigneeName={assigneeName(task.assignee_id)}
+                    projectCode={projectCode(task.project_id)}
                     menuOpen={menuFor === task.id}
                     onToggleMenu={() => setMenuFor((cur) => (cur === task.id ? null : task.id))}
                     onMove={(to) => move(task.id, to)}

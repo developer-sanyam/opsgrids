@@ -1,5 +1,6 @@
-import type { StandupEntry } from "@/api/types";
-import { person } from "@/data/people";
+import { useMemo } from "react";
+
+import type { Person, StandupEntry } from "@/api/types";
 import { AlertTriangleIcon, Avatar, CheckCircleIcon, cn } from "@opsgrids/ui";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -16,8 +17,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
  * dedicated, coloured row (amber when present, a quiet green "all clear" when not) so a blocked
  * person is never buried in prose.
  */
-function StandupCard({ entry }: { entry: StandupEntry }) {
-  const who = person(entry.person_id);
+function StandupCard({ entry, who }: { entry: StandupEntry; who: Person | undefined }) {
   const blocked = entry.blockers !== null;
   return (
     <article className="flex flex-col gap-4 rounded-card bg-surface p-5 shadow-card">
@@ -67,11 +67,12 @@ function StandupCard({ entry }: { entry: StandupEntry }) {
   );
 }
 
-export function StandupList({ entries }: { entries: StandupEntry[] }) {
+export function StandupList({ entries, people }: { entries: StandupEntry[]; people: Person[] }) {
+  const personById = useMemo(() => new Map(people.map((p) => [p.id, p])), [people]);
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
       {entries.map((entry) => (
-        <StandupCard key={entry.id} entry={entry} />
+        <StandupCard key={entry.id} entry={entry} who={personById.get(entry.person_id)} />
       ))}
     </div>
   );
