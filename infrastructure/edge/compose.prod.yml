@@ -368,20 +368,33 @@ services:
       - front
       - back
 
-  # ---------------------------------------------------------------- core: workers and relays
+  # ---------------------------------------------------------------- core: workers and the relay
   # ADR-0013 §5. A worker only where the service has event handlers (auth, catalog, billing,
-  # metering, operations and storefront have none today); a relay for every outbox, so nothing
-  # a service publishes sits in its table forever. Each reuses its API's image by name — the
-  # build step builds each image once, and `up` finds it locally.
-  auth-relay:
+  # metering, operations and storefront have none today); every outbox is drained, so nothing
+  # a service publishes sits in its table forever — by the one `edge-relay` below. Each worker
+  # reuses its API's image by name — the build step builds each image once, and `up` finds it.
+  # One process drains every service's outbox (platform_core.edge_relay). A relay per service
+  # is the platform's default and what `bin/relay` still is everywhere else; on this box it was
+  # 24 idle Python processes, ~35 MB each — about 800 MB the machine was swapping for. They
+  # all did the same thing against a different schema, as the same `opsgrids_outbox` role, so
+  # here one process runs them as tasks: a schema that fails or has no table yet is logged,
+  # retried on its own and never stops the others. It runs in the product image only because
+  # that image is always built; it imports no service's `app`. The list names every schema a
+  # product on this box can own — a profile that is off simply has no table to drain.
+  edge-relay:
     <<: *background
-    image: opsgrids-edge/auth
-    command: ['./bin/relay']
+    image: opsgrids-edge/product
+    command: ['python', '-m', 'platform_core.edge_relay']
     environment:
       <<: *service-env
-      JWT_PRIVATE_KEY_PATH: /run/secrets/jwt-ed25519.pem
-    volumes:
-      - ${JWT_PRIVATE_KEY_HOST_PATH}:/run/secrets/jwt-ed25519.pem:ro
+      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,operations,approval,employee,attendance,customer,deal,project,timesheet,standup,projects,support,marketing,finance,itsm}
+    depends_on:
+      product:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   account-worker:
     <<: *background
@@ -393,32 +406,11 @@ services:
     volumes:
       - ../../libs/contracts/permissions:/opt/opsgrids/permissions:ro
 
-  account-relay:
-    <<: *background
-    image: opsgrids-edge/account
-    command: ['./bin/relay']
-    environment: *service-env
-
   product-worker:
     <<: *background
     image: opsgrids-edge/product
     command: ['./bin/worker']
     environment: *service-env
-
-  product-relay:
-    <<: *background
-    image: opsgrids-edge/product
-    command: ['./bin/relay']
-    environment: *service-env
-
-  storefront-relay:
-    <<: *background
-    profiles: ['storefront']
-    image: opsgrids-edge/storefront
-    command: ['./bin/relay']
-    environment:
-      <<: *service-env
-      STORE_SLUG_CACHE_SECONDS: ${STORE_SLUG_CACHE_SECONDS:-300}
 
   # ---------------------------------------------------------------- commerce (ADR-0004)
   catalog:
@@ -430,12 +422,6 @@ services:
     environment: *service-env
     networks:
       - back
-
-  catalog-relay:
-    <<: *background
-    image: opsgrids-edge/catalog
-    command: ['./bin/relay']
-    environment: *service-env
 
   subscription:
     <<: *service-common
@@ -466,12 +452,6 @@ services:
       <<: *service-env
       CATALOG_SERVICE_URL: http://catalog:8000
 
-  subscription-relay:
-    <<: *background
-    image: opsgrids-edge/subscription
-    command: ['./bin/relay']
-    environment: *service-env
-
   billing:
     <<: *service-common
     image: opsgrids-edge/billing
@@ -482,12 +462,6 @@ services:
     networks:
       - back
 
-  billing-relay:
-    <<: *background
-    image: opsgrids-edge/billing
-    command: ['./bin/relay']
-    environment: *service-env
-
   metering:
     <<: *service-common
     image: opsgrids-edge/metering
@@ -497,12 +471,6 @@ services:
     environment: *service-env
     networks:
       - back
-
-  metering-relay:
-    <<: *background
-    image: opsgrids-edge/metering
-    command: ['./bin/relay']
-    environment: *service-env
 
   # Inert without Razorpay keys, by design (payment/app/config.py): every charge path runs and
   # nothing reaches the network. The webhook secret must still be a real value — production
@@ -525,12 +493,6 @@ services:
     <<: *background
     image: opsgrids-edge/payment
     command: ['./bin/worker']
-    environment: *payment-env
-
-  payment-relay:
-    <<: *background
-    image: opsgrids-edge/payment
-    command: ['./bin/relay']
     environment: *payment-env
 
   # ---------------------------------------------------------------- notification (platform)
@@ -570,12 +532,6 @@ services:
     command: ['./bin/worker']
     environment: *notification-env
 
-  notification-relay:
-    <<: *background
-    image: opsgrids-edge/notification
-    command: ['./bin/relay']
-    environment: *notification-env
-
   # ---------------------------------------------------------------- products behind profiles
   # One profile per sellable product (ADR-0013 §5). COMPOSE_PROFILES in the box's .env turns a
   # profile on; the catalogue's `status` says whether the product is sold; preflight refuses a
@@ -591,17 +547,10 @@ services:
     networks:
       - back
 
-  operations-relay:
-    <<: *background
-    profiles: ['inventory']
-    image: opsgrids-edge/operations
-    command: ['./bin/relay']
-    environment: *service-env
-
   # ---------------------------------------------------------------- the other products
   # One compose profile per product, named after the product's catalogue key (ADR-0013 §5), so
   # COMPOSE_PROFILES reads as the list of products this box sells. Every product service runs
-  # its API and its outbox relay; a worker runs only where the service consumes other services'
+  # its API (`edge-relay` drains its outbox); a worker runs only where it consumes other services'
   # events (attendance follows approvals, finance follows filings) — an idle worker is 30 MB of
   # RAM holding a broker channel for nothing. Helper services that are still scaffolds (lead,
   # pipeline, activity, quotation) are deliberately absent: a prefix that is not routed is an
@@ -621,13 +570,6 @@ services:
     environment: *service-env
     networks:
       - back
-
-  approval-relay:
-    <<: *background
-    profiles: ['hrms']
-    image: opsgrids-edge/approval
-    command: ['./bin/relay']
-    environment: *service-env
 
   approval-worker:
     <<: *background
@@ -654,13 +596,6 @@ services:
     networks:
       - back
 
-  employee-relay:
-    <<: *background
-    profiles: ['hrms']
-    image: opsgrids-edge/employee
-    command: ['./bin/relay']
-    environment: *service-env
-
   attendance:
     <<: *service-common
     profiles: ['hrms']
@@ -671,13 +606,6 @@ services:
     environment: *service-env
     networks:
       - back
-
-  attendance-relay:
-    <<: *background
-    profiles: ['hrms']
-    image: opsgrids-edge/attendance
-    command: ['./bin/relay']
-    environment: *service-env
 
   attendance-worker:
     <<: *background
@@ -698,13 +626,6 @@ services:
     networks:
       - back
 
-  customer-relay:
-    <<: *background
-    profiles: ['crm']
-    image: opsgrids-edge/customer
-    command: ['./bin/relay']
-    environment: *service-env
-
   deal:
     <<: *service-common
     profiles: ['crm']
@@ -715,13 +636,6 @@ services:
     environment: *service-env
     networks:
       - back
-
-  deal-relay:
-    <<: *background
-    profiles: ['crm']
-    image: opsgrids-edge/deal
-    command: ['./bin/relay']
-    environment: *service-env
 
   # ---------------------------------------------------------------- PulseBoard (profile `pulseboard`)
   project:
@@ -735,13 +649,6 @@ services:
     networks:
       - back
 
-  project-relay:
-    <<: *background
-    profiles: ['pulseboard']
-    image: opsgrids-edge/project
-    command: ['./bin/relay']
-    environment: *service-env
-
   timesheet:
     <<: *service-common
     profiles: ['pulseboard']
@@ -753,13 +660,6 @@ services:
     networks:
       - back
 
-  timesheet-relay:
-    <<: *background
-    profiles: ['pulseboard']
-    image: opsgrids-edge/timesheet
-    command: ['./bin/relay']
-    environment: *service-env
-
   standup:
     <<: *service-common
     profiles: ['pulseboard']
@@ -770,13 +670,6 @@ services:
     environment: *service-env
     networks:
       - back
-
-  standup-relay:
-    <<: *background
-    profiles: ['pulseboard']
-    image: opsgrids-edge/standup
-    command: ['./bin/relay']
-    environment: *service-env
 
   # ---------------------------------------------------------------- OpsGrids Projects (profile `projects`)
   projects:
@@ -790,13 +683,6 @@ services:
     networks:
       - back
 
-  projects-relay:
-    <<: *background
-    profiles: ['projects']
-    image: opsgrids-edge/projects
-    command: ['./bin/relay']
-    environment: *service-env
-
   # ---------------------------------------------------------------- OpsGrids Support (profile `support`)
   support:
     <<: *service-common
@@ -808,13 +694,6 @@ services:
     environment: *service-env
     networks:
       - back
-
-  support-relay:
-    <<: *background
-    profiles: ['support']
-    image: opsgrids-edge/support
-    command: ['./bin/relay']
-    environment: *service-env
 
   # ---------------------------------------------------------------- OpsGrids Marketing (profile `marketing`)
   marketing:
@@ -828,13 +707,6 @@ services:
     networks:
       - back
 
-  marketing-relay:
-    <<: *background
-    profiles: ['marketing']
-    image: opsgrids-edge/marketing
-    command: ['./bin/relay']
-    environment: *service-env
-
   # ---------------------------------------------------------------- OpsGrids Finance (profile `finance`)
   finance:
     <<: *service-common
@@ -846,13 +718,6 @@ services:
     environment: *service-env
     networks:
       - back
-
-  finance-relay:
-    <<: *background
-    profiles: ['finance']
-    image: opsgrids-edge/finance
-    command: ['./bin/relay']
-    environment: *service-env
 
   finance-worker:
     <<: *background
@@ -872,13 +737,6 @@ services:
     environment: *service-env
     networks:
       - back
-
-  itsm-relay:
-    <<: *background
-    profiles: ['itsm']
-    image: opsgrids-edge/itsm
-    command: ['./bin/relay']
-    environment: *service-env
 
 networks:
   # Caddy reaches the gateway and storefront. It has no route to Postgres or Redis, and
