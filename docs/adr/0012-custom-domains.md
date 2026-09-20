@@ -1511,10 +1511,13 @@ the SQL goes in on stdin and `\gexec` runs one statement per role. Verified from
 container, because inside the container `localhost` is a `trust` line and a wrong password
 looks right.
 
-**14. Caddy reported itself unhealthy while serving.** Its automatic HTTP→HTTPS redirect for
-the catch-all `https://` site is installed ahead of the explicit `http://` block's routes, so
-`/_edge/health` on port 80 answered 308 and the healthcheck followed it into TLS. Fixed with
-`auto_https disable_redirects`; the `http://` block already writes the redirect.
+**14. Caddy reported itself unhealthy while serving.** Caddy evaluates directives in a fixed
+order of its own, not the order written, and a bare `redir` sorts before every `handle` — so
+the `http://` block's unconditional redirect ran ahead of `handle /_edge/health`, port 80
+answered 308 for the health route, and the healthcheck followed it into a TLS handshake. The
+first diagnosis (Caddy's automatic HTTPS redirect) was wrong and cost a deploy; `auto_https
+disable_redirects` stays because the block writes its own redirect anyway. The fix is the
+redirect inside its own `handle`, so the two are mutually exclusive and tried in written order.
 
 Two more things surfaced while fixing it. The Caddyfile was bind-mounted *as a file*, and a
 file bind mount follows the inode — after `git checkout` replaced it, the container still read

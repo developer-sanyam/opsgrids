@@ -22,11 +22,8 @@
 	# The ACME account contact. Not a secret; it is what Let's Encrypt emails about expiry.
 	email {$ACME_EMAIL}
 
-	# The http:// block below writes its own redirect. Without this, Caddy installs an
-	# automatic HTTP→HTTPS redirect for the catch-all https:// site *ahead of* that block's
-	# routes on port 80, so `/_edge/health` over plain HTTP answered 308 instead of "ok" — the
-	# container healthcheck followed it into a TLS handshake and Caddy reported itself
-	# unhealthy while serving perfectly. Found on the first deploy.
+	# The http:// block below writes its own redirect, so Caddy's automatic one for the
+	# catch-all https:// site is switched off rather than left to overlap it.
 	auto_https disable_redirects
 
 	on_demand_tls {
@@ -57,7 +54,14 @@ http:// {
 		respond "ok" 200
 	}
 
-	redir https://{host}{uri} 308
+	# Inside a `handle`, deliberately. Caddy evaluates directives in its own fixed order, not
+	# the order they are written, and a bare `redir` sorts *before* every `handle` — so written
+	# bare, it redirected `/_edge/health` too, the container healthcheck followed the 308 into
+	# a TLS handshake, and Caddy reported itself unhealthy while serving perfectly. Found on
+	# the first deploy. `handle` blocks are mutually exclusive and tried in written order.
+	handle {
+		redir https://{host}{uri} 308
+	}
 }
 
 # ---------------------------------------------------------------------------- port 443
