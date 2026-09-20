@@ -6,6 +6,7 @@ import { listActivations, listPlans, listProducts, listSubscriptions, startTrial
 import type { Activation, Plan, PlanVersion, Price, Product, Subscription } from "@/api/types";
 import { daysUntil, formatDate, formatMoney, intervalLabel } from "@/lib/money";
 import { Button, Card, PageHeader } from "@/ui";
+import { shortProductName } from "../lib/productName";
 
 /**
  * Where each product's own app lives (ADR-0001's "one hostname per product", ADR-0013 §4). A
@@ -89,13 +90,13 @@ export function MarketplacePage() {
     setNotice(null);
     try {
       await startTrial(row.product.key, offer.version.id);
-      setNotice(`${row.product.name} is starting. Your 14-day trial begins now; its roles arrive in a moment.`);
+      setNotice(`${shortProductName(row.product.name)} is starting. Your 14-day trial begins now; its roles arrive in a moment.`);
       await refresh();
     } catch (err) {
       if (err instanceof ApiError) {
-        setNotice(`Couldn't start ${row.product.name}: ${err.problem?.detail ?? err.message}`);
+        setNotice(`Couldn't start ${shortProductName(row.product.name)}: ${err.problem?.detail ?? err.message}`);
       } else {
-        setNotice(`Couldn't start ${row.product.name}.`);
+        setNotice(`Couldn't start ${shortProductName(row.product.name)}.`);
       }
     } finally {
       setBusy(null);
@@ -146,7 +147,7 @@ function ProductCard({ row, busy, onStart }: { row: Row; busy: boolean; onStart:
       <Card className="flex w-full flex-col gap-4 p-6">
       <div className="flex flex-col gap-1">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted">{product.category ?? "Product"}</p>
-        <h2 className="display text-xl font-extrabold">{product.name}</h2>
+        <h2 className="display text-xl font-extrabold">{shortProductName(product.name)}</h2>
         {product.tagline ? <p className="text-sm text-muted">{product.tagline}</p> : null}
       </div>
 
@@ -178,7 +179,7 @@ function ProductCard({ row, busy, onStart }: { row: Row; busy: boolean; onStart:
               href={host}
               className="inline-flex h-11 items-center justify-center rounded-full bg-accent px-5 font-semibold text-white transition-colors hover:bg-accent-strong"
             >
-              Open {product.name}
+              Open {shortProductName(product.name)}
             </a>
           ) : (
             <p className="text-xs text-muted">

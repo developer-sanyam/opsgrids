@@ -79,10 +79,10 @@ describe("MarketplacePage", () => {
         <MarketplacePage />
       </MemoryRouter>,
     );
-    await waitFor(() => expect(screen.getByRole("heading", { name: "OpsGrids Inventory" })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Inventory" })).toBeTruthy());
     expect(screen.getByText(/₹2,499\.00/)).toBeTruthy();
     expect(screen.getByText(/per month, flat/)).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "OpsGrids People" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "People" })).toBeTruthy();
     expect(screen.getByText("Coming soon")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Notifications" })).toBeNull();
     // Only the available product with a price can be started.
@@ -135,7 +135,7 @@ describe("MarketplacePage", () => {
         <MarketplacePage />
       </MemoryRouter>,
     );
-    const link = await screen.findByRole("link", { name: "Open OpsGrids Inventory" });
+    const link = await screen.findByRole("link", { name: "Open Inventory" });
     expect(link.getAttribute("href")).toBe("https://ops.opsgrids.com/");
     expect(screen.queryByRole("button", { name: "Start 14-day trial" })).toBeNull();
     expect(screen.getByText(/On trial/).textContent).toContain("days left");

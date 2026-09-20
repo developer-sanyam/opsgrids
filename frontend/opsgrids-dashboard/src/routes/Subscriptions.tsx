@@ -4,6 +4,7 @@ import { listProducts, listSubscriptions } from "@/api";
 import type { Product, Subscription } from "@/api/types";
 import { daysUntil, formatDate } from "@/lib/money";
 import { Card, PageHeader } from "@/ui";
+import { shortProductName } from "../lib/productName";
 
 type Load =
   | { state: "loading" }
@@ -20,7 +21,7 @@ export function SubscriptionsPage() {
       try {
         const [subscriptions, products] = await Promise.all([listSubscriptions(), listProducts().catch(() => [] as Product[])]);
         if (cancelled) return;
-        const names = Object.fromEntries(products.map((p) => [p.key, p.name]));
+        const names = Object.fromEntries(products.map((p) => [p.key, shortProductName(p.name)]));
         setLoad({ state: "ready", subscriptions, names });
       } catch (err) {
         if (cancelled) return;
