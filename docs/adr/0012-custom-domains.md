@@ -1486,3 +1486,42 @@ merchant types into their apex A record changes when the VM is rebuilt — unrec
 contacting each of them. Confirm the provider before the first real domain points anywhere, and
 commit the intended zone as a file under `infrastructure/edge/` that `preflight.sh` diffs
 against live DNS.
+
+*Update, 2026-09-20.* The box landed on **Azure** (`20.219.18.84`, 2 vCPU / 3.8 GB, Ubuntu
+24.04), not Hostinger; DNS stays at Hostinger. Azure public IPs are reserved only when the
+address is the *Standard* SKU with *static* allocation — confirm that in the portal before any
+merchant apex record carries the address. Not verified from the box.
+
+### Errata, fifth pass — the first deploy (2026-09-20)
+
+Everything below was found by deploying, because nothing in CI builds an image, boots a
+container or runs the Postgres init files. Each was fixed before the box served anything.
+
+**12. No service image could start.** The shared Dockerfile built the venv under `/build` and
+copied it to `/app`: every script's shebang was `#!/build/.venv/bin/python`, and
+`platform-core` was an editable install whose `.pth` pointed into the builder stage.
+`alembic`, `uvicorn` and `import platform_core` all failed in the runtime image. Fixed in all
+35 Dockerfiles and the scaffold: build at `/app`, `uv sync --no-editable`.
+
+**13. The production database passwords were never set.** `30-role-passwords.sh` passed the
+`ALTER ROLE` as a psql `-c` string, which psql sends verbatim — variable interpolation only
+happens on input it reads. The init aborted, the entrypoint restarted with "skipping
+initialization", and every role kept the development password on a public address. Fixed:
+the SQL goes in on stdin and `\gexec` runs one statement per role. Verified from a second
+container, because inside the container `localhost` is a `trust` line and a wrong password
+looks right.
+
+**14. Caddy reported itself unhealthy while serving.** Its automatic HTTP→HTTPS redirect for
+the catch-all `https://` site is installed ahead of the explicit `http://` block's routes, so
+`/_edge/health` on port 80 answered 308 and the healthcheck followed it into TLS. Fixed with
+`auto_https disable_redirects`; the `http://` block already writes the redirect.
+
+**15. The sweep in §6 was never built.** `storefront-cron` exits 78 in a loop, as `bin/cron`
+was written to. It is now behind the `sweep` compose profile and not started. Consequence,
+stated for the record: **no merchant custom domain can reach `verified` on this box**, so
+slice 1 as deployed delivers the platform subdomain only. That is the next slice, and it is the
+one this ADR was written for.
+
+**16. The Caddyfile had never been through `caddy validate` (§17).** It has now, on
+`caddy:2.10.0-alpine`: valid, with two warnings — an unnecessary `header_up X-Forwarded-Host`
+(removed) and `caddy fmt` formatting (applied).

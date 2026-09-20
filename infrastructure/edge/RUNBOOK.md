@@ -554,6 +554,14 @@ Named here so nobody discovers them during an incident:
   Every other outbox also fills silently. `approval`, `subscription` and `storefront` have no
   entrypoint that starts their relay at all (their `bin/cron` correctly runs a sweep, and
   there is no `bin/relay`), so even with a broker those three would not publish.
+- **No custom-domain sweep, so no merchant custom domain can go live.** `storefront-cron`
+  runs `app/cron.py`, and that module was never written (ADR-0012 §6 was designed, not
+  built). The container sits behind the `sweep` compose profile and is not started; a claim a
+  merchant makes stays `unverified` forever, and the origin and the issuance gate both refuse
+  an unverified name, by design. **`<slug>.stores.opsgrids.com` is unaffected** — it needs no
+  sweep. Building the sweep is the next storefront slice; when it lands, start it with
+  `docker compose -f compose.prod.yml --env-file .env --profile sweep up -d storefront-cron`
+  and drop the profile from the compose file.
 - **No merchant admin SPA on this box.** The edge serves the anonymous buyer bundle only. The
   API is reachable at `https://<EDGE_HOST>/api/…`; the merchant console is ADR-0001's and is
   served elsewhere.

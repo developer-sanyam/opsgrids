@@ -233,8 +233,18 @@ services:
   # exits non-zero and keeps exiting, which is the intended failure: the alternative — the
   # scaffold's `python -m app.relay` — is a process that looks healthy while no domain is ever
   # checked and nothing errors.
+  #
+  # **Not started by default.** `app/cron.py` does not exist yet — the sweep in ADR-0012 §6
+  # (the three probes, the verified/live/failing state machine, the release of claims that
+  # expired) was designed and never built, which `bin/cron` correctly reports by exiting 78 in
+  # a loop. A crash loop in `docker compose ps` was the right signal for one deploy and the
+  # wrong thing to leave running for a month. The profile keeps the service definition, so the
+  # day the sweep lands it is `docker compose --profile sweep up -d` and nothing else changes.
+  # Until then a merchant's custom domain cannot become `verified`; `<slug>.stores.opsgrids.com`
+  # works because it needs no sweep.
   storefront-cron:
     <<: *service-common
+    profiles: ['sweep']
     build:
       context: ../..
       dockerfile: services/storefront/Dockerfile
