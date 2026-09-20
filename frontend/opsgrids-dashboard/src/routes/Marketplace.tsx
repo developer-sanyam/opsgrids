@@ -14,6 +14,15 @@ import { Button, Card, PageHeader } from "@/ui";
  */
 const PRODUCT_HOSTS: Record<string, string> = {
   operations: "https://ops.opsgrids.com/",
+  hrms: "https://people.opsgrids.com/",
+  crm: "https://revenue.opsgrids.com/",
+  pulseboard: "https://pulse.opsgrids.com/",
+  projects: "https://projects.opsgrids.com/",
+  support: "https://support.opsgrids.com/",
+  marketing: "https://marketing.opsgrids.com/",
+  finance: "https://finance.opsgrids.com/",
+  itsm: "https://it.opsgrids.com/",
+  storefront: "https://store.opsgrids.com/",
 };
 
 /** The one price a card shows: the first published version's flat price, if there is one. */

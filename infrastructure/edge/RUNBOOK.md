@@ -83,7 +83,16 @@ record terminates TLS at Cloudflare and our ACME challenge never arrives.
 | `app.opsgrids.com` | A | the reserved IP — the dashboard (ADR-0013 §4): sign up, sign in, the marketplace |
 | `ops.opsgrids.com` | A | the reserved IP — the Inventory product's app (one hostname per product, ADR-0001) |
 | `*.stores.opsgrids.com` | A | the reserved IP |
-| `edge.`, `api.`, `app.`, `ops.`, `*.stores.opsgrids.com` | AAAA | the VM's IPv6, if it has one |
+| `people.opsgrids.com` | A | the reserved IP — OpsGrids People's app |
+| `revenue.opsgrids.com` | A | the reserved IP — OpsGrids Revenue's app |
+| `pulse.opsgrids.com` | A | the reserved IP — PulseBoard's app |
+| `projects.opsgrids.com` | A | the reserved IP — OpsGrids Projects's app |
+| `support.opsgrids.com` | A | the reserved IP — OpsGrids Support's app |
+| `marketing.opsgrids.com` | A | the reserved IP — OpsGrids Marketing's app |
+| `finance.opsgrids.com` | A | the reserved IP — OpsGrids Finance's app |
+| `it.opsgrids.com` | A | the reserved IP — OpsGrids IT's app |
+| `store.opsgrids.com` | A | the reserved IP — OpsGrids Storefront's app |
+| every name above | AAAA | the VM's IPv6, if it has one |
 
 `opsgrids.com` (the marketing site, on Vercel) and `auth.` are ADR-0001's and are not touched
 here. **Every platform name in this table must also be in `TLS_PLATFORM_HOSTS`** in the

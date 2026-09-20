@@ -50,8 +50,9 @@ x-service-env: &service-env
   # The broker (ADR-0013 §5). Every service's relay publishes its outbox here and every
   # consumer reads from it; this is what makes activation install roles without a human.
   RABBITMQ_URL: amqp://opsgrids:${RABBITMQ_PASSWORD}@rabbitmq:5672/
-  # ~25 processes share one Postgres. The library default (10 + 5 per process) would want
-  # ~375 connections; 5 + 2 wants ~175, under the 300 the postgres service is started with.
+  # ~50 processes share one Postgres with every product profile on. The library default
+  # (10 + 5 per process) would want ~750 connections; 5 + 2 wants ~350, under the 400 the
+  # postgres service is started with.
   DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
   DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-2}
   JWKS_URL: http://auth:8000/.well-known/jwks.json
@@ -155,7 +156,7 @@ services:
     # ~25 client processes (ADR-0012 erratum 10): the default 100 connections is exceeded the
     # moment the workers start, and the first symptom is "FATAL: sorry, too many clients" on
     # auth — nobody can log in. shared_buffers sized for the box, not for the connection count.
-    command: ['postgres', '-c', 'max_connections=300', '-c', 'shared_buffers=256MB']
+    command: ['postgres', '-c', 'max_connections=400', '-c', 'shared_buffers=256MB']
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U opsgrids -d opsgrids']
       interval: 10s
@@ -554,6 +555,252 @@ services:
     <<: *background
     profiles: ['inventory']
     image: opsgrids-edge/operations
+    command: ['./bin/relay']
+    environment: *service-env
+
+  # ---------------------------------------------------------------- the other products
+  # One compose profile per product, named after the product's catalogue key (ADR-0013 §5), so
+  # COMPOSE_PROFILES reads as the list of products this box sells. Every product service runs
+  # its API and its outbox relay; a worker runs only where the service consumes other services'
+  # events (attendance follows approvals, finance follows filings) — an idle worker is 30 MB of
+  # RAM holding a broker channel for nothing. Helper services that are still scaffolds (lead,
+  # pipeline, activity, quotation) are deliberately absent: a prefix that is not routed is an
+  # honest 404, a service that answers only /info is a 404 dressed as a product.
+  # ---------------------------------------------------------------- OpsGrids People (profile `hrms`)
+  employee:
+    <<: *service-common
+    profiles: ['hrms']
+    image: opsgrids-edge/employee
+    build:
+      context: ../..
+      dockerfile: services/employee/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  employee-relay:
+    <<: *background
+    profiles: ['hrms']
+    image: opsgrids-edge/employee
+    command: ['./bin/relay']
+    environment: *service-env
+
+  attendance:
+    <<: *service-common
+    profiles: ['hrms']
+    image: opsgrids-edge/attendance
+    build:
+      context: ../..
+      dockerfile: services/attendance/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  attendance-relay:
+    <<: *background
+    profiles: ['hrms']
+    image: opsgrids-edge/attendance
+    command: ['./bin/relay']
+    environment: *service-env
+
+  attendance-worker:
+    <<: *background
+    profiles: ['hrms']
+    image: opsgrids-edge/attendance
+    command: ['./bin/worker']
+    environment: *service-env
+
+  # ---------------------------------------------------------------- OpsGrids Revenue (profile `crm`)
+  customer:
+    <<: *service-common
+    profiles: ['crm']
+    image: opsgrids-edge/customer
+    build:
+      context: ../..
+      dockerfile: services/customer/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  customer-relay:
+    <<: *background
+    profiles: ['crm']
+    image: opsgrids-edge/customer
+    command: ['./bin/relay']
+    environment: *service-env
+
+  deal:
+    <<: *service-common
+    profiles: ['crm']
+    image: opsgrids-edge/deal
+    build:
+      context: ../..
+      dockerfile: services/deal/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  deal-relay:
+    <<: *background
+    profiles: ['crm']
+    image: opsgrids-edge/deal
+    command: ['./bin/relay']
+    environment: *service-env
+
+  # ---------------------------------------------------------------- PulseBoard (profile `pulseboard`)
+  project:
+    <<: *service-common
+    profiles: ['pulseboard']
+    image: opsgrids-edge/project
+    build:
+      context: ../..
+      dockerfile: services/project/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  project-relay:
+    <<: *background
+    profiles: ['pulseboard']
+    image: opsgrids-edge/project
+    command: ['./bin/relay']
+    environment: *service-env
+
+  timesheet:
+    <<: *service-common
+    profiles: ['pulseboard']
+    image: opsgrids-edge/timesheet
+    build:
+      context: ../..
+      dockerfile: services/timesheet/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  timesheet-relay:
+    <<: *background
+    profiles: ['pulseboard']
+    image: opsgrids-edge/timesheet
+    command: ['./bin/relay']
+    environment: *service-env
+
+  standup:
+    <<: *service-common
+    profiles: ['pulseboard']
+    image: opsgrids-edge/standup
+    build:
+      context: ../..
+      dockerfile: services/standup/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  standup-relay:
+    <<: *background
+    profiles: ['pulseboard']
+    image: opsgrids-edge/standup
+    command: ['./bin/relay']
+    environment: *service-env
+
+  # ---------------------------------------------------------------- OpsGrids Projects (profile `projects`)
+  projects:
+    <<: *service-common
+    profiles: ['projects']
+    image: opsgrids-edge/projects
+    build:
+      context: ../..
+      dockerfile: services/projects/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  projects-relay:
+    <<: *background
+    profiles: ['projects']
+    image: opsgrids-edge/projects
+    command: ['./bin/relay']
+    environment: *service-env
+
+  # ---------------------------------------------------------------- OpsGrids Support (profile `support`)
+  support:
+    <<: *service-common
+    profiles: ['support']
+    image: opsgrids-edge/support
+    build:
+      context: ../..
+      dockerfile: services/support/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  support-relay:
+    <<: *background
+    profiles: ['support']
+    image: opsgrids-edge/support
+    command: ['./bin/relay']
+    environment: *service-env
+
+  # ---------------------------------------------------------------- OpsGrids Marketing (profile `marketing`)
+  marketing:
+    <<: *service-common
+    profiles: ['marketing']
+    image: opsgrids-edge/marketing
+    build:
+      context: ../..
+      dockerfile: services/marketing/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  marketing-relay:
+    <<: *background
+    profiles: ['marketing']
+    image: opsgrids-edge/marketing
+    command: ['./bin/relay']
+    environment: *service-env
+
+  # ---------------------------------------------------------------- OpsGrids Finance (profile `finance`)
+  finance:
+    <<: *service-common
+    profiles: ['finance']
+    image: opsgrids-edge/finance
+    build:
+      context: ../..
+      dockerfile: services/finance/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  finance-relay:
+    <<: *background
+    profiles: ['finance']
+    image: opsgrids-edge/finance
+    command: ['./bin/relay']
+    environment: *service-env
+
+  finance-worker:
+    <<: *background
+    profiles: ['finance']
+    image: opsgrids-edge/finance
+    command: ['./bin/worker']
+    environment: *service-env
+
+  # ---------------------------------------------------------------- OpsGrids IT (profile `itsm`)
+  itsm:
+    <<: *service-common
+    profiles: ['itsm']
+    image: opsgrids-edge/itsm
+    build:
+      context: ../..
+      dockerfile: services/itsm/Dockerfile
+    environment: *service-env
+    networks:
+      - back
+
+  itsm-relay:
+    <<: *background
+    profiles: ['itsm']
+    image: opsgrids-edge/itsm
     command: ['./bin/relay']
     environment: *service-env
 

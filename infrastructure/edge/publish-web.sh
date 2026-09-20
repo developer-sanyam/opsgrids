@@ -73,8 +73,71 @@ operations)
 	dist_dir="dist"
 	entry="index.html"
 	;;
+hrms)
+	# OpsGrids People: people.opsgrids.com.
+	app_dir="$repo_root/frontend/product-hrms"
+	build_script="build"
+	dist_dir="dist"
+	entry="index.html"
+	;;
+crm)
+	# OpsGrids Revenue: revenue.opsgrids.com.
+	app_dir="$repo_root/frontend/product-crm"
+	build_script="build"
+	dist_dir="dist"
+	entry="index.html"
+	;;
+pulseboard)
+	# PulseBoard: pulse.opsgrids.com.
+	app_dir="$repo_root/frontend/product-pulseboard"
+	build_script="build"
+	dist_dir="dist"
+	entry="index.html"
+	;;
+projects)
+	# OpsGrids Projects: projects.opsgrids.com.
+	app_dir="$repo_root/frontend/product-projects"
+	build_script="build"
+	dist_dir="dist"
+	entry="index.html"
+	;;
+support)
+	# OpsGrids Support: support.opsgrids.com.
+	app_dir="$repo_root/frontend/product-support"
+	build_script="build"
+	dist_dir="dist"
+	entry="index.html"
+	;;
+marketing)
+	# OpsGrids Marketing: marketing.opsgrids.com.
+	app_dir="$repo_root/frontend/product-marketing"
+	build_script="build"
+	dist_dir="dist"
+	entry="index.html"
+	;;
+finance)
+	# OpsGrids Finance: finance.opsgrids.com.
+	app_dir="$repo_root/frontend/product-finance"
+	build_script="build"
+	dist_dir="dist"
+	entry="index.html"
+	;;
+itsm)
+	# OpsGrids IT: it.opsgrids.com.
+	app_dir="$repo_root/frontend/product-itsm"
+	build_script="build"
+	dist_dir="dist"
+	entry="index.html"
+	;;
+storefront)
+	# OpsGrids Storefront: store.opsgrids.com.
+	app_dir="$repo_root/frontend/product-storefront"
+	build_script="build"
+	dist_dir="dist"
+	entry="index.html"
+	;;
 *)
-	echo "unknown APP '$app' — one of: buyer, dashboard, operations" >&2
+	echo "unknown APP '$app' — one of: buyer, dashboard, operations, hrms, crm, pulseboard, projects, support, marketing, finance, itsm, storefront" >&2
 	exit 64
 	;;
 esac

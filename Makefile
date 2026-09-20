@@ -412,7 +412,7 @@ edge-backup: edge-guard ## Run the nightly backup now (dump + certificates, off-
 # keeps `frontend` out of every image build context, and shipping only a bundle that compiled
 # is what stops a failed frontend build from breaking a merchant's shop.
 .PHONY: edge-web
-edge-web: ## Build and publish a bundle: make edge-web HOST=… CONFIRM=… [APP=buyer|dashboard] [PLACEHOLDER=1]
+edge-web: ## Build and publish a bundle: make edge-web HOST=… CONFIRM=… [APP=buyer|dashboard|operations|<product key>] [PLACEHOLDER=1]
 	@test -n "$(HOST)" || (echo "HOST= is required" && exit 1)
 	@test -n "$(CONFIRM)" || (echo "CONFIRM= is required" && exit 1)
 	EDGE_REPO=$(EDGE_REPO) APP=$(or $(APP),buyer) PLACEHOLDER=$(PLACEHOLDER) \

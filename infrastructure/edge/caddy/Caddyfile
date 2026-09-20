@@ -148,6 +148,177 @@ https://ops.opsgrids.com {
 	}
 }
 
+# ---------------------------------------------------------------------------- OpsGrids People
+# Published by `make edge-web APP=hrms`. Same shape as Inventory above.
+https://people.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/hrms/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids People is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- OpsGrids Revenue
+# Published by `make edge-web APP=crm`. Same shape as Inventory above.
+https://revenue.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/crm/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids Revenue is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- PulseBoard
+# Published by `make edge-web APP=pulseboard`. Same shape as Inventory above.
+https://pulse.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/pulseboard/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "PulseBoard is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- OpsGrids Projects
+# Published by `make edge-web APP=projects`. Same shape as Inventory above.
+https://projects.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/projects/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids Projects is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- OpsGrids Support
+# Published by `make edge-web APP=support`. Same shape as Inventory above.
+https://support.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/support/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids Support is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- OpsGrids Marketing
+# Published by `make edge-web APP=marketing`. Same shape as Inventory above.
+https://marketing.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/marketing/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids Marketing is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- OpsGrids Finance
+# Published by `make edge-web APP=finance`. Same shape as Inventory above.
+https://finance.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/finance/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids Finance is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- OpsGrids IT
+# Published by `make edge-web APP=itsm`. Same shape as Inventory above.
+https://it.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/itsm/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids IT is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- OpsGrids Storefront
+# Published by `make edge-web APP=storefront`. Same shape as Inventory above.
+https://store.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/storefront/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids Storefront is not published on this box yet." {err.status_code}
+	}
+}
+
 # ---------------------------------------------------------------------------- every store
 #
 # A catch-all rather than a list of hostnames. `*.stores.opsgrids.com` is deliberately *not* a

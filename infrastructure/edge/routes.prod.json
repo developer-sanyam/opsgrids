@@ -58,6 +58,28 @@
     { "prefix": "/api/v1/notifications", "upstream": "http://notification:8000", "product": "notification" },
     { "prefix": "/api/v1/webhooks/whatsapp", "upstream": "http://notification:8000" },
 
+    { "prefix": "/api/v1/employees", "upstream": "http://employee:8000", "product": "hrms" },
+    { "prefix": "/api/v1/attendance", "upstream": "http://attendance:8000", "product": "hrms" },
+    { "prefix": "/api/v1/shifts", "upstream": "http://attendance:8000", "product": "hrms" },
+
+    { "prefix": "/api/v1/customers", "upstream": "http://customer:8000", "product": "crm" },
+    { "prefix": "/api/v1/contacts", "upstream": "http://customer:8000", "product": "crm" },
+    { "prefix": "/api/v1/deals", "upstream": "http://deal:8000", "product": "crm" },
+
+    { "prefix": "/api/v1/projects", "upstream": "http://project:8000", "product": "pulseboard" },
+    { "prefix": "/api/v1/timesheets", "upstream": "http://timesheet:8000", "product": "pulseboard" },
+    { "prefix": "/api/v1/standups", "upstream": "http://standup:8000", "product": "pulseboard" },
+
+    { "prefix": "/api/v1/projects-workspace", "upstream": "http://projects:8000", "product": "projects" },
+
+    { "prefix": "/api/v1/support", "upstream": "http://support:8000", "product": "support" },
+
+    { "prefix": "/api/v1/marketing", "upstream": "http://marketing:8000", "product": "marketing" },
+
+    { "prefix": "/api/v1/finance", "upstream": "http://finance:8000", "product": "finance" },
+
+    { "prefix": "/api/v1/itsm", "upstream": "http://itsm:8000", "product": "itsm" },
+
     { "prefix": "/api/v1/operations", "upstream": "http://operations:8000", "product": "operations" },
 
     { "prefix": "/api/v1/storefront/public", "upstream": "http://storefront:8000" },

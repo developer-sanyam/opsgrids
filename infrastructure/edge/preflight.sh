@@ -143,6 +143,7 @@ profile_for() {
 	case "$1" in
 	operations) echo inventory ;;
 	storefront) echo storefront ;;
+	hrms|crm|pulseboard|projects|support|marketing|finance|itsm) echo "$1" ;;
 	*) echo "" ;;
 	esac
 }
@@ -163,7 +164,7 @@ if docker compose -f compose.prod.yml --env-file .env ps --status running postgr
 		bad "sold in the catalogue but no service will run for it:$sold_unserved — add the profile to COMPOSE_PROFILES or set the product to 'soon'"
 	for profile in $(echo "${COMPOSE_PROFILES:-}" | tr ',' ' '); do
 		key=""
-		case "$profile" in inventory) key=operations ;; storefront) key=storefront ;; esac
+		case "$profile" in inventory) key=operations ;; storefront) key=storefront ;; hrms|crm|pulseboard|projects|support|marketing|finance|itsm) key=$profile ;; esac
 		[ -n "$key" ] || continue
 		case " $available " in
 		*" $key "*) ;;
