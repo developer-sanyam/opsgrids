@@ -32,15 +32,21 @@ case "$OPSGRIDS_DB_PASSWORD" in
 	;;
 esac
 
-psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
-	--no-align --tuples-only \
-	-c "SELECT rolname FROM pg_roles WHERE rolcanlogin AND rolname LIKE 'opsgrids\_%'" |
-	while read -r role; do
-		[ -n "$role" ] || continue
-		# The password is passed as a psql variable and quoted by psql, so it never appears in
-		# a server log line built by string concatenation here.
-		psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
-			-v "role=$role" -v "pw=$OPSGRIDS_DB_PASSWORD" \
-			-c "ALTER ROLE :\"role\" PASSWORD :'pw'" >/dev/null
-		echo "30-role-passwords: reset password for $role"
-	done
+# The password travels as a psql variable and is quoted by psql (`:'pw'`), never by string
+# concatenation in this shell. **The SQL goes in on stdin, not with `-c`**: psql performs
+# variable interpolation only on input it reads, and a `-c` string is sent to the server
+# verbatim — which is how the first deploy sent the literal text `:"role"` and left every
+# role on the development password (the init aborted, and on restart the entrypoint skipped
+# initialisation altogether). `\gexec` runs each generated ALTER ROLE over one connection.
+psql -v ON_ERROR_STOP=1 --quiet --no-align --tuples-only \
+	--username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+	-v "pw=$OPSGRIDS_DB_PASSWORD" <<'SQL'
+SELECT format('ALTER ROLE %I PASSWORD %L', rolname, :'pw')
+  FROM pg_roles
+ WHERE rolcanlogin AND rolname LIKE 'opsgrids\_%'
+\gexec
+SELECT '30-role-passwords: reset password for ' || rolname
+  FROM pg_roles
+ WHERE rolcanlogin AND rolname LIKE 'opsgrids\_%'
+ ORDER BY rolname;
+SQL
