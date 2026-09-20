@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { listEmployees } from "@/api/client";
 import type { EmployeeOut, EmployeeStatus } from "@/api/types";
@@ -36,7 +36,11 @@ const NO_EMPLOYEES: EmployeeOut[] = [];
 
 function EmployeeCard({ emp }: { emp: EmployeeOut }) {
   return (
-    <Card className="p-5 flex flex-col gap-4">
+    <Link
+      to={`/employees/${emp.id}`}
+      className="block rounded-card transition-shadow hover:shadow-float focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+    >
+      <Card className="p-5 flex flex-col gap-4">
       <div className="flex items-start gap-3">
         <Avatar name={emp.full_name} size="lg" />
         <div className="flex min-w-0 flex-1 flex-col leading-tight">
@@ -62,7 +66,8 @@ function EmployeeCard({ emp }: { emp: EmployeeOut }) {
         <Tag>{employmentLabel(emp.employment_type)}</Tag>
         <Tag className="capitalize">{emp.work_mode}</Tag>
       </div>
-    </Card>
+      </Card>
+    </Link>
   );
 }
 

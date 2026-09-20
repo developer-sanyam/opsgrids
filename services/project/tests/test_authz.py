@@ -260,7 +260,7 @@ class TestEndpointAuthorization:
         assert response.status_code == 200
         body = response.json()
         assert body["active_projects"] == 2
-        assert body["tasks_due_this_week"] == 1  # PB-210 is due tomorrow; PB-215 has no date
+        assert body["tasks_due_this_week"] == 1  # PB-210 is due today; PB-215 has no date
         health = {h["status"]: h for h in body["health"]}
         assert set(health) == {"on_track", "at_risk", "blocked"}
         assert health["blocked"]["count"] == 1

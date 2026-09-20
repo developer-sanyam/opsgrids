@@ -440,6 +440,12 @@ class RolePermission(Base):
 
     __table_args__ = (
         UniqueConstraint("role_id", "permission_id", name="uq_role_permissions_role_perm"),
+        # `uq_role_permissions_role_perm` leads with `role_id`, so it cannot serve a lookup
+        # that starts from `permission_id` — `selectors.count_memberships_missing_grants`
+        # does exactly that (permission codes filtered first, then every role holding one).
+        # A single-column index on the trailing side of that composite gives the planner the
+        # leading column it needs instead of a bitmap scan of the whole composite index.
+        Index("ix_role_permissions_permission_id", "permission_id"),
     )
 
 

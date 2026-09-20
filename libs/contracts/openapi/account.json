@@ -538,6 +538,18 @@
             ],
             "title": "Display Name"
           },
+          "employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee Id"
+          },
           "job_title": {
             "anyOf": [
               {
@@ -1318,6 +1330,72 @@
         "title": "ServiceInfo",
         "type": "object"
       },
+      "SignupIn": {
+        "description": "A stranger creating an organisation and becoming its owner (ADR-0013 \u00a73).\n\n**No password.** The owner sets one through the reset-link flow after proving the address\nreceives mail; a payload with a password here would be a credential held by a service that\nhas no business holding one, on an address nobody has verified.",
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "full_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Full Name",
+            "type": "string"
+          },
+          "organization_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Organization Name",
+            "type": "string"
+          },
+          "slug": {
+            "maxLength": 60,
+            "minLength": 2,
+            "pattern": "^[a-z0-9][a-z0-9-]*$",
+            "title": "Slug",
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_name",
+          "slug",
+          "full_name",
+          "email"
+        ],
+        "title": "SignupIn",
+        "type": "object"
+      },
+      "SignupOut": {
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "next_step": {
+            "default": "Check your inbox for the link that sets your password.",
+            "title": "Next Step",
+            "type": "string"
+          },
+          "organization_id": {
+            "format": "uuid",
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "slug",
+          "email"
+        ],
+        "title": "SignupOut",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -1383,6 +1461,47 @@
           }
         },
         "summary": "What this service is",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/account/signup": {
+      "post": {
+        "description": "**Public by design** (ADR-0013 \u00a73): the caller has nothing yet, not even an account.\n\nBypass-then-narrow, the invitation route's shape with one difference. The bypass session\nanswers two questions it alone can \u2014 is the slug taken, is the email already somebody's \u2014\nbecause under the new tenant's binding the policied `organizations` table cannot show a\nclash and it would surface as a unique violation. Then an id is generated, a transaction is\nbound to it, and every write happens on the app role under the ordinary policy. See the\nADR for why that is narrower than running this route as the admin role.\n\nBoth clashes are a 409 with a plain sentence. An existing email is told to sign in: an\naccount that already exists does not get a second organisation from the sign-up form, and\n\"already registered\" is not the enumeration oracle a login form's 404 would be, because\nthe very next step \u2014 the set-password email \u2014 goes to that inbox and nobody else.",
+        "operationId": "signup_api_v1_account_signup_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "That address or that email is already taken"
+          },
+          "422": {
+            "description": "Not a slug, not an email"
+          },
+          "429": {
+            "description": "Rate limited by the gateway, per client address"
+          }
+        },
+        "summary": "Create an organisation and become its owner",
         "tags": [
           "account"
         ]
@@ -1647,6 +1766,24 @@
                 }
               ],
               "title": "Status"
+            }
+          },
+          {
+            "description": "`false` lists people with no employee link \u2014 the ones whose approval inbox is silently empty (ADR-0008 \u00a79). Omitted lists both.",
+            "in": "query",
+            "name": "linked",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`false` lists people with no employee link \u2014 the ones whose approval inbox is silently empty (ADR-0008 \u00a79). Omitted lists both.",
+              "title": "Linked"
             }
           },
           {

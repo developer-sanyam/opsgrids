@@ -24,6 +24,10 @@ class FakeRedis:
 
     def __init__(self) -> None:
         self.store: dict[str, str] = {}
+        #: Keys that must raise instead of incrementing — a test's way of simulating the
+        #: Redis outage `bump_permission_version` is required to fail loudly on rather
+        #: than swallow (ADR-0007 §5).
+        self.poisoned: set[str] = set()
 
     async def get(self, key: str) -> str | None:
         return self.store.get(key)
@@ -32,6 +36,8 @@ class FakeRedis:
         self.store[key] = value
 
     async def incr(self, key: str) -> int:
+        if key in self.poisoned:
+            raise ConnectionError(f"simulated redis outage for {key!r}")
         value = int(self.store.get(key, "0")) + 1
         self.store[key] = str(value)
         return value

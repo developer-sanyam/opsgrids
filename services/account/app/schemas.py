@@ -92,6 +92,29 @@ class OrganizationOut(BaseModel):
 # --------------------------------------------------------------------- structure
 
 
+class SignupIn(BaseModel):
+    """A stranger creating an organisation and becoming its owner (ADR-0013 §3).
+
+    **No password.** The owner sets one through the reset-link flow after proving the address
+    receives mail; a payload with a password here would be a credential held by a service that
+    has no business holding one, on an address nobody has verified.
+    """
+
+    organization_name: str = Field(min_length=1, max_length=200)
+    slug: Slug
+    full_name: str = Field(min_length=1, max_length=200)
+    email: EmailStr
+
+
+class SignupOut(BaseModel):
+    organization_id: uuid.UUID
+    slug: str
+    email: str
+    #: Always the same sentence. What the dashboard shows next, and a reminder that the answer
+    #: to "did that work?" is in the inbox, not in this body.
+    next_step: str = "Check your inbox for the link that sets your password."
+
+
 class OrgUnitIn(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     code: Code
@@ -170,6 +193,16 @@ class MemberPatch(BaseModel):
     manager_membership_id: uuid.UUID | None = None
     location_codes: list[str] | None = None
     started_on: date | None = None
+    #: The HR employee record this principal **is** — the sole origin of the `sref` claim
+    #: every OWN-scoped check in the estate resolves against (ADR-0008 §1). This is the
+    #: platform's only writer of that link.
+    #:
+    #: `exclude_unset` carries the distinction this field needs and no other field here
+    #: has: **absent** leaves the link alone, an explicit **null unlinks**. It is not
+    #: validated against employee-service — account cannot read another schema, and a
+    #: synchronous cross-service check on an interactive write is what ADR-0008 §4
+    #: refuses; a mistyped id is accepted and found by `tools/reconcile_membership_links.py`.
+    employee_id: uuid.UUID | None = None
 
 
 class InvitationIn(BaseModel):

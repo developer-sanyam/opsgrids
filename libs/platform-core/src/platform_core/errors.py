@@ -104,6 +104,19 @@ class BusinessRuleProblem(ProblemError):
     title = "Business rule violation"
 
 
+class PayloadTooLargeProblem(ProblemError):
+    """The request body is bigger than the entry point will accept.
+
+    413 rather than 400 so a client can tell "too big" from "malformed" and shrink the
+    payload instead of retrying it unchanged. The detail names the limit; it never names
+    the component that enforced it.
+    """
+
+    status_code = 413
+    problem_type = "payload-too-large"
+    title = "Request body too large"
+
+
 class RateLimitedProblem(ProblemError):
     status_code = 429
     problem_type = "rate-limited"

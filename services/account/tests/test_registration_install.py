@@ -260,17 +260,34 @@ class TestMergedManifests:
             )
         )
 
+        manifest = load_product_manifest("hrms")
+        assert manifest is not None
+        hr_admin_template = next(
+            t for t in manifest.registration.role_templates if t.code == "HR_ADMIN"
+        )
+        # Both slices' grants, not one service's worth — a merged manifest installs as one
+        # registration, so the template's own grant count (whatever either service's
+        # catalogue currently contributes) is what the installed role must match, not a
+        # number fixed at the time this test was written.
+        expected_codes = {(g.code, g.scope) for g in hr_admin_template.grants}
+        assert any(code == "hrms.people.employee.read" for code, _ in expected_codes)
+        assert any(code == "hrms.time.shift.write" for code, _ in expected_codes)
+
         async with session.begin():
             for code in ("hrms.people.employee.read", "hrms.time.shift.write"):
                 assert await selectors.get_permission_by_code(session, code) is not None
             role = await selectors.get_role_by_code(session, org.id, "HR_ADMIN")
             assert role is not None
-            grant_count = await session.execute(
-                select(func.count())
+            installed = await session.execute(
+                select(Permission.code, RolePermission.scope)
                 .select_from(RolePermission)
+                .join(Permission, Permission.id == RolePermission.permission_id)
                 .where(RolePermission.role_id == role.id)
             )
-            assert int(grant_count.scalar_one()) == 7
+            installed_codes = {(row.code, row.scope) for row in installed}
+            # The installed role carries exactly the template's grants — no more, no less,
+            # and none duplicated — which is the property "one registration" is asserting.
+            assert installed_codes == expected_codes
             employee = await selectors.get_role_by_code(session, org.id, "EMPLOYEE")
             assert employee is not None
             assert employee.is_default is True

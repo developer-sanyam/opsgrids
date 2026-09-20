@@ -14,14 +14,29 @@ dependencies = [
     #   authlib       → auth-service (OIDC client + provider)
     #   geoalchemy2   → attendance-service (geo-fence)
     #   aiosmtplib    → notification-service
-    #   boto3         → document-service
     #   stripe, razorpay → payment-service
     "argon2-cffi>=23.1",       # auth-service password hashing
+    # document-service's public asset store (ADR-0009). boto3 was earmarked here and is now
+    # installed because the service that needs it exists.
+    "boto3>=1.35",             # document-service — the only S3 client in the platform
+    # The upload route is the platform's first multipart body. Starlette's form parser is a
+    # thin wrapper over this and asserts on its absence rather than importing it lazily.
+    "python-multipart>=0.0.20", # document-service — multipart/form-data upload
+    # document-service decodes and re-encodes every upload (ADR-0009 §5): the decode is what
+    # decides the content type, and the re-encode is what strips EXIF and neutralises polyglots.
+    "pillow>=11.0",            # document-service image validation and downscale
     "cryptography>=43.0",      # EdDSA signing keys; PII envelope encryption
     # EmailStr needs this. Note for seeds and fixtures: it rejects .local, .test,
     # .example and .invalid as special-use reserved domains — a .local seed once produced
     # an administrator account that could not log in. Use example.com (RFC 2606).
     "email-validator>=2.2",
+    # storefront-service normalises the hostname a buyer's browser arrived on before it becomes
+    # a lookup and a cache key (ADR-0012 §2). Already resolved as an httpx transitive; declared
+    # here because a direct import of a transitive dependency is a break waiting for whichever
+    # release drops it. IDNA2008 with UTS-46, rather than the stdlib's IDNA2003 `encodings.idna`
+    # — the two disagree on real names (`ß`, final sigma), and a hostname that encodes
+    # differently from the one the browser sent resolves to nothing.
+    "idna>=3.10",
 ]
 
 [dependency-groups]
@@ -54,7 +69,15 @@ platform-core = { workspace = true }
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-extend-exclude = ["**/migrations/versions/*.py"]
+extend-exclude = [
+    "**/migrations/versions/*.py",
+    # The storefront's artwork generator. These are scratch-quality design scripts — they emit
+    # the SVGs in `public/img/` and print contact sheets while someone tunes a palette by eye.
+    # Nothing imports them, nothing runs them in CI, and they sit outside the Vite build. They
+    # are in the repo for one reason: without them, re-tuning a theme's art means redrawing path
+    # data by hand. Held to the standard of a sketchbook rather than the platform, deliberately.
+    "frontend/product-storefront/tools/art/*.py",
+]
 
 [tool.ruff.lint]
 select = [
@@ -102,7 +125,10 @@ warn_unreachable = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["geoalchemy2.*", "razorpay.*", "authlib.*", "argon2.*"]
+# boto3/botocore ship no type information of their own; the generated stub packages are a
+# large install for the three calls `services/document/app/storage.py` makes, and that module
+# is the only place in the platform that imports them.
+module = ["geoalchemy2.*", "razorpay.*", "authlib.*", "argon2.*", "boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------- pytest

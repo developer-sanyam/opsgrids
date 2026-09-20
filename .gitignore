@@ -20,6 +20,9 @@ build/
 node_modules/
 .next/
 dist/
+# The storefront's second Vite output — the anonymous buyer bundle (ADR-0012 §2). `dist/` above
+# does not match it, and `make edge-web` builds it on the way to the edge VM.
+dist-buyer/
 
 # Editors / OS
 .DS_Store
@@ -35,3 +38,4 @@ tools/dev-bootstrap/keys/
 
 # Local agent tooling — kept on disk, not shared
 .claude/
+edge_selfserve_tenant.json

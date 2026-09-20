@@ -164,7 +164,10 @@ async def data(session: AsyncSession, org_id: uuid.UUID) -> dict:
             estimate_hours=6,
             priority="medium",
             tags=["frontend"],
-            due_date=today + timedelta(days=1),
+            # Due *today*, not tomorrow: `domain.week_dates` is Monday-first, so on a Sunday
+            # "tomorrow" is next week and the summary's due-this-week count drops to zero.
+            # Today is the one offset that is inside its own week on every weekday.
+            due_date=today,
         )
         task_b = await services.create_task(
             session,

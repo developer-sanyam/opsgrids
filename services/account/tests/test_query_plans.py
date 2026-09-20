@@ -144,6 +144,31 @@ class TestTheTenantLeadingIndexesServeTheirQueries:
         )
 
 
+class TestTheRolePermissionIndexServesAPermissionLedJoin:
+    async def test_memberships_missing_a_grant_is_served_by_the_permission_id_index(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        """`selectors.count_memberships_missing_grants` — ADR-0007's `memberships_without` —
+        filters `permissions.code` down to a handful of rows first, then needs every
+        `role_permissions` row naming one of them. `uq_role_permissions_role_perm` leads with
+        `role_id`, so that direction falls back to a bitmap scan of the whole composite index;
+        `ix_role_permissions_permission_id` gives the planner a leading column that matches.
+        """
+        used = await _indexes_usable_for(
+            session,
+            "SELECT mr.membership_id FROM account.membership_roles mr "
+            "JOIN account.role_permissions rp ON rp.role_id = mr.role_id "
+            "JOIN account.permissions p ON p.id = rp.permission_id "
+            "WHERE p.code = ANY(:codes)",
+            {"codes": ["core.profile.self.read"]},
+        )
+        assert "ix_role_permissions_permission_id" in used, (
+            f"the permission-led join over role_permissions was planned over "
+            f"{sorted(used) or 'no index'}; ix_role_permissions_permission_id should serve "
+            "a lookup that starts from permission_id rather than role_id."
+        )
+
+
 class TestTheSingleColumnAuditIndexesAreGone:
     async def test_the_retired_audit_log_indexes_no_longer_exist(
         self, session: AsyncSession, org: Organization

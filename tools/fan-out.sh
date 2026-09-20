@@ -7,6 +7,12 @@
 # merely convenient is ADR-0000 §10: no foreign key crosses a schema boundary, so no
 # service's DDL can depend on another's.
 #
+# That argument is about *schema ownership*, and it holds for `mypy` and for `alembic`
+# unconditionally. It does not hold for `pytest` on its own: a test is free to reach into a
+# sibling service's schema, and two deliberately do. Those pay for it with an advisory lock
+# rather than with serial scheduling — see the `test-services` comment in the Makefile for
+# which they are and what a new one has to do.
+#
 # Two implementation notes, both learned the hard way:
 #
 #   * The parallelism is `xargs -P`, not a shell job loop. A loop needs `wait -n` to keep the

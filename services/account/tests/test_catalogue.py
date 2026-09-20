@@ -18,6 +18,7 @@ from app.catalogue import (
     PermissionCatalogue,
     PermissionSpec,
     RoleTemplate,
+    load_product_manifest,
     min_scope,
     validate,
 )
@@ -146,3 +147,101 @@ class TestProductActivationIsOwnerOnly:
         member = next(t for t in catalogue.CORE_ROLE_TEMPLATES if t.code == "MEMBER")
         codes = {g.code for g in member.grants}
         assert not [c for c in codes if c.startswith("core.product.")]
+
+
+class TestCoreManifestPin:
+    """`core` is installed twice: in-code (`CORE_REGISTRATION`) at organization creation,
+    because that path runs before any manifest directory is guaranteed readable, and from
+    its committed manifest (`libs/contracts/permissions/core.json`) by
+    `tools/reconcile_permissions.py` for a tenant that already exists (ADR-0007 §2).
+
+    ADR-0007 §2 describes this as "two sources for one thing", held together by a test that
+    the two describe "the same permissions and the same role templates with the same
+    grants" — equality. That assumption held only while `account` was the sole contributor
+    to `core`. It stopped holding the moment `services/approval/app/catalogue.py` started
+    contributing `core.approval.*` (ADR-0006 §11): `tools/export_permissions.py` merges every
+    service's slice of `core` into one manifest exactly as it already does for `hrms`
+    (`sources: ["account", "approval"]`), so `core.json` is now a strict superset of
+    `CORE_REGISTRATION` by design, not by drift.
+
+    The semantics this test enforces instead: **`CORE_REGISTRATION` must be a subset of the
+    merged manifest — account's declaration may never be missing from it, and never
+    contradicted by it (a scope the manifest ever states as narrower than account declared,
+    or a spec whose danger/ceiling disagrees).** The manifest may freely be *wider* — extra
+    permissions, extra role templates, extra grants on a shared template — because that is
+    exactly what another service's slice of `core` is. Equality is checked at a narrower
+    grain instead, in `TestApprovalGrantsReachExistingTenants` below: the merged manifest is
+    reconciled against a real organization and the resulting grants are asserted directly,
+    which is the property that actually matters — `core.approval.*` reaching a tenant that
+    already exists — rather than a byte-for-byte match between two declarations that both
+    have a right to add to `core`.
+
+    This narrows what ADR-0007 §2 states; see this slice's report for the exact contradiction
+    and what the ADR should say instead. The two-way pin against `tools/export_permissions.py
+    --check` (which still fails the build when the manifest is stale against *all* the code
+    that produced it) is unaffected — this test only changes what "the code" means when more
+    than one service contributes to the same product.
+    """
+
+    def test_in_code_registration_is_a_subset_of_the_merged_manifest(self) -> None:
+        manifest = load_product_manifest("core")
+        assert manifest is not None, (
+            "libs/contracts/permissions/core.json is missing — run `uv run python "
+            "tools/export_permissions.py` from the repository root"
+        )
+        assert manifest.product == "core"
+
+        in_code_specs = {
+            s.code("core"): (s.default_scope, s.max_scope, s.is_dangerous) for s in CORE.specs
+        }
+        manifest_specs = {
+            s.code("core"): (s.default_scope, s.max_scope, s.is_dangerous)
+            for s in manifest.registration.catalogue.specs
+        }
+        missing_specs = in_code_specs.keys() - manifest_specs.keys()
+        assert not missing_specs, (
+            f"core.json is missing permissions CORE declares in app/catalogue.py: "
+            f"{sorted(missing_specs)} — regenerate with `tools/export_permissions.py`"
+        )
+        contradicted_specs = {
+            code: (in_code_specs[code], manifest_specs[code])
+            for code in in_code_specs
+            if manifest_specs[code] != in_code_specs[code]
+        }
+        assert not contradicted_specs, (
+            "core.json describes a permission CORE also declares, differently: "
+            f"{contradicted_specs} — a manifest may add to a permission's declaration, "
+            "never disagree with it"
+        )
+
+        in_code_templates = {
+            t.code: {(g.code, g.scope) for g in t.grants} for t in CORE_ROLE_TEMPLATES
+        }
+        manifest_templates = {
+            t.code: {(g.code, g.scope) for g in t.grants}
+            for t in manifest.registration.role_templates
+        }
+        missing_templates = in_code_templates.keys() - manifest_templates.keys()
+        assert not missing_templates, (
+            f"core.json is missing role templates CORE_ROLE_TEMPLATES declares: "
+            f"{sorted(missing_templates)} — regenerate with `tools/export_permissions.py`"
+        )
+
+        manifest_scope_by_code = {
+            template_code: dict(grants) for template_code, grants in manifest_templates.items()
+        }
+        for template_code, grants in in_code_templates.items():
+            manifest_scopes = manifest_scope_by_code[template_code]
+            for code, scope in grants:
+                manifest_scope = manifest_scopes.get(code)
+                assert manifest_scope is not None, (
+                    f"core.json's {template_code!r} template is missing the grant "
+                    f"{code!r} that CORE_ROLE_TEMPLATES gives it — regenerate with "
+                    "`tools/export_permissions.py`"
+                )
+                assert catalogue._RANK[manifest_scope] >= catalogue._RANK[scope], (
+                    f"core.json's {template_code!r} template narrows {code!r} to "
+                    f"{manifest_scope!r}, but CORE_ROLE_TEMPLATES grants it {scope!r} — a "
+                    "merged manifest may only ever widen a shared template's grants "
+                    "(tools/export_permissions.py's merge rule), never narrow one"
+                )

@@ -169,6 +169,15 @@ CORE = PermissionCatalogue(
             # so this is granted to the owner only, and the templates below say so.
             is_dangerous=True,
         ),
+        # Money (ADR-0004, ADR-0013). billing-service guards invoices and the credit balance
+        # with these two codes; until they were catalogued here no manifest carried them, no
+        # role could hold them, and every request answered 403 — the audit's "billing is
+        # unreachable" finding. Subscriptions need no code of their own: subscription-service
+        # gates on `product.activation.*`, because starting a subscription *is* the activation.
+        # Owner-only by the templates: `ORG_ADMIN` is defined as the role that does not do
+        # billing.
+        PermissionSpec("billing", "invoice", "read", "See invoices", "ORG", "ORG"),
+        PermissionSpec("billing", "credit", "read", "See the credit balance", "ORG", "ORG"),
         PermissionSpec("profile", "self", "read", "See your own profile", "OWN", "OWN"),
         PermissionSpec("profile", "self", "write", "Edit your own profile", "OWN", "OWN"),
     ],

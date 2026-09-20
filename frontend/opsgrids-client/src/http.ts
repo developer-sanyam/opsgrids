@@ -80,6 +80,12 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     throw new ApiError(res.status, messageFor(problem, res.status), problem);
   }
 
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  // No body is a valid answer, and not only on 204: `password/forgot` is a 202 with nothing in
+  // it, on purpose (a body would be a way to learn whether the address exists). Reading the
+  // text first is what stops an empty 2xx from becoming "Unexpected end of JSON input" on the
+  // screen after a request that succeeded.
+  if (res.status === 204 || res.status === 205) return undefined as T;
+  const text = await res.text();
+  if (text.trim() === "") return undefined as T;
+  return JSON.parse(text) as T;
 }

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# The SLA escalation sweep (ADR-0006 §8), landed in slice 4 — this script previously pointed at
+# the outbox relay because no service work had a schedule yet (see git history for that header).
+#
+# ADR-0006 §14's connection budget gives `bin/cron` an app-engine share of 4 + 2, smaller than
+# `bin/api`'s default 10 + 5. Set here, ahead of `app/cron.py`'s own engine init, so the sweep
+# inherits the right budget without anyone remembering to add it later.
+: "${DB_POOL_SIZE:=4}"
+: "${DB_MAX_OVERFLOW:=2}"
+export DB_POOL_SIZE DB_MAX_OVERFLOW
+exec python -m app.cron

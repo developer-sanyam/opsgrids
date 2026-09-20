@@ -1,19 +1,17 @@
 import type { AttendanceStatus, EmployeeStatus } from "@/api/types";
+import { attendanceStatusLabel } from "@/lib/format";
 import { cn } from "@opsgrids/ui";
 
 const PILL_BASE =
   "inline-flex items-center gap-1.5 rounded-full pl-2 pr-2.5 py-1 text-xs font-semibold";
 
+/** The service's four statuses (screens spec gap **G13**) — `present | half_day | absent |
+ *  regularized`, replacing the SPA's earlier, wrong `present | late | absent` vocabulary. */
 const ATTENDANCE_TONE: Record<AttendanceStatus, string> = {
   present: "bg-present-soft text-present",
-  late: "bg-late-soft text-late",
+  half_day: "bg-late-soft text-late",
   absent: "bg-danger-soft text-danger",
-};
-
-const ATTENDANCE_LABEL: Record<AttendanceStatus, string> = {
-  present: "Present",
-  late: "Late",
-  absent: "Absent",
+  regularized: "bg-info-soft text-info",
 };
 
 /** Attendance status. A coloured dot backs up the colour so it never carries meaning alone. */
@@ -21,7 +19,7 @@ export function AttendancePill({ status }: { status: AttendanceStatus }) {
   return (
     <span className={cn(PILL_BASE, ATTENDANCE_TONE[status])}>
       <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      {ATTENDANCE_LABEL[status]}
+      {attendanceStatusLabel(status)}
     </span>
   );
 }

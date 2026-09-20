@@ -23,6 +23,7 @@ AttendanceStatusName = Literal["present", "half_day", "absent", "regularized"]
 #: A regularisation may name any observed or corrected state; the state machine in `domain.py`
 #: decides whether the specific step from the record's current status is legal.
 RegularizeTarget = Literal["present", "half_day", "absent", "regularized"]
+RegularizationStatus = Literal["pending", "approved", "rejected", "failed"]
 
 Latitude = Annotated[Decimal, Field(ge=-90, le=90)]
 Longitude = Annotated[Decimal, Field(ge=-180, le=180)]
@@ -71,6 +72,71 @@ class RegularizeIn(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class RegularizationRequestIn(BaseModel):
+    """A self-service ask for a correction to your own attendance record (ADR-0006 §11).
+
+    There is no `employee_id`, for the same reason `CheckInIn` has none: a person raises a
+    request against their own record, and the record named in the path already says whose it is.
+    `reason` is required here — unlike the approver's decision comment, which the platform
+    deliberately leaves optional (ADR-0006 §7), a request with no stated reason gives an approver
+    nothing to route on.
+    """
+
+    requested_status: RegularizeTarget
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class RegularizationRequestOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    attendance_id: uuid.UUID
+    employee_id: uuid.UUID
+    requested_status: str
+    reason: str
+    status: RegularizationStatus
+    approval_request_id: uuid.UUID | None
+    #: Set once `core.approval.request.opened` has been applied to this row — see the field's
+    #: docstring on the model. Null while the screen has nothing yet to say beyond "pending".
+    approval_opened_at: datetime | None
+    #: The routed approver's employee id from `.opened`, or null.
+    approver_employee_id: uuid.UUID | None
+    #: The routed approver's display name from `.opened`'s own `approver_name`, stored verbatim
+    #: (`app/models.py`) — lets the screen render "Waiting on {Name}" directly, without a second
+    #: resolve against employee-service. Null in every case `approver_employee_id` is null (routing
+    #: not yet known, or the step opened unassigned) *and* whenever approval published the event
+    #: without the key at all — an event from before approval's change landed, or a replay.
+    approver_name: str | None
+    decided_at: datetime | None
+    #: The decider's comment from `.decided`, verbatim, or null if none was given or no decision
+    #: has landed yet.
+    decision_comment: str | None
+    #: The decider's display name from `.decided`'s own `decided_by_name`, stored verbatim,
+    #: alongside `decision_comment` on a decided row. Null when the decider is not in approval's
+    #: hierarchy copy — legitimate for an org-level decider — and whenever the key was simply
+    #: absent from the payload; never raised on either way (`app.consumers`).
+    decided_by_name: str | None
+    failure_reason: str | None
+    created_at: datetime
+    #: `None` until `.opened` has been applied (`approval_opened_at is None` — nothing is known
+    #: about routing yet); `True`/`False` after, mirroring `approver_employee_id is None` at that
+    #: point (ADR-0006 §4: a step can open with no approver at all). Computed by the route from
+    #: `approval_opened_at`/`approver_employee_id` at read time, not a stored column — see
+    #: `api/routes.py::_regularization_out` — so the two stored fields stay the single source of
+    #: truth and cannot drift out of sync with a third column that duplicates them.
+    approver_unassigned: bool | None = None
+    #: The attendance record's own punch location, not a stored column on this row — composed by
+    #: the route from the record it was raised against, at read time (open contract question,
+    #: settled here: attendance carries no per-employee "home" location the way approval's
+    #: hierarchy copy does, ADR-0006 §11's `*_location_code` fields; the punch's own
+    #: `location_code` is the nearest fact this surface holds, and is `null` exactly when the
+    #: punch itself carried none — the client falls back to labelled organization time, the same
+    #: rule ADR-0006 §11 states for approval's responses). Never published on an outbox event:
+    #: the `.requested` / `.applied` payloads are ADR-0006 §12's exact contract, not a place to
+    #: add a field approval does not ask for.
+    location_code: str | None = None
+
+
 class AttendanceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -90,6 +156,15 @@ class AttendanceOut(BaseModel):
     check_out_lng: Decimal | None
     notes: str | None
     created_at: datetime
+    #: The most recent regularization request against this record, or null if none has ever been
+    #: raised (ADR-0006 §11 / screens doc: pending approval | approved | rejected | failed, with
+    #: its reason). Populated by the route from a second table — `from_attributes` never sees it
+    #: on the ORM row, which is why the field carries a default rather than being required.
+    regularization: RegularizationRequestOut | None = None
+    #: What `domain.ALLOWED_TRANSITIONS` permits from this record's *current* status, so a
+    #: correction dialog reads the server's own state machine instead of duplicating it
+    #: client-side (screens doc, ADR-0006 §11 **C3**).
+    allowed_transitions: list[AttendanceStatusName] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------- shifts

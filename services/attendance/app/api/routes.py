@@ -31,7 +31,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import scope, selectors, services
 from app.config import settings
-from app.models import SCHEMA
+from app.domain import ALLOWED_TRANSITIONS, AttendanceStatus
+from app.models import SCHEMA, AttendanceRecord, RegularizationRequest
 from app.schemas import (
     AttendanceOut,
     CheckInIn,
@@ -39,6 +40,8 @@ from app.schemas import (
     GeofenceIn,
     GeofenceOut,
     GeofencePatch,
+    RegularizationRequestIn,
+    RegularizationRequestOut,
     RegularizeIn,
     ServiceInfo,
     ShiftIn,
@@ -47,7 +50,7 @@ from app.schemas import (
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.db import get_tenant_session
-from platform_core.errors import NotFoundProblem
+from platform_core.errors import ForbiddenProblem, NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
 # Registering the HRMS scope resolver at import of the api module ties it to the product it
@@ -74,6 +77,13 @@ AttendancePunch = Annotated[ScopeContext, Depends(require("hrms.time.attendance.
 AttendanceRegularize = Annotated[
     ScopeContext, Depends(require("hrms.time.attendance.write", minimum=Scope.ORG))
 ]
+#: The self-service ask for a correction (ADR-0006 §11). `max_scope` is OWN in the catalogue, so
+#: there is no floor to set here — the ceiling already makes "request a correction for someone
+#: else" ungrantable through the normal install path. The object-level check still runs in the
+#: route (`_assert_requesting_own_record`), comparing identities directly rather than going
+#: through `assert_can_touch`/`Scope.ORG`, because a permission's ceiling is not itself an
+#: object-level check and this one has no scope at which "for someone else" is legitimate.
+AttendanceRequest = Annotated[ScopeContext, Depends(require("hrms.time.attendance.request"))]
 ShiftRead = Annotated[ScopeContext, Depends(require("hrms.time.shift.read"))]
 #: Shifts and geo-fences are organization definitions: read by everyone, written only by an
 #: administrator. The permission tops out at ORG; the floor makes that explicit at the route.
@@ -83,6 +93,63 @@ ShiftWrite = Annotated[ScopeContext, Depends(require("hrms.time.shift.write", mi
 @router.get("/attendance/info", response_model=ServiceInfo, summary="What this service is")
 async def info() -> ServiceInfo:
     return ServiceInfo(service=settings().service_name, schema_name=SCHEMA)
+
+
+def _regularization_out(
+    reg: RegularizationRequest, record: AttendanceRecord
+) -> RegularizationRequestOut:
+    """`location_code` is composed here, not stored on the row — see the field's docstring in
+    `schemas.py` for the open contract question this settles. `approver_unassigned` is likewise
+    computed rather than stored, so `approval_opened_at`/`approver_employee_id` stay the one
+    source of truth: null (routing not yet known) while `.opened` has not landed, else whether
+    that step opened with no approver at all (ADR-0006 §4)."""
+    approver_unassigned = (
+        None if reg.approval_opened_at is None else reg.approver_employee_id is None
+    )
+    return RegularizationRequestOut.model_validate(reg).model_copy(
+        update={
+            "location_code": record.location_code,
+            "approver_unassigned": approver_unassigned,
+        }
+    )
+
+
+def _assert_requesting_own_record(ctx: ScopeContext, record: AttendanceRecord) -> None:
+    """`hrms.time.attendance.request` is self-service by construction: its catalogue ceiling is
+    OWN, so no legitimately-issued grant reaches another employee's record. But
+    `ScopeContext.assert_can_touch` returns unconditionally at `Scope.ORG` — it exists for
+    permissions that genuinely have an organization-wide reading — so a single over-scoped
+    grant string (a bad install, a forged `X-Perms` header) would otherwise let a caller raise a
+    correction against *any* employee's record, and approval would then route it to that
+    victim's manager as if the victim had asked. There is no scope at which "for someone else"
+    is ever legitimate here, so this compares identities directly rather than going through
+    `assert_can_touch` at all — the same shape `services._subject_employee` uses for
+    check-in/check-out.
+    """
+    subject = ctx.subject_ref
+    if subject is None or record.employee_id != subject:
+        raise ForbiddenProblem("You may only request a correction to your own attendance record")
+
+
+def _attendance_out(
+    record: AttendanceRecord, regularization: RegularizationRequest | None
+) -> AttendanceOut:
+    """Compose the read model the screens doc asks for: the record plus its correction state
+    and the transitions the server's own state machine allows from here (ADR-0006 §11, **C3**).
+    `regularization` is a second table's row, fetched separately — `AttendanceOut.model_validate`
+    never sees it on the ORM object, so it is attached here rather than left to `from_attributes`.
+    """
+    out = AttendanceOut.model_validate(record)
+    return out.model_copy(
+        update={
+            "regularization": (
+                _regularization_out(regularization, record) if regularization is not None else None
+            ),
+            "allowed_transitions": sorted(
+                t.value for t in ALLOWED_TRANSITIONS[AttendanceStatus(record.status)]
+            ),
+        }
+    )
 
 
 # --------------------------------------------------------------------- attendance
@@ -99,7 +166,7 @@ async def check_in(
     payload: CheckInIn, session: SessionDep, ctx: AttendancePunch, request: Request
 ) -> AttendanceOut:
     record = await services.check_in(session, ctx, payload, request=request)
-    return AttendanceOut.model_validate(record)
+    return _attendance_out(record, None)
 
 
 @router.post(
@@ -112,7 +179,10 @@ async def check_out(
     payload: CheckOutIn, session: SessionDep, ctx: AttendancePunch, request: Request
 ) -> AttendanceOut:
     record = await services.check_out(session, ctx, payload, request=request)
-    return AttendanceOut.model_validate(record)
+    regularization = await selectors.get_latest_regularization(
+        session, ctx.organization_id, record.id
+    )
+    return _attendance_out(record, regularization)
 
 
 @router.get(
@@ -138,7 +208,11 @@ async def list_attendance(
         status=record_status,
     )
     rows, total = await paginate(session, stmt, params)
-    items = [AttendanceOut.model_validate(r) for r in rows]
+    # Batched, not one query per row (CLAUDE.md: a loop with a query in it is a bug).
+    regularizations = await selectors.get_latest_regularizations(
+        session, ctx.organization_id, [r.id for r in rows]
+    )
+    items = [_attendance_out(r, regularizations.get(r.id)) for r in rows]
     return Page.build(items, total=total, params=params)
 
 
@@ -162,13 +236,16 @@ async def read_attendance(
         team_owner_id=None,
         location_code=record.location_code,
     )
-    return AttendanceOut.model_validate(record)
+    regularization = await selectors.get_latest_regularization(
+        session, ctx.organization_id, record.id
+    )
+    return _attendance_out(record, regularization)
 
 
 @router.post(
     "/attendance/{record_id}/regularize",
     response_model=AttendanceOut,
-    summary="Correct an attendance record's status",
+    summary="Correct an attendance record's status directly (HR override)",
     dependencies=[Entitled],
 )
 async def regularize_attendance(
@@ -178,13 +255,52 @@ async def regularize_attendance(
     ctx: AttendanceRegularize,
     request: Request,
 ) -> AttendanceOut:
+    """The documented escape hatch for a stuck or urgent correction (ADR-0006 §6, §11) — an
+    administrator changes the status directly, audited in its own domain, unaffected by whether a
+    self-service request happens to be pending. If one is, its own decision lands later through
+    the approval consumer and finds the transition it was raised for no longer legal, and reports
+    `failed` rather than silently overwriting what HR just did."""
     record = await selectors.get_attendance(session, ctx.organization_id, record_id)
     if record is None:
         raise NotFoundProblem("That attendance record is not part of this organization")
     updated = await services.regularize_attendance(
         session, ctx, record, payload.to, reason=payload.reason, request=request
     )
-    return AttendanceOut.model_validate(updated)
+    regularization = await selectors.get_latest_regularization(
+        session, ctx.organization_id, updated.id
+    )
+    return _attendance_out(updated, regularization)
+
+
+@router.post(
+    "/attendance/{record_id}/regularization-requests",
+    response_model=RegularizationRequestOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Ask for a correction to your own attendance record",
+    dependencies=[Entitled],
+)
+async def request_regularization(
+    record_id: uuid.UUID,
+    payload: RegularizationRequestIn,
+    session: SessionDep,
+    ctx: AttendanceRequest,
+    request: Request,
+) -> RegularizationRequestOut:
+    """Self-service (ADR-0006 §11). Opens a `pending` request and publishes
+    `hrms.time.regularization.requested`; approval routes it and reports the decision back on
+    `core.approval.request.decided`, applied by `app.consumers`."""
+    record = await selectors.get_attendance(session, ctx.organization_id, record_id)
+    if record is None:
+        raise NotFoundProblem("That attendance record is not part of this organization")
+    # The named vulnerability again: the permission's OWN ceiling makes "request for someone
+    # else" ungrantable, but a caller who could still name another person's record by id must be
+    # refused *here*, not merely left unable to list it. `assert_can_touch` is not the right tool
+    # for this one check — it returns unconditionally at ORG, which is correct for permissions
+    # that have a real organization-wide reading, but this one never does. See
+    # `_assert_requesting_own_record`.
+    _assert_requesting_own_record(ctx, record)
+    reg = await services.request_regularization(session, ctx, record, payload, request=request)
+    return _regularization_out(reg, record)
 
 
 # --------------------------------------------------------------------- shifts

@@ -1,3 +1,5 @@
+> **Historical.** This describes `frontend/opsgrids-website`, which was removed on 2026-09-19 when the marketing site moved to its own repository. Nothing it names still exists in this tree — see the amendment at the end of `docs/adr/0001-frontend-topology.md`.
+
 # Subcategory filter — plan
 
 A design proposal for filtering the product catalogue. **Nothing here is built.**

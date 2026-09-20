@@ -120,7 +120,7 @@ EDGE        ┌─────────────────────�
                                   activity :8137  operations:8172
                                                   itsm      :8173
                                      │
- PLATFORM   document :8150 · notification :8151 · eventbridge :8163 (admin only)
+ PLATFORM   document :8150 · notification :8151 · approval :8152 · eventbridge :8163 (admin only)
             config · scheduler — no gateway prefix, service-to-service only
  OPERATOR   console :8170, behind admin-gateway
                                      │
@@ -480,7 +480,6 @@ auto-accepts an IMS document.
 One standalone app per surface (ADR-0001). A customer who bought only CRM downloads only CRM.
 
 ```
-opsgrids-website     marketing — public, SEO-critical      Next.js 16
 opsgrids-internal    operator console (staff, cross-tenant) Vite · React
 product-*          nine product apps                      Vite · React
 opsgrids-ui          the design system every app imports

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# The custom-domain sweep (ADR-0012 §6), and a distinct process from both the API and the
+# consumer — a poll loop must not share a pool with request traffic.
+#
+# The scaffold points bin/cron at `app.relay`, and for this service that is the worst possible
+# default: the relay starts, drains an outbox that is empty by design (ADR-0012 §15 publishes
+# no event), reports itself healthy, and **no domain is ever checked**. No claim is verified,
+# no expired claim is released, no live domain that has lost its DNS is ever noticed, and
+# nothing errors. It is the same silent-nothing failure shape as an unset directory role,
+# which this service already refuses to boot without.
+#
+# So this entrypoint checks that the sweep actually exists before it starts, and refuses
+# loudly when it does not. A cron container in a crash loop is visible in `docker compose ps`
+# in a way that a cron container running the wrong loop is not.
+if ! python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('app.cron') else 1)"; then
+	echo "storefront bin/cron: app/cron.py is not in this image — refusing to start." >&2
+	echo "  This entrypoint runs the custom-domain sweep (ADR-0012 §6): the three probes," >&2
+	echo "  the state machine, and the release of claims that expired after 14 days." >&2
+	echo "  Starting anything else here — the relay, a sleep — would look healthy while no" >&2
+	echo "  merchant's domain was ever checked and nothing errored. Build app/cron.py, or" >&2
+	echo "  stop scheduling this container." >&2
+	exit 78 # EX_CONFIG
+fi
+exec python -m app.cron

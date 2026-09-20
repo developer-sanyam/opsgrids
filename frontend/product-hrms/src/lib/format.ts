@@ -1,31 +1,14 @@
-import type { EmployeeStatus } from "@/api/types";
+import type { AttendanceStatus, EmployeeStatus } from "@/api/types";
 
 /**
- * "2026-08-24T09:24:00Z" -> "9:24 AM". Returns "—" for a missing punch.
- * Rendered in UTC so a stored wall-clock time shows as-is, independent of the viewer's zone.
+ * Zone-free label lookups — copy for enums, not time.
+ *
+ * Every timestamp in this app renders through `@opsgrids/ui`'s zone-aware helpers
+ * (`formatInstant`, `formatInZone`, `formatRelative`, `resolveZone`) and `useZoneLookup`
+ * (`@/lib/zone`), never through a formatter that hard-codes a zone. This file used to hard-code
+ * `timeZone: "UTC"` for every date and time in the app — ADR-0000 requires the *relevant
+ * location's* zone, and UTC is a location no record has (screens spec §2.1, gap G9).
  */
-export function formatTime(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleTimeString("en-IN", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-    timeZone: "UTC",
-  });
-}
-
-/** "2021-03-15" -> "15 Mar 2021". */
-export function formatDate(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
 
 /** 512 -> "8h 32m". */
 export function formatMinutes(minutes: number | null): string {
@@ -55,4 +38,17 @@ const EMPLOYMENT_LABELS: Record<string, string> = {
 
 export function employmentLabel(type: string): string {
   return EMPLOYMENT_LABELS[type] ?? type;
+}
+
+/** The service's four statuses (screens spec gap **G13**): `present | half_day | absent |
+ *  regularized`, not the SPA's earlier, wrong `present | late | absent`. */
+const ATTENDANCE_STATUS_LABELS: Record<AttendanceStatus, string> = {
+  present: "Present",
+  half_day: "Half day",
+  absent: "Absent",
+  regularized: "Regularised",
+};
+
+export function attendanceStatusLabel(status: AttendanceStatus): string {
+  return ATTENDANCE_STATUS_LABELS[status];
 }

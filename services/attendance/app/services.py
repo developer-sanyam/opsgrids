@@ -35,12 +35,20 @@ from app.domain import (
     assert_can_transition,
     assert_checkout_after_checkin,
 )
-from app.models import AttendanceRecord, AuditLog, Geofence, OutboxEvent, Shift
+from app.models import (
+    AttendanceRecord,
+    AuditLog,
+    Geofence,
+    OutboxEvent,
+    RegularizationRequest,
+    Shift,
+)
 from app.schemas import (
     CheckInIn,
     CheckOutIn,
     GeofenceIn,
     GeofencePatch,
+    RegularizationRequestIn,
     ShiftIn,
     ShiftPatch,
 )
@@ -53,6 +61,13 @@ from platform_core.events import publish_event
 EVT_CHECKED_IN = "hrms.time.attendance.checked_in"
 EVT_CHECKED_OUT = "hrms.time.attendance.checked_out"
 EVT_REGULARIZED = "hrms.time.attendance.regularized"
+#: ADR-0006 — the approval engine's request/decide pair. `.requested` is what approval opens a
+#: request from; `.applied` is attendance's return leg, closing the loop so "approved in approval"
+#: never sits uncontradicted against an attendance row that never actually moved (ADR-0006 §12).
+EVT_REGULARIZATION_REQUESTED = "hrms.time.regularization.requested"
+EVT_REGULARIZATION_APPLIED = "hrms.time.regularization.applied"
+#: The request type approval routes this product's regularisation requests under (ADR-0006 §12).
+REQUEST_TYPE_REGULARIZATION = "hrms.time.regularization"
 EVT_SHIFT_CREATED = "hrms.time.shift.created"
 EVT_SHIFT_UPDATED = "hrms.time.shift.updated"
 EVT_GEOFENCE_CREATED = "hrms.time.geofence.created"
@@ -328,6 +343,331 @@ async def regularize_attendance(
         actor=_actor(ctx),
     )
     return record
+
+
+def _consumer_actor() -> dict[str, Any]:
+    """The provenance stamped on a write the approval-decision consumer makes — not a person and
+    not a caller-supplied service, mirroring `payment.services._provider_actor`'s shape for the
+    same reason: the outbox `actor` column always names *something*, even when nobody is at the
+    keyboard."""
+    return {"type": "consumer", "id": "attendance.consumer"}
+
+
+async def request_regularization(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    record: AttendanceRecord,
+    payload: RegularizationRequestIn,
+    *,
+    request: Request | None = None,
+) -> RegularizationRequest:
+    """Ask for a correction to your own attendance (ADR-0006 §11) — self-service, routed.
+
+    Two checks the ADR asks for **at request time, not only when the decision lands**: the
+    requested transition must be legal from the record's *current* status (the same state
+    machine `regularize_attendance` enforces directly), and the record must not already carry a
+    pending request — the partial unique index is the backstop for a race, this is the readable
+    error for the ordinary case. The object-level "is this the caller's own record" check runs in
+    the route, before this is ever called, the same shape `read_attendance` uses.
+
+    Publishes `hrms.time.regularization.requested` — the event approval's consumer opens a
+    request from — in the same transaction as the row, never inline (ADR-0000).
+    """
+    current = AttendanceStatus(record.status)
+    target = AttendanceStatus(payload.requested_status)
+    try:
+        assert_can_transition(current, target)
+    except IllegalTransition as exc:
+        raise BusinessRuleProblem(str(exc)) from exc
+
+    if await selectors.get_pending_regularization(session, ctx.organization_id, record.id):
+        raise ConflictProblem("A regularization request for this record is already pending")
+
+    reg = RegularizationRequest(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        attendance_id=record.id,
+        employee_id=record.employee_id,
+        requested_status=target.value,
+        reason=payload.reason,
+        status="pending",
+    )
+    session.add(reg)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="attendance.regularization_requested",
+        entity="regularization_request",
+        entity_id=reg.id,
+        after={
+            "attendance_id": reg.attendance_id,
+            "current_status": current.value,
+            "requested_status": reg.requested_status,
+        },
+        reason=reg.reason,
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_REGULARIZATION_REQUESTED,
+        aggregate_type="regularization_request",
+        aggregate_id=reg.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "regularization_request_id": str(reg.id),
+            "attendance_id": str(record.id),
+            "employee_id": str(record.employee_id),
+            "requested_status": reg.requested_status,
+            "current_status": current.value,
+            "reason": reg.reason,
+            "date": record.work_date.isoformat(),
+        },
+        actor=_actor(ctx),
+    )
+    return reg
+
+
+def _publish_regularization_applied(
+    session: AsyncSession,
+    reg: RegularizationRequest,
+    *,
+    outcome: str,
+    failure_reason: str | None = None,
+) -> None:
+    """Attendance's return leg (ADR-0006 §12). Published for **every** decision it consumes: a
+    landed approval and a rejection are both `applied` — the event means "I applied your
+    decision", not "I corrected the day" — and an approval whose transition has since become
+    illegal is `failed`. Never raises: approval's own alarm on `application_state` is what finds
+    the population where this leg never runs, not a redelivery loop here."""
+    payload: dict[str, Any] = {
+        "organization_id": str(reg.organization_id),
+        "regularization_request_id": str(reg.id),
+        "approval_request_id": (str(reg.approval_request_id) if reg.approval_request_id else None),
+        "request_type": REQUEST_TYPE_REGULARIZATION,
+        "outcome": outcome,
+    }
+    if failure_reason is not None:
+        payload["failure_reason"] = failure_reason
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=reg.organization_id,
+        event_type=EVT_REGULARIZATION_APPLIED,
+        aggregate_type="regularization_request",
+        aggregate_id=reg.id,
+        payload=payload,
+        actor=_consumer_actor(),
+    )
+
+
+async def apply_regularization_opened(
+    session: AsyncSession,
+    reg: RegularizationRequest,
+    *,
+    approval_request_id: uuid.UUID,
+    approver_employee_id: uuid.UUID | None,
+    approver_name: str | None,
+    opened_at: datetime,
+) -> RegularizationRequest:
+    """Apply `core.approval.request.opened` to a still-`pending` regularization request
+    (ADR-0006 §12, the half of the loop that was specified and never built). Called only from
+    `consumers.py`, which has already checked `reg.status == "pending"` — a replay, or `.opened`
+    arriving after `.decided` for the same request, never reaches here, so this can never
+    overwrite a terminal decision.
+
+    Sets `approval_request_id` only if it is not already set (harmless either way — `.opened` and
+    `.decided` both carry the same id, but `.decided` may have already written it if it somehow
+    landed first). Sets `approval_opened_at`, `approver_employee_id` and `approver_name`
+    unconditionally; a null `approver_employee_id` here means the step opened unassigned, not
+    "unknown" — that is what `approval_opened_at` being set at all is for (see the model's
+    docstring). `approver_name` is `consumers._display_name`'s own already-optional extraction
+    (`None` for an absent key, an unassigned step, or a name the payload sets to `null`) — this
+    function never distinguishes those cases either, it only stores what it is given.
+
+    No outbox event: nothing downstream needs to know approval merely opened a step — attendance's
+    own return leg is `.applied`, published only once a decision lands.
+    """
+    if reg.approval_request_id is None:
+        reg.approval_request_id = approval_request_id
+    reg.approval_opened_at = opened_at
+    reg.approver_employee_id = approver_employee_id
+    reg.approver_name = approver_name
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=reg.organization_id,
+        actor_id=None,
+        acting_as="attendance.consumer",
+        action="attendance.regularization_opened",
+        entity="regularization_request",
+        entity_id=reg.id,
+        after={
+            "approval_request_id": reg.approval_request_id,
+            "approver_employee_id": approver_employee_id,
+            "approver_name": approver_name,
+            "unassigned": approver_employee_id is None,
+        },
+    )
+    return reg
+
+
+async def apply_regularization_decision(
+    session: AsyncSession,
+    reg: RegularizationRequest,
+    record: AttendanceRecord,
+    *,
+    outcome: str,
+    approval_request_id: uuid.UUID,
+    decided_at: datetime,
+    comment: str | None = None,
+    decided_by_name: str | None = None,
+) -> RegularizationRequest:
+    """Apply `core.approval.request.decided` to a still-`pending` regularization request
+    (ADR-0006 §12). Called only from `consumers.py`, which has already checked `reg.status ==
+    "pending"` — a replay or a stale `.opened` arriving after `.decided` never reaches here.
+
+    There is no `ScopeContext`: the caller is an event, not a person, so the audit rows below
+    carry no `actor_id` and are attributed to the consumer, the same "consumer-driven" shape
+    ADR-0006 §13 specifies for approval's own opening and escalation rows.
+
+    * **`rejected`** moves the request to `rejected` and stops — the attendance record itself is
+      untouched, because rejecting a request is a decision about the request, not a correction.
+    * **`approved`** re-validates the transition against the record's *current* status before
+      applying it. HR may have corrected the day directly through the override endpoint while
+      the request was in flight; if the step that was legal when the request was raised has since
+      become illegal, this does **not** raise — raising would redeliver once and then dead-letter
+      a fact that is not a processing error — it records `failed` with a reason instead.
+
+    `comment` is the decider's own free text from `.decided`'s `comment` field, stored verbatim
+    on `reg.decision_comment` (Text, plaintext — the same rule `reg.reason` already follows, data
+    model §5) and threaded onto every audit row this function writes through `record_audit`'s
+    `reason=` parameter, exactly how `request_regularization` carries the requester's own `reason`
+    — never folded into a `before`/`after` blob.
+
+    `decided_by_name` is `consumers._display_name`'s own already-optional extraction — `None` for
+    an absent key or a decider outside approval's hierarchy copy (a legitimate org-level decision,
+    not an error) — stored verbatim on `reg.decided_by_name`, the same plaintext, unmasked
+    treatment `decision_comment` gets (data model §5: approval's own source is not sealed either).
+    Unlike `comment`, it is a system-resolved fact rather than the decider's own authored text, so
+    it travels in each audit row's `after` snapshot beside the status it accompanies, the same
+    place `approver_employee_id` already travels in `apply_regularization_opened` — `reason=`
+    stays reserved for `comment` alone, never overwritten.
+
+    Either branch publishes `hrms.time.regularization.applied` from this same transaction.
+    """
+    reg.approval_request_id = approval_request_id
+    reg.decided_at = decided_at
+    reg.decision_comment = comment
+    reg.decided_by_name = decided_by_name
+
+    if outcome == "rejected":
+        reg.status = "rejected"
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=reg.organization_id,
+            actor_id=None,
+            acting_as="attendance.consumer",
+            action="attendance.regularization_rejected",
+            entity="regularization_request",
+            entity_id=reg.id,
+            before={"status": "pending"},
+            after={"status": "rejected", "decided_by_name": decided_by_name},
+            reason=comment,
+        )
+        _publish_regularization_applied(session, reg, outcome="applied")
+        return reg
+
+    current = AttendanceStatus(record.status)
+    target = AttendanceStatus(reg.requested_status)
+    try:
+        assert_can_transition(current, target)
+    except IllegalTransition:
+        reg.status = "failed"
+        reg.failure_reason = (
+            f"The record has since moved to {current.value!r}; a correction to "
+            f"{target.value!r} is no longer legal."
+        )[:500]
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=reg.organization_id,
+            actor_id=None,
+            acting_as="attendance.consumer",
+            action="attendance.regularization_failed",
+            entity="regularization_request",
+            entity_id=reg.id,
+            before={"status": "pending"},
+            after={
+                "status": "failed",
+                "failure_reason": reg.failure_reason,
+                "decided_by_name": decided_by_name,
+            },
+            reason=comment,
+        )
+        _publish_regularization_applied(
+            session, reg, outcome="failed", failure_reason=reg.failure_reason
+        )
+        return reg
+
+    record.status = target.value
+    record.updated_by = "attendance.consumer"
+    reg.status = "approved"
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=reg.organization_id,
+        actor_id=None,
+        acting_as="attendance.consumer",
+        action="attendance.regularization_approved",
+        entity="regularization_request",
+        entity_id=reg.id,
+        before={"status": "pending"},
+        after={"status": "approved", "decided_by_name": decided_by_name},
+        reason=comment,
+    )
+    # `reason` here is the requester's own stated reason for the correction (`reg.reason`), not
+    # the decider's comment — this row documents why the *attendance record* changed, which is
+    # what the requester asked for; the row above documents the decision itself.
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=reg.organization_id,
+        actor_id=None,
+        acting_as="attendance.consumer",
+        action="attendance.regularized",
+        entity="attendance",
+        entity_id=record.id,
+        before={"status": current.value},
+        after={"status": target.value},
+        reason=reg.reason,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=reg.organization_id,
+        event_type=EVT_REGULARIZED,
+        aggregate_type="attendance",
+        aggregate_id=record.id,
+        payload={
+            "organization_id": str(reg.organization_id),
+            "attendance_id": str(record.id),
+            "employee_id": str(record.employee_id),
+            "from": current.value,
+            "to": target.value,
+        },
+        actor=_consumer_actor(),
+    )
+    _publish_regularization_applied(session, reg, outcome="applied")
+    return reg
 
 
 # --------------------------------------------------------------------- shifts

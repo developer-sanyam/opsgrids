@@ -108,6 +108,20 @@ HRMS = PermissionCatalogue(
         PermissionSpec(
             "time", "attendance", "write", "Punch, and correct, attendance records", "OWN", "ORG"
         ),
+        # ADR-0006 §11: the self-service regularisation request. `max_scope` is OWN, not ORG —
+        # there is no meaningful "request a correction on behalf of everyone". An administrator
+        # who wants to change someone else's day uses the existing direct override
+        # (`attendance.write` at `minimum=ORG`), which stays the audited escape hatch. Capping
+        # the ceiling at OWN makes an ORG-wide request-for-others power unrepresentable rather
+        # than merely ungranted.
+        PermissionSpec(
+            "time",
+            "attendance",
+            "request",
+            "Ask for a correction to your own attendance",
+            "OWN",
+            "OWN",
+        ),
         # A shift is an organization-wide definition, not a personal one: everyone reads them,
         # only an administrator writes them. So both default to ORG — there is no "own shift".
         PermissionSpec("time", "shift", "read", "See shift definitions", "ORG", "ORG"),
@@ -131,6 +145,9 @@ HRMS_ROLE_TEMPLATES: list[RoleTemplate] = [
         grants=HRMS.pick(
             ("hrms.time.attendance.read", "ORG"),
             ("hrms.time.attendance.write", "ORG"),
+            # An HR administrator is also an employee with their own attendance (ADR-0006 §11),
+            # so they hold the self-service request permission too — at OWN, its ceiling.
+            ("hrms.time.attendance.request", "OWN"),
             ("hrms.time.shift.read", "ORG"),
             ("hrms.time.shift.write", "ORG"),
         ),
@@ -140,14 +157,16 @@ HRMS_ROLE_TEMPLATES: list[RoleTemplate] = [
         name="Employee",
         product=PRODUCT,
         description=(
-            "Every person with an HRMS seat. Punches and reads their own attendance, and sees "
-            "the organization's shifts."
+            "Every person with an HRMS seat. Punches and reads their own attendance, asks for "
+            "corrections to it, and sees the organization's shifts."
         ),
         is_default=True,
         grants=HRMS.pick(
             # A person punches and reads their own attendance — OWN, so it reaches nobody else's.
             ("hrms.time.attendance.read", "OWN"),
             ("hrms.time.attendance.write", "OWN"),
+            # Everyone raises requests against their own record (ADR-0006 §11).
+            ("hrms.time.attendance.request", "OWN"),
             # Shifts are org definitions everyone needs to see, so shift.read is granted at ORG.
             ("hrms.time.shift.read", "ORG"),
         ),

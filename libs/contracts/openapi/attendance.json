@@ -3,6 +3,19 @@
     "schemas": {
       "AttendanceOut": {
         "properties": {
+          "allowed_transitions": {
+            "items": {
+              "enum": [
+                "present",
+                "half_day",
+                "absent",
+                "regularized"
+              ],
+              "type": "string"
+            },
+            "title": "Allowed Transitions",
+            "type": "array"
+          },
           "check_in_at": {
             "format": "date-time",
             "title": "Check In At",
@@ -104,6 +117,16 @@
               }
             ],
             "title": "Notes"
+          },
+          "regularization": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RegularizationRequestOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "shift_id": {
             "anyOf": [
@@ -588,6 +611,208 @@
           "pages"
         ],
         "title": "Page[ShiftOut]",
+        "type": "object"
+      },
+      "RegularizationRequestIn": {
+        "description": "A self-service ask for a correction to your own attendance record (ADR-0006 \u00a711).\n\nThere is no `employee_id`, for the same reason `CheckInIn` has none: a person raises a\nrequest against their own record, and the record named in the path already says whose it is.\n`reason` is required here \u2014 unlike the approver's decision comment, which the platform\ndeliberately leaves optional (ADR-0006 \u00a77), a request with no stated reason gives an approver\nnothing to route on.",
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "requested_status": {
+            "enum": [
+              "present",
+              "half_day",
+              "absent",
+              "regularized"
+            ],
+            "title": "Requested Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requested_status",
+          "reason"
+        ],
+        "title": "RegularizationRequestIn",
+        "type": "object"
+      },
+      "RegularizationRequestOut": {
+        "properties": {
+          "approval_opened_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Opened At"
+          },
+          "approval_request_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Request Id"
+          },
+          "approver_employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Employee Id"
+          },
+          "approver_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Name"
+          },
+          "approver_unassigned": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Unassigned"
+          },
+          "attendance_id": {
+            "format": "uuid",
+            "title": "Attendance Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By Name"
+          },
+          "decision_comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Comment"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "location_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Code"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "requested_status": {
+            "title": "Requested Status",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "approved",
+              "rejected",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "attendance_id",
+          "employee_id",
+          "requested_status",
+          "reason",
+          "status",
+          "approval_request_id",
+          "approval_opened_at",
+          "approver_employee_id",
+          "approver_name",
+          "decided_at",
+          "decision_comment",
+          "decided_by_name",
+          "failure_reason",
+          "created_at"
+        ],
+        "title": "RegularizationRequestOut",
         "type": "object"
       },
       "RegularizeIn": {
@@ -1124,8 +1349,63 @@
         ]
       }
     },
+    "/api/v1/attendance/{record_id}/regularization-requests": {
+      "post": {
+        "description": "Self-service (ADR-0006 \u00a711). Opens a `pending` request and publishes\n`hrms.time.regularization.requested`; approval routes it and reports the decision back on\n`core.approval.request.decided`, applied by `app.consumers`.",
+        "operationId": "request_regularization_api_v1_attendance__record_id__regularization_requests_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "record_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Record Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegularizationRequestIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegularizationRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask for a correction to your own attendance record",
+        "tags": [
+          "attendance"
+        ]
+      }
+    },
     "/api/v1/attendance/{record_id}/regularize": {
       "post": {
+        "description": "The documented escape hatch for a stuck or urgent correction (ADR-0006 \u00a76, \u00a711) \u2014 an\nadministrator changes the status directly, audited in its own domain, unaffected by whether a\nself-service request happens to be pending. If one is, its own decision lands later through\nthe approval consumer and finds the transition it was raised for no longer legal, and reports\n`failed` rather than silently overwriting what HR just did.",
         "operationId": "regularize_attendance_api_v1_attendance__record_id__regularize_post",
         "parameters": [
           {
@@ -1171,7 +1451,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Correct an attendance record's status",
+        "summary": "Correct an attendance record's status directly (HR override)",
         "tags": [
           "attendance"
         ]

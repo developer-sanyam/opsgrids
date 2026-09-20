@@ -38,6 +38,15 @@
       "resource": "attendance"
     },
     {
+      "action": "request",
+      "default_scope": "OWN",
+      "description": "Ask for a correction to your own attendance",
+      "is_dangerous": false,
+      "max_scope": "OWN",
+      "module": "time",
+      "resource": "attendance"
+    },
+    {
       "action": "write",
       "default_scope": "OWN",
       "description": "Punch, and correct, attendance records",
@@ -89,6 +98,10 @@
           "scope": "ORG"
         },
         {
+          "code": "hrms.time.attendance.request",
+          "scope": "OWN"
+        },
+        {
           "code": "hrms.time.attendance.write",
           "scope": "ORG"
         },
@@ -108,7 +121,7 @@
     {
       "code": "EMPLOYEE",
       "cross_product": false,
-      "description": "Every person with an HRMS seat. Punches and reads their own attendance, and sees the organization's shifts. Every person with an HRMS seat. Sees their own employment record.",
+      "description": "Every person with an HRMS seat. Punches and reads their own attendance, asks for corrections to it, and sees the organization's shifts. Every person with an HRMS seat. Sees their own employment record.",
       "grants": [
         {
           "code": "hrms.people.employee.read",
@@ -120,6 +133,10 @@
         },
         {
           "code": "hrms.time.attendance.read",
+          "scope": "OWN"
+        },
+        {
+          "code": "hrms.time.attendance.request",
           "scope": "OWN"
         },
         {

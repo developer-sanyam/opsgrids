@@ -2,6 +2,78 @@
   "manifest_version": 1,
   "permissions": [
     {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Create and revoke delegations: OWN only where the caller is the delegator; ORG for any delegator",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "approval",
+      "resource": "delegation"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Edit the SLA policy for a request type",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "approval",
+      "resource": "policy"
+    },
+    {
+      "action": "decide",
+      "default_scope": "OWN",
+      "description": "Decide a pending request: OWN where the routing chain makes the caller eligible; ORG additionally decides unassigned steps",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "approval",
+      "resource": "request"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See approval requests: OWN reaches requests raised or eligible on, and the caller's own chain; ORG reaches every request and any employee's chain",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "approval",
+      "resource": "request"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See the credit balance",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "billing",
+      "resource": "credit"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See invoices",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "billing",
+      "resource": "invoice"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "List the organization's uploaded images and read one image's details. Organization-wide: an asset library has no team or location reading",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "content",
+      "resource": "asset"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Upload an image to the organization's library, and remove one from it \u2014 including an immediate takedown of the published object",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "content",
+      "resource": "asset"
+    },
+    {
       "action": "read",
       "default_scope": "ORG",
       "description": "Read the audit trail",
@@ -169,8 +241,40 @@
     {
       "code": "ORG_OWNER",
       "cross_product": false,
-      "description": "Runs the account: billing, product activation, members and roles. Deliberately separate from a product administrator \u2014 owning the company is not the same job as administering its HR data.",
+      "description": "Runs the account: billing, product activation, members and roles. Deliberately separate from a product administrator \u2014 owning the company is not the same job as administering its HR data. Account's template already grants every `core` permission at ORG over its own specs; this is approval's contribution to that union. It is what guarantees every organization ends ADR-0007's reconcile with at least one holder of decide:ORG, so the unassigned queue always has an owner. Document's contribution to that union is the organization's image library.",
       "grants": [
+        {
+          "code": "core.approval.delegation.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.approval.policy.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.approval.request.decide",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.approval.request.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.billing.credit.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.billing.invoice.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.content.asset.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.content.asset.write",
+          "scope": "ORG"
+        },
         {
           "code": "core.identity.audit.read",
           "scope": "ORG"
@@ -251,8 +355,32 @@
     {
       "code": "ORG_ADMIN",
       "cross_product": false,
-      "description": "Manages people and structure, but not billing.",
+      "description": "Manages people and structure, but not billing. The organization's administrator. SLA policy is organization configuration, not billing, so it is in scope for the role defined as people and structure. The image library is organization content rather than billing, so it belongs to the same role.",
       "grants": [
+        {
+          "code": "core.approval.delegation.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.approval.policy.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.approval.request.decide",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.approval.request.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.content.asset.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.content.asset.write",
+          "scope": "ORG"
+        },
         {
           "code": "core.identity.membership.read",
           "scope": "ORG"
@@ -309,8 +437,20 @@
     {
       "code": "MEMBER",
       "cross_product": false,
-      "description": "Everyone. Sees the organization chart and edits their own profile.",
+      "description": "Everyone. Sees the organization chart and edits their own profile. Everyone raises requests, decides what the routing chain sends them, and may hand over while away. Holding decide:OWN is not authority by itself \u2014 ADR-0006 \u00a76's eligibility check is what actually decides who may answer.",
       "grants": [
+        {
+          "code": "core.approval.delegation.write",
+          "scope": "OWN"
+        },
+        {
+          "code": "core.approval.request.decide",
+          "scope": "OWN"
+        },
+        {
+          "code": "core.approval.request.read",
+          "scope": "OWN"
+        },
         {
           "code": "core.identity.membership.read",
           "scope": "TEAM"
@@ -339,9 +479,37 @@
       "is_admin": false,
       "is_default": true,
       "name": "Member"
+    },
+    {
+      "code": "APPROVAL_ADMIN",
+      "cross_product": false,
+      "description": "All four approval permissions at ORG, nothing else. HRMS's HR_ADMIN cannot be granted core.* directly (ADR-0000 \u00a75's corollary \u2014 a product's admin role is built from that product's own catalogue), so an HR administrator who needs the unassigned queue is given this role alongside HR_ADMIN. Deliberately not the product's admin-most template: `ORG_OWNER` already holds every `core` grant, so marking this one admin-most too would be redundant and it is not auto-granted on activation.",
+      "grants": [
+        {
+          "code": "core.approval.delegation.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.approval.policy.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.approval.request.decide",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.approval.request.read",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "Approvals administrator"
     }
   ],
   "sources": [
-    "account"
+    "account",
+    "approval",
+    "document"
   ]
 }

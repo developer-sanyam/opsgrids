@@ -35,7 +35,10 @@ from platform_core.audit import record_audit, record_sensitive_read
 from platform_core.auth import ScopeContext
 from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
 from platform_core.events import publish_event
+from platform_core.logging import get_logger
 from platform_core.pii import open_sealed, seal
+
+log = get_logger("employee.services")
 
 # Event names. `hrms.*` because these are the product's own, not the platform's.
 EVT_EMPLOYEE_ONBOARDED = "hrms.people.employee.onboarded"
@@ -116,6 +119,7 @@ _TRACKED_FIELDS = (
     "work_mode",
     "date_of_joining",
     "reporting_manager_id",
+    "dotted_line_manager_id",
 )
 
 
@@ -127,21 +131,103 @@ def _actor(ctx: ScopeContext) -> dict[str, Any]:
     }
 
 
-async def _assert_manager_exists(
-    session: AsyncSession, org_id: uuid.UUID, manager_id: uuid.UUID | None
-) -> None:
-    """A reporting manager must be an employee of the same organization.
+def _hierarchy_snapshot(employee: Employee) -> dict[str, Any]:
+    """The full hierarchy state of `employee` **after** the change — never a diff.
 
-    Enforced in application code rather than by a foreign key, because the manager link is a
-    plain UUID (it could point across a schema boundary in other shapes of this data) and
-    because the check has to be tenant-scoped: naming an employee id from another organization
-    must read as "not found here", never resolve.
+    Carried on all three employee events (ADR-0006 §2): a consumer that missed or reordered an
+    event converges on the next one it sees, and never needs to replay history. `display_name`
+    is the wire name approval's copy uses — the column here is `full_name`, which is
+    deliberately not among employee's sealed PII fields (`app/models.py`), so copying it moves
+    no ciphertext. Reading `hierarchy_version` back only works because the caller has already
+    flushed and refreshed the row past the version trigger (`app/models.py`
+    `trg_employees_hierarchy_version`) — building this from a Python-side attribute the ORM set
+    itself would carry a stale value.
+    """
+    return {
+        "employee_id": str(employee.id),
+        "reporting_manager_id": (
+            str(employee.reporting_manager_id) if employee.reporting_manager_id else None
+        ),
+        "dotted_line_manager_id": (
+            str(employee.dotted_line_manager_id) if employee.dotted_line_manager_id else None
+        ),
+        "status": employee.status,
+        "location_code": employee.location_code,
+        "display_name": employee.full_name,
+        "employee_no": employee.employee_no,
+        "hierarchy_version": employee.hierarchy_version,
+    }
+
+
+async def _assert_manager_exists(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    manager_id: uuid.UUID | None,
+    *,
+    label: str = "reporting manager",
+) -> None:
+    """A reporting (or dotted-line) manager must be an employee of the same organization.
+
+    Enforced in application code rather than by a foreign key for `reporting_manager_id` (the
+    manager link is a plain UUID, and the check has to be tenant-scoped: naming an employee id
+    from another organization must read as "not found here", never resolve). The composite
+    foreign key covers `dotted_line_manager_id` at the database level too, but this still runs
+    for it so the failure is the same friendly 404 rather than an `IntegrityError`.
     """
     if manager_id is None:
         return
     manager = await selectors.get_employee(session, org_id, manager_id)
     if manager is None:
-        raise NotFoundProblem("That reporting manager is not an employee of this organization")
+        raise NotFoundProblem(f"That {label} is not an employee of this organization")
+
+
+async def _assert_no_cycle(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    employee: Employee,
+    proposed_manager_id: uuid.UUID,
+    *,
+    label: str,
+) -> None:
+    """Refuse a manager change that would close a reporting cycle, make the chain unroutably
+    deep, or write into a cycle that already exists elsewhere in the data (ADR-0006 §2, data
+    model §4.3). Applies to both `reporting_manager_id` and `dotted_line_manager_id`: both walk
+    the same *reporting* edges upward from the proposed manager, and both are refused the same
+    way for whichever of the three reasons applies.
+
+    The three are reported with distinct messages on purpose — they are different defects with
+    different fixes, and collapsing them into one "reporting cycle" message (as this used to)
+    is actively misleading for the one that is not a cycle at all: a chain that is simply too
+    long to route is not looping, and telling an operator it is sends them looking for a loop
+    that does not exist.
+    """
+    walk = await selectors.walk_manager_chain(session, org_id, employee.id, proposed_manager_id)
+    if walk.existing_cycle:
+        # The data already contained a cycle — possible, since no check has ever existed until
+        # now. Writing into it would only make it worse, so it is refused too, but this is worth
+        # a line an operator can find: it means some *other* row needs fixing, not this one.
+        log.warning(
+            "employee.hierarchy.existing_cycle",
+            organization_id=str(org_id),
+            employee_id=str(employee.id),
+            proposed_manager_id=str(proposed_manager_id),
+        )
+    if walk.reaches_employee:
+        raise BusinessRuleProblem(
+            f"Making {proposed_manager_id} the {label} of {employee.id} would create a "
+            "reporting cycle"
+        )
+    if walk.too_deep:
+        raise BusinessRuleProblem(
+            f"Making {proposed_manager_id} the {label} of {employee.id} would push the "
+            f"reporting chain past {selectors.MAX_MANAGER_CHAIN_DEPTH} rungs, which is too deep "
+            "to route"
+        )
+    if walk.existing_cycle:
+        raise BusinessRuleProblem(
+            f"Cannot make {proposed_manager_id} the {label} of {employee.id}: that manager's "
+            "existing reporting chain already contains a cycle unrelated to this change"
+        )
 
 
 async def create_employee(
@@ -152,20 +238,47 @@ async def create_employee(
     request: Request | None = None,
 ) -> Employee:
     """Onboard an employee. Starts on probation; the lifecycle is the only way out of it."""
+    # ADR-0008 §3: the membership link is frozen on this side. `account.memberships.employee_id`
+    # is authoritative and account is its only writer, because deciding which person a platform
+    # principal *is* is an authorization decision a product service must not be able to make.
+    # Refused loudly and before anything else runs: a rejected request is not a change, so this
+    # writes no audit row and stages no event. The message names the endpoint that does work,
+    # because the whole point of refusing rather than ignoring is that the caller finds out where
+    # to go.
+    if payload.membership_id is not None:
+        raise BusinessRuleProblem(
+            "membership_id is no longer accepted here: the employee link is owned by "
+            "account-service. Link this employee with "
+            "PATCH /api/v1/members/{membership_id} instead."
+        )
+
     if await selectors.get_by_employee_no(session, ctx.organization_id, payload.employee_no):
         raise ConflictProblem(f"An employee numbered {payload.employee_no!r} already exists")
 
     await _assert_manager_exists(session, ctx.organization_id, payload.reporting_manager_id)
+    await _assert_manager_exists(
+        session, ctx.organization_id, payload.dotted_line_manager_id, label="dotted-line manager"
+    )
+    # No cycle check here: the new row's id does not exist yet and the payload cannot name it
+    # (`EmployeeIn` accepts no `id`), so nothing already in the organization can point at it —
+    # a fresh employee cannot be part of a cycle at the moment it is created.
 
     employee = Employee(
         organization_id=ctx.organization_id,
         created_by=str(ctx.principal.sub),
         status=EmploymentStatus.PROBATION.value,
         # `pii` is a nested contract, sealed into its own row below — never a column on the
-        # employment record, so it is excluded from the mass assignment.
-        **payload.model_dump(exclude={"pii"}),
+        # employment record. `membership_id` is refused above and is excluded here as well, so
+        # this path cannot write the frozen column even if that guard is ever moved or relaxed
+        # (ADR-0008 §3) — the value is always `None` by the time we get here, and stating it
+        # keeps the mass assignment from quietly becoming a writer again.
+        **payload.model_dump(exclude={"pii", "membership_id"}),
     )
     session.add(employee)
+    # `hierarchy_version`'s server default is fetched back automatically here (SQLAlchemy 2.0's
+    # `eager_defaults="auto"` appends it to the INSERT's RETURNING clause on Postgres) — no
+    # explicit refresh needed on the create path, unlike update and transition below, where the
+    # version comes from the `BEFORE UPDATE` trigger rather than the column's own default.
     await session.flush()
 
     sealed_fields: list[str] = []
@@ -204,12 +317,16 @@ async def create_employee(
         aggregate_id=employee.id,
         payload={
             "organization_id": str(ctx.organization_id),
-            "employee_id": str(employee.id),
-            "employee_no": employee.employee_no,
+            # Always null since ADR-0008 §3 froze the column — kept on the wire rather than
+            # removed because dropping a published key is a breaking contract change for a
+            # benefit nothing has asked for, and no consumer reads it. It goes when the later
+            # ADR drops the column.
             "membership_id": str(employee.membership_id) if employee.membership_id else None,
-            "status": employee.status,
             # The event names which sensitive fields were set, never their contents.
             "pii_fields": sorted(sealed_fields),
+            # Full hierarchy state, not a diff (ADR-0006 §2) — includes employee_id, employee_no
+            # and status, so they are not repeated above.
+            **_hierarchy_snapshot(employee),
         },
         actor=_actor(ctx),
     )
@@ -238,6 +355,22 @@ async def update_employee(
         if new_manager == employee.id:
             raise BusinessRuleProblem("An employee cannot report to themselves")
         await _assert_manager_exists(session, ctx.organization_id, new_manager)
+        if new_manager is not None:
+            await _assert_no_cycle(
+                session, ctx.organization_id, employee, new_manager, label="reporting manager"
+            )
+
+    if "dotted_line_manager_id" in changes:
+        new_dotted = changes["dotted_line_manager_id"]
+        if new_dotted == employee.id:
+            raise BusinessRuleProblem("An employee cannot be their own dotted-line manager")
+        await _assert_manager_exists(
+            session, ctx.organization_id, new_dotted, label="dotted-line manager"
+        )
+        if new_dotted is not None:
+            await _assert_no_cycle(
+                session, ctx.organization_id, employee, new_dotted, label="dotted-line manager"
+            )
 
     before = {f: employee.as_dict().get(f) for f in _TRACKED_FIELDS}
     for field, value in changes.items():
@@ -257,7 +390,14 @@ async def update_employee(
         else:
             pii_row.updated_by = str(ctx.principal.sub)
         sealed_fields = _apply_pii(pii_row, payload.pii)
-        await session.flush()
+
+    # Flush so the `UPDATE` actually reaches Postgres and the `BEFORE UPDATE` trigger runs, then
+    # refresh the whole row: the ORM has no idea a trigger touched `hierarchy_version`, so it
+    # would otherwise still read the stale, pre-write value, and a flush also expires any other
+    # server-computed column (`updated_at`'s `onupdate`) that a *narrower* refresh would leave
+    # expired for `as_dict()` to trip over below.
+    await session.flush()
+    await session.refresh(employee)
 
     record_audit(
         session,
@@ -284,9 +424,11 @@ async def update_employee(
         aggregate_id=employee.id,
         payload={
             "organization_id": str(ctx.organization_id),
-            "employee_id": str(employee.id),
+            # Kept beside the full state below: a consumer that only wants to know *what*
+            # changed still has it, without decoding a diff from two snapshots.
             "changed": sorted([*changes, *(["pii"] if sealed_fields else [])]),
             "pii_fields": sorted(sealed_fields),
+            **_hierarchy_snapshot(employee),
         },
         actor=_actor(ctx),
     )
@@ -322,6 +464,12 @@ async def transition_status(
         employee.date_of_exit = datetime.now(UTC).date()
     employee.updated_by = str(ctx.principal.sub)
 
+    # `status` is one of the six hierarchy fields the version trigger watches. Flush so the
+    # `UPDATE` runs and the trigger fires, then refresh the whole row — see `update_employee`
+    # for why this cannot be a Python-side attribute read or a narrower refresh.
+    await session.flush()
+    await session.refresh(employee)
+
     record_audit(
         session,
         AuditLog,
@@ -344,9 +492,9 @@ async def transition_status(
         aggregate_id=employee.id,
         payload={
             "organization_id": str(ctx.organization_id),
-            "employee_id": str(employee.id),
             "from": current.value,
             "to": to.value,
+            **_hierarchy_snapshot(employee),
         },
         actor=_actor(ctx),
     )

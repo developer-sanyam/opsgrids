@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
@@ -39,10 +39,12 @@ from app.schemas import (
     RoleIn,
     RoleOut,
     ServiceInfo,
+    SignupIn,
+    SignupOut,
 )
 from platform_core.auth import Scope, ScopeContext, require
 from platform_core.db import get_directory_session, get_tenant_session, session_scope
-from platform_core.errors import NotFoundProblem
+from platform_core.errors import ConflictProblem, NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
 router = APIRouter(tags=["account"])
@@ -107,6 +109,45 @@ async def update_organization(
         raise NotFoundProblem("Organization not found")
     updated = await services.update_organization(session, ctx, org, payload)
     return OrganizationOut.model_validate(updated)
+
+
+@router.post(
+    "/account/signup",
+    response_model=SignupOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create an organisation and become its owner",
+    responses={
+        409: {"description": "That address or that email is already taken"},
+        422: {"description": "Not a slug, not an email"},
+        429: {"description": "Rate limited by the gateway, per client address"},
+    },
+)
+async def signup(payload: SignupIn, directory: DirectorySessionDep, request: Request) -> SignupOut:
+    """**Public by design** (ADR-0013 §3): the caller has nothing yet, not even an account.
+
+    Bypass-then-narrow, the invitation route's shape with one difference. The bypass session
+    answers two questions it alone can — is the slug taken, is the email already somebody's —
+    because under the new tenant's binding the policied `organizations` table cannot show a
+    clash and it would surface as a unique violation. Then an id is generated, a transaction is
+    bound to it, and every write happens on the app role under the ordinary policy. See the
+    ADR for why that is narrower than running this route as the admin role.
+
+    Both clashes are a 409 with a plain sentence. An existing email is told to sign in: an
+    account that already exists does not get a second organisation from the sign-up form, and
+    "already registered" is not the enumeration oracle a login form's 404 would be, because
+    the very next step — the set-password email — goes to that inbox and nobody else.
+    """
+    if await selectors.slug_taken(directory, payload.slug):
+        raise ConflictProblem(f"The address {payload.slug!r} is already taken")
+    if await selectors.get_user_by_email(directory, payload.email) is not None:
+        raise ConflictProblem("That email already has an account. Sign in instead.")
+
+    organization_id = uuid.uuid4()
+    async with session_scope(organization_id) as session:
+        await services.signup(
+            session, organization_id=organization_id, payload=payload, request=request
+        )
+    return SignupOut(organization_id=organization_id, slug=payload.slug, email=payload.email)
 
 
 # --------------------------------------------------------------------- structure
@@ -175,8 +216,17 @@ async def list_members(
     q: Annotated[str | None, Query(description="Name, email or job title")] = None,
     org_unit_id: Annotated[uuid.UUID | None, Query()] = None,
     member_status: Annotated[str | None, Query(alias="status")] = None,
+    linked: Annotated[
+        bool | None,
+        Query(
+            description="`false` lists people with no employee link — the ones whose "
+            "approval inbox is silently empty (ADR-0008 §9). Omitted lists both."
+        ),
+    ] = None,
 ) -> Page[MemberOut]:
-    stmt = selectors.members_stmt(ctx, q=q, org_unit_id=org_unit_id, status=member_status)
+    stmt = selectors.members_stmt(
+        ctx, q=q, org_unit_id=org_unit_id, status=member_status, linked=linked
+    )
     # `paginate` scalars() to the first entity, so page the memberships and read the
     # joined user off the relationship rather than losing the second column.
     rows, total = await paginate(session, stmt, params)

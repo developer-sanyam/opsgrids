@@ -23,6 +23,7 @@ def test_every_permission_code_is_under_the_hrms_time_module() -> None:
     assert set(HRMS.codes()) == {
         "hrms.time.attendance.read",
         "hrms.time.attendance.write",
+        "hrms.time.attendance.request",
         "hrms.time.shift.read",
         "hrms.time.shift.write",
     }
@@ -37,6 +38,16 @@ def test_attendance_permissions_default_to_own_and_shifts_to_org() -> None:
     assert by_code["hrms.time.shift.write"].default_scope == "ORG"
 
 
+def test_the_self_service_request_permission_tops_out_at_own() -> None:
+    """ADR-0006 §11: there is no meaningful "request a correction for someone else", so the
+    ceiling is OWN, not ORG — an ORG-wide request-for-others power is unrepresentable, not
+    merely ungranted."""
+    by_code = {s.code(HRMS.product): s for s in HRMS.specs}
+    spec = by_code["hrms.time.attendance.request"]
+    assert spec.default_scope == "OWN"
+    assert spec.max_scope == "OWN"
+
+
 def test_the_role_templates_grant_only_their_expected_scopes() -> None:
     by_code = {t.code: t for t in HRMS_ROLE_TEMPLATES}
 
@@ -44,6 +55,8 @@ def test_the_role_templates_grant_only_their_expected_scopes() -> None:
     assert hr_admin == {
         ("hrms.time.attendance.read", "ORG"),
         ("hrms.time.attendance.write", "ORG"),
+        # An HR administrator is also an employee with their own attendance (ADR-0006 §11).
+        ("hrms.time.attendance.request", "OWN"),
         ("hrms.time.shift.read", "ORG"),
         ("hrms.time.shift.write", "ORG"),
     }
@@ -53,6 +66,8 @@ def test_the_role_templates_grant_only_their_expected_scopes() -> None:
         # A person punches and reads their own attendance — hence OWN.
         ("hrms.time.attendance.read", "OWN"),
         ("hrms.time.attendance.write", "OWN"),
+        # Everyone may ask for a correction to their own attendance.
+        ("hrms.time.attendance.request", "OWN"),
         # Shifts are org definitions everyone needs to see.
         ("hrms.time.shift.read", "ORG"),
     }

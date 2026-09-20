@@ -14,15 +14,17 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete
+from sqlalchemy import delete, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import selectors
-from app.catalogue import CORE_REGISTRATION, ProductManifest, ProductRegistration
+from app.catalogue import CORE_REGISTRATION, ProductManifest, ProductRegistration, min_scope
 from app.models import (
     AuditLog,
     Invitation,
@@ -46,6 +48,7 @@ from app.schemas import (
     OrganizationPatch,
     OrgUnitIn,
     RoleIn,
+    SignupIn,
 )
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
@@ -64,6 +67,11 @@ EVT_MEMBERSHIP_CREATED = "core.membership.created"
 EVT_MEMBERSHIP_UPDATED = "core.membership.updated"
 EVT_MEMBERSHIP_REVOKED = "core.membership.revoked"
 EVT_GRANTS_CHANGED = "core.grants.changed"
+
+#: The scope ladder, shared by every place that has to decide whether one grant is wider
+#: than another: replacing a role's grants (`_replace_grants`) and reconciling a role
+#: template against a live tenant (`install_registration`, ADR-0007 §1).
+_SCOPE_RANK = {"OWN": 0, "TEAM": 1, "LOCATION": 2, "ORG": 3}
 
 
 def _actor(ctx: ScopeContext) -> dict[str, Any]:
@@ -100,11 +108,16 @@ async def create_organization(
     *,
     actor_user_id: uuid.UUID | None,
     request: Request | None = None,
+    organization_id: uuid.UUID | None = None,
 ) -> Organization:
     """Create a customer.
 
     Not scoped by an organization — this is the one write that brings one into existence,
     so it is guarded by platform staff rather than by `require(...)`.
+
+    `organization_id` lets sign-up (ADR-0013 §3) name the id *before* the row exists, so the
+    transaction can be bound to it and the write can run on the app role under the ordinary
+    policy. Every other caller leaves it None and runs as the admin role.
     """
     if await selectors.slug_taken(session, payload.slug):
         raise ConflictProblem(f"The address {payload.slug!r} is already taken")
@@ -115,6 +128,8 @@ async def create_organization(
         trial_ends_at=datetime.now(UTC) + timedelta(days=14),
         created_by=str(actor_user_id) if actor_user_id else "system",
     )
+    if organization_id is not None:
+        org.id = organization_id
     session.add(org)
     await session.flush()
 
@@ -163,8 +178,8 @@ async def update_organization(
 ) -> Organization:
     before = org.as_dict(exclude={"security_policy"})
     changes = payload.model_dump(exclude_unset=True, exclude_none=True)
-    for field, value in changes.items():
-        setattr(org, field, value)
+    for attr, value in changes.items():
+        setattr(org, attr, value)
     org.updated_by = str(ctx.principal.sub)
 
     record_audit(
@@ -193,6 +208,60 @@ async def update_organization(
 
 
 # --------------------------------------------------------------------- structure
+
+
+async def signup(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    payload: SignupIn,
+    request: Request | None = None,
+) -> Membership:
+    """A stranger becomes an organisation's owner (ADR-0013 §3).
+
+    Runs inside a transaction already bound to `organization_id` — the id the route generated
+    before opening it — on the ordinary app role. The organisation is created *with* that id,
+    so every row this writes (organisation, core roles, user, membership, audit, outbox) passes
+    the tenant policy's `WITH CHECK`, and no other organisation's rows are reachable at all.
+
+    `ORG_OWNER` is held *and* `is_owner` is set: holding the role is what gates role
+    administration, `is_owner` is what product activation's "grant the admin role to the
+    owners" selects on. A membership with one and not the other is the demo-seed defect
+    `tools/demo/promote_owner.py` exists to repair, and it is not repeated here.
+
+    No credential is created. The owner's password arrives through the reset-link path once
+    the address has proved it can receive mail.
+    """
+    org = await create_organization(
+        session,
+        OrganizationIn(name=payload.organization_name, slug=payload.slug),
+        actor_user_id=None,
+        request=request,
+        organization_id=organization_id,
+    )
+    membership = await add_member(
+        session,
+        org_id=org.id,
+        email=payload.email,
+        full_name=payload.full_name,
+        actor_user_id=None,
+        role_codes=["ORG_OWNER"],
+        request=request,
+    )
+    membership.is_owner = True
+    await session.flush()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=org.id,
+        actor_id=membership.user_id,
+        action="org.signed_up",
+        entity="organization",
+        entity_id=org.id,
+        after={"slug": org.slug, "owner_email": payload.email},
+        request=request,
+    )
+    return membership
 
 
 async def create_org_unit(
@@ -447,6 +516,118 @@ async def add_member(
     return membership
 
 
+#: The partial unique index on `(organization_id, employee_id)` — one employee, one
+#: membership, per organization (`models.Membership.__table_args__`). Named here because
+#: ADR-0008 §5 requires the *specific* constraint to be recognised rather than every
+#: integrity failure being reported as this one business rule.
+EMPLOYEE_LINK_CONSTRAINT = "uq_memberships_org_employee"
+
+
+def _integrity_error_constraint(exc: IntegrityError) -> str | None:
+    """The name of the constraint that actually fired, when the driver surfaces one — or
+    `None` when it does not (a constraint with no name, or an `IntegrityError` that is not a
+    constraint violation at all).
+
+    asyncpg's own exception carries `constraint_name` directly, but SQLAlchemy's asyncpg
+    dialect re-raises it as a driver-shaped exception first
+    (`AsyncAdapt_asyncpg_dbapi.IntegrityError`, raised `from` the original), so the
+    structured attribute survives on `exc.orig.__cause__` rather than on `exc.orig` itself.
+    Both are checked, in that order, so this keeps working if a future SQLAlchemy version
+    stops wrapping. The same helper `approval/app/services.py` uses for its exclusion
+    constraint, for the same reason.
+    """
+    orig = exc.orig
+    name = getattr(orig, "constraint_name", None)
+    if name is not None:
+        return str(name)
+    cause = getattr(orig, "__cause__", None)
+    name = getattr(cause, "constraint_name", None)
+    return str(name) if name is not None else None
+
+
+def _employee_already_linked(
+    employee_id: uuid.UUID, holder_membership_id: uuid.UUID | None
+) -> ConflictProblem:
+    """ADR-0008 §5's 409, naming the membership that holds the link.
+
+    Naming it reveals nothing the caller cannot already list — reaching this code needs
+    `core.identity.membership.write` at ORG — and it is the difference between an error and
+    an instruction: the remedy is to PATCH that membership with `employee_id: null` first.
+    **Nothing is auto-unlinked**; reassigning somebody's identity as a side effect of
+    somebody else's PATCH is not a fix.
+    """
+    return ConflictProblem(
+        "That employee is already linked to another member of this organization",
+        errors=[
+            {
+                "field": "employee_id",
+                "code": "employee_already_linked",
+                "message": (
+                    "That employee record is already linked to another member. Unlink them "
+                    "first (PATCH that member with employee_id: null), then link this one."
+                ),
+                "employee_id": str(employee_id),
+                "membership_id": str(holder_membership_id) if holder_membership_id else None,
+            }
+        ],
+    )
+
+
+async def _write_employee_link(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    membership: Membership,
+    employee_id: uuid.UUID | None,
+) -> None:
+    """Write the link, translating **only** `uq_memberships_org_employee` into a 409.
+
+    The pre-check in `update_member` is what makes the common case legible; this is what
+    makes it correct. Between that read and this write another transaction can link the same
+    employee, and the index is what refuses it — ADR-0008 §5 requires both, and neither alone
+    is sufficient.
+
+    Four details are load-bearing, and the first two were arrived at the hard way:
+
+    * The write is an explicit tenant-scoped `UPDATE` inside a **savepoint**, not an ORM
+      `flush()`. A failed flush marks the enclosing `Session` transaction as rolled back, so
+      nothing may be executed on it afterwards — including the one question this function
+      still has to ask. A statement-level failure inside a savepoint leaves the transaction
+      usable, which is what lets the raced path name the holder instead of shrugging.
+    * The statement names `organization_id` as well as the primary key. Under RLS the policy
+      would refuse another tenant's row anyway; saying it here means the query is correct
+      before the net is, which is the rule for every scoped query in this service.
+    * Anything other than the link constraint **re-raises** and reaches
+      `platform_core.errors`' generic, non-leaking handler. A broad `except IntegrityError`
+      here would report every integrity failure as this one business rule, which for anything
+      else is simply false — the bug the delegation slice shipped and had to fix.
+    * `no_autoflush` keeps the rest of the PATCH's pending attribute changes out of this
+      probe: they are flushed by the caller's commit, and dragging them into a savepoint that
+      exists to test one constraint is how an unrelated failure arrives wearing this one's
+      exception.
+
+    The ORM attribute is set only after the statement succeeds, so an object in the identity
+    map never claims a link the database refused.
+    """
+    stmt = (
+        update(Membership)
+        .where(Membership.id == membership.id, Membership.organization_id == org_id)
+        .values(employee_id=employee_id)
+        .execution_options(synchronize_session=False)
+    )
+    try:
+        with session.no_autoflush:
+            async with session.begin_nested():
+                await session.execute(stmt)
+    except IntegrityError as exc:
+        if _integrity_error_constraint(exc) != EMPLOYEE_LINK_CONSTRAINT:
+            raise
+        assert employee_id is not None  # clearing a link cannot violate this index
+        holder = await selectors.get_membership_by_employee(session, org_id, employee_id)
+        holder_id = holder.id if holder is not None and holder.id != membership.id else None
+        raise _employee_already_linked(employee_id, holder_id) from exc
+    membership.employee_id = employee_id
+
+
 async def update_member(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -455,7 +636,34 @@ async def update_member(
     *,
     request: Request | None = None,
 ) -> Membership:
+    """Change one membership's facts, including **who that principal is** (ADR-0008 §2).
+
+    `employee_id` is handled explicitly and popped out of `changes` before the blind
+    `setattr` loop, exactly as `location_codes` already is. Letting the loop reach it would
+    write the sole origin of the `sref` claim with no conflict handling and no old value in
+    the audit row — which is how a 23505 becomes a 500 and how an identity reassignment
+    leaves no trail.
+    """
     changes = payload.model_dump(exclude_unset=True)
+    # Captured before anything is popped: the event names every field the caller actually
+    # sent, including the ones handled explicitly below.
+    changed_fields = sorted(changes)
+
+    # --- the identity link (ADR-0008) -------------------------------------------------
+    # Popped first so the `setattr` loop below cannot reach it under any later edit.
+    employee_id_requested = "employee_id" in changes
+    new_employee_id: uuid.UUID | None = changes.pop("employee_id", None)
+    previous_employee_id = membership.employee_id
+    employee_link_changes = employee_id_requested and new_employee_id != previous_employee_id
+
+    if employee_link_changes and new_employee_id is not None:
+        # Opportunistic, not the enforcement (`_write_employee_link` is): reads before the
+        # write so the ordinary, non-racing case gets a 409 that names the holder.
+        holder = await selectors.get_membership_by_employee(
+            session, ctx.organization_id, new_employee_id
+        )
+        if holder is not None and holder.id != membership.id:
+            raise _employee_already_linked(new_employee_id, holder.id)
 
     if "manager_membership_id" in changes:
         manager_id = changes["manager_membership_id"]
@@ -476,13 +684,19 @@ async def update_member(
         "manager_membership_id": str(membership.manager_membership_id or ""),
         "location_codes": membership.location_codes,
         "job_title": membership.job_title,
+        # ADR-0008 §10: an identity reassignment that is not in the audit trail is not
+        # defensible. One action code, so a member's whole history reads in one vocabulary.
+        "employee_id": str(previous_employee_id or ""),
     }
 
     if "location_codes" in changes and changes["location_codes"] is not None:
         membership.location_codes = ",".join(changes.pop("location_codes"))
     changes.pop("location_codes", None)
-    for field, value in changes.items():
-        setattr(membership, field, value)
+    for attr, value in changes.items():
+        setattr(membership, attr, value)
+
+    if employee_link_changes:
+        await _write_employee_link(session, ctx.organization_id, membership, new_employee_id)
 
     record_audit(
         session,
@@ -498,6 +712,7 @@ async def update_member(
             "manager_membership_id": str(membership.manager_membership_id or ""),
             "location_codes": membership.location_codes,
             "job_title": membership.job_title,
+            "employee_id": str(membership.employee_id or ""),
         },
         request=request,
     )
@@ -511,10 +726,23 @@ async def update_member(
         payload={
             "organization_id": str(ctx.organization_id),
             "membership_id": str(membership.id),
-            "changed": sorted(changes),
+            "changed": changed_fields,
         },
         actor=_actor(ctx),
     )
+    # ADR-0008 §7's asymmetry, and it is deliberate. `pv` is bumped **per organization**, so
+    # every bump is a tenant-wide token-refresh burst:
+    #
+    #   null -> an employee id   no bump. The routine onboarding path. The token catches up
+    #                            at the next refresh, within one 900 s access-token life —
+    #                            ADR-0000 §4's "tolerable for a grant". Bumping here would
+    #                            fire that burst several times a day in a 4,000-person tenant.
+    #   a link cleared/replaced  bump. This is the revocation shape — the operation that
+    #                            *stops* somebody acting as an employee, most importantly to
+    #                            correct a wrong link — and fifteen more minutes of the wrong
+    #                            identity after the fix is not an acceptable answer.
+    employee_link_revoked = employee_link_changes and previous_employee_id is not None
+
     # Locations, department and reporting line all feed scope resolution, and `loc` is
     # carried in the token — so a move between sites has to invalidate it too. A change
     # to job title or display name does not.
@@ -522,6 +750,7 @@ async def update_member(
         before["location_codes"] != membership.location_codes
         or before["org_unit_id"] != str(membership.org_unit_id or "")
         or before["manager_membership_id"] != str(membership.manager_membership_id or "")
+        or employee_link_revoked
     ):
         await _invalidate_grants(ctx.organization_id)
     return membership
@@ -736,7 +965,6 @@ async def _replace_grants(session: AsyncSession, role: Role, grants: list[GrantI
     `max_scope` is the reason a role editor cannot quietly turn a self-service permission
     into an organization-wide one.
     """
-    rank = {"OWN": 0, "TEAM": 1, "LOCATION": 2, "ORG": 3}
     # An explicit DELETE rather than mutating the collection: touching `role.grants` on a
     # freshly flushed object triggers a lazy load, which raises MissingGreenlet under
     # asyncio. It is also one statement instead of N.
@@ -746,7 +974,7 @@ async def _replace_grants(session: AsyncSession, role: Role, grants: list[GrantI
         permission = await selectors.get_permission_by_code(session, grant.permission_code)
         if permission is None:
             raise NotFoundProblem(f"No permission named {grant.permission_code!r}")
-        if rank[grant.scope] > rank[permission.max_scope]:
+        if _SCOPE_RANK[grant.scope] > _SCOPE_RANK[permission.max_scope]:
             raise BusinessRuleProblem(
                 f"{permission.code} cannot be granted at {grant.scope}; "
                 f"the widest it supports is {permission.max_scope}"
@@ -883,13 +1111,77 @@ async def revoke_invitation(
 # --------------------------------------------------------------------- registration
 
 
+@dataclass(slots=True)
+class RegistrationDiff:
+    """What `install_registration` did to reconcile a registration against one
+    organization's roles (ADR-0007 §1).
+
+    Roles created from scratch are unchanged first-write behaviour and are not "changed"
+    in the sense this diff cares about — nobody's capabilities moved, because nobody held
+    the role a moment ago. `grants_added` and `scopes_widened` are the two ways an
+    *existing* system role's grant set can grow, and are what decide whether the `pv`
+    bump fires (ADR-0007 §5) and what `memberships_without` is computed against (§4).
+    """
+
+    roles_created: list[str] = field(default_factory=list)
+    #: `(role_code, permission_code, scope)` — a permission the role did not hold at all.
+    grants_added: list[tuple[str, str, str]] = field(default_factory=list)
+    #: `(role_code, permission_code, old_scope, new_scope)` — a permission the role held
+    #: at a narrower scope than the template now names.
+    scopes_widened: list[tuple[str, str, str, str]] = field(default_factory=list)
+    #: Role codes the registration names that exist in this organization but are
+    #: customer-authored (`is_system = False`) — left untouched, per ADR-0007 §4.
+    skipped_customer_roles: list[str] = field(default_factory=list)
+    #: `role_code -> sorted "code:scope"` grant list, before and after — only for roles
+    #: that were actually widened, in the shape `role.grants_changed` already audits with.
+    role_grants_before: dict[str, list[str]] = field(default_factory=dict)
+    role_grants_after: dict[str, list[str]] = field(default_factory=dict)
+
+    @property
+    def changed(self) -> bool:
+        """Whether anybody's *capabilities* moved.
+
+        Creating a role nobody holds yet, or installing a permission row, changes what
+        *exists* in the catalogue, not what anybody *may do* — so it must not drive the
+        `pv` bump. This is the same rule `install_product_registration` already applied to
+        the admin-role grant, extended to cover widening (ADR-0007 §5).
+        """
+        return bool(self.grants_added or self.scopes_widened)
+
+    def permission_codes(self) -> list[str]:
+        """Every permission code touched by a widen, for the `pv` bump's audience and the
+        `memberships_without` count."""
+        codes = {code for _, code, _ in self.grants_added}
+        codes.update(code for _, code, _, _ in self.scopes_widened)
+        return sorted(codes)
+
+    def role_codes(self) -> list[str]:
+        """Every role code that was actually widened."""
+        codes = {code for code, _, _ in self.grants_added}
+        codes.update(code for code, _, _, _ in self.scopes_widened)
+        return sorted(codes)
+
+
 async def install_registration(
     session: AsyncSession, org_id: uuid.UUID, registration: ProductRegistration
-) -> None:
-    """Install a product's permissions and instantiate its role templates for an org.
+) -> RegistrationDiff:
+    """Install a product's permissions and reconcile its role templates for an org.
 
-    Idempotent: called on organization creation and again whenever a product is activated,
-    so it upserts rather than assuming a clean slate.
+    Idempotent, and a **reconcile** rather than a first-write (ADR-0007 §1): called on
+    organization creation, on every product activation, and by
+    `tools/reconcile_permissions.py` for a tenant that already exists. For each role
+    template:
+
+    - **missing** → created with its grants, exactly as before.
+    - **present and system** (`is_system = True`) → **widened**: every `(permission,
+      scope)` the template names and the role lacks is added, and an existing grant whose
+      scope is narrower than the template's is raised. Nothing is ever removed or
+      narrowed — union, not synchronisation, so this can never revoke.
+    - **present and customer-authored** (`is_system = False`) → left alone entirely, and
+      named in the returned diff so the caller can report the gap rather than close it
+      (ADR-0007 §4) — automatically granting a capability to a role a customer built
+      themselves is the "HR admin holds every permission" failure ADR-0000 §5's corollary
+      exists to prevent.
     """
     for spec in registration.catalogue.specs:
         code = spec.code(registration.product)
@@ -909,27 +1201,162 @@ async def install_registration(
             session.add(permission)
     await session.flush()
 
+    diff = RegistrationDiff()
+
     for template in registration.role_templates:
-        if await selectors.get_role_by_code(session, org_id, template.code):
+        role = await selectors.get_role_by_code(session, org_id, template.code)
+
+        if role is None:
+            role = Role(
+                organization_id=org_id,
+                product=template.product,
+                code=template.code,
+                name=template.name,
+                description=template.description,
+                is_default=template.is_default,
+                is_system=True,
+            )
+            session.add(role)
+            await session.flush()
+            for grant in template.grants:
+                permission = await selectors.get_permission_by_code(session, grant.code)
+                if permission is None:
+                    continue
+                session.add(
+                    RolePermission(role_id=role.id, permission_id=permission.id, scope=grant.scope)
+                )
+            diff.roles_created.append(template.code)
             continue
-        role = Role(
-            organization_id=org_id,
-            product=template.product,
-            code=template.code,
-            name=template.name,
-            description=template.description,
-            is_default=template.is_default,
-            is_system=True,
-        )
-        session.add(role)
-        await session.flush()
+
+        if not role.is_system:
+            diff.skipped_customer_roles.append(template.code)
+            continue
+
+        # Widen: a set union over (permission_code, scope). `role.grants` is loaded
+        # (`lazy="selectin"`) as part of the query above, so this reads what is already
+        # in memory rather than issuing another round trip.
+        before_snapshot = sorted(f"{g.permission.code}:{g.scope}" for g in role.grants)
+        existing = {g.permission.code: g for g in role.grants}
+        role_changed = False
         for grant in template.grants:
             permission = await selectors.get_permission_by_code(session, grant.code)
             if permission is None:
                 continue
-            session.add(
-                RolePermission(role_id=role.id, permission_id=permission.id, scope=grant.scope)
+            # Defence in depth: the template was already built against the permission's
+            # ceiling (`PermissionCatalogue.all`/`.pick`), but a reconcile is exactly the
+            # place a stale template could otherwise smuggle a wider grant through.
+            target_scope = min_scope(grant.scope, permission.max_scope)
+            current = existing.get(grant.code)
+            if current is None:
+                # `role=role, permission=permission` rather than the `*_id` columns used
+                # above: the back-populated relationship appends to `role.grants` in
+                # memory immediately, so the `after` snapshot below sees it without a
+                # second query.
+                session.add(RolePermission(role=role, permission=permission, scope=target_scope))
+                diff.grants_added.append((template.code, grant.code, target_scope))
+                role_changed = True
+            elif _SCOPE_RANK[target_scope] > _SCOPE_RANK[current.scope]:
+                old_scope = current.scope
+                current.scope = target_scope
+                diff.scopes_widened.append((template.code, grant.code, old_scope, target_scope))
+                role_changed = True
+
+        if role_changed:
+            diff.role_grants_before[template.code] = before_snapshot
+            diff.role_grants_after[template.code] = sorted(
+                f"{g.permission.code}:{g.scope}" for g in role.grants
             )
+
+    return diff
+
+
+@dataclass(slots=True)
+class ReconcileSummary:
+    """The per-organization report line ADR-0007 §4 names:
+    `{org_id, roles_created, grants_added, scopes_widened, memberships_without}`."""
+
+    organization_id: uuid.UUID
+    roles_created: list[str]
+    grants_added: int
+    scopes_widened: int
+    skipped_customer_roles: list[str]
+    memberships_without: int
+    changed: bool
+
+
+async def reconcile_registration(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    registration: ProductRegistration,
+    *,
+    acting_as: str,
+    dry_run: bool = False,
+) -> ReconcileSummary:
+    """Reconcile one organization against `registration` — what
+    `tools/reconcile_permissions.py` drives, one call per organization, inside that
+    organization's own transaction (ADR-0007 §3).
+
+    An empty diff writes nothing: no audit row ("nothing happened" is not an event —
+    ADR-0007 §6), no outbox event, and no `pv` bump. A non-empty diff writes exactly one
+    audit row and publishes exactly one `core.grants.changed` event for the whole
+    organization — never per membership, because a widening touches every membership in
+    the tenant and that fan-out has no consumer today (ADR-0007 §5) — and only then bumps
+    `pv`, inside this same transaction: if the transaction rolls back, the version has
+    still moved, which costs one round of token refreshes and grants nobody anything, the
+    safe direction to be wrong in.
+
+    `dry_run` runs the identical reconcile — the same diff, computed the same way — but
+    skips the audit row, the event and the bump. The caller (the CLI) is the one that
+    decides not to commit; this function's only job is to not pretend anything happened
+    when nothing was meant to.
+    """
+    diff = await install_registration(session, org_id, registration)
+
+    memberships_without = 0
+    if diff.changed:
+        memberships_without = await selectors.count_memberships_missing_grants(
+            session, org_id, diff.permission_codes()
+        )
+        if not dry_run:
+            record_audit(
+                session,
+                AuditLog,
+                organization_id=org_id,
+                actor_id=None,
+                acting_as=acting_as,
+                action="permissions.reconciled",
+                entity="organization",
+                entity_id=org_id,
+                before={"roles": diff.role_grants_before},
+                after={"roles": diff.role_grants_after},
+            )
+            publish_event(
+                session,
+                OutboxEvent,
+                organization_id=org_id,
+                event_type=EVT_GRANTS_CHANGED,
+                aggregate_type="organization",
+                aggregate_id=org_id,
+                payload={
+                    "organization_id": str(org_id),
+                    "role_codes": diff.role_codes(),
+                    "permission_codes": diff.permission_codes(),
+                },
+            )
+            # Fail-loud, inside this organization's transaction: `bump_permission_version`
+            # raises when Redis is unreachable, which rolls this org's writes back and
+            # leaves it to be picked up by the next run — never reported as reconciled.
+            await _invalidate_grants(org_id)
+
+    return ReconcileSummary(
+        organization_id=org_id,
+        roles_created=diff.roles_created,
+        grants_added=len(diff.grants_added),
+        scopes_widened=len(diff.scopes_widened),
+        skipped_customer_roles=diff.skipped_customer_roles,
+        memberships_without=memberships_without,
+        changed=diff.changed,
+    )
 
 
 async def install_product_registration(
@@ -956,10 +1383,13 @@ async def install_product_registration(
 
     The permission-version bump happens only when a grant was actually added: installing
     permissions and instantiating roles changes what *exists*, not what anybody may do, so a
-    pure re-install must not invalidate every token in the organization.
+    pure re-install must not invalidate every token in the organization. As of ADR-0007,
+    that now also covers a role that already existed being *widened* — a product whose
+    catalogue grew since an organization first activated it picks up the new grants on the
+    next activation-time install, not only through the separate fleet reconciler.
     """
     registration = manifest.registration
-    await install_registration(session, org_id, registration)
+    diff = await install_registration(session, org_id, registration)
 
     granted: list[uuid.UUID] = []
     granted_roles: list[str] = []
@@ -998,6 +1428,7 @@ async def install_product_registration(
             "role_templates": [t.code for t in registration.role_templates],
             "admin_roles": list(manifest.admin_role_codes),
             "admin_role_granted_to": [str(m) for m in granted],
+            "widened_roles": diff.role_codes(),
         },
     )
     for membership_id in granted:
@@ -1014,9 +1445,10 @@ async def install_product_registration(
                 "granted_roles": granted_roles,
             },
         )
-    if granted:
-        # A grant landed, so tokens minted before it are stale — same rule as every other
-        # write that changes what somebody may do.
+    if granted or diff.changed:
+        # A grant landed — either an owner picked up the admin role, or an existing
+        # system role was widened (ADR-0007 §1, §5) — so tokens minted before it are
+        # stale, same rule as every other write that changes what somebody may do.
         await _invalidate_grants(org_id)
 
     return {
@@ -1025,4 +1457,188 @@ async def install_product_registration(
         "role_templates": [t.code for t in registration.role_templates],
         "admin_roles": granted_roles,
         "owners_granted": len(granted),
+        "grants_added": len(diff.grants_added),
+        "scopes_widened": len(diff.scopes_widened),
     }
+
+
+# ------------------------------------------------------- employee links (ADR-0008 §8)
+
+
+@dataclass(frozen=True, slots=True)
+class EmployeeLink:
+    """One row of employee-service's `GET /internal/v1/employee-links`.
+
+    Two UUIDs and nothing else — no name, no employee number, no PII (ADR-0008 §8).
+    `membership_id` is null for an employee nobody ever pointed at a membership; those rows
+    still matter, because they are what makes an `employee_id` account holds *recognised*.
+    """
+
+    employee_id: uuid.UUID
+    membership_id: uuid.UUID | None
+
+
+@dataclass(frozen=True, slots=True)
+class LinkConflict:
+    """A disagreement the reconcile reports and deliberately does not resolve.
+
+    `kind` is `"employee_taken"` (employee says E↔M, but a different membership already
+    holds E) or `"disagree"` (employee says E↔M, but M already holds a different employee).
+    """
+
+    kind: str
+    employee_id: uuid.UUID
+    membership_id: uuid.UUID
+    held_by_membership_id: uuid.UUID | None
+
+
+@dataclass(slots=True)
+class LinkReconcileSummary:
+    """The per-organization report line ADR-0008 §8 names."""
+
+    organization_id: uuid.UUID
+    links_written: int
+    conflicts: list[LinkConflict]
+    unrecognised_employee_ids: list[uuid.UUID]
+    unrecognised_membership_ids: list[uuid.UUID]
+    memberships_unlinked: int
+    changed: bool
+
+    @property
+    def conflicts_employee_taken(self) -> int:
+        return sum(1 for c in self.conflicts if c.kind == "employee_taken")
+
+    @property
+    def conflicts_disagree(self) -> int:
+        return sum(1 for c in self.conflicts if c.kind == "disagree")
+
+
+async def reconcile_employee_links(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    links: list[EmployeeLink],
+    *,
+    acting_as: str,
+    dry_run: bool = False,
+) -> LinkReconcileSummary:
+    """Fill and verify one organization's employee links — what
+    `tools/reconcile_membership_links.py` drives, one call per organization, inside that
+    organization's own transaction (ADR-0008 §8).
+
+    `links` is employee-service's full answer for this organization: **every** employee with
+    its `membership_id`, null or not. One page set serves both halves of the job.
+
+    **Fill.** For every row whose `membership_id` is not null, set that membership's
+    `employee_id`. Three rules, none of them negotiable:
+
+    * **It only ever fills a null.** A membership account has already linked is never
+      overwritten — not to a different value, not to the same one. That is what makes this
+      re-runnable, safe to run beside live traffic, safe to interrupt, and what removes any
+      need for a version gate (ADR-0008 §6): the interactive path is always the winner.
+    * **Conflicts are reported, never resolved.** An employee already held by a different
+      membership, or a membership already holding a different employee, is counted and
+      returned. An automatic fix to a disagreement about who somebody *is* is not a fix.
+    * **`pv` is never bumped.** Every write here is grant-shaped — a null becoming a value —
+      and ADR-0008 §7 says grant-shaped changes wait for the token. It also keeps a fleet run
+      from being a fleet-wide refresh storm. There is deliberately no `_invalidate_grants`
+      call anywhere in this function.
+
+    **Verify.** Every `employee_id` account holds that employee-service does not recognise is
+    returned in `unrecognised_employee_ids`. That is ADR-0008 §4's mistyped UUID — a
+    principal whose OWN scope silently resolves to nothing — and this pass is the only
+    mechanism in the platform that finds it.
+
+    An empty diff writes no audit row: "nothing happened" is not an event. A non-empty one
+    writes exactly one organization-level row in this same transaction, carrying the
+    counters. No outbox event: nothing consumes one, and a contract with no consumer is a
+    compatibility obligation bought for nothing (ADR-0008 §3).
+    """
+    memberships = await selectors.list_memberships(session, org_id)
+    by_id = {m.id: m for m in memberships}
+    # Who currently holds each employee id, maintained as rows are filled so two employee
+    # rows naming the same employee inside one run conflict rather than racing the index.
+    holder_by_employee: dict[uuid.UUID, uuid.UUID] = {
+        m.employee_id: m.id for m in memberships if m.employee_id is not None
+    }
+    known_employee_ids = {link.employee_id for link in links}
+
+    links_written = 0
+    conflicts: list[LinkConflict] = []
+    unrecognised_membership_ids: list[uuid.UUID] = []
+
+    for link in links:
+        if link.membership_id is None:
+            continue
+        membership = by_id.get(link.membership_id)
+        if membership is None or membership.status == "removed":
+            # A membership id account does not have, or one that has been revoked. Filling a
+            # removed row would block the rehire's new membership behind ADR-0008 §5's
+            # conflict for no gain, so this is reported rather than written.
+            unrecognised_membership_ids.append(link.membership_id)
+            continue
+        if membership.employee_id == link.employee_id:
+            continue  # already true; the verify half below still counts it as recognised
+        if membership.employee_id is not None:
+            conflicts.append(
+                LinkConflict(
+                    kind="disagree",
+                    employee_id=link.employee_id,
+                    membership_id=membership.id,
+                    held_by_membership_id=None,
+                )
+            )
+            continue
+        holder = holder_by_employee.get(link.employee_id)
+        if holder is not None:
+            conflicts.append(
+                LinkConflict(
+                    kind="employee_taken",
+                    employee_id=link.employee_id,
+                    membership_id=membership.id,
+                    held_by_membership_id=holder,
+                )
+            )
+            continue
+        membership.employee_id = link.employee_id
+        holder_by_employee[link.employee_id] = membership.id
+        links_written += 1
+
+    unrecognised_employee_ids = sorted(
+        (e for e in holder_by_employee if e not in known_employee_ids), key=str
+    )
+
+    # Flushed before the count so it sees this run's writes; the caller owns the commit, and
+    # under `--dry-run` the caller rolls the whole transaction back regardless.
+    await session.flush()
+    memberships_unlinked = await selectors.count_memberships_unlinked(session, org_id)
+
+    changed = links_written > 0
+    if changed and not dry_run:
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=org_id,
+            actor_id=None,
+            acting_as=acting_as,
+            action="membership.links_reconciled",
+            entity="organization",
+            entity_id=org_id,
+            after={
+                "links_written": links_written,
+                "conflicts_employee_taken": sum(1 for c in conflicts if c.kind == "employee_taken"),
+                "conflicts_disagree": sum(1 for c in conflicts if c.kind == "disagree"),
+                "unrecognised_employee_ids": [str(e) for e in unrecognised_employee_ids],
+                "unrecognised_membership_ids": [str(m) for m in unrecognised_membership_ids],
+                "memberships_unlinked": memberships_unlinked,
+            },
+        )
+
+    return LinkReconcileSummary(
+        organization_id=org_id,
+        links_written=links_written,
+        conflicts=conflicts,
+        unrecognised_employee_ids=unrecognised_employee_ids,
+        unrecognised_membership_ids=unrecognised_membership_ids,
+        memberships_unlinked=memberships_unlinked,
+        changed=changed,
+    )

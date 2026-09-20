@@ -198,24 +198,65 @@ migration-shard: ## Migration round-trip for one shard: make migration-shard SHA
 
 .PHONY: test-services
 test-services: ## Each service in its own process
-	# Parallel across services, never within one: every service owns a Postgres schema and
-	# its fixtures truncate only its own tables, so two services cannot see or clobber each
-	# other's rows. Inside a service the fixtures do share a schema, which is why the
-	# fan-out is per service and pytest itself stays single-process.
+	# Parallel across services, never within one. Inside a service the fixtures share a
+	# schema, which is why the fan-out is per service and pytest itself stays single-process.
+	#
+	# Across services it is parallel because each one owns a Postgres schema — *except where a
+	# test deliberately crosses a service boundary*, which two do. They are not an accident to
+	# be removed: they are the only tests that prove the two halves of a slice actually fit.
+	#
+	#   services/approval/tests/test_attendance_round_trip.py    -> the `attendance` schema
+	#   services/approval/tests/test_cross_service_contract.py   -> the `employee` schema
+	#
+	# Each drives the other service's real write and consume paths through a subprocess helper
+	# in that service's own `tests/`, so it holds live rows in a schema it does not own — while
+	# that service's own `session` fixture opens every one of its tests by truncating exactly
+	# those tables. Scheduled at the same time, each deletes rows the other is mid-way through
+	# using, and the failures read like broken logic rather than like a scheduling bug.
+	#
+	# So each of those two modules, and the `session` fixture of the service it reaches into,
+	# take a Postgres advisory lock named for the schema they contend for
+	# (`platform_core.testing.cross_service_schema_lock`). Each pair serialises against itself
+	# and nothing else; the other ~32 services stay fully parallel.
+	#
+	# The rule for a new service: fan-out safety comes from a suite touching only its own
+	# schema. If a test reaches into a sibling's schema — directly, or through that sibling's
+	# test helper — it must take the same lock on that sibling's schema, and the sibling's
+	# truncating fixture must take it too. Nothing detects this for you; it shows up as a
+	# flake.
 	#
 	# pytest's exit code 5 means "no tests collected", which is not a failure for a
 	# service that has none yet — hence `ok-empty`.
 	$(call fan_out,tests,ok-empty,uv run pytest tests -q -p no:cacheprovider)
+
+# e2e/conftest.py pins DATABASE_URL to `opsgrids_wt`, a second database in the same cluster
+# that nothing else creates. This does, by hand, what the postgis image's own init script did
+# for `opsgrids` at initdb time — plus the database-level grants init-db.sql only ever names
+# `opsgrids` for — so a service's migrations and its role can actually reach opsgrids_wt.
+# Idempotent: every statement is guarded, safe to run any number of times, never drops or
+# truncates anything. Needs `make infra` already up.
+.PHONY: e2e-db
+e2e-db: ## Create/grant the opsgrids_wt database the e2e suite targets (idempotent, needs make infra)
+	$(COMPOSE) exec -T postgres psql -v ON_ERROR_STOP=1 -U opsgrids -d opsgrids -f - \
+	  < tools/dev-bootstrap/e2e-db.sql
 
 # The one suite where nothing is stubbed: six services, an outbox relay and an event
 # consumer, all started by the harness on ports the OS hands out, driven over real HTTP
 # against real Postgres and RabbitMQ. It needs no free port reserved and no stack stopped —
 # it allocates its own and generates the gateway's route table to match, so it can run
 # alongside a stack you already have up. Ordered: the steps share state and read as one
-# journey. `make infra` is the only prerequisite.
+# journey. `make infra` is the prerequisite this doesn't run for you; `e2e-db` it does, every
+# time, because it's cheap and idempotent and a stale opsgrids_wt is a confusing way to fail.
+#
+# The one thing neither `e2e-db` nor `e2e` runs for you is the schema itself. The first time,
+# and again whenever a migration is added, apply it with a make command-line variable —
+# `make migrate DATABASE_URL=postgresql+asyncpg://opsgrids:opsgrids@localhost:5434/opsgrids_wt`
+# — not a `DATABASE_URL=… make migrate` env-var prefix: this Makefile's `include .env` +
+# `export` re-exports the name from `.env` after your prefix set it, so the prefix is silently
+# overridden back to whatever `.env` points at.
 .PHONY: e2e
-e2e: ## Boot the real services and drive one ordered journey over HTTP
-	@echo "→ end-to-end (needs make infra; ports are allocated, not fixed)"
+e2e: e2e-db ## Boot the real services and drive one ordered journey over HTTP
+	@echo "→ end-to-end (needs make infra, and the schema migrated into opsgrids_wt — see above)"
 	uv run pytest e2e -q
 
 .PHONY: check
@@ -305,3 +346,86 @@ openapi-check: ## Fail if a committed OpenAPI document or permission manifest is
 
 .PHONY: gate
 gate: check audit licenses secrets hygiene boundaries openapi-check migration-roundtrip smoke ## The whole quality gate — everything CI runs
+
+# ---------------------------------------------------------------- the edge (ADR-0012)
+# One Linux VM, Docker Compose and Caddy. Deploys are `ssh` from a laptop with the engineer's
+# own key — no registry, no CI deploy job, no GitHub secret (ADR-0012 §1). That is a
+# deliberate simplification and it makes "deployed by accident" the risk to design against, so
+# every target below:
+#
+#   * requires HOST= — an ssh target you type. There is no default and no fallback;
+#   * requires CONFIRM= — which must equal the EDGE_HOST the box records in its own .env, so
+#     aiming at the wrong machine fails on the first ssh, before anything is fetched or built;
+#   * deploys a pushed REF, never your working tree.
+#
+# Everything these targets do on the box is in infrastructure/edge/remote.sh, which ships with
+# the commit being deployed. Read infrastructure/edge/RUNBOOK.md before the first one.
+EDGE_REPO ?= /srv/opsgrids/repo
+REF       ?= origin/main
+EDGE_SSH   = ssh -o BatchMode=yes $(HOST) $(EDGE_REPO)/infrastructure/edge/remote.sh
+
+.PHONY: edge-guard
+edge-guard:
+	@test -n "$(HOST)" || (echo "HOST= is required. Name the box: HOST=deploy@203.0.113.7" && exit 1)
+	@test -n "$(CONFIRM)" || (echo "CONFIRM= is required. It must match the box's EDGE_HOST: CONFIRM=edge.opsgrids.com" && exit 1)
+	@$(EDGE_SSH) assert-host $(CONFIRM)
+
+.PHONY: deploy
+deploy: ## Deploy the edge: make deploy HOST=deploy@host CONFIRM=edge.opsgrids.com [REF=origin/main]
+	# preflight → build → caddy validate → migrate → up → health, in that order, and the
+	# first three change nothing. A build that fails leaves the running site untouched; the
+	# recreate at `up` is a few seconds of downtime, not zero. See the runbook.
+	@test -n "$(HOST)" || (echo "HOST= is required. Name the box: HOST=deploy@203.0.113.7" && exit 1)
+	@test -n "$(CONFIRM)" || (echo "CONFIRM= is required. It must match the box's EDGE_HOST" && exit 1)
+	EDGE_REPO=$(EDGE_REPO) infrastructure/edge/ssh-deploy.sh $(HOST) $(CONFIRM) $(REF) deploy
+
+.PHONY: edge-rollback
+edge-rollback: edge-guard ## Redeploy the previous good ref: make edge-rollback HOST=… CONFIRM=… [TO=<sha>]
+	@ref="$(TO)"; \
+	 if [ -z "$$ref" ]; then ref=$$($(EDGE_SSH) previous-ref); fi; \
+	 echo "rolling back to $$ref"; \
+	 EDGE_REPO=$(EDGE_REPO) infrastructure/edge/ssh-deploy.sh $(HOST) $(CONFIRM) "$$ref" deploy
+
+.PHONY: edge-preflight
+edge-preflight: edge-guard ## Check the box is deployable without changing anything: HOST=… CONFIRM=…
+	@$(EDGE_SSH) preflight
+
+.PHONY: edge-validate
+edge-validate: ## Load the Caddyfile at REF with the pinned Caddy, restart nothing: HOST=… CONFIRM=…
+	@test -n "$(HOST)" || (echo "HOST= is required" && exit 1)
+	@test -n "$(CONFIRM)" || (echo "CONFIRM= is required" && exit 1)
+	EDGE_REPO=$(EDGE_REPO) infrastructure/edge/ssh-deploy.sh $(HOST) $(CONFIRM) $(REF) validate
+
+.PHONY: edge-status
+edge-status: edge-guard ## What is running, which ref, how much disk: HOST=… CONFIRM=…
+	@$(EDGE_SSH) status
+
+.PHONY: edge-logs
+edge-logs: edge-guard ## Tail the edge logs: make edge-logs HOST=… CONFIRM=… [SERVICE=caddy] [TAIL=200]
+	@$(EDGE_SSH) logs $(or $(TAIL),200) $(SERVICE)
+
+.PHONY: edge-backup
+edge-backup: edge-guard ## Run the nightly backup now (dump + certificates, off-box): HOST=… CONFIRM=…
+	@$(EDGE_SSH) backup
+
+# The buyer bundle is built here and shipped, not built on the box: the root .dockerignore
+# keeps `frontend` out of every image build context, and shipping only a bundle that compiled
+# is what stops a failed frontend build from breaking a merchant's shop.
+.PHONY: edge-web
+edge-web: ## Build and publish a bundle: make edge-web HOST=… CONFIRM=… [APP=buyer|dashboard|operations|<product key>] [PLACEHOLDER=1]
+	@test -n "$(HOST)" || (echo "HOST= is required" && exit 1)
+	@test -n "$(CONFIRM)" || (echo "CONFIRM= is required" && exit 1)
+	EDGE_REPO=$(EDGE_REPO) APP=$(or $(APP),buyer) PLACEHOLDER=$(PLACEHOLDER) \
+	  infrastructure/edge/publish-web.sh publish $(HOST) $(CONFIRM)
+
+.PHONY: edge-web-rollback
+edge-web-rollback: ## Point the edge back at the previous bundle (one symlink): HOST=… CONFIRM=…
+	@test -n "$(HOST)" || (echo "HOST= is required" && exit 1)
+	@test -n "$(CONFIRM)" || (echo "CONFIRM= is required" && exit 1)
+	EDGE_REPO=$(EDGE_REPO) APP=$(or $(APP),buyer) infrastructure/edge/publish-web.sh rollback $(HOST) $(CONFIRM)
+
+.PHONY: edge-releases
+edge-releases: ## Which bundles are on the box and which one is live: HOST=… CONFIRM=…
+	@test -n "$(HOST)" || (echo "HOST= is required" && exit 1)
+	@test -n "$(CONFIRM)" || (echo "CONFIRM= is required" && exit 1)
+	EDGE_REPO=$(EDGE_REPO) APP=$(or $(APP),buyer) infrastructure/edge/publish-web.sh releases $(HOST) $(CONFIRM)

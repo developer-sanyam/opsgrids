@@ -11,13 +11,22 @@ row would let the relay step pass on an event from a previous run. `products` it
 global catalogue data seeded by a migration and is deliberately *not* truncated — emptying it
 would leave nothing to activate.
 
-**Promote `crm` from "soon" to "available".** `services.activate` refuses a product whose
-registry status is `soon` — rightly, since activating something with no service behind it
-sells a customer a 404. But CRM is the only product in the catalogue that spans two services
-(customer-service owns the account book, deal-service owns the pipeline) and therefore the
-only one shipping **two** admin role templates. That is exactly the shape of the defect this
-journey exists to catch: activation used to grant only the last admin template parsed, so
-CRM's owners could read contacts and not deals.
+**Promote `crm` and `hrms` from "soon" to "available".** `services.activate` refuses a product
+whose registry status is `soon` — rightly, since activating something with no service behind it
+sells a customer a 404.
+
+CRM is the only product in the catalogue that spans two services (customer-service owns the
+account book, deal-service owns the pipeline) and therefore the only one shipping **two** admin
+role templates. That is exactly the shape of the defect the CRM journey exists to catch:
+activation used to grant only the last admin template parsed, so CRM's owners could read
+contacts and not deals.
+
+HRMS spans employee-service and attendance-service, and the Wave 0 exit journey
+(`test_approval_journey.py`) cannot start without it: an attendance correction is the one
+request type approval routes, and `/api/v1/employees` and `/api/v1/attendance` are both gated on
+the `hrms` entitlement at the gateway. Both services are built, both are booted by this suite,
+and both contribute to `libs/contracts/permissions/hrms.json` — so this flips a launch flag, it
+does not fabricate a capability.
 
 Launch status is deployment data — which products this deployment is selling — not a property
 of the code. Both services are built and both have manifests, so flipping the flag in this
@@ -40,8 +49,9 @@ sys.path.insert(0, str(SERVICE_DIR))
 from app.config import settings  # noqa: E402
 from app.models import SCHEMA  # noqa: E402
 
-#: The product whose activation this journey drives. Two services, two admin roles.
-PRODUCT = "crm"
+#: The products this suite's journeys activate. `crm` for the CRM journey (two services, two
+#: admin roles); `hrms` for the Wave 0 exit journey (employee + attendance).
+PRODUCTS = ("crm", "hrms")
 
 
 async def main() -> None:
@@ -56,14 +66,17 @@ async def main() -> None:
     async with engine.begin() as conn:
         await conn.execute(text(f'TRUNCATE "{SCHEMA}"."activations", "{SCHEMA}"."outbox" CASCADE'))
         # The only interpolation is `SCHEMA`, a constant this service defines; the product
-        # key is bound.
+        # keys are bound.
         await conn.execute(
-            text(f'UPDATE "{SCHEMA}"."products" SET status = \'available\' WHERE key = :key'),  # noqa: S608
-            {"key": PRODUCT},
+            text(
+                f'UPDATE "{SCHEMA}"."products" SET status = \'available\' '  # noqa: S608
+                "WHERE key = ANY(:keys)"
+            ),
+            {"keys": list(PRODUCTS)},
         )
 
     await engine.dispose()
-    print(f"{PRODUCT} is activatable; activations and outbox cleared")
+    print(f"{', '.join(PRODUCTS)} activatable; activations and outbox cleared")
 
 
 asyncio.run(main())

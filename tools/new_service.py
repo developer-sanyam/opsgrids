@@ -420,20 +420,34 @@ exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"
 set -euo pipefail
 exec python -m app.consumers
 """,
+        "bin/relay": """#!/usr/bin/env bash
+set -euo pipefail
+# The outbox relay: reads this service's outbox on the BYPASSRLS outbox role and publishes to
+# the broker. Its own process, always — a relay that shares a process with the API loses
+# events when the API restarts, and one that hides behind bin/cron is not started when cron is
+# something else (ADR-0012 erratum 8).
+exec python -m app.relay
+""",
         "bin/cron": """#!/usr/bin/env bash
 set -euo pipefail
-exec python -m app.relay
+# Scheduled work. Nothing here yet: a service with a sweep replaces this line with
+# `exec python -m app.cron` (subscription, storefront). The relay has its own entrypoint.
+echo "$(basename "$(dirname "$(dirname "$0")")") bin/cron: no scheduled work in this service" >&2
+exit 78
 """,
         "Dockerfile": f"""# syntax=docker/dockerfile:1
 # Dependencies resolve once at the workspace root, then exactly one service's code is
 # copied in. Services are not installed as packages — each exposes a top-level `app`, so
 # only one may be present per image.
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
-WORKDIR /build
+# Built at the path it will run at: every venv script's shebang is absolute, and a venv
+# built under /build and copied to /app cannot exec alembic or uvicorn. --no-editable
+# installs platform-core into site-packages instead of a .pth pointing back at libs/.
+WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 COPY pyproject.toml uv.lock ./
 COPY libs/ libs/
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-editable
 
 FROM python:3.12-slim-bookworm AS runtime
 ENV PYTHONUNBUFFERED=1 \\
@@ -441,7 +455,7 @@ ENV PYTHONUNBUFFERED=1 \\
     PATH="/app/.venv/bin:$PATH"
 RUN groupadd -r opsgrids && useradd -r -g opsgrids opsgrids
 WORKDIR /app
-COPY --from=builder /build/.venv /app/.venv
+COPY --from=builder /app/.venv /app/.venv
 COPY --chown=opsgrids:opsgrids services/{name}/ /app/
 USER opsgrids
 EXPOSE 8000

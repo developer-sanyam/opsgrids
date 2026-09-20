@@ -29,6 +29,12 @@ allowed = [
     # Python Software Foundation
     "PSF-2.0",
     "Python Software Foundation License",
+    # HPND family. Pillow declares MIT-CMU: MIT terms plus a requirement that the copyright
+    # notice appear in supporting documentation. Permissive, allows commercial use and
+    # redistribution, no copyleft — which is the test that matters, because this platform is
+    # sold onward and a dependency's terms travel with every copy.
+    "MIT-CMU",
+    "HPND",
     # Mozilla — file-level copyleft, acceptable for an unmodified dependency
     "MPL-2.0",
     "Mozilla Public License 2.0 (MPL 2.0)",

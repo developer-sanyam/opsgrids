@@ -19,6 +19,12 @@ class Settings(ServiceSettings):
     #: deployment ships the manifests and points this at them.
     permission_manifest_dir: str | None = None
 
+    #: Where employee-service answers `GET /internal/v1/employee-links`, the read
+    #: `tools/reconcile_membership_links.py` keys on (ADR-0008 §8). Used by that command
+    #: only — **no request path in this service calls employee-service**, and ADR-0006 §1
+    #: says none ever should.
+    employee_service_url: str = "http://localhost:8120"
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

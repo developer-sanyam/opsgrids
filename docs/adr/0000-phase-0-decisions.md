@@ -8,6 +8,10 @@ because they are interdependent: several of them only make sense together.
 
 Every later ADR may refine these. None may quietly contradict one.
 
+**Clarifying notes added 2026-09-17** (§5, `is_dangerous`). No decision here changed; a note records a
+fact about the implementation that later ADRs kept getting wrong, and is placed here because this is
+the document they all read.
+
 ---
 
 ## 1. A user is global; membership is per-organization
@@ -71,6 +75,20 @@ per-product admin role needs.
 
 **Corollary.** A product's admin role is defined against *its own* catalogue, never as "every
 permission that exists". The seeder asserts this and fails the build otherwise.
+
+**Note added 2026-09-17, from ADR-0008's implementation review — `is_dangerous` is metadata, not a
+control.** A permission row carries `is_dangerous`, and it is easy to read as an enforcement flag.
+It is not: `grep -rn is_dangerous libs/platform-core` returns **nothing**, so no authorization gate
+consults it. It is declared in a service catalogue, written to `permissions` by
+`install_registration`, and exposed on `PermissionOut`. The one place it changes an outcome is
+pricing — `catalog/app/domain.py:169` keeps a dangerous permission out of a view-only seat class at
+entitlement time. So it is not inert everywhere; it is inert **at request time**. Marking a
+permission dangerous makes a write no safer. What constrains a dangerous write is the scope floor on
+the route (`minimum=Scope.ORG`), the grant itself, and the audit row. ADR-0008 originally cited the
+flag as a mitigation and had to retract it; this note exists so the next ADR does not repeat that.
+Two related traps live nearby: `max_scope` is a ladder ceiling and not an allowed-set (ADR-0007 §1,
+amended), and `install_registration` skips role codes that already exist (ADR-0007's reason to
+exist).
 
 ## 6. Scope is a ranked ladder with per-product resolvers
 

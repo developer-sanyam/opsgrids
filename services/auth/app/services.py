@@ -732,7 +732,15 @@ async def request_password_reset(
         event_type=EVT_PASSWORD_RESET_REQUESTED,
         aggregate_type="credential",
         aggregate_id=user.user_id,
-        payload={"user_id": str(user.user_id), "email": user.email, "token": raw},
+        payload={
+            "user_id": str(user.user_id),
+            "email": user.email,
+            "token": raw,
+            # Ready to paste into a template. The dashboard owns the route; this service owns
+            # the token; the platform's base URL is the one configured value that joins them,
+            # so notification's template never has to know a hostname (ADR-0013 §3).
+            "reset_url": f"{cfg.app_base_url.rstrip('/')}/reset-password?token={raw}",
+        },
     )
     await session.commit()
 

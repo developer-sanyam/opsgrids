@@ -81,7 +81,7 @@ organizations that have bought nothing.
 
 | Package | State |
 |---|---|
-| `opsgrids-website` | **Built** — Next.js 16 marketing site, 9-product catalogue, runs on `:4300` |
+| `opsgrids-website` | **Moved out** — now its own repo, deployed to opsgrids.com (ADR-0001 amendment) |
 | `opsgrids-config` | **Built** — shared strict TypeScript config |
 | `opsgrids-ui` | **Absent** — declared workspace package, `src/` is empty |
 | `opsgrids-client` | **Absent** — declared workspace package, `src/` is empty |

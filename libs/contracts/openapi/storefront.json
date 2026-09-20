@@ -1,0 +1,2186 @@
+{
+  "components": {
+    "schemas": {
+      "DeliveryCheckIn": {
+        "additionalProperties": false,
+        "description": "The merchant's tester. No `store` \u2014 the tenant comes from the token, not from a slug.",
+        "properties": {
+          "postal_code": {
+            "maxLength": 24,
+            "minLength": 1,
+            "title": "Postal Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "postal_code"
+        ],
+        "title": "DeliveryCheckIn",
+        "type": "object"
+      },
+      "DemandRowOut": {
+        "description": "One postal code's demand on one day.",
+        "properties": {
+          "check_date": {
+            "format": "date",
+            "title": "Check Date",
+            "type": "string"
+          },
+          "checks": {
+            "title": "Checks",
+            "type": "integer"
+          },
+          "outcome": {
+            "enum": [
+              "SERVED",
+              "NO_MAPPING",
+              "EXCLUDED",
+              "ZONE_INACTIVE"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "postal_code": {
+            "title": "Postal Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "check_date",
+          "postal_code",
+          "outcome",
+          "checks"
+        ],
+        "title": "DemandRowOut",
+        "type": "object"
+      },
+      "FeesOut": {
+        "description": "**Display values. These are never the numbers charged.**\n\nInteger minor units of `currency` (ADR-0000 \u00a78). Slice 1 has no cart, no pricing engine and\nnothing that enforces them; when the cart lands, the pricing engine recomputes the total\nfrom its own state and one of the two sources of truth stops being authoritative \u2014 and it is\nthis one (ADR-0010 \u00a78). Show them on the card; never total them into anything.",
+        "properties": {
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "delivery_fee_minor": {
+            "title": "Delivery Fee Minor",
+            "type": "integer"
+          },
+          "display_only": {
+            "default": true,
+            "title": "Display Only",
+            "type": "boolean"
+          },
+          "free_delivery_above_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Free Delivery Above Minor"
+          },
+          "min_order_minor": {
+            "default": 0,
+            "title": "Min Order Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "currency",
+          "delivery_fee_minor"
+        ],
+        "title": "FeesOut",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ImportResultOut": {
+        "description": "What a bulk import did. Counters, and the offending line numbers if it refused.\n\nThe audit row carries the same five counters and the mode \u2014 **one row per import**, not\n19,000. The mode is on the row because a `replace` is destructive and a `merge` is not, and\nthe trail has to distinguish them (ADR-0010 \u00a714).",
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "integer"
+          },
+          "inserted": {
+            "title": "Inserted",
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "merge",
+              "replace"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "rejected": {
+            "default": 0,
+            "title": "Rejected",
+            "type": "integer"
+          },
+          "rows_read": {
+            "title": "Rows Read",
+            "type": "integer"
+          },
+          "updated": {
+            "title": "Updated",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mode",
+          "rows_read",
+          "inserted",
+          "updated",
+          "deleted"
+        ],
+        "title": "ImportResultOut",
+        "type": "object"
+      },
+      "MerchantServiceabilityOut": {
+        "description": "The same answer, from the same selector, plus which zone matched.\n\nThe tester is the only way a merchant verifies that a 19,000-row import did what they meant,\nand `zone_code` is the whole reason it is not just the public endpoint with a token: a\nconfident wrong answer from a mis-mapped postal code is invisible without it (ADR-0010 \u00a713).",
+        "properties": {
+          "buyer_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buyer Note"
+          },
+          "checked_at": {
+            "format": "date-time",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "fees": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FeesOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mode": {
+            "enum": [
+              "SLOTTED",
+              "PROMISED",
+              "UNSERVED"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "postal_code": {
+            "title": "Postal Code",
+            "type": "string"
+          },
+          "promise": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PromiseOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "no_mapping",
+                  "excluded",
+                  "zone_inactive"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "serviceable": {
+            "title": "Serviceable",
+            "type": "boolean"
+          },
+          "zone_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Zone Code"
+          },
+          "zone_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Zone Id"
+          },
+          "zone_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Zone Name"
+          }
+        },
+        "required": [
+          "postal_code",
+          "serviceable",
+          "mode",
+          "checked_at"
+        ],
+        "title": "MerchantServiceabilityOut",
+        "type": "object"
+      },
+      "Page_DemandRowOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DemandRowOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[DemandRowOut]",
+        "type": "object"
+      },
+      "Page_ZoneOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ZoneOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ZoneOut]",
+        "type": "object"
+      },
+      "PromiseOut": {
+        "description": "When it arrives. Exactly one of `minutes` / `date` is populated.\n\n`date` is already resolved **on the server, in the store's timezone**, cutoff applied. The\nclient renders it; it never computes it, and it never sends its own clock.",
+        "properties": {
+          "date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "kind": {
+            "enum": [
+              "DURATION",
+              "DATE_OFFSET"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minutes"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "PromiseOut",
+        "type": "object"
+      },
+      "PublicServiceabilityIn": {
+        "additionalProperties": false,
+        "description": "The anonymous request body.\n\n**The store slug travels in the body, not in the path, and that is a standing constraint on\nthe whole future buyer API** \u2014 not a quirk of this route. `GatewayPolicy.public_paths` is an\nexact-path frozenset (`full_path in policy.public_paths`), and `full_path` is built from the\ncatch-all `{path:path}` and excludes the query string. So a public path with a variable in\nit \u2014 `/public/store/{slug}` \u2014 is not expressible at all, and every anonymous storefront\nendpoint must carry its variables in the query string or the body (ADR-0010 \u00a74).",
+        "properties": {
+          "postal_code": {
+            "maxLength": 24,
+            "minLength": 1,
+            "title": "Postal Code",
+            "type": "string"
+          },
+          "store": {
+            "maxLength": 63,
+            "minLength": 2,
+            "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
+            "title": "Store",
+            "type": "string"
+          }
+        },
+        "required": [
+          "store",
+          "postal_code"
+        ],
+        "title": "PublicServiceabilityIn",
+        "type": "object"
+      },
+      "PublicStoreContextIn": {
+        "additionalProperties": false,
+        "description": "The first call a buyer's browser makes, before anything is rendered (ADR-0012 \u00a72).\n\n`host` is `window.location.hostname` \u2014 nothing else, and in particular not a value the\nbundle was built with. **The bundle is identical for every merchant**, which is what lets\none build serve `greenleaf.stores.opsgrids.com` and `merchant.com` without a config file\nper store.\n\nIt is bounded here at a hostname's own ceiling so an oversized body is refused by the schema\nbefore any code touches it; `domain.normalise_request_host` is what decides whether what is\ninside that bound is a hostname at all.",
+        "properties": {
+          "host": {
+            "maxLength": 253,
+            "minLength": 1,
+            "title": "Host",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host"
+        ],
+        "title": "PublicStoreContextIn",
+        "type": "object"
+      },
+      "ServiceInfo": {
+        "properties": {
+          "schema_name": {
+            "title": "Schema Name",
+            "type": "string"
+          },
+          "service": {
+            "title": "Service",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "schema_name"
+        ],
+        "title": "ServiceInfo",
+        "type": "object"
+      },
+      "ServiceabilityOut": {
+        "description": "The answer to \"do you deliver to me?\".\n\n**There is no `UNKNOWN` here, and that is the contract.** The server never returns an\noutcome it did not compute: a check that fails is a non-2xx problem+json, and \"couldn't\ncheck\" is the client's rendering of that. Telling a buyer in a served area that the shop\ndoes not reach them is a lost order and a support ticket, and it is exactly what a naive\n`catch \u2192 not serviceable` produces (ADR-0010 \u00a713).",
+        "properties": {
+          "buyer_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buyer Note"
+          },
+          "checked_at": {
+            "format": "date-time",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "fees": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FeesOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mode": {
+            "enum": [
+              "SLOTTED",
+              "PROMISED",
+              "UNSERVED"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "postal_code": {
+            "title": "Postal Code",
+            "type": "string"
+          },
+          "promise": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PromiseOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "no_mapping",
+                  "excluded",
+                  "zone_inactive"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "serviceable": {
+            "title": "Serviceable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "postal_code",
+          "serviceable",
+          "mode",
+          "checked_at"
+        ],
+        "title": "ServiceabilityOut",
+        "type": "object"
+      },
+      "StoreContextOut": {
+        "description": "Which store this address is, and what it is called.\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n**This is the only public representation of ADR-0011's brand columns**, and the\nstorefront-document ADR extends *this* payload rather than adding a second one (ADR-0012\n\u00a711). A second bootstrap would mean two calls on the first-paint path and two shapes that\ndrift.\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n**`name`, `tagline` and `logo_text` are merchant-authored text, returned verbatim and\ndeliberately not escaped.** They are stored trimmed, bounded, single-line and free of\ncontrol characters and bidi overrides, and that is the whole of the sanitising this service\ndoes. Output encoding belongs to whatever renders the page \u2014 escaping here would\ndouble-escape the moment anything else read the column, and would still not protect a client\nthat injected the value as HTML (ADR-0011 \u00a76). **The buyer bundle owns escaping these three\nfields.**\n\nEvery field is always present. `tagline` and `logo_text` are nullable rather than absent, so\n\"the merchant has not written one\" is one state on the wire rather than two that compare\ndifferently. The renderer decides the fallback \u2014 `logo_text` falling back to `name` is its\ndecision and not a value this service copies.",
+        "properties": {
+          "canonical_host": {
+            "description": "The address this store should be linked to. The merchant's own domain once it is live, and the platform host otherwise \u2014 **including when a live domain starts failing**, so the canonical pointer never aims at a name that does not answer. Slice 1 does not redirect: this is what the bundle puts in `<link rel=\"canonical\">`.",
+            "title": "Canonical Host",
+            "type": "string"
+          },
+          "checked_at": {
+            "format": "date-time",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "is_canonical": {
+            "title": "Is Canonical",
+            "type": "boolean"
+          },
+          "logo_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo Text"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "store": {
+            "title": "Store",
+            "type": "string"
+          },
+          "tagline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tagline"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "store",
+          "name",
+          "tagline",
+          "logo_text",
+          "currency",
+          "timezone",
+          "canonical_host",
+          "is_canonical",
+          "checked_at"
+        ],
+        "title": "StoreContextOut",
+        "type": "object"
+      },
+      "StoreOut": {
+        "description": "The store's identity \u2014 **who the store is, not how it looks**.\n\nThe brand (`name`, `tagline`, `logo_text`) is here rather than in the theme document,\nbecause a store's name is its identity and not a property of the theme somebody picked\n(ADR-0011 \u00a72). The theme document \u2014 tokens, pages, sections \u2014 is a separate resource at\n`/api/v1/storefront/theme`, reserved by ADR-0011 \u00a73 and **not served by this service yet**.\n\nEvery string here is **merchant-authored text that will be rendered into a public page**.\nIt is stored trimmed, bounded and free of control characters; it is **not** HTML-escaped,\nand escaping it here would be wrong. Output encoding belongs to whatever renders the page.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "custom_domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The domain the merchant intends to use. **It is not an address the store is reachable at.** Nothing in this platform serves a custom domain \u2014 there is no ingress, no TLS termination and no host-based routing \u2014 so this records an intention and changes nothing about reachability.",
+            "title": "Custom Domain"
+          },
+          "custom_domain_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unverified",
+                  "verified"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`unverified` whenever `custom_domain` is set, `null` when it is not. **Nothing can move it off `unverified` today**: verifying that a merchant owns a domain is DNS work nobody has done, and it is a precondition of ever serving one \u2014 serving a domain on the strength of a form submission is how one merchant takes another's traffic.",
+            "title": "Custom Domain Status"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "logo_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo Text"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "status": {
+            "description": "`draft` is invisible to buyers; `published` makes the anonymous serviceability check answer for this store. Both are reached only through `POST /storefront/store/publish` and `.../unpublish`. `suspended` is set by the platform and no merchant route can set or leave it.",
+            "enum": [
+              "draft",
+              "published",
+              "suspended"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tagline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tagline"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "name",
+          "tagline",
+          "logo_text",
+          "status",
+          "currency",
+          "timezone",
+          "custom_domain",
+          "custom_domain_status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "StoreOut",
+        "type": "object"
+      },
+      "StorePut": {
+        "additionalProperties": false,
+        "description": "Create or update the organization's single storefront.\n\nA PUT rather than a PATCH because a merchant editing a store's identity is editing one form,\nall of it at once. **`status` is deliberately not on this payload** (ADR-0011 \u00a74): a settings\nsave must not be able to put a store in front of the internet, so publishing is its own named\ntransition. A store is created `draft`, always.\n\n`slug` is required on create and must **match the stored value** on update \u2014 a rename is a\n409 `slug_immutable` rather than a field this payload silently ignores (ADR-0011 \u00a77).",
+        "properties": {
+          "currency": {
+            "default": "INR",
+            "pattern": "^[A-Z]{3}$",
+            "title": "Currency",
+            "type": "string"
+          },
+          "custom_domain": {
+            "anyOf": [
+              {
+                "description": "The domain the merchant **intends** to use, stored lower-cased with no scheme, path or port. **Setting it records an intention and changes nothing about reachability**: no request is served on it, nothing here checks that the merchant owns it, and the stored status is `unverified` with no path off it. `null` or an empty string releases the claim. A domain another organization has already claimed is a 409 `custom_domain_taken`.",
+                "examples": [
+                  "shop.example.com"
+                ],
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Domain"
+          },
+          "logo_text": {
+            "anyOf": [
+              {
+                "description": "The header wordmark. `null` or an empty string clears it, and the renderer falls back to `name`.",
+                "maxLength": 12,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo Text"
+          },
+          "name": {
+            "description": "The store's name, as a buyer sees it. Trimmed and whitespace-collapsed before it is stored; blank after trimming is a 422 `name_required`. Stored verbatim otherwise \u2014 it is **not** HTML-escaped, and encoding it for output is the renderer's job.",
+            "maxLength": 80,
+            "title": "Name",
+            "type": "string"
+          },
+          "slug": {
+            "maxLength": 63,
+            "minLength": 2,
+            "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
+            "title": "Slug",
+            "type": "string"
+          },
+          "tagline": {
+            "anyOf": [
+              {
+                "description": "One line under the name. `null` or an empty string clears it.",
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tagline"
+          },
+          "timezone": {
+            "default": "Asia/Kolkata",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "name"
+        ],
+        "title": "StorePut",
+        "type": "object"
+      },
+      "TlsAuthorizeOut": {
+        "description": "The edge may obtain a certificate for `host` (ADR-0012 \u00a75). Only ever a 200 body.\n\n`host` is the normalised name the decision was made for, so a human with curl can see what\nCaddy's SNI was reduced to. `reason` says which of the two allowed kinds it was \u2014 a listed\nplatform host or a published store's name \u2014 and nothing about the store: this is answered\nto Caddy, and the name was chosen by whoever pointed DNS at us.",
+        "properties": {
+          "host": {
+            "title": "Host",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "platform",
+              "store"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host",
+          "reason"
+        ],
+        "title": "TlsAuthorizeOut",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "ZoneCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "buyer_note": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buyer Note"
+          },
+          "code": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$",
+            "title": "Code",
+            "type": "string"
+          },
+          "delivery_fee_minor": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Delivery Fee Minor",
+            "type": "integer"
+          },
+          "free_delivery_above_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Free Delivery Above Minor"
+          },
+          "is_active": {
+            "default": true,
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "min_order_minor": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Min Order Minor",
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "SLOTTED",
+              "PROMISED",
+              "UNSERVED"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "promise_cutoff_time": {
+            "anyOf": [
+              {
+                "format": "time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promise Cutoff Time"
+          },
+          "promise_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "DURATION",
+                  "DATE_OFFSET"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promise Kind"
+          },
+          "promise_minutes": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 20160.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promise Minutes"
+          },
+          "promise_offset_days": {
+            "anyOf": [
+              {
+                "maximum": 90.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promise Offset Days"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "mode"
+        ],
+        "title": "ZoneCreate",
+        "type": "object"
+      },
+      "ZoneOut": {
+        "properties": {
+          "buyer_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buyer Note"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "delivery_fee_minor": {
+            "title": "Delivery Fee Minor",
+            "type": "integer"
+          },
+          "free_delivery_above_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Free Delivery Above Minor"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "min_order_minor": {
+            "title": "Min Order Minor",
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "SLOTTED",
+              "PROMISED",
+              "UNSERVED"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "postal_code_count": {
+            "default": 0,
+            "title": "Postal Code Count",
+            "type": "integer"
+          },
+          "promise_cutoff_time": {
+            "anyOf": [
+              {
+                "format": "time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promise Cutoff Time"
+          },
+          "promise_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "DURATION",
+                  "DATE_OFFSET"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promise Kind"
+          },
+          "promise_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promise Minutes"
+          },
+          "promise_offset_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promise Offset Days"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "mode",
+          "promise_kind",
+          "promise_minutes",
+          "promise_offset_days",
+          "promise_cutoff_time",
+          "delivery_fee_minor",
+          "free_delivery_above_minor",
+          "min_order_minor",
+          "is_active",
+          "buyer_note",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ZoneOut",
+        "type": "object"
+      },
+      "ZonePatch": {
+        "additionalProperties": false,
+        "description": "A partial edit. **Absent leaves a field alone; an explicit `null` clears it.**\n\nCarried by `model_dump(exclude_unset=True)`, the same mechanism `account.MemberPatch` uses\nfor the employee link. It matters here for the promise fields: clearing a promise and never\nmentioning it are different intentions, and a zone whose mode changed to `UNSERVED` has to\nbe able to say the first.",
+        "properties": {
+          "buyer_note": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buyer Note"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "delivery_fee_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Fee Minor"
+          },
+          "free_delivery_above_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Free Delivery Above Minor"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "min_order_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Order Minor"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "SLOTTED",
+                  "PROMISED",
+                  "UNSERVED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "promise_cutoff_time": {
+            "anyOf": [
+              {
+                "format": "time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promise Cutoff Time"
+          },
+          "promise_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "DURATION",
+                  "DATE_OFFSET"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promise Kind"
+          },
+          "promise_minutes": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 20160.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promise Minutes"
+          },
+          "promise_offset_days": {
+            "anyOf": [
+              {
+                "maximum": 90.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promise Offset Days"
+          }
+        },
+        "title": "ZonePatch",
+        "type": "object"
+      },
+      "ZonePostalCodesOut": {
+        "description": "Every postal code in one zone. Bounded by the zone, not by a page.\n\nThe zone editor's textarea is one control holding one list, so paging it would mean a\nmerchant editing a fragment of their own zone and saving the fragment. The bound is\n`MAX_POSTAL_CODES_PER_ZONE` on the write, which is what keeps this read finite.",
+        "properties": {
+          "postal_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Postal Codes",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "zone_code": {
+            "title": "Zone Code",
+            "type": "string"
+          },
+          "zone_id": {
+            "format": "uuid",
+            "title": "Zone Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "zone_id",
+          "zone_code",
+          "postal_codes",
+          "total"
+        ],
+        "title": "ZonePostalCodesOut",
+        "type": "object"
+      },
+      "ZonePostalCodesPut": {
+        "additionalProperties": false,
+        "description": "The textarea path: the complete list for this zone, replacing whatever was there.\n\nReplace rather than append, because without it a merchant who **shrinks** a zone watches\ntheir removal do nothing and the old area keep delivering.",
+        "properties": {
+          "postal_codes": {
+            "description": "Postal codes, one per line or comma-separated.",
+            "examples": [
+              "400050\n400051, 400052"
+            ],
+            "title": "Postal Codes",
+            "type": "string"
+          }
+        },
+        "required": [
+          "postal_codes"
+        ],
+        "title": "ZonePostalCodesPut",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "The storefront product's first service, and the platform's **first anonymous read of tenant data** (ADR-0010). A buyer with no token, no account and no session asks whether a store delivers to their postal code, and gets a real answer: served with a promise, served with slots (slice 2), or deliberately not served \u2014 with the reason. The tenant is resolved from a store slug in the request body on a BYPASSRLS, SELECT-only reader confined to one table, and every statement after that runs tenant-bound under row-level security. **A check that fails renders as 'we couldn't check', never as 'we don't deliver here'** \u2014 the server never returns an outcome it did not compute. Behind the public route, the merchant configures zones, maps postal codes, imports them in bulk, tests one, and reads which postal codes were turned away.",
+    "title": "Storefront service",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/storefront/delivery/check": {
+      "post": {
+        "description": "`storefront.delivery.zone.read`, floored at ORG.\n\n**The same selector, the same answer shape, plus the matched zone.** It is the second\nconcrete caller that justifies the chokepoint, and it is the only way a merchant verifies\nthat a 19,000-row import did what they meant: a mis-mapped postal code returns a confident\nwrong answer and nothing else in the system notices.\n\nNo demand row is written. This is the merchant testing their own map, not a buyer asking \u2014\ncounting it would poison the one signal the report exists to give.",
+        "operationId": "check_postal_code_api_v1_storefront_delivery_check_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeliveryCheckIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MerchantServiceabilityOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test a postal code against this store's delivery map",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/delivery/demand": {
+      "get": {
+        "description": "`storefront.delivery.zone.read`, floored at ORG \u2014 **no fifth permission** (ADR-0010 \u00a79).\n\nNobody has asked for a read-the-demand-but-not-the-zones role, and a fifth permission is a\nfifth thing to deliver. The trade, plainly: anyone who can see the zones can see which\npostal codes were turned away.\n\nOrdered by count descending, because the merchant's question is \"where should I expand\nnext\", not \"what happened most recently\". Dates are the **store's** calendar days, so a\nmerchant's totals break at their own midnight rather than at UTC's.",
+        "operationId": "read_demand_api_v1_storefront_delivery_demand_get",
+        "parameters": [
+          {
+            "description": "Inclusive. Defaults to 30 days ago.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive. Defaults to 30 days ago.",
+              "title": "Since"
+            }
+          },
+          {
+            "description": "Inclusive. Defaults to today.",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive. Defaults to today.",
+              "title": "Until"
+            }
+          },
+          {
+            "description": "Filter to one outcome. `NO_MAPPING` is the expansion list.",
+            "in": "query",
+            "name": "outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "SERVED",
+                    "NO_MAPPING",
+                    "EXCLUDED",
+                    "ZONE_INACTIVE"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one outcome. `NO_MAPPING` is the expansion list.",
+              "title": "Outcome"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_DemandRowOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Which postal codes were asked for, and how often",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/delivery/postal-codes/import": {
+      "post": {
+        "description": "`storefront.delivery.zone.write`, floored at ORG. **All or nothing, in one transaction.**\n\nA half-applied import is worse than a failed one, because the merchant cannot tell which\nhalf. Duplicates are detected in pure code before a single statement runs, and refused with\nthe line numbers.\n\nOne audit row carries the mode and five counters \u2014 not 19,000 rows. The mode is on the row\nbecause a `replace` is destructive and a `merge` is not.\n\nA 19,000-row batched upsert runs in one to three seconds against the gateway's 30-second\nupstream timeout. If a real file ever approaches that, ADR-0010 \u00a79 names the next step in\norder: the import becomes a job with a status row, or the route takes a `max_body_bytes`\noverride \u2014 and nobody reaches for chunking first.",
+        "operationId": "import_postal_codes_api_v1_storefront_delivery_postal_codes_import_post",
+        "parameters": [
+          {
+            "description": "`merge` upserts each row and leaves everything else alone. `replace` deletes every postal-code mapping in the organization first \u2014 which is what a merchant re-uploading their master file means, and without it their removals never take effect.",
+            "in": "query",
+            "name": "mode",
+            "required": false,
+            "schema": {
+              "default": "merge",
+              "description": "`merge` upserts each row and leaves everything else alone. `replace` deletes every postal-code mapping in the organization first \u2014 which is what a merchant re-uploading their master file means, and without it their removals never take effect.",
+              "enum": [
+                "merge",
+                "replace"
+              ],
+              "title": "Mode",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "text/csv": {
+              "schema": {
+                "description": "Two columns with a header row: `postal_code,zone_code`. Every zone code must already exist. A postal code appearing twice is refused with the offending line numbers \u2014 last-wins on a file you cannot read back is the silent wrong answer.",
+                "example": "postal_code,zone_code\n400050,BANDRA\n400051,BANDRA\n",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportResultOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Bulk-import postal codes from a CSV",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/delivery/zones": {
+      "get": {
+        "description": "`storefront.delivery.zone.read`, floored at ORG. Paginated, server-capped at 200.\n\nThe counts arrive as one grouped query for the whole page \u2014 a per-zone count inside the loop\nwould be an N+1 on the screen a merchant opens first.",
+        "operationId": "list_zones_api_v1_storefront_delivery_zones_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ZoneOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The delivery zones, with how many postal codes each holds",
+        "tags": [
+          "storefront"
+        ]
+      },
+      "post": {
+        "description": "`storefront.delivery.zone.write`, floored at ORG.\n\n`SLOTTED` is refused with a 422 naming slice 2 \u2014 the mode exists in the column's check\nconstraint from day one so slice 2 is a validation change rather than a schema change, and\nthe writer is what holds the line until then.",
+        "operationId": "create_zone_api_v1_storefront_delivery_zones_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ZoneCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ZoneOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a delivery zone",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/delivery/zones/{zone_id}": {
+      "delete": {
+        "description": "`storefront.delivery.zone.write`, floored at ORG.\n\n**Refused while postal codes are still mapped to it**, with a 422 naming the count. Cascading\nwould silently un-serve every one of those areas, and a merchant would find out from a buyer.",
+        "operationId": "delete_zone_api_v1_storefront_delivery_zones__zone_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "zone_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Zone Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a delivery zone",
+        "tags": [
+          "storefront"
+        ]
+      },
+      "patch": {
+        "description": "`storefront.delivery.zone.write`, floored at ORG. Absent leaves a field alone; an explicit\n`null` clears it.\n\nA zone in another organization is a 404 and never a 403: confirming that an id exists in\n*some* organization is itself a disclosure.",
+        "operationId": "patch_zone_api_v1_storefront_delivery_zones__zone_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "zone_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Zone Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ZonePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ZoneOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a delivery zone",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/delivery/zones/{zone_id}/postal-codes": {
+      "get": {
+        "description": "`storefront.delivery.zone.read`, floored at ORG.\n\nDeliberately unpaginated, and bounded instead by the write: this is one textarea holding one\nlist, and a merchant editing a page of their own zone would save the page and silently drop\nthe rest. `domain.MAX_POSTAL_CODES_PER_ZONE` is what keeps this finite.",
+        "operationId": "read_zone_postal_codes_api_v1_storefront_delivery_zones__zone_id__postal_codes_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "zone_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Zone Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ZonePostalCodesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Every postal code in one zone",
+        "tags": [
+          "storefront"
+        ]
+      },
+      "put": {
+        "description": "`storefront.delivery.zone.write`, floored at ORG.\n\nReplace, not append: without that a merchant who **shrinks** a zone watches the removal do\nnothing and the old area keep delivering. A code that belongs to another zone is refused\nnaming that zone, rather than silently moved \u2014 one postal code belongs to exactly one zone.",
+        "operationId": "put_zone_postal_codes_api_v1_storefront_delivery_zones__zone_id__postal_codes_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "zone_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Zone Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ZonePostalCodesPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ZonePostalCodesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replace the zone's postal codes with this list",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/info": {
+      "get": {
+        "operationId": "info_api_v1_storefront_info_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "What this service is",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/internal/tls-authorize": {
+      "get": {
+        "description": "Caddy's `ask` (ADR-0012 \u00a75). 200 allows issuance for exactly this name; 403 refuses.\n\nThe order is the cheap answer first: a platform host needs no lookup at all. Everything\nelse is one read of `storefront.storefronts` on the SELECT-only bypass reader, which is the\nsame read the buyer's bootstrap makes \u2014 so \"would we serve this host\" and \"may this host\nhave a certificate\" are one decision made in one place.",
+        "operationId": "tls_authorize_api_v1_storefront_internal_tls_authorize_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "maxLength": 253,
+              "title": "Domain",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TlsAuthorizeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "No \u2014 not a platform host and no published store answers there"
+          },
+          "422": {
+            "description": "That is not a hostname; the edge treats this as no"
+          }
+        },
+        "summary": "May the edge obtain a certificate for this hostname?",
+        "tags": [
+          "storefront (internal)"
+        ]
+      }
+    },
+    "/api/v1/storefront/public/serviceability": {
+      "post": {
+        "description": "**No token, no account, no session.** The one thing a stranger may ask this platform.\n\nFour steps, in this order and no other:\n\n1. the postal code is parsed and validated \u2014 a typo is a 422, never an answer, because \"that\n   is not a postal code\" and \"we do not deliver there\" are different facts;\n2. the slug is resolved on the bypass reader, which returns two ids and a status and buys\n   *discovery only*;\n3. an unresolved or unpublished store is a **404**, logged at warning with the slug, and is\n   distinct in both status and log from \"resolved, and not served\" \u2014 a draft store is\n   invisible so a merchant can map zones and use the tester before any buyer can ask;\n4. everything after that runs tenant-bound on the NOBYPASSRLS application role, under the\n   same row policies an authenticated request gets.\n\nThe answer is **not** cached server-side and **must not** be cached by the client: the\nbuyer's postal code lives in their browser, the answer does not, and it is re-fetched on\nevery page load. A client-side check that is trusted is not a check (ADR-0010 \u00a75).\n\n**Entitlement is not checked here and cannot cheaply be.** The gateway's public branch\nreturns before its entitlement gate, and asking product-service would put an HTTP hop on\nevery page view. A merchant whose `storefront` entitlement lapses therefore keeps answering\nuntil somebody unpublishes them; the consumer that would flip `status` to `suspended` on\ndeactivation is named in ADR-0010 \u00a74, is **not built here, and has no owner**.",
+        "operationId": "check_serviceability_api_v1_storefront_public_serviceability_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicServiceabilityIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceabilityOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No published store with that slug"
+          },
+          "422": {
+            "description": "That is not a postal code \u2014 distinct from 'we do not deliver there'"
+          },
+          "429": {
+            "description": "Rate limited by the gateway; render as 'couldn't check'"
+          },
+          "503": {
+            "description": "Could not check; render as 'couldn't check', never as 'no'"
+          }
+        },
+        "summary": "Does this store deliver to this postal code?",
+        "tags": [
+          "storefront (public)"
+        ]
+      }
+    },
+    "/api/v1/storefront/public/store-context": {
+      "post": {
+        "description": "**No token, no account, no session** \u2014 the second thing a stranger may ask this platform.\n\nA buyer's browser arrives at a hostname and needs to know which store it is looking at. The\nbundle is identical for every merchant, so this is what turns `window.location.hostname`\ninto a slug, a brand and a canonical address (ADR-0012 \u00a72).\n\nThree steps, in this order and no other:\n\n1. the host is normalised or refused \u2014 **a string that is not a hostname is a 422, never a\n   404**, because \"that is not an address\" and \"nothing is published there\" are different\n   facts, exactly as a malformed postal code is distinct from an unserved one;\n2. it is resolved on the bypass reader, which reads one row of one table and buys *discovery\n   only* \u2014 the platform subdomain through the existing slug lookup, a custom domain only at\n   a status that means the claim was proved;\n3. **anything that is not a published store is the same 404, with the same sentence.** An\n   unknown host, a `draft` store, a `suspended` store and an unverified claim are one answer\n   on the wire. Distinguishing them would hand a stranger an oracle for which domains are\n   connected to which stores and which tenants exist but are not live yet \u2014 exactly the\n   enumeration ADR-0011 \u00a75's global uniqueness rule already makes tempting.\n\nNothing tenant-bound runs here, and that is not an omission: this route reads one identity\nrow and returns columns from it. There is no second query to open a transaction for, so\nthere is no place for row-level security to apply and nothing for it to protect. The moment\nthis payload grows something that is not on `storefronts` \u2014 the store document, a catalogue\n\u2014 that stops being true, and the extension goes through `session_scope` exactly as\nserviceability's does.\n\n**Entitlement is not checked, and cannot cheaply be.** The gateway's public branch returns\nbefore its entitlement gate. A merchant whose `storefront` entitlement lapses keeps\nanswering here until somebody unpublishes them; the consumer that would flip `status` to\n`suspended` is ADR-0010 \u00a74's, is still unowned, and is named again in ADR-0012 slice 3.",
+        "operationId": "store_context_api_v1_storefront_public_store_context_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicStoreContextIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreContextOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No published store at this address \u2014 and it says nothing more"
+          },
+          "422": {
+            "description": "That is not a hostname \u2014 distinct from 'nothing is published there'"
+          },
+          "429": {
+            "description": "Rate limited by the gateway; retry, never render an empty store"
+          },
+          "503": {
+            "description": "Could not look it up; render as unavailable, never as 'no store'"
+          }
+        },
+        "summary": "Which store is this address, and what is it called?",
+        "tags": [
+          "storefront (public)"
+        ]
+      }
+    },
+    "/api/v1/storefront/store": {
+      "get": {
+        "description": "`storefront.store.settings.read`, floored at ORG.\n\n**This is the identity row, not the theme document.** The two collided on this path: the\nSPA's `getStore()` called it expecting a `StoreDoc`. Identity stayed, because it is in the\npublished schema and both the delivery admin and the merchant surface read it; the theme\ndocument moved to `/api/v1/storefront/theme`, which ADR-0011 \u00a73 reserves and the\nstorefront-document ADR builds. Nothing serves that path yet.",
+        "operationId": "read_store_api_v1_storefront_store_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The store's identity \u2014 name, address, brand and status",
+        "tags": [
+          "storefront"
+        ]
+      },
+      "put": {
+        "description": "`storefront.store.settings.write`, floored at ORG.\n\n**This route cannot publish a store.** `status` is not on the payload: a save that could put\na store in front of the internet as a side effect of editing a tagline is the failure a\ndropdown produces by default, so publishing is `POST /storefront/store/publish` and nothing\nelse (ADR-0011 \u00a74). A store created here is always `draft`.\n\n**The slug is immutable** once the store exists (ADR-0011 \u00a77): send the stored value back\nunchanged, or get a 409 `slug_immutable`. It is required rather than omittable because a\nfull-replacement payload that silently ignores a field is worse than one that refuses it.\n\n**Setting `custom_domain` records an intention and changes nothing about reachability.**\nNothing in this platform serves a custom domain \u2014 no ingress, no TLS termination, no\nhost-based routing \u2014 and nothing here verifies that the merchant owns the name. The response\nsays so: `custom_domain_status` is `unverified` and there is no path off it yet.",
+        "operationId": "put_store_api_v1_storefront_store_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StorePut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "A named conflict. `errors[0].code` is one of `slug_immutable` (the store address cannot be changed), `slug_taken`, `custom_domain_taken` (another organization has claimed it \u2014 nothing about that organization is disclosed) or `storefront_exists`."
+          },
+          "422": {
+            "description": "A rule refused it. `errors[0].code` is one of `name_required`, `name_too_long`, `name_invalid`, `tagline_too_long`, `tagline_invalid`, `logo_text_too_long`, `logo_text_invalid`, `custom_domain_invalid`, `custom_domain_too_long`, `custom_domain_reserved` or `timezone_invalid`."
+          }
+        },
+        "summary": "Create or update the store's identity and brand",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/store/publish": {
+      "post": {
+        "description": "`storefront.store.settings.write`, floored at ORG. **The act with consequences.**\n\nPublishing is what makes the anonymous serviceability check answer for this store, and with\nit makes that merchant's delivery map readable by anyone who knows the slug \u2014 a deliberate\ndisclosure, accepted because a merchant publishes both on their own website, and not\nreversible once the slug is in circulation (ADR-0010 \u00a74). It is its own endpoint, its own\naudit action and its own control in the UI for exactly that reason.\n\nIdempotent: publishing a published store returns 200 and changes nothing.\n\n**This does not put the store on a custom domain.** Nothing in this platform serves one.",
+        "operationId": "publish_store_api_v1_storefront_store_publish_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "This organization has no storefront yet."
+          },
+          "409": {
+            "description": "`errors[0].code` is `store_suspended`. A suspended store is suspended by the platform and cannot be published or unpublished from here."
+          }
+        },
+        "summary": "Publish the store \u2014 make it reachable by anyone",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/store/unpublish": {
+      "post": {
+        "description": "`storefront.store.settings.write`, floored at ORG.\n\nThe store goes back to `draft` and the anonymous check 404s for it again \u2014 after the slug\ncache's five minutes, which is the same staleness ADR-0010 \u00a713 accepts in the other\ndirection. Idempotent.",
+        "operationId": "unpublish_store_api_v1_storefront_store_unpublish_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "This organization has no storefront yet."
+          },
+          "409": {
+            "description": "`errors[0].code` is `store_suspended`. A suspended store is suspended by the platform and cannot be published or unpublished from here."
+          }
+        },
+        "summary": "Unpublish the store \u2014 take it back to draft",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Liveness \u2014 is the process up?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/outbox": {
+      "get": {
+        "description": "How far behind the relay is. **Alert on `oldest_seconds`.**\n\nA stalled relay is the platform's quietest failure. It selects, finds nothing,\nlogs nothing, sleeps, and loops \u2014 `attempts` never increments and `last_error`\nstays null, so the process looks healthy indefinitely while the outbox grows\nwithout bound and every consumer downstream starves.\n\nDeliberately **not** part of readiness. A backlog is not a reason to take the\nservice out of rotation: refusing traffic would stop new events being written\nwithout helping drain the ones already queued, which makes the incident worse.\nThis is a metric to alert on, not a health state.\n\nCounted through the outbox engine, not the application one. The app role is\nNOBYPASSRLS and this request binds no tenant, so through it `pending` would be\nzero whatever the table holds \u2014 the probe that exists to expose the stall would\nbe wired to the same blind spot that causes it.",
+        "operationId": "outbox_health_outbox_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Outbox Health Outbox Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Outbox depth and age \u2014 scrape this",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "description": "Route traffic on this; restart on /health.\n\nConflating the two restarts a healthy process that is merely waiting on a\ndependency.\n\nOnly the dependencies a service actually declares are checked. A gateway owns no\ntables, so asking it for a database is asking a question whose answer means nothing\n\u2014 and a readiness probe that reports on something the service does not use is worse\nthan no probe, because it will eventually fail for a reason nobody can act on.",
+        "operationId": "ready_health_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ready Health Ready Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readiness \u2014 can it serve traffic?",
+        "tags": [
+          "health"
+        ]
+      }
+    }
+  }
+}

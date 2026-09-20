@@ -1,0 +1,89 @@
+{
+  "$comment": [
+    "The gateway route table for the edge VM (ADR-0012 §1, ADR-0013 §5). Mounted at",
+    "/opt/opsgrids/routes.prod.json and selected with ROUTES_FILE.",
+    "",
+    "It is a separate file from services/app-gateway/routes.json rather than an edit to it,",
+    "for two reasons. Every upstream in the committed table is http://localhost:<port>, which",
+    "is correct for `make run` and meaningless inside a container. And only the services in",
+    "compose.prod.yml are deployed — a prefix pointing at a service that is not running is a",
+    "hung connection and a 504, where a prefix that is absent is an immediate 404 from the",
+    "gateway that names the path. A 404 for a product nobody deployed is the honest answer.",
+    "",
+    "The semantics are the committed table's, unchanged: longest prefix wins, `product` names",
+    "the entitlement a request needs, and the storefront pair is split so the anonymous buyer",
+    "surface carries no `product` key. A prefix here does not make anything public — the",
+    "public paths are an exact-match frozenset in the gateway's own app/main.py.",
+    "",
+    "Prefixes are the services' REAL mounted paths (`create_app` mounts every router at",
+    "/api/v1 with no per-service segment): billing's routes are /api/v1/invoices and",
+    "/api/v1/credit-balance, not /api/v1/billing/…; the committed table reaches only billing's",
+    "info route and that is a defect there, not a convention to copy.",
+    "",
+    "A prefix for a service behind a compose profile (operations → `inventory`) is present",
+    "whether or not the profile is enabled: preflight refuses to deploy when the catalogue",
+    "sells a product whose profile is off, so the 504 that would otherwise result cannot",
+    "reach a customer.",
+    "",
+    "When a service is added to compose.prod.yml, it is added here. When a route is added to",
+    "the committed table for a service that is deployed, it must be added here too — nothing",
+    "checks that for you, and the symptom is a 404 on a route that works locally."
+  ],
+  "routes": [
+    { "prefix": "/api/v1/auth", "upstream": "http://auth:8000" },
+
+    { "prefix": "/api/v1/organization", "upstream": "http://account:8000" },
+    { "prefix": "/api/v1/org-units", "upstream": "http://account:8000" },
+    { "prefix": "/api/v1/locations", "upstream": "http://account:8000" },
+    { "prefix": "/api/v1/members", "upstream": "http://account:8000" },
+    { "prefix": "/api/v1/roles", "upstream": "http://account:8000" },
+    { "prefix": "/api/v1/permissions", "upstream": "http://account:8000" },
+    { "prefix": "/api/v1/invitations", "upstream": "http://account:8000" },
+    { "prefix": "/api/v1/account", "upstream": "http://account:8000" },
+
+    { "prefix": "/api/v1/products", "upstream": "http://product:8000" },
+    { "prefix": "/api/v1/marketplace", "upstream": "http://product:8000" },
+
+    { "prefix": "/api/v1/plans", "upstream": "http://catalog:8000" },
+    { "prefix": "/api/v1/catalog", "upstream": "http://catalog:8000" },
+    { "prefix": "/api/v1/subscriptions", "upstream": "http://subscription:8000" },
+    { "prefix": "/api/v1/subscription", "upstream": "http://subscription:8000" },
+    { "prefix": "/api/v1/invoices", "upstream": "http://billing:8000" },
+    { "prefix": "/api/v1/credit-balance", "upstream": "http://billing:8000" },
+    { "prefix": "/api/v1/billing", "upstream": "http://billing:8000" },
+    { "prefix": "/api/v1/usage", "upstream": "http://metering:8000" },
+    { "prefix": "/api/v1/payment", "upstream": "http://payment:8000" },
+    { "prefix": "/api/v1/webhooks/razorpay", "upstream": "http://payment:8000" },
+
+    { "prefix": "/api/v1/notifications", "upstream": "http://notification:8000", "product": "notification" },
+    { "prefix": "/api/v1/webhooks/whatsapp", "upstream": "http://notification:8000" },
+
+    { "prefix": "/api/v1/approvals", "upstream": "http://approval:8000" },
+    { "prefix": "/api/v1/employees", "upstream": "http://employee:8000", "product": "hrms" },
+    { "prefix": "/api/v1/attendance", "upstream": "http://attendance:8000", "product": "hrms" },
+    { "prefix": "/api/v1/shifts", "upstream": "http://attendance:8000", "product": "hrms" },
+
+    { "prefix": "/api/v1/customers", "upstream": "http://customer:8000", "product": "crm" },
+    { "prefix": "/api/v1/contacts", "upstream": "http://customer:8000", "product": "crm" },
+    { "prefix": "/api/v1/deals", "upstream": "http://deal:8000", "product": "crm" },
+
+    { "prefix": "/api/v1/projects", "upstream": "http://project:8000", "product": "pulseboard" },
+    { "prefix": "/api/v1/timesheets", "upstream": "http://timesheet:8000", "product": "pulseboard" },
+    { "prefix": "/api/v1/standups", "upstream": "http://standup:8000", "product": "pulseboard" },
+
+    { "prefix": "/api/v1/projects-workspace", "upstream": "http://projects:8000", "product": "projects" },
+
+    { "prefix": "/api/v1/support", "upstream": "http://support:8000", "product": "support" },
+
+    { "prefix": "/api/v1/marketing", "upstream": "http://marketing:8000", "product": "marketing" },
+
+    { "prefix": "/api/v1/finance", "upstream": "http://finance:8000", "product": "finance" },
+
+    { "prefix": "/api/v1/itsm", "upstream": "http://itsm:8000", "product": "itsm" },
+
+    { "prefix": "/api/v1/operations", "upstream": "http://operations:8000", "product": "operations" },
+
+    { "prefix": "/api/v1/storefront/public", "upstream": "http://storefront:8000" },
+    { "prefix": "/api/v1/storefront", "upstream": "http://storefront:8000", "product": "storefront" }
+  ]
+}

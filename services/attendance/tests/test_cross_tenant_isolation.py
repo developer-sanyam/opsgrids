@@ -177,6 +177,7 @@ class TestCrossTenantOverHttp:
             [
                 "hrms.time.attendance.read:ORG",
                 "hrms.time.attendance.write:ORG",
+                "hrms.time.attendance.request:OWN",
             ],
         )
         app.dependency_overrides[get_principal] = lambda: principal
@@ -191,12 +192,17 @@ class TestCrossTenantOverHttp:
                 f"/api/v1/attendance/{target}/regularize",
                 json={"to": "regularized", "reason": "hijack"},
             )
+            requested = await client.post(
+                f"/api/v1/attendance/{target}/regularization-requests",
+                json={"requested_status": "half_day", "reason": "hijack"},
+            )
             listed = await client.get("/api/v1/attendance")
         finally:
             app.dependency_overrides.pop(get_principal, None)
 
         assert by_id.status_code == 404
         assert regularized.status_code == 404
+        assert requested.status_code == 404
         # The list is scoped to org B, which has no records, so it is empty — and crucially
         # carries none of org A's ids.
         assert listed.status_code == 200

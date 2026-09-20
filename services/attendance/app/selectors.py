@@ -17,13 +17,14 @@ The scope columns for an attendance record are:
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import date
 from typing import Any
 
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AttendanceRecord, Geofence, Shift
+from app.models import AttendanceRecord, Geofence, RegularizationRequest, Shift
 from platform_core.auth import ScopeContext
 
 
@@ -87,6 +88,77 @@ async def get_day_record(
         AttendanceRecord.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+# --------------------------------------------------------------------- regularization requests
+
+
+async def get_pending_regularization(
+    session: AsyncSession, org_id: uuid.UUID, attendance_id: uuid.UUID
+) -> RegularizationRequest | None:
+    """The one `pending` request against a record, or None — backs the partial unique index's
+    friendly error and the "may I raise a second one" check at request time."""
+    stmt = select(RegularizationRequest).where(
+        RegularizationRequest.organization_id == org_id,
+        RegularizationRequest.attendance_id == attendance_id,
+        RegularizationRequest.status == "pending",
+        RegularizationRequest.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_regularization(
+    session: AsyncSession, org_id: uuid.UUID, request_id: uuid.UUID
+) -> RegularizationRequest | None:
+    """Org-scoped fetch by id — the consumer's lookup by `source_ref` (ADR-0006 §12)."""
+    stmt = select(RegularizationRequest).where(
+        RegularizationRequest.id == request_id,
+        RegularizationRequest.organization_id == org_id,
+        RegularizationRequest.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_latest_regularization(
+    session: AsyncSession, org_id: uuid.UUID, attendance_id: uuid.UUID
+) -> RegularizationRequest | None:
+    """The most recent regularization request against one record, or None — what a single-record
+    screen shows as the correction state."""
+    stmt = (
+        select(RegularizationRequest)
+        .where(
+            RegularizationRequest.organization_id == org_id,
+            RegularizationRequest.attendance_id == attendance_id,
+            RegularizationRequest.deleted_at.is_(None),
+        )
+        .order_by(RegularizationRequest.created_at.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_latest_regularizations(
+    session: AsyncSession, org_id: uuid.UUID, attendance_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, RegularizationRequest]:
+    """The most recent regularization request per record, batched into one query for a whole
+    page rather than one per row — a loop with a query in it is a bug (CLAUDE.md)."""
+    if not attendance_ids:
+        return {}
+    stmt = (
+        select(RegularizationRequest)
+        .where(
+            RegularizationRequest.organization_id == org_id,
+            RegularizationRequest.attendance_id.in_(attendance_ids),
+            RegularizationRequest.deleted_at.is_(None),
+        )
+        # `DISTINCT ON` under the postgresql dialect this service always runs against — verified
+        # against SQLAlchemy 2.0.43 rather than assumed (`select(...).distinct(col)` compiles to
+        # a plain, unhelpful `DISTINCT` on every other dialect).
+        .distinct(RegularizationRequest.attendance_id)
+        .order_by(RegularizationRequest.attendance_id, RegularizationRequest.created_at.desc())
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return {r.attendance_id: r for r in rows}
 
 
 # --------------------------------------------------------------------- shifts

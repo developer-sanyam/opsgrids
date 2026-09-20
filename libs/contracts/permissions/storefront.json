@@ -1,0 +1,91 @@
+{
+  "manifest_version": 1,
+  "permissions": [
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See delivery zones and their postal codes, test a postal code, and read the out-of-zone demand report",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "delivery",
+      "resource": "zone"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Create and edit delivery zones, map postal codes to them, and import a postal-code file",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "delivery",
+      "resource": "zone"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See the store's identity \u2014 its name, tagline, logo text, address, status, currency, timezone and custom-domain claim",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "store",
+      "resource": "settings"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Change the store's name, brand and settings, claim a custom domain, and publish or unpublish the store \u2014 the act that makes it visible to anyone",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "store",
+      "resource": "settings"
+    }
+  ],
+  "product": "storefront",
+  "role_templates": [
+    {
+      "code": "STOREFRONT_ADMIN",
+      "cross_product": false,
+      "description": "Runs the store: its published identity and its delivery map. Built from the Storefront catalogue alone \u2014 publishing a store is not the same job as owning the account.",
+      "grants": [
+        {
+          "code": "storefront.delivery.zone.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "storefront.delivery.zone.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "storefront.store.settings.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "storefront.store.settings.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": true,
+      "is_default": false,
+      "name": "Storefront administrator"
+    },
+    {
+      "code": "STOREFRONT_STAFF",
+      "cross_product": false,
+      "description": "Every person with a Storefront seat. Reads the store's settings and its delivery zones, including which postal codes were turned away, and changes neither.",
+      "grants": [
+        {
+          "code": "storefront.delivery.zone.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "storefront.store.settings.read",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": true,
+      "name": "Storefront staff"
+    }
+  ],
+  "sources": [
+    "storefront"
+  ]
+}

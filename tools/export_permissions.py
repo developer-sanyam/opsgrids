@@ -184,7 +184,41 @@ def merge(dumps: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             manifest["permissions"], key=lambda p: (p["module"], p["resource"], p["action"])
         )
         _flag_admin(manifest)
+        _refuse_cross_product(manifest)
     return manifests
+
+
+def _refuse_cross_product(manifest: dict[str, Any]) -> None:
+    """Refuse to write a manifest carrying a `cross_product` role template.
+
+    `app/catalogue.py`'s `validate()` — the guard that stops a role reaching into a foreign
+    product's permissions — deliberately does nothing for a template that declares
+    `cross_product=True`; that is the point of the escape hatch. `registration_from_manifest`
+    mirrors every other guard `validate()` applies when it reads a manifest back, *except*
+    this one: a `cross_product` template also skips the unknown-grant check there. A manifest
+    is a machine-generated, committed contract that every consumer trusts without a human
+    rereading it at load time — `tools/reconcile_permissions.py --all` in particular, which
+    can widen a role with whatever the template names at ORG scope across every organization
+    in the fleet in one run. Baking an unreviewed cross-product grant into that contract is
+    exactly the failure this guards against.
+
+    No shipped catalogue declares `cross_product=True` today. Refusing outright — rather than
+    adding an opt-in flag to thread through the exporter, `reconcile_permissions.py` and
+    `wire_product.py` alike — is the smaller change and keeps the escape hatch what its own
+    docstring already calls it: visible in the source of the one service that declared it,
+    not in a generated artifact three tools downstream trust blindly. A genuine cross-product
+    grant that must reach every tenant is the same shape ADR-0007 gives revocation: a
+    bespoke, reviewed one-off script, not a change that flows through the ordinary
+    export/reconcile pipeline.
+    """
+    offenders = [t["code"] for t in manifest["role_templates"] if t["cross_product"]]
+    if offenders:
+        raise SystemExit(
+            f"{manifest['product']}.json would carry cross_product=True role template(s) "
+            f"{offenders} — the exporter refuses to emit a cross-product grant into a "
+            "committed manifest; ship it as a reviewed, bespoke migration instead of a "
+            "catalogue change"
+        )
 
 
 def _flag_admin(manifest: dict[str, Any]) -> None:

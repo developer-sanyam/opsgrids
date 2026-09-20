@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# One-time, per organization: bin/backfill-hierarchy --org <id> [--cursor <uuid>]
+#
+# Deliberately its own entrypoint rather than a bin/cron flag (ADR-0006 §2.1: "The runner is a
+# one-shot command"). bin/cron is for recurring scheduled work — the SLA sweep, arriving in slice
+# 4 — and this is neither recurring nor a sweep: it runs once per organization, is idempotent
+# under re-run, and exits. Bolting it onto the sweep binary would make a one-time job look like
+# scheduled work it is not, and would tie its lifecycle to a process that starts and stops with
+# every deploy.
+exec python -m app.backfill "$@"

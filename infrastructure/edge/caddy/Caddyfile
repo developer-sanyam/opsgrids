@@ -1,0 +1,349 @@
+# The edge, ADR-0012 §2 and §5, ADR-0013 §4.
+#
+# One catch-all site for every store, plus one named site per platform application. Every
+# hostname a buyer can type — `<slug>.stores.opsgrids.com`, `merchant.com`, `www.merchant.com` —
+# is served by the catch-all, and the decision about whether a name may have a certificate is
+# made by one HTTP call to the storefront service. `app.opsgrids.com` is the dashboard, the one
+# page a customer signs up and signs in on; it shares everything but its document root.
+#
+# Two things to understand before editing:
+#
+#   1. There is no per-merchant configuration here, and there must never be. A merchant
+#      connecting a domain writes one database row; nothing writes to this file and nothing
+#      reloads Caddy. That is the whole reason the design uses on-demand TLS with an `ask`
+#      endpoint rather than a certificate per name. A block per *platform application* is not
+#      per-merchant configuration — it changes when an app ships, not when a customer does.
+#   2. `ask` is the only control on issuance. Without it, anyone who points ten thousand
+#      hostnames at this IP burns our ACME account against Let's Encrypt's failed-validation
+#      limits. Caddy treats any non-2xx (and any timeout) as "no", so a broken authorizer
+#      stops *new* issuance and leaves certificates already in storage serving. The platform
+#      names below are listed in TLS_PLATFORM_HOSTS, or the authorizer refuses them too.
+#
+# Validate before deploying — `make edge-validate HOST=...` runs `caddy validate` against the
+# pinned image on the box. A Caddyfile that fails to load is a total outage of every
+# merchant's shop, and there is no staging environment to catch it.
+{
+	# The ACME account contact. Not a secret; it is what Let's Encrypt emails about expiry.
+	email {$ACME_EMAIL}
+
+	# The http:// block below writes its own redirect, so Caddy's automatic one for the
+	# catch-all https:// site is switched off rather than left to overlap it.
+	auto_https disable_redirects
+
+	on_demand_tls {
+		# GET {$TLS_ASK_URL}?domain=<name> — 2xx means Caddy may obtain a certificate for
+		# that name. The endpoint answers from the same bypass reader, the same 300-second
+		# Redis cache and the same published-store check the origin uses.
+		ask {$TLS_ASK_URL}
+	}
+
+	# No `acme_ca`, no `issuer` and no DNS provider, deliberately. Caddy's defaults try Let's
+	# Encrypt and fall back to ZeroSSL on their own — two certificate authorities for no
+	# configuration and no cost — and naming one issuer here would throw that away. A DNS
+	# challenge would need a provider credential; the platform holds none and that is a class
+	# of secret we do not want to own. HTTP-01 on port 80 is the only challenge that matters,
+	# and it is the one the merchant's DNS change has already enabled.
+}
+
+# What every HTTPS site on this box shares: on-demand issuance, compression, the health route,
+# the internal route sealed off from the internet, and the same-origin API. A site imports this
+# and adds only its document root.
+(edge) {
+	tls {
+		on_demand
+	}
+
+	log {
+		output stdout
+		format json
+	}
+
+	encode zstd gzip
+
+	handle /_edge/health {
+		respond "ok" 200
+	}
+
+	# Defence in depth, and cheap. `internal/tls-authorize` is reached by Caddy on the compose
+	# network; it has no reason to be reachable from the internet through the edge. The
+	# gateway's catch-all would demand a bearer token anyway — this makes that a fact here
+	# rather than a consequence of a route table someone may edit.
+	handle /api/v1/storefront/internal/* {
+		respond "Not found" 404
+	}
+
+	# Same-origin API. The browser on merchant.com — or on app.opsgrids.com — calls its own
+	# host's /api/..., so no hostname adds a CORS surface and `cors_origins` never grows a row.
+	# Caddy preserves the incoming Host header on reverse_proxy by default, and sets
+	# X-Forwarded-Host, X-Forwarded-For and X-Forwarded-Proto on its own — which is what the
+	# gateway's public branch needs, so nothing is added here.
+	handle /api/* {
+		reverse_proxy app-gateway:8000
+	}
+}
+
+# ---------------------------------------------------------------------------- port 80
+#
+# Caddy installs its own ACME HTTP-01 challenge handler ahead of these routes, so defining
+# this block does not stop issuance. Everything else on :80 is redirected, which is also what
+# makes a merchant's first plain-HTTP visit work.
+http:// {
+	# The container healthcheck, and the first thing to curl when something is wrong: it
+	# answers on plain HTTP with no certificate, no DNS and no upstream involved. If this
+	# answers and a merchant domain does not, the problem is TLS or DNS, not the process.
+	handle /_edge/health {
+		respond "ok" 200
+	}
+
+	# Inside a `handle`, deliberately. Caddy evaluates directives in its own fixed order, not
+	# the order they are written, and a bare `redir` sorts *before* every `handle` — so written
+	# bare, it redirected `/_edge/health` too, the container healthcheck followed the 308 into
+	# a TLS handshake, and Caddy reported itself unhealthy while serving perfectly. Found on
+	# the first deploy. `handle` blocks are mutually exclusive and tried in written order.
+	handle {
+		redir https://{host}{uri} 308
+	}
+}
+
+# ---------------------------------------------------------------------------- the dashboard
+#
+# A named site wins over the catch-all for its own host. The bundle is published by
+# `make edge-web APP=dashboard` to `${EDGE_WEB_ROOT}/dashboard/current`.
+https://app.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/dashboard/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "The OpsGrids dashboard is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- Inventory
+#
+# The operations product's own app (ADR-0001: one hostname per product). Published by
+# `make edge-web APP=operations`. Its API calls are same-origin through the snippet's /api/*,
+# and the gateway's entitlement gate is what decides whether this organisation may use it.
+https://ops.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/operations/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids Inventory is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- OpsGrids People
+# Published by `make edge-web APP=hrms`. Same shape as Inventory above.
+https://people.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/hrms/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids People is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- OpsGrids Revenue
+# Published by `make edge-web APP=crm`. Same shape as Inventory above.
+https://revenue.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/crm/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids Revenue is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- PulseBoard
+# Published by `make edge-web APP=pulseboard`. Same shape as Inventory above.
+https://pulse.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/pulseboard/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "PulseBoard is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- OpsGrids Projects
+# Published by `make edge-web APP=projects`. Same shape as Inventory above.
+https://projects.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/projects/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids Projects is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- OpsGrids Support
+# Published by `make edge-web APP=support`. Same shape as Inventory above.
+https://support.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/support/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids Support is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- OpsGrids Marketing
+# Published by `make edge-web APP=marketing`. Same shape as Inventory above.
+https://marketing.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/marketing/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids Marketing is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- OpsGrids Finance
+# Published by `make edge-web APP=finance`. Same shape as Inventory above.
+https://finance.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/finance/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids Finance is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- OpsGrids IT
+# Published by `make edge-web APP=itsm`. Same shape as Inventory above.
+https://it.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/itsm/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids IT is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- OpsGrids Storefront
+# Published by `make edge-web APP=storefront`. Same shape as Inventory above.
+https://store.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/storefront/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids Storefront is not published on this box yet." {err.status_code}
+	}
+}
+
+# ---------------------------------------------------------------------------- every store
+#
+# A catch-all rather than a list of hostnames. `*.stores.opsgrids.com` is deliberately *not* a
+# site address: a wildcard site address makes Caddy want a wildcard certificate, which needs a
+# DNS challenge, which needs a provider credential we do not have. On-demand issues per name
+# over HTTP-01 instead, and the per-name certificate is the honest thing anyway.
+https:// {
+	import edge
+
+	# The buyer bundle. One build, byte-identical for every merchant: it learns its store from
+	# window.location.hostname and one bootstrap call, never from a baked-in config.
+	handle {
+		root * /srv/web/current
+		try_files {path} /index.html
+		file_server
+
+		# Fingerprinted assets are immutable; the document is not, or a deploy would take a
+		# cache TTL to reach anyone.
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	# When the web root holds no bundle at all, `try_files` cannot find index.html and the
+	# file server answers 404. Say so in a way that cannot be mistaken for a merchant's store.
+	handle_errors {
+		respond "This address is not serving a store right now. If you are the merchant, check your domain settings; if you are a shopper, try again shortly." {err.status_code}
+	}
+}
