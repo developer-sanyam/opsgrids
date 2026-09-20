@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import Settings, assert_directory_role_configured
+from app.config import Settings, assert_directory_role_configured, settings
 from app.main import app
 from platform_core.cache import close_redis
 from platform_core.config import get_settings
@@ -90,8 +90,12 @@ class TestItRefusesToBootWithoutTheDirectoryRole:
     async def test_the_real_lifespan_fails_rather_than_serving(self, monkeypatch) -> None:
         """Drives `create_app`'s actual lifespan, so this covers the wiring and not just the
         function: if somebody removes `on_startup=_startup` from `main.py`, this goes red."""
-        monkeypatch.setenv("DB_DIRECTORY_ROLE", "")
+        # Not `setenv("DB_DIRECTORY_ROLE", "")`: an empty variable means "not configured" to
+        # `platform_core` (`env_ignore_empty`), so it yields the pinned default and the service
+        # boots. "No directory role" is the settings object saying None, which is what a
+        # config file or an operator override would produce.
         get_settings.cache_clear()
+        monkeypatch.setattr(settings(), "db_directory_role", None)
         try:
             with pytest.raises(RuntimeError, match="db_directory_role"):
                 async with app.router.lifespan_context(app):
