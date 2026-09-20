@@ -9,6 +9,7 @@ import for its side effects — every function is called explicitly by the scrip
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 import time
 
@@ -49,6 +50,10 @@ class StepLog:
         return not self.failed
 
 
+#: What an address may look like before it is allowed inside a SQL literal.
+_SAFE_EMAIL = re.compile(r"[A-Za-z0-9._+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
 def box(sql: str, *, host: str = BOX, compose: str = COMPOSE) -> str:
     """Run one SQL statement on the production box over ssh.
 
@@ -56,7 +61,7 @@ def box(sql: str, *, host: str = BOX, compose: str = COMPOSE) -> str:
     until SMTP exists, so a sent email is a row in `notification.messages` rather than
     something that reaches a real mailbox.
     """
-    cmd = f'{compose} exec -T postgres psql -U opsgrids -d opsgrids -Atc "{sql}"'
+    cmd = f"{compose} exec -T postgres psql -U opsgrids -d opsgrids -Atc {shlex.quote(sql)}"
     out = subprocess.run(
         ["ssh", "-o", "BatchMode=yes", host, cmd], capture_output=True, text=True, timeout=60
     )
@@ -68,6 +73,12 @@ def read_reset_token(email: str, *, attempts: int = 30, interval: float = 1.0) -
     the link it carries. Returns `(token, raw_body)` — `token` is `""` if the email never
     showed up within `attempts * interval` seconds.
     """
+    # The address lands inside a SQL literal run as the database superuser on production. Every
+    # caller generates it today; a shared helper does not get to assume the next one will.
+    if not _SAFE_EMAIL.fullmatch(email):
+        raise ValueError(
+            f"refusing to query for an address that is not plainly an email: {email!r}"
+        )
     body = ""
     for _ in range(attempts):
         body = box(

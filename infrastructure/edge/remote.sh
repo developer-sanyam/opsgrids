@@ -124,12 +124,17 @@ up() {
 health() {
 	log "health"
 	local deadline=$((SECONDS + 120))
-	local unhealthy
+	local unhealthy expected missing
+	# `ps` lists only what exists, so a service that exited and stayed exited — or never
+	# started — has no row to fail on. Compare against what this box is configured to run.
+	expected=$("${COMPOSE[@]}" config --services | sort)
 	while [ $SECONDS -lt $deadline ]; do
-		unhealthy=$("${COMPOSE[@]}" ps --format '{{.Service}} {{.State}} {{.Health}}' |
+		unhealthy=$("${COMPOSE[@]}" ps --all --format '{{.Service}} {{.State}} {{.Health}}' |
 			awk '$2 != "running" || ($3 != "" && $3 != "healthy" && $3 != "<nil>") {print $1"("$2"/"$3")"}' |
 			tr '\n' ' ')
-		if [ -z "$unhealthy" ]; then
+		missing=$(comm -23 <(echo "$expected") <("${COMPOSE[@]}" ps --format '{{.Service}}' | sort -u) | tr '\n' ' ')
+		[ -z "$missing" ] || unhealthy="$unhealthy missing:$missing"
+		if [ -z "${unhealthy// /}" ]; then
 			"${COMPOSE[@]}" ps
 			echo "health: every container is up"
 			return 0

@@ -135,6 +135,17 @@ else
 	ok "payment provider keys present"
 fi
 
+# A prefix in the route table whose upstream is not among this box's services is a hung
+# connection and a 504 for whoever calls it. Product routes are covered by the catalogue check
+# below; this catches the ones with no product key (approvals runs only with the hrms profile).
+running_services=" $(docker compose -f compose.prod.yml --env-file .env config --services 2>/dev/null | tr '\n' ' ') "
+for upstream in $(grep -o '"upstream": *"http://[a-z-]*' routes.prod.json | sed 's#.*http://##' | sort -u); do
+	case "$running_services" in
+	*" $upstream "*) ;;
+	*) echo "  warn  routes.prod.json sends traffic to '$upstream', which this box's profiles do not run (callers get 504)" >&2 ;;
+	esac
+done
+
 # The catalogue says which products are sold; COMPOSE_PROFILES says which product services
 # run. They must agree (ADR-0013 §5): an `available` product with no service behind it is a
 # 504 the customer finds. Only checkable once Postgres exists — on the first deploy it does
