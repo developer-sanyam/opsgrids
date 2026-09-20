@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import { ApiError } from "@opsgrids/client";
 
 import { requestPasswordLink, signup } from "@/api";
-import { SLUG_RULE, suggestSlug } from "@/lib/slug";
+import { SLUG_RULE, sanitiseHandleInput, suggestSlug } from "@/lib/slug";
 import { AuthCard, Button, Field, InlineError, inputClass } from "@/ui";
 
 /**
@@ -39,15 +39,20 @@ export function SignupPage() {
     if (submitting) return;
     setError(null);
     const trimmedEmail = email.trim();
-    if (!SLUG_RULE.test(slug)) {
-      setError("The address can only use lowercase letters, digits and hyphens, and must start with a letter or digit.");
+    // A trailing hyphen left mid-typing is trimmed here rather than refused.
+    const handle = suggestSlug(slug);
+    if (!SLUG_RULE.test(handle)) {
+      setError(
+        "The workspace handle needs at least two characters: lowercase letters, digits and hyphens, starting with a letter or digit. It is a short name, not a postal address.",
+      );
       return;
     }
+    setSlug(handle);
     setSubmitting(true);
     try {
       const created = await signup({
         organization_name: organizationName.trim(),
-        slug,
+        slug: handle,
         full_name: fullName.trim(),
         email: trimmedEmail,
       });
@@ -125,16 +130,22 @@ export function SignupPage() {
           />
         </Field>
 
-        <Field id={slugId} label="Address" hint="Your organisation's short name inside OpsGrids. Lowercase letters, digits and hyphens.">
+        <Field
+          id={slugId}
+          label="Workspace handle"
+          hint={`Not a postal address — the short name that identifies your organisation in OpsGrids, like a username. Suggested from the name above; lowercase letters, digits and hyphens. ${slug ? `Yours: ${slug}` : "Example: greenleaf"}`}
+        >
           <input
             id={slugId}
             type="text"
             autoComplete="off"
+            spellCheck={false}
             required
             value={slug}
             onChange={(e) => {
               setSlugTouched(true);
-              setSlug(e.target.value.toLowerCase());
+              // Sanitised as typed, so a stray space or capital never reaches the rule.
+              setSlug(sanitiseHandleInput(e.target.value));
             }}
             placeholder="greenleaf"
             className={inputClass}

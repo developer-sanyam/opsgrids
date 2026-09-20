@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "@opsgrids/client";
 
-import { suggestSlug } from "@/lib/slug";
+import { sanitiseHandleInput, suggestSlug } from "@/lib/slug";
 
 import { SignupPage } from "./Signup";
 
@@ -41,6 +41,15 @@ describe("suggestSlug", () => {
   });
 });
 
+describe("sanitiseHandleInput", () => {
+  it("keeps a trailing hyphen while typing and folds everything else", () => {
+    expect(sanitiseHandleInput("green-")).toBe("green-");
+    expect(sanitiseHandleInput("Green Leaf")).toBe("green-leaf");
+    expect(sanitiseHandleInput("opsgrids, 5, balaji towers, 11th main")).toBe("opsgrids-5-balaji-towers-11th-main");
+    expect(sanitiseHandleInput("--x")).toBe("x");
+  });
+});
+
 describe("SignupPage", () => {
   it("carries no password field — the link comes by email (ADR-0013 §3)", () => {
     renderPage();
@@ -59,7 +68,7 @@ describe("SignupPage", () => {
     renderPage();
     await fill(user);
     // The address was suggested from the name and not touched.
-    expect(screen.getByLabelText("Address")).toHaveProperty("value", "greenleaf-organics");
+    expect(screen.getByLabelText("Workspace handle")).toHaveProperty("value", "greenleaf-organics");
 
     await user.click(screen.getByRole("button", { name: "Create organisation" }));
 
@@ -90,16 +99,34 @@ describe("SignupPage", () => {
     expect(screen.getByRole("button", { name: "Create organisation" })).toBeTruthy();
   });
 
-  it("refuses a malformed address before calling anything", async () => {
+  it("sanitises a pasted postal address into a handle instead of refusing it", async () => {
+    // The mistake that shipped: the field was labelled "Address" and somebody typed one.
+    const user = userEvent.setup();
+    signup.mockResolvedValue({ organization_id: "org-2", slug: "x", email: "a@b.example", next_step: "" });
+    requestPasswordLink.mockResolvedValue(undefined);
+    renderPage();
+    await fill(user);
+    const handle = screen.getByLabelText("Workspace handle");
+    await user.clear(handle);
+    await user.type(handle, "OpsGrids, 5, Balaji Towers, Hosur Rd");
+    expect(handle).toHaveProperty("value", "opsgrids-5-balaji-towers-hosur-rd");
+    expect(screen.getByText(/Yours: opsgrids-5-balaji-towers-hosur-rd/)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Create organisation" }));
+    await waitFor(() => expect(signup).toHaveBeenCalled());
+    expect(signup.mock.calls[0]?.[0]?.slug).toBe("opsgrids-5-balaji-towers-hosur-rd");
+  });
+
+  it("refuses a handle that is too short after sanitising, before calling anything", async () => {
     const user = userEvent.setup();
     renderPage();
     await fill(user);
-    const address = screen.getByLabelText("Address");
-    await user.clear(address);
-    await user.type(address, "-bad");
+    const handle = screen.getByLabelText("Workspace handle");
+    await user.clear(handle);
+    await user.type(handle, "-");
     await user.click(screen.getByRole("button", { name: "Create organisation" }));
 
-    expect(screen.getByRole("alert").textContent).toContain("lowercase letters");
+    expect(screen.getByRole("alert").textContent).toContain("not a postal address");
     expect(signup).not.toHaveBeenCalled();
   });
 });
