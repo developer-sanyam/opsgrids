@@ -1,0 +1,188 @@
+import { useCallback, useEffect, useState } from "react";
+
+import { ApiError } from "@opsgrids/client";
+
+import { listActivations, listPlans, listProducts, listSubscriptions, startTrial } from "@/api";
+import type { Activation, Plan, PlanVersion, Price, Product, Subscription } from "@/api/types";
+import { daysUntil, formatDate, formatMoney, intervalLabel } from "@/lib/money";
+import { Button, Card, PageHeader } from "@/ui";
+
+/**
+ * Where each product's own app lives (ADR-0001's "one hostname per product", ADR-0013 §4). A
+ * product with no entry has no console on this deployment yet, and the card says so rather than
+ * linking into a 404.
+ */
+const PRODUCT_HOSTS: Record<string, string> = {
+  operations: "https://ops.opsgrids.com/",
+};
+
+/** The one price a card shows: the first published version's flat price, if there is one. */
+function flatPrice(plans: Plan[]): { version: PlanVersion; price: Price } | null {
+  for (const plan of plans) {
+    for (const version of plan.versions) {
+      if (version.state !== "published") continue;
+      const price = version.prices.find((p) => p.kind === "flat" && p.amount_minor !== null);
+      if (price) return { version, price };
+    }
+  }
+  return null;
+}
+
+interface Row {
+  product: Product;
+  plans: Plan[];
+  subscription: Subscription | null;
+  activation: Activation | null;
+}
+
+type Load =
+  | { state: "loading" }
+  | { state: "error"; message: string }
+  | { state: "ready"; rows: Row[] };
+
+export function MarketplacePage() {
+  const [load, setLoad] = useState<Load>({ state: "loading" });
+  const [busy, setBusy] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [products, activations, subscriptions] = await Promise.all([
+        listProducts(),
+        listActivations().catch(() => [] as Activation[]),
+        listSubscriptions().catch(() => [] as Subscription[]),
+      ]);
+      const sellable = products.filter((p) => !p.is_platform);
+      const plans = await Promise.all(
+        sellable.map((p) => (p.status === "available" ? listPlans(p.key).catch(() => [] as Plan[]) : Promise.resolve([] as Plan[]))),
+      );
+      const rows: Row[] = sellable.map((product, i) => ({
+        product,
+        plans: plans[i] ?? [],
+        subscription: subscriptions.find((s) => s.product_key === product.key && s.state !== "cancelled") ?? null,
+        activation: activations.find((a) => a.product_key === product.key) ?? null,
+      }));
+      setLoad({ state: "ready", rows });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Something went wrong.";
+      setLoad({ state: "error", message });
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  async function handleStart(row: Row) {
+    const offer = flatPrice(row.plans);
+    if (!offer) return;
+    setBusy(row.product.key);
+    setNotice(null);
+    try {
+      await startTrial(row.product.key, offer.version.id);
+      setNotice(`${row.product.name} is starting. Your 14-day trial begins now; its roles arrive in a moment.`);
+      await refresh();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setNotice(`Couldn't start ${row.product.name}: ${err.problem?.detail ?? err.message}`);
+      } else {
+        setNotice(`Couldn't start ${row.product.name}.`);
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        eyebrow="Products"
+        title="Start what your organisation needs"
+        description="Every product runs on the same account, the same people and the same permissions. Start one on a 14-day trial; add another whenever you like."
+      />
+
+      {notice ? (
+        <p role="status" className="rounded-tile bg-surface px-4 py-3 text-sm font-medium text-ink-soft" style={{ boxShadow: "var(--shadow-float)" }}>
+          {notice}
+        </p>
+      ) : null}
+
+      {load.state === "loading" ? <p className="text-sm text-muted">Loading the catalogue…</p> : null}
+      {load.state === "error" ? (
+        <p role="alert" className="rounded-tile bg-danger-soft px-4 py-3 text-sm font-medium text-danger">
+          Couldn't load the catalogue. {load.message}
+        </p>
+      ) : null}
+
+      {load.state === "ready" ? (
+        <ul className="grid list-none gap-4 p-0 sm:grid-cols-2 xl:grid-cols-3">
+          {load.rows.map((row) => (
+            <ProductCard key={row.product.key} row={row} busy={busy === row.product.key} onStart={() => void handleStart(row)} />
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function ProductCard({ row, busy, onStart }: { row: Row; busy: boolean; onStart: () => void }) {
+  const { product, subscription, activation } = row;
+  const offer = flatPrice(row.plans);
+  const host = PRODUCT_HOSTS[product.key];
+  const entitled = activation?.entitles === true;
+  const trialDays = daysUntil(subscription?.trial_ends_at ?? null);
+
+  return (
+    <li className="flex">
+      <Card className="flex w-full flex-col gap-4 p-6">
+      <div className="flex flex-col gap-1">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted">{product.category ?? "Product"}</p>
+        <h2 className="display text-xl font-extrabold">{product.name}</h2>
+        {product.tagline ? <p className="text-sm text-muted">{product.tagline}</p> : null}
+      </div>
+
+      <p className="text-sm font-semibold text-ink-soft">
+        {product.status !== "available" ? (
+          "Coming soon"
+        ) : offer ? (
+          <>
+            {formatMoney(offer.price.amount_minor ?? 0, offer.price.currency)}{" "}
+            <span className="font-normal text-muted">{intervalLabel(offer.version.billing_interval)}, flat</span>
+          </>
+        ) : (
+          "Price on request"
+        )}
+      </p>
+
+      <div className="mt-auto flex flex-col gap-2">
+        {subscription ? (
+          <p className="text-sm text-muted">
+            {subscription.state === "trial" && trialDays !== null
+              ? `On trial — ${trialDays > 0 ? `${trialDays} days left` : "ends today"} (${formatDate(subscription.trial_ends_at)})`
+              : `Subscription: ${subscription.state}`}
+          </p>
+        ) : null}
+
+        {subscription ? (
+          host && entitled ? (
+            <a
+              href={host}
+              className="inline-flex h-11 items-center justify-center rounded-full bg-accent px-5 font-semibold text-white transition-colors hover:bg-accent-strong"
+            >
+              Open {product.name}
+            </a>
+          ) : (
+            <p className="text-xs text-muted">
+              {entitled ? "Its console is not on this deployment yet." : "Getting ready — refresh in a moment."}
+            </p>
+          )
+        ) : product.status === "available" && offer ? (
+          <Button type="button" disabled={busy} onClick={onStart}>
+            {busy ? "Starting…" : "Start 14-day trial"}
+          </Button>
+        ) : null}
+      </div>
+      </Card>
+    </li>
+  );
+}

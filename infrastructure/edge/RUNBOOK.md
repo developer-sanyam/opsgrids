@@ -80,11 +80,12 @@ record terminates TLS at Cloudflare and our ACME challenge never arrives.
 |---|---|---|
 | `edge.opsgrids.com` | A | the reserved IP |
 | `api.opsgrids.com` | A | the reserved IP — the gateway answers `/api/*` on every host this box serves |
+| `app.opsgrids.com` | A | the reserved IP — the dashboard (ADR-0013 §4): sign up, sign in, the marketplace |
 | `*.stores.opsgrids.com` | A | the reserved IP |
-| `edge.opsgrids.com`, `api.opsgrids.com`, `*.stores.opsgrids.com` | AAAA | the VM's IPv6, if it has one |
+| `edge.opsgrids.com`, `api.opsgrids.com`, `app.opsgrids.com`, `*.stores.opsgrids.com` | AAAA | the VM's IPv6, if it has one |
 
-`opsgrids.com` (the marketing site, on Vercel), `app.` and `auth.` are ADR-0001's and are not
-touched here. **Every platform name in this table must also be in `TLS_PLATFORM_HOSTS`** in the
+`opsgrids.com` (the marketing site, on Vercel) and `auth.` are ADR-0001's and are not touched
+here. **Every platform name in this table must also be in `TLS_PLATFORM_HOSTS`** in the
 box's `.env`, except the wildcard: a store's own subdomain is authorised by the store lookup,
 but `edge.` and `api.` are nobody's store, and the issuance gate refuses any name it cannot
 account for.

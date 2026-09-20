@@ -412,20 +412,20 @@ edge-backup: edge-guard ## Run the nightly backup now (dump + certificates, off-
 # keeps `frontend` out of every image build context, and shipping only a bundle that compiled
 # is what stops a failed frontend build from breaking a merchant's shop.
 .PHONY: edge-web
-edge-web: ## Build and publish the buyer bundle: make edge-web HOST=… CONFIRM=… [PLACEHOLDER=1]
+edge-web: ## Build and publish a bundle: make edge-web HOST=… CONFIRM=… [APP=buyer|dashboard] [PLACEHOLDER=1]
 	@test -n "$(HOST)" || (echo "HOST= is required" && exit 1)
 	@test -n "$(CONFIRM)" || (echo "CONFIRM= is required" && exit 1)
-	EDGE_REPO=$(EDGE_REPO) PLACEHOLDER=$(PLACEHOLDER) \
+	EDGE_REPO=$(EDGE_REPO) APP=$(or $(APP),buyer) PLACEHOLDER=$(PLACEHOLDER) \
 	  infrastructure/edge/publish-web.sh publish $(HOST) $(CONFIRM)
 
 .PHONY: edge-web-rollback
 edge-web-rollback: ## Point the edge back at the previous bundle (one symlink): HOST=… CONFIRM=…
 	@test -n "$(HOST)" || (echo "HOST= is required" && exit 1)
 	@test -n "$(CONFIRM)" || (echo "CONFIRM= is required" && exit 1)
-	EDGE_REPO=$(EDGE_REPO) infrastructure/edge/publish-web.sh rollback $(HOST) $(CONFIRM)
+	EDGE_REPO=$(EDGE_REPO) APP=$(or $(APP),buyer) infrastructure/edge/publish-web.sh rollback $(HOST) $(CONFIRM)
 
 .PHONY: edge-releases
 edge-releases: ## Which bundles are on the box and which one is live: HOST=… CONFIRM=…
 	@test -n "$(HOST)" || (echo "HOST= is required" && exit 1)
 	@test -n "$(CONFIRM)" || (echo "CONFIRM= is required" && exit 1)
-	EDGE_REPO=$(EDGE_REPO) infrastructure/edge/publish-web.sh releases $(HOST) $(CONFIRM)
+	EDGE_REPO=$(EDGE_REPO) APP=$(or $(APP),buyer) infrastructure/edge/publish-web.sh releases $(HOST) $(CONFIRM)
