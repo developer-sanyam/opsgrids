@@ -126,6 +126,28 @@ https://app.opsgrids.com {
 	}
 }
 
+# ---------------------------------------------------------------------------- Inventory
+#
+# The operations product's own app (ADR-0001: one hostname per product). Published by
+# `make edge-web APP=operations`. Its API calls are same-origin through the snippet's /api/*,
+# and the gateway's entitlement gate is what decides whether this organisation may use it.
+https://ops.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/operations/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids Inventory is not published on this box yet." {err.status_code}
+	}
+}
+
 # ---------------------------------------------------------------------------- every store
 #
 # A catch-all rather than a list of hostnames. `*.stores.opsgrids.com` is deliberately *not* a

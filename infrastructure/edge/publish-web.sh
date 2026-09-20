@@ -17,6 +17,7 @@
 #
 #   buyer       the anonymous shop, served on every store host        (default; ADR-0012 §2)
 #   dashboard   app.opsgrids.com — sign up, sign in, the marketplace  (ADR-0013 §4)
+#   operations  ops.opsgrids.com — the Inventory product's own app    (ADR-0013 slice 3)
 #
 # The buyer bundle lives at `$EDGE_WEB_ROOT/{releases,current}` — the root itself, because the
 # first deploy put it there and moving a live store's directory buys nothing. Every other app
@@ -65,8 +66,15 @@ dashboard)
 	dist_dir="dist"
 	entry="index.html"
 	;;
+operations)
+	# The Inventory product's app, ops.opsgrids.com (ADR-0013 slice 3).
+	app_dir="$repo_root/frontend/product-operations"
+	build_script="build"
+	dist_dir="dist"
+	entry="index.html"
+	;;
 *)
-	echo "unknown APP '$app' — one of: buyer, dashboard" >&2
+	echo "unknown APP '$app' — one of: buyer, dashboard, operations" >&2
 	exit 64
 	;;
 esac

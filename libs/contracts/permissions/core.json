@@ -40,6 +40,24 @@
     {
       "action": "read",
       "default_scope": "ORG",
+      "description": "See the credit balance",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "billing",
+      "resource": "credit"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See invoices",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "billing",
+      "resource": "invoice"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
       "description": "List the organization's uploaded images and read one image's details. Organization-wide: an asset library has no team or location reading",
       "is_dangerous": false,
       "max_scope": "ORG",
@@ -239,6 +257,14 @@
         },
         {
           "code": "core.approval.request.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.billing.credit.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "core.billing.invoice.read",
           "scope": "ORG"
         },
         {
