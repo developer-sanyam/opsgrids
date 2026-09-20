@@ -244,6 +244,18 @@ jobs:
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 3s --health-retries 20
+      # The approval backfill tests bind a queue against a real broker (ADR-0006 §2): a queue
+      # declared with the wrong arguments only fails at the broker, never in a mock. Host port
+      # 5673 matches `ServiceSettings.rabbitmq_url`'s default and the dev compose file.
+      rabbitmq:
+        image: rabbitmq:3-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: opsgrids
+          RABBITMQ_DEFAULT_PASS: opsgrids
+        ports: ['5673:5672']
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s --health-timeout 5s --health-retries 20
 
     steps:
       - uses: actions/checkout@v4
@@ -358,15 +370,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Next's build cache. Only the marketing site has one, and it is the slowest package to
-      # build; the Vite apps keep nothing worth carrying between runs.
-      - name: Restore Next.js build cache
-        uses: actions/cache@v4
-        with:
-          key: next-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}-${{ github.sha }}
-          restore-keys: |
-            next-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}-
-            next-${{ runner.os }}-
+      # No build cache: every package here is a Vite app, and Vite keeps nothing worth carrying
+      # between runs. (The Next.js marketing site that used to have one lives in its own repo.)
 
       # There is no separate type-check step because there is nothing left for it to do.
       # Twelve of the fourteen packages run `tsc --noEmit` inside their own `build`, the two
