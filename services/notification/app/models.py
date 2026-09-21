@@ -465,6 +465,15 @@ class EmailDomain(Base, TenantBase):
     records: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    #: The DKIM signing key, sealed by `platform_core.pii.seal`. Minted when the domain is
+    #: created, because its public half *is* the DKIM record's value — generating the record set
+    #: without a keypair publishes a record that can never verify.
+    #:
+    #: Nullable, like every sealed column here: there is no such thing as a default private key,
+    #: and a domain row whose key is missing must read as missing rather than as an empty
+    #: envelope that fails to open at signing time.
+    dkim_private_key_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+
     __table_args__ = (
         UniqueConstraint("organization_id", "domain", name="uq_email_domain_org_domain"),
         # Leads with the tenant column like every index here: the RLS policy qual is ANDed into
