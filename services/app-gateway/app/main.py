@@ -63,6 +63,12 @@ STOREFRONT_PUBLIC_PATHS = frozenset(
     {
         "/api/v1/storefront/public/serviceability",
         "/api/v1/storefront/public/store-context",
+        # What a buyer's shop is made of, and the one thing a buyer may send. Both resolve a
+        # PUBLISHED store from the body and serve nothing else: the catalogue returns only
+        # active rows, the enquiry is a write-only receipt. Exact paths, no path variable, the
+        # anonymous per-IP limit in front of them — the same terms as the pair above.
+        "/api/v1/storefront/public/catalogue",
+        "/api/v1/storefront/public/enquiry",
     }
 )
 

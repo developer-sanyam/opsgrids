@@ -39,22 +39,44 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, selectors
+from app.config import settings
 from app.models import (
     AuditLog,
+    Category,
     DeliveryZone,
+    Enquiry,
+    OutboxEvent,
+    Product,
+    ProductVariant,
     ServiceabilityDemand,
     Storefront,
+    ThemeDocument,
     ZonePostalCode,
 )
-from app.schemas import StorePut, ZoneCreate, ZonePatch
+from app.schemas import (
+    CategoryCreate,
+    CategoryPatch,
+    EnquiryCreate,
+    EnquiryPatch,
+    ProductCreate,
+    ProductPatch,
+    ProductVariantIn,
+    StorePut,
+    ThemeDocPut,
+    ZoneCreate,
+    ZonePatch,
+)
 from app.selectors import PublicStore, ServiceabilityAnswer
-from platform_core.audit import record_audit
+from platform_core.audit import record_audit, record_sensitive_read
 from platform_core.auth import ScopeContext
 from platform_core.cache import cache_delete
 from platform_core.db import session_scope
 from platform_core.errors import BusinessRuleProblem, ConflictProblem
+from platform_core.events import publish_event
 from platform_core.logging import get_logger
 from platform_core.models import utcnow
+from platform_core.pagination import PageParams
+from platform_core.pii import open_sealed, seal
 
 log = get_logger("storefront.services")
 
@@ -871,3 +893,684 @@ async def import_postal_codes(
         deleted=counters.deleted,
     )
     return counters
+
+
+# --------------------------------------------------------------------- the theme document
+
+
+def _theme_snapshot(doc: ThemeDocument) -> dict[str, Any]:
+    return {"theme_key": doc.theme_key, "mode": doc.mode, "version": doc.version}
+
+
+async def put_theme_document(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    payload: ThemeDocPut,
+    *,
+    request: Request | None = None,
+) -> ThemeDocument:
+    """Upsert the organization's one theme document — this **is** adopt (ADR-0011 §3: the front
+    end forks a theme client-side and PUTs the result, so there is no separate `/adopt` route).
+
+    **Optimistic concurrency.** A `PUT` whose `version` does not match the stored one is a named
+    409, never a silent overwrite of whatever a second tab just saved. `tokens` and `pages` are
+    opaque JSON to this service; `domain.validate_theme_document` bounds only the envelope.
+    """
+    domain.validate_theme_document(
+        theme_key=payload.theme_key, mode=payload.mode, tokens=payload.tokens, pages=payload.pages
+    )
+
+    existing = await selectors.get_theme_document(session, ctx)
+    before: dict[str, Any] | None = None
+
+    if existing is None:
+        doc = ThemeDocument(
+            organization_id=ctx.organization_id,
+            theme_key=payload.theme_key,
+            mode=payload.mode,
+            tokens=payload.tokens,
+            pages=payload.pages,
+            version=1,
+        )
+        session.add(doc)
+        action = "theme.adopted"
+    else:
+        if payload.version != existing.version:
+            raise domain.Conflicted(
+                "theme_version_conflict",
+                "This theme document changed since you loaded it. Reload and reapply your "
+                "edit — saving now would silently overwrite someone else's change.",
+                field="version",
+            )
+        doc = existing
+        before = _theme_snapshot(doc)
+        doc.theme_key = payload.theme_key
+        doc.mode = payload.mode
+        doc.tokens = payload.tokens
+        doc.pages = payload.pages
+        doc.version = existing.version + 1
+        action = "theme.updated"
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action=action,
+        entity="theme_document",
+        entity_id=doc.id,
+        before=before,
+        after=_theme_snapshot(doc),
+        request=request,
+    )
+    await session.flush()
+    log.info(
+        "storefront.theme.saved",
+        organization_id=str(ctx.organization_id),
+        action=action,
+        version=doc.version,
+    )
+    return doc
+
+
+async def delete_theme_document(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    doc: ThemeDocument,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Soft delete — "Remove this store" in Gallery. A re-adopt afterwards is a fresh `PUT`
+    starting at `version=1` again, since the row it would have conflicted with is gone."""
+    before = _theme_snapshot(doc)
+    doc.deleted_at = utcnow()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="theme.removed",
+        entity="theme_document",
+        entity_id=doc.id,
+        before=before,
+        request=request,
+    )
+    await session.flush()
+    log.info("storefront.theme.removed", organization_id=str(ctx.organization_id))
+
+
+# --------------------------------------------------------------------- categories
+
+
+def _category_snapshot(category: Category) -> dict[str, Any]:
+    return {
+        "key": category.key,
+        "label": category.label,
+        "blurb": category.blurb,
+        "image_url": category.image_path,
+        "sort_order": category.sort_order,
+        "is_active": category.is_active,
+    }
+
+
+async def create_category(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    payload: CategoryCreate,
+    *,
+    request: Request | None = None,
+) -> Category:
+    if await selectors.get_category_by_key(session, ctx, payload.key) is not None:
+        raise ConflictProblem(f"A category with the key {payload.key!r} already exists.")
+
+    category = Category(
+        organization_id=ctx.organization_id,
+        key=payload.key,
+        label=payload.label,
+        blurb=payload.blurb,
+        image_path=payload.image_url,
+        sort_order=payload.sort_order,
+        is_active=payload.is_active,
+    )
+    session.add(category)
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="catalogue.category.created",
+        entity="category",
+        entity_id=category.id,
+        after=_category_snapshot(category),
+        request=request,
+    )
+    await session.flush()
+    log.info(
+        "storefront.category.created",
+        organization_id=str(ctx.organization_id),
+        category_id=str(category.id),
+    )
+    return category
+
+
+async def update_category(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    category: Category,
+    payload: CategoryPatch,
+    *,
+    request: Request | None = None,
+) -> Category:
+    changes = payload.model_dump(exclude_unset=True)
+    if not changes:
+        return category
+
+    before = _category_snapshot(category)
+    if "image_url" in changes:
+        category.image_path = changes.pop("image_url")
+    for field, value in changes.items():
+        setattr(category, field, value)
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="catalogue.category.updated",
+        entity="category",
+        entity_id=category.id,
+        before=before,
+        after=_category_snapshot(category),
+        request=request,
+    )
+    await session.flush()
+    return category
+
+
+async def delete_category(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    category: Category,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Soft delete. **Refused while a live product still carries this category** — cascading
+    would silently orphan every one of them, the same rule `delete_zone` applies to a zone with
+    postal codes still mapped."""
+    counts = await selectors.category_product_counts(session, ctx, [category.id])
+    in_use = counts.get(category.id, 0)
+    if in_use:
+        raise BusinessRuleProblem(
+            f"That category still has {in_use} product(s) in it. Move or delete them first — "
+            "deleting the category would leave them pointing at nothing."
+        )
+
+    before = _category_snapshot(category)
+    category.deleted_at = utcnow()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="catalogue.category.deleted",
+        entity="category",
+        entity_id=category.id,
+        before=before,
+        request=request,
+    )
+    await session.flush()
+
+
+# --------------------------------------------------------------------- products
+
+
+def _variant_snapshot(variant: ProductVariant) -> dict[str, Any]:
+    return {
+        "label": variant.label,
+        "price_min_minor": variant.price_min_minor,
+        "price_max_minor": variant.price_max_minor,
+        "mrp_minor": variant.mrp_minor,
+        "in_stock": variant.in_stock,
+        "position": variant.position,
+    }
+
+
+def _product_snapshot(product: Product) -> dict[str, Any]:
+    return {
+        "code": product.code,
+        "name": product.name,
+        "brand": product.brand,
+        "category_id": str(product.category_id),
+        "spec": product.spec,
+        "unit": product.unit,
+        "price_min_minor": product.price_min_minor,
+        "price_max_minor": product.price_max_minor,
+        "mrp_minor": product.mrp_minor,
+        "gst_inclusive": product.gst_inclusive,
+        "moq": product.moq,
+        "moq_unit": product.moq_unit,
+        "in_stock": product.in_stock,
+        "lead_time_days": product.lead_time_days,
+        "delivery_eta_minutes": product.delivery_eta_minutes,
+        "featured": product.featured,
+        "image_url": product.image_path,
+        "status": product.status,
+        "is_active": product.is_active,
+    }
+
+
+async def _assert_category_exists(
+    session: AsyncSession, ctx: ScopeContext, category_id: uuid.UUID
+) -> None:
+    if await selectors.get_category(session, ctx, category_id) is None:
+        raise domain.Rejected(
+            "category_not_found",
+            "That category does not exist in this organization.",
+            field="category_id",
+        )
+
+
+def _apply_variant_price_sync(
+    *,
+    price_min_minor: int,
+    price_max_minor: int,
+    mrp_minor: int | None,
+    variants: list[ProductVariantIn],
+) -> tuple[int, int, int | None]:
+    """The invariant `types.ts:100-104` states and the client relies on: when variants exist,
+    the product's own price band and MRP equal the first (default) variant's — enforced here
+    rather than trusted from the client, so a rail with no variant selector still prints a true
+    price."""
+    if not variants:
+        return price_min_minor, price_max_minor, mrp_minor
+    first = variants[0]
+    return first.price_min_minor, first.price_max_minor, first.mrp_minor
+
+
+async def create_product(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    payload: ProductCreate,
+    *,
+    request: Request | None = None,
+) -> Product:
+    await _assert_category_exists(session, ctx, payload.category_id)
+    if await selectors.get_product_by_code(session, ctx, payload.code) is not None:
+        raise ConflictProblem(f"A product with the code {payload.code!r} already exists.")
+
+    price_min, price_max, mrp = _apply_variant_price_sync(
+        price_min_minor=payload.price_min_minor,
+        price_max_minor=payload.price_max_minor,
+        mrp_minor=payload.mrp_minor,
+        variants=payload.variants,
+    )
+    domain.assert_price_band(price_min, price_max, mrp)
+    for variant in payload.variants:
+        domain.assert_price_band(
+            variant.price_min_minor, variant.price_max_minor, variant.mrp_minor
+        )
+
+    product = Product(
+        organization_id=ctx.organization_id,
+        code=payload.code,
+        name=payload.name,
+        brand=payload.brand,
+        category_id=payload.category_id,
+        spec=payload.spec,
+        unit=payload.unit,
+        description=payload.description,
+        price_min_minor=price_min,
+        price_max_minor=price_max,
+        mrp_minor=mrp,
+        gst_inclusive=payload.gst_inclusive,
+        moq=payload.moq,
+        moq_unit=payload.moq_unit,
+        in_stock=payload.in_stock,
+        lead_time_days=payload.lead_time_days,
+        delivery_eta_minutes=payload.delivery_eta_minutes,
+        featured=payload.featured,
+        image_path=payload.image_url,
+        status=payload.status,
+        is_active=payload.is_active,
+    )
+    session.add(product)
+    await session.flush()
+
+    for position, variant in enumerate(payload.variants):
+        session.add(
+            ProductVariant(
+                organization_id=ctx.organization_id,
+                product_id=product.id,
+                label=variant.label,
+                price_min_minor=variant.price_min_minor,
+                price_max_minor=variant.price_max_minor,
+                mrp_minor=variant.mrp_minor,
+                in_stock=variant.in_stock,
+                position=position,
+            )
+        )
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="catalogue.product.created",
+        entity="product",
+        entity_id=product.id,
+        after=_product_snapshot(product),
+        request=request,
+    )
+    await session.flush()
+    log.info(
+        "storefront.product.created",
+        organization_id=str(ctx.organization_id),
+        product_id=str(product.id),
+    )
+    return product
+
+
+async def _replace_variants(
+    session: AsyncSession, ctx: ScopeContext, product: Product, variants: list[ProductVariantIn]
+) -> None:
+    """Wholesale replace — the same `ZonePostalCodesPut` shape: variants carry no id a client
+    holds across two requests, so a partial patch of them would be a merge nobody asked for."""
+    existing = (
+        (
+            await session.execute(
+                select(ProductVariant).where(
+                    ProductVariant.organization_id == ctx.organization_id,
+                    ProductVariant.product_id == product.id,
+                    ProductVariant.deleted_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in existing:
+        await session.delete(row)
+    for position, variant in enumerate(variants):
+        session.add(
+            ProductVariant(
+                organization_id=ctx.organization_id,
+                product_id=product.id,
+                label=variant.label,
+                price_min_minor=variant.price_min_minor,
+                price_max_minor=variant.price_max_minor,
+                mrp_minor=variant.mrp_minor,
+                in_stock=variant.in_stock,
+                position=position,
+            )
+        )
+
+
+async def update_product(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    product: Product,
+    payload: ProductPatch,
+    *,
+    request: Request | None = None,
+) -> Product:
+    changes = payload.model_dump(exclude_unset=True)
+    if not changes:
+        return product
+
+    if "category_id" in changes and changes["category_id"] is not None:
+        await _assert_category_exists(session, ctx, changes["category_id"])
+
+    before = _product_snapshot(product)
+
+    variants_changed = "variants" in changes
+    new_variants = changes.pop("variants", None)
+
+    if "image_url" in changes:
+        product.image_path = changes.pop("image_url")
+    for field, value in changes.items():
+        setattr(product, field, value)
+
+    if variants_changed and new_variants is not None:
+        variant_inputs = [ProductVariantIn.model_validate(v) for v in new_variants]
+        price_min, price_max, mrp = _apply_variant_price_sync(
+            price_min_minor=product.price_min_minor,
+            price_max_minor=product.price_max_minor,
+            mrp_minor=product.mrp_minor,
+            variants=variant_inputs,
+        )
+        product.price_min_minor = price_min
+        product.price_max_minor = price_max
+        product.mrp_minor = mrp
+        for variant in variant_inputs:
+            domain.assert_price_band(
+                variant.price_min_minor, variant.price_max_minor, variant.mrp_minor
+            )
+        await _replace_variants(session, ctx, product, variant_inputs)
+
+    domain.assert_price_band(product.price_min_minor, product.price_max_minor, product.mrp_minor)
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="catalogue.product.updated",
+        entity="product",
+        entity_id=product.id,
+        before=before,
+        after=_product_snapshot(product),
+        request=request,
+    )
+    await session.flush()
+    return product
+
+
+async def delete_product(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    product: Product,
+    *,
+    request: Request | None = None,
+) -> None:
+    before = _product_snapshot(product)
+    product.deleted_at = utcnow()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="catalogue.product.deleted",
+        entity="product",
+        entity_id=product.id,
+        before=before,
+        request=request,
+    )
+    await session.flush()
+
+
+# --------------------------------------------------------------------- public catalogue
+
+
+@dataclass(frozen=True, slots=True)
+class PublicCatalogue:
+    """What the buyer bundle's catalogue call needs — raw rows, not the wire shape. `public.py`
+    builds `PublicCatalogueOut` from this, the same split `resolve_serviceability` /
+    `answer_out` uses for the serviceability check."""
+
+    categories: list[tuple[Category, int]]
+    products: list[Product]
+    products_total: int
+    category_keys: dict[uuid.UUID, str]
+    variants: dict[uuid.UUID, list[ProductVariant]]
+
+
+async def get_public_catalogue_for_store(
+    store: PublicStore, params: PageParams, *, category_key: str | None = None
+) -> PublicCatalogue:
+    """A published store's active catalogue, anonymous, tenant-bound (gap 4).
+
+    Its own `session_scope`, the same bypass-then-narrow shape as every other anonymous read
+    here: the tenant is already resolved by the caller on the bypass reader, and everything
+    below runs on the ordinary NOBYPASSRLS role under row-level security.
+    """
+    async with session_scope(organization_id=store.organization_id) as session:
+        categories = await selectors.list_public_categories(session, store.organization_id)
+        products, total = await selectors.list_public_products(
+            session, store.organization_id, params, category_key=category_key
+        )
+        variants = await selectors.public_variants_for_products(
+            session, store.organization_id, [p.id for p in products]
+        )
+        category_rows = await selectors.public_categories_by_id(
+            session, store.organization_id, {p.category_id for p in products}
+        )
+    return PublicCatalogue(
+        categories=categories,
+        products=products,
+        products_total=total,
+        category_keys={cid: row.key for cid, row in category_rows.items()},
+        variants=variants,
+    )
+
+
+async def get_theme_for_store(store: PublicStore) -> ThemeDocument | None:
+    """The buyer bootstrap's theme lookup — its own `session_scope`, the same shape
+    `check_serviceability_for_store` uses, per `public.py`'s own rule: the moment
+    `store-context` grows something that is not on `storefronts`, the extension goes through
+    `session_scope` exactly as serviceability's does."""
+    async with session_scope(organization_id=store.organization_id) as session:
+        return await selectors.get_theme_document_for_org(session, store.organization_id)
+
+
+# --------------------------------------------------------------------- enquiries
+
+
+def _enquiry_snapshot(enquiry: Enquiry) -> dict[str, Any]:
+    return {"status": enquiry.status}
+
+
+async def create_enquiry_for_store(
+    store: PublicStore,
+    payload: EnquiryCreate,
+    *,
+    now: dt.datetime | None = None,
+) -> Enquiry:
+    """A buyer's enquiry against a published store — anonymous, its own transaction, the same
+    bypass-then-narrow shape `check_serviceability_for_store` uses (ADR-0002, "What breaks",
+    path 4).
+
+    Contact fields are sealed before they are ever written: `email`/`phone` get an
+    AES-256-GCM envelope (`platform_core.pii.seal`) plus a masked hint, and no raw value is
+    stored in the clear at any point.
+
+    The outbox event is staged in the same transaction, so a notification can never fire for an
+    enquiry that failed to commit — and never silently vanish for one that did.
+    """
+    now = now or utcnow()
+    cfg = settings()
+    email_enc, email_masked = seal(payload.email, kind="email", settings=cfg)
+    phone_enc: bytes | None = None
+    phone_masked = ""
+    if payload.phone:
+        phone_enc, phone_masked = seal(payload.phone, kind="phone", settings=cfg)
+
+    async with session_scope(organization_id=store.organization_id) as session:
+        enquiry = Enquiry(
+            organization_id=store.organization_id,
+            name=payload.name,
+            company=payload.company,
+            email_masked=email_masked,
+            email_enc=email_enc,
+            phone_masked=phone_masked,
+            phone_enc=phone_enc,
+            gstin=payload.gstin,
+            requirement=payload.requirement,
+            quantity=payload.quantity,
+            lines=[line.model_dump(mode="json") for line in payload.lines],
+            status="new",
+        )
+        session.add(enquiry)
+        await session.flush()
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=store.organization_id,
+            actor_id=None,
+            action="sales.enquiry.received",
+            entity="enquiry",
+            entity_id=enquiry.id,
+            after={"status": enquiry.status, "company": enquiry.company},
+        )
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=store.organization_id,
+            event_type="storefront.enquiry.created",
+            aggregate_type="enquiry",
+            aggregate_id=enquiry.id,
+            payload={
+                "enquiry_id": str(enquiry.id),
+                "store_id": str(store.storefront_id),
+                "company": enquiry.company,
+                "line_count": len(enquiry.lines),
+            },
+        )
+    return enquiry
+
+
+async def update_enquiry_status(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    enquiry: Enquiry,
+    payload: EnquiryPatch,
+    *,
+    request: Request | None = None,
+) -> Enquiry:
+    domain.assert_enquiry_transition(enquiry.status, payload.status)
+    if enquiry.status == payload.status:
+        return enquiry
+
+    before = _enquiry_snapshot(enquiry)
+    enquiry.status = payload.status
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="sales.enquiry.status_changed",
+        entity="enquiry",
+        entity_id=enquiry.id,
+        before=before,
+        after=_enquiry_snapshot(enquiry),
+        request=request,
+    )
+    await session.flush()
+    return enquiry
+
+
+async def unmask_enquiry_contact(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    enquiry: Enquiry,
+    *,
+    request: Request | None = None,
+) -> tuple[str | None, str | None]:
+    """Reveal an enquiry's real email and phone — the audited, stepped-up path, the same shape
+    as `services/customer`'s `unmask_contact_phone`. Writes `entity.sensitive_read` in the
+    caller's transaction whether or not anything was sealed, because the auditable act is the
+    attempt."""
+    cfg = settings()
+    email = open_sealed(enquiry.email_enc, settings=cfg) if enquiry.email_enc is not None else None
+    phone = open_sealed(enquiry.phone_enc, settings=cfg) if enquiry.phone_enc is not None else None
+
+    record_sensitive_read(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        entity="enquiry",
+        entity_id=enquiry.id,
+        fields=["email", "phone"],
+        request=request,
+    )
+    return email, phone

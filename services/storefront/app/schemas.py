@@ -28,11 +28,28 @@ from app import domain
 # The lengths are the column's, imported rather than repeated: a limit that disagrees with the
 # column is a 500 waiting for the first merchant who reaches it.
 from app.models import (
+    CATEGORY_BLURB_LENGTH,
+    CATEGORY_KEY_LENGTH,
+    CATEGORY_LABEL_LENGTH,
     CUSTOM_DOMAIN_LENGTH,
+    ENQUIRY_COMPANY_LENGTH,
+    ENQUIRY_GSTIN_LENGTH,
+    ENQUIRY_NAME_LENGTH,
+    ENQUIRY_QUANTITY_LENGTH,
+    IMAGE_PATH_LENGTH,
     LOGO_TEXT_LENGTH,
+    PRODUCT_BRAND_LENGTH,
+    PRODUCT_CODE_LENGTH,
+    PRODUCT_MOQ_UNIT_LENGTH,
+    PRODUCT_NAME_LENGTH,
+    PRODUCT_SPEC_LENGTH,
+    PRODUCT_UNIT_LENGTH,
     STORE_NAME_LENGTH,
     TAGLINE_LENGTH,
+    THEME_KEY_LENGTH,
+    VARIANT_LABEL_LENGTH,
 )
+from platform_core.pagination import Page
 
 
 def _collapsed(value: Any) -> Any:
@@ -60,6 +77,7 @@ BrandText = Annotated[str, BeforeValidator(_collapsed)]
 #: nothing here and nothing in the schema changes.
 AnswerMode = Literal["SLOTTED", "PROMISED", "UNSERVED"]
 PromiseKind = Literal["DURATION", "DATE_OFFSET"]
+ThemeMode = Literal["trade", "retail"]
 #: Why the answer is what it is. `no_mapping` is **not** the same fact as `excluded`: one says
 #: "we have not got round to it", the other says "we decided not to", and the demand report is
 #: worth far more when a merchant can tell them apart (ADR-0010 §3).
@@ -206,6 +224,16 @@ class TlsAuthorizeOut(BaseModel):
     reason: Literal["platform", "store"]
 
 
+class PublicThemeOut(BaseModel):
+    """The theme document, minus `version` and the timestamps — a buyer has no concurrent
+    write to race and no reason to see when a merchant last saved."""
+
+    theme_key: str
+    mode: ThemeMode
+    tokens: dict[str, Any]
+    pages: list[dict[str, Any]]
+
+
 class StoreContextOut(BaseModel):
     """Which store this address is, and what it is called.
 
@@ -257,6 +285,12 @@ class StoreContextOut(BaseModel):
     #: not a redirect — both addresses serve, permanently — it is what lets the page render a
     #: one-line banner and a correct canonical link.
     is_canonical: bool
+    #: The adopted theme's `mode`/`tokens`/`pages` — **the only public representation of the
+    #: theme document** (ADR-0012 §11's coordination note: extend this payload, not add a
+    #: second one). `null` when the store has published with no theme adopted, which
+    #: `ShopFront.tsx` renders as its own empty state rather than a 404 — a store name and
+    #: nothing else is still a valid published store.
+    theme: PublicThemeOut | None = None
     #: When the server answered. The bundle caches this in `sessionStorage` for the tab, so it is
     #: one call per session rather than one per page view.
     checked_at: dt.datetime
@@ -539,3 +573,350 @@ class DemandRowOut(BaseModel):
     postal_code: str
     outcome: Literal["SERVED", "NO_MAPPING", "EXCLUDED", "ZONE_INACTIVE"]
     checks: int
+
+
+# --------------------------------------------------------------------- the theme document
+
+ThemeKey = Annotated[str, Field(min_length=1, max_length=THEME_KEY_LENGTH)]
+
+
+class ThemeDocOut(BaseModel):
+    """The document the editor loads and saves. No `brand` — that left for `StoreOut` in
+    ADR-0011 §2; the renderer reads name/tagline/logo_text off the store, not off this."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    theme_key: str
+    mode: ThemeMode
+    tokens: dict[str, Any]
+    pages: list[dict[str, Any]]
+    #: Optimistic concurrency. Echo this back unchanged on `PUT` to win the race; a stale value
+    #: is a 409 `theme_version_conflict`, never a silent overwrite.
+    version: int
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class ThemeDocPut(BaseModel):
+    """Upsert — **this is adopt**, per ADR-0011 §3: the front end forks a theme client-side and
+    PUTs the result, so no separate `/adopt` route exists.
+
+    `version` is required on an update and ignored on create (there is nothing to conflict
+    with yet); a caller creating for the first time sends `1`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    theme_key: ThemeKey
+    mode: ThemeMode
+    tokens: dict[str, Any]
+    pages: list[dict[str, Any]]
+    version: Annotated[int, Field(ge=1)]
+
+
+# --------------------------------------------------------------------- the catalogue
+
+ProductStatus = Literal["draft", "active", "archived"]
+CategoryKeyField = Annotated[
+    str, Field(min_length=1, max_length=CATEGORY_KEY_LENGTH, pattern=r"^[a-z0-9][a-z0-9-]*$")
+]
+ImagePath = Annotated[str, Field(max_length=IMAGE_PATH_LENGTH)]
+
+
+class CategoryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    key: str
+    label: str
+    blurb: str | None
+    image_url: str | None
+    sort_order: int
+    is_active: bool
+    #: Live products carrying this category — one grouped query for the whole page, the same
+    #: shape as `ZoneOut.postal_code_count`, never a per-row count in a loop.
+    line_count: int = 0
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class CategoryCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: CategoryKeyField
+    label: Annotated[str, Field(min_length=1, max_length=CATEGORY_LABEL_LENGTH)]
+    blurb: Annotated[str, Field(max_length=CATEGORY_BLURB_LENGTH)] | None = None
+    image_url: ImagePath | None = None
+    sort_order: int = 0
+    is_active: bool = True
+
+
+class CategoryPatch(BaseModel):
+    """Absent leaves a field alone; explicit `null` clears the nullable ones. `key` is
+    immutable once created — it is what a product's `category_id` resolves through, and a
+    rename would silently repoint every product to a category a client thinks is different."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: Annotated[str, Field(min_length=1, max_length=CATEGORY_LABEL_LENGTH)] | None = None
+    blurb: Annotated[str, Field(max_length=CATEGORY_BLURB_LENGTH)] | None = None
+    image_url: ImagePath | None = None
+    sort_order: int | None = None
+    is_active: bool | None = None
+
+
+class ProductVariantIn(BaseModel):
+    """One pack size. Variants are replaced wholesale with the product — there is no
+    independent variant id a client holds across two requests, so nested writes stay atomic
+    with the price-sync invariant `services.py` enforces."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: Annotated[str, Field(min_length=1, max_length=VARIANT_LABEL_LENGTH)]
+    price_min_minor: Annotated[int, Field(ge=0)]
+    price_max_minor: Annotated[int, Field(ge=0)]
+    mrp_minor: Annotated[int, Field(ge=0)] | None = None
+    in_stock: bool = True
+
+
+class ProductVariantOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    label: str
+    price_min_minor: int
+    price_max_minor: int
+    mrp_minor: int | None
+    in_stock: bool
+
+
+class ProductOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    code: str
+    name: str
+    brand: str
+    category_id: uuid.UUID
+    #: The category's `key` — resolved once per page, batched, never a query per row
+    #: (`selectors.list_products`). Kept alongside `category_id` so a write can target the
+    #: relation and a read can render the label the client already expects (`types.ts`).
+    category: str
+    spec: str
+    unit: str
+    description: str | None
+    price_min_minor: int
+    price_max_minor: int
+    mrp_minor: int | None
+    #: `storefronts.currency` — one value per store, not repeated on every row by hand.
+    currency: str
+    gst_inclusive: bool
+    moq: int
+    moq_unit: str
+    in_stock: bool
+    lead_time_days: int
+    delivery_eta_minutes: int | None
+    featured: bool
+    image_url: str | None
+    status: ProductStatus
+    is_active: bool
+    variants: list[ProductVariantOut]
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class ProductCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: Annotated[str, Field(min_length=1, max_length=PRODUCT_CODE_LENGTH)]
+    name: Annotated[str, Field(min_length=1, max_length=PRODUCT_NAME_LENGTH)]
+    brand: Annotated[str, Field(max_length=PRODUCT_BRAND_LENGTH)] = ""
+    category_id: uuid.UUID
+    spec: Annotated[str, Field(max_length=PRODUCT_SPEC_LENGTH)] = ""
+    unit: Annotated[str, Field(max_length=PRODUCT_UNIT_LENGTH)] = ""
+    description: str | None = None
+    price_min_minor: Annotated[int, Field(ge=0)]
+    price_max_minor: Annotated[int, Field(ge=0)]
+    mrp_minor: Annotated[int, Field(ge=0)] | None = None
+    gst_inclusive: bool = True
+    moq: Annotated[int, Field(ge=1)] = 1
+    moq_unit: Annotated[str, Field(max_length=PRODUCT_MOQ_UNIT_LENGTH)] = ""
+    in_stock: bool = True
+    lead_time_days: Annotated[int, Field(ge=0)] = 0
+    delivery_eta_minutes: Annotated[int, Field(ge=0)] | None = None
+    featured: bool = False
+    image_url: ImagePath | None = None
+    status: ProductStatus = "draft"
+    is_active: bool = True
+    #: Empty is the ordinary case — a single-pack line (`types.ts`'s "required, sometimes
+    #: empty"). When non-empty, `variants[0]`'s price band and MRP become this product's own.
+    variants: list[ProductVariantIn] = Field(default_factory=list)
+
+
+class ProductPatch(BaseModel):
+    """Absent leaves a field alone. `code` is immutable — it is what a buyer quotes on a PO
+    and what CSV-style re-imports would key on; send a new product instead of renaming one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Annotated[str, Field(min_length=1, max_length=PRODUCT_NAME_LENGTH)] | None = None
+    brand: Annotated[str, Field(max_length=PRODUCT_BRAND_LENGTH)] | None = None
+    category_id: uuid.UUID | None = None
+    spec: Annotated[str, Field(max_length=PRODUCT_SPEC_LENGTH)] | None = None
+    unit: Annotated[str, Field(max_length=PRODUCT_UNIT_LENGTH)] | None = None
+    description: str | None = None
+    price_min_minor: Annotated[int, Field(ge=0)] | None = None
+    price_max_minor: Annotated[int, Field(ge=0)] | None = None
+    mrp_minor: Annotated[int, Field(ge=0)] | None = None
+    gst_inclusive: bool | None = None
+    moq: Annotated[int, Field(ge=1)] | None = None
+    moq_unit: Annotated[str, Field(max_length=PRODUCT_MOQ_UNIT_LENGTH)] | None = None
+    in_stock: bool | None = None
+    lead_time_days: Annotated[int, Field(ge=0)] | None = None
+    delivery_eta_minutes: Annotated[int, Field(ge=0)] | None = None
+    featured: bool | None = None
+    image_url: ImagePath | None = None
+    status: ProductStatus | None = None
+    is_active: bool | None = None
+    variants: list[ProductVariantIn] | None = None
+
+
+# --------------------------------------------------------------------- public catalogue
+
+
+class PublicCatalogueIn(BaseModel):
+    """The buyer bundle's one catalogue call — store in the body, same reason as every other
+    public endpoint here (`GatewayPolicy.public_paths` is exact-match, ADR-0010 §4)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    store: Slug
+    category: CategoryKeyField | None = None
+
+
+class CategoryPublicOut(BaseModel):
+    """`CategoryOut` minus what a stranger has no business seeing — `is_active` is implicit
+    (every row here already is one) and `id`/`sort_order` stay merchant-only detail."""
+
+    key: str
+    label: str
+    blurb: str | None
+    image_url: str | None
+    line_count: int = 0
+
+
+class ProductPublicOut(BaseModel):
+    """Field-for-field `types.ts` `Product`, built from the same row `ProductOut` is — this is
+    the shape gap 3's merchant screen and gap 4's buyer screen share."""
+
+    id: uuid.UUID
+    code: str
+    name: str
+    brand: str
+    category: str
+    spec: str
+    unit: str
+    price_min_minor: int
+    price_max_minor: int
+    currency: str
+    gst_inclusive: bool
+    moq: int
+    moq_unit: str
+    in_stock: bool
+    lead_time_days: int
+    featured: bool
+    image_url: str | None
+    mrp_minor: int | None
+    delivery_eta_minutes: int | None
+    variants: list[ProductVariantOut]
+
+
+class PublicCatalogueOut(BaseModel):
+    categories: list[CategoryPublicOut]
+    products: Page[ProductPublicOut]
+
+
+# --------------------------------------------------------------------- enquiries
+
+EnquiryStatus = Literal["new", "contacted", "won", "lost"]
+
+
+class EnquiryLineIn(BaseModel):
+    """One line of the buyer's list, echoed back rather than joined at read time — a product
+    referenced here may since have been edited or deleted, and the enquiry is a record of what
+    was asked for, not a live view of the catalogue."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    product_id: uuid.UUID
+    name: Annotated[str, Field(min_length=1, max_length=200)]
+    quantity: Annotated[int, Field(ge=1)]
+
+
+#: Bounds a buyer's paste the same way `ZonePostalCodesPut` bounds a merchant's — a line list
+#: this long is not a real enquiry.
+MAX_ENQUIRY_LINES = 200
+
+
+class EnquiryCreate(BaseModel):
+    """The public body. `store` names the tenant the same way every other public endpoint's
+    body does; `email` and `phone` are sealed rather than stored, `phone` optional because the
+    front end's own form only requires an email (`EnquiryForm.tsx`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    store: Slug
+    name: Annotated[str, Field(min_length=1, max_length=ENQUIRY_NAME_LENGTH)]
+    company: Annotated[str, Field(min_length=1, max_length=ENQUIRY_COMPANY_LENGTH)]
+    email: Annotated[str, Field(min_length=1, max_length=254)]
+    phone: Annotated[str, Field(max_length=40)] | None = None
+    gstin: Annotated[str, Field(max_length=ENQUIRY_GSTIN_LENGTH)] | None = None
+    requirement: Annotated[str, Field(min_length=1, max_length=4000)]
+    quantity: Annotated[str, Field(max_length=ENQUIRY_QUANTITY_LENGTH)] = ""
+    lines: Annotated[list[EnquiryLineIn], Field(max_length=MAX_ENQUIRY_LINES)] = Field(
+        default_factory=list
+    )
+
+
+class EnquiryReceiptOut(BaseModel):
+    id: uuid.UUID
+    received_at: dt.datetime
+
+
+class EnquiryOut(BaseModel):
+    """The merchant's ordinary read. Contact fields are **masked by default** — `email_masked`
+    and `phone_masked` are the same `•••`-bulleted hint `platform_core.pii.mask` produces for
+    `services/customer`'s contacts. Unmasking is `POST /storefront/enquiries/{id}:reveal`."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    company: str
+    email_masked: str
+    phone_masked: str
+    gstin: str | None
+    requirement: str
+    quantity: str
+    lines: list[dict[str, Any]]
+    status: EnquiryStatus
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class EnquiryPatch(BaseModel):
+    """Only `status` ever changes — the enquiry's content is append-only. `domain.
+    assert_enquiry_transition` is the state machine; an illegal move is a 409."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: EnquiryStatus
+
+
+class EnquiryRevealed(BaseModel):
+    """The audited, stepped-up read. `None` for a field means nothing was ever sealed for it —
+    `phone` is optional on create — not that the caller lacked permission to see it."""
+
+    id: uuid.UUID
+    email: str | None
+    phone: str | None

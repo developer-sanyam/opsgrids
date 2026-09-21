@@ -460,7 +460,12 @@ class TestTheStorefrontBuyerSurface:
         same `/public/` segment is **not** public, which is the property the whole anonymous
         buyer API is designed around: variables travel in the query string or the body, never the
         path."""
-        assert (await client.post("/api/v1/storefront/public/catalogue")).status_code == 401
+        assert (await client.post("/api/v1/storefront/public/orders")).status_code == 401
+        # The catalogue and the enquiry are public by exact path too: nothing beneath them, and
+        # no near-miss beside them, comes along.
+        assert (await client.post("/api/v1/storefront/public/catalogue/x")).status_code == 401
+        assert (await client.post("/api/v1/storefront/public/enquiry/x")).status_code == 401
+        assert (await client.post("/api/v1/storefront/public/enquiries")).status_code == 401
         assert (
             await client.post(f"{self.SERVICEABILITY}/x", json={"store": "g"})
         ).status_code == 401
@@ -512,7 +517,16 @@ class TestTheStorefrontBuyerSurface:
         from app.main import STOREFRONT_PUBLIC_PATHS, policy
         from platform_core.gateway import DEFAULT_PUBLIC_PATHS
 
-        assert {self.SERVICEABILITY, self.STORE_CONTEXT} == STOREFRONT_PUBLIC_PATHS
+        assert {
+            self.SERVICEABILITY,
+            self.STORE_CONTEXT,
+            "/api/v1/storefront/public/catalogue",
+            "/api/v1/storefront/public/enquiry",
+        } == STOREFRONT_PUBLIC_PATHS
+        # The merchant's side of both stays behind a token: a stranger may send an enquiry and
+        # may never list them, and may read a published catalogue and never edit one.
+        assert "/api/v1/storefront/enquiries" not in policy.public_paths
+        assert "/api/v1/storefront/products" not in policy.public_paths
         assert not (STOREFRONT_PUBLIC_PATHS & DEFAULT_PUBLIC_PATHS)
         assert policy.public_paths >= STOREFRONT_PUBLIC_PATHS
         # The certificate-issuance gate is reached by Caddy on the compose network and by

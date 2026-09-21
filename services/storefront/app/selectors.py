@@ -37,15 +37,20 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import ColumnElement, Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain
 from app.config import settings
 from app.models import (
+    Category,
     DeliveryZone,
+    Enquiry,
+    Product,
+    ProductVariant,
     ServiceabilityDemand,
     Storefront,
+    ThemeDocument,
     ZonePostalCode,
 )
 from platform_core.auth import ScopeContext
@@ -597,3 +602,346 @@ async def list_demand(
         ServiceabilityDemand.postal_code.asc(),
     )
     return await paginate(session, stmt, params)
+
+
+# --------------------------------------------------------------------- the theme document
+
+
+async def get_theme_document(session: AsyncSession, ctx: ScopeContext) -> ThemeDocument | None:
+    """The organization's single theme document, or None before one is adopted."""
+    stmt = select(ThemeDocument).where(
+        ThemeDocument.organization_id == ctx.organization_id,
+        ThemeDocument.deleted_at.is_(None),
+    )
+    return (
+        (await session.execute(ctx.apply(stmt, owner_col=ThemeDocument.id))).scalars().one_or_none()
+    )
+
+
+async def get_theme_document_for_org(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> ThemeDocument | None:
+    """The anonymous path's read: tenant-bound already by `session_scope`, so this is a plain
+    query rather than a `ctx.apply()` — there is no principal on this path to build a
+    `ScopeContext` from."""
+    stmt = select(ThemeDocument).where(
+        ThemeDocument.organization_id == organization_id,
+        ThemeDocument.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalars().one_or_none()
+
+
+# --------------------------------------------------------------------- categories
+
+
+def _categories(ctx: ScopeContext) -> Select[tuple[Category]]:
+    stmt = select(Category).where(
+        Category.organization_id == ctx.organization_id,
+        Category.deleted_at.is_(None),
+    )
+    return ctx.apply(stmt, owner_col=Category.id)
+
+
+async def list_categories(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    params: PageParams,
+    *,
+    q: str | None = None,
+    is_active: bool | None = None,
+) -> tuple[list[Category], int, dict[uuid.UUID, int]]:
+    stmt = _categories(ctx)
+    if q:
+        pattern = f"%{q}%"
+        stmt = stmt.where(or_(Category.label.ilike(pattern), Category.key.ilike(pattern)))
+    if is_active is not None:
+        stmt = stmt.where(Category.is_active == is_active)
+    stmt = stmt.order_by(Category.sort_order.asc(), Category.label.asc())
+    rows, total = await paginate(session, stmt, params)
+    counts = await category_product_counts(session, ctx, [row.id for row in rows])
+    return rows, total, counts
+
+
+async def category_product_counts(
+    session: AsyncSession, ctx: ScopeContext, category_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, int]:
+    """`category_id -> live product count`, for a page of categories, in one statement — the
+    same shape as `postal_code_counts`, never a query per row."""
+    if not category_ids:
+        return {}
+    stmt = (
+        select(Product.category_id, func.count())
+        .where(
+            Product.organization_id == ctx.organization_id,
+            Product.category_id.in_(category_ids),
+            Product.deleted_at.is_(None),
+        )
+        .group_by(Product.category_id)
+    )
+    return {cid: int(count) for cid, count in (await session.execute(stmt)).all()}
+
+
+async def get_category(
+    session: AsyncSession, ctx: ScopeContext, category_id: uuid.UUID
+) -> Category | None:
+    return (
+        (await session.execute(_categories(ctx).where(Category.id == category_id)))
+        .scalars()
+        .one_or_none()
+    )
+
+
+async def get_category_by_key(
+    session: AsyncSession, ctx: ScopeContext, key: str
+) -> Category | None:
+    return (
+        (await session.execute(_categories(ctx).where(Category.key == key))).scalars().one_or_none()
+    )
+
+
+async def categories_by_id(
+    session: AsyncSession, ctx: ScopeContext, category_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, Category]:
+    """Every named category in one statement — what a product page resolves `category` with."""
+    if not category_ids:
+        return {}
+    rows = (
+        (await session.execute(_categories(ctx).where(Category.id.in_(category_ids))))
+        .scalars()
+        .all()
+    )
+    return {row.id: row for row in rows}
+
+
+# --------------------------------------------------------------------- products
+
+
+def _products(ctx: ScopeContext) -> Select[tuple[Product]]:
+    stmt = select(Product).where(
+        Product.organization_id == ctx.organization_id,
+        Product.deleted_at.is_(None),
+    )
+    return ctx.apply(stmt, owner_col=Product.id)
+
+
+_PRODUCT_SORTS: dict[str, ColumnElement[Any]] = {
+    "name": Product.name.asc(),
+    "-name": Product.name.desc(),
+    "code": Product.code.asc(),
+    "-code": Product.code.desc(),
+    "price_min_minor": Product.price_min_minor.asc(),
+    "-price_min_minor": Product.price_min_minor.desc(),
+    "updated_at": Product.updated_at.asc(),
+    "-updated_at": Product.updated_at.desc(),
+}
+
+
+async def list_products(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    params: PageParams,
+    *,
+    q: str | None = None,
+    category_id: uuid.UUID | None = None,
+    status: str | None = None,
+    in_stock: bool | None = None,
+    featured: bool | None = None,
+    sort: str = "-updated_at",
+) -> tuple[list[Product], int]:
+    stmt = _products(ctx)
+    if q:
+        pattern = f"%{q}%"
+        stmt = stmt.where(
+            or_(
+                Product.code.ilike(pattern),
+                Product.name.ilike(pattern),
+                Product.brand.ilike(pattern),
+            )
+        )
+    if category_id is not None:
+        stmt = stmt.where(Product.category_id == category_id)
+    if status is not None:
+        stmt = stmt.where(Product.status == status)
+    if in_stock is not None:
+        stmt = stmt.where(Product.in_stock == in_stock)
+    if featured is not None:
+        stmt = stmt.where(Product.featured == featured)
+    stmt = stmt.order_by(_PRODUCT_SORTS.get(sort, _PRODUCT_SORTS["-updated_at"]), Product.id.asc())
+    return await paginate(session, stmt, params)
+
+
+async def get_product(
+    session: AsyncSession, ctx: ScopeContext, product_id: uuid.UUID
+) -> Product | None:
+    return (
+        (await session.execute(_products(ctx).where(Product.id == product_id)))
+        .scalars()
+        .one_or_none()
+    )
+
+
+async def get_product_by_code(
+    session: AsyncSession, ctx: ScopeContext, code: str
+) -> Product | None:
+    return (
+        (await session.execute(_products(ctx).where(Product.code == code))).scalars().one_or_none()
+    )
+
+
+async def variants_for_products(
+    session: AsyncSession, ctx: ScopeContext, product_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[ProductVariant]]:
+    """`product_id -> its variants`, in one statement for a whole page of products — the N+1
+    a product list is most likely to grow."""
+    if not product_ids:
+        return {}
+    stmt = (
+        select(ProductVariant)
+        .where(
+            ProductVariant.organization_id == ctx.organization_id,
+            ProductVariant.product_id.in_(product_ids),
+            ProductVariant.deleted_at.is_(None),
+        )
+        .order_by(ProductVariant.position.asc(), ProductVariant.id.asc())
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    out: dict[uuid.UUID, list[ProductVariant]] = {}
+    for row in rows:
+        out.setdefault(row.product_id, []).append(row)
+    return out
+
+
+# --------------------------------------------------------------------- public catalogue
+
+
+async def list_public_categories(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> list[tuple[Category, int]]:
+    """Active, live categories with their **active, live** product count — never a merchant's
+    draft or archived count, which would advertise a line a buyer cannot actually see."""
+    counted = (
+        select(Product.category_id, func.count().label("n"))
+        .where(
+            Product.organization_id == organization_id,
+            Product.deleted_at.is_(None),
+            Product.status == "active",
+            Product.is_active.is_(True),
+        )
+        .group_by(Product.category_id)
+        .subquery()
+    )
+    stmt = (
+        select(Category, func.coalesce(counted.c.n, 0))
+        .outerjoin(counted, counted.c.category_id == Category.id)
+        .where(
+            Category.organization_id == organization_id,
+            Category.deleted_at.is_(None),
+            Category.is_active.is_(True),
+        )
+        .order_by(Category.sort_order.asc(), Category.label.asc())
+    )
+    return [(row[0], int(row[1])) for row in (await session.execute(stmt)).all()]
+
+
+async def list_public_products(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    params: PageParams,
+    *,
+    category_key: str | None = None,
+) -> tuple[list[Product], int]:
+    stmt = select(Product).where(
+        Product.organization_id == organization_id,
+        Product.deleted_at.is_(None),
+        Product.status == "active",
+        Product.is_active.is_(True),
+    )
+    if category_key is not None:
+        stmt = stmt.where(
+            Product.category_id.in_(
+                select(Category.id).where(
+                    Category.organization_id == organization_id,
+                    Category.key == category_key,
+                    Category.deleted_at.is_(None),
+                    Category.is_active.is_(True),
+                )
+            )
+        )
+    stmt = stmt.order_by(Product.featured.desc(), Product.name.asc(), Product.id.asc())
+    return await paginate(session, stmt, params)
+
+
+async def public_variants_for_products(
+    session: AsyncSession, organization_id: uuid.UUID, product_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[ProductVariant]]:
+    if not product_ids:
+        return {}
+    stmt = (
+        select(ProductVariant)
+        .where(
+            ProductVariant.organization_id == organization_id,
+            ProductVariant.product_id.in_(product_ids),
+            ProductVariant.deleted_at.is_(None),
+            ProductVariant.in_stock.is_(True),
+        )
+        .order_by(ProductVariant.position.asc(), ProductVariant.id.asc())
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    out: dict[uuid.UUID, list[ProductVariant]] = {}
+    for row in rows:
+        out.setdefault(row.product_id, []).append(row)
+    return out
+
+
+async def public_categories_by_id(
+    session: AsyncSession, organization_id: uuid.UUID, category_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, Category]:
+    if not category_ids:
+        return {}
+    stmt = select(Category).where(
+        Category.organization_id == organization_id, Category.id.in_(category_ids)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return {row.id: row for row in rows}
+
+
+# --------------------------------------------------------------------- enquiries
+
+
+def _enquiries(ctx: ScopeContext) -> Select[tuple[Enquiry]]:
+    stmt = select(Enquiry).where(
+        Enquiry.organization_id == ctx.organization_id,
+        Enquiry.deleted_at.is_(None),
+    )
+    return ctx.apply(stmt, owner_col=Enquiry.id)
+
+
+async def list_enquiries(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    params: PageParams,
+    *,
+    status: str | None = None,
+    since: dt.datetime | None = None,
+    q: str | None = None,
+) -> tuple[list[Enquiry], int]:
+    stmt = _enquiries(ctx)
+    if status is not None:
+        stmt = stmt.where(Enquiry.status == status)
+    if since is not None:
+        stmt = stmt.where(Enquiry.created_at >= since)
+    if q:
+        pattern = f"%{q}%"
+        stmt = stmt.where(or_(Enquiry.name.ilike(pattern), Enquiry.company.ilike(pattern)))
+    stmt = stmt.order_by(Enquiry.created_at.desc(), Enquiry.id.asc())
+    return await paginate(session, stmt, params)
+
+
+async def get_enquiry(
+    session: AsyncSession, ctx: ScopeContext, enquiry_id: uuid.UUID
+) -> Enquiry | None:
+    return (
+        (await session.execute(_enquiries(ctx).where(Enquiry.id == enquiry_id)))
+        .scalars()
+        .one_or_none()
+    )

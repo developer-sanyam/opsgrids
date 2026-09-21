@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -49,11 +50,14 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
+    Text,
     Time,
     UniqueConstraint,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -125,6 +129,37 @@ LOGO_TEXT_LENGTH = 12
 #: validator so a later internationalised-domain decision (store the punycode form, or store
 #: both) is a validator change rather than an ALTER on a live table.
 CUSTOM_DOMAIN_LENGTH = 255
+
+#: The theme document (ADR-0011 §3): a `StoreDoc` minus the brand, which ADR-0011 moved onto
+#: `storefronts`. One row per organization, keyed the same way `storefronts` is.
+THEME_MODES = ("trade", "retail")
+THEME_KEY_LENGTH = 40
+#: Bounds `tokens` + `pages`, serialised, so a merchant's editor cannot grow one document
+#: without limit. `domain.validate_theme_document` is what checks it before a write.
+MAX_THEME_DOCUMENT_BYTES = 750_000
+MAX_THEME_PAGES = 60
+
+#: Catalogue lengths — column limits mirrored in `schemas.py`, same discipline as the brand
+#: text above: a limit that exists only in pydantic is one a backfill can walk past.
+CATEGORY_KEY_LENGTH = 40
+CATEGORY_LABEL_LENGTH = 80
+CATEGORY_BLURB_LENGTH = 200
+IMAGE_PATH_LENGTH = 255
+PRODUCT_CODE_LENGTH = 40
+PRODUCT_NAME_LENGTH = 160
+PRODUCT_BRAND_LENGTH = 80
+PRODUCT_SPEC_LENGTH = 200
+PRODUCT_UNIT_LENGTH = 40
+PRODUCT_MOQ_UNIT_LENGTH = 24
+PRODUCT_STATUSES = ("draft", "active", "archived")
+VARIANT_LABEL_LENGTH = 40
+
+#: Enquiries — this product's order-like flow (ADR-0000 "Also settled": no cart, no checkout).
+ENQUIRY_STATUSES = ("new", "contacted", "won", "lost")
+ENQUIRY_NAME_LENGTH = 160
+ENQUIRY_COMPANY_LENGTH = 160
+ENQUIRY_GSTIN_LENGTH = 15
+ENQUIRY_QUANTITY_LENGTH = 40
 
 
 class Base(_Base):
@@ -426,12 +461,245 @@ class ServiceabilityDemand(Base, TenantBase):
     )
 
 
+class ThemeDocument(Base, TenantBase):
+    """One merchant's `StoreDoc`, minus the brand (ADR-0011 §2 moved that onto `storefronts`).
+
+    Reserved at `/api/v1/storefront/theme` by ADR-0011 §3. `tokens` and `pages` are the
+    front end's `ThemeTokens` and `PageDoc[]` — opaque JSON to this service, validated only at
+    the envelope (`theme_key`, `mode`, size) by `domain.validate_theme_document`; a section's
+    internal shape is the editor's business, not the database's.
+
+    `version` is optimistic concurrency: `PUT` fails with a named 409 when the caller's
+    `version` does not match the stored one, so a second tab saving over a stale copy is a
+    message rather than a silent overwrite.
+    """
+
+    __tablename__ = "theme_documents"
+
+    theme_key: Mapped[str] = mapped_column(String(THEME_KEY_LENGTH), nullable=False)
+    #: trade | retail — copied from the theme at adopt time; the front end forks it and this
+    #: service never resolves it back to a theme.
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    tokens: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    pages: Mapped[list[Any]] = mapped_column(JSONB, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        # One **live** theme document per organization — the singular `GET/PUT
+        # /storefront/theme`. Partial, the same shape `categories.key` and `products.code`
+        # use: a soft-deleted document ("Remove this store" in Gallery) must not block a fresh
+        # adopt, or a merchant who removes their theme could never adopt another one.
+        Index(
+            "uq_theme_documents_organization_id_live",
+            "organization_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        CheckConstraint("mode IN ('trade', 'retail')", name="mode"),
+        CheckConstraint("length(theme_key) > 0", name="theme_key_not_blank"),
+        CheckConstraint("version > 0", name="version_positive"),
+    )
+
+
+class Category(Base, TenantBase):
+    """One catalogue category. Merchant-owned vocabulary — the front end's `CategoryKey` was a
+    compile-time constant; this table is what makes it data (ADR-0000 §10, gap 3).
+
+    `key` is the slug a product's `category_id` resolves to and the client renders as
+    `Category.key` / `Product.category`. Unique per organization **among live rows only**, so a
+    merchant can delete "seasonal" and create a new category with the same key later.
+    """
+
+    __tablename__ = "categories"
+
+    key: Mapped[str] = mapped_column(String(CATEGORY_KEY_LENGTH), nullable=False)
+    label: Mapped[str] = mapped_column(String(CATEGORY_LABEL_LENGTH), nullable=False)
+    blurb: Mapped[str | None] = mapped_column(String(CATEGORY_BLURB_LENGTH))
+    #: Root-relative, `/a/...` (ADR-0009 §6) — resolved to an absolute address at render time,
+    #: never stored as one.
+    image_path: Mapped[str | None] = mapped_column(String(IMAGE_PATH_LENGTH))
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        # Partial: reuse of a key is allowed once the row that held it is gone, so a merchant
+        # is never permanently blocked from a slug they deleted.
+        Index(
+            "uq_categories_org_key_live",
+            "organization_id",
+            "key",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        CheckConstraint("key ~ '^[a-z0-9][a-z0-9-]*$'", name="key_shape"),
+        Index("ix_categories_org_active", "organization_id", "is_active"),
+    )
+
+
+class Product(Base, TenantBase):
+    """One catalogue line. Field-for-field against `frontend/product-storefront/src/api/types.ts`
+    `Product`, minus what the client derives (`variants[0]` pricing) or resolves (`category`,
+    `currency`) at read time (gap 3).
+
+    Money is `price_min_minor` / `price_max_minor` — a band, matching the front end's "from"
+    pricing — plus an optional `mrp_minor`, checked never to sit below the band's floor.
+    `currency` is not a column here: it is `storefronts.currency`, read once per store rather
+    than repeated on every line.
+    """
+
+    __tablename__ = "products"
+
+    code: Mapped[str] = mapped_column(String(PRODUCT_CODE_LENGTH), nullable=False)
+    name: Mapped[str] = mapped_column(String(PRODUCT_NAME_LENGTH), nullable=False)
+    brand: Mapped[str] = mapped_column(String(PRODUCT_BRAND_LENGTH), nullable=False, default="")
+    #: In-schema FK — allowed; only cross-schema FKs are banned. `RESTRICT`: a category with
+    #: live products refuses to delete rather than silently orphaning them (services.py enforces
+    #: the friendlier 409 first; this is the net under it).
+    category_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.categories.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    spec: Mapped[str] = mapped_column(String(PRODUCT_SPEC_LENGTH), nullable=False, default="")
+    unit: Mapped[str] = mapped_column(String(PRODUCT_UNIT_LENGTH), nullable=False, default="")
+    description: Mapped[str | None] = mapped_column(Text)
+    price_min_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    price_max_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: Printed MRP. **Never a stored discount** — the percentage is derived at render time so it
+    #: cannot disagree with the price it was computed from (ADR-0000 §8; `types.ts` says the same).
+    mrp_minor: Mapped[int | None] = mapped_column(BigInteger)
+    gst_inclusive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    moq: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    moq_unit: Mapped[str] = mapped_column(
+        String(PRODUCT_MOQ_UNIT_LENGTH), nullable=False, default=""
+    )
+    in_stock: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    lead_time_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: Door-to-door minutes — the quick-commerce promise. Null: no delivery promise for this line.
+    delivery_eta_minutes: Mapped[int | None] = mapped_column(Integer)
+    featured: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    image_path: Mapped[str | None] = mapped_column(String(IMAGE_PATH_LENGTH))
+    #: draft | active | archived. Only `active` lines of a `published` store are ever shown to
+    #: an anonymous buyer (`app/api/public.py`).
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        Index(
+            "uq_products_org_code_live",
+            "organization_id",
+            "code",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        CheckConstraint(
+            "price_min_minor >= 0 AND price_max_minor >= price_min_minor",
+            name="price_band_is_coherent",
+        ),
+        CheckConstraint(
+            "mrp_minor IS NULL OR mrp_minor >= price_min_minor", name="mrp_not_below_price"
+        ),
+        CheckConstraint("moq >= 1", name="moq_positive"),
+        CheckConstraint("lead_time_days >= 0", name="lead_time_not_negative"),
+        CheckConstraint(
+            "status IN ('draft', 'active', 'archived')",
+            name="status",
+        ),
+        Index("ix_products_org_category", "organization_id", "category_id"),
+        Index("ix_products_org_status", "organization_id", "status"),
+    )
+
+
+class ProductVariant(Base, TenantBase):
+    """One pack size of a product — "500 g", "1 kg" — matching `types.ts`' `ProductVariant`
+    field for field. `product_id` is `CASCADE`: a variant has no identity a buyer can address
+    independently of its product (unlike `zone_postal_codes`, which is `RESTRICT`), so removing
+    the product removes its variants with it.
+    """
+
+    __tablename__ = "product_variants"
+
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.products.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    label: Mapped[str] = mapped_column(String(VARIANT_LABEL_LENGTH), nullable=False)
+    price_min_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    price_max_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    mrp_minor: Mapped[int | None] = mapped_column(BigInteger)
+    in_stock: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    #: Display order. `position = 0` is the default pack — `services.py`'s invariant is that the
+    #: product's own price band and MRP equal this row's (`types.ts:100-104`).
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        CheckConstraint(
+            "price_min_minor >= 0 AND price_max_minor >= price_min_minor",
+            name="price_band_is_coherent",
+        ),
+        CheckConstraint(
+            "mrp_minor IS NULL OR mrp_minor >= price_min_minor", name="mrp_not_below_price"
+        ),
+        Index("ix_product_variants_org_product", "organization_id", "product_id"),
+    )
+
+
+class Enquiry(Base, TenantBase):
+    """A buyer's line list, sent as an enquiry — this product's "order" (ADR-0000 "Also
+    settled": no cart, no checkout, no pricing engine; gap 6).
+
+    **Append-only content.** Only `status` ever changes after creation — the enquiry itself is
+    what the buyer sent, and correcting it is a new row, not an edit, exactly as ADR-0000
+    requires of an append-only ledger.
+
+    Buyer contact fields are PII, sealed the way `services/customer` seals a contact's phone
+    (`models.py:157`): `<field>_masked` is what an ordinary list or detail read returns,
+    `<field>_enc` is the AES-256-GCM envelope `platform_core.pii.seal` produces, and nothing in
+    this table stores a raw value in the clear. `email` and `phone` are both PII on a b2b
+    enquiry — a buyer's business email is still personally identifying — so both are sealed;
+    `name` and `company` are not classified sensitive and are stored in the clear, matching the
+    front end's own form (`EnquiryForm.tsx`), which treats them as the business's own words
+    about itself rather than a contact channel.
+    """
+
+    __tablename__ = "enquiries"
+
+    name: Mapped[str] = mapped_column(String(ENQUIRY_NAME_LENGTH), nullable=False)
+    company: Mapped[str] = mapped_column(String(ENQUIRY_COMPANY_LENGTH), nullable=False)
+    email_masked: Mapped[str] = mapped_column(String(254), nullable=False, default="")
+    email_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    phone_masked: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    phone_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    gstin: Mapped[str | None] = mapped_column(String(ENQUIRY_GSTIN_LENGTH))
+    requirement: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    quantity: Mapped[str] = mapped_column(
+        String(ENQUIRY_QUANTITY_LENGTH), nullable=False, default=""
+    )
+    #: The line list, as the buyer built it: `[{"product_id": ..., "name": ..., "quantity": ...}]`.
+    #: Opaque JSON — a product referenced here may since have been deleted, and that is fine: an
+    #: enquiry is a record of what was asked for, not a live join.
+    lines: Mapped[list[Any]] = mapped_column(JSONB, nullable=False)
+    #: new | contacted | won | lost. `domain.assert_enquiry_transition` is the state machine.
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="new")
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('new', 'contacted', 'won', 'lost')",
+            name="status",
+        ),
+        Index("ix_enquiries_org_status", "organization_id", "status"),
+        Index("ix_enquiries_org_created", "organization_id", "created_at"),
+    )
+
+
 class OutboxEvent(Base, OutboxMixin):
     """Domain events staged in the same transaction as the change they describe.
 
-    **Empty in slice 1, deliberately.** ADR-0010 §14 publishes nothing: an event type with no
-    consumer is a contract kept compatible forever in exchange for nothing (ADR-0008 §3). The
-    table stays until the order engine needs something from it.
+    **Non-empty as of gap 6**: `enquiry.created` is published after commit so a notification
+    consumer can pick it up. Nothing else in this service publishes yet — ADR-0010 §14's
+    reasoning still holds for the rest: an event type with no consumer is a contract kept
+    compatible forever in exchange for nothing (ADR-0008 §3).
     """
 
 

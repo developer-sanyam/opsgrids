@@ -35,13 +35,25 @@ from app.api.public import answer_out
 from app.config import settings
 from app.models import SCHEMA
 from app.schemas import (
+    CategoryCreate,
+    CategoryOut,
+    CategoryPatch,
     DeliveryCheckIn,
     DemandRowOut,
+    EnquiryOut,
+    EnquiryPatch,
+    EnquiryRevealed,
     ImportResultOut,
     MerchantServiceabilityOut,
+    ProductCreate,
+    ProductOut,
+    ProductPatch,
+    ProductVariantOut,
     ServiceInfo,
     StoreOut,
     StorePut,
+    ThemeDocOut,
+    ThemeDocPut,
     ZoneCreate,
     ZoneOut,
     ZonePatch,
@@ -74,6 +86,24 @@ ZoneRead = Annotated[
 ]
 ZoneWrite = Annotated[
     ScopeContext, Depends(require("storefront.delivery.zone.write", minimum=Scope.ORG))
+]
+CatalogueRead = Annotated[
+    ScopeContext, Depends(require("storefront.catalogue.product.read", minimum=Scope.ORG))
+]
+CatalogueWrite = Annotated[
+    ScopeContext, Depends(require("storefront.catalogue.product.write", minimum=Scope.ORG))
+]
+EnquiryRead = Annotated[
+    ScopeContext, Depends(require("storefront.sales.enquiry.read", minimum=Scope.ORG))
+]
+EnquiryWrite = Annotated[
+    ScopeContext, Depends(require("storefront.sales.enquiry.write", minimum=Scope.ORG))
+]
+#: Revealing a real email and phone number. The dangerous permission **and** a second factor —
+#: the same pairing `services/customer` requires to unmask a contact's phone.
+EnquiryUnmask = Annotated[
+    ScopeContext,
+    Depends(require("storefront.sales.enquiry.unmask", amr={"otp"}, minimum=Scope.ORG)),
 ]
 
 #: A refusal ceiling for the CSV body, enforced in this service as well as at the gateway.
@@ -581,3 +611,464 @@ async def read_demand(
         total=total,
         params=params,
     )
+
+
+# ------------------------------------------------------------------ the theme document
+
+
+@router.get(
+    "/storefront/theme",
+    response_model=ThemeDocOut,
+    summary="The store's theme document — tokens, pages, sections",
+    dependencies=[Entitled],
+)
+async def read_theme(session: SessionDep, ctx: StoreRead) -> ThemeDocOut:
+    """`storefront.store.settings.read`, floored at ORG. Reused rather than a new code — ADR-0011
+    §3's own note: anyone who can publish the store can edit its theme.
+
+    **404 with a clear detail is the "no theme adopted" state** — the front end maps this to
+    "pick a theme" rather than treating it as an error.
+    """
+    doc = await selectors.get_theme_document(session, ctx)
+    if doc is None:
+        raise NotFoundProblem(
+            "This store has no theme yet. Pick a theme in the gallery to get started."
+        )
+    return ThemeDocOut.model_validate(doc)
+
+
+@router.put(
+    "/storefront/theme",
+    response_model=ThemeDocOut,
+    summary="Adopt a theme, or save an edit to the one already adopted",
+    dependencies=[Entitled],
+    responses={
+        409: {"description": "`errors[0].code` is `theme_version_conflict` — reload and retry"},
+        422: {"description": "The envelope is invalid or too large — see `errors[0].code`"},
+    },
+)
+async def put_theme(
+    payload: ThemeDocPut, session: SessionDep, ctx: StoreWrite, request: Request
+) -> ThemeDocOut:
+    """`storefront.store.settings.write`, floored at ORG. **This is adopt** — the front end
+    forks a theme client-side and PUTs the result; there is no separate `/adopt` route."""
+    doc = await services.put_theme_document(session, ctx, payload, request=request)
+    await session.refresh(doc)
+    return ThemeDocOut.model_validate(doc)
+
+
+@router.delete(
+    "/storefront/theme",
+    status_code=204,
+    summary="Remove the store's theme document",
+    dependencies=[Entitled],
+)
+async def delete_theme(session: SessionDep, ctx: StoreWrite, request: Request) -> Response:
+    """`storefront.store.settings.write`, floored at ORG. "Remove this store" in Gallery — soft
+    delete; a later `PUT` adopts fresh, starting again at `version=1`."""
+    doc = await selectors.get_theme_document(session, ctx)
+    if doc is None:
+        raise NotFoundProblem("This store has no theme to remove.")
+    await services.delete_theme_document(session, ctx, doc, request=request)
+    await session.flush()
+    return Response(status_code=204)
+
+
+# ------------------------------------------------------------------ categories
+
+
+def _category_out(category: Any, *, line_count: int = 0) -> CategoryOut:
+    return CategoryOut(
+        id=category.id,
+        key=category.key,
+        label=category.label,
+        blurb=category.blurb,
+        image_url=category.image_path,
+        sort_order=category.sort_order,
+        is_active=category.is_active,
+        line_count=line_count,
+        created_at=category.created_at,
+        updated_at=category.updated_at,
+    )
+
+
+@router.get(
+    "/storefront/categories",
+    response_model=Page[CategoryOut],
+    summary="Catalogue categories",
+    dependencies=[Entitled],
+)
+async def list_categories(
+    session: SessionDep,
+    ctx: CatalogueRead,
+    params: PageQuery,
+    q: Annotated[str | None, Query(description="Key or label")] = None,
+    is_active: Annotated[bool | None, Query()] = None,
+) -> Page[CategoryOut]:
+    rows, total, counts = await selectors.list_categories(
+        session, ctx, params, q=q, is_active=is_active
+    )
+    return Page.build(
+        [_category_out(row, line_count=counts.get(row.id, 0)) for row in rows],
+        total=total,
+        params=params,
+    )
+
+
+@router.post(
+    "/storefront/categories",
+    response_model=CategoryOut,
+    status_code=201,
+    summary="Create a category",
+    dependencies=[Entitled],
+)
+async def create_category(
+    payload: CategoryCreate, session: SessionDep, ctx: CatalogueWrite, request: Request
+) -> CategoryOut:
+    category = await services.create_category(session, ctx, payload, request=request)
+    await session.flush()
+    return _category_out(category)
+
+
+@router.patch(
+    "/storefront/categories/{category_id}",
+    response_model=CategoryOut,
+    summary="Edit a category",
+    dependencies=[Entitled],
+)
+async def patch_category(
+    category_id: uuid.UUID,
+    payload: CategoryPatch,
+    session: SessionDep,
+    ctx: CatalogueWrite,
+    request: Request,
+) -> CategoryOut:
+    category = await selectors.get_category(session, ctx, category_id)
+    if category is None:
+        raise NotFoundProblem("No such category")
+    category = await services.update_category(session, ctx, category, payload, request=request)
+    await session.flush()
+    # `updated_at` carries a SQL `onupdate`, so the ORM expires it after an UPDATE — see
+    # `put_store`'s comment above for the full reasoning; same fix, same reason.
+    await session.refresh(category)
+    counts = await selectors.category_product_counts(session, ctx, [category.id])
+    return _category_out(category, line_count=counts.get(category.id, 0))
+
+
+@router.delete(
+    "/storefront/categories/{category_id}",
+    status_code=204,
+    summary="Delete a category",
+    dependencies=[Entitled],
+    responses={422: {"description": "The category still has live products in it — named count"}},
+)
+async def delete_category(
+    category_id: uuid.UUID, session: SessionDep, ctx: CatalogueWrite, request: Request
+) -> Response:
+    """`storefront.catalogue.product.write`, floored at ORG. Soft delete, **refused while a live
+    product still carries this category** — the same rule `DELETE /delivery/zones/{id}` applies
+    to a zone with postal codes still mapped."""
+    category = await selectors.get_category(session, ctx, category_id)
+    if category is None:
+        raise NotFoundProblem("No such category")
+    await services.delete_category(session, ctx, category, request=request)
+    await session.flush()
+    return Response(status_code=204)
+
+
+# ------------------------------------------------------------------ products
+
+
+def _variant_out(variant: Any) -> ProductVariantOut:
+    return ProductVariantOut.model_validate(variant)
+
+
+def _resolved_category_key(categories: dict[uuid.UUID, Any], product: Any) -> str:
+    category = categories.get(product.category_id)
+    return category.key if category is not None else ""
+
+
+def _product_out(
+    product: Any, *, category_key: str, currency: str, variants: list[Any]
+) -> ProductOut:
+    return ProductOut(
+        id=product.id,
+        code=product.code,
+        name=product.name,
+        brand=product.brand,
+        category_id=product.category_id,
+        category=category_key,
+        spec=product.spec,
+        unit=product.unit,
+        description=product.description,
+        price_min_minor=product.price_min_minor,
+        price_max_minor=product.price_max_minor,
+        mrp_minor=product.mrp_minor,
+        currency=currency,
+        gst_inclusive=product.gst_inclusive,
+        moq=product.moq,
+        moq_unit=product.moq_unit,
+        in_stock=product.in_stock,
+        lead_time_days=product.lead_time_days,
+        delivery_eta_minutes=product.delivery_eta_minutes,
+        featured=product.featured,
+        image_url=product.image_path,
+        status=product.status,
+        is_active=product.is_active,
+        variants=[_variant_out(v) for v in variants],
+        created_at=product.created_at,
+        updated_at=product.updated_at,
+    )
+
+
+async def _product_out_batch(
+    session: AsyncSession, ctx: ScopeContext, products: list[Any], *, currency: str
+) -> list[ProductOut]:
+    """Resolve category keys and variants for a whole page in two statements — never one per
+    row, which is the N+1 this list is most likely to grow."""
+    categories = await selectors.categories_by_id(session, ctx, {p.category_id for p in products})
+    variants = await selectors.variants_for_products(session, ctx, [p.id for p in products])
+    return [
+        _product_out(
+            p,
+            category_key=_resolved_category_key(categories, p),
+            currency=currency,
+            variants=variants.get(p.id, []),
+        )
+        for p in products
+    ]
+
+
+async def _store_currency(session: AsyncSession, ctx: ScopeContext) -> str:
+    store = await selectors.get_storefront(session, ctx)
+    return store.currency if store is not None else "INR"
+
+
+@router.get(
+    "/storefront/products",
+    response_model=Page[ProductOut],
+    summary="Catalogue products",
+    dependencies=[Entitled],
+)
+async def list_products(
+    session: SessionDep,
+    ctx: CatalogueRead,
+    params: PageQuery,
+    q: Annotated[str | None, Query(description="Code, name or brand")] = None,
+    category_id: Annotated[uuid.UUID | None, Query()] = None,
+    status: Annotated[Literal["draft", "active", "archived"] | None, Query()] = None,
+    in_stock: Annotated[bool | None, Query()] = None,
+    featured: Annotated[bool | None, Query()] = None,
+    sort: Annotated[
+        Literal[
+            "name",
+            "-name",
+            "code",
+            "-code",
+            "price_min_minor",
+            "-price_min_minor",
+            "updated_at",
+            "-updated_at",
+        ],
+        Query(),
+    ] = "-updated_at",
+) -> Page[ProductOut]:
+    rows, total = await selectors.list_products(
+        session,
+        ctx,
+        params,
+        q=q,
+        category_id=category_id,
+        status=status,
+        in_stock=in_stock,
+        featured=featured,
+        sort=sort,
+    )
+    currency = await _store_currency(session, ctx)
+    items = await _product_out_batch(session, ctx, rows, currency=currency)
+    return Page.build(items, total=total, params=params)
+
+
+@router.get(
+    "/storefront/products/{product_id}",
+    response_model=ProductOut,
+    summary="One product",
+    dependencies=[Entitled],
+)
+async def get_product(product_id: uuid.UUID, session: SessionDep, ctx: CatalogueRead) -> ProductOut:
+    product = await selectors.get_product(session, ctx, product_id)
+    if product is None:
+        raise NotFoundProblem("No such product")
+    categories = await selectors.categories_by_id(session, ctx, {product.category_id})
+    variants = await selectors.variants_for_products(session, ctx, [product.id])
+    currency = await _store_currency(session, ctx)
+    return _product_out(
+        product,
+        category_key=_resolved_category_key(categories, product),
+        currency=currency,
+        variants=variants.get(product.id, []),
+    )
+
+
+@router.post(
+    "/storefront/products",
+    response_model=ProductOut,
+    status_code=201,
+    summary="Create a product",
+    dependencies=[Entitled],
+    responses={
+        422: {
+            "description": (
+                "`errors[0].code` is `mrp_below_price`, `price_band_invalid` or "
+                "`category_not_found`"
+            )
+        }
+    },
+)
+async def create_product(
+    payload: ProductCreate, session: SessionDep, ctx: CatalogueWrite, request: Request
+) -> ProductOut:
+    product = await services.create_product(session, ctx, payload, request=request)
+    await session.flush()
+    categories = await selectors.categories_by_id(session, ctx, {product.category_id})
+    variants = await selectors.variants_for_products(session, ctx, [product.id])
+    currency = await _store_currency(session, ctx)
+    return _product_out(
+        product,
+        category_key=_resolved_category_key(categories, product),
+        currency=currency,
+        variants=variants.get(product.id, []),
+    )
+
+
+@router.patch(
+    "/storefront/products/{product_id}",
+    response_model=ProductOut,
+    summary="Edit a product — including archive/unarchive via `status`",
+    dependencies=[Entitled],
+)
+async def patch_product(
+    product_id: uuid.UUID,
+    payload: ProductPatch,
+    session: SessionDep,
+    ctx: CatalogueWrite,
+    request: Request,
+) -> ProductOut:
+    product = await selectors.get_product(session, ctx, product_id)
+    if product is None:
+        raise NotFoundProblem("No such product")
+    product = await services.update_product(session, ctx, product, payload, request=request)
+    await session.flush()
+    await session.refresh(product)
+    categories = await selectors.categories_by_id(session, ctx, {product.category_id})
+    variants = await selectors.variants_for_products(session, ctx, [product.id])
+    currency = await _store_currency(session, ctx)
+    return _product_out(
+        product,
+        category_key=_resolved_category_key(categories, product),
+        currency=currency,
+        variants=variants.get(product.id, []),
+    )
+
+
+@router.delete(
+    "/storefront/products/{product_id}",
+    status_code=204,
+    summary="Delete a product",
+    dependencies=[Entitled],
+)
+async def delete_product(
+    product_id: uuid.UUID, session: SessionDep, ctx: CatalogueWrite, request: Request
+) -> Response:
+    product = await selectors.get_product(session, ctx, product_id)
+    if product is None:
+        raise NotFoundProblem("No such product")
+    await services.delete_product(session, ctx, product, request=request)
+    await session.flush()
+    return Response(status_code=204)
+
+
+# ------------------------------------------------------------------ enquiries
+
+
+def _enquiry_out(enquiry: Any) -> EnquiryOut:
+    return EnquiryOut.model_validate(enquiry)
+
+
+@router.get(
+    "/storefront/enquiries",
+    response_model=Page[EnquiryOut],
+    summary="Enquiries received from buyers",
+    dependencies=[Entitled],
+)
+async def list_enquiries(
+    session: SessionDep,
+    ctx: EnquiryRead,
+    params: PageQuery,
+    status: Annotated[Literal["new", "contacted", "won", "lost"] | None, Query()] = None,
+    since: Annotated[dt.datetime | None, Query(description="Inclusive, created_at >=")] = None,
+    q: Annotated[str | None, Query(description="Name or company")] = None,
+) -> Page[EnquiryOut]:
+    """`storefront.sales.enquiry.read`, floored at ORG. Contact fields are masked — see
+    `POST /storefront/enquiries/{id}:reveal` for the audited, stepped-up read."""
+    rows, total = await selectors.list_enquiries(
+        session, ctx, params, status=status, since=since, q=q
+    )
+    return Page.build([_enquiry_out(row) for row in rows], total=total, params=params)
+
+
+@router.get(
+    "/storefront/enquiries/{enquiry_id}",
+    response_model=EnquiryOut,
+    summary="One enquiry",
+    dependencies=[Entitled],
+)
+async def get_enquiry(enquiry_id: uuid.UUID, session: SessionDep, ctx: EnquiryRead) -> EnquiryOut:
+    enquiry = await selectors.get_enquiry(session, ctx, enquiry_id)
+    if enquiry is None:
+        raise NotFoundProblem("No such enquiry")
+    return _enquiry_out(enquiry)
+
+
+@router.patch(
+    "/storefront/enquiries/{enquiry_id}",
+    response_model=EnquiryOut,
+    summary="Change an enquiry's status",
+    dependencies=[Entitled],
+    responses={409: {"description": "Illegal transition. Path is new -> contacted -> won or lost"}},
+)
+async def patch_enquiry(
+    enquiry_id: uuid.UUID,
+    payload: EnquiryPatch,
+    session: SessionDep,
+    ctx: EnquiryWrite,
+    request: Request,
+) -> EnquiryOut:
+    """`storefront.sales.enquiry.write`, floored at ORG. Only `status` ever changes — the
+    enquiry's content is append-only."""
+    enquiry = await selectors.get_enquiry(session, ctx, enquiry_id)
+    if enquiry is None:
+        raise NotFoundProblem("No such enquiry")
+    enquiry = await services.update_enquiry_status(session, ctx, enquiry, payload, request=request)
+    await session.flush()
+    await session.refresh(enquiry)
+    return _enquiry_out(enquiry)
+
+
+@router.post(
+    "/storefront/enquiries/{enquiry_id}:reveal",
+    response_model=EnquiryRevealed,
+    summary="Reveal an enquiry's real email and phone (audited)",
+    dependencies=[Entitled],
+)
+async def reveal_enquiry(
+    enquiry_id: uuid.UUID, session: SessionDep, ctx: EnquiryUnmask, request: Request
+) -> EnquiryRevealed:
+    """`storefront.sales.enquiry.unmask`, floored at ORG, requires an OTP step-up. A POST rather
+    than a GET: this has a side effect — an `entity.sensitive_read` audit row — and must never
+    be cached, pre-fetched or replayed from browser history."""
+    enquiry = await selectors.get_enquiry(session, ctx, enquiry_id)
+    if enquiry is None:
+        raise NotFoundProblem("No such enquiry")
+    email, phone = await services.unmask_enquiry_contact(session, ctx, enquiry, request=request)
+    return EnquiryRevealed(id=enquiry.id, email=email, phone=phone)
