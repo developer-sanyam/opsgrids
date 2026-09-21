@@ -3,9 +3,11 @@
  *
  * Amounts are integer minor units with an ISO currency everywhere except the digits inside a
  * money input (root `CLAUDE.md`: no floats, no `Numeric(_, 2)`). The parse works on the digits of
- * the typed string rather than `Math.round(parseFloat(x) * 100)` — `29.35 * 100` is
- * `2934.9999999999995`, and rounding that away is the kind of fix that works until the amount is
- * large enough that it doesn't.
+ * the typed string rather than `Math.round(parseFloat(x) * 100)` — `2250.99 * 100` is
+ * `225098.99999999997` in IEEE 754, and rounding that away is the kind of fix that works until
+ * the amount is large enough that it doesn't. Every money field on this product goes through this
+ * one parser — a form that needs its own rules (a required line price, say) passes `options`
+ * rather than growing a second implementation next to it.
  */
 
 /** The value a money input shows for an amount already stored: `2950` -> `"29.50"`. */
@@ -19,22 +21,39 @@ export function minorToInput(minor: number): string {
 
 export type MoneyParse = { ok: true; minor: number } | { ok: false; message: string };
 
+export interface ParseMoneyOptions {
+  /** An empty string is invalid rather than 0 minor units — for a required amount, like a
+   *  purchase order line's unit price. Most money fields in this app are optional and default to
+   *  0, so this is `false` unless a caller opts in. */
+  required?: boolean;
+  /** The message when `required` is true and the input, once cleaned, is empty. */
+  emptyMessage?: string;
+  /** The message for anything that isn't a valid amount — wrong shape, negative, or more than two
+   *  decimal places. */
+  invalidMessage?: string;
+}
+
+const DEFAULT_INVALID_MESSAGE =
+  "Enter a whole-currency amount, like 24000 or 24000.50. No more than two decimal places.";
+
 /**
- * Read a typed amount into integer minor units, on the string. Spaces and commas are tolerated
- * because people paste amounts; anything past two decimal places is refused rather than rounded.
- * Empty parses as zero — every money field on this product defaults to 0, never null.
+ * Read a typed amount into integer minor units, on the digits of the string. Spaces, commas and a
+ * rupee sign are tolerated because people paste amounts; anything past two decimal places is
+ * refused rather than rounded, and a negative amount is refused outright — this product has no
+ * negative money field. Empty parses as zero unless `options.required` says otherwise.
  */
-export function parseMinor(input: string): MoneyParse {
-  const cleaned = input.replace(/[\s,]/g, "");
-  if (cleaned === "") return { ok: true, minor: 0 };
+export function parseMinor(input: string, options: ParseMoneyOptions = {}): MoneyParse {
+  const cleaned = input.replace(/[\s,₹]/g, "");
+  if (cleaned === "") {
+    if (options.required) {
+      return { ok: false, message: options.emptyMessage ?? "Enter an amount." };
+    }
+    return { ok: true, minor: 0 };
+  }
 
   const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(cleaned);
   if (!match) {
-    return {
-      ok: false,
-      message:
-        "Enter a whole-currency amount, like 24000 or 24000.50. No more than two decimal places.",
-    };
+    return { ok: false, message: options.invalidMessage ?? DEFAULT_INVALID_MESSAGE };
   }
   const whole = match[1] ?? "0";
   const fraction = (match[2] ?? "").padEnd(2, "0");

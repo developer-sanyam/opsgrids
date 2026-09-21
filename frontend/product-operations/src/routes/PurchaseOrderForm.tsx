@@ -2,12 +2,22 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { createPurchaseOrder, getPurchaseOrder, updatePurchaseOrder } from "@/api/client";
-import type { InventoryItemOut, PoLineIn, PurchaseOrderIn, PurchaseOrderOut } from "@/api/types";
+import type { PurchaseOrderIn, PurchaseOrderOut, PurchaseOrderPatch } from "@/api/types";
 import { useWarehouseOptions } from "@/data/useWarehouseOptions";
 import { useAuth, problemMessage, useAsync, useMutation } from "@opsgrids/client";
-import { minorToInput, parseMinor } from "@/lib/money";
+import { minorToInput } from "@/lib/money";
 import { formatMoney } from "@/lib/format";
 import { today } from "@/lib/now";
+import {
+  buildPurchaseOrderPayload,
+  emptyLine,
+  emptyPurchaseOrder,
+  hasErrors,
+  lineAmountMinor,
+  orderTotalMinor,
+  validatePurchaseOrder,
+} from "@/lib/purchaseOrderForm";
+import type { LineDraft, LineErrors, PurchaseOrderErrors, PurchaseOrderFormValues } from "@/lib/purchaseOrderForm";
 import { Button, Card, ErrorState, InlineAlert, PageHeader, Select, Skeleton, TextArea, TextField } from "@/ui";
 import type { ComboboxOption } from "@/ui";
 import { ArrowRightIcon, MinusCircleIcon, PlusIcon, useToast } from "@opsgrids/ui";
@@ -20,68 +30,50 @@ function nextRowKey(): string {
   return `row-${rowSeq}`;
 }
 
-interface LineRow {
-  key: string;
-  sku: ComboboxOption | null;
-  skuText: string;
-  description: string;
-  uom: string;
-  quantity: string;
-  unitPrice: string;
-}
-
-function emptyRow(): LineRow {
-  return { key: nextRowKey(), sku: null, skuText: "", description: "", uom: "", quantity: "1", unitPrice: "" };
-}
-
-function rowFromLine(line: PurchaseOrderOut["line_items"][number]): LineRow {
-  return {
+function linesFromPo(po: PurchaseOrderOut): LineDraft[] {
+  if (po.line_items.length === 0) return [emptyLine(nextRowKey())];
+  return po.line_items.map((line) => ({
     key: nextRowKey(),
-    sku: null,
-    skuText: line.sku,
+    sku: line.sku,
     description: line.description,
-    uom: line.uom,
     quantity: String(line.quantity),
     unitPrice: minorToInput(line.unit_price_minor),
-  };
-}
-
-interface RowErrors {
-  sku?: string;
-  quantity?: string;
-  unitPrice?: string;
+    uom: line.uom,
+  }));
 }
 
 /** One line of the purchase order — stacks as a card at every width, so it stays usable at 360px. */
 function LineEditor({
-  row,
+  line,
   index,
+  skuOption,
   errors,
   serverErrors,
   onChange,
+  onPickSku,
   onRemove,
   canRemove,
+  currency,
 }: {
-  row: LineRow;
+  line: LineDraft;
   index: number;
-  errors: RowErrors;
+  skuOption: ComboboxOption | null;
+  errors: LineErrors;
   serverErrors: Record<string, string>;
-  onChange: (next: LineRow) => void;
+  onChange: (next: LineDraft) => void;
+  onPickSku: (option: ComboboxOption | null, prefill: Partial<LineDraft>) => void;
   onRemove: () => void;
   canRemove: boolean;
+  currency: string;
 }) {
-  const lineTotal = (() => {
-    const qty = Number.parseInt(row.quantity, 10);
-    const price = parseMinor(row.unitPrice);
-    if (!Number.isFinite(qty) || !price.ok) return 0;
-    return qty * price.minor;
-  })();
+  const amount = lineAmountMinor(line);
 
   const skuServerError = serverErrors[`lines.${index}.sku`];
   const descriptionServerError = serverErrors[`lines.${index}.description`];
   const quantityError = errors.quantity ?? serverErrors[`lines.${index}.quantity`];
   const uomServerError = serverErrors[`lines.${index}.uom`];
   const unitPriceError = errors.unitPrice ?? serverErrors[`lines.${index}.unit_price_minor`];
+  const skuError = errors.sku ?? skuServerError;
 
   return (
     <div className="flex flex-col gap-3 rounded-tile border border-line p-4">
@@ -100,35 +92,35 @@ function LineEditor({
       </div>
 
       <SkuPicker
-        value={row.sku}
-        onChange={(option) =>
-          onChange({ ...row, sku: option, skuText: option ? option.id : row.skuText })
+        value={skuOption}
+        onChange={(option) => onPickSku(option, option ? { sku: option.id } : {})}
+        onPick={(item) =>
+          onPickSku(
+            item ? { id: item.sku, label: item.sku, sublabel: item.name } : skuOption,
+            item
+              ? {
+                  sku: item.sku,
+                  description: item.name,
+                  uom: item.uom,
+                  unitPrice: minorToInput(item.unit_value_minor),
+                }
+              : {},
+          )
         }
-        onPick={(item: InventoryItemOut | null) =>
-          onChange({
-            ...row,
-            sku: item ? { id: item.sku, label: item.sku, sublabel: item.name } : row.sku,
-            skuText: item ? item.sku : row.skuText,
-            description: item ? item.name : row.description,
-            uom: item ? item.uom : row.uom,
-            unitPrice: item ? minorToInput(item.unit_value_minor) : row.unitPrice,
-          })
-        }
-        {...((errors.sku) !== undefined ? { error: errors.sku } : {})}
+        {...(skuError !== undefined ? { error: skuError } : {})}
       />
 
       <TextField
         label="SKU (free text for a non-stock line)"
-        value={row.skuText}
-        onChange={(e) => onChange({ ...row, skuText: e.target.value, sku: null })}
+        value={line.sku}
+        onChange={(e) => onChange({ ...line, sku: e.target.value })}
         helper="Prefilled when you pick a stocked item above; type your own for services or freight."
-        {...(skuServerError !== undefined ? { error: skuServerError } : {})}
       />
 
       <TextField
         label="Description"
-        value={row.description}
-        onChange={(e) => onChange({ ...row, description: e.target.value })}
+        value={line.description}
+        onChange={(e) => onChange({ ...line, description: e.target.value })}
         optional
         {...(descriptionServerError !== undefined ? { error: descriptionServerError } : {})}
       />
@@ -137,28 +129,28 @@ function LineEditor({
         <TextField
           label="Quantity"
           inputMode="numeric"
-          value={row.quantity}
-          onChange={(e) => onChange({ ...row, quantity: e.target.value })}
+          value={line.quantity}
+          onChange={(e) => onChange({ ...line, quantity: e.target.value })}
           {...(quantityError !== undefined ? { error: quantityError } : {})}
         />
         <TextField
           label="UoM"
-          value={row.uom}
-          onChange={(e) => onChange({ ...row, uom: e.target.value })}
+          value={line.uom}
+          onChange={(e) => onChange({ ...line, uom: e.target.value })}
           optional
           {...(uomServerError !== undefined ? { error: uomServerError } : {})}
         />
         <TextField
           label="Unit price"
           inputMode="decimal"
-          value={row.unitPrice}
-          onChange={(e) => onChange({ ...row, unitPrice: e.target.value })}
+          value={line.unitPrice}
+          onChange={(e) => onChange({ ...line, unitPrice: e.target.value })}
           containerClassName="col-span-2 sm:col-span-1"
           {...(unitPriceError !== undefined ? { error: unitPriceError } : {})}
         />
         <div className="col-span-2 sm:col-span-1 flex flex-col justify-end pb-2.5">
           <span className="text-xs font-semibold uppercase tracking-wide text-faint">Line total</span>
-          <span className="tnum font-bold text-ink">{formatMoney(lineTotal)}</span>
+          <span className="tnum font-bold text-ink">{formatMoney(amount ?? 0, currency)}</span>
         </div>
       </div>
     </div>
@@ -252,130 +244,67 @@ function PurchaseOrderFormBody({
   onCancel: () => void;
   onSaved: (po: PurchaseOrderOut) => void;
 }) {
-  const [supplier, setSupplier] = useState<ComboboxOption | null>(
+  const [values, setValues] = useState<PurchaseOrderFormValues>(() =>
+    po
+      ? {
+          supplierId: po.supplier_id,
+          supplierName: po.supplier_name,
+          warehouse: po.warehouse,
+          currency: "",
+          expectedDate: po.expected_date,
+          notes: po.notes ?? "",
+          lines: linesFromPo(po),
+        }
+      : emptyPurchaseOrder(nextRowKey()),
+  );
+  // The SKU combobox's selection is UI-only — the wire value is `LineDraft.sku`, a plain string,
+  // so a free-text SKU with no inventory match still round-trips without a matching option.
+  const [skuOptions, setSkuOptions] = useState<Record<string, ComboboxOption | null>>({});
+  const [supplierOption, setSupplierOption] = useState<ComboboxOption | null>(
     po ? { id: po.supplier_id, label: po.supplier_name } : null,
   );
-  const [warehouse, setWarehouse] = useState(po?.warehouse ?? "");
-  const [expectedDate, setExpectedDate] = useState(po?.expected_date ?? "");
-  const [currency, setCurrency] = useState(po?.currency ?? "");
-  const [notes, setNotes] = useState(po?.notes ?? "");
-  const [lines, setLines] = useState<LineRow[]>(
-    po && po.line_items.length > 0 ? po.line_items.map(rowFromLine) : [emptyRow()],
-  );
 
-  const [supplierError, setSupplierError] = useState<string | undefined>(undefined);
-  const [warehouseError, setWarehouseError] = useState<string | undefined>(undefined);
-  const [dateError, setDateError] = useState<string | undefined>(undefined);
-  const [linesError, setLinesError] = useState<string | undefined>(undefined);
-  const [rowErrors, setRowErrors] = useState<Record<number, RowErrors>>({});
+  const [errors, setErrors] = useState<PurchaseOrderErrors>({});
 
   const save = useMutation(
-    (input: PurchaseOrderIn) =>
-      po ? updatePurchaseOrder(po.id, input) : createPurchaseOrder(input),
+    (payload: PurchaseOrderIn | PurchaseOrderPatch) =>
+      po ? updatePurchaseOrder(po.id, payload) : createPurchaseOrder(payload as PurchaseOrderIn),
     { onSuccess: (saved) => onSaved(saved) },
   );
 
-  const total = lines.reduce((sum, row) => {
-    const qty = Number.parseInt(row.quantity, 10);
-    const price = parseMinor(row.unitPrice);
-    if (!Number.isFinite(qty) || !price.ok) return sum;
-    return sum + qty * price.minor;
-  }, 0);
+  const total = orderTotalMinor(values.lines);
+  const currency = po ? po.currency : values.currency || "INR";
 
-  function updateRow(index: number, next: LineRow) {
-    setLines((prev) => prev.map((row, i) => (i === index ? next : row)));
+  function updateLine(index: number, next: LineDraft) {
+    setValues((v) => ({ ...v, lines: v.lines.map((line, i) => (i === index ? next : line)) }));
   }
 
-  function removeRow(index: number) {
-    setLines((prev) => prev.filter((_, i) => i !== index));
+  function pickSku(key: string, index: number, option: ComboboxOption | null, prefill: Partial<LineDraft>) {
+    setSkuOptions((prev) => ({ ...prev, [key]: option }));
+    if (Object.keys(prefill).length > 0) {
+      setValues((v) => ({
+        ...v,
+        lines: v.lines.map((line, i) => (i === index ? { ...line, ...prefill } : line)),
+      }));
+    }
+  }
+
+  function removeLine(index: number) {
+    const key = values.lines[index]?.key;
+    setValues((v) => ({ ...v, lines: v.lines.filter((_, i) => i !== index) }));
+    if (key) setSkuOptions((prev) => { const next = { ...prev }; delete next[key]; return next; });
   }
 
   function submit() {
-    setSupplierError(undefined);
-    setWarehouseError(undefined);
-    setDateError(undefined);
-    setLinesError(undefined);
-    setRowErrors({});
+    const mode = po ? ("edit" as const) : ("create" as const);
+    const found = validatePurchaseOrder(values, { mode, today: today() });
+    setErrors(found);
+    if (hasErrors(found)) return;
 
-    if (!po && supplier === null) {
-      setSupplierError("Choose a supplier.");
-      return;
-    }
-    if (warehouse === "") {
-      setWarehouseError("Choose a warehouse.");
-      return;
-    }
-    if (expectedDate === "") {
-      setDateError("Choose an expected date.");
-      return;
-    }
-    if (!po && expectedDate < today()) {
-      setDateError("The expected date can't be in the past.");
-      return;
-    }
-    if (lines.length === 0) {
-      setLinesError("Add at least one line.");
-      return;
-    }
-
-    const nextRowErrors: Record<number, RowErrors> = {};
-    let firstBad = -1;
-    const parsedLines: PoLineIn[] = [];
-    lines.forEach((row, index) => {
-      const errors: RowErrors = {};
-      const sku = row.skuText.trim();
-      if (sku === "") {
-        errors.sku = "Enter a SKU.";
-      }
-      const qty = Number.parseInt(row.quantity, 10);
-      if (!Number.isFinite(qty) || qty < 1 || String(qty) !== row.quantity.trim()) {
-        errors.quantity = "Enter a whole number of at least 1.";
-      }
-      const price = parseMinor(row.unitPrice);
-      if (!price.ok) {
-        errors.unitPrice = price.message;
-      }
-      if (Object.keys(errors).length > 0) {
-        nextRowErrors[index] = errors;
-        if (firstBad === -1) firstBad = index;
-      } else {
-        parsedLines.push({
-          sku,
-          description: row.description.trim(),
-          quantity: qty,
-          uom: row.uom.trim(),
-          unit_price_minor: price.ok ? price.minor : 0,
-        });
-      }
-    });
-
-    if (firstBad !== -1) {
-      setRowErrors(nextRowErrors);
-      return;
-    }
-
-    if (po) {
-      void save.mutate({
-        supplier_id: po.supplier_id,
-        warehouse,
-        expected_date: expectedDate,
-        currency: currency.trim().toUpperCase() || po.currency,
-        notes: notes.trim(),
-        lines: parsedLines,
-      });
-      return;
-    }
-
-    if (!supplier) return;
-    void save.mutate({
-      supplier_id: supplier.id,
-      warehouse,
-      expected_date: expectedDate,
-      ...(currency.trim() ? { currency: currency.trim().toUpperCase() } : {}),
-      notes: notes.trim(),
-      raised_by: raisedByName,
-      lines: parsedLines,
-    });
+    const payload = po
+      ? buildPurchaseOrderPayload(values, { mode: "edit" })
+      : buildPurchaseOrderPayload(values, { mode: "create", raisedBy: raisedByName });
+    void save.mutate(payload);
   }
 
   return (
@@ -391,39 +320,46 @@ function PurchaseOrderFormBody({
           <TextField label="Supplier" value={po.supplier_name} disabled helper="A draft's supplier can't be changed here — cancel and re-raise instead." />
         ) : (
           <SupplierPicker
-            value={supplier}
-            onChange={setSupplier}
-            onPick={(record) => {
-              if (record && currency === "") setCurrency(record.currency);
+            value={supplierOption}
+            onChange={(option) => {
+              setSupplierOption(option);
+              setValues((v) => ({ ...v, supplierId: option?.id ?? null, supplierName: option?.label ?? null }));
             }}
-            {...((supplierError) !== undefined ? { error: supplierError } : {})}
+            onPick={(record) => {
+              if (record && values.currency === "") setValues((v) => ({ ...v, currency: record.currency }));
+            }}
+            {...(errors.supplier !== undefined ? { error: errors.supplier } : {})}
           />
         )}
 
         <div className="grid gap-4 sm:grid-cols-2">
           <Select
             label="Warehouse"
-            value={warehouse}
-            onChange={(e) => setWarehouse(e.target.value)}
+            value={values.warehouse}
+            onChange={(e) => setValues((v) => ({ ...v, warehouse: e.target.value }))}
             placeholder="Choose a warehouse"
             options={warehouseOptions}
-            {...((warehouseError ?? save.fieldErrors.warehouse) !== undefined ? { error: warehouseError ?? save.fieldErrors.warehouse } : {})}
+            {...((errors.warehouse ?? save.fieldErrors.warehouse) !== undefined
+              ? { error: errors.warehouse ?? save.fieldErrors.warehouse }
+              : {})}
           />
           <TextField
             label="Expected date"
             type="date"
-            value={expectedDate}
+            value={values.expectedDate}
             {...(po ? {} : { min: today() })}
-            onChange={(e) => setExpectedDate(e.target.value)}
-            {...((dateError ?? save.fieldErrors.expected_date) !== undefined ? { error: dateError ?? save.fieldErrors.expected_date } : {})}
+            onChange={(e) => setValues((v) => ({ ...v, expectedDate: e.target.value }))}
+            {...((errors.expectedDate ?? save.fieldErrors.expected_date) !== undefined
+              ? { error: errors.expectedDate ?? save.fieldErrors.expected_date }
+              : {})}
           />
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
           <TextField
             label="Currency"
-            value={currency}
-            onChange={(e) => setCurrency(e.target.value.toUpperCase())}
+            value={values.currency}
+            onChange={(e) => setValues((v) => ({ ...v, currency: e.target.value.toUpperCase() }))}
             maxLength={3}
             optional
             helper={
@@ -431,18 +367,18 @@ function PurchaseOrderFormBody({
                 ? "Leave blank to keep the order's current currency."
                 : "Leave blank to use the supplier's currency."
             }
-            {...((save.fieldErrors.currency) !== undefined ? { error: save.fieldErrors.currency } : {})}
+            {...(save.fieldErrors.currency !== undefined ? { error: save.fieldErrors.currency } : {})}
           />
         </div>
 
         <TextArea
           label="Notes"
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
+          value={values.notes}
+          onChange={(e) => setValues((v) => ({ ...v, notes: e.target.value }))}
           optional
           maxLength={2000}
           counterFrom={1800}
-          {...((save.fieldErrors.notes) !== undefined ? { error: save.fieldErrors.notes } : {})}
+          {...(save.fieldErrors.notes !== undefined ? { error: save.fieldErrors.notes } : {})}
         />
       </Card>
 
@@ -454,33 +390,38 @@ function PurchaseOrderFormBody({
             variant="outline"
             size="sm"
             leadingIcon={<PlusIcon className="size-4" />}
-            onClick={() => setLines((prev) => [...prev, emptyRow()])}
-            disabled={lines.length >= 200}
+            onClick={() => setValues((v) => ({ ...v, lines: [...v.lines, emptyLine(nextRowKey())] }))}
+            disabled={values.lines.length >= 200}
           >
             Add line
           </Button>
         </div>
 
-        {linesError ? <InlineAlert tone="danger" title={linesError} /> : null}
+        <div aria-live="polite" className="empty:hidden">
+          {errors.lines ? <InlineAlert tone="danger" title={errors.lines} /> : null}
+        </div>
 
         <div className="flex flex-col gap-3">
-          {lines.map((row, index) => (
+          {values.lines.map((line, index) => (
             <LineEditor
-              key={row.key}
-              row={row}
+              key={line.key}
+              line={line}
               index={index}
-              errors={rowErrors[index] ?? {}}
+              skuOption={skuOptions[line.key] ?? null}
+              errors={errors.lineErrors?.[line.key] ?? {}}
               serverErrors={save.fieldErrors}
-              onChange={(next) => updateRow(index, next)}
-              onRemove={() => removeRow(index)}
-              canRemove={lines.length > 1}
+              currency={currency}
+              onChange={(next) => updateLine(index, next)}
+              onPickSku={(option, prefill) => pickSku(line.key, index, option, prefill)}
+              onRemove={() => removeLine(index)}
+              canRemove={values.lines.length > 1}
             />
           ))}
         </div>
 
         <div className="flex items-center justify-between border-t border-line pt-4">
           <span className="text-sm font-bold text-ink">Order total</span>
-          <span className="display text-xl font-extrabold tnum">{formatMoney(total)}</span>
+          <span className="display text-xl font-extrabold tnum">{formatMoney(total, currency)}</span>
         </div>
       </Card>
 

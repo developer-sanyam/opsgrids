@@ -21,35 +21,76 @@ describe("minorToInput", () => {
 });
 
 describe("parseMinor", () => {
-  it("parses a whole-number amount", () => {
-    expect(parseMinor("24000")).toEqual({ ok: true, minor: 2400000 });
+  describe("optional amount (default) — the common case, blank means 0", () => {
+    it("parses a whole-number amount", () => {
+      expect(parseMinor("24000")).toEqual({ ok: true, minor: 2400000 });
+    });
+
+    it("parses two decimal places exactly", () => {
+      expect(parseMinor("29.35")).toEqual({ ok: true, minor: 2935 });
+    });
+
+    it("tolerates spaces and commas", () => {
+      expect(parseMinor("2,40,000")).toEqual({ ok: true, minor: 24000000 });
+    });
+
+    it("treats an empty string as zero", () => {
+      expect(parseMinor("")).toEqual({ ok: true, minor: 0 });
+    });
+
+    it("refuses more than two decimal places", () => {
+      expect(parseMinor("29.355").ok).toBe(false);
+    });
+
+    it("refuses a non-numeric string", () => {
+      expect(parseMinor("abc").ok).toBe(false);
+    });
+
+    it("refuses a negative amount", () => {
+      expect(parseMinor("-100").ok).toBe(false);
+    });
   });
 
-  it("parses two decimal places exactly", () => {
-    expect(parseMinor("29.35")).toEqual({ ok: true, minor: 2935 });
-  });
+  describe("required amount — e.g. a purchase order line's unit price", () => {
+    const unitPrice = { required: true, emptyMessage: "Enter a unit price." };
 
-  it("tolerates spaces and commas", () => {
-    expect(parseMinor("2,40,000")).toEqual({ ok: true, minor: 24000000 });
-  });
+    it("reads whole rupees and paise without a float in the middle", () => {
+      expect(parseMinor("2250", unitPrice)).toEqual({ ok: true, minor: 225000 });
+      expect(parseMinor("2250.50", unitPrice)).toEqual({ ok: true, minor: 225050 });
+      expect(parseMinor("2250.5", unitPrice)).toEqual({ ok: true, minor: 225050 });
+    });
 
-  it("treats an empty string as zero", () => {
-    expect(parseMinor("")).toEqual({ ok: true, minor: 0 });
-  });
+    it("keeps a value with paise exact", () => {
+      expect(parseMinor("29.35", unitPrice)).toEqual({ ok: true, minor: 2935 });
+      expect(parseMinor("0.05", unitPrice)).toEqual({ ok: true, minor: 5 });
+    });
 
-  it("refuses more than two decimal places", () => {
-    const result = parseMinor("29.355");
-    expect(result.ok).toBe(false);
-  });
+    it("parses a value that would drift through a naive float multiply", () => {
+      // `2250.99 * 100` is `225098.99999999997` in IEEE 754 — a `Math.round` papering over that
+      // works until the amount is large enough that it doesn't. The digit-based parse never
+      // constructs that float at all, so it lands on the exact integer every time.
+      expect(2250.99 * 100).not.toBe(225099);
+      expect(parseMinor("2250.99", unitPrice)).toEqual({ ok: true, minor: 225099 });
+    });
 
-  it("refuses a non-numeric string", () => {
-    const result = parseMinor("abc");
-    expect(result.ok).toBe(false);
-  });
+    it("tolerates what people paste", () => {
+      expect(parseMinor(" ₹1,499.00 ", unitPrice)).toEqual({ ok: true, minor: 149900 });
+    });
 
-  it("refuses a negative amount", () => {
-    const result = parseMinor("-100");
-    expect(result.ok).toBe(false);
+    it("refuses an empty price — a line's unit price is required, never optional", () => {
+      expect(parseMinor("", unitPrice).ok).toBe(false);
+      expect(parseMinor("   ", unitPrice).ok).toBe(false);
+      expect(parseMinor("", unitPrice)).toEqual({ ok: false, message: "Enter a unit price." });
+    });
+
+    it("refuses more than two decimal places instead of rounding them away", () => {
+      expect(parseMinor("29.999", unitPrice).ok).toBe(false);
+    });
+
+    it("refuses anything that is not an amount", () => {
+      expect(parseMinor("free", unitPrice).ok).toBe(false);
+      expect(parseMinor("-5", unitPrice).ok).toBe(false);
+    });
   });
 });
 
