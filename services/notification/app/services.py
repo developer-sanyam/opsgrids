@@ -18,7 +18,7 @@ import base64
 import hashlib
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Final
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -51,6 +51,7 @@ from app.transports import (
 from platform_core import pii
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
+from platform_core.cache import enforce_rate_limit
 from platform_core.errors import (
     BusinessRuleProblem,
     ConflictProblem,
@@ -1024,6 +1025,22 @@ EVT_DOMAIN_VERIFIED = "engage.setup.domain.verified"
 EVT_SENDER_CREATED = "engage.setup.sender.created"
 EVT_SENDER_VERIFIED = "engage.setup.sender.verified"
 
+#: Kinds whose submission host is derived entirely from the provider, never from the caller —
+#: fixed, known-public endpoints. `smtp` is the only kind whose host is a customer's own value,
+#: and the only one the outbound dial guard below ever has to run against; asking `platform`'s
+#: (unreachable) host through the guard would be pointless, and its writer refuses before this
+#: is consulted anyway.
+_FIXED_PROVIDER_KINDS: Final[frozenset[str]] = frozenset({"google", "microsoft"})
+
+#: The one sentence a caller ever sees for a submission host or port the dial guard refused.
+#: Deliberately not the reason: "that resolves to a private address" tells a probe its target
+#: was reachable, and "that isn't a real domain" tells it the opposite. A single fixed sentence
+#: for every rejection is what keeps a scan of this endpoint from learning anything at all.
+_HOST_NOT_ALLOWED = (
+    "The submission host must be a public mail server hostname, and the port one of "
+    "25, 465, 587, or 2525."
+)
+
 #: 2048 bits, and not a choice of ours: 1024 is being retired by the large mailbox providers, and
 #: a 4096-bit public key does not fit one 255-byte TXT character-string — a registrar that will
 #: not split it publishes a record no verifier can read.
@@ -1086,16 +1103,24 @@ async def create_connection(
     host: str = "",
     port: int | None = None,
     request: Request | None = None,
+    resolver: dns_check.Resolver | None = None,
 ) -> EmailConnection:
     """Record how one organization sends email, its credential sealed on the way in.
 
     The transport is derived from the kind rather than asked for: the customer chose "Google
     Workspace", and a wizard that then asked them for a port would be asking them to look up
-    something we already know.
+    something we already know. For `google` and `microsoft` that derivation is total — the
+    caller's `host` is never even read — because a fixed-provider kind exists precisely so a
+    customer cannot aim this connection anywhere but the provider they named.
 
     One per organization, refused here as well as by the unique constraint. The constraint is the
     net; a caller deserves a sentence naming the connection that already exists rather than an
     IntegrityError from the driver.
+
+    An `smtp` connection's host and port are the one thing here that came from outside — this
+    process is going to open a socket to whatever they name — so they pass the outbound dial
+    guard before anything is stored. `resolver` exists only for that guard's own test to hand it
+    a name that resolves differently than the real internet, the same way `verify_domain`'s does.
     """
     try:
         transport = _rules.transport_for(kind, username)
@@ -1118,9 +1143,32 @@ async def create_connection(
             "Disconnect that connection before adding another."
         )
 
-    submission_host = (host or transport.host).strip()
-    if not submission_host:
-        raise ValidationProblem("An SMTP connection needs the host its provider submits on")
+    if kind in _FIXED_PROVIDER_KINDS:
+        # The provider's own host and port, full stop — both are `_KINDS[kind]` in `domain.py`,
+        # never request data. A caller sending `host="postgres"`, `port=5432` alongside
+        # `kind="google"` gets Google's own submission endpoint regardless: this is what closes
+        # that off rather than merely discouraging it. Consistent, too, with why this kind asks
+        # for neither in the first place — "the customer chose Google Workspace, not a port".
+        submission_host = transport.host
+        submission_port = transport.port
+    else:
+        submission_host = (host or transport.host).strip()
+        if not submission_host:
+            raise ValidationProblem("An SMTP connection needs the host its provider submits on")
+        submission_port = port or transport.port
+
+        # The one path where `host`/`port` are the caller's own words. Checked here, at rest,
+        # and checked again by `_transport_for_connection` immediately before every dial — DNS
+        # is free to answer this name differently between the two moments.
+        try:
+            await dns_check.assert_dialable(submission_host, submission_port, resolver=resolver)
+        except dns_check.HostNotAllowed as exc:
+            log.warning(
+                "engage.connection.host_rejected",
+                organization_id=str(ctx.organization_id),
+                reason=str(exc),
+            )
+            raise ValidationProblem(_HOST_NOT_ALLOWED) from exc
 
     # `seal` returns (ciphertext, mask); the mask is discarded deliberately. A hint of an app
     # password is a hint of a credential, and nothing in this product displays one.
@@ -1131,7 +1179,7 @@ async def create_connection(
         created_by=str(ctx.principal.sub),
         kind=kind,
         host=submission_host,
-        port=port or transport.port,
+        port=submission_port,
         use_tls=transport.use_tls,
         username=username,
         secret_enc=sealed,
@@ -1400,20 +1448,48 @@ async def create_sender(
     return sender
 
 
-def _transport_for_connection(connection: EmailConnection, *, from_address: str) -> Transport:
+async def _transport_for_connection(
+    connection: EmailConnection,
+    *,
+    from_address: str,
+    resolver: dns_check.Resolver | None = None,
+) -> Transport:
     """The transport this connection describes, credential unsealed for the send.
 
     Unsealing here is machine-to-machine: the plaintext reaches an SMTP handshake and nothing
     else — no response body, no log line, no audit `after`. That is why this is not a sensitive
     *read* in the PII sense, and why the audit row the caller writes records that a test send
     happened rather than what it used.
+
+    For an `smtp` connection this is also **the outbound dial guard's second and final check**.
+    `create_connection` ran it once, against the host as it resolved the day the connection was
+    saved; DNS answers to whoever controls the zone, and a name that was public then can be
+    repointed at the compose network by the time a test send actually runs. So the guard runs
+    again here, against a fresh resolution, and the transport dials the address that resolution
+    returned rather than the name — a third lookup, made by the socket layer instead of by this
+    guard, is exactly the gap a rebinding attack needs. `google` and `microsoft` connections
+    carry a fixed, trusted host and skip both checks, the same as at creation.
     """
     cfg = settings()
+    dial_host = connection.host
+    if connection.kind not in _FIXED_PROVIDER_KINDS:
+        try:
+            dial_host = await dns_check.assert_dialable(
+                connection.host, connection.port, resolver=resolver
+            )
+        except dns_check.HostNotAllowed as exc:
+            log.warning(
+                "engage.test_send.host_rejected",
+                organization_id=str(connection.organization_id),
+                reason=str(exc),
+            )
+            raise BusinessRuleProblem(_HOST_NOT_ALLOWED) from exc
+
     password = (
         pii.open_sealed(connection.secret_enc, settings=cfg) if connection.secret_enc else None
     )
     return SmtpTransport(
-        host=connection.host,
+        host=dial_host,
         port=connection.port,
         username=connection.username or None,
         password=password,
@@ -1431,6 +1507,7 @@ async def send_test(
     to_address: str,
     request: Request | None = None,
     transport: Transport | None = None,
+    resolver: dns_check.Resolver | None = None,
 ) -> Sender:
     """**The gate.** Send a real message through the customer's own connection, and only if it
     arrives, mark the sender usable.
@@ -1444,10 +1521,24 @@ async def send_test(
     state change, and a customer pressing *send test* is waiting for the provider's answer, not
     for a queue. Nothing is written until the provider has given one.
 
-    A failure raises carrying the provider's own words. "Check your settings" is not a
-    diagnosis; `535 5.7.8 Username and Password not accepted` tells the customer which of the
-    fourteen things they typed is wrong.
+    A failure raises one fixed sentence per class — unreachable, refused, or a host the outbound
+    dial guard would not open a socket to. Never the provider's own words: an arbitrary
+    `to_address` and a live SMTP handshake is exactly the shape a port scan wants an oracle from,
+    and `535 5.7.8 ...` or a connection-refused errno is that oracle. The exception itself is
+    logged, with a correlation id and this organization's, for whoever operates the connection to
+    read; nothing from the socket reaches the caller.
+
+    Rate limited per organization — `daily_cap` bounds a connected provider's patience, not a
+    caller's, and an arbitrary `to_address` on every attempt makes this route worth bounding on
+    its own rather than trusting that cap alone.
     """
+    cfg = settings()
+    await enforce_rate_limit(
+        f"engage.test_send:{ctx.organization_id}",
+        limit=cfg.engage_test_send_rate_limit_per_minute,
+        window_seconds=60,
+    )
+
     sender = await selectors.get_sender(session, ctx.organization_id, sender_id)
     if sender is None:
         raise NotFoundProblem("No such sender")
@@ -1476,18 +1567,29 @@ async def send_test(
         subject=TEST_SEND_SUBJECT,
         body=TEST_SEND_BODY.format(address=sender.address),
     )
-    wire = transport or _transport_for_connection(connection, from_address=sender.address)
+    wire = transport
+    if wire is None:
+        wire = await _transport_for_connection(
+            connection, from_address=sender.address, resolver=resolver
+        )
     try:
         receipt = await wire.send(outgoing)
     except TransportRefused as exc:
         # Nothing is written, so nothing is audited: the audit row would be rolled back with the
-        # rest of the transaction and only the log would remember. The provider's text is carried
-        # to the caller intact.
+        # rest of the transaction and only the log would remember. The provider's own words stay
+        # in the log, keyed to this sender — never in the response, which an arbitrary
+        # `to_address` and a caller who chose the host turns into exactly the oracle a port scan
+        # wants.
         log.warning("engage.test_send.refused", sender_id=str(sender.id), error=str(exc))
-        raise BusinessRuleProblem(f"The provider refused the test message: {exc}") from exc
+        raise BusinessRuleProblem(
+            "The provider refused the test message. Check the connection's credentials and "
+            "the sender's address."
+        ) from exc
     except TransportUnavailable as exc:
         log.warning("engage.test_send.unavailable", sender_id=str(sender.id), error=str(exc))
-        raise UpstreamUnavailableProblem(f"The provider could not be reached: {exc}") from exc
+        raise UpstreamUnavailableProblem(
+            "The provider could not be reached. Try again in a few minutes."
+        ) from exc
 
     sender.verified_at = datetime.now(UTC)
     sender.updated_by = str(ctx.principal.sub)

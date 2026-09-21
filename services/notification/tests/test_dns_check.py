@@ -216,3 +216,106 @@ async def test_a_name_that_will_not_resolve_answers_nothing(failure: Exception) 
     resolver = dns_check.DnsPythonResolver(_StubDnsResolver(failure))
 
     assert await resolver.resolve("bounce.company.com", "CNAME") == []
+
+
+# --------------------------------------------------------------------- the outbound dial guard
+
+
+class TestIsPublicFqdn:
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "127.0.0.1",
+            "10.0.0.5",
+            "::1",
+            "fe80::1",
+            "[::1]",
+            "localhost",
+            "postgres",
+            "redis",
+            "rabbitmq",
+            "account",
+            "2130706433",  # 127.0.0.1, decimal
+            "0x7f000001",  # 127.0.0.1, hex
+            "017700000001",  # 127.0.0.1, octal
+            "0177.0.0.1",  # 127.0.0.1, per-octet octal
+            "127.1",  # 127.0.0.1, shorthand
+            "",
+            "a" * 254,
+        ],
+    )
+    def test_refuses_every_shape_of_ip_literal_and_single_label_name(self, host: str) -> None:
+        assert dns_check.is_public_fqdn(host) is False
+
+    @pytest.mark.parametrize(
+        "host",
+        ["mail.company.com", "smtp.gmail.com", "smtp.office365.com", "mail.example.co.uk"],
+    )
+    def test_accepts_an_ordinary_multi_label_hostname(self, host: str) -> None:
+        assert dns_check.is_public_fqdn(host) is True
+
+
+class TestIsGlobalAddress:
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "127.0.0.1",  # loopback
+            "10.1.2.3",  # RFC 1918
+            "172.16.0.5",  # RFC 1918
+            "192.168.1.1",  # RFC 1918
+            "169.254.1.1",  # link-local
+            "100.64.0.1",  # carrier-grade NAT
+            "0.0.0.0",  # noqa: S104 - unspecified, asserted as a value here, never bound
+            "224.0.0.1",  # multicast — `ipaddress.is_global` alone says `True` for this
+            "::1",  # loopback
+            "fc00::1",  # unique-local
+            "fe80::1",  # link-local
+            "ff02::1",  # multicast
+            "::ffff:127.0.0.1",  # IPv4-mapped loopback
+            "::ffff:10.0.0.1",  # IPv4-mapped RFC 1918
+            "::ffff:169.254.1.1",  # IPv4-mapped link-local
+            "not-an-address",
+        ],
+    )
+    def test_refuses_every_non_public_address(self, address: str) -> None:
+        assert dns_check.is_global_address(address) is False
+
+    @pytest.mark.parametrize("address", ["8.8.8.8", "2001:4860:4860::8888", "::ffff:8.8.8.8"])
+    def test_accepts_an_ordinary_public_address(self, address: str) -> None:
+        assert dns_check.is_global_address(address) is True
+
+
+class TestAssertDialable:
+    async def test_a_literal_ip_is_refused_before_any_lookup(self) -> None:
+        with pytest.raises(dns_check.HostNotAllowed):
+            await dns_check.assert_dialable("127.0.0.1", 587)
+
+    async def test_a_forbidden_port_is_refused_before_any_lookup(self) -> None:
+        with pytest.raises(dns_check.HostNotAllowed):
+            await dns_check.assert_dialable("mail.company.com", 5432)
+
+    async def test_a_name_resolving_to_a_private_address_is_refused(self) -> None:
+        resolver = FakeResolver({("mail.company.com", "A"): ["10.0.0.5"]})
+        with pytest.raises(dns_check.HostNotAllowed):
+            await dns_check.assert_dialable("mail.company.com", 587, resolver=resolver)
+
+    async def test_refuses_if_any_one_of_several_addresses_is_private(self) -> None:
+        """A dual-stack name with one public and one private answer is refused entirely —
+        `SmtpTransport`'s own address selection is not this guard's to predict."""
+        resolver = FakeResolver(
+            {
+                ("mail.company.com", "A"): ["8.8.8.8"],
+                ("mail.company.com", "AAAA"): ["fc00::1"],
+            }
+        )
+        with pytest.raises(dns_check.HostNotAllowed):
+            await dns_check.assert_dialable("mail.company.com", 587, resolver=resolver)
+
+    async def test_a_name_that_does_not_resolve_at_all_is_refused(self) -> None:
+        with pytest.raises(dns_check.HostNotAllowed):
+            await dns_check.assert_dialable("mail.company.com", 587, resolver=FakeResolver({}))
+
+    async def test_a_public_name_on_an_allowed_port_returns_an_address_to_dial(self) -> None:
+        resolver = FakeResolver({("mail.company.com", "A"): ["8.8.8.8"]})
+        address = await dns_check.assert_dialable("mail.company.com", 587, resolver=resolver)
+        assert address == "8.8.8.8"

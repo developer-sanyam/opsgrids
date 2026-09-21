@@ -71,6 +71,12 @@ class Settings(ServiceSettings):
     customer_internal_url: str = "http://localhost:8130"
     customer_timeout_seconds: float = 5.0
 
+    # ----------------------------------------------------------------- engage sending identity
+    #: Test sends per organization per minute. Independent of `daily_cap`, which is the
+    #: provider's own limit on a *connected* connection — this bounds the route itself, which
+    #: takes an arbitrary `to_address` and opens a real SMTP handshake on every call.
+    engage_test_send_rate_limit_per_minute: int = 5
+
     # ----------------------------------------------------------------- dispatcher
     #: Rows claimed per dispatcher pass.
     dispatch_batch_size: int = 50

@@ -18,6 +18,7 @@ import contextlib
 import json
 import uuid
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -29,7 +30,13 @@ from app.config import settings
 from app.main import app
 from app.transports import RecordingTransport, TransportRefused, TransportUnavailable
 from platform_core.auth import Principal, Scope, ScopeContext, get_principal
-from platform_core.errors import BusinessRuleProblem, NotFoundProblem, UpstreamUnavailableProblem
+from platform_core.errors import (
+    BusinessRuleProblem,
+    NotFoundProblem,
+    RateLimitedProblem,
+    UpstreamUnavailableProblem,
+    ValidationProblem,
+)
 from platform_core.pii import open_sealed
 from tests.helpers import ctx_for, principal_for
 
@@ -451,7 +458,8 @@ async def test_a_refused_test_send_leaves_the_sender_unusable(
     session, org_id, usable_sender
 ) -> None:
     """The gate only opens on a message that actually left. A sender marked usable by a send the
-    provider rejected is a campaign that fails one address at a time, in front of customers."""
+    provider rejected is a campaign that fails one address at a time, in front of customers. The
+    refusal itself must not carry the provider's own words back to the caller — see M1 below."""
     # Read before the failure: the rollback expires every loaded attribute, and reading one
     # afterwards is a lazy refresh from a thread that has no event loop to do it on.
     sender_id = usable_sender.id
@@ -476,9 +484,16 @@ async def test_a_refused_test_send_leaves_the_sender_unusable(
                 staged = await session.get(models.Sender, sender_id)
                 assert staged is not None and staged.verified_at is None
 
-    # The provider's own words, carried out intact. "Check your settings" would leave the
-    # customer guessing which of the fourteen things they typed is the wrong one.
-    assert "535 5.7.8 Username and Password not accepted" in str(refusal.value)
+    # M1: the provider's own words used to be carried out intact. An arbitrary `to_address` and
+    # a caller who chose the host turns that into an oracle for a port scan, so the response now
+    # carries one fixed sentence and nothing from the transport — the banner text is logged, not
+    # returned.
+    assert "535" not in str(refusal.value)
+    assert "Username and Password" not in str(refusal.value)
+    assert str(refusal.value) == (
+        "The provider refused the test message. Check the connection's credentials and "
+        "the sender's address."
+    )
     assert (await _reread(session, sender_id)).usable is False
     assert await _events(session, services.EVT_SENDER_VERIFIED) == 0
 
@@ -500,7 +515,12 @@ async def test_a_provider_that_could_not_be_reached_is_not_the_customers_mistake
                 transport=wire,
             )
 
-    assert "Operation timed out" in str(outage.value)
+    # M1: the errno used to be carried out intact, which is exactly the connect-vs-timeout
+    # oracle a port scan wants from an internal address. Fixed sentence, nothing from the
+    # socket.
+    assert "Errno" not in str(outage.value)
+    assert "timed out" not in str(outage.value)
+    assert str(outage.value) == "The provider could not be reached. Try again in a few minutes."
     assert (await _reread(session, sender_id)).usable is False
 
 
@@ -539,6 +559,309 @@ async def test_a_test_send_for_an_unknown_sender_is_not_found(session, org_id) -
                 to_address="ops@company.com",
                 transport=RecordingTransport(),
             )
+
+
+# --------------------------------------------------------------------- the outbound dial guard
+#
+# M1: an `smtp` connection's host used to be dialled exactly as the caller typed it, and a
+# fixed-provider kind's `host` field was honoured too — so a customer holding only
+# `engage.setup.connection.write` could point a real SMTP handshake at `postgres`, `redis`,
+# `169.254.169.254`, or anything else reachable from inside the compose network, then read
+# connect-vs-refuse-vs-timeout and banner text back through `POST .../test`. Every test below
+# proves one class of that is now refused, and that refusing it never repeats the reason.
+
+_FIXED_MESSAGE = (
+    "The submission host must be a public mail server hostname, and the port one of "
+    "25, 465, 587, or 2525."
+)
+
+
+async def test_a_literal_ip_host_is_refused(session, org_id) -> None:
+    with pytest.raises(ValidationProblem) as exc:
+        async with session.begin():
+            await services.create_connection(
+                session,
+                _ctx(org_id, "engage.setup.connection.write"),
+                kind="smtp",
+                username="ops@company.com",
+                secret="x",  # pragma: allowlist secret
+                host="127.0.0.1",
+                port=587,
+            )
+    assert str(exc.value) == _FIXED_MESSAGE
+    assert (await session.execute(select(models.EmailConnection))).scalars().all() == []
+
+
+async def test_a_single_label_compose_service_name_is_refused(session, org_id) -> None:
+    """`postgres`, `redis`, `rabbitmq`, `account` — every name the compose network answers to
+    without a search domain appended."""
+    with pytest.raises(ValidationProblem) as exc:
+        async with session.begin():
+            await services.create_connection(
+                session,
+                _ctx(org_id, "engage.setup.connection.write"),
+                kind="smtp",
+                username="ops@company.com",
+                secret="x",  # pragma: allowlist secret
+                host="postgres",
+                port=587,
+            )
+    assert str(exc.value) == _FIXED_MESSAGE
+
+
+async def test_a_hostname_resolving_to_a_private_address_is_refused(session, org_id) -> None:
+    """A name is not the thing being trusted — where it resolves is."""
+    resolver = FakeResolver({("mail.attacker.example", "A"): ["10.0.0.5"]})
+    with pytest.raises(ValidationProblem) as exc:
+        async with session.begin():
+            await services.create_connection(
+                session,
+                _ctx(org_id, "engage.setup.connection.write"),
+                kind="smtp",
+                username="ops@company.com",
+                secret="x",  # pragma: allowlist secret
+                host="mail.attacker.example",
+                port=587,
+                resolver=resolver,
+            )
+    assert str(exc.value) == _FIXED_MESSAGE
+
+
+async def test_a_forbidden_port_is_refused_even_bypassing_the_schema(session, org_id) -> None:
+    """The schema narrows `port` to the submission set too, but the writer is the boundary that
+    actually matters — a caller that reached this function some other way must still be refused."""
+    with pytest.raises(ValidationProblem) as exc:
+        async with session.begin():
+            await services.create_connection(
+                session,
+                _ctx(org_id, "engage.setup.connection.write"),
+                kind="smtp",
+                username="ops@company.com",
+                secret="x",  # pragma: allowlist secret
+                host="mail.example.com",
+                port=5432,
+                resolver=FakeResolver({("mail.example.com", "A"): ["8.8.8.8"]}),
+            )
+    assert str(exc.value) == _FIXED_MESSAGE
+
+
+async def test_a_public_hostname_on_an_allowed_port_is_accepted(session, org_id) -> None:
+    resolver = FakeResolver({("mail.example.com", "A"): ["8.8.8.8"]})
+    async with session.begin():
+        conn = await services.create_connection(
+            session,
+            _ctx(org_id, "engage.setup.connection.write"),
+            kind="smtp",
+            username="ops@company.com",
+            secret="x",  # pragma: allowlist secret
+            host="mail.example.com",
+            port=587,
+            resolver=resolver,
+        )
+    assert (conn.host, conn.port) == ("mail.example.com", 587)
+
+
+async def test_a_fixed_provider_kind_ignores_the_callers_host_entirely(session, org_id) -> None:
+    """The exploit itself: `kind="google"` with `host` aimed at the metadata service. Before the
+    fix, `(host or transport.host)` let the caller's value win outright."""
+    async with session.begin():
+        conn = await services.create_connection(
+            session,
+            _ctx(org_id, "engage.setup.connection.write"),
+            kind="google",
+            username="ops@company.com",
+            secret="x",  # pragma: allowlist secret
+            host="169.254.169.254",
+            port=5432,
+        )
+    assert (conn.host, conn.port) == ("smtp.gmail.com", 587)
+
+
+async def test_a_name_that_rebinds_between_creation_and_dial_is_refused_at_dial_time(
+    session, org_id, verified_domain
+) -> None:
+    """The connection is saved while `mail.rebindy.example` still answers publicly. By the time a
+    test send actually runs, its zone has been repointed at the compose network — and the second,
+    independent resolution the dial guard performs catches exactly that, because it trusts
+    nothing the first resolution already decided."""
+    ctx = _ctx(org_id, "engage.setup.connection.write")
+    creation_resolver = FakeResolver({("mail.rebindy.example", "A"): ["8.8.8.8"]})
+    async with session.begin():
+        await services.create_connection(
+            session,
+            ctx,
+            kind="smtp",
+            username="ops@company.com",
+            secret="app-password",  # pragma: allowlist secret
+            host="mail.rebindy.example",
+            port=587,
+            resolver=creation_resolver,
+        )
+        sender = await services.create_sender(
+            session,
+            _ctx(org_id, "engage.setup.sender.write"),
+            domain_id=verified_domain.id,
+            name="Sales",
+            address="sales@company.com",
+        )
+
+    dial_resolver = FakeResolver({("mail.rebindy.example", "A"): ["10.0.0.5"]})
+    sender_id = sender.id
+    with pytest.raises(BusinessRuleProblem) as exc:
+        async with session.begin():
+            await services.send_test(
+                session,
+                _ctx(org_id, "engage.setup.sender.write"),
+                sender_id=sender_id,
+                to_address="ops@company.com",
+                resolver=dial_resolver,
+            )
+
+    assert str(exc.value) == _FIXED_MESSAGE
+    # Nothing from the rejected resolution — not the address, not the zone — reaches the caller.
+    assert "10.0.0.5" not in str(exc.value)
+    assert (await _reread(session, sender_id)).verified_at is None
+
+
+async def test_a_refused_dial_never_leaks_the_providers_own_words(
+    session, org_id, usable_sender
+) -> None:
+    """The transport's exception text is real diagnostic detail — a banner, an errno, an SMTP
+    reply code — and none of it is safe to hand back to a caller who chose the host and can
+    retry with a different one on every attempt."""
+    sender_id = usable_sender.id
+    wire = RecordingTransport(
+        fail_with=TransportRefused("550 5.1.1 mailbox postgres@internal does not exist")
+    )
+    with pytest.raises(BusinessRuleProblem) as exc:
+        async with session.begin():
+            await services.send_test(
+                session,
+                _ctx(org_id, "engage.setup.sender.write"),
+                sender_id=sender_id,
+                to_address="ops@company.com",
+                transport=wire,
+            )
+    assert "550 5.1.1" not in str(exc.value)
+    assert "postgres@internal" not in str(exc.value)
+
+
+class TestTheTestSendRateLimit:
+    async def test_a_burst_of_test_sends_is_refused_past_the_limit(
+        self, session, org_id, usable_sender, monkeypatch
+    ) -> None:
+        cfg = settings()
+        monkeypatch.setattr(cfg, "engage_test_send_rate_limit_per_minute", 1)
+
+        async with session.begin():
+            await services.send_test(
+                session,
+                _ctx(org_id, "engage.setup.sender.write"),
+                sender_id=usable_sender.id,
+                to_address="ops@company.com",
+                transport=RecordingTransport(),
+            )
+
+        with pytest.raises(RateLimitedProblem):
+            async with session.begin():
+                await services.send_test(
+                    session,
+                    _ctx(org_id, "engage.setup.sender.write"),
+                    sender_id=usable_sender.id,
+                    to_address="ops2@company.com",
+                    transport=RecordingTransport(),
+                )
+
+    async def test_the_limit_is_keyed_per_organization(
+        self, session, org_id, usable_sender, monkeypatch
+    ) -> None:
+        """A neighbour's burst must not spend this organization's budget. Proven at the key the
+        limiter is asked to count against, rather than by standing up a second tenant's whole
+        sending identity through a session bound to this one's — which RLS would refuse anyway,
+        for exactly the reason `test_writing_a_sender_into_another_tenant_is_refused` exists."""
+        seen_keys: list[str] = []
+        original = services.enforce_rate_limit
+
+        async def _spy(key: str, **kwargs: Any) -> None:
+            seen_keys.append(key)
+            await original(key, **kwargs)
+
+        monkeypatch.setattr(services, "enforce_rate_limit", _spy)
+
+        async with session.begin():
+            await services.send_test(
+                session,
+                _ctx(org_id, "engage.setup.sender.write"),
+                sender_id=usable_sender.id,
+                to_address="ops@company.com",
+                transport=RecordingTransport(),
+            )
+
+        assert seen_keys == [f"engage.test_send:{org_id}"]
+
+
+# --------------------------------------------------------------------- the HTTP surface, again
+#
+# The exploit was reachable over HTTP with nothing but `engage.setup.connection.write`, so the
+# closing assertion belongs there too: a malicious `host` is refused before a row exists, and the
+# response carries no more than the fixed sentence above.
+
+
+async def test_the_connection_route_refuses_a_literal_ip_host(client, org_id) -> None:
+    with as_principal(engage_caller(org_id, [f"{C_WRITE}:ORG"])):
+        response = await client.post(
+            CONNECTION,
+            json={
+                "kind": "smtp",
+                "username": "ops@company.com",
+                "secret": "x",  # pragma: allowlist secret
+                "host": "169.254.169.254",
+                "port": 587,
+            },
+        )
+    assert response.status_code == 422
+    assert response.json()["detail"] == _FIXED_MESSAGE
+    assert "169.254.169.254" not in response.text
+
+
+async def test_the_connection_route_ignores_a_malicious_host_on_a_fixed_provider_kind(
+    client, org_id
+) -> None:
+    """`port` is a value the schema's own `Literal` would accept on its own — 25 is a real mail
+    submission port — so a 201 here isolates `create_connection`'s own ignore-the-caller rule
+    from the schema's separate, narrower one below."""
+    with as_principal(engage_caller(org_id, [f"{C_WRITE}:ORG"])):
+        response = await client.post(
+            CONNECTION,
+            json={
+                "kind": "google",
+                "username": "ops@company.com",
+                "secret": "x",  # pragma: allowlist secret
+                "host": "169.254.169.254",
+                "port": 25,
+            },
+        )
+    assert response.status_code == 201
+    assert response.json()["host"] == "smtp.gmail.com"
+    assert response.json()["port"] == 587
+
+
+async def test_the_connection_route_refuses_a_port_outside_the_submission_set(
+    client, org_id
+) -> None:
+    """Defence in depth, at the boundary: a bad port never reaches the writer at all here."""
+    with as_principal(engage_caller(org_id, [f"{C_WRITE}:ORG"])):
+        response = await client.post(
+            CONNECTION,
+            json={
+                "kind": "smtp",
+                "username": "ops@company.com",
+                "secret": "x",  # pragma: allowlist secret
+                "host": "mail.example.com",
+                "port": 5432,
+            },
+        )
+    assert response.status_code == 422
 
 
 async def _events(session, event_type: str) -> int:

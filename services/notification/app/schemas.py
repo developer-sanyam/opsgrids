@@ -270,11 +270,16 @@ class ConnectionIn(BaseModel):
     #: and has no counterpart on the way out — not masked, not truncated, not counted.
     secret: str = Field(min_length=1, max_length=2000)
     #: An `smtp` connection has no submission host implied by its kind, so it must give one.
-    #: A named provider derives both, and sending them anyway overrides the derived values —
-    #: which is what keeps a customer whose mail goes through a relay in front of Workspace
-    #: supported without inventing a fifth kind for them.
+    #: A named provider (`google`, `microsoft`) derives both — and `services.create_connection`
+    #: ignores this field entirely for those, rather than letting it override the derived host,
+    #: because this process is about to open a socket to whatever it names. Shape only, here:
+    #: this is free text because telling a literal IP or a private name from a real one needs a
+    #: DNS answer this layer has no business making, so that check — and the one that matters,
+    #: repeated immediately before every dial — lives in `app/dns_check.py`.
     host: str = Field(default="", max_length=255)
-    port: int | None = Field(default=None, ge=1, le=65535)
+    #: The mail submission ports, and the only ones `app/dns_check.py` will dial regardless of
+    #: what this accepts — narrowed here too so a bad port is a 422 rather than a round trip.
+    port: Literal[25, 465, 587, 2525] | None = None
 
 
 class ConnectionOut(BaseModel):

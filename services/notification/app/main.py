@@ -22,6 +22,10 @@ app = create_app(
     # never queue. `/health/outbox` is what makes that visible, counted through the outbox
     # engine so it is not blind to the rows the app role cannot see.
     outbox_model=OutboxEvent,
+    # `services.send_test` rate-limits per organization through `platform_core.cache`, which
+    # fails closed if Redis was never opened — so this process must open it, the same as every
+    # other service that carries a limiter or a cache.
+    redis=True,
 )
 
 # Meta's webhooks, mounted at the root rather than under `/api/v1`: this is the provider's

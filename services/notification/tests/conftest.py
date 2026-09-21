@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.config import settings
 from app.main import app
 from app.models import SCHEMA
+from platform_core.cache import close_redis, init_redis
 from platform_core.db import TENANT_GUC, get_session
 
 #: Every table here is tenant-scoped or global-and-empty, so all are safe to truncate.
@@ -74,6 +75,12 @@ async def session(org_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
     the consumer's `session_scope` does per message. Pointing this at the admin DSN would make
     row-level security invisible here and every isolation assertion a false pass — the failure
     ADR-0002 calls worse than no test.
+
+    Redis is initialised for real, the same way document-service's `client` fixture does it: the
+    test-send route's rate limiter fails **closed**, so a `services.send_test` called with no
+    Redis behind it would answer 503 on every attempt and prove nothing about the writer. Opened
+    and closed per test rather than once for the session, for the same reason — a cached client
+    leaks into the next test's event loop and every limiter call reports it as an outage.
     """
     cfg = settings()
     tables = ", ".join(f'"{SCHEMA}"."{t}"' for t in TENANT_TABLES)
@@ -82,6 +89,8 @@ async def session(org_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
     async with admin.begin() as conn:
         await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
     await admin.dispose()
+
+    init_redis(cfg.redis_url)
 
     engine = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
     maker = async_sessionmaker(engine, expire_on_commit=False)
@@ -93,6 +102,7 @@ async def session(org_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
 
         yield s
     await engine.dispose()
+    await close_redis()
 
 
 @pytest_asyncio.fixture
