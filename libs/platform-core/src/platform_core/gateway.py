@@ -39,6 +39,7 @@ from starlette.background import BackgroundTask
 
 from platform_core.auth import decode_token
 from platform_core.cache import (
+    cache_set,
     current_permission_version,
     enforce_rate_limit,
     resolve_cached,
@@ -114,6 +115,22 @@ DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024
 #: not be able to hand back the unbounded buffer this cap exists to remove, so an override
 #: past this refuses at boot rather than at request time.
 MAX_ROUTE_BODY_BYTES = 32 * 1024 * 1024
+
+
+#: How long a *fresh* re-resolution (see `PermissionResolver.resolve`'s `fresh` branch) is
+#: cached when it still finds no code for the product that triggered it.
+#:
+#: `OutboxRelay.max_idle_interval` (`platform_core.events`) defaults to 5.0s — the worst
+#: case between a grant's outbox row being written and an idle relay noticing it, before
+#: the account-service consumer that installs the grant has even run. A few seconds keeps
+#: an owner whose grant is genuinely still in flight within about one extra relay cycle of
+#: success once this key is re-checked, while an ordinary member who was simply never given
+#: a role in this product pays for one resolver round trip every few seconds instead of
+#: holding a stale-but-plausible-looking negative for the full 60s a normal cache entry
+#: gets. Short enough to bound both the propagating owner's window and the unpermitted
+#: member's retry load; long enough that a member hammering the endpoint does not turn into
+#: a query per request.
+GRANT_PROPAGATION_RETRY_TTL = 5
 
 
 class TokenStaleProblem(ProblemError):
@@ -270,7 +287,28 @@ class PermissionResolver:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def resolve(self, membership_id: str, org_id: str, version: int) -> list[str]:
+    async def resolve(
+        self,
+        membership_id: str,
+        org_id: str,
+        version: int,
+        *,
+        fresh: bool = False,
+        product: str | None = None,
+    ) -> list[str]:
+        """Resolve a membership's grants, normally through the cache.
+
+        `fresh=True` bypasses the cache *read* — used only by the gateway's
+        activation-race re-check (see the call site in `build_gateway`) — and always
+        talks to account-service, the same endpoint an ordinary resolution would have hit
+        on a miss. It cannot hand back anything the membership does not actually hold; it
+        only refuses to trust a snapshot the caller has a specific, detectable reason to
+        distrust. The fresh result is still written back to the same cache key so every
+        following request benefits rather than repeating this round trip, with a TTL
+        chosen by whether `product` (when given) is now present among the grants — see
+        `GRANT_PROPAGATION_RETRY_TTL`.
+        """
+
         async def load() -> list[str]:
             response = await self._client.get(
                 f"/internal/v1/memberships/{membership_id}/grants",
@@ -288,6 +326,19 @@ class PermissionResolver:
 
         key = f"authz:{org_id}:{membership_id}:{version}"
         try:
+            if fresh:
+                value = await load()
+                landed = product is not None and any(g.startswith(f"{product}.") for g in value)
+                # Once the grant has actually landed this fresh read *is* the truth, so it
+                # earns the same 60s every other resolution gets. If it still hasn't landed,
+                # caching that negative for 60s would recreate the exact bug this bypass
+                # exists to fix — the next unlucky request would sit behind it for up to a
+                # minute instead of seconds. See `GRANT_PROPAGATION_RETRY_TTL` for why a few
+                # seconds is the right size for that half.
+                await cache_set(
+                    key, json.dumps(value), ttl=60 if landed else GRANT_PROPAGATION_RETRY_TTL
+                )
+                return value
             return list(await resolve_cached(key, load, ttl=60))
         except httpx.HTTPError as exc:
             # Failing open here would hand the caller whatever permissions the downstream
@@ -417,7 +468,39 @@ def build_gateway(
         # Permissions are resolved here rather than carried in the token — see
         # `platform_core.auth` for why a fat token does not survive five products.
         if resolver is not None and claims.get("mem"):
-            grants = await resolver.resolve(str(claims["mem"]), org_id, int(claims.get("pv", 0)))
+            membership_id = str(claims["mem"])
+            pv = int(claims.get("pv", 0))
+            grants = await resolver.resolve(membership_id, org_id, pv)
+
+            # The activation race: product-service commits an activation (and mints tokens
+            # carrying it in `ent`) synchronously, but the owner's admin grant for that
+            # product installs asynchronously — outbox -> relay -> account-service consumer,
+            # on the order of seconds. A request that lands in that window has a token that
+            # is neither stale (`pv` has not moved yet — installing the grant is what bumps
+            # it) nor unentitled (`route.product` is already in `ent`, checked above), so
+            # both earlier gates pass it through. But the grants just resolved may have been
+            # read — or cached — from before the install landed: non-empty (the owner
+            # already holds ORG_OWNER etc.) yet missing this product's codes specifically.
+            # That combination — entitled per the token, absent per the resolved grants — is
+            # the race's one detectable signature, and it is the only thing this branch
+            # reacts to. (Checking `route.product in ent` again here would be redundant: the
+            # 402 gate above already raised if it were not.)
+            if route.product and not any(g.startswith(f"{route.product}.") for g in grants):
+                # Re-read account-service directly, bypassing whatever is cached, and let
+                # the fresh answer overwrite it (see `PermissionResolver.resolve`). This can
+                # only ever narrow the gap between "the token says I'm entitled" and "the
+                # grants agree" *toward the truth* — it is the exact same grants endpoint an
+                # ordinary cache miss would have called, so it can return more than the
+                # stale cache held only if the membership genuinely holds it now, and it can
+                # never fabricate or widen a permission that account-service does not itself
+                # report. An owner mid-propagation gets the grant that has already landed
+                # server-side; a member who was simply never given a role in this product
+                # gets the same absence as before, just cached briefly instead of for a full
+                # minute.
+                grants = await resolver.resolve(
+                    membership_id, org_id, pv, fresh=True, product=route.product
+                )
+
             headers["x-perms"] = ",".join(grants)
 
         return await _forward(request, route, headers, policy)
@@ -540,6 +623,7 @@ def http_client(policy: GatewayPolicy) -> httpx.AsyncClient:
 __all__ = [
     "DEFAULT_MAX_BODY_BYTES",
     "DEFAULT_PUBLIC_PATHS",
+    "GRANT_PROPAGATION_RETRY_TTL",
     "MAX_ROUTE_BODY_BYTES",
     "GatewayPolicy",
     "PermissionResolver",
