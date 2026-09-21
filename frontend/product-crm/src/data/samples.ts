@@ -27,13 +27,14 @@ export const PIPELINE_TREND: TrendPoint[] = [
 /** Percent change to show beside the pipeline headline (representative). */
 export const PIPELINE_DELTA = 6.4;
 
-/** Small trend series and deltas for the four Overview KPI sparklines (representative). */
+/**
+ * Small trend series and deltas for the four Overview KPI sparklines. Representative, not live —
+ * every `KpiCard` that reads these passes a `sample` prop naming so, because there is no history
+ * service behind them yet. The headline figure beside each one is always the live one.
+ */
 export const KPI_TRENDS = {
   pipeline: { series: [172, 188, 196, 214, 221, 238, 263], deltaPct: 6.4 },
   openDeals: { series: [11, 12, 13, 12, 14, 15, 15], deltaPct: 3.1 },
   winRate: { series: [58, 60, 61, 59, 62, 63, 67], deltaPct: 4.8 },
   activities: { series: [22, 26, 24, 29, 31, 28, 34], deltaPct: -2.4 },
 } as const;
-
-/** Activities logged in the current week, and the prior week for the delta (representative). */
-export const ACTIVITIES_THIS_WEEK = { count: 34, deltaPct: 12.5 };

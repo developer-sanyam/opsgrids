@@ -8,15 +8,29 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  createCompany,
+  createContact,
+  createDeal,
+  createOwner,
+  deleteCompany,
+  deleteContact,
+  deleteDeal,
   getAllDeals,
   getCompany,
   getContact,
   getDeal,
   getOwners,
+  getSummary,
   listActivities,
   listCompanies,
   listContacts,
   listDeals,
+  logActivity,
+  moveDealStage,
+  setContactPhone,
+  updateCompany,
+  updateContact,
+  updateDeal,
 } from "./client";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -36,6 +50,12 @@ function requestedUrl(fetchMock: ReturnType<typeof vi.fn>): string {
   const call = fetchMock.mock.calls[0] as [string, RequestInit] | undefined;
   if (!call) throw new Error("fetch was never called");
   return call[0];
+}
+
+function requested(fetchMock: ReturnType<typeof vi.fn>): { url: string; init: RequestInit } {
+  const call = fetchMock.mock.calls[0] as [string, RequestInit] | undefined;
+  if (!call) throw new Error("fetch was never called");
+  return { url: call[0], init: call[1] };
 }
 
 afterEach(() => {
@@ -101,9 +121,11 @@ const ACTIVITY_WIRE = {
   direction: "outbound",
 };
 
+const PAGE_ENVELOPE = { page: 1, size: 25, pages: 1 };
+
 describe("listCompanies", () => {
   it("calls GET /customers, not /companies — that's a customer row in the customer service", async () => {
-    const fetchMock = stubFetch({ items: [COMPANY_WIRE], total: 1, page: 1, size: 200, pages: 1 });
+    const fetchMock = stubFetch({ items: [COMPANY_WIRE], total: 1, ...PAGE_ENVELOPE });
     const result = await listCompanies({ search: "north", status: "customer" });
 
     const url = requestedUrl(fetchMock);
@@ -112,16 +134,19 @@ describe("listCompanies", () => {
     const params = new URL(url, "http://localhost").searchParams;
     expect(params.get("q")).toBe("north");
     expect(params.get("status")).toBe("customer");
-    expect(params.get("size")).toBe("200");
+    expect(params.get("page")).toBe("1");
+    expect(params.get("size")).toBe("25");
 
-    expect(result).toEqual({ items: [{ ...COMPANY_WIRE }], total: 1 });
+    expect(result).toEqual({ items: [{ ...COMPANY_WIRE }], total: 1, ...PAGE_ENVELOPE });
   });
 
-  it("omits status when 'all'", async () => {
-    const fetchMock = stubFetch({ items: [], total: 0, page: 1, size: 200, pages: 0 });
-    await listCompanies({ status: "all" });
+  it("omits status when 'all', and forwards an explicit page/size", async () => {
+    const fetchMock = stubFetch({ items: [], total: 0, page: 2, size: 50, pages: 0 });
+    await listCompanies({ status: "all", page: 2, size: 50 });
     const params = new URL(requestedUrl(fetchMock), "http://localhost").searchParams;
     expect(params.has("status")).toBe(false);
+    expect(params.get("page")).toBe("2");
+    expect(params.get("size")).toBe("50");
   });
 });
 
@@ -134,6 +159,39 @@ describe("getCompany", () => {
   });
 });
 
+describe("createCompany", () => {
+  it("POSTs to /customers with the CompanyIn body verbatim", async () => {
+    const fetchMock = stubFetch(COMPANY_WIRE, 201);
+    const body = { name: "Northwind Logistics", owner_id: "own-1", status: "prospect" as const };
+    await createCompany(body);
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/customers");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual(body);
+  });
+});
+
+describe("updateCompany", () => {
+  it("PATCHes /customers/:id with only the changed fields", async () => {
+    const fetchMock = stubFetch(COMPANY_WIRE);
+    await updateCompany("comp-1", { status: "churned" });
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/customers/comp-1");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body as string)).toEqual({ status: "churned" });
+  });
+});
+
+describe("deleteCompany", () => {
+  it("DELETEs /customers/:id", async () => {
+    const fetchMock = stubFetch(undefined, 204);
+    await deleteCompany("comp-1");
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/customers/comp-1");
+    expect(init.method).toBe("DELETE");
+  });
+});
+
 describe("getOwners", () => {
   it("calls GET /customers/owners, not a standalone /owners endpoint", async () => {
     const fetchMock = stubFetch([OWNER_WIRE]);
@@ -143,16 +201,29 @@ describe("getOwners", () => {
   });
 });
 
+describe("createOwner", () => {
+  it("POSTs to /customers/owners with the OwnerIn body verbatim", async () => {
+    const fetchMock = stubFetch(OWNER_WIRE, 201);
+    const body = { full_name: "Sofia Marchetti", email: "sofia@example.com", role: "AE" };
+    await createOwner(body);
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/customers/owners");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual(body);
+  });
+});
+
 describe("listContacts", () => {
-  it("calls GET /contacts with q/status", async () => {
-    const fetchMock = stubFetch({ items: [CONTACT_WIRE], total: 1, page: 1, size: 200, pages: 1 });
-    const result = await listContacts({ search: "asha", status: "customer" });
+  it("calls GET /contacts with q/status/company_id/page/size", async () => {
+    const fetchMock = stubFetch({ items: [CONTACT_WIRE], total: 1, ...PAGE_ENVELOPE });
+    const result = await listContacts({ search: "asha", status: "customer", companyId: "comp-1" });
     const url = requestedUrl(fetchMock);
     expect(url).toContain("/api/v1/contacts?");
     const params = new URL(url, "http://localhost").searchParams;
     expect(params.get("q")).toBe("asha");
     expect(params.get("status")).toBe("customer");
-    expect(result).toEqual({ items: [CONTACT_WIRE], total: 1 });
+    expect(params.get("company_id")).toBe("comp-1");
+    expect(result).toEqual({ items: [CONTACT_WIRE], total: 1, ...PAGE_ENVELOPE });
   });
 });
 
@@ -164,23 +235,85 @@ describe("getContact", () => {
   });
 });
 
+describe("createContact", () => {
+  it("POSTs to /contacts with the ContactIn body verbatim, no phone field", async () => {
+    const fetchMock = stubFetch(CONTACT_WIRE, 201);
+    const body = {
+      full_name: "Asha Rao",
+      email: "asha@northwind.co",
+      company_id: "comp-1",
+      owner_id: "own-1",
+      raw_phone: "+919876543210",
+    };
+    await createContact(body);
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/contacts");
+    expect(init.method).toBe("POST");
+    const sent = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(sent).toEqual(body);
+    expect(sent.phone).toBeUndefined();
+  });
+});
+
+describe("updateContact", () => {
+  it("PATCHes /contacts/:id and never carries phone or raw_phone", async () => {
+    const fetchMock = stubFetch(CONTACT_WIRE);
+    await updateContact("cont-1", { full_name: "Asha K. Rao" });
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/contacts/cont-1");
+    expect(init.method).toBe("PATCH");
+    const sent = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(sent).toEqual({ full_name: "Asha K. Rao" });
+    expect(sent.phone).toBeUndefined();
+    expect(sent.raw_phone).toBeUndefined();
+  });
+});
+
+describe("deleteContact", () => {
+  it("DELETEs /contacts/:id", async () => {
+    const fetchMock = stubFetch(undefined, 204);
+    await deleteContact("cont-1");
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/contacts/cont-1");
+    expect(init.method).toBe("DELETE");
+  });
+});
+
+describe("setContactPhone", () => {
+  it("PUTs /contacts/:id/phone with raw_phone, and returns the mask never the raw value", async () => {
+    const fetchMock = stubFetch(CONTACT_WIRE);
+    const result = await setContactPhone("cont-1", { raw_phone: "+919876543210" });
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/contacts/cont-1/phone");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({ raw_phone: "+919876543210" });
+    expect(result.phone).toBe(CONTACT_WIRE.phone);
+  });
+});
+
 describe("listDeals", () => {
-  it("calls GET /deals with q/stage/owner_id", async () => {
-    const fetchMock = stubFetch({ items: [DEAL_WIRE], total: 1, page: 1, size: 200, pages: 1 });
-    const result = await listDeals({ search: "renewal", stage: "proposal", ownerId: "own-1" });
+  it("calls GET /deals with q/stage/owner_id/company_id", async () => {
+    const fetchMock = stubFetch({ items: [DEAL_WIRE], total: 1, ...PAGE_ENVELOPE });
+    const result = await listDeals({
+      search: "renewal",
+      stage: "proposal",
+      ownerId: "own-1",
+      companyId: "comp-1",
+    });
     const url = requestedUrl(fetchMock);
     expect(url).toContain("/api/v1/deals?");
     const params = new URL(url, "http://localhost").searchParams;
     expect(params.get("q")).toBe("renewal");
     expect(params.get("stage")).toBe("proposal");
     expect(params.get("owner_id")).toBe("own-1");
-    expect(result).toEqual({ items: [DEAL_WIRE], total: 1 });
+    expect(params.get("company_id")).toBe("comp-1");
+    expect(result).toEqual({ items: [DEAL_WIRE], total: 1, ...PAGE_ENVELOPE });
   });
 });
 
 describe("getAllDeals", () => {
   it("calls GET /deals?size=<full page>", async () => {
-    const fetchMock = stubFetch({ items: [DEAL_WIRE], total: 1, page: 1, size: 200, pages: 1 });
+    const fetchMock = stubFetch({ items: [DEAL_WIRE], total: 1, ...PAGE_ENVELOPE });
     await getAllDeals();
     expect(requestedUrl(fetchMock)).toBe("/api/v1/deals?size=200");
   });
@@ -194,6 +327,77 @@ describe("getDeal", () => {
   });
 });
 
+describe("createDeal", () => {
+  it("POSTs to /deals with the DealIn body verbatim", async () => {
+    const fetchMock = stubFetch(DEAL_WIRE, 201);
+    const body = {
+      name: "Northwind renewal",
+      company_id: "comp-1",
+      owner_id: "own-1",
+      value_minor: 500000000,
+      close_date: "2026-10-01",
+    };
+    await createDeal(body);
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/deals");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual(body);
+  });
+});
+
+describe("updateDeal", () => {
+  it("PATCHes /deals/:id and never carries stage", async () => {
+    const fetchMock = stubFetch(DEAL_WIRE);
+    await updateDeal("deal-1", { value_minor: 600000000 });
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/deals/deal-1");
+    expect(init.method).toBe("PATCH");
+    const sent = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(sent).toEqual({ value_minor: 600000000 });
+    expect(sent.stage).toBeUndefined();
+  });
+});
+
+describe("deleteDeal", () => {
+  it("DELETEs /deals/:id", async () => {
+    const fetchMock = stubFetch(undefined, 204);
+    await deleteDeal("deal-1");
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/deals/deal-1");
+    expect(init.method).toBe("DELETE");
+  });
+});
+
+describe("moveDealStage", () => {
+  it("POSTs /deals/:id/stage with the StageMoveIn body", async () => {
+    const fetchMock = stubFetch(DEAL_WIRE);
+    await moveDealStage("deal-1", { stage: "negotiation", probability: 70 });
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/deals/deal-1/stage");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ stage: "negotiation", probability: 70 });
+  });
+});
+
+describe("getSummary", () => {
+  it("calls GET /deals/summary", async () => {
+    const fetchMock = stubFetch({
+      pipeline_value_minor: 1,
+      weighted_pipeline_minor: 1,
+      open_deals: 1,
+      win_rate_pct: 50,
+      won_value_minor: 0,
+      activities_this_week: 3,
+      currency: "INR",
+      trend: [],
+      funnel: [],
+    });
+    const result = await getSummary();
+    expect(requestedUrl(fetchMock)).toBe("/api/v1/deals/summary");
+    expect(result.activities_this_week).toBe(3);
+  });
+});
+
 describe("listActivities", () => {
   it("calls GET /deals/activities, not a standalone /activities endpoint", async () => {
     const fetchMock = stubFetch({ items: [ACTIVITY_WIRE], total: 1, page: 1, size: 200, pages: 1 });
@@ -204,7 +408,19 @@ describe("listActivities", () => {
     const params = new URL(url, "http://localhost").searchParams;
     expect(params.get("deal_id")).toBe("deal-1");
     expect(params.get("type")).toBe("call");
-    expect(result).toEqual([ACTIVITY_WIRE]);
+    expect(result.items).toEqual([ACTIVITY_WIRE]);
+  });
+});
+
+describe("logActivity", () => {
+  it("POSTs to /deals/activities with the ActivityIn body verbatim", async () => {
+    const fetchMock = stubFetch(ACTIVITY_WIRE, 201);
+    const body = { type: "call" as const, subject: "Renewal check-in", deal_id: "deal-1" };
+    await logActivity(body);
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/deals/activities");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual(body);
   });
 });
 

@@ -1,18 +1,22 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { listActivities } from "@/api/client";
-import type { ActivityType } from "@/api/types";
-import { useAsync } from "@opsgrids/client";
+import type { Activity, ActivityType } from "@/api/types";
+import { useDirectory } from "@/data/directoryContext";
+import { Can, problemMessage, useAsync, useMutation } from "@opsgrids/client";
 import {
   ActivityTimeline,
+  Button,
   Card,
   EmptyState,
   ErrorState,
+  LoadMore,
   PageHeader,
   Pill,
   Skeleton,
 } from "@/ui";
-import { ActivityIcon } from "@opsgrids/ui";
+import { ActivityIcon, PlusIcon, useToast } from "@opsgrids/ui";
+import { ActivityFormDialog } from "@/forms/ActivityFormDialog";
 
 type TypeFilter = ActivityType | "all";
 
@@ -25,13 +29,32 @@ const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
   { value: "task", label: "Tasks" },
 ];
 
-export function ActivitiesPage() {
-  const [type, setType] = useState<TypeFilter>("all");
+const PAGE_SIZE = 25;
 
-  const loader = useCallback(() => listActivities({ type }), [type]);
+export function ActivitiesPage() {
+  const toast = useToast();
+  const directory = useDirectory();
+  const { companies, contacts } = directory;
+  const [type, setType] = useState<TypeFilter>("all");
+  const [loaded, setLoaded] = useState<Activity[]>([]);
+  const [logging, setLogging] = useState(false);
+
+  const loader = useCallback(() => listActivities({ type, page: 1, size: PAGE_SIZE }), [type]);
   const activities = useAsync(loader, [type]);
 
-  const count = activities.status === "success" ? activities.data.length : 0;
+  // `activities` always holds page 1 for the current filter; `loaded` is that page plus whatever
+  // `LoadMore` appended. Reset it every time page 1 changes under it (a new filter, a reload).
+  useEffect(() => {
+    if (activities.status === "success") setLoaded(activities.data.items);
+  }, [activities.status, activities.data]);
+
+  const loadMore = useMutation(
+    (nextPage: number) => listActivities({ type, page: nextPage, size: PAGE_SIZE }),
+    { onSuccess: (page) => setLoaded((current) => [...current, ...page.items]) },
+  );
+
+  const rows = activities.status === "success" ? loaded : [];
+  const total = activities.status === "success" ? activities.data.total : 0;
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -39,18 +62,32 @@ export function ActivitiesPage() {
         eyebrow="Pipeline"
         title="Activities"
         actions={
-          <span className="inline-flex h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold shadow-card">
-            <ActivityIcon className="size-4 text-muted" />
-            <span className="tnum">{count}</span>
-            <span className="font-medium text-muted">logged</span>
-          </span>
+          <>
+            <span className="inline-flex h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold shadow-card">
+              <ActivityIcon className="size-4 text-muted" />
+              <span className="tnum">{total}</span>
+              <span className="font-medium text-muted">logged</span>
+            </span>
+            <Can permission="crm.pipeline.activity.write" scope="OWN">
+              <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setLogging(true)}>
+                Log activity
+              </Button>
+            </Can>
+          </>
         }
       />
 
       <Card className="p-4 sm:p-5">
         <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
           {TYPE_FILTERS.map((f) => (
-            <Pill key={f.value} active={type === f.value} onClick={() => setType(f.value)}>
+            <Pill
+              key={f.value}
+              active={type === f.value}
+              onClick={() => {
+                setType(f.value);
+                setLoaded([]);
+              }}
+            >
               {f.label}
             </Pill>
           ))}
@@ -71,10 +108,28 @@ export function ActivitiesPage() {
             ))}
           </div>
         ) : null}
-        {activities.status === "error" ? <ErrorState message={activities.error.message} /> : null}
+        {activities.status === "error" ? (
+          <ErrorState
+            title="Couldn't load activities"
+            message={problemMessage(activities.error)}
+            onRetry={activities.reload}
+          />
+        ) : null}
         {activities.status === "success" ? (
-          activities.data.length > 0 ? (
-            <ActivityTimeline activities={activities.data} />
+          rows.length > 0 ? (
+            <div className="flex flex-col gap-5">
+              <ActivityTimeline activities={rows} />
+              <LoadMore
+                loaded={rows.length}
+                total={total}
+                loading={loadMore.pending}
+                noun="activities"
+                onLoadMore={() => {
+                  const nextPage = Math.floor(rows.length / PAGE_SIZE) + 1;
+                  void loadMore.mutate(nextPage);
+                }}
+              />
+            </div>
           ) : (
             <EmptyState
               icon={<ActivityIcon className="size-6" />}
@@ -84,6 +139,20 @@ export function ActivitiesPage() {
           )
         ) : null}
       </Card>
+
+      {logging ? (
+        <ActivityFormDialog
+          companies={companies}
+          contacts={contacts}
+          onClose={() => setLogging(false)}
+          onSaved={() => {
+            setLogging(false);
+            toast.success("Activity logged.");
+            setLoaded([]);
+            activities.reload();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

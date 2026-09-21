@@ -8,19 +8,25 @@ export {
   Avatar,
   Button,
   Card,
+  ConfirmDialog,
   DataTable,
   DeltaPill,
   EmptyState,
   ErrorState,
+  InlineAlert,
   KpiCard,
+  LoadMore,
   PageHeader,
+  Pagination,
   Pill,
+  RowActions,
   SampleChip,
   SearchInput,
   SectionHeader,
+  Select,
   Skeleton,
 } from "@opsgrids/ui";
-export type { Column, KpiTone } from "@opsgrids/ui";
+export type { Column, KpiTone, RowAction } from "@opsgrids/ui";
 
 export { Sidebar } from "./Sidebar";
 export { CompanyStatusPill, ContactStatusPill, StagePill } from "./StatusPill";

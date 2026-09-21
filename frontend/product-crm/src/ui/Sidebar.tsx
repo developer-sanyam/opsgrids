@@ -1,4 +1,7 @@
-import { useAuth } from "@opsgrids/client";
+import { useCallback } from "react";
+
+import { listDeals } from "@/api/client";
+import { useAsync, useAuth } from "@opsgrids/client";
 import {
   ActivityIcon,
   BuildingIcon,
@@ -15,32 +18,6 @@ import {
 import type { NavEntry, NavGroup } from "@opsgrids/ui";
 import { LogoMark } from "./LogoMark";
 
-const GROUPS: NavGroup[] = [
-  {
-    title: "Pipeline",
-    items: [
-      { to: "/", label: "Overview", icon: HomeIcon, end: true },
-      { to: "/deals", label: "Deals", icon: KanbanIcon, count: "15" },
-      { to: "/activities", label: "Activities", icon: ActivityIcon, badge: "6" },
-    ],
-  },
-  {
-    title: "Records",
-    items: [
-      { to: "/companies", label: "Companies", icon: BuildingIcon },
-      { to: "/contacts", label: "Contacts", icon: UsersIcon },
-      { to: "/reports", label: "Reports", icon: FileTextIcon },
-    ],
-  },
-  {
-    title: "Workspace",
-    items: [
-      { to: "/integrations", label: "Integrations", icon: PlugIcon },
-      { to: "/team", label: "Team Members", icon: UserPlusIcon },
-    ],
-  },
-];
-
 const PINNED: NavEntry[] = [
   { to: "/settings", label: "Settings", icon: SettingsIcon },
   { to: "/help", label: "Help & Getting Started", icon: LifeBuoyIcon },
@@ -50,6 +27,11 @@ const PINNED: NavEntry[] = [
  * This product's navigation. The shell — account switcher, ⌘K search, active pill, workspace card
  * and theme toggle — is `@opsgrids/ui`'s `Sidebar`. Everything below is the part that is genuinely
  * this product's: its groups, its mark and its wording.
+ *
+ * The Deals count is real (`total` from the same paged envelope every list screen reads), not the
+ * literal `"15"` this used to render. There is no honest source for an "unread" badge on
+ * Activities — the timeline has no read/unread concept — so it carries no badge rather than a
+ * number that never changes.
  */
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { user, logout } = useAuth();
@@ -59,9 +41,43 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     user?.organizations[0] ??
     null;
 
+  const dealsTotal = useAsync(useCallback(() => listDeals({ size: 1 }), []), []);
+  const dealsCount = dealsTotal.status === "success" ? String(dealsTotal.data.total) : undefined;
+
+  const groups: NavGroup[] = [
+    {
+      title: "Pipeline",
+      items: [
+        { to: "/", label: "Overview", icon: HomeIcon, end: true },
+        {
+          to: "/deals",
+          label: "Deals",
+          icon: KanbanIcon,
+          ...(dealsCount !== undefined ? { count: dealsCount } : {}),
+        },
+        { to: "/activities", label: "Activities", icon: ActivityIcon },
+      ],
+    },
+    {
+      title: "Records",
+      items: [
+        { to: "/companies", label: "Companies", icon: BuildingIcon },
+        { to: "/contacts", label: "Contacts", icon: UsersIcon },
+        { to: "/reports", label: "Reports", icon: FileTextIcon },
+      ],
+    },
+    {
+      title: "Workspace",
+      items: [
+        { to: "/integrations", label: "Integrations", icon: PlugIcon },
+        { to: "/team", label: "Team Members", icon: UserPlusIcon },
+      ],
+    },
+  ];
+
   return (
     <SidebarShell
-      groups={GROUPS}
+      groups={groups}
       pinned={PINNED}
       account={{
         name,

@@ -94,13 +94,25 @@ describe("ownerFromWire", () => {
 });
 
 describe("mapPage", () => {
-  it("maps items and keeps total, dropping the gateway's page/size/pages fields", () => {
+  it("maps items and keeps the gateway's total/page/size/pages", () => {
     const page = { items: [1, 2, 3], total: 3, page: 1, size: 200, pages: 1 };
-    expect(mapPage(page, (n: number) => n * 2)).toEqual({ items: [2, 4, 6], total: 3 });
+    expect(mapPage(page, (n: number) => n * 2)).toEqual({
+      items: [2, 4, 6],
+      total: 3,
+      page: 1,
+      size: 200,
+      pages: 1,
+    });
   });
 
-  it("keeps total even when the current page is a narrower slice", () => {
-    const page = { items: [1], total: 50, page: 1, size: 1, pages: 50 };
-    expect(mapPage(page, (n: number) => n)).toEqual({ items: [1], total: 50 });
+  it("keeps total and pages even when the current page is a narrower slice", () => {
+    const page = { items: [1], total: 50, page: 3, size: 1, pages: 50 };
+    expect(mapPage(page, (n: number) => n)).toEqual({
+      items: [1],
+      total: 50,
+      page: 3,
+      size: 1,
+      pages: 50,
+    });
   });
 });

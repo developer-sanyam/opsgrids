@@ -4,8 +4,16 @@
  * product's vocabulary for it — so `companyFromWire` is the explicit, typed place that mapping
  * happens, rather than an assumption every screen makes on its own.
  */
-import type { Activity, Company, Contact, Deal, Owner } from "./types";
-import type { ActivityOut, CompanyOut, ContactOut, DealOut, OwnerOut, WirePage } from "./wire";
+import type { Activity, Company, Contact, Deal, Owner, Summary } from "./types";
+import type {
+  ActivityOut,
+  CompanyOut,
+  ContactOut,
+  DealOut,
+  OwnerOut,
+  SummaryOut,
+  WirePage,
+} from "./wire";
 
 export function ownerFromWire(row: OwnerOut): Owner {
   return {
@@ -82,10 +90,36 @@ export function activityFromWire(row: ActivityOut): Activity {
   };
 }
 
-/** Maps a gateway page envelope down to this product's small `{ items, total }` envelope. */
+export function summaryFromWire(row: SummaryOut): Summary {
+  return {
+    pipeline_value_minor: row.pipeline_value_minor,
+    weighted_pipeline_minor: row.weighted_pipeline_minor,
+    open_deals: row.open_deals,
+    win_rate_pct: row.win_rate_pct,
+    won_value_minor: row.won_value_minor,
+    activities_this_week: row.activities_this_week,
+    currency: row.currency,
+    trend: row.trend.map((t) => ({ label: t.label, value_minor: t.value_minor })),
+    funnel: row.funnel.map((f) => ({
+      stage: f.stage,
+      label: f.label,
+      count: f.count,
+      value_minor: f.value_minor,
+      pct: f.pct,
+    })),
+  };
+}
+
+/** Maps a gateway page envelope to this product's `Page<T>` — same shape, mapped items. */
 export function mapPage<TWire, TUi>(
   page: WirePage<TWire>,
   mapItem: (row: TWire) => TUi,
-): { items: TUi[]; total: number } {
-  return { items: page.items.map(mapItem), total: page.total };
+): { items: TUi[]; total: number; page: number; size: number; pages: number } {
+  return {
+    items: page.items.map(mapItem),
+    total: page.total,
+    page: page.page,
+    size: page.size,
+    pages: page.pages,
+  };
 }

@@ -3,14 +3,7 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
 import { configureSession } from "@opsgrids/client";
-import {
-  FileTextIcon,
-  LifeBuoyIcon,
-  PlugIcon,
-  SettingsIcon,
-  ThemeProvider,
-  UserPlusIcon,
-} from "@opsgrids/ui";
+import { FileTextIcon, LifeBuoyIcon, PlugIcon, SettingsIcon, ThemeProvider, Toaster } from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
@@ -22,6 +15,7 @@ import { CompaniesPage } from "./routes/Companies";
 import { CompanyDetailPage } from "./routes/CompanyDetail";
 import { ContactsPage } from "./routes/Contacts";
 import { ActivitiesPage } from "./routes/Activities";
+import { TeamPage } from "./routes/Team";
 import { LoginPage } from "./routes/Login";
 import { ComingSoonPage } from "./routes/ComingSoon";
 
@@ -70,16 +64,7 @@ const router = createBrowserRouter([
               />
             ),
           },
-          {
-            path: "team",
-            element: (
-              <ComingSoonPage
-                icon={<UserPlusIcon className="size-6" />}
-                title="Team Members"
-                description="Invite and manage the reps who work this pipeline, and set their territories."
-              />
-            ),
-          },
+          { path: "team", element: <TeamPage /> },
           {
             path: "settings",
             element: (
@@ -104,8 +89,9 @@ const router = createBrowserRouter([
             path: "*",
             element: (
               <ComingSoonPage
-                title="Not found"
-                description="That page doesn't exist. Head back to the overview."
+                eyebrow="Not found"
+                title="That page doesn't exist"
+                description="Check the address, or head back to the overview."
               />
             ),
           },
@@ -125,7 +111,9 @@ if (!rootEl) throw new Error("Root element #root not found");
 createRoot(rootEl).render(
   <StrictMode>
     <ThemeProvider storageKey="opsgrids.crm.theme">
-      <RouterProvider router={router} />
+      <Toaster>
+        <RouterProvider router={router} />
+      </Toaster>
     </ThemeProvider>
   </StrictMode>,
 );

@@ -101,10 +101,13 @@ export interface Activity {
   direction: ActivityDirection | null;
 }
 
-/** Small envelope every list endpoint returns. */
+/** The envelope every list endpoint returns, straight from `platform_core.pagination.Page`. */
 export interface Page<T> {
   items: T[];
   total: number;
+  page: number;
+  size: number;
+  pages: number;
 }
 
 /* ---------------------------- dashboard rollups ---------------------------- */
@@ -132,4 +135,22 @@ export interface AttentionItem {
   reason: "stale" | "closing_soon" | "overdue";
   /** A short human explanation, e.g. "No activity in 21 days". */
   detail: string;
+}
+
+/**
+ * Mirrors `SummaryOut` — `GET /deals/summary`, the server's own rollup over the caller's scope.
+ * The headline figures agree with what `data/derive.ts` computes client-side over the deal list
+ * (both are live); `trend`'s earlier points are representative history, its last point live.
+ */
+export interface Summary {
+  pipeline_value_minor: number;
+  weighted_pipeline_minor: number;
+  open_deals: number;
+  win_rate_pct: number;
+  won_value_minor: number;
+  /** Touches logged in the trailing seven days — live, unlike the fabricated figure this replaces. */
+  activities_this_week: number;
+  currency: string;
+  trend: TrendPoint[];
+  funnel: StageRollup[];
 }
