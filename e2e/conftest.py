@@ -102,6 +102,7 @@ SERVICES = (
     "attendance",
     "approval",
     "notification",
+    "catalog",
     "app-gateway",
 )
 
@@ -118,6 +119,7 @@ UPSTREAM_PORTS = {
     8131: "deal",
     8151: "notification",
     8152: "approval",
+    8164: "catalog",
 }
 
 #: The background processes that carry an event from the service that staged it to the service
