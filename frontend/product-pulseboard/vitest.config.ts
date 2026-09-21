@@ -3,9 +3,10 @@ import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vitest/config";
 
 /**
- * What's under test here is the API client's mappers and request shapes, and the pure rollup
- * functions in `data/derive.ts` — none of it touches the DOM, so a plain Node environment is
- * enough (no `jsdom` dependency to carry for a suite that never renders anything).
+ * The client's mappers and request shapes, the pure rollup functions in `data/derive.ts`, the
+ * money/date parsing helpers and the form dialogs all live here. The form dialogs render into the
+ * DOM, so the suite runs in `jsdom` — the same shape `@opsgrids/ui` and the other product apps
+ * already use — rather than splitting into two environments for one app.
  */
 export default defineConfig({
   resolve: {
@@ -14,8 +15,9 @@ export default defineConfig({
     },
   },
   test: {
-    environment: "node",
+    environment: "jsdom",
     include: ["src/**/*.test.{ts,tsx}"],
+    setupFiles: ["./src/test-setup.ts"],
     restoreMocks: true,
   },
 });

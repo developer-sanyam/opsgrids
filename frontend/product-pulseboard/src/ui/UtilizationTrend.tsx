@@ -1,7 +1,7 @@
 import { useId, useMemo, useState } from "react";
 
 import type { TrendPoint } from "@/api/types";
-import { DeltaPill } from "@opsgrids/ui";
+import { DeltaPill, SampleChip } from "@opsgrids/ui";
 
 const W = 640;
 const H = 200;
@@ -32,15 +32,20 @@ function geometry(series: TrendPoint[]): Geo {
 interface UtilizationTrendProps {
   /** The live current-week utilization shown as the headline. */
   current: number;
-  deltaPct: number;
+  /** Omit where there is no real prior-week figure to compare against — no delta pill renders,
+   * rather than a fabricated "+0%" that claims a week-over-week comparison that was never made. */
+  deltaPct?: number;
   series: TrendPoint[];
+  /** Marks the series (not the live headline) as representative — `/timesheets/summary`'s
+   * history is a server-side constant until real weeks accumulate; only its last point is live. */
+  sampleHistory?: boolean;
 }
 
 /**
  * The wide utilization-over-time card: a live headline percentage with a filled area+line series
  * across the trailing weeks, a hover tooltip, and a subtle target line at 80% capacity.
  */
-export function UtilizationTrend({ current, deltaPct, series }: UtilizationTrendProps) {
+export function UtilizationTrend({ current, deltaPct, series, sampleHistory = false }: UtilizationTrendProps) {
   const [hover, setHover] = useState<number | null>(null);
   const gradientId = useId();
 
@@ -61,9 +66,10 @@ export function UtilizationTrend({ current, deltaPct, series }: UtilizationTrend
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center gap-2.5">
             <span className="display text-3xl font-extrabold tnum leading-none">{current}%</span>
-            <DeltaPill value={deltaPct} />
+            {deltaPct !== undefined ? <DeltaPill value={deltaPct} /> : null}
+            {sampleHistory ? <SampleChip label="Sample trend" title="The current week's figure is live; the prior weeks shown are representative until real history accumulates." /> : null}
           </div>
-          <span className="text-sm text-muted">team utilization this week · vs last week</span>
+          <span className="text-sm text-muted">team utilization this week · trailing weeks</span>
         </div>
         <div className="flex items-center gap-3 text-xs font-medium text-muted">
           <span className="inline-flex items-center gap-1.5">

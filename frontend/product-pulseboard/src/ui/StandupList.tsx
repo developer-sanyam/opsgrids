@@ -1,7 +1,8 @@
 import { useMemo } from "react";
 
 import type { Person, StandupEntry } from "@/api/types";
-import { AlertTriangleIcon, Avatar, CheckCircleIcon, cn } from "@opsgrids/ui";
+import { Can } from "@opsgrids/client";
+import { AlertTriangleIcon, Avatar, CheckCircleIcon, RowActions, cn } from "@opsgrids/ui";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -17,14 +18,22 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
  * dedicated, coloured row (amber when present, a quiet green "all clear" when not) so a blocked
  * person is never buried in prose.
  */
-function StandupCard({ entry, who }: { entry: StandupEntry; who: Person | undefined }) {
+function StandupCard({
+  entry,
+  who,
+  onEdit,
+}: {
+  entry: StandupEntry;
+  who: Person | undefined;
+  onEdit: () => void;
+}) {
   const blocked = entry.blockers !== null;
   return (
     <article className="flex flex-col gap-4 rounded-card bg-surface p-5 shadow-card">
       <header className="flex items-center gap-3">
         <Avatar name={who?.name ?? "Unknown"} size="md" />
         <div className="flex min-w-0 flex-col leading-tight">
-          <span className="truncate font-bold text-ink">{who?.name}</span>
+          <span className="truncate font-bold text-ink">{who?.name ?? entry.person_id}</span>
           <span className="truncate text-xs text-muted">{who?.role}</span>
         </div>
         {blocked ? (
@@ -38,6 +47,9 @@ function StandupCard({ entry, who }: { entry: StandupEntry; who: Person | undefi
             Clear
           </span>
         )}
+        <Can permission="pulseboard.standup.entry.write">
+          <RowActions label={who?.name ?? "check-in"} actions={[{ label: "Edit", onSelect: onEdit }]} />
+        </Can>
       </header>
 
       <div className="grid gap-4 sm:grid-cols-2">
@@ -45,19 +57,12 @@ function StandupCard({ entry, who }: { entry: StandupEntry; who: Person | undefi
         <Field label="Today">{entry.today}</Field>
       </div>
 
-      <div
-        className={cn(
-          "flex items-start gap-2.5 rounded-tile px-3 py-2.5",
-          blocked ? "bg-late-soft/60" : "bg-ground",
-        )}
-      >
+      <div className={cn("flex items-start gap-2.5 rounded-tile px-3 py-2.5", blocked ? "bg-late-soft/60" : "bg-ground")}>
         <span className={cn("mt-0.5 shrink-0", blocked ? "text-late" : "text-present")}>
           {blocked ? <AlertTriangleIcon className="size-4" /> : <CheckCircleIcon className="size-4" />}
         </span>
         <div className="flex flex-col gap-0.5">
-          <span className="text-[0.65rem] font-bold uppercase tracking-wider text-faint">
-            Blockers
-          </span>
+          <span className="text-[0.65rem] font-bold uppercase tracking-wider text-faint">Blockers</span>
           <p className={cn("text-sm leading-snug", blocked ? "text-ink-soft" : "text-muted")}>
             {entry.blockers ?? "No blockers — clear to keep moving."}
           </p>
@@ -67,12 +72,20 @@ function StandupCard({ entry, who }: { entry: StandupEntry; who: Person | undefi
   );
 }
 
-export function StandupList({ entries, people }: { entries: StandupEntry[]; people: Person[] }) {
+export function StandupList({
+  entries,
+  people,
+  onEdit,
+}: {
+  entries: StandupEntry[];
+  people: Person[];
+  onEdit: (entry: StandupEntry) => void;
+}) {
   const personById = useMemo(() => new Map(people.map((p) => [p.id, p])), [people]);
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
       {entries.map((entry) => (
-        <StandupCard key={entry.id} entry={entry} who={personById.get(entry.person_id)} />
+        <StandupCard key={entry.id} entry={entry} who={personById.get(entry.person_id)} onEdit={() => onEdit(entry)} />
       ))}
     </div>
   );
