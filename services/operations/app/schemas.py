@@ -164,6 +164,14 @@ class PurchaseOrderOut(BaseModel):
     notes: str | None
 
 
+class PurchaseOrderReceiptOut(PurchaseOrderOut):
+    """What receiving answers with: the order, plus the SKUs of the lines that matched no
+    inventory item and therefore posted no stock (a freight or service line, or a SKU nobody
+    has created yet)."""
+
+    unmatched_skus: list[str] = Field(default_factory=list)
+
+
 class PoLineIn(BaseModel):
     """One line on `PurchaseOrderIn`/`PurchaseOrderPatch.lines`. `sku` is free text — a line
     against a SKU with no matching inventory item is a service/logistics line, not an error; it

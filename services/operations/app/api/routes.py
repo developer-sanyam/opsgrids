@@ -36,6 +36,7 @@ from app.schemas import (
     PurchaseOrderIn,
     PurchaseOrderOut,
     PurchaseOrderPatch,
+    PurchaseOrderReceiptOut,
     ReceiveIn,
     ServiceInfo,
     StockAdjustmentIn,
@@ -319,7 +320,7 @@ async def approve_purchase_order(
 
 @router.post(
     "/operations/purchase-orders/{po_id}/receive",
-    response_model=PurchaseOrderOut,
+    response_model=PurchaseOrderReceiptOut,
     summary="Receive a purchase order (marks it received, fills received quantities and posts "
     "stock)",
     dependencies=[Entitled],
@@ -330,17 +331,19 @@ async def receive_purchase_order(
     ctx: PoWrite,
     request: Request,
     payload: ReceiveIn | None = None,
-) -> PurchaseOrderOut:
+) -> PurchaseOrderReceiptOut:
     po = await selectors.get_purchase_order(session, ctx.organization_id, po_id)
     if po is None:
         raise NotFoundProblem("That purchase order is not part of this organization")
     ctx.assert_can_touch(owner_id=po.raised_by_id)
     received_date = payload.received_date if payload is not None else None
+    unmatched: list[str] = []
     await services.receive_purchase_order(
-        session, ctx, po, received_date=received_date, request=request
+        session, ctx, po, received_date=received_date, request=request, unmatched_out=unmatched
     )
     lines = await selectors.lines_for(session, ctx.organization_id, po.id)
-    return selectors.purchase_order_out(po, lines=lines)
+    out = selectors.purchase_order_out(po, lines=lines)
+    return PurchaseOrderReceiptOut(**out.model_dump(), unmatched_skus=unmatched)
 
 
 @router.post(

@@ -399,6 +399,8 @@ class TestPoLifecycle:
             po_id = created.json()["id"]
             received = await client.post(f"/api/v1/operations/purchase-orders/{po_id}/receive")
         assert received.status_code == 200
+        # The freight line matches no inventory item: it posts no stock, and the answer says so.
+        assert received.json()["unmatched_skus"] == ["SVC-FREIGHT"]
 
         with as_principal(
             principal_for(

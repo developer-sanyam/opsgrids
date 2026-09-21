@@ -183,7 +183,16 @@ async def create_supplier(
     `since` defaults to today rather than staying null — `SupplierOut.since` is a required field
     over a nullable column, and a row created with none used to be an unconditional 500."""
     if await selectors.get_supplier_by_code(session, ctx.organization_id, code):
-        raise ConflictProblem(f"A supplier coded {code!r} already exists")
+        raise ConflictProblem(
+            f"A supplier coded {code!r} already exists",
+            errors=[
+                {
+                    "field": "code",
+                    "code": "duplicate",
+                    "message": f"A supplier coded {code!r} already exists",
+                }
+            ],
+        )
 
     supplier = Supplier(
         organization_id=ctx.organization_id,
@@ -358,9 +367,27 @@ async def create_warehouse(
     `inventory_items.warehouse` and `purchase_orders.warehouse` carry — so a duplicate name is
     refused exactly like a duplicate code."""
     if await selectors.get_warehouse_by_code(session, ctx.organization_id, code):
-        raise ConflictProblem(f"A warehouse coded {code!r} already exists")
+        raise ConflictProblem(
+            f"A warehouse coded {code!r} already exists",
+            errors=[
+                {
+                    "field": "code",
+                    "code": "duplicate",
+                    "message": f"A warehouse coded {code!r} already exists",
+                }
+            ],
+        )
     if await selectors.get_warehouse_by_name(session, ctx.organization_id, name):
-        raise ConflictProblem(f"A warehouse named {name!r} already exists")
+        raise ConflictProblem(
+            f"A warehouse named {name!r} already exists",
+            errors=[
+                {
+                    "field": "name",
+                    "code": "duplicate",
+                    "message": f"A warehouse named {name!r} already exists",
+                }
+            ],
+        )
 
     warehouse = Warehouse(
         organization_id=ctx.organization_id,
@@ -417,7 +444,16 @@ async def update_warehouse(
             session, ctx.organization_id, changes["name"]
         )
         if existing is not None and existing.id != warehouse.id:
-            raise ConflictProblem(f"A warehouse named {changes['name']!r} already exists")
+            raise ConflictProblem(
+                f"A warehouse named {changes['name']!r} already exists",
+                errors=[
+                    {
+                        "field": "name",
+                        "code": "duplicate",
+                        "message": f"A warehouse named {changes['name']!r} already exists",
+                    }
+                ],
+            )
 
     old_name = warehouse.name
     before = {field: getattr(warehouse, field) for field in changes}
@@ -952,6 +988,7 @@ async def receive_purchase_order(
     *,
     received_date: date | None = None,
     request: Request | None = None,
+    unmatched_out: list[str] | None = None,
 ) -> PurchaseOrder:
     """Mark a purchase order received: move it to `received`, stamp the delivery date, fill in
     each line's `received_qty` to the ordered quantity, and post the stock. Only a draft or
@@ -1044,6 +1081,10 @@ async def receive_purchase_order(
         },
         actor=_actor(ctx),
     )
+    # The route answers with these: a line that posted no stock is something the person who
+    # just clicked Receive needs to see, not something to be found in the audit log later.
+    if unmatched_out is not None:
+        unmatched_out.extend(unmatched_skus)
     return po
 
 
