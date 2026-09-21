@@ -36,6 +36,7 @@ import {
   TruckIcon,
   useToast,
 } from "@opsgrids/ui";
+import { purchaseOrderActions } from "../lib/purchaseOrderActions";
 
 function lineTotal(line: PoLineItem): number {
   return line.quantity * line.unit_price_minor;
@@ -188,6 +189,7 @@ export function PurchaseOrderDetailPage() {
   }
 
   const total = po.line_items.reduce((s, l) => s + lineTotal(l), 0);
+  const actions = purchaseOrderActions(po.status, canApprove);
 
   function submitCancel() {
     setCancelReasonError(undefined);
@@ -216,7 +218,7 @@ export function PurchaseOrderDetailPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {po.status === "draft" ? (
+          {actions.edit ? (
             <Can permission="operations.procurement.purchase_order.write" scope="OWN">
               <Button variant="outline" onClick={() => navigate(`/purchase-orders/${id}/edit`)}>
                 Edit
@@ -226,7 +228,7 @@ export function PurchaseOrderDetailPage() {
               </Button>
             </Can>
           ) : null}
-          {po.status === "draft" && canApprove ? (
+          {actions.approve ? (
             <Button
               variant="outline"
               loading={approve.pending}
@@ -235,7 +237,9 @@ export function PurchaseOrderDetailPage() {
               Approve
             </Button>
           ) : null}
-          {po.status === "draft" || po.status === "approved" ? (
+          {/* Approval is a prerequisite for receiving: the service refuses to receive a draft, so
+              the control only exists once someone with the approve permission has signed off. */}
+          {actions.receive ? (
             <Can permission="operations.procurement.purchase_order.write" scope="OWN">
               <Button
                 leadingIcon={<CheckCircleIcon className="size-4" />}
@@ -244,12 +248,18 @@ export function PurchaseOrderDetailPage() {
               >
                 Mark as received
               </Button>
+            </Can>
+          ) : null}
+          {/* Cancelling a draft undoes nothing. Cancelling an approved order reverses spend an
+              approver committed, so the service asks for the approve permission as well. */}
+          {actions.cancel ? (
+            <Can permission="operations.procurement.purchase_order.write" scope="OWN">
               <Button variant="outline" onClick={() => setCancelling(true)}>
                 Cancel order
               </Button>
             </Can>
           ) : null}
-          {po.status === "received" ? (
+          {actions.close ? (
             <Can permission="operations.procurement.purchase_order.write" scope="OWN">
               <Button loading={close.pending} onClick={() => void close.mutate(undefined)}>
                 Close order

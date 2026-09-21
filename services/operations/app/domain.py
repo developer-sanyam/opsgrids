@@ -46,11 +46,13 @@ OPEN_STATUSES: frozenset[str] = frozenset({"draft", "approved"})
 
 #: The lifecycle: draft -> approved -> received -> closed, with a `cancelled` terminal state
 #: reachable from draft or approved (an approved PO that will never arrive must not stay "open"
-#: forever, inflating `open_pos` and the late-delivery attention queue). Receiving directly from
-#: `draft` is deliberately still allowed — approval is a commitment step, not a prerequisite gate
-#: on receiving; tightening that is a product decision, not a CRUD gap.
+#: forever, inflating `open_pos` and the late-delivery attention queue). Approval is a
+#: prerequisite gate on receiving, not merely a commitment step: `purchase_order.approve` is
+#: floored at ORG specifically so a buyer can never approve their own PO, and a buyer who could
+#: still receive straight from `draft` would walk straight around that gate — stock would move
+#: and spend would commit with no second person ever having signed off.
 PO_TRANSITIONS: dict[str, frozenset[str]] = {
-    "draft": frozenset({"approved", "received", "cancelled"}),
+    "draft": frozenset({"approved", "cancelled"}),
     "approved": frozenset({"received", "cancelled"}),
     "received": frozenset({"closed"}),
     "closed": frozenset(),

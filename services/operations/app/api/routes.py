@@ -69,7 +69,10 @@ Entitled = Depends(require_product("operations"))
 PoRead = Annotated[ScopeContext, Depends(require("operations.procurement.purchase_order.read"))]
 PoWrite = Annotated[ScopeContext, Depends(require("operations.procurement.purchase_order.write"))]
 #: Approving is a commitment step distinct from `purchase_order.write` (which `OPERATIONS_USER`
-#: holds at OWN) — floored at ORG so a buyer can never approve their own PO.
+#: holds at OWN) — floored at ORG so a buyer can never approve their own PO. It is also the
+#: prerequisite gate before a PO can be received: `domain.PO_TRANSITIONS` has no `draft ->
+#: received` edge, so a buyer holding only `write:OWN` cannot walk around this by receiving
+#: straight from draft.
 PoApprove = Annotated[
     ScopeContext,
     Depends(require("operations.procurement.purchase_order.approve", minimum=Scope.ORG)),
@@ -321,8 +324,8 @@ async def approve_purchase_order(
 @router.post(
     "/operations/purchase-orders/{po_id}/receive",
     response_model=PurchaseOrderReceiptOut,
-    summary="Receive a purchase order (marks it received, fills received quantities and posts "
-    "stock)",
+    summary="Receive an approved purchase order (marks it received, fills received quantities "
+    "and posts stock)",
     dependencies=[Entitled],
 )
 async def receive_purchase_order(

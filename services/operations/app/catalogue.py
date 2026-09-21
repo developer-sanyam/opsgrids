@@ -99,7 +99,11 @@ OPERATIONS = PermissionCatalogue(
         # Purchase orders. Reading has a meaningful OWN reading (the POs I raised), so it
         # defaults to OWN and tops out at ORG. Writing (raise, receive) has an OWN reading too —
         # a buyer works their own POs — so the write route sets no floor and the object-level
-        # check does the rest.
+        # check does the rest. Receiving still needs the PO to already be `approved`
+        # (`domain.PO_TRANSITIONS` has no `draft -> received` edge) — `write` alone gets a buyer
+        # to a draft, never past the approval gate. Cancelling a draft is `write` too (nothing
+        # committed, nothing to reverse); cancelling an *approved* PO additionally needs
+        # `purchase_order.approve`, because it reverses spend an approver committed.
         PermissionSpec(
             "procurement", "purchase_order", "read", "See purchase orders and their lines", "OWN"
         ),
@@ -107,13 +111,16 @@ OPERATIONS = PermissionCatalogue(
             "procurement",
             "purchase_order",
             "write",
-            "Raise, edit and delete draft purchase orders; receive, close and cancel them",
+            "Raise, edit and delete draft purchase orders; receive an approved one; close it; "
+            "cancel a draft (cancelling an approved one also needs approve)",
             "OWN",
         ),
-        # Approving is a commitment step distinct from raising/editing/receiving: a buyer holds
+        # Approving is a commitment step distinct from raising/editing/receiving, and the
+        # prerequisite gate before a PO can be received at all: a buyer holds
         # `purchase_order.write` at OWN so they can work their own POs, but approving must not
-        # let that same buyer sign off on their own spend. No OWN reading, so every grant floors
-        # at ORG.
+        # let that same buyer sign off on their own spend, or walk around the sign-off by
+        # receiving straight from draft. No OWN reading, so every grant floors at ORG. The same
+        # floor gates cancelling an already-approved PO, since that reverses the commitment.
         PermissionSpec(
             "procurement", "purchase_order", "approve", "Approve a purchase order", "ORG", "ORG"
         ),

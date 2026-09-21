@@ -44,8 +44,13 @@ from app.schemas import (
     WarehousePatch,
 )
 from platform_core.audit import record_audit
-from platform_core.auth import ScopeContext
-from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
+from platform_core.auth import Scope, ScopeContext
+from platform_core.errors import (
+    ConflictProblem,
+    ForbiddenProblem,
+    NotFoundProblem,
+    ValidationProblem,
+)
 from platform_core.events import publish_event
 
 # Event names. `operations.*` because these are the product's own, not the platform's.
@@ -991,9 +996,10 @@ async def receive_purchase_order(
     unmatched_out: list[str] | None = None,
 ) -> PurchaseOrder:
     """Mark a purchase order received: move it to `received`, stamp the delivery date, fill in
-    each line's `received_qty` to the ordered quantity, and post the stock. Only a draft or
-    approved PO can be received — receiving a closed, already-received or cancelled PO is
-    refused.
+    each line's `received_qty` to the ordered quantity, and post the stock. Only an *approved*
+    PO can be received — approval is a prerequisite gate, not a skippable commitment step, so a
+    draft (not yet signed off by an ORG-scope approver), an already-received, a closed or a
+    cancelled PO is refused.
 
     Each line whose `sku` matches a live inventory item in the org gets a `receipt` movement of
     `+quantity`, referencing this PO. A line with no matching SKU is a service/logistics line,
@@ -1001,9 +1007,13 @@ async def receive_purchase_order(
     and the event payload so that is visible rather than silent.
     """
     if not domain.can_transition_po(po.status, "received"):
+        if po.status == "draft":
+            raise ConflictProblem(
+                f"Purchase order {po.number} is draft and must be approved before it can be "
+                "received"
+            )
         raise ConflictProblem(f"Purchase order {po.number} is {po.status} and cannot be received")
 
-    was_draft = po.status == "draft"
     landed = received_date or datetime.now(UTC).date()
     po.status = "received"
     po.received_date = landed
@@ -1037,16 +1047,9 @@ async def receive_purchase_order(
         )
     await session.flush()
 
-    total = domain.po_total_minor(lines)
-    supplier = await selectors.get_supplier(session, ctx.organization_id, po.supplier_id)
-    # A PO approved earlier already had its spend committed at approve time; only a PO received
-    # straight from `draft` (approval skipped) commits it here, and only in the PO's own currency.
-    spend_delta = (
-        total if was_draft and supplier is not None and supplier.currency == po.currency else 0
-    )
-    await _bump_supplier(
-        session, ctx.organization_id, po.supplier_id, open_pos=-1, spend_minor=spend_delta
-    )
+    # Spend was already committed once, at approve time — the only way into `received` now that
+    # `approved` is a prerequisite. Receiving only closes out the supplier's open-PO count.
+    await _bump_supplier(session, ctx.organization_id, po.supplier_id, open_pos=-1)
 
     record_audit(
         session,
@@ -1143,11 +1146,26 @@ async def cancel_purchase_order(
     """`draft|approved -> cancelled`. The terminal, unordinary end: an approved PO that will
     never arrive must not stay "open" forever, inflating `open_pos` and the late-delivery
     attention queue. Reverses the `approve` spend commitment if the PO had made it; a PO
-    cancelled straight from `draft` never committed spend, so there is nothing to reverse."""
+    cancelled straight from `draft` never committed spend, so there is nothing to reverse.
+
+    Cancelling an **approved** PO needs `purchase_order.approve` at ORG, the same floor as
+    approving itself — it reverses spend an ORG-scope approver committed, and a buyer holding
+    only `write:OWN` unilaterally undoing that would be the same separation-of-duty hole as
+    letting them approve their own PO, worked from the other end. Cancelling a **draft** PO
+    reverses nothing (no spend was ever committed) and stays at `write:OWN`, the same as
+    deleting one.
+    """
     if not domain.can_transition_po(po.status, "cancelled"):
         raise ConflictProblem(f"Purchase order {po.number} is {po.status} and cannot be cancelled")
 
     was_approved = po.status == "approved"
+    if was_approved:
+        approve_scope = ctx.principal.scope_for("operations.procurement.purchase_order.approve")
+        if approve_scope is None or approve_scope.rank < Scope.ORG.rank:
+            raise ForbiddenProblem(
+                "Cancelling an approved purchase order needs the approve permission"
+            )
+
     po.status = "cancelled"
     po.updated_by = str(ctx.principal.sub)
     po.updated_at = datetime.now(UTC)
