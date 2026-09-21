@@ -87,6 +87,11 @@ PASSWORD = "e2e-Sufficiently-Long-Passw0rd!"
 #: (`test_approval_journey.py`): an attendance correction is raised in one service, routed by a
 #: second off a hierarchy the third published, and applied back into the first. Every hop is a
 #: contract between two services, which is the only kind of defect this suite exists to catch.
+#: `notification` joined for `test_engage_journey.py`: Engage is a product this service serves
+#: (a second catalogue, `app/catalogue.py::ENGAGE`, alongside the platform's own `notification`
+#: plumbing), and the only way to prove its sending-identity API works for an authenticated
+#: caller — rather than merely refusing one with no token — is to boot the real service and
+#: drive it over HTTP.
 SERVICES = (
     "account",
     "product",
@@ -96,6 +101,7 @@ SERVICES = (
     "employee",
     "attendance",
     "approval",
+    "notification",
     "app-gateway",
 )
 
@@ -110,6 +116,7 @@ UPSTREAM_PORTS = {
     8121: "attendance",
     8130: "customer",
     8131: "deal",
+    8151: "notification",
     8152: "approval",
 }
 

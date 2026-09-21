@@ -319,6 +319,13 @@ https://store.opsgrids.com {
 	}
 }
 
+# ---------------------------------------------------------------------------- OpsGrids Engage
+# Deliberately not served yet. The bundle publishes to /srv/web/engage/current already, but a
+# site block here would fail preflight: it refuses any name the box's TLS_PLATFORM_HOSTS does
+# not list, because a served name with no certificate is worse than an unserved one. That
+# variable lives in the box's own .env (RUNBOOK §2), so the block goes in once the name is
+# added there — one line, then this comment becomes the site.
+
 # ---------------------------------------------------------------------------- every store
 #
 # A catch-all rather than a list of hostnames. `*.stores.opsgrids.com` is deliberately *not* a
