@@ -7,7 +7,6 @@ import {
   getTasks,
   getTimesheets,
   listProjects,
-  WEEK_START,
 } from "./client";
 
 /** Stub `fetch` once, capture the request URL, and answer with the given JSON body. */
@@ -30,6 +29,7 @@ function requestedUrl(fetchMock: ReturnType<typeof vi.fn>): string {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("listProjects", () => {
@@ -169,10 +169,18 @@ describe("getPeople", () => {
 });
 
 describe("getTimesheets", () => {
-  it("requests the current week's grid from the timesheet service", async () => {
+  // `TODAY`/`WEEK_START` are derived at module load from the real clock on the live path, so
+  // proving that requires pinning the clock to a known instant and checking the literal week —
+  // asserting against the module's own `WEEK_START` would just compare a value with itself and
+  // could never catch a regression back to the pinned fixture week.
+  it("requests the Monday of the real current week, not the pinned fixture week", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-21T10:00:00Z")); // a Monday
+    vi.resetModules();
+    const live = await import("./client");
     const fetchMock = stubFetch({ items: [], total: 0 });
-    await getTimesheets();
-    expect(requestedUrl(fetchMock)).toBe(`/api/v1/timesheets?week=${WEEK_START}&size=200`);
+    await live.getTimesheets();
+    expect(requestedUrl(fetchMock)).toBe("/api/v1/timesheets?week=2026-09-21&size=200");
   });
 
   it("maps a wire row and its cells", async () => {
@@ -202,6 +210,16 @@ describe("getStandups", () => {
     const fetchMock = stubFetch({ items: [], total: 0 });
     await getStandups("2026-08-24");
     expect(requestedUrl(fetchMock)).toBe("/api/v1/standups?date=2026-08-24&size=200");
+  });
+
+  it("defaults to the real current date when called with no argument, not the pinned fixture date", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-03T09:00:00Z"));
+    vi.resetModules();
+    const live = await import("./client");
+    const fetchMock = stubFetch({ items: [], total: 0 });
+    await live.getStandups();
+    expect(requestedUrl(fetchMock)).toBe("/api/v1/standups?date=2026-11-03&size=200");
   });
 
   it("maps a wire entry, preserving a null blockers field", async () => {

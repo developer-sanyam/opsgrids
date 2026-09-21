@@ -16,14 +16,15 @@
  */
 
 import { apiRequest } from "@opsgrids/client";
+import { isoOf, mondayOf, weekFrom } from "./dates";
 import {
   PROJECTS,
   STANDUPS,
   TASKS,
   TIMESHEETS,
-  TODAY,
-  WEEK_DATES,
-  WEEK_START,
+  TODAY as FIXTURE_TODAY,
+  WEEK_DATES as FIXTURE_WEEK_DATES,
+  WEEK_START as FIXTURE_WEEK_START,
 } from "./fixtures";
 import { PEOPLE } from "@/data/people";
 import type {
@@ -44,8 +45,17 @@ import type {
  *  with the "Sample data" markers suppressed. */
 export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES === "true";
 
+/** The fixture rows in `fixtures.ts` are generated from a pinned date, so the date itself is
+ *  pinned too — move it and the standups, the timesheet week and the "due this week" rollups all
+ *  drift out of sync with the rows built around it. Live traffic has no generated rows to stay
+ *  consistent with, so it gets the real clock: pin that one too and every date-derived view on
+ *  this screen would quietly keep serving the same stale week forever. */
+const LIVE_TODAY = isoOf(new Date());
+
 /** The current week's Monday and its seven ISO dates — shared by the Overview and Timesheets. */
-export { WEEK_START, WEEK_DATES, TODAY };
+export const TODAY = USE_FIXTURES ? FIXTURE_TODAY : LIVE_TODAY;
+export const WEEK_START = USE_FIXTURES ? FIXTURE_WEEK_START : mondayOf(TODAY);
+export const WEEK_DATES = USE_FIXTURES ? FIXTURE_WEEK_DATES : weekFrom(WEEK_START);
 
 /** Small artificial delay so loading states are exercised in fixture mode. */
 function settle<T>(value: T, ms = 240): Promise<T> {

@@ -8,6 +8,7 @@
  */
 
 import { PEOPLE } from "@/data/people";
+import { mondayOf, weekFrom } from "./dates";
 import type {
   Project,
   StandupEntry,
@@ -74,26 +75,10 @@ export const TASKS: Task[] = [
 
 /* ------------------------------------ week dates ----------------------------------- */
 
-function isoOf(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-
-/** Monday of the week containing `iso`. */
-function mondayOf(iso: string): string {
-  const base = new Date(`${iso}T00:00:00Z`);
-  const dow = (base.getUTCDay() + 6) % 7; // 0 = Monday
-  base.setUTCDate(base.getUTCDate() - dow);
-  return isoOf(base);
-}
-
 export const WEEK_START = mondayOf(TODAY);
 
 /** The seven ISO dates of the current week, Monday first. */
-export const WEEK_DATES: string[] = Array.from({ length: 7 }, (_, i) => {
-  const d = new Date(`${WEEK_START}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + i);
-  return isoOf(d);
-});
+export const WEEK_DATES: string[] = weekFrom(WEEK_START);
 
 /* ------------------------------------ timesheets ----------------------------------- */
 
