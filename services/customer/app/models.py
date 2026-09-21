@@ -39,6 +39,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -113,7 +114,14 @@ class Company(Base, TenantBase):
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
 
     __table_args__ = (
-        UniqueConstraint("organization_id", "name", name="uq_companies_org_name"),
+        # Unique among LIVE rows only: a soft-deleted record must not hold its name hostage.
+        Index(
+            "uq_companies_org_name",
+            "organization_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         Index("ix_companies_org_status", "organization_id", "status"),
         Index("ix_companies_org_owner", "organization_id", "owner_id"),
     )
@@ -183,7 +191,14 @@ class Contact(Base, TenantBase):
     last_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
-        UniqueConstraint("organization_id", "email", name="uq_contacts_org_email"),
+        # Unique among LIVE rows only: a soft-deleted record must not hold its name hostage.
+        Index(
+            "uq_contacts_org_email",
+            "organization_id",
+            "email",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         Index("ix_contacts_org_company", "organization_id", "company_id"),
         Index("ix_contacts_org_status", "organization_id", "status"),
         Index("ix_contacts_org_owner", "organization_id", "owner_id"),

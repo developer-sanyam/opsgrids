@@ -325,10 +325,10 @@ class StockMovement(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     created_by: Mapped[str | None] = mapped_column(String(64))
 
     __table_args__ = (
-        CheckConstraint("on_hand_after >= 0", name="ck_stock_movements_on_hand_after_non_negative"),
+        CheckConstraint("on_hand_after >= 0", name="on_hand_after_non_negative"),
         CheckConstraint(
             "quantity_delta <> 0 OR kind = 'count'",
-            name="ck_stock_movements_quantity_delta_nonzero",
+            name="quantity_delta_nonzero",
         ),
         Index(
             "ix_stock_movements_org_item_created",
