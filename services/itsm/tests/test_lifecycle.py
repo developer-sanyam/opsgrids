@@ -23,6 +23,8 @@ INCIDENT_READ_ORG = "itsm.service.incident.read:ORG"
 REQUEST_WRITE_OWN = "itsm.service.request.write:OWN"
 REQUEST_WRITE_ORG = "itsm.service.request.write:ORG"
 REQUEST_READ_ORG = "itsm.service.request.read:ORG"
+CATALOG_WRITE_OWN = "itsm.service.catalog.write:OWN"
+CATALOG_WRITE_ORG = "itsm.service.catalog.write:ORG"
 ASSET_WRITE_OWN = "itsm.cmdb.asset.write:OWN"
 ASSET_WRITE_ORG = "itsm.cmdb.asset.write:ORG"
 
@@ -453,9 +455,14 @@ class TestServiceRequestFlow:
 
 
 class TestCatalogAdministration:
+    """Catalog admin (`POST`/`PATCH`/`DELETE /itsm/catalog`) is gated by its own permission,
+    `itsm.service.catalog.write` — not `itsm.service.request.write`, which only reaches the
+    request queue. `ITSM_ADMIN` holds it (`catalogue.py::ITSM.all`); `ITSM_AGENT` and
+    `ITSM_USER` do not."""
+
     async def test_create_update_and_retire(self, client, org_id, data) -> None:
         with as_principal(
-            principal_for(org_id, [REQUEST_WRITE_ORG], subject_ref=data["subject_b"])
+            principal_for(org_id, [CATALOG_WRITE_ORG], subject_ref=data["subject_b"])
         ):
             created = await client.post(
                 "/api/v1/itsm/catalog",
@@ -477,13 +484,34 @@ class TestCatalogAdministration:
         self, client, org_id, data
     ) -> None:
         with as_principal(
-            principal_for(org_id, [REQUEST_WRITE_OWN], subject_ref=data["subject_a"])
+            principal_for(org_id, [CATALOG_WRITE_OWN], subject_ref=data["subject_a"])
         ):
             response = await client.post(
                 "/api/v1/itsm/catalog",
                 json={"id": "CAT-99", "name": "Denied", "category": "hardware"},
             )
         assert response.status_code == 403
+
+    async def test_holding_request_write_without_catalog_write_is_refused_catalog_admin(
+        self, client, org_id, data
+    ) -> None:
+        """The desk's ordinary request-write grant — enough to raise, decide and fulfil
+        requests — is not enough to administer the catalog they draw from. Proven across all
+        three catalog-admin routes, not only create."""
+        with as_principal(
+            principal_for(
+                org_id, [REQUEST_WRITE_ORG, REQUEST_READ_ORG], subject_ref=data["subject_b"]
+            )
+        ):
+            created = await client.post(
+                "/api/v1/itsm/catalog",
+                json={"id": "CAT-99", "name": "Denied", "category": "hardware"},
+            )
+            updated = await client.patch("/api/v1/itsm/catalog/CAT-01", json={"sla_days": 5})
+            deleted = await client.delete("/api/v1/itsm/catalog/CAT-01")
+        assert created.status_code == 403
+        assert updated.status_code == 403
+        assert deleted.status_code == 403
 
     async def test_a_retired_item_still_names_itself_on_existing_requests(
         self, client, org_id, data
@@ -492,7 +520,7 @@ class TestCatalogAdministration:
         with as_principal(
             principal_for(
                 org_id,
-                [REQUEST_WRITE_ORG, REQUEST_READ_ORG],
+                [CATALOG_WRITE_ORG, REQUEST_READ_ORG],
                 subject_ref=data["subject_b"],
             )
         ):
