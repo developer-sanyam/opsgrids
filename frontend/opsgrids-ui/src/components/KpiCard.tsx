@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 
 import { cn } from "../lib/cn";
-import { MoreHorizontalIcon } from "../icons";
 import { Card } from "./Card";
 import { DeltaPill } from "./DeltaPill";
 import { SampleChip } from "./SampleChip";
@@ -52,7 +51,7 @@ interface KpiCardProps {
 }
 
 /**
- * A dashboard KPI: a pastel icon square, an inline trend sparkline and a "…" menu across the top,
+ * A dashboard KPI: a pastel icon square and an inline trend sparkline across the top,
  * then a label, a big tabular value and a coloured delta pill whose colour tracks whether the
  * change is *good* for this metric — not merely which way it points.
  */
@@ -78,16 +77,7 @@ export function KpiCard({
         <span className={cn("grid size-10 place-items-center rounded-tile", TONE[tone])}>
           {icon}
         </span>
-        <div className="flex items-center gap-2">
-          <Sparkline data={series} tone={good ? "good" : "bad"} />
-          <button
-            type="button"
-            aria-label={`More options for ${label}`}
-            className="grid size-7 place-items-center rounded-full text-faint hover:bg-ground hover:text-ink transition-colors"
-          >
-            <MoreHorizontalIcon className="size-4" />
-          </button>
-        </div>
+        <Sparkline data={series} tone={good ? "good" : "bad"} />
       </div>
 
       <div className="flex flex-col gap-2">
