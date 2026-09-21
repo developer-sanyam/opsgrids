@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import uuid
 from collections.abc import Iterator
+from datetime import time
 
 import pytest
 from sqlalchemy import func, select
@@ -21,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
 from app.main import app
-from app.models import AuditLog, OutboxEvent
+from app.models import AuditLog, OutboxEvent, Shift
 from app.schemas import CheckInIn, CheckOutIn
 from platform_core.auth import Principal, Scope, ScopeContext, get_principal
 from platform_core.errors import (
@@ -237,6 +238,183 @@ class TestEndpointAuthorization:
         assert response.status_code == 200
         employees = {item["employee_id"] for item in response.json()["items"]}
         assert employees == {str(records["alice"])}
+
+
+# --------------------------------------------------------------------- retiring shifts/geofences
+
+
+class TestDeleteShiftAndGeofence:
+    async def test_an_org_admin_may_retire_a_shift(self, client, org_id, records) -> None:
+        principal = principal_for(
+            org_id,
+            records["alice"],
+            ["hrms.time.shift.write:ORG", "hrms.time.shift.read:ORG"],
+        )
+        with as_principal(principal):
+            created = await client.post(
+                "/api/v1/shifts",
+                json={
+                    "code": "GEN",
+                    "name": "General",
+                    "start_time": "09:00",
+                    "end_time": "18:00",
+                },
+            )
+            assert created.status_code == 201
+            shift_id = created.json()["id"]
+
+            deleted = await client.delete(f"/api/v1/shifts/{shift_id}")
+            assert deleted.status_code == 204
+            assert deleted.content == b""
+
+            listed = await client.get("/api/v1/shifts")
+            assert shift_id not in {item["id"] for item in listed.json()["items"]}
+
+            # `uq_shifts_org_code` is a partial index on `deleted_at is null` (migration
+            # `f4c1a9b3d2e7`) — the retired code is free to be reused, not burned forever.
+            recreated = await client.post(
+                "/api/v1/shifts",
+                json={
+                    "code": "GEN",
+                    "name": "General (v2)",
+                    "start_time": "10:00",
+                    "end_time": "19:00",
+                },
+            )
+        assert recreated.status_code == 201
+        assert recreated.json()["id"] != shift_id
+
+    async def test_deleting_an_already_deleted_shift_is_not_found(
+        self, client, org_id, records
+    ) -> None:
+        principal = principal_for(org_id, records["alice"], ["hrms.time.shift.write:ORG"])
+        with as_principal(principal):
+            created = await client.post(
+                "/api/v1/shifts",
+                json={
+                    "code": "DUP",
+                    "name": "Duplicate check",
+                    "start_time": "09:00",
+                    "end_time": "18:00",
+                },
+            )
+            shift_id = created.json()["id"]
+            first = await client.delete(f"/api/v1/shifts/{shift_id}")
+            second = await client.delete(f"/api/v1/shifts/{shift_id}")
+        assert first.status_code == 204
+        assert second.status_code == 404
+
+    async def test_an_own_writer_cannot_retire_a_shift(self, client, org_id, records) -> None:
+        principal = principal_for(org_id, records["alice"], ["hrms.time.shift.write:ORG"])
+        with as_principal(principal):
+            created = await client.post(
+                "/api/v1/shifts",
+                json={
+                    "code": "PROTECTED",
+                    "name": "Protected",
+                    "start_time": "09:00",
+                    "end_time": "18:00",
+                },
+            )
+        shift_id = created.json()["id"]
+
+        weak_principal = principal_for(org_id, records["alice"], ["hrms.time.attendance.write:OWN"])
+        with as_principal(weak_principal):
+            response = await client.delete(f"/api/v1/shifts/{shift_id}")
+        assert response.status_code == 403
+
+    async def test_deleting_a_shift_in_another_organization_is_not_found(
+        self, client, org_id, admin_session
+    ) -> None:
+        """Cross-tenant isolation: naming another org's shift by id gets 404, never 403 — the
+        row must not be confirmed to exist anywhere else, and nothing about it changes."""
+        other_org = uuid.uuid4()
+        other_shift = uuid.uuid4()
+        async with admin_session.begin():
+            await admin_session.execute(
+                Shift.__table__.insert().values(
+                    id=other_shift,
+                    organization_id=other_org,
+                    code="OTHERORG",
+                    name="Other org's shift",
+                    start_time=time(9, 0),
+                    end_time=time(18, 0),
+                    grace_minutes=0,
+                    is_night=False,
+                )
+            )
+
+        principal = principal_for(org_id, uuid.uuid4(), ["hrms.time.shift.write:ORG"])
+        with as_principal(principal):
+            response = await client.delete(f"/api/v1/shifts/{other_shift}")
+        assert response.status_code == 404
+
+        async with admin_session.begin():
+            row = (
+                await admin_session.execute(select(Shift).where(Shift.id == other_shift))
+            ).scalar_one()
+            assert row.deleted_at is None
+
+    async def test_an_org_admin_may_retire_a_geofence(self, client, org_id, records) -> None:
+        principal = principal_for(
+            org_id,
+            records["alice"],
+            ["hrms.time.shift.write:ORG", "hrms.time.shift.read:ORG"],
+        )
+        with as_principal(principal):
+            created = await client.post(
+                "/api/v1/geofences",
+                json={
+                    "location_code": "SITE9",
+                    "name": "Site 9",
+                    "center_lat": "19.07",
+                    "center_lng": "72.87",
+                    "radius_m": 100,
+                },
+            )
+            assert created.status_code == 201
+            geofence_id = created.json()["id"]
+
+            deleted = await client.delete(f"/api/v1/geofences/{geofence_id}")
+            assert deleted.status_code == 204
+
+            listed = await client.get("/api/v1/geofences")
+            assert geofence_id not in {item["id"] for item in listed.json()["items"]}
+
+            # `uq_geofences_org_location` is a partial index on `deleted_at is null`
+            # (migration `f4c1a9b3d2e7`) — the retired location code is free to be reused.
+            recreated = await client.post(
+                "/api/v1/geofences",
+                json={
+                    "location_code": "SITE9",
+                    "name": "Site 9 (v2)",
+                    "center_lat": "19.08",
+                    "center_lng": "72.88",
+                    "radius_m": 150,
+                },
+            )
+        assert recreated.status_code == 201
+        assert recreated.json()["id"] != geofence_id
+
+    async def test_an_own_writer_cannot_retire_a_geofence(self, client, org_id, records) -> None:
+        principal = principal_for(org_id, records["alice"], ["hrms.time.shift.write:ORG"])
+        with as_principal(principal):
+            created = await client.post(
+                "/api/v1/geofences",
+                json={
+                    "location_code": "SITE10",
+                    "name": "Site 10",
+                    "center_lat": "19.07",
+                    "center_lng": "72.87",
+                    "radius_m": 100,
+                },
+            )
+        geofence_id = created.json()["id"]
+
+        weak_principal = principal_for(org_id, records["alice"], ["hrms.time.attendance.write:OWN"])
+        with as_principal(weak_principal):
+            response = await client.delete(f"/api/v1/geofences/{geofence_id}")
+        assert response.status_code == 403
 
 
 # --------------------------------------------------------------------- validation

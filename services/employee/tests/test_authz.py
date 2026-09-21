@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import uuid
 from collections.abc import Iterator
+from datetime import date
 
 import pytest
 from sqlalchemy import func, select
@@ -254,6 +255,35 @@ class TestValidation:
                     session, ctx, report, EmployeePatch(reporting_manager_id=report.id)
                 )
 
+    async def test_date_of_exit_cannot_be_corrected_before_the_exit_transition(
+        self, session, org_id, people
+    ) -> None:
+        """`report` starts on probation — correcting an exit date that has not happened yet is
+        refused, not silently accepted as a future-dated exit."""
+        ctx = ctx_for(org_id, people["manager"], "hrms.people.employee.write", Scope.ORG)
+        report = people["report"]
+        with pytest.raises(BusinessRuleProblem, match="only be corrected on an employee"):
+            async with session.begin():
+                await services.update_employee(
+                    session, ctx, report, EmployeePatch(date_of_exit=date(2026, 1, 1))
+                )
+
+    async def test_date_of_exit_cannot_precede_date_of_joining(
+        self, session, org_id, people
+    ) -> None:
+        ctx = ctx_for(org_id, people["manager"], "hrms.people.employee.write", Scope.ORG)
+        report = people["report"]
+        async with session.begin():
+            await services.update_employee(
+                session, ctx, report, EmployeePatch(date_of_joining=date(2024, 1, 1))
+            )
+            await services.transition_status(session, ctx, report, "exited")
+        with pytest.raises(BusinessRuleProblem, match="cannot be before date_of_joining"):
+            async with session.begin():
+                await services.update_employee(
+                    session, ctx, report, EmployeePatch(date_of_exit=date(2023, 12, 31))
+                )
+
 
 # --------------------------------------------------------------------- lifecycle
 
@@ -310,6 +340,19 @@ class TestLifecycle:
             await services.transition_status(session, ctx, report, "exited")
         assert report.status == "exited"
         assert report.date_of_exit is not None
+
+    async def test_date_of_exit_can_be_corrected_once_exited(self, session, org_id, people) -> None:
+        """`transition_status`'s own comment calls the auto-stamped date "a correction is a
+        later update" — this is that later update, and it must actually stick."""
+        ctx = ctx_for(org_id, people["manager"], "hrms.people.employee.write", Scope.ORG)
+        report = people["report"]
+        async with session.begin():
+            await services.transition_status(session, ctx, report, "exited")
+        async with session.begin():
+            corrected = await services.update_employee(
+                session, ctx, report, EmployeePatch(date_of_exit=date(2026, 3, 15))
+            )
+        assert corrected.date_of_exit == date(2026, 3, 15)
 
 
 # --------------------------------------------------------------------- events
