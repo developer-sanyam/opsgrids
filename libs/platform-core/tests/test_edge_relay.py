@@ -424,7 +424,14 @@ class TestRunForever:
                 return None
 
         task = asyncio.create_task(run_forever(settings, engine=_FakeEngine()))  # type: ignore[arg-type]
-        await asyncio.sleep(0.05)  # let both supervisors start and build their relays
+        # Wait for both relays to be running rather than for a fixed interval: on a contended CI
+        # runner 50ms was sometimes not enough for a supervisor to build its relay, the cancel
+        # landed first, and `stopped` was never set on a relay that never started.
+        for _ in range(500):  # ~5s ceiling
+            if all(relay.run_calls for relay in relays.values()):
+                break
+            await asyncio.sleep(0.01)
+        assert all(relay.run_calls for relay in relays.values()), "a supervisor never started"
         task.cancel()
 
         with pytest.raises(asyncio.CancelledError):
