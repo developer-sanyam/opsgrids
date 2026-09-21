@@ -1537,7 +1537,7 @@ export function __unmaskFixturePii(id: string, body: PiiUnmaskIn): EmployeePiiUn
     if (field === "date_of_birth") out.date_of_birth = "1990-01-01";
     if (field === "personal_email") out.personal_email = "demo.personal@example.com";
     if (field === "personal_phone") out.personal_phone = "+91 90000 00000";
-    if (field === "pan") out.pan = "ABCDE1234F";
+    if (field === "pan") out.pan = "ABCDE1234F"; // pragma: allowlist secret — a demo PAN, not a credential
     if (field === "aadhaar") out.aadhaar = "1234 5678 9012";
     if (field === "uan") out.uan = "100123456789";
     if (field === "esi") out.esi = "10012345670000123";

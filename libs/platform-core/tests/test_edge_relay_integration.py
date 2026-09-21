@@ -109,6 +109,16 @@ async def _insert_outbox_row(
         return row.id  # type: ignore[no-any-return]
 
 
+def _ours(published: list[dict[str, Any]], organization_id: uuid.UUID) -> list[dict[str, Any]]:
+    """The envelopes this test's own rows produced.
+
+    These are real, shared outbox tables: another service's test run may have left unpublished
+    rows in them, and the relay — correctly — drains those too. Judging every envelope it
+    published made this test fail on a row it never wrote.
+    """
+    return [entry for entry in published if entry.get("organization_id") == str(organization_id)]
+
+
 async def _delete_outbox_row(admin_engine: AsyncEngine, schema: str, event_id: uuid.UUID) -> None:
     # Table identifiers cannot be bound parameters; `schema` is always one of the
     # hardcoded `SCHEMAS` above, never external input.
@@ -144,8 +154,8 @@ class TestEdgeRelayAgainstRealSchemas:
 
         task = asyncio.create_task(run_forever(settings, engine=engine))
         try:
-            for _ in range(100):  # ~2s ceiling
-                if len(published) >= 2:
+            for _ in range(250):  # ~5s ceiling
+                if len(_ours(published, org_id)) >= 2:
                     break
                 await asyncio.sleep(0.02)
         finally:
@@ -156,7 +166,7 @@ class TestEdgeRelayAgainstRealSchemas:
             for schema, row_id in row_ids.items():
                 await _delete_outbox_row(admin_engine, schema, row_id)
 
-        by_schema = {entry["payload"]["schema"]: entry for entry in published}
+        by_schema = {entry["payload"]["schema"]: entry for entry in _ours(published, org_id)}
         assert set(by_schema) == set(SCHEMAS)
         assert by_schema["account"]["producer"] == "account"
         assert by_schema["activity"]["producer"] == "Activity-Service"
