@@ -132,6 +132,29 @@ class TestCreateDeal:
             )
         assert response.status_code == 403
 
+    async def test_an_own_scoped_rep_cannot_create_a_deal_owned_by_another_rep(
+        self, client, org_id, data
+    ) -> None:
+        """#9: `assert_can_touch` already refuses this at the route — this is the missing
+        coverage, mirroring `TestUpdateDeal`'s equivalent edit check."""
+        principal = principal_for(
+            org_id,
+            ["crm.pipeline.deal.write:OWN", "crm.pipeline.deal.read:OWN"],
+            subject_ref=data["subject_a"],
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/deals",
+                json={
+                    "name": "Handed To Someone Else",
+                    "company_id": str(data["company_a"]),
+                    "owner_id": str(data["subject_b"]),
+                    "value_minor": 1,
+                    "close_date": "2026-12-01",
+                },
+            )
+        assert response.status_code == 403
+
     async def test_created_in_one_org_is_invisible_to_another(self, client, org_id, data) -> None:
         other_org = uuid.uuid4()
         with as_principal(_admin(other_org, uuid.uuid4())):
@@ -198,6 +221,33 @@ class TestUpdateDeal:
                 f"/api/v1/deals/{data['deal_a_id']}", json={"source": "X"}
             )
         assert response.status_code == 403
+
+    async def test_an_own_scoped_rep_cannot_reassign_their_deal_to_another_rep(
+        self, client, org_id, data
+    ) -> None:
+        """Minor #1: `owner_id` is the OWN-scope column — the route only checks the
+        deal's *current* owner, so without a check in the writer an own-scoped rep could
+        patch their own deal onto anyone. deal-service cannot verify the target id exists
+        (no cross-schema read), so the scope half is what's enforced: OWN may only set
+        their own `subject_ref`."""
+        principal = principal_for(
+            org_id,
+            ["crm.pipeline.deal.write:OWN", "crm.pipeline.deal.read:OWN"],
+            subject_ref=data["subject_a"],
+        )
+        with as_principal(principal):
+            response = await client.patch(
+                f"/api/v1/deals/{data['deal_a_id']}", json={"owner_id": str(data["subject_b"])}
+            )
+        assert response.status_code == 403
+
+    async def test_an_org_scoped_caller_can_reassign_to_any_rep(self, client, org_id, data) -> None:
+        with as_principal(_admin(org_id, data["subject_a"])):
+            response = await client.patch(
+                f"/api/v1/deals/{data['deal_a_id']}", json={"owner_id": str(data["subject_b"])}
+            )
+        assert response.status_code == 200
+        assert response.json()["owner_id"] == str(data["subject_b"])
 
 
 # --------------------------------------------------------------------- delete

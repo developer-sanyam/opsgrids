@@ -163,9 +163,17 @@ async def update_deal(
 ) -> Deal:
     """Patch the plain deal fields. Deliberately never `stage` — `DealPatch` has no such
     field, so the transition rule in `move_stage` cannot be bypassed by a patch.
-    `company_id` / `primary_contact_id` / `owner_id` are cross-schema plain UUIDs and are
-    not verified here for the same reason `create_deal` does not verify them."""
+    `company_id` / `primary_contact_id` are cross-schema plain UUIDs and are not verified
+    here for the same reason `create_deal` does not verify them. `owner_id` is different:
+    it is the OWN-scope column, so re-checking the *current* owner on the route and then
+    applying a *new* one unchecked would let an own-scoped rep hand their own deal to
+    anyone — `ctx.assert_can_touch` re-applies the caller's scope to the incoming value
+    exactly as `create_deal`'s route does, so an OWN-scoped caller may only reassign to
+    themselves."""
     changes = payload.model_dump(exclude_unset=True)
+
+    if "owner_id" in changes:
+        ctx.assert_can_touch(owner_id=changes["owner_id"])
 
     if "name" in changes and changes["name"] != deal.name:
         existing = await selectors.get_deal_by_name(session, ctx.organization_id, changes["name"])

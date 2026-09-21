@@ -62,7 +62,9 @@ class DealIn(BaseModel):
 class DealPatch(BaseModel):
     """Partial update of the plain deal fields. Deliberately **no `stage`** — a stage
     move only ever goes through `POST /deals/{id}/stage`, so the transition rule and its
-    event can never be bypassed by a patch."""
+    event can never be bypassed by a patch. Reassigning `owner_id` is scope-checked in
+    `app.services.update_deal` exactly like naming one on create — an OWN-scoped caller
+    may only set it to themselves."""
 
     model_config = ConfigDict(extra="forbid")
 

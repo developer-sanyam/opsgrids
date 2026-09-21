@@ -436,7 +436,9 @@ async def update_contact(
     """Patch the plain contact fields. Never the phone — `ContactPatch` has no `phone` or
     `raw_phone` field, so this can never touch `phone`, `phone_enc` or `phone_index`; the
     number stays on its own dedicated route. Renaming onto another live contact's email,
-    or moving to a company outside the org, both refuse."""
+    moving to a company outside the org, or reassigning to an owner outside the org (or,
+    for an OWN-scoped caller, to anyone but themselves), all refuse — the same rule
+    `update_company` applies to `owner_id`."""
     changes = payload.model_dump(exclude_unset=True)
 
     if "email" in changes and changes["email"] != contact.email:
@@ -445,6 +447,9 @@ async def update_contact(
         )
         if existing is not None and existing.id != contact.id:
             raise ConflictProblem(f"A contact with email {changes['email']!r} already exists")
+
+    if "owner_id" in changes:
+        await _assert_owner_assignable(session, ctx, changes["owner_id"])
 
     if "company_id" in changes:
         company = await selectors.get_company(session, ctx.organization_id, changes["company_id"])

@@ -171,3 +171,51 @@ class TestCrossTenantOverHttp:
         assert listed.json()["items"] == []
         assert "Northwind" not in listed.text
         assert contacts.json()["items"] == []
+
+    async def test_org_b_cannot_patch_org_as_company(self, client, org_id, data) -> None:
+        """#9: the DELETEs are covered elsewhere; the PATCH must refuse the same way — a
+        real id from another organization reads as not-found, and the row is untouched."""
+        other_org = uuid.uuid4()
+        outsider = principal_for(
+            other_org, ["crm.book.company.write:ORG"], subject_ref=uuid.uuid4()
+        )
+        app.dependency_overrides[get_principal] = lambda: outsider
+        try:
+            response = await client.patch(
+                f"/api/v1/customers/{data['company_a_id']}", json={"city": "Nowhere"}
+            )
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+        assert response.status_code == 404
+
+        owner = principal_for(org_id, ["crm.book.company.read:ORG"], subject_ref=data["subject_a"])
+        app.dependency_overrides[get_principal] = lambda: owner
+        try:
+            still_there = await client.get(f"/api/v1/customers/{data['company_a_id']}")
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+        assert still_there.status_code == 200
+        assert still_there.json()["city"] != "Nowhere"
+
+    async def test_org_b_cannot_patch_org_as_contact(self, client, org_id, data) -> None:
+        other_org = uuid.uuid4()
+        outsider = principal_for(
+            other_org, ["crm.book.contact.write:ORG"], subject_ref=uuid.uuid4()
+        )
+        app.dependency_overrides[get_principal] = lambda: outsider
+        try:
+            response = await client.patch(
+                f"/api/v1/contacts/{data['contact_a_id']}", json={"title": "Nowhere"}
+            )
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+        assert response.status_code == 404
+
+        owner = principal_for(org_id, ["crm.book.contact.read:ORG"], subject_ref=data["subject_a"])
+        app.dependency_overrides[get_principal] = lambda: owner
+        try:
+            still_there = await client.get(f"/api/v1/contacts/{data['contact_a_id']}")
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+        assert still_there.status_code == 200
+        assert still_there.json()["title"] != "Nowhere"

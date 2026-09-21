@@ -467,6 +467,32 @@ class TestUpdateContact:
             )
         assert response.status_code == 403
 
+    async def test_reassigning_to_an_unknown_owner_is_not_found(self, client, org_id, data) -> None:
+        with as_principal(_admin(org_id, data["subject_a"])):
+            response = await client.patch(
+                f"/api/v1/contacts/{data['contact_a_id']}",
+                json={"owner_id": str(uuid.uuid4())},
+            )
+        assert response.status_code == 404
+
+    async def test_an_own_scoped_rep_cannot_reassign_a_contact_to_another_rep(
+        self, client, org_id, data
+    ) -> None:
+        """M2: `owner_id` is the OWN-scope column — an own-scoped rep patching their own
+        contact must not be able to hand it to another rep's book, mirroring
+        `TestUpdateCompany`'s equivalent check."""
+        principal = principal_for(
+            org_id,
+            ["crm.book.contact.write:OWN", "crm.book.contact.read:OWN"],
+            subject_ref=data["subject_a"],
+        )
+        with as_principal(principal):
+            response = await client.patch(
+                f"/api/v1/contacts/{data['contact_a_id']}",
+                json={"owner_id": str(data["subject_b"])},
+            )
+        assert response.status_code == 403
+
 
 class TestDeleteContact:
     async def test_happy_path(self, client, org_id, data) -> None:
