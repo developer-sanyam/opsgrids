@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { ArrowLeftIcon, ArrowRightIcon } from "@opsgrids/ui";
 
@@ -148,6 +148,19 @@ type Step = "kind" | "credentials" | "confirm";
  *  own description — tied to the dialog by `aria-describedby` — and again through the live region
  *  when the step is reached, because a step change inside an already-open dialog moves no focus
  *  for a screen reader to follow onto it. */
+/** The heading each step carries, focused on every change so a step change inside an
+ *  already-open dialog — which moves no focus of its own — still lands screen-reader focus on
+ *  the question now on screen. Reused for the Card's own steps in `"connect"` mode, where there
+ *  is no dialog to have focused anything in the first place. */
+const STEP_TITLE: Record<Step, string> = {
+  kind: "How does your organization send email?",
+  credentials: "Enter your credentials",
+  // Distinct from the confirmation `Dialog`'s own title ("Confirm the replacement") — that text
+  // already exists once on screen as the dialog's `<h2>`, and this heading exists only to be
+  // this step's own focus target, not to repeat it under a second heading with the same name.
+  confirm: "Review before confirming",
+};
+
 const REPLACE_CONSEQUENCE =
   "Replacing the connection resets every sender in this organization to unusable. Each one " +
   "needs a new test message before it can send again, and none of them can send until it has.";
@@ -176,6 +189,20 @@ export function ConnectionWizard({
   const [errors, setErrors] = useState<Errors>({});
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const stepHeadingRef = useRef<HTMLHeadingElement>(null);
+  const previousStepRef = useRef<Step>(step);
+
+  // Fires on a real step change only — not on mount, where the Card's own heading or (in
+  // `"replace"` mode) `Dialog`'s open-focus already did the right thing. `Dialog` only moves
+  // focus when it opens, not when the step inside it changes, so this is what makes "kind" →
+  // "credentials" → "confirm" (and back) land focus on the question that's now on screen instead
+  // of leaving it on a "Continue" button that just left the page.
+  useEffect(() => {
+    if (previousStepRef.current !== step) {
+      stepHeadingRef.current?.focus();
+    }
+    previousStepRef.current = step;
+  }, [step]);
 
   function set<K extends keyof Values>(key: K, value: Values[K]) {
     setValues((current) => ({ ...current, [key]: value }));
@@ -290,6 +317,12 @@ export function ConnectionWizard({
 
   const kindStep = (
     <>
+      {/* Visually hidden: `RadioGroup`'s own legend already says this on screen. This is only the
+          focus target a step change moves to, so a screen reader hears the new question the
+          instant it appears instead of staying parked on the button that was just clicked. */}
+      <h3 ref={stepHeadingRef} tabIndex={-1} className="sr-only focus:outline-none">
+        {STEP_TITLE.kind}
+      </h3>
       <RadioGroup
         legend="How does your organization send email?"
         name="connection-kind"
@@ -325,6 +358,9 @@ export function ConnectionWizard({
         }
       }}
     >
+      <h3 ref={stepHeadingRef} tabIndex={-1} className="text-base font-bold text-ink focus:outline-none">
+        {STEP_TITLE.credentials}
+      </h3>
       <div className="flex flex-wrap items-center gap-3 rounded-tile bg-ground px-4 py-3">
         <span className="text-sm text-muted">Sending through</span>
         <span className="text-sm font-bold text-ink">{connectionKindLabel(kind)}</span>
@@ -410,6 +446,12 @@ export function ConnectionWizard({
 
   const confirmStep = (
     <div className="flex flex-col gap-4">
+      {/* Visually hidden: this step's `Dialog` title already says this on screen (see `title`
+          below). This is only the focus target, since Dialog moves focus when it opens, not when
+          the step inside it changes. */}
+      <h3 ref={stepHeadingRef} tabIndex={-1} className="sr-only focus:outline-none">
+        {STEP_TITLE.confirm}
+      </h3>
       <div className="flex flex-col gap-1 rounded-tile bg-ground px-4 py-3">
         <span className="text-sm text-muted">Replacing with</span>
         <span className="text-sm font-bold text-ink">
