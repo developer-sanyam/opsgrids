@@ -104,15 +104,50 @@ OPERATIONS = PermissionCatalogue(
             "procurement", "purchase_order", "read", "See purchase orders and their lines", "OWN"
         ),
         PermissionSpec(
-            "procurement", "purchase_order", "write", "Raise and receive purchase orders", "OWN"
+            "procurement",
+            "purchase_order",
+            "write",
+            "Raise, edit and delete draft purchase orders; receive, close and cancel them",
+            "OWN",
+        ),
+        # Approving is a commitment step distinct from raising/editing/receiving: a buyer holds
+        # `purchase_order.write` at OWN so they can work their own POs, but approving must not
+        # let that same buyer sign off on their own spend. No OWN reading, so every grant floors
+        # at ORG.
+        PermissionSpec(
+            "procurement", "purchase_order", "approve", "Approve a purchase order", "ORG", "ORG"
         ),
         # Suppliers are org reference data — no per-person owner — so the natural reading is ORG.
         PermissionSpec(
             "procurement", "supplier", "read", "See the supplier directory", "ORG", "ORG"
         ),
+        PermissionSpec(
+            "procurement",
+            "supplier",
+            "write",
+            "Create, edit and delete suppliers",
+            "ORG",
+            "ORG",
+        ),
         # Inventory and warehouses are org infrastructure; ORG for everyone with a seat.
         PermissionSpec("inventory", "item", "read", "See inventory on hand", "ORG", "ORG"),
+        PermissionSpec(
+            "inventory", "item", "write", "Create, edit and delete inventory items", "ORG", "ORG"
+        ),
+        # Separate from `item.write`: editing the item card is not the same act as changing its
+        # quantity, and a stock count needs its own audit trail either way.
+        PermissionSpec(
+            "inventory",
+            "stock",
+            "adjust",
+            "Adjust or count an item's stock on hand",
+            "ORG",
+            "ORG",
+        ),
         PermissionSpec("inventory", "warehouse", "read", "See warehouses", "ORG", "ORG"),
+        PermissionSpec(
+            "inventory", "warehouse", "write", "Create, edit and delete warehouses", "ORG", "ORG"
+        ),
     ],
 )
 
@@ -134,14 +169,19 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
         name="Procurement manager",
         product=PRODUCT,
         description=(
-            "Raises and receives purchase orders org-wide and reads suppliers, inventory and "
-            "warehouses."
+            "Raises, approves and receives purchase orders org-wide; maintains suppliers and "
+            "inventory (including stock adjustments); reads warehouses. Does not create or "
+            "rename warehouses — that stays with the admin."
         ),
         grants=OPERATIONS.pick(
             ("operations.procurement.purchase_order.read", "ORG"),
             ("operations.procurement.purchase_order.write", "ORG"),
+            ("operations.procurement.purchase_order.approve", "ORG"),
             ("operations.procurement.supplier.read", "ORG"),
+            ("operations.procurement.supplier.write", "ORG"),
             ("operations.inventory.item.read", "ORG"),
+            ("operations.inventory.item.write", "ORG"),
+            ("operations.inventory.stock.adjust", "ORG"),
             ("operations.inventory.warehouse.read", "ORG"),
         ),
     ),

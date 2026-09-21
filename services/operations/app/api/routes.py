@@ -21,23 +21,35 @@ import uuid
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
 from app.config import settings
 from app.models import SCHEMA, PurchaseOrderLine
 from app.schemas import (
+    CancelIn,
+    InventoryItemIn,
     InventoryItemOut,
+    InventoryItemPatch,
     OverviewOut,
+    PurchaseOrderIn,
     PurchaseOrderOut,
+    PurchaseOrderPatch,
+    ReceiveIn,
     ServiceInfo,
+    StockAdjustmentIn,
+    StockMovementOut,
+    SupplierIn,
     SupplierOut,
+    SupplierPatch,
+    WarehouseIn,
     WarehouseOut,
+    WarehousePatch,
 )
-from platform_core.auth import ScopeContext, require, require_product
+from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.db import get_tenant_session
-from platform_core.errors import NotFoundProblem
+from platform_core.errors import NotFoundProblem, ValidationProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
 # Registering the operations scope resolver at import of the api module ties it to the product it
@@ -55,9 +67,19 @@ Entitled = Depends(require_product("operations"))
 
 PoRead = Annotated[ScopeContext, Depends(require("operations.procurement.purchase_order.read"))]
 PoWrite = Annotated[ScopeContext, Depends(require("operations.procurement.purchase_order.write"))]
+#: Approving is a commitment step distinct from `purchase_order.write` (which `OPERATIONS_USER`
+#: holds at OWN) — floored at ORG so a buyer can never approve their own PO.
+PoApprove = Annotated[
+    ScopeContext,
+    Depends(require("operations.procurement.purchase_order.approve", minimum=Scope.ORG)),
+]
 SupplierRead = Annotated[ScopeContext, Depends(require("operations.procurement.supplier.read"))]
+SupplierWrite = Annotated[ScopeContext, Depends(require("operations.procurement.supplier.write"))]
 InventoryRead = Annotated[ScopeContext, Depends(require("operations.inventory.item.read"))]
+InventoryWrite = Annotated[ScopeContext, Depends(require("operations.inventory.item.write"))]
+StockAdjust = Annotated[ScopeContext, Depends(require("operations.inventory.stock.adjust"))]
 WarehouseRead = Annotated[ScopeContext, Depends(require("operations.inventory.warehouse.read"))]
+WarehouseWrite = Annotated[ScopeContext, Depends(require("operations.inventory.warehouse.write"))]
 
 
 @router.get("/operations/info", response_model=ServiceInfo, summary="What this service is")
@@ -103,6 +125,70 @@ async def read_supplier(
     return selectors.supplier_out(supplier)
 
 
+@router.post(
+    "/operations/suppliers",
+    response_model=SupplierOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a supplier",
+    dependencies=[Entitled],
+)
+async def create_supplier(
+    payload: SupplierIn, session: SessionDep, ctx: SupplierWrite, request: Request
+) -> SupplierOut:
+    supplier = await services.create_supplier(
+        session,
+        ctx,
+        code=payload.code,
+        name=payload.name,
+        category=payload.category,
+        status=payload.status,
+        lead_time_days=payload.lead_time_days,
+        currency=payload.currency,
+        contact_name=payload.contact_name,
+        contact_email=payload.contact_email,
+        location=payload.location,
+        since=payload.since,
+        request=request,
+    )
+    return selectors.supplier_out(supplier)
+
+
+@router.patch(
+    "/operations/suppliers/{supplier_id}",
+    response_model=SupplierOut,
+    summary="Update a supplier",
+    dependencies=[Entitled],
+)
+async def update_supplier(
+    supplier_id: uuid.UUID,
+    payload: SupplierPatch,
+    session: SessionDep,
+    ctx: SupplierWrite,
+    request: Request,
+) -> SupplierOut:
+    supplier = await selectors.get_supplier(session, ctx.organization_id, supplier_id)
+    if supplier is None:
+        raise NotFoundProblem("That supplier is not part of this organization")
+    updated = await services.update_supplier(session, ctx, supplier, payload, request=request)
+    return selectors.supplier_out(updated)
+
+
+@router.delete(
+    "/operations/suppliers/{supplier_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a supplier",
+    dependencies=[Entitled],
+)
+async def delete_supplier(
+    supplier_id: uuid.UUID, session: SessionDep, ctx: SupplierWrite, request: Request
+) -> Response:
+    supplier = await selectors.get_supplier(session, ctx.organization_id, supplier_id)
+    if supplier is None:
+        raise NotFoundProblem("That supplier is not part of this organization")
+    await services.delete_supplier(session, ctx, supplier, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 # ------------------------------------------------------------------ purchase orders
 
 
@@ -119,13 +205,42 @@ async def list_purchase_orders(
     q: Annotated[str | None, Query(description="Number, supplier, raiser or warehouse")] = None,
     po_status: Annotated[str | None, Query(alias="status")] = None,
     category: Annotated[str | None, Query()] = None,
+    supplier_id: Annotated[uuid.UUID | None, Query()] = None,
     sort: Annotated[str | None, Query(description="expected | created | number")] = None,
 ) -> Page[PurchaseOrderOut]:
-    stmt = selectors.purchase_orders_stmt(ctx, q=q, status=po_status, category=category, sort=sort)
+    stmt = selectors.purchase_orders_stmt(
+        ctx, q=q, status=po_status, category=category, supplier_id=supplier_id, sort=sort
+    )
     rows, total = await paginate(session, stmt, params)
     by_po = await selectors.lines_map(session, ctx.organization_id, [r.id for r in rows])
     items = [selectors.purchase_order_out(po, lines=by_po.get(po.id, [])) for po in rows]
     return Page.build(items, total=total, params=params)
+
+
+@router.post(
+    "/operations/purchase-orders",
+    response_model=PurchaseOrderOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Raise a purchase order",
+    dependencies=[Entitled],
+)
+async def create_purchase_order(
+    payload: PurchaseOrderIn, session: SessionDep, ctx: PoWrite, request: Request
+) -> PurchaseOrderOut:
+    po = await services.raise_purchase_order(
+        session,
+        ctx,
+        supplier_id=payload.supplier_id,
+        warehouse=payload.warehouse,
+        expected_date=payload.expected_date,
+        currency=payload.currency,
+        notes=payload.notes,
+        raised_by=payload.raised_by,
+        lines=[line.model_dump() for line in payload.lines],
+        request=request,
+    )
+    lines = await selectors.lines_for(session, ctx.organization_id, po.id)
+    return selectors.purchase_order_out(po, lines=lines)
 
 
 @router.get(
@@ -145,20 +260,125 @@ async def read_purchase_order(
     return selectors.purchase_order_out(po, lines=lines)
 
 
+@router.patch(
+    "/operations/purchase-orders/{po_id}",
+    response_model=PurchaseOrderOut,
+    summary="Edit a draft purchase order (and, optionally, replace its lines)",
+    dependencies=[Entitled],
+)
+async def update_purchase_order(
+    po_id: uuid.UUID,
+    payload: PurchaseOrderPatch,
+    session: SessionDep,
+    ctx: PoWrite,
+    request: Request,
+) -> PurchaseOrderOut:
+    po = await selectors.get_purchase_order(session, ctx.organization_id, po_id)
+    if po is None:
+        raise NotFoundProblem("That purchase order is not part of this organization")
+    ctx.assert_can_touch(owner_id=po.raised_by_id)
+    updated = await services.update_purchase_order(session, ctx, po, payload, request=request)
+    lines = await selectors.lines_for(session, ctx.organization_id, updated.id)
+    return selectors.purchase_order_out(updated, lines=lines)
+
+
+@router.delete(
+    "/operations/purchase-orders/{po_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a draft purchase order",
+    dependencies=[Entitled],
+)
+async def delete_purchase_order(
+    po_id: uuid.UUID, session: SessionDep, ctx: PoWrite, request: Request
+) -> Response:
+    po = await selectors.get_purchase_order(session, ctx.organization_id, po_id)
+    if po is None:
+        raise NotFoundProblem("That purchase order is not part of this organization")
+    ctx.assert_can_touch(owner_id=po.raised_by_id)
+    await services.delete_purchase_order(session, ctx, po, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/operations/purchase-orders/{po_id}/approve",
+    response_model=PurchaseOrderOut,
+    summary="Approve a draft purchase order",
+    dependencies=[Entitled],
+)
+async def approve_purchase_order(
+    po_id: uuid.UUID, session: SessionDep, ctx: PoApprove, request: Request
+) -> PurchaseOrderOut:
+    po = await selectors.get_purchase_order(session, ctx.organization_id, po_id)
+    if po is None:
+        raise NotFoundProblem("That purchase order is not part of this organization")
+    ctx.assert_can_touch(owner_id=po.raised_by_id)
+    await services.approve_purchase_order(session, ctx, po, request=request)
+    lines = await selectors.lines_for(session, ctx.organization_id, po.id)
+    return selectors.purchase_order_out(po, lines=lines)
+
+
 @router.post(
     "/operations/purchase-orders/{po_id}/receive",
     response_model=PurchaseOrderOut,
-    summary="Receive a purchase order (marks it received and fills received quantities)",
+    summary="Receive a purchase order (marks it received, fills received quantities and posts "
+    "stock)",
     dependencies=[Entitled],
 )
 async def receive_purchase_order(
+    po_id: uuid.UUID,
+    session: SessionDep,
+    ctx: PoWrite,
+    request: Request,
+    payload: ReceiveIn | None = None,
+) -> PurchaseOrderOut:
+    po = await selectors.get_purchase_order(session, ctx.organization_id, po_id)
+    if po is None:
+        raise NotFoundProblem("That purchase order is not part of this organization")
+    ctx.assert_can_touch(owner_id=po.raised_by_id)
+    received_date = payload.received_date if payload is not None else None
+    await services.receive_purchase_order(
+        session, ctx, po, received_date=received_date, request=request
+    )
+    lines = await selectors.lines_for(session, ctx.organization_id, po.id)
+    return selectors.purchase_order_out(po, lines=lines)
+
+
+@router.post(
+    "/operations/purchase-orders/{po_id}/close",
+    response_model=PurchaseOrderOut,
+    summary="Close a received purchase order",
+    dependencies=[Entitled],
+)
+async def close_purchase_order(
     po_id: uuid.UUID, session: SessionDep, ctx: PoWrite, request: Request
 ) -> PurchaseOrderOut:
     po = await selectors.get_purchase_order(session, ctx.organization_id, po_id)
     if po is None:
         raise NotFoundProblem("That purchase order is not part of this organization")
     ctx.assert_can_touch(owner_id=po.raised_by_id)
-    await services.receive_purchase_order(session, ctx, po, request=request)
+    await services.close_purchase_order(session, ctx, po, request=request)
+    lines = await selectors.lines_for(session, ctx.organization_id, po.id)
+    return selectors.purchase_order_out(po, lines=lines)
+
+
+@router.post(
+    "/operations/purchase-orders/{po_id}/cancel",
+    response_model=PurchaseOrderOut,
+    summary="Cancel a draft or approved purchase order",
+    dependencies=[Entitled],
+)
+async def cancel_purchase_order(
+    po_id: uuid.UUID,
+    payload: CancelIn,
+    session: SessionDep,
+    ctx: PoWrite,
+    request: Request,
+) -> PurchaseOrderOut:
+    po = await selectors.get_purchase_order(session, ctx.organization_id, po_id)
+    if po is None:
+        raise NotFoundProblem("That purchase order is not part of this organization")
+    ctx.assert_can_touch(owner_id=po.raised_by_id)
+    await services.cancel_purchase_order(session, ctx, po, reason=payload.reason, request=request)
     lines = await selectors.lines_for(session, ctx.organization_id, po.id)
     return selectors.purchase_order_out(po, lines=lines)
 
@@ -191,6 +411,143 @@ async def list_inventory(
     return Page.build([selectors.inventory_out(i) for i in rows], total=total, params=params)
 
 
+@router.post(
+    "/operations/inventory",
+    response_model=InventoryItemOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add an inventory item",
+    dependencies=[Entitled],
+)
+async def create_inventory_item(
+    payload: InventoryItemIn, session: SessionDep, ctx: InventoryWrite, request: Request
+) -> InventoryItemOut:
+    if (
+        await selectors.get_warehouse_by_name(session, ctx.organization_id, payload.warehouse)
+        is None
+    ):
+        raise ValidationProblem(f"{payload.warehouse!r} does not match an existing warehouse")
+    item = await services.create_inventory_item(
+        session,
+        ctx,
+        sku=payload.sku,
+        name=payload.name,
+        category=payload.category,
+        warehouse=payload.warehouse,
+        on_hand=payload.opening_on_hand,
+        reorder_point=payload.reorder_point,
+        uom=payload.uom,
+        unit_value_minor=payload.unit_value_minor,
+        currency=payload.currency,
+        request=request,
+    )
+    return selectors.inventory_out(item)
+
+
+@router.get(
+    "/operations/inventory/{item_id}",
+    response_model=InventoryItemOut,
+    summary="One inventory item",
+    dependencies=[Entitled],
+)
+async def read_inventory_item(
+    item_id: uuid.UUID, session: SessionDep, ctx: InventoryRead
+) -> InventoryItemOut:
+    item = await selectors.get_inventory_item(session, ctx.organization_id, item_id)
+    if item is None:
+        raise NotFoundProblem("That inventory item is not part of this organization")
+    return selectors.inventory_out(item)
+
+
+@router.patch(
+    "/operations/inventory/{item_id}",
+    response_model=InventoryItemOut,
+    summary="Update an inventory item's card",
+    dependencies=[Entitled],
+)
+async def update_inventory_item(
+    item_id: uuid.UUID,
+    payload: InventoryItemPatch,
+    session: SessionDep,
+    ctx: InventoryWrite,
+    request: Request,
+) -> InventoryItemOut:
+    item = await selectors.get_inventory_item(session, ctx.organization_id, item_id)
+    if item is None:
+        raise NotFoundProblem("That inventory item is not part of this organization")
+    updated = await services.update_inventory_item(session, ctx, item, payload, request=request)
+    return selectors.inventory_out(updated)
+
+
+@router.delete(
+    "/operations/inventory/{item_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete an inventory item",
+    dependencies=[Entitled],
+)
+async def delete_inventory_item(
+    item_id: uuid.UUID, session: SessionDep, ctx: InventoryWrite, request: Request
+) -> Response:
+    item = await selectors.get_inventory_item(session, ctx.organization_id, item_id)
+    if item is None:
+        raise NotFoundProblem("That inventory item is not part of this organization")
+    await services.delete_inventory_item(session, ctx, item, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/operations/inventory/{item_id}/adjustments",
+    response_model=InventoryItemOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Adjust or count an item's stock on hand",
+    dependencies=[Entitled],
+)
+async def adjust_stock(
+    item_id: uuid.UUID,
+    payload: StockAdjustmentIn,
+    session: SessionDep,
+    ctx: StockAdjust,
+    request: Request,
+) -> InventoryItemOut:
+    item = await selectors.get_inventory_item(
+        session, ctx.organization_id, item_id, for_update=True
+    )
+    if item is None:
+        raise NotFoundProblem("That inventory item is not part of this organization")
+    updated = await services.adjust_stock(
+        session,
+        ctx,
+        item,
+        quantity_delta=payload.quantity_delta,
+        counted_on_hand=payload.counted_on_hand,
+        reason=payload.reason,
+        note=payload.note,
+        occurred_on=payload.occurred_on,
+        request=request,
+    )
+    return selectors.inventory_out(updated)
+
+
+@router.get(
+    "/operations/inventory/{item_id}/movements",
+    response_model=Page[StockMovementOut],
+    summary="An item's stock movement history, newest first",
+    dependencies=[Entitled],
+)
+async def list_movements(
+    item_id: uuid.UUID,
+    session: SessionDep,
+    ctx: InventoryRead,
+    params: PageQuery,
+    kind: Annotated[str | None, Query(description="opening | receipt | adjustment | count")] = None,
+) -> Page[StockMovementOut]:
+    item = await selectors.get_inventory_item(session, ctx.organization_id, item_id)
+    if item is None:
+        raise NotFoundProblem("That inventory item is not part of this organization")
+    stmt = selectors.movements_stmt(ctx, item_id, kind=kind)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([selectors.movement_out(m) for m in rows], total=total, params=params)
+
+
 # ------------------------------------------------------------------ warehouses (reference)
 
 
@@ -206,6 +563,63 @@ async def list_warehouses(
     stmt = selectors.warehouses_stmt(ctx.organization_id)
     rows, total = await paginate(session, stmt, params)
     return Page.build([selectors.warehouse_out(w) for w in rows], total=total, params=params)
+
+
+@router.post(
+    "/operations/warehouses",
+    response_model=WarehouseOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a warehouse",
+    dependencies=[Entitled],
+)
+async def create_warehouse(
+    payload: WarehouseIn, session: SessionDep, ctx: WarehouseWrite, request: Request
+) -> WarehouseOut:
+    warehouse = await services.create_warehouse(
+        session,
+        ctx,
+        code=payload.code,
+        name=payload.name,
+        location=payload.location,
+        request=request,
+    )
+    return selectors.warehouse_out(warehouse)
+
+
+@router.patch(
+    "/operations/warehouses/{warehouse_id}",
+    response_model=WarehouseOut,
+    summary="Update a warehouse",
+    dependencies=[Entitled],
+)
+async def update_warehouse(
+    warehouse_id: uuid.UUID,
+    payload: WarehousePatch,
+    session: SessionDep,
+    ctx: WarehouseWrite,
+    request: Request,
+) -> WarehouseOut:
+    warehouse = await selectors.get_warehouse(session, ctx.organization_id, warehouse_id)
+    if warehouse is None:
+        raise NotFoundProblem("That warehouse is not part of this organization")
+    updated = await services.update_warehouse(session, ctx, warehouse, payload, request=request)
+    return selectors.warehouse_out(updated)
+
+
+@router.delete(
+    "/operations/warehouses/{warehouse_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a warehouse",
+    dependencies=[Entitled],
+)
+async def delete_warehouse(
+    warehouse_id: uuid.UUID, session: SessionDep, ctx: WarehouseWrite, request: Request
+) -> Response:
+    warehouse = await selectors.get_warehouse(session, ctx.organization_id, warehouse_id)
+    if warehouse is None:
+        raise NotFoundProblem("That warehouse is not part of this organization")
+    await services.delete_warehouse(session, ctx, warehouse, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ------------------------------------------------------------------ overview

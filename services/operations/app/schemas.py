@@ -13,18 +13,44 @@ the read models (`supplier_name`, `warehouse`) so a list renders without a cross
 
 from __future__ import annotations
 
-from datetime import date
-from typing import Literal
+from datetime import date, datetime
+from typing import Literal, Self
+from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
+
+#: Validates a non-empty string as an email address — used where the field is "email format or
+#: empty" rather than always-required, so `EmailStr` itself (which rejects empty) does not fit.
+_EMAIL = TypeAdapter(EmailStr)
+
+
+def _validate_email_or_empty(value: str) -> str:
+    if not value:
+        return value
+    try:
+        _EMAIL.validate_python(value)
+    except Exception as exc:
+        raise ValueError("must be a valid email address, or empty") from exc
+    return value
+
 
 # ------------------------------------------------------------------ vocabularies (match the SPA)
 
 Category = Literal["raw_materials", "packaging", "components", "mro", "logistics", "services"]
 SupplierStatus = Literal["active", "on_hold", "pending"]
-PoStatus = Literal["draft", "approved", "received", "closed"]
+PoStatus = Literal["draft", "approved", "received", "closed", "cancelled"]
 AttentionKind = Literal["low_stock", "out_of_stock", "late_delivery"]
 AttentionTone = Literal["danger", "late"]
+StockMovementKind = Literal["opening", "receipt", "adjustment", "count"]
+StockMovementReason = Literal["damaged", "lost", "found", "consumed", "returned", "other"]
 
 
 class ServiceInfo(BaseModel):
@@ -53,6 +79,53 @@ class SupplierOut(BaseModel):
     contact_email: str
     location: str
     since: date
+
+
+class SupplierIn(BaseModel):
+    """`POST /suppliers`. `spend_minor`, `open_pos` and `on_time_pct` are system-maintained
+    rollups — never accepted here, only ever moved by `_bump_supplier` and the (unbuilt)
+    on-time-delivery rollup. `since` defaults to today rather than staying null, so the response
+    is never the nullable-column 500 gap-12 found."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=200)
+    category: Category
+    status: SupplierStatus = "active"
+    lead_time_days: int = Field(default=0, ge=0, le=365)
+    currency: str = Field(default="INR", min_length=3, max_length=3)
+    contact_name: str = Field(default="", max_length=120)
+    contact_email: str = Field(default="", max_length=200)
+    location: str = Field(default="", max_length=160)
+    since: date = Field(default_factory=date.today)
+
+    @field_validator("contact_email")
+    @classmethod
+    def _contact_email_valid(cls, value: str) -> str:
+        return _validate_email_or_empty(value)
+
+
+class SupplierPatch(BaseModel):
+    """`PATCH /suppliers/{id}`. `code` and `currency` are deliberately absent — join keys and
+    the unit spend has already accumulated in, neither may move under a supplier. This is also
+    how a supplier's status changes (`active` <-> `on_hold` <-> `pending`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    category: Category | None = None
+    status: SupplierStatus | None = None
+    lead_time_days: int | None = Field(default=None, ge=0, le=365)
+    contact_name: str | None = Field(default=None, max_length=120)
+    contact_email: str | None = Field(default=None, max_length=200)
+    location: str | None = Field(default=None, max_length=160)
+    since: date | None = None
+
+    @field_validator("contact_email")
+    @classmethod
+    def _contact_email_valid(cls, value: str | None) -> str | None:
+        return value if value is None else _validate_email_or_empty(value)
 
 
 # ------------------------------------------------------------------ purchase orders
@@ -91,6 +164,85 @@ class PurchaseOrderOut(BaseModel):
     notes: str | None
 
 
+class PoLineIn(BaseModel):
+    """One line on `PurchaseOrderIn`/`PurchaseOrderPatch.lines`. `sku` is free text — a line
+    against a SKU with no matching inventory item is a service/logistics line, not an error; it
+    simply posts no stock when the PO is received."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sku: str = Field(min_length=1, max_length=60)
+    description: str = Field(default="", max_length=300)
+    quantity: int = Field(ge=1)
+    uom: str = Field(default="", max_length=20)
+    unit_price_minor: int = Field(default=0, ge=0)
+
+
+class PurchaseOrderIn(BaseModel):
+    """`POST /purchase-orders`. `status`, `number`, `received_date` and `received_qty` are
+    server-owned and never accepted here: the number is assigned by `services.next_po_number`,
+    status always starts `draft`, and receiving is its own endpoint. `raised_by_id` is always
+    `ctx.subject_ref` — never the client's word for who is calling."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    supplier_id: UUID
+    warehouse: str = Field(min_length=1, max_length=120)
+    expected_date: date
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    notes: str | None = Field(default=None, max_length=2000)
+    #: Display name only — `Principal` carries no name; the SPA sends `useAuth().user.full_name`.
+    raised_by: str = Field(default="", max_length=120)
+    lines: list[PoLineIn] = Field(min_length=1, max_length=200)
+
+    @field_validator("expected_date")
+    @classmethod
+    def _expected_not_in_the_past(cls, value: date) -> date:
+        if value < date.today():
+            raise ValueError("expected_date cannot be in the past")
+        return value
+
+
+class PurchaseOrderPatch(BaseModel):
+    """`PATCH /purchase-orders/{id}`, draft only. When `lines` is present it is a **full
+    replacement** of the PO's lines, never a merge. `status` never appears — every transition
+    goes through its own endpoint (`/approve`, `/receive`, `/close`, `/cancel`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    supplier_id: UUID | None = None
+    warehouse: str | None = Field(default=None, min_length=1, max_length=120)
+    expected_date: date | None = None
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    notes: str | None = Field(default=None, max_length=2000)
+    lines: list[PoLineIn] | None = Field(default=None, min_length=1, max_length=200)
+
+
+class ReceiveIn(BaseModel):
+    """`POST /purchase-orders/{id}/receive`. The body is optional — an empty POST receives as of
+    today — so this schema exists only to validate `received_date` when one is sent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    received_date: date | None = None
+
+    @field_validator("received_date")
+    @classmethod
+    def _not_in_the_future(cls, value: date | None) -> date | None:
+        if value is not None and value > date.today():
+            raise ValueError("received_date cannot be in the future")
+        return value
+
+
+class CancelIn(BaseModel):
+    """`POST /purchase-orders/{id}/cancel`. The reason is recorded in the audit row's `after`,
+    never silently dropped — cancelling committed spend needs a "why" on the record."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=500)
+
+
 # ------------------------------------------------------------------ inventory
 
 
@@ -111,6 +263,100 @@ class InventoryItemOut(BaseModel):
     updated_at: date
 
 
+class InventoryItemIn(BaseModel):
+    """`POST /inventory`. `on_hand` is never accepted — `opening_on_hand` becomes the item's
+    first `opening` movement instead, so `on_hand` is always the sum of its movements from the
+    moment the row exists."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sku: str = Field(min_length=1, max_length=60, pattern=r"^[A-Za-z0-9._-]+$")
+    name: str = Field(min_length=1, max_length=200)
+    category: Category
+    #: Must name an existing warehouse in the org — validated against the warehouse directory,
+    #: not just a non-empty string.
+    warehouse: str = Field(min_length=1, max_length=120)
+    uom: str = Field(min_length=1, max_length=20)
+    reorder_point: int = Field(default=0, ge=0)
+    unit_value_minor: int = Field(default=0, ge=0)
+    currency: str = Field(default="INR", min_length=3, max_length=3)
+    opening_on_hand: int = Field(default=0, ge=0)
+
+
+class InventoryItemPatch(BaseModel):
+    """`PATCH /inventory/{id}`. `sku`, `currency` and — above all — `on_hand` are deliberately
+    absent: `sku` is the string a PO line joins on, `currency` is the unit the stock value
+    accumulated in, and `on_hand` may only ever move through a movement (`/adjustments`).
+    Sending any of the three is a 422 by `extra="forbid"`, not a silently ignored field."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    category: Category | None = None
+    warehouse: str | None = Field(default=None, min_length=1, max_length=120)
+    uom: str | None = Field(default=None, min_length=1, max_length=20)
+    reorder_point: int | None = Field(default=None, ge=0)
+    unit_value_minor: int | None = Field(default=None, ge=0)
+
+
+class StockAdjustmentIn(BaseModel):
+    """`POST /inventory/{id}/adjustments`. Exactly one of `quantity_delta` (a relative add/remove)
+    or `counted_on_hand` (an absolute physical count) — never both, never neither. `reason` is
+    required with a delta adjustment (why it moved) and forbidden with a count (a count is a
+    fact, not a reason)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    quantity_delta: int | None = None
+    counted_on_hand: int | None = Field(default=None, ge=0)
+    reason: StockMovementReason | None = None
+    note: str = Field(default="", max_length=500)
+    occurred_on: date = Field(default_factory=date.today)
+
+    @field_validator("quantity_delta")
+    @classmethod
+    def _delta_nonzero(cls, value: int | None) -> int | None:
+        if value == 0:
+            raise ValueError("quantity_delta must not be zero")
+        return value
+
+    @field_validator("occurred_on")
+    @classmethod
+    def _not_in_the_future(cls, value: date) -> date:
+        if value > date.today():
+            raise ValueError("occurred_on cannot be in the future")
+        return value
+
+    @model_validator(mode="after")
+    def _exactly_one_mode(self) -> Self:
+        has_delta = self.quantity_delta is not None
+        has_count = self.counted_on_hand is not None
+        if has_delta == has_count:
+            raise ValueError("Provide exactly one of quantity_delta or counted_on_hand")
+        if has_delta and self.reason is None:
+            raise ValueError("reason is required with quantity_delta")
+        if has_count and self.reason is not None:
+            raise ValueError("reason is not accepted with counted_on_hand")
+        return self
+
+
+class StockMovementOut(BaseModel):
+    """One row of an item's movement history. Append-only, newest first — the ledger
+    `on_hand` is the running sum of."""
+
+    id: str
+    kind: StockMovementKind
+    reason: StockMovementReason | None
+    quantity_delta: int
+    on_hand_after: int
+    reference_type: Literal["purchase_order"] | None
+    reference_id: str | None
+    note: str
+    occurred_on: date
+    created_at: datetime
+    created_by: str | None
+
+
 # ------------------------------------------------------------------ warehouses (reference)
 
 
@@ -122,6 +368,28 @@ class WarehouseOut(BaseModel):
     code: str
     name: str
     location: str
+
+
+class WarehouseIn(BaseModel):
+    """`POST /warehouses`. `code` is immutable once created — it never appears on
+    `WarehousePatch`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=120)
+    location: str = Field(default="", max_length=160)
+
+
+class WarehousePatch(BaseModel):
+    """`PATCH /warehouses/{id}`. A rename cascades to `purchase_orders.warehouse` and
+    `inventory_items.warehouse` in the same transaction — those columns are denormalised copies
+    of `name`, not a join."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    location: str | None = Field(default=None, max_length=160)
 
 
 # ------------------------------------------------------------------ overview rollups

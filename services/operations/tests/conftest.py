@@ -208,7 +208,7 @@ async def data(session: AsyncSession, org_id: uuid.UUID) -> dict:
         )
 
         # One low-stock item (below reorder point) and one healthy one.
-        await services.create_inventory_item(
+        low_stock_item = await services.create_inventory_item(
             session,
             write,
             sku="RM-ALU-7075",
@@ -222,7 +222,7 @@ async def data(session: AsyncSession, org_id: uuid.UUID) -> dict:
             currency="INR",
             stocked_at=date(2026, 8, 22),
         )
-        await services.create_inventory_item(
+        healthy_item = await services.create_inventory_item(
             session,
             write,
             sku="CMP-REL-014",
@@ -244,6 +244,8 @@ async def data(session: AsyncSession, org_id: uuid.UUID) -> dict:
         "po_b": po_b,
         "subject_a": SUBJECT_A,
         "subject_b": SUBJECT_B,
+        "low_stock_item": low_stock_item,
+        "healthy_item": healthy_item,
     }
 
 
