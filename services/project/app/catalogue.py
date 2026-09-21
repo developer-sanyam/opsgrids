@@ -113,6 +113,9 @@ PULSEBOARD = PermissionCatalogue(
         # The delivery-team roster. A roster has no meaningful OWN slice — the whole team is
         # what the screens join names and capacities from — so reading floors at ORG.
         PermissionSpec("team", "person", "read", "See the delivery-team roster", "ORG"),
+        # Writing the roster is an org-wide act for the same reason reading it is: a person
+        # belongs to the team, not to a slice of it.
+        PermissionSpec("team", "person", "write", "Add and edit roster people", "ORG"),
     ],
 )
 

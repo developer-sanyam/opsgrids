@@ -128,6 +128,48 @@
         "title": "HealthSlice",
         "type": "object"
       },
+      "MemberIn": {
+        "description": "Add a member to the delivery team.\n\n`ref` is the stable human handle (`p-01`) the rest of the API addresses this person by; it\nis unique within the organization, so a repeat is a conflict rather than a second row. The\norganization is never part of the payload \u2014 it comes from the tenant context.\n\n`directory_id` is the account-service id of this person's platform login, when they have\none. A plain UUID, never a cross-schema foreign key, and legitimately absent: a delivery-org\nmember need not hold a seat.",
+        "properties": {
+          "directory_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Directory Id"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "ref": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Ref",
+            "type": "string"
+          },
+          "role": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "name"
+        ],
+        "title": "MemberIn",
+        "type": "object"
+      },
       "MilestoneIn": {
         "description": "Create a milestone on a project (named by its `code`).",
         "properties": {
@@ -1098,6 +1140,48 @@
           }
         },
         "summary": "What this service is",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects-workspace/members": {
+      "post": {
+        "description": "Create the roster row a project owner or task assignee is addressed by.\n\n`services.create_member` refuses a `ref` already taken in this organization (409), which is\nwhat makes the human handle safe to key on. It stages no event: a roster row is a local\ndirectory entry, not a delivery fact another service reacts to.",
+        "operationId": "create_member_api_v1_projects_workspace_members_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Person"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a member to the delivery team",
         "tags": [
           "projects"
         ]

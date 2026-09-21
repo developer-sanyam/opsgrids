@@ -108,6 +108,12 @@ ITSM = PermissionCatalogue(
         # because the catalog is the request surface's reference data.
         PermissionSpec("service", "request", "read", "See service requests and the catalog", "OWN"),
         PermissionSpec("service", "request", "write", "Raise and fulfil service requests", "OWN"),
+        # The catalog itself is the organization's reference data, not anyone's own row: an
+        # offering has no OWN reading, so writing it floors at ORG (the route carries the
+        # matching `minimum=Scope.ORG`) while reading it still rides on request.read.
+        PermissionSpec(
+            "service", "catalog", "write", "Add and change catalog offerings", "ORG", "ORG"
+        ),
         # CMDB. Assets are org infrastructure, so the natural reading is ORG for an agent; the
         # permission still tops out at ORG and OWN reads the assets a person owns.
         PermissionSpec("cmdb", "asset", "read", "See CMDB assets", "OWN"),
@@ -133,7 +139,7 @@ ITSM_ROLE_TEMPLATES: list[RoleTemplate] = [
         product=PRODUCT,
         description=(
             "Works the incident and request queues org-wide and reads the CMDB, but does not "
-            "administer assets."
+            "administer assets or the service catalog."
         ),
         grants=ITSM.pick(
             ("itsm.service.incident.read", "ORG"),

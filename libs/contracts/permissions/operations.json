@@ -11,9 +11,27 @@
       "resource": "item"
     },
     {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Add inventory items",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "item"
+    },
+    {
       "action": "read",
       "default_scope": "ORG",
       "description": "See warehouses",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "warehouse"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Open warehouses",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "inventory",
@@ -45,6 +63,15 @@
       "max_scope": "ORG",
       "module": "procurement",
       "resource": "supplier"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Add suppliers to the directory",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "supplier"
     }
   ],
   "product": "operations",
@@ -59,7 +86,15 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.item.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.warehouse.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.warehouse.write",
           "scope": "ORG"
         },
         {
@@ -72,6 +107,10 @@
         },
         {
           "code": "operations.procurement.supplier.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.supplier.write",
           "scope": "ORG"
         }
       ],
@@ -82,10 +121,14 @@
     {
       "code": "OPERATIONS_MANAGER",
       "cross_product": false,
-      "description": "Raises and receives purchase orders org-wide and reads suppliers, inventory and warehouses.",
+      "description": "Raises and receives purchase orders org-wide, and curates the supplier directory and the inventory records. Reads warehouses but does not open them \u2014 a stocking site is administered, not procured.",
       "grants": [
         {
           "code": "operations.inventory.item.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.item.write",
           "scope": "ORG"
         },
         {
@@ -103,6 +146,10 @@
         {
           "code": "operations.procurement.supplier.read",
           "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.supplier.write",
+          "scope": "ORG"
         }
       ],
       "is_admin": false,
@@ -112,7 +159,7 @@
     {
       "code": "OPERATIONS_USER",
       "cross_product": false,
-      "description": "Every person with an Operations seat. Raises and sees their own purchase orders, and reads the shared suppliers, inventory and warehouses.",
+      "description": "Every person with an Operations seat. Raises and sees their own purchase orders, and reads the shared suppliers, inventory and warehouses \u2014 reference data is curated by the manager and administrator roles, not by every seat.",
       "grants": [
         {
           "code": "operations.inventory.item.read",

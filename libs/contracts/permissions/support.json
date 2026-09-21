@@ -2,6 +2,24 @@
   "manifest_version": 1,
   "permissions": [
     {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Add or update the agents who work the queue",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "desk",
+      "resource": "agent"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Set the SLA policy the queue is measured against",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "desk",
+      "resource": "sla_policy"
+    },
+    {
       "action": "read",
       "default_scope": "ORG",
       "description": "See the support queue: tickets, threads, agents, SLA policy and the overview",
@@ -13,7 +31,7 @@
     {
       "action": "write",
       "default_scope": "ORG",
-      "description": "Reply to tickets and assign them",
+      "description": "Open tickets, reply to them and assign them",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "desk",
@@ -25,8 +43,16 @@
     {
       "code": "SUPPORT_ADMIN",
       "cross_product": false,
-      "description": "Runs the support desk: reads the whole queue and every thread, replies and assigns. Built from the support catalogue alone \u2014 running the desk is not the same job as owning the account.",
+      "description": "Runs the support desk: reads the whole queue and every thread, opens and works tickets, and maintains the desk's reference data \u2014 the agent roster and the SLA policy. Built from the support catalogue alone \u2014 running the desk is not the same job as owning the account.",
       "grants": [
+        {
+          "code": "support.desk.agent.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "support.desk.sla_policy.write",
+          "scope": "ORG"
+        },
         {
           "code": "support.desk.ticket.read",
           "scope": "ORG"
@@ -43,7 +69,7 @@
     {
       "code": "SUPPORT_AGENT",
       "cross_product": false,
-      "description": "Works the shared queue: reads every ticket, replies and assigns.",
+      "description": "Works the shared queue: reads every ticket, opens them, replies and assigns. Not the roster or the SLA policy \u2014 those are the administrator's.",
       "grants": [
         {
           "code": "support.desk.ticket.read",

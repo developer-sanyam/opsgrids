@@ -94,6 +94,12 @@ class PermissionCatalogue:
 # there is no self-service "own tickets only" reading to protect, and a permission guarded by
 # name alone would let any holder act. Per-assignee narrowing is a query filter (`?assignee=`),
 # never a security boundary.
+#
+# The desk's *reference data* — the agent roster and the SLA policy — is a second axis, and it
+# gets its own write permissions rather than riding on `ticket.write`. Everyone who works the
+# queue replies and assigns; rewriting the roster or moving the SLA targets the desk is measured
+# against is the administrator's job. Reading them stays under `ticket.read`, which is how the
+# queue has always read them.
 
 SUPPORT = PermissionCatalogue(
     PRODUCT,
@@ -110,7 +116,23 @@ SUPPORT = PermissionCatalogue(
             "desk",
             "ticket",
             "write",
-            "Reply to tickets and assign them",
+            "Open tickets, reply to them and assign them",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "desk",
+            "agent",
+            "write",
+            "Add or update the agents who work the queue",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "desk",
+            "sla_policy",
+            "write",
+            "Set the SLA policy the queue is measured against",
             "ORG",
             "ORG",
         ),
@@ -124,20 +146,26 @@ SUPPORT_ROLE_TEMPLATES: list[RoleTemplate] = [
         name="Support administrator",
         product=PRODUCT,
         description=(
-            "Runs the support desk: reads the whole queue and every thread, replies and assigns. "
-            "Built from the support catalogue alone — running the desk is not the same job as "
-            "owning the account."
+            "Runs the support desk: reads the whole queue and every thread, opens and works "
+            "tickets, and maintains the desk's reference data — the agent roster and the SLA "
+            "policy. Built from the support catalogue alone — running the desk is not the same "
+            "job as owning the account."
         ),
         grants=SUPPORT.pick(
             ("support.desk.ticket.read", "ORG"),
             ("support.desk.ticket.write", "ORG"),
+            ("support.desk.agent.write", "ORG"),
+            ("support.desk.sla_policy.write", "ORG"),
         ),
     ),
     RoleTemplate(
         code="SUPPORT_AGENT",
         name="Support agent",
         product=PRODUCT,
-        description="Works the shared queue: reads every ticket, replies and assigns.",
+        description=(
+            "Works the shared queue: reads every ticket, opens them, replies and assigns. Not "
+            "the roster or the SLA policy — those are the administrator's."
+        ),
         is_default=True,
         grants=SUPPORT.pick(
             ("support.desk.ticket.read", "ORG"),

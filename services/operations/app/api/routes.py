@@ -1,9 +1,9 @@
 """HTTP surface for the operations service.
 
 Mounted behind the gateway's `/api/v1/operations` prefix, so every route path here begins
-`/operations/...`. The read endpoints are the priority — they are what flips the Operations SPA
-from fixtures to live — and each returns exactly the shape
-`frontend/product-operations/src/api/types.ts` declares.
+`/operations/...`. The reads return exactly the shape
+`frontend/product-operations/src/api/types.ts` declares, and each write returns that same read
+model, so a screen that creates a row renders it without a second round trip.
 
 Every route declares the permission it needs and is guarded by `require_product("operations")` as
 defence in depth behind the gateway's own entitlement gate. Reads go through `selectors`, writes
@@ -21,18 +21,22 @@ import uuid
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
 from app.config import settings
 from app.models import SCHEMA, PurchaseOrderLine
 from app.schemas import (
+    InventoryItemIn,
     InventoryItemOut,
     OverviewOut,
+    PurchaseOrderIn,
     PurchaseOrderOut,
     ServiceInfo,
+    SupplierIn,
     SupplierOut,
+    WarehouseIn,
     WarehouseOut,
 )
 from platform_core.auth import ScopeContext, require, require_product
@@ -56,8 +60,11 @@ Entitled = Depends(require_product("operations"))
 PoRead = Annotated[ScopeContext, Depends(require("operations.procurement.purchase_order.read"))]
 PoWrite = Annotated[ScopeContext, Depends(require("operations.procurement.purchase_order.write"))]
 SupplierRead = Annotated[ScopeContext, Depends(require("operations.procurement.supplier.read"))]
+SupplierWrite = Annotated[ScopeContext, Depends(require("operations.procurement.supplier.write"))]
 InventoryRead = Annotated[ScopeContext, Depends(require("operations.inventory.item.read"))]
+InventoryWrite = Annotated[ScopeContext, Depends(require("operations.inventory.item.write"))]
 WarehouseRead = Annotated[ScopeContext, Depends(require("operations.inventory.warehouse.read"))]
+WarehouseWrite = Annotated[ScopeContext, Depends(require("operations.inventory.warehouse.write"))]
 
 
 @router.get("/operations/info", response_model=ServiceInfo, summary="What this service is")
@@ -86,6 +93,34 @@ async def list_suppliers(
     stmt = selectors.suppliers_stmt(ctx, q=q, category=category, status=supplier_status, sort=sort)
     rows, total = await paginate(session, stmt, params)
     return Page.build([selectors.supplier_out(s) for s in rows], total=total, params=params)
+
+
+@router.post(
+    "/operations/suppliers",
+    response_model=SupplierOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a supplier to the directory",
+    dependencies=[Entitled],
+)
+async def create_supplier(
+    payload: SupplierIn, session: SessionDep, ctx: SupplierWrite, request: Request
+) -> SupplierOut:
+    supplier = await services.create_supplier(
+        session,
+        ctx,
+        code=payload.code,
+        name=payload.name,
+        category=payload.category,
+        status=payload.status,
+        lead_time_days=payload.lead_time_days,
+        currency=payload.currency,
+        contact_name=payload.contact_name,
+        contact_email=payload.contact_email,
+        location=payload.location,
+        since=payload.since,
+        request=request,
+    )
+    return selectors.supplier_out(supplier)
 
 
 @router.get(
@@ -126,6 +161,42 @@ async def list_purchase_orders(
     by_po = await selectors.lines_map(session, ctx.organization_id, [r.id for r in rows])
     items = [selectors.purchase_order_out(po, lines=by_po.get(po.id, [])) for po in rows]
     return Page.build(items, total=total, params=params)
+
+
+@router.post(
+    "/operations/purchase-orders",
+    response_model=PurchaseOrderOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Raise a purchase order against a supplier",
+    dependencies=[Entitled],
+)
+async def raise_purchase_order(
+    payload: PurchaseOrderIn, session: SessionDep, ctx: PoWrite, request: Request
+) -> PurchaseOrderOut:
+    po = await services.create_purchase_order(
+        session,
+        ctx,
+        number=payload.number,
+        supplier_id=payload.supplier_id,
+        supplier_code=payload.supplier_code,
+        status=payload.status,
+        warehouse=payload.warehouse,
+        raised_by=payload.raised_by,
+        # The raiser is the caller, never the payload: `raised_by_id` is the column OWN scope
+        # narrows on, so taking it from the body would let a client raise a PO in someone
+        # else's name — or into a scope they cannot see.
+        raised_by_id=ctx.subject_ref,
+        currency=payload.currency,
+        created_date=payload.created_date,
+        expected_date=payload.expected_date,
+        notes=payload.notes,
+        # Each line's `amount_minor` is computed in the service; the client sends quantity and
+        # unit price only, so the lines foot to the derived total.
+        lines=[line.model_dump() for line in payload.lines],
+        request=request,
+    )
+    lines = await selectors.lines_for(session, ctx.organization_id, po.id)
+    return selectors.purchase_order_out(po, lines=lines)
 
 
 @router.get(
@@ -191,6 +262,34 @@ async def list_inventory(
     return Page.build([selectors.inventory_out(i) for i in rows], total=total, params=params)
 
 
+@router.post(
+    "/operations/inventory",
+    response_model=InventoryItemOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Stock an inventory item",
+    dependencies=[Entitled],
+)
+async def create_inventory_item(
+    payload: InventoryItemIn, session: SessionDep, ctx: InventoryWrite, request: Request
+) -> InventoryItemOut:
+    item = await services.create_inventory_item(
+        session,
+        ctx,
+        sku=payload.sku,
+        name=payload.name,
+        category=payload.category,
+        warehouse=payload.warehouse,
+        on_hand=payload.on_hand,
+        reorder_point=payload.reorder_point,
+        uom=payload.uom,
+        unit_value_minor=payload.unit_value_minor,
+        currency=payload.currency,
+        stocked_at=payload.stocked_at,
+        request=request,
+    )
+    return selectors.inventory_out(item)
+
+
 # ------------------------------------------------------------------ warehouses (reference)
 
 
@@ -206,6 +305,27 @@ async def list_warehouses(
     stmt = selectors.warehouses_stmt(ctx.organization_id)
     rows, total = await paginate(session, stmt, params)
     return Page.build([selectors.warehouse_out(w) for w in rows], total=total, params=params)
+
+
+@router.post(
+    "/operations/warehouses",
+    response_model=WarehouseOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Open a stocking location",
+    dependencies=[Entitled],
+)
+async def create_warehouse(
+    payload: WarehouseIn, session: SessionDep, ctx: WarehouseWrite, request: Request
+) -> WarehouseOut:
+    warehouse = await services.create_warehouse(
+        session,
+        ctx,
+        code=payload.code,
+        name=payload.name,
+        location=payload.location,
+        request=request,
+    )
+    return selectors.warehouse_out(warehouse)
 
 
 # ------------------------------------------------------------------ overview

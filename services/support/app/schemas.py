@@ -10,7 +10,7 @@ UTC, and `assignee_id` is the agent's public ref.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -116,6 +116,110 @@ class OverviewOut(BaseModel):
 
 
 # --------------------------------------------------------------------- write contracts
+
+
+class RequesterIn(BaseModel):
+    """Who a ticket is being opened for.
+
+    A contact snapshot denormalised onto the ticket, not a link to a customer record — the same
+    shape the queue reads back as `requester`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+    email: str = Field(min_length=1, max_length=254)
+    company: str = Field(min_length=1, max_length=200)
+    kind: RequesterKind = "customer"
+
+
+class OpeningMessageIn(BaseModel):
+    """One message of a new ticket's opening thread.
+
+    The per-ticket code (`m1`, `m2`) and the timestamp are stamped by the server — a client that
+    could choose either could rewrite the order of a conversation that is meant to be append-only.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    author_type: AuthorType = "customer"
+    author_name: str = Field(min_length=1, max_length=160)
+    body: str = Field(min_length=1)
+    internal: bool = False
+
+
+class TicketIn(BaseModel):
+    """Open a ticket, with its opening thread.
+
+    What is deliberately **not** on this payload:
+
+    * `status` — a new ticket always starts `new`; it moves through the lifecycle from there.
+    * `assignee_id` — assignment goes through `POST /support/tickets/{number}/assign`, which
+      refuses an agent who is not part of the organization. Accepting it here would be the one
+      way to assign a ticket to a ghost.
+    * `created_at`, `updated_at`, `first_response_at`, `sla_due`, `sla_breached`, `satisfaction`
+      — lifecycle state the desk stamps as it happens, never something a caller declares.
+
+    `number` *is* accepted: it is the organization's own ticket code (`TK-4001`) and nothing here
+    allocates one. A repeat is a 409, not a second ticket.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    number: str = Field(min_length=1, max_length=40)
+    subject: str = Field(min_length=1, max_length=300)
+    requester: RequesterIn
+    priority: Priority = "normal"
+    channel: Channel = "email"
+    tags: list[Annotated[str, Field(min_length=1, max_length=60)]] = Field(default_factory=list)
+    messages: list[OpeningMessageIn] = Field(default_factory=list)
+
+
+class AgentIn(BaseModel):
+    """Create or replace one agent's record. The agent's public ref (`ag-01`) is the path segment,
+    because it is the natural key the upsert is idempotent on.
+
+    The performance figures are a stored projection the desk maintains, so they are writable here
+    rather than derived — see `models.Agent`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+    email: str = Field(min_length=1, max_length=254)
+    role: AgentRole = "agent"
+    team: str = Field(default="Tier 1", min_length=1, max_length=80)
+    open_load: int = Field(default=0, ge=0)
+    avg_first_response_min: int = Field(default=0, ge=0)
+    csat_pct: int = Field(default=0, ge=0, le=100)
+    solved_7d: int = Field(default=0, ge=0)
+    online: bool = False
+
+
+class SlaTargetIn(BaseModel):
+    """One priority's first-response and resolution windows, in minutes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    priority: Priority
+    first_response_min: int = Field(ge=0)
+    resolution_min: int = Field(ge=0)
+
+
+class SlaPolicyIn(BaseModel):
+    """Set the organization's one SLA policy.
+
+    A **whole replacement**, not a patch: an organization has exactly one policy and `targets`
+    replaces the stored list outright, so the field is required rather than defaulted — a payload
+    that silently wiped the targets by omitting them is worse than one that refuses.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+    business_hours: str = Field(default="", max_length=200)
+    coverage: str = Field(default="", max_length=2000)
+    targets: list[SlaTargetIn]
 
 
 class ReplyIn(BaseModel):

@@ -54,6 +54,15 @@
       "max_scope": "ORG",
       "module": "portfolio",
       "resource": "project"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Add people to the delivery team",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "team",
+      "resource": "member"
     }
   ],
   "product": "projects",
@@ -86,6 +95,10 @@
         {
           "code": "projects.portfolio.project.write",
           "scope": "ORG"
+        },
+        {
+          "code": "projects.team.member.write",
+          "scope": "ORG"
         }
       ],
       "is_admin": true,
@@ -95,7 +108,7 @@
     {
       "code": "PROJECTS_MANAGER",
       "cross_product": false,
-      "description": "Runs projects, milestones and the board org-wide: reads and writes every portfolio resource, but does not administer the product.",
+      "description": "Runs projects, milestones and the board org-wide: reads and writes every portfolio resource and staffs the delivery team, but does not administer the product.",
       "grants": [
         {
           "code": "projects.board.task.read",
@@ -119,6 +132,10 @@
         },
         {
           "code": "projects.portfolio.project.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.team.member.write",
           "scope": "ORG"
         }
       ],

@@ -13,6 +13,7 @@ Ids are opaque row UUIDs, exchanged as strings.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
 from typing import Literal
 
@@ -53,6 +54,35 @@ class DealOut(BaseModel):
     source: str
 
 
+class DealIn(BaseModel):
+    """Create a deal. `value_minor` is integer minor units of `currency` (ISO-4217) — no
+    float, ever. `owner_id` is optional: omitted, the deal belongs to the calling rep;
+    naming another rep is an object-level scope question the route answers. `probability`
+    omitted takes the stage's board default. `last_activity_at` is the server's staleness
+    clock and `organization_id` comes from the tenant context, so neither is accepted."""
+
+    name: str = Field(min_length=1, max_length=200)
+    company_id: uuid.UUID
+    #: Minor units of `currency`. Never negative, never a float.
+    value_minor: int = Field(ge=0)
+    close_date: date
+    currency: str = Field(default="INR", min_length=3, max_length=3)
+    stage: DealStage = "lead"
+    owner_id: uuid.UUID | None = None
+    probability: int | None = Field(default=None, ge=0, le=100)
+    primary_contact_id: uuid.UUID | None = None
+    source: str = Field(default="", max_length=60)
+
+
+class StageIn(BaseModel):
+    """Move a deal to another stage. A transition, not a field edit: which moves are legal
+    is `domain.can_transition`, enforced by the service. `probability` omitted takes the
+    new stage's default — 100 once won, 0 once lost."""
+
+    stage: DealStage
+    probability: int | None = Field(default=None, ge=0, le=100)
+
+
 # ------------------------------------------------------------------ activities
 
 
@@ -70,6 +100,25 @@ class ActivityOut(BaseModel):
     owner_id: str
     occurred_at: datetime
     direction: ActivityDirection | None
+
+
+class ActivityIn(BaseModel):
+    """Log one touch against a deal. Append-only — there is no update or delete, by
+    design — so every field here describes what happened, not what it should become.
+
+    `type` is the wire name for the touch kind, matching `ActivityOut`. The deal comes
+    from the path and the company from that deal, so neither is accepted in the body.
+    `owner_id` omitted attributes the touch to the calling rep. `occurred_at` omitted is
+    now; it is carried explicitly so a touch logged after the fact keeps its real time.
+    """
+
+    subject: str = Field(min_length=1, max_length=300)
+    type: ActivityType = "note"
+    body: str | None = Field(default=None, max_length=8000)
+    owner_id: uuid.UUID | None = None
+    contact_id: uuid.UUID | None = None
+    direction: ActivityDirection | None = None
+    occurred_at: datetime | None = None
 
 
 # ------------------------------------------------------------------ summary rollups

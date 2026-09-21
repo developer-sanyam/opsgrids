@@ -1,6 +1,97 @@
 {
   "components": {
     "schemas": {
+      "ActivityIn": {
+        "description": "Log one touch against a deal. Append-only \u2014 there is no update or delete, by\ndesign \u2014 so every field here describes what happened, not what it should become.\n\n`type` is the wire name for the touch kind, matching `ActivityOut`. The deal comes\nfrom the path and the company from that deal, so neither is accepted in the body.\n`owner_id` omitted attributes the touch to the calling rep. `occurred_at` omitted is\nnow; it is carried explicitly so a touch logged after the fact keeps its real time.",
+        "properties": {
+          "body": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
+          },
+          "contact_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Id"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "inbound",
+                  "outbound"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "subject": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Subject",
+            "type": "string"
+          },
+          "type": {
+            "default": "note",
+            "enum": [
+              "call",
+              "email",
+              "meeting",
+              "note",
+              "task"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject"
+        ],
+        "title": "ActivityIn",
+        "type": "object"
+      },
       "ActivityOut": {
         "description": "Mirrors the SPA's `Activity`. `type` is the wire name for the touch kind; exactly\none of the target ids is usually set, and the owner always is.",
         "properties": {
@@ -105,6 +196,103 @@
           "direction"
         ],
         "title": "ActivityOut",
+        "type": "object"
+      },
+      "DealIn": {
+        "description": "Create a deal. `value_minor` is integer minor units of `currency` (ISO-4217) \u2014 no\nfloat, ever. `owner_id` is optional: omitted, the deal belongs to the calling rep;\nnaming another rep is an object-level scope question the route answers. `probability`\nomitted takes the stage's board default. `last_activity_at` is the server's staleness\nclock and `organization_id` comes from the tenant context, so neither is accepted.",
+        "properties": {
+          "close_date": {
+            "format": "date",
+            "title": "Close Date",
+            "type": "string"
+          },
+          "company_id": {
+            "format": "uuid",
+            "title": "Company Id",
+            "type": "string"
+          },
+          "currency": {
+            "default": "INR",
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Currency",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "primary_contact_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Contact Id"
+          },
+          "probability": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability"
+          },
+          "source": {
+            "default": "",
+            "maxLength": 60,
+            "title": "Source",
+            "type": "string"
+          },
+          "stage": {
+            "default": "lead",
+            "enum": [
+              "lead",
+              "qualified",
+              "proposal",
+              "negotiation",
+              "closed_won",
+              "closed_lost"
+            ],
+            "title": "Stage",
+            "type": "string"
+          },
+          "value_minor": {
+            "minimum": 0.0,
+            "title": "Value Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "company_id",
+          "value_minor",
+          "close_date"
+        ],
+        "title": "DealIn",
         "type": "object"
       },
       "DealOut": {
@@ -307,6 +495,41 @@
           "schema_name"
         ],
         "title": "ServiceInfo",
+        "type": "object"
+      },
+      "StageIn": {
+        "description": "Move a deal to another stage. A transition, not a field edit: which moves are legal\nis `domain.can_transition`, enforced by the service. `probability` omitted takes the\nnew stage's default \u2014 100 once won, 0 once lost.",
+        "properties": {
+          "probability": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability"
+          },
+          "stage": {
+            "enum": [
+              "lead",
+              "qualified",
+              "proposal",
+              "negotiation",
+              "closed_won",
+              "closed_lost"
+            ],
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage"
+        ],
+        "title": "StageIn",
         "type": "object"
       },
       "StageRollupOut": {
@@ -603,6 +826,46 @@
         "tags": [
           "deal"
         ]
+      },
+      "post": {
+        "description": "`request` is passed through because the audit row records the actor and the origin\nof the call, not merely that a deal appeared.",
+        "operationId": "create_deal_api_v1_deals_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DealIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DealOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a deal",
+        "tags": [
+          "deal"
+        ]
       }
     },
     "/api/v1/deals/activities": {
@@ -788,6 +1051,114 @@
           }
         },
         "summary": "One deal",
+        "tags": [
+          "deal"
+        ]
+      }
+    },
+    "/api/v1/deals/{deal_id}/activities": {
+      "post": {
+        "description": "The timeline is append-only \u2014 this adds an entry and there is deliberately no route\nthat edits or removes one. The company is the deal's, rather than whatever the body\nclaimed, so an entry cannot name a deal and a company that disagree.",
+        "operationId": "log_activity_api_v1_deals__deal_id__activities_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Deal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActivityIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Log a touch against a deal (append-only)",
+        "tags": [
+          "deal"
+        ]
+      }
+    },
+    "/api/v1/deals/{deal_id}/stage": {
+      "post": {
+        "description": "A transition, not a field edit: `services.move_stage` is `domain.can_transition`'s\nenforcement point, so a closed deal is refused (409) rather than quietly reopened.",
+        "operationId": "move_stage_api_v1_deals__deal_id__stage_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Deal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StageIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DealOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Move a deal to another stage",
         "tags": [
           "deal"
         ]

@@ -49,12 +49,18 @@ async def get_member_by_ref(session: AsyncSession, org_id: uuid.UUID, ref: str) 
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+def person_out(member: Member) -> Person:
+    """One member row on the wire. `id` is the `ref` (`p-01`), the handle every embedded
+    `Person` elsewhere in the API carries — the opaque primary key stays internal."""
+    return Person(id=member.ref, name=member.name, role=member.role)
+
+
 def person_of(members: dict[uuid.UUID, Member], member_id: uuid.UUID | None) -> Person:
     """The embedded `Person` for a (possibly absent) member id."""
     member = members.get(member_id) if member_id is not None else None
     if member is None:
         return _FALLBACK_PERSON
-    return Person(id=member.ref, name=member.name, role=member.role)
+    return person_out(member)
 
 
 # ------------------------------------------------------------------ projects

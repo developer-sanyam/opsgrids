@@ -110,6 +110,11 @@ CRM_BOOK = PermissionCatalogue(
         # company.read, the way ITSM's catalog rides on request.read.
         PermissionSpec("book", "company", "read", "See companies and the rep directory", "OWN"),
         PermissionSpec("book", "company", "write", "Create and update companies", "OWN"),
+        # The rep directory itself. *Reading* it rides on company.read — a name has to
+        # resolve on any row a caller can already see — but adding a rep is directory
+        # administration, not account work, and a directory has no "own" reading: nobody
+        # owns the list of reps. So it sits at ORG and the route demands that floor.
+        PermissionSpec("book", "owner", "write", "Add a rep to the directory", "ORG", "ORG"),
         PermissionSpec("book", "contact", "read", "See contacts", "OWN"),
         PermissionSpec("book", "contact", "write", "Create and update contacts", "OWN"),
         # Reading a contact's real phone number, as opposed to the masked hint every other
@@ -156,6 +161,10 @@ CRM_BOOK_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("crm.book.company.write", "OWN"),
             ("crm.book.contact.read", "ORG"),
             ("crm.book.contact.write", "OWN"),
+            # `crm.book.owner.write` is deliberately absent: maintaining the rep directory is
+            # the administrator's job, not the rep's. This template lists its codes explicitly
+            # for exactly that reason — a `.pick` never acquires a new permission by accident,
+            # the way `.all("ORG")` on the admin template deliberately does.
         ),
     ),
 ]

@@ -6,11 +6,11 @@ does not commit for the route, so a crash between the state change and the event
 leave one without the other, and a rolled-back write never leaves an audit row claiming it
 happened. Events are staged into the outbox, never published inline (ADR-0000).
 
-The CRM SPA is read-only in this slice — its client has no create or update calls — so
-these writers are not yet exposed as public routes. They exist to finalise the domain
-rules and to drive the demo seed through the real, RLS-bound path (the finance-service
-precedent), so every seeded row lands with an audit row and an outbox event exactly as the
-live product will produce them.
+These writers are reached two ways, and the rules are the same on both. `app/api/routes.py`
+exposes them over HTTP — that is how the product creates anything — and the demo seed calls
+them directly, so every seeded row lands with the audit row and the outbox event the live
+product produces. Nothing here knows which caller it has; scope is settled at the route and
+tenancy at the session, so the seed cannot take a path a request could not.
 
 A contact's phone arrives already in its masked display form and is stored as such — this
 slice never accepts a raw number (see `app.models`). `last_activity_at` on a contact is

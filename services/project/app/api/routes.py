@@ -33,6 +33,7 @@ from app.models import SCHEMA
 from app.schemas import (
     AttentionItem,
     HealthBucket,
+    PersonIn,
     PersonOut,
     ProjectIn,
     ProjectOut,
@@ -64,6 +65,7 @@ ProjectWrite = Annotated[ScopeContext, Depends(require("pulseboard.engagements.p
 TaskRead = Annotated[ScopeContext, Depends(require("pulseboard.board.task.read"))]
 TaskWrite = Annotated[ScopeContext, Depends(require("pulseboard.board.task.write"))]
 PersonRead = Annotated[ScopeContext, Depends(require("pulseboard.team.person.read"))]
+PersonWrite = Annotated[ScopeContext, Depends(require("pulseboard.team.person.write"))]
 
 
 @router.get("/projects/info", response_model=ServiceInfo, summary="What this service is")
@@ -109,6 +111,31 @@ async def list_people(session: SessionDep, ctx: PersonRead, params: PageQuery) -
     stmt = selectors.people_stmt(ctx)
     rows, total = await paginate(session, stmt, params)
     return Page.build([selectors.person_out(p) for p in rows], total=total, params=params)
+
+
+@router.post(
+    "/projects/people",
+    response_model=PersonOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add someone to the delivery-team roster",
+    dependencies=[Entitled],
+)
+async def create_person(payload: PersonIn, session: SessionDep, ctx: PersonWrite) -> PersonOut:
+    """Create a roster person. Unlike the engagement and card writers this one takes no
+    `request`: `services.create_person` stages neither an audit row nor an event, because the
+    roster was built for the seed to call. Wiring one in is a change to the writer, not to this
+    route, and is deliberately left for the change that adds it.
+    """
+    person = await services.create_person(
+        session,
+        ctx,
+        ref=payload.ref,
+        name=payload.name,
+        role=payload.role,
+        location=payload.location,
+        capacity_hours=payload.capacity_hours,
+    )
+    return selectors.person_out(person)
 
 
 # ------------------------------------------------------------------ board / tasks

@@ -19,13 +19,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Path, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
 from app.config import settings
 from app.models import SCHEMA, Agent, SlaPolicy, Ticket, TicketMessage
 from app.schemas import (
+    AgentIn,
     AgentOut,
     AssignIn,
     BreakdownSliceOut,
@@ -34,8 +35,10 @@ from app.schemas import (
     ReplyIn,
     Requester,
     ServiceInfo,
+    SlaPolicyIn,
     SlaPolicyOut,
     SlaTargetOut,
+    TicketIn,
     TicketOut,
     VolumePointOut,
 )
@@ -64,6 +67,20 @@ TicketRead = Annotated[
 TicketWrite = Annotated[
     ScopeContext, Depends(require("support.desk.ticket.write", minimum=Scope.ORG))
 ]
+
+#: The desk's reference data is administration, not queue work: everyone who works the queue
+#: replies and assigns, but the roster and the SLA targets the desk is measured against are their
+#: own permissions (see `catalogue.py`). Reading them stays under `support.desk.ticket.read`.
+AgentWrite = Annotated[
+    ScopeContext, Depends(require("support.desk.agent.write", minimum=Scope.ORG))
+]
+SlaPolicyWrite = Annotated[
+    ScopeContext, Depends(require("support.desk.sla_policy.write", minimum=Scope.ORG))
+]
+
+#: An agent's public ref, bounded to the column it lands in, so an over-long one is a 422 here
+#: rather than a database error underneath.
+AgentRef = Annotated[str, Path(min_length=1, max_length=40, description="The agent's public ref")]
 
 
 # --------------------------------------------------------------------- assemblers
@@ -174,6 +191,43 @@ async def list_tickets(
     return Page.build(items, total=total, params=params)
 
 
+@router.post(
+    "/support/tickets",
+    response_model=TicketOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Open a ticket",
+    dependencies=[Entitled],
+)
+async def create_ticket(
+    payload: TicketIn, session: SessionDep, ctx: TicketWrite, request: Request
+) -> TicketOut:
+    """Open a ticket with its opening thread, and stage `support.desk.ticket.created`.
+
+    The ticket starts `new` and unassigned: the lifecycle owns the first and the assignment
+    route — which refuses an agent outside the organization — owns the second (see `TicketIn`).
+    The opening messages are stamped with the ticket's own creation time: they are its first
+    thread, not a backfilled history.
+    """
+    now = datetime.now(UTC)
+    ticket = await services.create_ticket(
+        session,
+        ctx,
+        number=payload.number,
+        subject=payload.subject,
+        requester=payload.requester.model_dump(),
+        priority=payload.priority,
+        status=domain.TicketStatus.NEW.value,
+        channel=payload.channel,
+        assignee_ref=None,
+        tags=list(payload.tags),
+        created_at=now,
+        messages=[{**m.model_dump(), "at": now} for m in payload.messages],
+        request=request,
+    )
+    messages = await selectors.get_messages(session, ctx.organization_id, ticket.id)
+    return _ticket_out(ticket, messages)
+
+
 @router.get(
     "/support/agents",
     response_model=list[AgentOut],
@@ -183,6 +237,37 @@ async def list_tickets(
 async def list_agents(session: SessionDep, ctx: TicketRead) -> list[AgentOut]:
     agents = await selectors.list_agents(session, ctx.organization_id)
     return [_agent_out(a) for a in agents]
+
+
+@router.put(
+    "/support/agents/{ref}",
+    response_model=AgentOut,
+    summary="Create or update an agent",
+    dependencies=[Entitled],
+)
+async def put_agent(
+    ref: AgentRef, payload: AgentIn, session: SessionDep, ctx: AgentWrite
+) -> AgentOut:
+    """Idempotent on `ref` — the same PUT twice leaves one agent, updated. That is why this is a
+    PUT on the ref rather than a POST to a collection.
+
+    Reference data, so nothing is staged on the outbox: nothing downstream reacts to the roster.
+    """
+    agent = await services.upsert_agent(
+        session,
+        ctx,
+        ref=ref,
+        name=payload.name,
+        email=payload.email,
+        role=payload.role,
+        team=payload.team,
+        open_load=payload.open_load,
+        avg_first_response_min=payload.avg_first_response_min,
+        csat_pct=payload.csat_pct,
+        solved_7d=payload.solved_7d,
+        online=payload.online,
+    )
+    return _agent_out(agent)
 
 
 @router.get(
@@ -195,6 +280,33 @@ async def get_sla_policy(session: SessionDep, ctx: TicketRead) -> SlaPolicyOut:
     policy = await selectors.get_sla_policy(session, ctx.organization_id)
     if policy is None:
         raise NotFoundProblem("No SLA policy is configured for this organization")
+    return _policy_out(policy)
+
+
+@router.put(
+    "/support/sla-policy",
+    response_model=SlaPolicyOut,
+    summary="Set the SLA policy governing the queue",
+    dependencies=[Entitled],
+)
+async def put_sla_policy(
+    payload: SlaPolicyIn, session: SessionDep, ctx: SlaPolicyWrite
+) -> SlaPolicyOut:
+    """Create or replace the organization's one policy. Idempotent, and a whole replacement:
+    `targets` lands as sent.
+
+    Moving a target does not re-clock the tickets already in flight — `sla_due` and
+    `sla_breached` are stored state, stamped as each ticket moved, not a colour recomputed from
+    whatever the policy says today.
+    """
+    policy = await services.upsert_sla_policy(
+        session,
+        ctx,
+        name=payload.name,
+        business_hours=payload.business_hours,
+        coverage=payload.coverage,
+        targets=[t.model_dump() for t in payload.targets],
+    )
     return _policy_out(policy)
 
 
