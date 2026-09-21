@@ -136,8 +136,15 @@ storefront)
 	dist_dir="dist"
 	entry="index.html"
 	;;
+engage)
+	# OpsGrids Engage: engage.opsgrids.com.
+	app_dir="$repo_root/frontend/product-engage"
+	build_script="build"
+	dist_dir="dist"
+	entry="index.html"
+	;;
 *)
-	echo "unknown APP '$app' — one of: buyer, dashboard, operations, hrms, crm, pulseboard, projects, support, marketing, finance, itsm, storefront" >&2
+	echo "unknown APP '$app' — one of: buyer, dashboard, operations, hrms, crm, pulseboard, projects, support, marketing, finance, itsm, storefront, engage" >&2
 	exit 64
 	;;
 esac

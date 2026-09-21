@@ -1834,6 +1834,46 @@
         "tags": [
           "engage"
         ]
+      },
+      "put": {
+        "description": "PUT rather than POST, for the reverse of `connect_provider`'s reason: this replaces the\none connection a caller already knows exists, and calling it twice with the same body\nleaves the same state \u2014 an app password rotated to the same value, or a provider switched\nto the same provider, is not a new fact each time.\n\nSame request shape as the POST, because what a caller supplies to replace a connection is\nexactly what they supply to create one \u2014 a second schema for the same four fields would be\na distinction with no difference for anyone filling in the form.",
+        "operationId": "replace_provider_api_v1_engage_connection_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replace the organization's email connection",
+        "tags": [
+          "engage"
+        ]
       }
     },
     "/api/v1/engage/domains": {

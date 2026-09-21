@@ -275,6 +275,166 @@ async def test_connecting_audits_and_stages_an_event_without_the_secret(session,
     assert "app-password" not in json.dumps([audit[0].after, events[0].payload])
 
 
+# --------------------------------------------------------------------- replacing the connection
+#
+# `replace_connection` is a transactional overwrite, not delete-then-create: the unique
+# constraint is on `organization_id` alone, so there is never a window with zero rows and never
+# a second row alongside the first.
+
+
+async def test_replacing_changes_the_connections_fields_and_reseals_the_secret(
+    session, org_id
+) -> None:
+    ctx = _ctx(org_id, "engage.setup.connection.write")
+    async with session.begin():
+        original = await services.create_connection(
+            session,
+            ctx,
+            kind="google",
+            username="info@company.com",
+            secret="old-app-password",  # pragma: allowlist secret
+        )
+    original_id = original.id
+
+    async with session.begin():
+        replaced = await services.replace_connection(
+            session,
+            ctx,
+            kind="smtp",
+            username="ops@newprovider.com",
+            secret="new-app-password",  # pragma: allowlist secret
+            host="mail.newprovider.com",
+        )
+
+    # The same row, changed in place — not a second connection alongside the first.
+    assert replaced.id == original_id
+    rows = (await session.execute(select(models.EmailConnection))).scalars().all()
+    assert len(rows) == 1
+
+    assert (replaced.kind, replaced.username, replaced.host, replaced.port) == (
+        "smtp",
+        "ops@newprovider.com",
+        "mail.newprovider.com",
+        587,
+    )
+    assert replaced.secret_enc is not None
+    assert open_sealed(replaced.secret_enc, settings=settings()) == "new-app-password"
+
+
+async def test_replacing_erases_the_old_plaintext_everywhere(session, org_id) -> None:
+    """The old credential must be destroyed, not orphaned: overwritten in the same
+    transaction, with the prior plaintext left in none of the places this function writes —
+    not the row, not the audit row, not the outbox payload."""
+    ctx = _ctx(org_id, "engage.setup.connection.write")
+    async with session.begin():
+        await services.create_connection(
+            session,
+            ctx,
+            kind="google",
+            username="info@company.com",
+            secret="old-app-password",  # pragma: allowlist secret
+        )
+
+    async with session.begin():
+        replaced = await services.replace_connection(
+            session,
+            ctx,
+            kind="google",
+            username="info@company.com",
+            secret="new-app-password",  # pragma: allowlist secret
+        )
+
+    assert replaced.secret_enc is not None
+    assert b"old-app-password" not in replaced.secret_enc
+    assert open_sealed(replaced.secret_enc, settings=settings()) == "new-app-password"
+
+    audit = (await session.execute(select(models.AuditLog))).scalars().all()
+    events = (await session.execute(select(models.OutboxEvent))).scalars().all()
+    everywhere = json.dumps([a.before for a in audit] + [a.after for a in audit]) + json.dumps(
+        [e.payload for e in events]
+    )
+    assert "old-app-password" not in everywhere
+    assert "new-app-password" not in everywhere
+
+
+async def test_replacing_audits_and_stages_an_event_without_the_secret(session, org_id) -> None:
+    ctx = _ctx(org_id, "engage.setup.connection.write")
+    async with session.begin():
+        await services.create_connection(
+            session,
+            ctx,
+            kind="google",
+            username="info@company.com",
+            secret="old-app-password",  # pragma: allowlist secret
+        )
+
+    async with session.begin():
+        await services.replace_connection(
+            session,
+            ctx,
+            kind="smtp",
+            username="ops@newprovider.com",
+            secret="new-app-password",  # pragma: allowlist secret
+            host="mail.newprovider.com",
+        )
+
+    audit = (
+        (
+            await session.execute(
+                select(models.AuditLog).where(
+                    models.AuditLog.action == "engage.connection.replaced"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    events = (
+        (
+            await session.execute(
+                select(models.OutboxEvent).where(
+                    models.OutboxEvent.event_type == services.EVT_CONNECTION_REPLACED
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(audit) == 1
+    assert len(events) == 1
+    assert audit[0].before == {
+        "kind": "google",
+        "username": "info@company.com",
+        "host": "smtp.gmail.com",
+        "port": 587,
+    }
+    assert audit[0].after == {
+        "kind": "smtp",
+        "username": "ops@newprovider.com",
+        "host": "mail.newprovider.com",
+        "port": 587,
+    }
+    everywhere = json.dumps([audit[0].before, audit[0].after, events[0].payload])
+    assert "old-app-password" not in everywhere
+    assert "new-app-password" not in everywhere
+
+
+async def test_replacing_when_no_connection_exists_is_not_found(session, org_id) -> None:
+    """PUT replaces a resource that already exists; a PUT with nothing to replace is a client
+    error rather than a silent create. `create_connection` (POST) already owns creation — a
+    second route that created one too would leave the two routes ambiguous about which one to
+    call, for no gain over telling the caller there is nothing here yet."""
+    with pytest.raises(NotFoundProblem):
+        async with session.begin():
+            await services.replace_connection(
+                session,
+                _ctx(org_id, "engage.setup.connection.write"),
+                kind="google",
+                username="info@company.com",
+                secret="x",  # pragma: allowlist secret
+            )
+
+
 async def test_creating_a_domain_mints_a_dkim_keypair(session, org_id) -> None:
     """`dns_records_for` is pure and leaves the DKIM value empty for its caller to fill. This
     is that caller: a domain created without a key publishes a record that can never verify,
@@ -677,6 +837,76 @@ async def test_a_fixed_provider_kind_ignores_the_callers_host_entirely(session, 
     assert (conn.host, conn.port) == ("smtp.gmail.com", 587)
 
 
+# Replacing a connection is a second way to put a host on the row, so it is held to the same
+# rule by the same function. Without that, PUT is simply the way round the check on POST.
+
+
+async def _connected_google(session, org_id) -> None:
+    async with session.begin():
+        await services.create_connection(
+            session,
+            _ctx(org_id, "engage.setup.connection.write"),
+            kind="google",
+            username="ops@company.com",
+            secret="x",  # pragma: allowlist secret
+        )
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "postgres", "169.254.169.254", "localhost"])
+async def test_replacing_a_connection_refuses_an_internal_host(session, org_id, host) -> None:
+    await _connected_google(session, org_id)
+    with pytest.raises(ValidationProblem) as exc:
+        async with session.begin():
+            await services.replace_connection(
+                session,
+                _ctx(org_id, "engage.setup.connection.write"),
+                kind="smtp",
+                username="ops@company.com",
+                secret="y",  # pragma: allowlist secret
+                host=host,
+                port=587,
+            )
+    assert str(exc.value) == _FIXED_MESSAGE
+    # The refusal left the working connection exactly as it was.
+    async with session.begin():
+        conn = (await session.execute(select(models.EmailConnection))).scalar_one()
+    assert (conn.kind, conn.host, conn.port) == ("google", "smtp.gmail.com", 587)
+
+
+async def test_replacing_a_connection_refuses_a_name_resolving_privately(session, org_id) -> None:
+    await _connected_google(session, org_id)
+    resolver = FakeResolver({("mail.attacker.example", "A"): ["10.0.0.5"]})
+    with pytest.raises(ValidationProblem) as exc:
+        async with session.begin():
+            await services.replace_connection(
+                session,
+                _ctx(org_id, "engage.setup.connection.write"),
+                kind="smtp",
+                username="ops@company.com",
+                secret="y",  # pragma: allowlist secret
+                host="mail.attacker.example",
+                port=587,
+                resolver=resolver,
+            )
+    assert str(exc.value) == _FIXED_MESSAGE
+
+
+async def test_replacing_with_a_fixed_provider_ignores_the_callers_host(session, org_id) -> None:
+    await _connected_google(session, org_id)
+    async with session.begin():
+        conn = await services.replace_connection(
+            session,
+            _ctx(org_id, "engage.setup.connection.write"),
+            kind="microsoft",
+            username="ops@company.com",
+            secret="y",  # pragma: allowlist secret
+            host="169.254.169.254",
+            port=5432,
+        )
+    assert conn.host != "169.254.169.254"
+    assert conn.port in {25, 465, 587, 2525}
+
+
 async def test_a_name_that_rebinds_between_creation_and_dial_is_refused_at_dial_time(
     session, org_id, verified_domain
 ) -> None:
@@ -877,6 +1107,39 @@ async def _events(session, event_type: str) -> int:
     return len(rows)
 
 
+async def test_replacing_the_connection_resets_every_sender_in_the_organization_to_unusable(
+    session, org_id, usable_sender
+) -> None:
+    """`verified_at` is proof a test message reached the provider through the connection that
+    is about to stop existing. Once the credential or the provider changes, that proof is
+    about a path that no longer exists, so every sender proved through it must go back to
+    unusable rather than stay selectable on the strength of a connection nobody has tested."""
+    wire = RecordingTransport()
+    async with session.begin():
+        sender = await services.send_test(
+            session,
+            _ctx(org_id, "engage.setup.sender.write"),
+            sender_id=usable_sender.id,
+            to_address="ops@company.com",
+            transport=wire,
+        )
+    assert sender.usable is True
+
+    async with session.begin():
+        await services.replace_connection(
+            session,
+            _ctx(org_id, "engage.setup.connection.write"),
+            kind="smtp",
+            username="ops@newprovider.com",
+            secret="new-app-password",  # pragma: allowlist secret
+            host="mail.newprovider.com",
+        )
+
+    refreshed = await _reread(session, sender.id)
+    assert refreshed.verified_at is None
+    assert refreshed.usable is False
+
+
 # --------------------------------------------------------------------- the HTTP surface
 #
 # What is asserted below is the router's own work: the permission each route declares, the
@@ -1014,6 +1277,116 @@ async def test_reading_the_connection_returns_that_same_shape(client, org_id) ->
     # worth reading back, because a screen showing nothing here looks unconnected.
     assert body["items"][0]["host"] == "smtp.gmail.com"
     assert "app-password" not in response.text
+
+
+async def test_replacing_a_connection_never_returns_the_secret_and_updates_the_fields(
+    client, org_id
+) -> None:
+    with as_principal(engage_caller(org_id, [f"{C_WRITE}:ORG"])):
+        await client.post(
+            CONNECTION,
+            json={
+                "kind": "google",
+                "username": "info@company.com",
+                "secret": "old-app-password",  # pragma: allowlist secret
+            },
+        )
+        response = await client.put(
+            CONNECTION,
+            json={
+                "kind": "smtp",
+                "username": "ops@newprovider.com",
+                "secret": "new-app-password",  # pragma: allowlist secret
+                "host": "mail.newprovider.com",
+            },
+        )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert set(body) == {"kind", "username", "host", "port", "status", "daily_cap"}
+    assert (body["kind"], body["username"], body["host"]) == (
+        "smtp",
+        "ops@newprovider.com",
+        "mail.newprovider.com",
+    )
+    assert "old-app-password" not in response.text
+    assert "new-app-password" not in response.text
+
+
+async def test_replacing_refuses_a_caller_holding_only_the_read(client, org_id) -> None:
+    with as_principal(engage_caller(org_id, [f"{C_READ}:ORG"])):
+        response = await client.put(
+            CONNECTION,
+            json={
+                "kind": "google",
+                "username": "info@company.com",
+                "secret": "x",  # pragma: allowlist secret
+            },
+        )
+    assert response.status_code == 403
+
+
+async def test_replacing_when_no_connection_exists_is_a_404(client, org_id) -> None:
+    """PUT replaces a resource that already exists. The decision, spelled out in
+    `services.replace_connection`: a PUT with nothing to replace is a client error, not a
+    silent create — `POST /engage/connection` already owns creation, and a PUT that created
+    too would leave the two routes ambiguous about which one to call."""
+    with as_principal(engage_caller(org_id, [f"{C_WRITE}:ORG"])):
+        response = await client.put(
+            CONNECTION,
+            json={
+                "kind": "google",
+                "username": "info@company.com",
+                "secret": "x",  # pragma: allowlist secret
+            },
+        )
+    assert response.status_code == 404
+
+
+async def test_replacing_as_another_organization_does_not_touch_this_ones_connection(
+    client, admin_session, org_id
+) -> None:
+    """The write-side mirror of `test_another_tenants_sending_identity_is_invisible`: proof
+    that a replace cannot reach a row scoped to a different tenant, not only that a read
+    cannot see one."""
+    other = uuid.uuid4()
+    async with admin_session.begin():
+        admin_session.add(
+            models.EmailConnection(
+                organization_id=other,
+                kind="google",
+                host="smtp.gmail.com",
+                port=587,
+                username="ops@theirs.example.com",
+                secret_enc=b"their-sealed-envelope",
+            )
+        )
+
+    with as_principal(engage_caller(org_id, [f"{C_WRITE}:ORG"])):
+        response = await client.put(
+            CONNECTION,
+            json={
+                "kind": "smtp",
+                "username": "attacker@evil.com",
+                "secret": "stolen",  # pragma: allowlist secret
+                "host": "mail.evil.com",
+            },
+        )
+    # `org_id` has no connection of its own to replace — proof the write landed on nobody's
+    # row rather than reaching across into the other organization's.
+    assert response.status_code == 404
+
+    async with admin_session.begin():
+        theirs = (
+            await admin_session.execute(
+                select(models.EmailConnection).where(
+                    models.EmailConnection.organization_id == other
+                )
+            )
+        ).scalar_one()
+    assert theirs.username == "ops@theirs.example.com"
+    assert theirs.host == "smtp.gmail.com"
+    assert theirs.secret_enc == b"their-sealed-envelope"
 
 
 async def test_adding_a_domain_returns_what_the_customer_has_to_publish(client, org_id) -> None:
