@@ -8,6 +8,7 @@ import type { ConnectionOut } from "@/api/types";
 import { connectionKindLabel, formatNumber } from "@/lib/format";
 import {
   Announcer,
+  Button,
   Card,
   ConnectionStatusTag,
   ErrorState,
@@ -18,7 +19,9 @@ import {
 import { ConnectionWizard } from "./ConnectionWizard";
 
 /**
- * How this organization sends email — and, until it does, the wizard that decides it.
+ * How this organization sends email — and, until it does, the wizard that decides it. Once it is
+ * connected, the same wizard reopens in a dialog to replace it, because `replace_connection`
+ * collects exactly the same four fields as creating one does.
  *
  * **Nothing on this screen is derived from the credential, and nothing ever may be.** The app
  * password is write-only on the wire: `ConnectionOut` has no field for it, masked or otherwise,
@@ -26,6 +29,11 @@ import { ConnectionWizard } from "./ConnectionWizard";
  * would each be the secret with a hint attached, reconstructed here from data the service
  * deliberately withheld. The note in the panel says so to the customer, because "why can't I see
  * what I entered" is a reasonable question with a real answer.
+ *
+ * **Replacing is not a lighter action than it sounds.** `replace_connection` resets every sender
+ * in the organization to unusable in the same transaction the new credential is sealed in, and
+ * the wizard's confirmation step says that in those terms before the request fires — not "are you
+ * sure?", which would let the customer agree without knowing what they agreed to.
  */
 
 /** One label/value row. `mono` for values a person compares character by character. */
@@ -40,7 +48,13 @@ function Detail({ label, value, mono = false }: { label: string; value: string; 
   );
 }
 
-function ConnectionPanel({ connection }: { connection: ConnectionOut }) {
+function ConnectionPanel({
+  connection,
+  onReplace,
+}: {
+  connection: ConnectionOut;
+  onReplace: () => void;
+}) {
   return (
     <Card className="flex flex-col gap-5 p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -68,13 +82,14 @@ function ConnectionPanel({ connection }: { connection: ConnectionOut }) {
         Nothing sends it back — not masked, not shortened.
       </InlineAlert>
 
-      {/* One connection per organization, and the service refuses a second. There is no route
-          that removes this one, so there is no control here that pretends to: telling a customer
-          to "just reconnect" would walk them into a refusal with their new password in hand. */}
-      <InlineAlert tone="warning" title="Replacing this connection isn't possible from here yet" live="off">
-        An organization gets one connection and the service refuses a second, so a new app
-        password needs this one removed first — which nothing in Engage can do today.
-      </InlineAlert>
+      {/* One connection per organization, so there is nothing to add alongside this one — only
+          this one to replace. The wizard that replaces it names the real cost of doing so before
+          it does. */}
+      <div>
+        <Button variant="outline" onClick={onReplace}>
+          Replace provider
+        </Button>
+      </div>
     </Card>
   );
 }
@@ -83,13 +98,15 @@ function Connection() {
   const loader = useCallback(() => getConnection(), []);
   const state = useAsync(loader, []);
   /* The wizard's answer, held so the screen turns over the moment it succeeds rather than after a
-     second round trip. `POST` returns the whole `ConnectionOut`, so there is nothing a re-read
-     would add. */
+     second round trip. `POST` and `PUT` both return the whole `ConnectionOut`, so there is
+     nothing a re-read would add. */
   const [justConnected, setJustConnected] = useState<ConnectionOut | null>(null);
+  const [justReplaced, setJustReplaced] = useState<ConnectionOut | null>(null);
+  const [replaceOpen, setReplaceOpen] = useState(false);
   // A page of at most one: an empty page is "no provider connected", which is the state a
   // customer who has just activated Engage is genuinely in.
   const loaded = state.status === "success" ? (state.data.items[0] ?? null) : null;
-  const connection = justConnected ?? loaded;
+  const connection = justReplaced ?? justConnected ?? loaded;
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -131,13 +148,43 @@ function Connection() {
         </InlineAlert>
       ) : null}
 
+      {justReplaced !== null ? (
+        <InlineAlert
+          tone="success"
+          title={`Now sending through ${connectionKindLabel(justReplaced.kind)}`}
+          action={
+            <Link
+              to="/senders"
+              className="inline-flex h-9 items-center rounded-full px-3 text-sm font-semibold text-accent-ink transition-colors hover:bg-accent-soft focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              Review senders
+            </Link>
+          }
+        >
+          Replacing the connection reset every sender to unusable. Send each one a new test
+          message before it can send again.
+        </InlineAlert>
+      ) : null}
+
       {/* The unconnected state is the wizard itself. An empty panel saying "no provider
           connected" above the form that connects one is the same sentence twice. */}
       {state.status === "success" && connection === null ? (
         <ConnectionWizard onConnected={setJustConnected} />
       ) : null}
 
-      {connection !== null ? <ConnectionPanel connection={connection} /> : null}
+      {connection !== null ? (
+        <ConnectionPanel connection={connection} onReplace={() => setReplaceOpen(true)} />
+      ) : null}
+
+      <ConnectionWizard
+        mode="replace"
+        open={replaceOpen}
+        onCancel={() => setReplaceOpen(false)}
+        onConnected={(replaced) => {
+          setReplaceOpen(false);
+          setJustReplaced(replaced);
+        }}
+      />
     </div>
   );
 }

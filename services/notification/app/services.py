@@ -22,6 +22,7 @@ from typing import Any
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -1019,6 +1020,7 @@ async def fold_status(
 _rules = domain
 
 EVT_CONNECTION_CREATED = "engage.setup.connection.created"
+EVT_CONNECTION_REPLACED = "engage.setup.connection.replaced"
 EVT_DOMAIN_CREATED = "engage.setup.domain.created"
 EVT_DOMAIN_VERIFIED = "engage.setup.domain.verified"
 EVT_SENDER_CREATED = "engage.setup.sender.created"
@@ -1176,6 +1178,151 @@ async def create_connection(
         actor=_actor(ctx),
     )
     return connection
+
+
+async def replace_connection(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    kind: str,
+    username: str,
+    secret: str,
+    host: str = "",
+    port: int | None = None,
+    request: Request | None = None,
+) -> EmailConnection:
+    """Replace the one row `create_connection` refuses to add a second of.
+
+    An app password gets rotated, a provider gets switched — and because the unique
+    constraint is on `organization_id` alone, there is no way to have zero or two rows at
+    once. **In place, not delete-then-create**: a delete followed by a create leaves a window
+    with no connection at all, and a crash between the two steps strands the organization
+    there. Overwriting the existing row inside one transaction has no such window — the
+    caller either ends up with the old connection or the new one, never neither.
+
+    The old credential is destroyed, not archived: `secret_enc` is overwritten with the newly
+    sealed value and the prior ciphertext is not copied anywhere else this function touches
+    (audit, outbox) before it is gone. There is no history column for it and there must not
+    become one — a credential that no longer authenticates anything is not worth keeping a
+    trail of, and a trail of it is one more place it can leak from.
+
+    Every sender in the organization is reset to unusable in the same transaction. See the
+    comment at that statement for why — this is the safety property the slice exists for.
+    """
+    try:
+        transport = _rules.transport_for(kind, username)
+    except ValueError as exc:
+        raise ValidationProblem(str(exc)) from exc
+
+    if kind == "platform":
+        # Same refusal as `create_connection`, for the same reason: modelled but unreachable
+        # until the platform runs an MTA of its own.
+        raise BusinessRuleProblem(
+            "Platform-managed sending is not available yet — connect Google Workspace, "
+            "Microsoft 365, or your own SMTP server."
+        )
+
+    existing = await selectors.get_connection(session, ctx.organization_id)
+    if existing is None:
+        # PUT replaces a resource that already exists; a PUT with nothing to replace is a
+        # client error, not an invitation to create one. `create_connection` already owns
+        # creation (POST, precisely because a second call must fail) — a PUT that silently
+        # created one too would leave two routes claiming the same job, and a caller who
+        # mistypes the path would get a row instead of a sentence telling them so.
+        raise NotFoundProblem("No email connection to replace. Connect a provider first.")
+
+    submission_host = (host or transport.host).strip()
+    if not submission_host:
+        raise ValidationProblem("An SMTP connection needs the host its provider submits on")
+
+    # Snapshotted before the row changes, for the audit `before`. Never the secret or its
+    # envelope — that rule is not this snapshot's alone, `after` below keeps it too.
+    before = {
+        "kind": existing.kind,
+        "username": existing.username,
+        "host": existing.host,
+        "port": existing.port,
+    }
+
+    # `seal` returns (ciphertext, mask); the mask is discarded deliberately, as in
+    # `create_connection`. Sealed before anything on the row is touched, so a failure here
+    # leaves the old connection intact rather than half-replaced.
+    sealed, _ = pii.seal(secret, kind="generic", settings=settings())
+
+    existing.kind = kind
+    existing.host = submission_host
+    existing.port = port or transport.port
+    existing.use_tls = transport.use_tls
+    existing.username = username
+    # The overwrite. Assigning a new value to the same column, in the same row, in the same
+    # transaction as everything else here — there is no intermediate state where the row
+    # holds neither credential, and no second location the old one was ever copied to.
+    existing.secret_enc = sealed
+    existing.daily_cap = transport.daily_cap
+    # A replace is presumed working until proven otherwise, exactly like a fresh connection —
+    # `send_test` is what actually proves it, on whichever sender gets tested next.
+    existing.status = "connected"
+    existing.updated_by = str(ctx.principal.sub)
+
+    # Every sender's `verified_at` is proof that a test message reached the provider through
+    # *this* connection's credential. The moment the credential or the provider changes, that
+    # proof is about a path that no longer exists — the new credential might not even
+    # authenticate, and even if it does, nobody has sent a single message through it yet. A
+    # sender left `usable` after this would let a campaign go out over a connection nobody has
+    # tested, which is the exact failure the whole setup wizard exists to prevent. So every
+    # sender in the organization is reset here, unconditionally, in the same transaction as
+    # the credential swap — not just the ones a caller happens to remember to re-test.
+    #
+    # A single UPDATE rather than a loop over `selectors.senders_stmt`: an organization can
+    # hold many senders, and looping a write per row is the N+1 this codebase treats as a bug.
+    # `synchronize_session="fetch"` so any `Sender` already loaded into this session (a route
+    # or a test holding one from an earlier call in the same transaction) is expired and
+    # reflects the reset on its next read, rather than going stale in memory while the
+    # database has already moved on.
+    await session.execute(
+        update(Sender)
+        .where(Sender.organization_id == ctx.organization_id, Sender.deleted_at.is_(None))
+        .values(verified_at=None, updated_by=str(ctx.principal.sub))
+        .execution_options(synchronize_session="fetch")
+    )
+
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.connection.replaced",
+        entity="email_connection",
+        entity_id=existing.id,
+        # Neither half carries the secret or its ciphertext — see the docstring. kind,
+        # username, host and port are the whole of what changed that is safe to record.
+        before=before,
+        after={
+            "kind": kind,
+            "username": username,
+            "host": submission_host,
+            "port": existing.port,
+        },
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_CONNECTION_REPLACED,
+        aggregate_type="email_connection",
+        aggregate_id=existing.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "connection_id": str(existing.id),
+            "kind": kind,
+            "daily_cap": existing.daily_cap,
+        },
+        actor=_actor(ctx),
+    )
+    return existing
 
 
 async def create_domain(
