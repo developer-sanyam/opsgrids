@@ -7,8 +7,8 @@ import { DateTimeField } from "./DateTimeField";
 interface DateRangeFieldProps {
   /** The `<legend>` — the question the pair answers, e.g. "When it runs". */
   legend: string;
-  startLabel?: string;
-  endLabel?: string;
+  startLabel?: string | undefined;
+  endLabel?: string | undefined;
   start: string | null;
   end: string | null;
   onStartChange: (instant: string | null) => void;
@@ -23,10 +23,10 @@ interface DateRangeFieldProps {
    * whose start time is ambiguous is one whose handover cannot be audited.
    */
   zoneNote: ReactNode;
-  startError?: string;
-  endError?: string;
-  disabled?: boolean;
-  className?: string;
+  startError?: string | undefined;
+  endError?: string | undefined;
+  disabled?: boolean | undefined;
+  className?: string | undefined;
 }
 
 /**

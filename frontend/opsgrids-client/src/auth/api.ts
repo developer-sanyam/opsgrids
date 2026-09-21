@@ -27,6 +27,33 @@ export function selectOrg(preAuthToken: string, organizationId: string): Promise
   });
 }
 
+/**
+ * `POST /auth/mfa/verify`. The second step of sign-in: the pre-auth token `login` answered with,
+ * plus six digits from an authenticator app or a recovery code.
+ *
+ * Answers the same union `login` does — `complete`, or `org_selection_required` **with a fresh
+ * pre-auth token** for a user who belongs to several organizations. A wrong code is a 401 carrying
+ * the server's own sentence ("That code is not valid"); the pre-auth token survives it, so the
+ * screen keeps the field and lets the user try again. Like `login`, it never trips the global
+ * sign-out handler: there is no session here to be stale.
+ */
+export function mfaVerify(
+  preAuthToken: string,
+  code: string,
+  organization?: string,
+): Promise<LoginResult> {
+  return apiRequest<LoginResult>("/auth/mfa/verify", {
+    method: "POST",
+    body: {
+      pre_auth_token: preAuthToken,
+      code,
+      ...(organization !== undefined ? { organization } : {}),
+    },
+    auth: false,
+    signalUnauthorized: false,
+  });
+}
+
 /** `GET /auth/me`. Who the current token belongs to, plus their org memberships. */
 export function me(): Promise<MeOut> {
   return apiRequest<MeOut>("/auth/me");

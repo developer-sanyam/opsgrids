@@ -15,14 +15,14 @@ interface DateTimeFieldProps {
    * which is the precise failure ADR-0000 forbids.
    */
   zone: string;
-  helper?: ReactNode;
-  error?: string;
+  helper?: ReactNode | undefined;
+  error?: string | undefined;
   /** The earliest instant this field accepts, in UTC. */
-  min?: string | null;
-  disabled?: boolean;
+  min?: string | null | undefined;
+  disabled?: boolean | undefined;
   /** An id of shared copy — the timezone note under a range — appended to `aria-describedby`. */
-  describedById?: string;
-  className?: string;
+  describedById?: string | undefined;
+  className?: string | undefined;
 }
 
 /**

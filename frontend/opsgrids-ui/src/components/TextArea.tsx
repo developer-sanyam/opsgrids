@@ -10,18 +10,23 @@ type NativeTextArea = Omit<
 
 interface TextAreaProps extends NativeTextArea {
   label: string;
-  helper?: string;
-  error?: string;
-  optional?: boolean;
+  helper?: string | undefined;
+  error?: string | undefined;
+  optional?: boolean | undefined;
   /**
    * Show `{n}/{maxLength}` once the value reaches this length. A counter that is on from the
    * first character reads as a limit to obey; one that appears near the end reads as a warning,
    * which is what it is. Requires `maxLength` and `value`.
    */
-  counterFrom?: number;
-  containerClassName?: string;
+  counterFrom?: number | undefined;
+  /**
+   * Keep the label in the accessibility tree but off the screen — for a dense row whose column
+   * heading already says what the control is. Default false.
+   */
+  hideLabel?: boolean | undefined;
+  containerClassName?: string | undefined;
   /** The textarea itself — for moving focus to the field a server error landed on. */
-  ref?: Ref<HTMLTextAreaElement>;
+  ref?: Ref<HTMLTextAreaElement> | undefined;
 }
 
 /**
@@ -35,6 +40,7 @@ export function TextArea({
   helper,
   error,
   optional = false,
+  hideLabel = false,
   counterFrom,
   containerClassName,
   className,
@@ -54,6 +60,7 @@ export function TextArea({
       {...(helper !== undefined ? { helper } : {})}
       {...(error !== undefined ? { error } : {})}
       optional={optional}
+      hideLabel={hideLabel}
       {...(containerClassName !== undefined ? { className: containerClassName } : {})}
       {...(showCounter
         ? {

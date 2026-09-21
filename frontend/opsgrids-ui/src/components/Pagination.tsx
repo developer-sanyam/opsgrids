@@ -15,11 +15,11 @@ interface PaginationProps {
   size: number;
   onPageChange: (page: number) => void;
   /** Omit to render a fixed page size with no control. */
-  onSizeChange?: (size: number) => void;
-  sizeOptions?: number[];
+  onSizeChange?: ((size: number) => void) | undefined;
+  sizeOptions?: number[] | undefined;
   /** What is being counted, plural: "widgets", "suppliers". */
   noun: string;
-  className?: string;
+  className?: string | undefined;
 }
 
 /** How many numbered buttons sit either side of the current page before an ellipsis takes over. */

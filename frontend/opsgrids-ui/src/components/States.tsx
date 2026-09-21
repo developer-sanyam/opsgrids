@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { cn } from "../lib/cn";
 
 /** A shimmering placeholder block that reserves layout so nothing shifts on load. */
-export function Skeleton({ className }: { className?: string }) {
+export function Skeleton({ className }: { className?: string | undefined }) {
   return (
     <div
       className={cn("animate-pulse rounded-full bg-ground", className)}
@@ -13,10 +13,10 @@ export function Skeleton({ className }: { className?: string }) {
 }
 
 interface EmptyStateProps {
-  icon?: ReactNode;
+  icon?: ReactNode | undefined;
   title: string;
   description: string;
-  action?: ReactNode;
+  action?: ReactNode | undefined;
 }
 
 /** Every list gets one: says what happened and what to do next. */
@@ -52,21 +52,21 @@ interface ErrorStateProps {
    * everything else — a 403, a 404 and an offline state are different facts and say so
    * ("You can't do this", "That request isn't available to you", "You're offline").
    */
-  title?: string;
+  title?: string | undefined;
   /**
    * `danger` for a failure, `warning` for a state that is not the caller's fault and not
    * broken, `neutral` for one that is simply unavailable. Colour never carries the meaning on
    * its own — the heading does.
    */
-  tone?: ErrorStateTone;
+  tone?: ErrorStateTone | undefined;
   /**
    * The problem document's `request_id`, rendered as `Reference: 7f3c1a2e`. Support asks for it;
    * a user should never have to find it.
    */
-  reference?: string;
-  onRetry?: () => void;
+  reference?: string | undefined;
+  onRetry?: (() => void) | undefined;
   /** An action other than retry — "Back to approvals" on a 404, where retrying is pointless. */
-  action?: ReactNode;
+  action?: ReactNode | undefined;
 }
 
 /**
@@ -107,8 +107,8 @@ export function ErrorState({
 
 interface SectionHeaderProps {
   title: string;
-  action?: ReactNode;
-  subtitle?: string;
+  action?: ReactNode | undefined;
+  subtitle?: string | undefined;
 }
 
 /** A card's internal title row: bold title left, optional control right. */

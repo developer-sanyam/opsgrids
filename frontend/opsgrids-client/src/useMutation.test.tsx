@@ -153,6 +153,38 @@ describe("useMutation", () => {
     await screen.findByText("error: nope");
   });
 
+  /**
+   * `onSuccess={() => widgets.reload()}` — where `reload` is async — is what every CRUD screen
+   * writes. The callback must therefore be typed `((result, input) => void) | undefined` and not
+   * `(result, input) => void | undefined`: the second parses as a function *returning*
+   * `void | undefined`, and a union return type rejects a handler that returns a promise. This
+   * test is a compile-time guard first and a runtime one second.
+   */
+  it("takes a callback that returns a promise", async () => {
+    const user = userEvent.setup();
+    const done: string[] = [];
+    const reload = async (result: string): Promise<void> => {
+      await Promise.resolve();
+      done.push(result);
+    };
+
+    function AsyncHarness() {
+      const save = useMutation((input: string) => Promise.resolve(`${input} saved`), {
+        onSuccess: (result) => reload(result),
+        onError: (failure) => reload(failure.message),
+      });
+      return (
+        <button type="button" onClick={() => void save.mutate("widget")}>
+          Save
+        </button>
+      );
+    }
+
+    render(<AsyncHarness />);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(done).toEqual(["widget saved"]));
+  });
+
   it("does not run onSuccess for a call it skipped", async () => {
     const user = userEvent.setup();
     const gate = deferred<string>();

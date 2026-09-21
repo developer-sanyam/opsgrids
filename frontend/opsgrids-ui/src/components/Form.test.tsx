@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { CheckboxGroup } from "./CheckboxGroup";
 import { InlineAlert } from "./InlineAlert";
 import { RadioGroup } from "./RadioGroup";
 import { Select } from "./Select";
@@ -130,6 +131,136 @@ describe("RadioGroup", () => {
     expect(document.activeElement).toBe(first);
     await user.keyboard(" ");
     expect(first.checked).toBe(true);
+  });
+});
+
+describe("CheckboxGroup", () => {
+  const OPTIONS = [
+    { value: "finance_admin", label: "Finance admin", description: "Issues invoices and credit notes." },
+    { value: "finance_viewer", label: "Finance viewer" },
+    { value: "owner", label: "Owner", disabled: true },
+  ];
+
+  function Harness({ initial = [] as string[] }: { initial?: string[] }) {
+    const [value, setValue] = useState<string[]>(initial);
+    return (
+      <CheckboxGroup
+        label="Roles"
+        value={value}
+        onChange={setValue}
+        options={OPTIONS}
+        helper="A member can hold more than one."
+      />
+    );
+  }
+
+  it("is a real group of real checkboxes", () => {
+    render(<Harness />);
+    expect(screen.getByRole("group", { name: "Roles" })).toBeDefined();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(3);
+  });
+
+  it("adds and removes, reporting the whole next selection in the options' order", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <CheckboxGroup
+        label="Roles"
+        value={["finance_viewer"]}
+        onChange={onChange}
+        options={OPTIONS}
+      />,
+    );
+    await user.click(screen.getByRole("checkbox", { name: /Finance admin/ }));
+    expect(onChange).toHaveBeenCalledWith(["finance_admin", "finance_viewer"]);
+
+    onChange.mockClear();
+    await user.click(screen.getByRole("checkbox", { name: /Finance viewer/ }));
+    expect(onChange).toHaveBeenCalledWith([]);
+  });
+
+  it("keeps a chosen value the current options do not offer, rather than dropping it", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <CheckboxGroup
+        label="Roles"
+        value={["role_from_another_page"]}
+        onChange={onChange}
+        options={OPTIONS}
+      />,
+    );
+    await user.click(screen.getByRole("checkbox", { name: /Finance viewer/ }));
+    expect(onChange).toHaveBeenCalledWith(["finance_viewer", "role_from_another_page"]);
+  });
+
+  it("toggles from the keyboard, and a disabled option is not reachable", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.tab();
+    const first = screen.getByRole("checkbox", { name: /Finance admin/ }) as HTMLInputElement;
+    expect(document.activeElement).toBe(first);
+    await user.keyboard(" ");
+    expect(first.checked).toBe(true);
+    expect((screen.getByRole("checkbox", { name: /Owner/ }) as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("describes the group by its helper and its error, and each box by its own description", () => {
+    render(
+      <CheckboxGroup
+        label="Roles"
+        value={[]}
+        onChange={vi.fn()}
+        options={OPTIONS}
+        helper="A member can hold more than one."
+        error="Pick at least one role."
+      />,
+    );
+    const group = screen.getByRole("group", { name: "Roles" });
+    expect(describedText(group)).toContain("A member can hold more than one.");
+    expect(describedText(group)).toContain("Pick at least one role.");
+    expect(group.getAttribute("aria-invalid")).toBe("true");
+    expect(describedText(screen.getByRole("checkbox", { name: /Finance admin/ }))).toContain(
+      "Issues invoices and credit notes.",
+    );
+  });
+});
+
+describe("a hidden label", () => {
+  it("keeps the control named for a screen reader while taking the label off the screen", () => {
+    render(
+      <Select
+        label="Scope"
+        hideLabel
+        value="ORG"
+        onChange={vi.fn()}
+        options={[
+          { value: "ORG", label: "Whole organisation" },
+          { value: "SELF", label: "Only themselves" },
+        ]}
+      />,
+    );
+    const control = screen.getByRole("combobox", { name: "Scope" });
+    const label = document.querySelector(`label[for="${control.id}"]`);
+    expect(label?.className).toContain("sr-only");
+    expect(label?.textContent).toBe("Scope");
+  });
+
+  it("is off by default, and the four FormField controls all take it", () => {
+    render(
+      <>
+        <TextField label="Quantity" hideLabel readOnly value="2" />
+        <TextArea label="Note" hideLabel readOnly value="" />
+        <Select label="Unit" hideLabel value="kg" onChange={vi.fn()} options={[{ value: "kg", label: "kg" }]} />
+        <TextField label="Reference" readOnly value="" />
+      </>,
+    );
+    for (const name of ["Quantity", "Note", "Unit"]) {
+      const control = screen.getByLabelText(name);
+      expect(document.querySelector(`label[for="${control.id}"]`)?.className).toContain("sr-only");
+    }
+    const visible = screen.getByLabelText("Reference");
+    expect(document.querySelector(`label[for="${visible.id}"]`)?.className).not.toContain("sr-only");
   });
 });
 

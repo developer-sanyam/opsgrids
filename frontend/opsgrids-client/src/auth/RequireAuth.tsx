@@ -7,7 +7,7 @@ interface RequireAuthProps {
   /** The product's mark, pulsing while the session boots. */
   logo: ReactNode;
   /** What the hold screen says — "Signing you in…", "Opening the service desk…". */
-  message?: string;
+  message?: string | undefined;
   children: ReactNode;
 }
 

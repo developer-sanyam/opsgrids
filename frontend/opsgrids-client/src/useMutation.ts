@@ -24,12 +24,12 @@ import { fieldErrorMap } from "./problem";
 
 export interface MutationOptions<Input, Result> {
   /** Ran after the write lands. Close the dialog, toast, reload the list — in that order. */
-  onSuccess?: (result: Result, input: Input) => void;
+  onSuccess?: ((result: Result, input: Input) => void) | undefined;
   /**
    * Ran after it fails, *in addition to* `error` being set. For the failures that are not a
    * message under a control: a 409 that should reload the row, a 403 that should re-route.
    */
-  onError?: (error: Error, input: Input) => void;
+  onError?: ((error: Error, input: Input) => void) | undefined;
 }
 
 export interface Mutation<Input, Result> {

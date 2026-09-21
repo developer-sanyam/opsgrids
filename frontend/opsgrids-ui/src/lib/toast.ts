@@ -14,16 +14,16 @@ export type ToastTone = "success" | "error" | "info";
 
 export interface ToastOptions {
   /** A second line under the title. The detail; the title carries the fact. */
-  description?: string;
+  description?: string | undefined;
   /**
    * Milliseconds before it dismisses itself, or `null` to stay until dismissed.
    *
    * Defaults: 5000 for a success, 8000 for an error — an error is usually longer to read and
    * more costly to miss. The clock pauses while the toast is hovered or holds focus.
    */
-  duration?: number | null;
+  duration?: number | null | undefined;
   /** `problem.request_id`, rendered small under the description. */
-  reference?: string;
+  reference?: string | undefined;
 }
 
 export interface ToastControls {

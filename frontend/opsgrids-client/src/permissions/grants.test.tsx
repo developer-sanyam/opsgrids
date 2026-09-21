@@ -46,6 +46,7 @@ function authValue(user: MeOut | null): AuthContextValue {
     status: user ? "authenticated" : "unauthenticated",
     user,
     login: () => Promise.reject(new Error("not used")),
+    verifyMfa: () => Promise.reject(new Error("not used")),
     selectOrg: () => Promise.reject(new Error("not used")),
     logout: () => Promise.resolve(),
   };

@@ -21,7 +21,7 @@ import { apiRequest } from "../http";
 export interface MyGrantsOut {
   membership_id: string;
   /** The organization's permission version, when the service reports one. */
-  pv?: number;
+  pv?: number | undefined;
   grants: string[];
 }
 

@@ -8,7 +8,7 @@
  */
 import type { ReactNode, SVGProps } from "react";
 
-export type IconProps = SVGProps<SVGSVGElement> & { title?: string };
+export type IconProps = SVGProps<SVGSVGElement> & { title?: string | undefined };
 
 function Base({ title, children, ...props }: IconProps & { children: ReactNode }) {
   return (

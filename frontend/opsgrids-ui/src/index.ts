@@ -16,6 +16,8 @@ export { Button } from "./components/Button";
 export type { ButtonSize, ButtonVariant } from "./components/Button";
 export { Card } from "./components/Card";
 export type { CardTone } from "./components/Card";
+export { CheckboxGroup } from "./components/CheckboxGroup";
+export type { CheckboxOption } from "./components/CheckboxGroup";
 export { Combobox } from "./components/Combobox";
 export type { ComboboxCopy, ComboboxOption } from "./components/Combobox";
 export { ConfirmDialog } from "./components/ConfirmDialog";

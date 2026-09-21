@@ -7,12 +7,12 @@ export interface Column<T> {
   key: string;
   header: ReactNode;
   render: (row: T) => ReactNode;
-  align?: "left" | "right";
+  align?: "left" | "right" | undefined;
   /** Extra classes on the cell — e.g. hide on small screens, or force tabular figures. */
-  cellClassName?: string;
-  headerClassName?: string;
+  cellClassName?: string | undefined;
+  headerClassName?: string | undefined;
   /** Sort key handed to `onSort` when the header is activated; omit for a fixed column. */
-  sortKey?: string;
+  sortKey?: string | undefined;
 }
 
 export interface TableSelection<T> {
@@ -27,7 +27,7 @@ export interface TableSelection<T> {
    */
   onToggleAll: (next: boolean) => void;
   /** Names the row in its checkbox's label: "Select Acme Ltd". Falls back to the row key. */
-  label?: (row: T) => string;
+  label?: ((row: T) => string) | undefined;
 }
 
 interface DataTableProps<T> {
@@ -35,26 +35,26 @@ interface DataTableProps<T> {
   rows: T[];
   rowKey: (row: T) => string;
   /** Shown in place of the body when there are no rows. The toolbar stays put above it. */
-  emptyState?: ReactNode;
-  caption?: string;
+  emptyState?: ReactNode | undefined;
+  caption?: string | undefined;
   /**
    * Search, filters, a bulk-action bar — anything that acts on the table. Rendered above it, and
    * **kept when the table is empty**, because a filter that returns nothing is exactly when the
    * user needs the control that will let them undo it.
    */
-  toolbar?: ReactNode;
+  toolbar?: ReactNode | undefined;
   /**
    * Called when a row is activated by click or Enter/Space. Setting it makes the whole row an
    * operable control — pointer *and* keyboard, so a drill-down is never mouse-only.
    */
-  onRowClick?: (row: T) => void;
+  onRowClick?: ((row: T) => void) | undefined;
   /** Marks the current row in a list-plus-detail layout. Only meaningful with `onRowClick`. */
-  isSelected?: (row: T) => boolean;
+  isSelected?: ((row: T) => boolean) | undefined;
   /** Current sort, and the handler the sortable headers call. */
-  sort?: { key: string; dir: "asc" | "desc" };
-  onSort?: (key: string) => void;
+  sort?: { key: string; dir: "asc" | "desc" } | undefined;
+  onSort?: ((key: string) => void) | undefined;
   /** Tick boxes for bulk actions. Omit it and no selection column is rendered at all. */
-  selection?: TableSelection<T>;
+  selection?: TableSelection<T> | undefined;
 }
 
 /**

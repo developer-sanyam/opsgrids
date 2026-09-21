@@ -13,19 +13,19 @@ export const API_BASE = "/api/v1";
 
 /** The RFC 7807 body the gateway returns on an error. */
 export interface ProblemJson {
-  type?: string;
-  title?: string;
-  status?: number;
-  detail?: string;
-  instance?: string;
-  request_id?: string;
+  type?: string | undefined;
+  title?: string | undefined;
+  status?: number | undefined;
+  detail?: string | undefined;
+  instance?: string | undefined;
+  request_id?: string | undefined;
   /**
    * The platform's one extension member: field-level detail on a validation failure, and on any
    * hand-raised problem that names a field. Declared here because it is a platform contract
    * (`platform_core.errors`) rather than one API's private extension — read it through
    * `fieldErrors` / `fieldErrorMap`, which drop anything that is not the documented shape.
    */
-  errors?: readonly { field: string; code: string; message: string }[];
+  errors?: readonly { field: string; code: string; message: string }[] | undefined;
 }
 
 /** A failed request, carrying the HTTP status and the parsed problem document when there is one. */
@@ -42,12 +42,12 @@ export class ApiError extends Error {
 }
 
 export interface RequestOptions {
-  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-  body?: unknown;
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | undefined;
+  body?: unknown | undefined;
   /** Attach the bearer token (default true). Login and select-org opt out — they carry their own. */
-  auth?: boolean;
+  auth?: boolean | undefined;
   /** Fire the global unauthorized handler on a 401 (default true). Login/logout opt out. */
-  signalUnauthorized?: boolean;
+  signalUnauthorized?: boolean | undefined;
 }
 
 async function readProblem(res: Response): Promise<ProblemJson | null> {

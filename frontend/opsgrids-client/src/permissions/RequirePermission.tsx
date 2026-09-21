@@ -7,14 +7,14 @@ interface RequirePermissionProps {
   /** The full code, `core.approval.policy.write`. */
   perm: string;
   /** The scope the endpoint's guard floors at. Default `OWN`. */
-  scope?: Scope;
+  scope?: Scope | undefined;
   /**
    * What to render instead. A *screen* that hides its whole reason for existing should say what
    * is possible and who to ask, rather than render an empty page — so unlike `<Can>`, this one
    * renders the fallback on a failed grants fetch too. A blank screen explains nothing; "we
    * couldn't check your access, try reloading" explains something.
    */
-  fallback?: ReactNode;
+  fallback?: ReactNode | undefined;
   children: ReactNode;
 }
 

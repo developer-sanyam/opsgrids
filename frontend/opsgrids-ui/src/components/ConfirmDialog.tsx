@@ -20,19 +20,19 @@ interface ConfirmDialogProps {
   body: ReactNode;
   /** The verb, matching the title: "Delete", "Revoke", "Cancel the order". Never "OK". */
   confirmLabel: string;
-  cancelLabel?: string;
+  cancelLabel?: string | undefined;
   /** What the confirm button says while it works. Defaults to `confirmLabel`. */
-  pendingLabel?: string;
+  pendingLabel?: string | undefined;
   /** `danger` is the default — this is the destructive-action dialog. */
-  tone?: "danger" | "primary";
+  tone?: "danger" | "primary" | undefined;
   /** Drive this from `useMutation`'s `pending`. Disables both controls. */
-  pending?: boolean;
+  pending?: boolean | undefined;
   /** The server's sentence when the confirm failed. Rendered with a Try again beside it. */
-  error?: string;
+  error?: string | undefined;
   /** `problem.request_id`, so a support conversation has a thread to pull. */
-  reference?: string;
+  reference?: string | undefined;
   /** Anything between the body and the actions — a "this also deletes N items" list. */
-  children?: ReactNode;
+  children?: ReactNode | undefined;
 }
 
 /**

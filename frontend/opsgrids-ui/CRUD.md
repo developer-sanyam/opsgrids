@@ -9,8 +9,8 @@ subset of those rules, not a replacement for them.
 
 ```ts
 import {
-  Button, Can, ConfirmDialog, DataTable, EmptyState, ErrorState, FormDialog,
-  Pagination, RowActions, SearchInput, Select, Skeleton, TextField, Toaster, useToast,
+  Button, Can, CheckboxGroup, ConfirmDialog, DataTable, EmptyState, ErrorState, FormDialog,
+  Pagination, RadioGroup, RowActions, SearchInput, Select, Skeleton, TextField, Toaster, useToast,
 } from "@opsgrids/ui";
 import { ApiError, apiRequest, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 ```
@@ -43,6 +43,17 @@ Failures are RFC 7807. Field detail arrives as `errors: [{field, code, message}]
 stripped — key on `name`, or `parts.0.sku` for a nested one. `useMutation` turns it into
 `fieldErrors`; `problemMessage(error)` is the sentence for everything else. Never retry a 4xx —
 `useMutation` never retries anything.
+
+`fieldErrors.name` is `string | undefined`, and **that is now a legal value for every optional
+prop** — `error`, `helper`, `reference`, `description` and the rest are declared `?: T | undefined`,
+so `exactOptionalPropertyTypes` accepts it:
+
+```tsx
+<TextField label="Name" value={name} onChange={…} error={nameError ?? save.fieldErrors.name} />
+```
+
+Four apps wrote their own `maybe(key, value)` spread helper for this. New code needs none of it;
+pass the value. (The conditional-spread form still compiles, so nothing has to be rewritten.)
 
 ## The list
 
@@ -211,6 +222,56 @@ field — a 409, a 403, a 500.
 ```
 
 Focus opens on Cancel, confirm fires once per attempt, and the dialog will not close mid-flight.
+
+## Fields beyond a TextField
+
+`RadioGroup` is one-of; **`CheckboxGroup` is many-of** — a real `<fieldset>`/`<legend>` of real
+checkboxes, for roles on a membership, locations a member covers, permissions on an invite. It
+reports the **whole next array** in the options' order, so the screen stores what it is handed:
+
+```tsx
+<CheckboxGroup label="Roles" options={roleOptions} value={roles} onChange={setRoles}
+  helper="A member can hold more than one." error={rolesError} />
+```
+
+`{value, label, description?, disabled?}` per option, `orientation="horizontal"` for a row of
+short labels. Do not hand-roll a checkbox list again; three screens did, three different ways.
+
+**`hideLabel`** on `Select`, `TextField`, `TextArea` and `Combobox` keeps the `<label>` real and
+tied to the control but takes it off the screen — for a dense row where the column heading above
+already says what the control is (the per-row scope `Select` in a permission picker). Default
+false. A column heading is not a label: without this the control has no accessible name at all.
+
+## Dialogs that open dialogs
+
+A `Dialog`, `ConfirmDialog` or `FormDialog` opened **from inside** an open one now behaves: Escape
+closes the top one only, Tab stays inside it, and closing it returns focus to the control that
+opened it and hands the trap back to the dialog underneath. Nothing to pass — render the nested
+dialog inside the outer one's children and it takes the keyboard while it is up.
+
+## Signing in, including a second factor
+
+`useAuth().login(email, password)` resolves to `{kind: "complete" | "org_selection" | "mfa_required"}`.
+On `mfa_required` the provider holds the pre-auth token itself — **never put it in component state
+or storage** — and the screen asks for the code and calls `verifyMfa(code)`, which resolves to the
+same steps (`complete`, or `org_selection` for an account reaching several organizations; a single
+one auto-selects). A wrong code rejects with the server's `ApiError`: show `problemMessage(error)`
+beside the field, keep the field, and call `verifyMfa` again. No app needs `authApi` directly for
+this, and none needs a page reload to pick up the session.
+
+## A KPI with no trend
+
+`KpiCard`'s `deltaPct` and `series` are optional. A live figure with no history behind it renders
+as icon, label, value and caption — no delta pill, no sparkline. Do not invent a trend to satisfy
+the props, and do not fork a second stat card: a card with nothing to compare against says so by
+showing nothing.
+
+## Touch targets
+
+Every control in `RowActions` — the inline pills, the overflow trigger, the menu items — carries a
+44x44 hit area while keeping its drawn size, per `frontend/CLAUDE.md`. If you build a control this
+small anywhere else, it needs the same: a thumb that misses by 4px in a table of rows is a delete
+on the wrong row.
 
 ## Rules
 

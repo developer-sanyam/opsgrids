@@ -18,13 +18,13 @@ export interface TimelineEntry {
   id: string;
   /** One sentence, in the product's voice. The dot never carries meaning the sentence doesn't. */
   content: ReactNode;
-  tone?: TimelineTone;
+  tone?: TimelineTone | undefined;
   /** The rendered instant — `15 Sep, 6:40 pm IST · 2 days ago`. */
-  timestamp?: ReactNode;
+  timestamp?: ReactNode | undefined;
   /** The UTC instant for the `<time datetime>` attribute, when `timestamp` is set. */
-  dateTime?: string;
+  dateTime?: string | undefined;
   /** Quoted verbatim beneath the sentence — a decider's comment, never summarised. */
-  quote?: string;
+  quote?: string | undefined;
 }
 
 interface TimelineProps {
@@ -34,12 +34,12 @@ interface TimelineProps {
    * Collapse to the most recent N when there are more. An escalation ladder can reach 32 rungs,
    * and the recent end is the one being read.
    */
-  collapseAfter?: number;
+  collapseAfter?: number | undefined;
   /** "Show all 14 events" — the noun is the caller's, since a chain shows "levels". */
-  expandLabel?: (total: number) => string;
+  expandLabel?: ((total: number) => string) | undefined;
   /** Rendered instead of a blank card when the history is empty. */
-  emptyMessage?: string;
-  className?: string;
+  emptyMessage?: string | undefined;
+  className?: string | undefined;
 }
 
 /**

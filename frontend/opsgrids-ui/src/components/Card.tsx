@@ -5,7 +5,7 @@ import { cn } from "../lib/cn";
 export type CardTone = "surface" | "dark";
 
 interface CardProps extends HTMLAttributes<HTMLDivElement> {
-  tone?: CardTone;
+  tone?: CardTone | undefined;
 }
 
 /**

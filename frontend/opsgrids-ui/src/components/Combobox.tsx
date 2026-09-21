@@ -10,7 +10,7 @@ export interface ComboboxOption {
   id: string;
   label: string;
   /** The line that identifies rather than describes — an employee number. */
-  sublabel?: string;
+  sublabel?: string | undefined;
 }
 
 type Phase = "idle" | "short" | "loading" | "ready" | "error";
@@ -25,23 +25,28 @@ interface ComboboxProps {
    * server's, and `capHint` says so rather than truncating silently.
    */
   loadOptions: (query: string, signal: AbortSignal) => Promise<ComboboxOption[]>;
-  helper?: string;
-  error?: string;
-  placeholder?: string;
+  helper?: string | undefined;
+  error?: string | undefined;
+  /**
+   * Keep the label in the accessibility tree but off the screen — for a dense row whose column
+   * heading already says what the control is. Default false.
+   */
+  hideLabel?: boolean | undefined;
+  placeholder?: string | undefined;
   /** Below this many characters nothing is requested: a 422 for a state the UI can prevent is a bug. */
-  minQueryLength?: number;
+  minQueryLength?: number | undefined;
   /** The server's result cap. When exactly this many come back, the footer says so. */
-  cap?: number;
+  cap?: number | undefined;
   /**
    * How long a pause in typing counts as "done", in ms. Defaults to a real debounce window; tests
    * lower it so a keystroke burst still coalesces into one request without spending the window's
    * duration in real wall-clock time.
    */
-  debounceMs?: number;
-  disabled?: boolean;
+  debounceMs?: number | undefined;
+  disabled?: boolean | undefined;
   /** Copy for each pre-result state. Defaults are generic; a screen names its own nouns. */
-  copy?: Partial<ComboboxCopy>;
-  className?: string;
+  copy?: Partial<ComboboxCopy> | undefined;
+  className?: string | undefined;
 }
 
 export interface ComboboxCopy {
@@ -90,6 +95,7 @@ export function Combobox({
   loadOptions,
   helper,
   error,
+  hideLabel = false,
   placeholder,
   minQueryLength = 2,
   cap = 20,
@@ -212,6 +218,7 @@ export function Combobox({
       label={label}
       {...(helper !== undefined ? { helper } : {})}
       {...(error !== undefined ? { error } : {})}
+      hideLabel={hideLabel}
       {...(className !== undefined ? { className } : {})}
     >
       {({ id, describedBy, invalid }) => (

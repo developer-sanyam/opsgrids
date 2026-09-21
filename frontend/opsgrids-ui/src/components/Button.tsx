@@ -6,10 +6,10 @@ export type ButtonVariant = "primary" | "ghost" | "dark" | "outline" | "danger";
 export type ButtonSize = "sm" | "md";
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: ButtonVariant;
-  size?: ButtonSize;
-  leadingIcon?: ReactNode;
-  trailingIcon?: ReactNode;
+  variant?: ButtonVariant | undefined;
+  size?: ButtonSize | undefined;
+  leadingIcon?: ReactNode | undefined;
+  trailingIcon?: ReactNode | undefined;
   /**
    * The sixth state, for anything that hits the network.
    *
@@ -21,9 +21,9 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
    * Change the label too where the wait is long enough to need a word ("Saving…"): the spinner
    * says *something* is happening, the label says what.
    */
-  loading?: boolean;
+  loading?: boolean | undefined;
   /** For a dialog that wants focus on Cancel, and for returning focus after a row disappears. */
-  ref?: Ref<HTMLButtonElement>;
+  ref?: Ref<HTMLButtonElement> | undefined;
 }
 
 const VARIANTS: Record<ButtonVariant, string> = {

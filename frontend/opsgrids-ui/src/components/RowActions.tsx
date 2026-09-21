@@ -9,21 +9,21 @@ export interface RowAction {
   label: string;
   onSelect: () => void;
   /** `danger` tints the label red. The label still carries the meaning on its own. */
-  tone?: "default" | "danger";
+  tone?: "default" | "danger" | undefined;
   /**
    * Leave the action out entirely. This is the **permission** answer — an absent control is
    * honest, and a Delete button that is present but refuses is a puzzle. Gate it with
    * `useCan` from `@opsgrids/client`.
    */
-  hidden?: boolean;
+  hidden?: boolean | undefined;
   /**
    * Present but not available *right now* — an invoice that is already paid, a delegation
    * already revoked. Requires `disabledReason`, because a dead control with no explanation is
    * the thing this prop exists to avoid.
    */
-  disabled?: boolean;
+  disabled?: boolean | undefined;
   /** Why it cannot be used. Shown on hover and read by a screen reader. */
-  disabledReason?: string;
+  disabledReason?: string | undefined;
 }
 
 interface RowActionsProps {
@@ -35,9 +35,18 @@ interface RowActionsProps {
    */
   label: string;
   /** More visible actions than this collapse into the overflow menu. Default 3. */
-  inlineLimit?: number;
-  className?: string;
+  inlineLimit?: number | undefined;
+  className?: string | undefined;
 }
+
+/**
+ * A 44x44 hit area centred on a control that is drawn smaller — the minimum touch target in
+ * `frontend/CLAUDE.md`, added without changing a single row's height. The pseudo-element belongs
+ * to the button, so a tap on it is a tap on the button.
+ */
+const TOUCH_TARGET =
+  "before:absolute before:left-1/2 before:top-1/2 before:h-11 before:w-full before:min-w-11 " +
+  "before:-translate-x-1/2 before:-translate-y-1/2 before:content-['']";
 
 function toneClass(action: RowAction): string {
   return action.tone === "danger" ? "text-negative hover:bg-negative-soft" : "text-ink-soft hover:bg-ground";
@@ -140,7 +149,10 @@ export function RowActions({ actions, label, inlineLimit = 3, className }: RowAc
 
   return (
     <div
-      className={cn("flex items-center justify-end gap-1", className)}
+      // `gap-2`, not `gap-1`: the 44px hit areas below grow up to 6px past each control, and an
+      // 8px gap keeps two of them from overlapping — a thumb must never land on Delete while
+      // aiming at the control beside it.
+      className={cn("flex items-center justify-end gap-2", className)}
       // These sit inside a `DataTable` row that may itself be clickable. Without this, Delete
       // opens the row it was about to delete on the way to the confirmation.
       onClick={(event) => event.stopPropagation()}
@@ -154,7 +166,11 @@ export function RowActions({ actions, label, inlineLimit = 3, className }: RowAc
               type="button"
               aria-label={`${action.label} ${label}`}
               className={cn(
-                "rounded-full px-3 py-1.5 text-sm font-semibold transition-colors",
+                "relative rounded-full px-3 py-1.5 text-sm font-semibold transition-colors",
+                // The pill stays 32px tall so a fifty-row table still reads as a table; the
+                // *target* is 44px, per frontend/CLAUDE.md, through a centred pseudo-element.
+                // A thumb that misses by 4px on a phone deletes the wrong row's neighbour.
+                TOUCH_TARGET,
                 toneClass(action),
                 action.disabled === true && "text-faint hover:bg-transparent cursor-not-allowed",
               )}
@@ -180,7 +196,10 @@ export function RowActions({ actions, label, inlineLimit = 3, className }: RowAc
             aria-haspopup="menu"
             aria-expanded={open}
             onClick={() => setOpen((previous) => !previous)}
-            className="grid size-8 place-items-center rounded-full text-ink-soft transition-colors hover:bg-ground"
+            className={cn(
+              "relative grid size-8 place-items-center rounded-full text-ink-soft transition-colors hover:bg-ground",
+              TOUCH_TARGET,
+            )}
           >
             <MoreHorizontalIcon className="size-[18px]" />
           </button>
@@ -204,7 +223,8 @@ export function RowActions({ actions, label, inlineLimit = 3, className }: RowAc
                     type="button"
                     role="menuitem"
                     className={cn(
-                      "px-4 py-2 text-left text-sm font-medium transition-colors",
+                      // 44px of row, not 36: a menu is where the destructive action lives.
+                      "flex min-h-11 items-center px-4 py-2 text-left text-sm font-medium transition-colors",
                       toneClass(action),
                       action.disabled === true && "text-faint hover:bg-transparent cursor-not-allowed",
                     )}

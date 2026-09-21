@@ -178,6 +178,51 @@ describe("RowActions", () => {
     expect(onRowClick).not.toHaveBeenCalled();
   });
 
+  it("gives every control a 44px hit area without growing the row", () => {
+    render(
+      <RowActions
+        label="Acme Ltd"
+        inlineLimit={2}
+        actions={[
+          { label: "Edit", onSelect: vi.fn() },
+          { label: "Delete", tone: "danger", onSelect: vi.fn() },
+          { label: "Archive", onSelect: vi.fn() },
+        ]}
+      />,
+    );
+
+    // `before:h-11` + `before:min-w-11` is the 44x44 target; the pill and the 32px trigger keep
+    // their drawn size. jsdom has no layout, so the contract is pinned on the classes that make it.
+    const edit = screen.getByRole("button", { name: "Edit Acme Ltd" });
+    expect(edit.className).toContain("before:h-11");
+    expect(edit.className).toContain("before:min-w-11");
+    expect(edit.className).toContain("relative");
+
+    const trigger = screen.getByRole("button", { name: "More actions for Acme Ltd" });
+    expect(trigger.className).toContain("before:h-11");
+    expect(trigger.className).toContain("before:min-w-11");
+    expect(trigger.className).toContain("size-8");
+  });
+
+  it("gives the overflow menu items a 44px row of their own", async () => {
+    const user = userEvent.setup();
+    render(
+      <RowActions
+        label="Acme Ltd"
+        inlineLimit={1}
+        actions={[
+          { label: "Edit", onSelect: vi.fn() },
+          { label: "Delete", tone: "danger", onSelect: vi.fn() },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "More actions for Acme Ltd" }));
+    for (const item of screen.getAllByRole("menuitem")) {
+      expect(item.className).toContain("min-h-11");
+    }
+  });
+
   it("renders nothing when every action is hidden", () => {
     const { container } = render(
       <RowActions

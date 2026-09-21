@@ -19,11 +19,11 @@ export interface NavEntry {
   to: string;
   label: string;
   icon: IconType;
-  end?: boolean;
+  end?: boolean | undefined;
   /** A count that wants attention — rendered as a filled pill. */
-  badge?: string;
+  badge?: string | undefined;
   /** A plain count, rendered quietly. */
-  count?: string;
+  count?: string | undefined;
 }
 
 export interface NavGroup {
@@ -36,7 +36,7 @@ export interface SidebarAccount {
   name: string;
   email: string;
   /** The organization the person is acting in, when there is one. */
-  organizationName?: string;
+  organizationName?: string | undefined;
 }
 
 interface SidebarProps {
@@ -55,8 +55,8 @@ interface SidebarProps {
    * The tone of a `badge` pill. `accent` (default) is the violet attention pill; `danger` is for
    * a count that is a problem — overdue invoices — rather than merely new.
    */
-  badgeTone?: "accent" | "danger";
-  onNavigate?: () => void;
+  badgeTone?: "accent" | "danger" | undefined;
+  onNavigate?: (() => void) | undefined;
 }
 
 function NavRow({

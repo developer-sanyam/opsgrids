@@ -28,8 +28,8 @@ function tintFor(name: string): string {
 
 interface AvatarProps {
   name: string;
-  size?: AvatarSize;
-  className?: string;
+  size?: AvatarSize | undefined;
+  className?: string | undefined;
 }
 
 /** An initials avatar. Alt/label carried by the surrounding name; marked decorative here. */

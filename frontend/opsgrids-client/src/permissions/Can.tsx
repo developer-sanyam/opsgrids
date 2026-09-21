@@ -10,14 +10,14 @@ interface CanProps {
    * The scope that guard floors at. Pass the same one: `require(perm, minimum=Scope.ORG)` on the
    * server is `scope="ORG"` here. Defaults to `OWN`.
    */
-  scope?: Scope;
+  scope?: Scope | undefined;
   /**
    * What to render in place of a control the caller is **known** not to hold — usually nothing.
    * Not rendered while the grants are still loading, and not rendered if they failed to load:
    * "You don't have permission to do this" is a claim, and it should only be made when it is
    * true rather than when the network was slow.
    */
-  fallback?: ReactNode;
+  fallback?: ReactNode | undefined;
   children: ReactNode;
 }
 

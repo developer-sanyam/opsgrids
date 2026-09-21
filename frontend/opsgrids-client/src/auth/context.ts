@@ -16,9 +16,18 @@ export interface AuthContextValue {
   user: MeOut | null;
   /**
    * Sign in with credentials. Resolves to a step: `complete` (routed straight in),
-   * `org_selection` (render the picker), or `mfa_required`. A single org auto-selects.
+   * `org_selection` (render the picker), or `mfa_required` (ask for the code, then call
+   * `verifyMfa`). A single org auto-selects. The pre-auth token behind the last two is held in
+   * the provider — the screen never sees it and must never store it.
    */
   login: (email: string, password: string) => Promise<LoginStep>;
+  /**
+   * Finish an MFA sign-in with a code from the user's authenticator app, or a recovery code.
+   * Resolves to the same steps `login` does — `complete`, or `org_selection` for an account that
+   * reaches several organizations. A wrong code rejects with the server's `ApiError`, leaves the
+   * pending sign-in intact and can simply be called again.
+   */
+  verifyMfa: (code: string) => Promise<LoginStep>;
   /** Finish an org-selection sign-in by choosing one of the offered organizations. */
   selectOrg: (organizationId: string) => Promise<void>;
   /** Clear the session and return to a signed-out state. */

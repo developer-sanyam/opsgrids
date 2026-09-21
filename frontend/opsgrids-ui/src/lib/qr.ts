@@ -32,9 +32,9 @@ export interface QrMatrix {
 
 export interface EncodeOptions {
   /** Default `"M"` — the level that survives an ordinary print or a phone camera at an angle. */
-  level?: QrLevel;
+  level?: QrLevel | undefined;
   /** Force a mask (0–7) instead of choosing by penalty score. Tests use it; nothing else should. */
-  mask?: number;
+  mask?: number | undefined;
 }
 
 const MIN_VERSION = 1;

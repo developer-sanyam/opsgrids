@@ -17,9 +17,9 @@ interface PermissionProviderProps {
    * fetches `GET /members/me/grants` once the session is authenticated. Only a non-null array
    * suppresses the request.
    */
-  grants?: readonly string[] | null;
+  grants?: readonly string[] | null | undefined;
   /** Overrides the `ent` claim. Fixture mode uses it; a real build should not need to. */
-  entitlements?: readonly string[] | null;
+  entitlements?: readonly string[] | null | undefined;
   children: ReactNode;
 }
 

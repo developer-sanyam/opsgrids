@@ -13,24 +13,24 @@ interface FormDialogProps {
   onSubmit: () => void;
   title: string;
   /** One sentence of context where the title needs it. Tied by `aria-describedby`. */
-  description?: ReactNode;
+  description?: ReactNode | undefined;
   /** The verb: "Create widget", "Save changes". Never "Submit" or "OK". */
   submitLabel: string;
-  cancelLabel?: string;
+  cancelLabel?: string | undefined;
   /** What the submit button says while it works — "Saving…". */
-  pendingLabel?: string;
+  pendingLabel?: string | undefined;
   /** From `useMutation`'s `pending`. */
-  pending?: boolean;
+  pending?: boolean | undefined;
   /**
    * The failure that belongs to no single field — a 409, a 403, a 500. Field-level messages go
    * on the fields through `fieldErrors`, never up here.
    */
-  error?: string;
+  error?: string | undefined;
   /** `problem.request_id`. */
-  reference?: string;
+  reference?: string | undefined;
   /** The first control worth answering. Without it focus lands on the dialog's heading. */
-  initialFocusRef?: RefObject<HTMLElement | null>;
-  size?: "sm" | "md" | "lg";
+  initialFocusRef?: RefObject<HTMLElement | null> | undefined;
+  size?: "sm" | "md" | "lg" | undefined;
   /** The fields. See the note on resetting, below. */
   children: ReactNode;
 }
