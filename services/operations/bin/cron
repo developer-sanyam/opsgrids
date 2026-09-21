@@ -1,3 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec python -m app.relay
+# The nightly ledger ↔ balance reconciliation (ADR-0014 §3). This script previously pointed at
+# the outbox relay because no operations work had a schedule yet; production drains every
+# schema's outbox through the one edge relay, so nothing depended on that.
+: "${DB_POOL_SIZE:=2}"
+: "${DB_MAX_OVERFLOW:=1}"
+export DB_POOL_SIZE DB_MAX_OVERFLOW
+exec python -m app.cron

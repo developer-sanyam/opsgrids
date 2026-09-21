@@ -6,7 +6,7 @@ that crosses a schema boundary. Links **within** this schema (`purchase_orders.s
 `purchase_order_lines.purchase_order_id`) are real foreign keys, because only cross-schema
 foreign keys are banned.
 
-Six tables, one schema:
+The procurement tables, then the inventory ones (ADR-0014):
 
 * **suppliers** — the vendors the org buys from. `spend_minor` (lifetime committed spend) and
   `open_pos` are denormalised read-model rollups so a supplier row renders without a join;
@@ -21,13 +21,19 @@ Six tables, one schema:
 * **purchase_order_lines** — one item on a PO. `unit_price_minor` is per-unit minor units;
   `amount_minor` is `quantity * unit_price_minor`, stored so the lines **foot to the PO total**
   and the arithmetic is checkable in the database, not just in the UI.
-* **inventory_items** — stock on hand at a warehouse. `on_hand` is a **cached balance**, changed
-  only by inserting a `stock_movements` row in the same transaction — never a bare column write.
-  Low-stock is *derived* (`on_hand <= reorder_point`), never a stored flag, so it can never
-  contradict the counts.
-* **stock_movements** — the append-only ledger `on_hand` is the running sum of. `UPDATE`/`DELETE`
-  are revoked from the app role (like `audit_logs`); a wrong movement is corrected by an
-  opposite one, never rewritten.
+* **locations** — zone / rack / bin inside a warehouse; every warehouse has a default bin.
+* **inventory_items** — the item master. Stock is **not stored on it**: `on_hand_milli` is an
+  aggregate over `inventory_balances`. Low-stock is derived, never a stored flag.
+* **inventory_moves** + **inventory_ledger** — the append-only record of every stock change: a
+  header per posting and one signed row per bucket it touched. `UPDATE`/`DELETE` are revoked
+  from the app role (like `audit_logs`); a wrong move is corrected by an opposite one.
+* **inventory_balances** — the current quantity per bucket (item, location, status, lot, roll),
+  a projection of the ledger written only in the same transaction as the ledger row.
+* **inventory_reservations** — stock promised to a demand without moving it.
+* **inventory_discrepancies** — ledger/balance drift the reconciler found. Never auto-repaired.
+
+Quantities are integer **milli-units** of the item's UOM (`app.inventory.quantity`) — as with
+money, no float ever touches one.
 
 The human identifiers the SPA speaks in — a supplier `code` (`SUP-MER`), a PO `number`
 (`PO-2026-0148`), an inventory `sku` — are stored as their own unique-per-org columns; the
@@ -41,9 +47,11 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -54,12 +62,15 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    cast,
     func,
+    select,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, column_property, mapped_column, relationship
 
+from app.inventory import quantity
 from platform_core.audit import AuditLogMixin
 from platform_core.events import OutboxMixin, ProcessedEventMixin
 from platform_core.models import Base as _Base
@@ -243,14 +254,80 @@ class PurchaseOrderLine(Base, TenantBase):
     )
 
 
-class InventoryItem(Base, TenantBase):
-    """A stocked material at a warehouse.
+#: Stock statuses — a bucket dimension, so a status change is a ledger move (ADR-0014 §4).
+#: RESERVED/ALLOCATED are not here: a reservation does not move stock, it narrows what is
+#: available (`inventory_balances.reserved_milli`).
+STOCK_STATUSES = (
+    "AVAILABLE",
+    "QUALITY_HOLD",
+    "QUARANTINE",
+    "DAMAGED",
+    "REJECTED",
+    "WIP",
+    "IN_TRANSIT",
+    "AT_JOB_WORKER",
+    "BLOCKED",
+)
+#: Held but not on the premises — reported separately, never in physical on-hand.
+OFF_SITE_STATUSES = ("IN_TRANSIT", "AT_JOB_WORKER")
+_STATUS_SQL = ", ".join(f"'{s}'" for s in STOCK_STATUSES)
 
-    `sku` is the human identity, unique within an organization. Low-stock is **derived**
-    (`on_hand <= reorder_point`) rather than stored, so a flag can never disagree with the count.
-    `unit_value_minor` is the per-unit stock value in integer minor units; stock value is
-    `on_hand * unit_value_minor`, computed on read. `stocked_at` is when the count was last taken
-    — surfaced as `updated_at` on the wire, and distinct from the row's own audit `updated_at`.
+
+class Location(Base, TenantBase):
+    """A place stock sits inside a warehouse: zone → rack → bin (ADR-0014, plan §2).
+
+    Every warehouse gets one `is_default` bin at creation; the pre-Phase-1 single-location API
+    posts there. `parent_id` builds the tree; a bin with no parent sits directly in its warehouse.
+    """
+
+    __tablename__ = "locations"
+
+    warehouse_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.warehouses.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.locations.id", ondelete="RESTRICT")
+    )
+    #: zone | rack | bin
+    kind: Mapped[str] = mapped_column(String(10), nullable=False, default="bin")
+    code: Mapped[str] = mapped_column(String(40), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('zone', 'rack', 'bin')", name="kind_known"),
+        Index(
+            "uq_locations_org_warehouse_code",
+            "organization_id",
+            "warehouse_id",
+            "code",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        # At most one default bin per warehouse.
+        Index(
+            "uq_locations_org_warehouse_default",
+            "organization_id",
+            "warehouse_id",
+            unique=True,
+            postgresql_where=text("is_default AND deleted_at IS NULL"),
+        ),
+    )
+
+
+class InventoryItem(Base, TenantBase):
+    """The item master: one stocked material, identified by `sku` within the organization.
+
+    Stock is **not stored here** (ADR-0014 §10). `on_hand_milli` / `reserved_milli` are SQL
+    aggregates over `inventory_balances`, attached below as column properties so they can be
+    filtered and sorted in SQL, and `on_hand` is the whole-unit compatibility view of them.
+    Low-stock is derived (`on_hand_milli <= reorder_point * 1000`), never a stored flag.
+
+    `warehouse` is the denormalised display name the wire has always carried; `home_location_id`
+    is the default bin of that warehouse, where single-location writes (opening stock, PO receipt,
+    adjustments, counts) post until Phase 1 brings per-location writes.
     """
 
     __tablename__ = "inventory_items"
@@ -261,15 +338,30 @@ class InventoryItem(Base, TenantBase):
     category: Mapped[str] = mapped_column(String(20), nullable=False)
     #: Denormalised warehouse name, matching the wire.
     warehouse: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    home_location_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.locations.id", ondelete="RESTRICT")
+    )
 
-    on_hand: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reorder_point: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: The stock UOM every quantity of this item is counted in (milli-units of it).
     uom: Mapped[str] = mapped_column(String(20), nullable=False, default="")
     #: Per-unit stock value, integer minor units of `currency`.
     unit_value_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
-    #: When the stock count was last taken. Surfaced as `updated_at` on the wire.
+    #: When stock last moved. Surfaced as `updated_at` on the wire.
     stocked_at: Mapped[date | None] = mapped_column(Date)
+
+    if TYPE_CHECKING:
+        #: Physical stock in milli-units — every bucket except the off-site ones — and the open
+        #: reservations against it. Column properties, attached after `InventoryBalance` exists.
+        on_hand_milli: Mapped[int]
+        reserved_milli: Mapped[int]
+        available_milli: Mapped[int]
+
+    @property
+    def on_hand(self) -> int:
+        """Whole-unit compatibility view (`on_hand_qty` on the wire is the exact figure)."""
+        return quantity.whole_units(self.on_hand_milli)
 
     __table_args__ = (
         # Partial — a soft-deleted item's SKU can be reused (a purchase-order line joins on it).
@@ -285,58 +377,304 @@ class InventoryItem(Base, TenantBase):
     )
 
 
-class StockMovement(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
-    """One append-only fact about an inventory item's balance changing.
+class InventoryMove(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """The header of one stock posting — what happened and why. Its `inventory_ledger` rows say
+    which buckets moved by how much. Append-only, like the ledger.
 
-    `inventory_items.on_hand` is a cached running balance; this table is the only thing
-    allowed to change it, and only by inserting a row here in the same transaction (never a
-    bare column write). `on_hand_after` is the resulting balance, so the item's current
-    `on_hand` must always equal the most recent movement's `on_hand_after`, and the sum of
-    every movement's `quantity_delta` for an item must always equal its `on_hand`.
-
-    No `TenantBase`: this table carries no `updated_at`/`deleted_at` — a movement is never
-    edited or removed once written (`UPDATE`/`DELETE` are revoked from the app role in the
-    migration and re-revoked in `migrations/env.py` after every grant re-application). A wrong
-    adjustment is corrected by an opposite movement, not a rewrite.
+    `idempotency_key` + `request_hash` make a retried post a replay rather than a second move:
+    the key is unique per organization, and the hash tells a genuine retry from a key reused for
+    a different request (which is refused).
     """
 
-    __tablename__ = "stock_movements"
+    __tablename__ = "inventory_moves"
 
-    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
-        PGUUID(as_uuid=True),
-        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    #: opening | receipt | adjustment | count.
+    #: opening | receipt | adjustment | count | relocation | issue — vocabulary in
+    #: `app.inventory.ledger.MOVE_KINDS`, enforced by the write path.
     kind: Mapped[str] = mapped_column(String(20), nullable=False)
-    #: damaged | lost | found | consumed | returned | other. Required when `kind == "adjustment"`.
+    #: damaged | lost | found | consumed | returned | other. Required with `kind == "adjustment"`.
     reason: Mapped[str | None] = mapped_column(String(30))
-    quantity_delta: Mapped[int] = mapped_column(Integer, nullable=False)
-    #: The resulting balance — `on_hand` after this movement is applied.
-    on_hand_after: Mapped[int] = mapped_column(Integer, nullable=False)
     #: "purchase_order" when a receipt posts against one. A plain UUID, never a cross-entity FK.
     reference_type: Mapped[str | None] = mapped_column(String(30))
     reference_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     occurred_on: Mapped[date] = mapped_column(Date, nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     created_by: Mapped[str | None] = mapped_column(String(64))
 
     __table_args__ = (
-        CheckConstraint("on_hand_after >= 0", name="on_hand_after_non_negative"),
-        CheckConstraint(
-            "quantity_delta <> 0 OR kind = 'count'",
-            name="quantity_delta_nonzero",
-        ),
         Index(
-            "ix_stock_movements_org_item_created",
+            "uq_inventory_moves_org_idempotency_key",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index("ix_inventory_moves_org_reference", "organization_id", "reference_id"),
+    )
+
+
+class LedgerEntry(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One append-only change to one bucket — the authoritative record of stock (ADR-0014 §3).
+
+    `balance_after_milli` is the bucket's balance once this row applied, so the stored balance
+    must equal the latest row's `balance_after_milli` and the `SUM(quantity_milli)` of the bucket.
+    `UPDATE`/`DELETE` are revoked from the app role; a wrong entry is corrected by an opposite
+    move. This is the table formerly called `stock_movements`; its row ids are unchanged.
+    """
+
+    __tablename__ = "inventory_ledger"
+
+    move_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_moves.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.locations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="AVAILABLE")
+    #: Lot / roll bucket keys. Plain UUIDs until `lots`/`rolls` exist (Phase 1 adds the FKs).
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    roll_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: Signed change, milli-units of the item's UOM. Zero only on a count that found no change.
+    quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    balance_after_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: Per-unit cost of an inbound row, integer minor units — the costing input (ADR-0014 §8).
+    unit_cost_minor: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
+
+    #: The header this row belongs to. `raise`: always loaded explicitly (`contains_eager`), so
+    #: a history page can never degrade into one lazy query per row.
+    move: Mapped[InventoryMove] = relationship(lazy="raise")
+
+    __table_args__ = (
+        CheckConstraint("balance_after_milli >= 0", name="balance_after_non_negative"),
+        CheckConstraint(f"status IN ({_STATUS_SQL})", name="status_known"),
+        Index(
+            "ix_inventory_ledger_org_item_created",
             "organization_id",
             "inventory_item_id",
             text("created_at DESC"),
         ),
+        Index("ix_inventory_ledger_org_move", "organization_id", "move_id"),
+        Index(
+            "ix_inventory_ledger_org_bucket",
+            "organization_id",
+            "inventory_item_id",
+            "location_id",
+            "status",
+        ),
     )
+
+
+class InventoryBalance(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """The current quantity of one bucket — a projection of the ledger, written only by
+    `app.inventory.ledger` in the same transaction as the ledger row, under this row's lock.
+
+    `reserved_milli` caches the open remainder of the bucket's active reservations. Available to
+    promise is `quantity_milli - reserved_milli`; the CHECKs make over-reservation and negative
+    stock impossible even for a write path that forgot to look.
+    """
+
+    __tablename__ = "inventory_balances"
+
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.locations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="AVAILABLE")
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    roll_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    reserved_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("quantity_milli >= 0", name="quantity_non_negative"),
+        CheckConstraint(
+            "reserved_milli >= 0 AND reserved_milli <= quantity_milli", name="reserved_within"
+        ),
+        CheckConstraint(f"status IN ({_STATUS_SQL})", name="status_known"),
+        # One row per bucket. NULLS NOT DISTINCT: a bucket with no lot is still one bucket.
+        Index(
+            "uq_inventory_balances_bucket",
+            "organization_id",
+            "inventory_item_id",
+            "location_id",
+            "status",
+            "lot_id",
+            "roll_id",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+        ),
+    )
+
+
+class InventoryReservation(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """Stock promised to a demand (a sales order, a production order) without moving it.
+
+    `quantity_milli - consumed_milli` is the open remainder while `status == "active"`; the sum
+    of open remainders per balance is that balance's `reserved_milli`.
+    """
+
+    __tablename__ = "inventory_reservations"
+
+    balance_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_balances.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    consumed_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    #: active | released | consumed
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="active")
+    reference_type: Mapped[str | None] = mapped_column(String(30))
+    reference_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    closed_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint("quantity_milli > 0", name="quantity_positive"),
+        CheckConstraint(
+            "consumed_milli >= 0 AND consumed_milli <= quantity_milli", name="consumed_within"
+        ),
+        CheckConstraint("status IN ('active', 'released', 'consumed')", name="status_known"),
+        Index(
+            "uq_inventory_reservations_org_idempotency_key",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index(
+            "ix_inventory_reservations_org_balance_active",
+            "organization_id",
+            "balance_id",
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+
+class InventoryDiscrepancy(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """A disagreement the reconciler found between a stored figure and what the source of truth
+    says it must be. Recorded, surfaced, alerted on — never repaired automatically.
+
+    `kind`: `balance` (stored `quantity_milli` vs `SUM(ledger)`) or `reserved` (stored
+    `reserved_milli` vs the open reservations). One open row per bucket and kind; a later run that
+    still sees it bumps `last_seen_at`.
+    """
+
+    __tablename__ = "inventory_discrepancies"
+
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    location_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    roll_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    stored_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    expected_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    run_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[str | None] = mapped_column(String(64))
+    resolution_note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('balance', 'reserved')", name="kind_known"),
+        Index(
+            "uq_inventory_discrepancies_open_bucket",
+            "organization_id",
+            "kind",
+            "inventory_item_id",
+            "location_id",
+            "status",
+            "lot_id",
+            "roll_id",
+            unique=True,
+            postgresql_where=text("resolved_at IS NULL"),
+            postgresql_nulls_not_distinct=True,
+        ),
+        Index("ix_inventory_discrepancies_org_detected", "organization_id", "detected_at"),
+    )
+
+
+def _on_hand_expr(column: Any) -> Any:
+    # `SUM(bigint)` is NUMERIC in PostgreSQL, which asyncpg hands back as a Decimal; the cast keeps
+    # every quantity a plain int from the database to the wire.
+    return (
+        select(cast(func.coalesce(func.sum(column), 0), BigInteger))
+        .where(
+            InventoryBalance.organization_id == InventoryItem.organization_id,
+            InventoryBalance.inventory_item_id == InventoryItem.id,
+            InventoryBalance.status.not_in(OFF_SITE_STATUSES),
+        )
+        .correlate_except(InventoryBalance)
+        .scalar_subquery()
+    )
+
+
+InventoryItem.on_hand_milli = column_property(_on_hand_expr(InventoryBalance.quantity_milli))
+InventoryItem.reserved_milli = column_property(_on_hand_expr(InventoryBalance.reserved_milli))
+#: The item's derived stock attributes — what a writer re-reads after touching the item's stock.
+STOCK_AGGREGATES = ("on_hand_milli", "reserved_milli", "available_milli")
+
+#: Available to promise: only AVAILABLE stock, less what is reserved. Stock on quality hold,
+#: damaged, WIP etc. is on hand but not available (plan §2).
+InventoryItem.available_milli = column_property(
+    select(
+        cast(
+            func.coalesce(
+                func.sum(InventoryBalance.quantity_milli - InventoryBalance.reserved_milli), 0
+            ),
+            BigInteger,
+        )
+    )
+    .where(
+        InventoryBalance.organization_id == InventoryItem.organization_id,
+        InventoryBalance.inventory_item_id == InventoryItem.id,
+        InventoryBalance.status == "AVAILABLE",
+    )
+    .correlate_except(InventoryBalance)
+    .scalar_subquery()
+)
 
 
 class OutboxEvent(Base, OutboxMixin):

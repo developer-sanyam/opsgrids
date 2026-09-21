@@ -582,6 +582,17 @@ services:
     networks:
       - back
 
+  # The nightly stock ledger ↔ balance reconciliation (ADR-0014 §3). Records and alerts on
+  # drift (`inventory.reconcile.drift` at error level, an `inventory_discrepancies` row, an
+  # `operations.inventory.inconsistency_detected` event); never repairs it. Discovery runs on
+  # the outbox role, which holds `SELECT (organization_id)` on the ledger tables and nothing more.
+  operations-cron:
+    <<: *background
+    profiles: ['inventory']
+    image: opsgrids-edge/operations
+    command: ['./bin/cron']
+    environment: *service-env
+
   # ---------------------------------------------------------------- the other products
   # One compose profile per product, named after the product's catalogue key (ADR-0013 §5), so
   # COMPOSE_PROFILES reads as the list of products this box sells. Every product service runs

@@ -29,6 +29,15 @@
       "resource": "stock"
     },
     {
+      "action": "reconcile",
+      "default_scope": "ORG",
+      "description": "Check the stock ledger against balances and resolve discrepancies",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "stock"
+    },
+    {
       "action": "read",
       "default_scope": "ORG",
       "description": "See warehouses",
@@ -109,6 +118,10 @@
         },
         {
           "code": "operations.inventory.stock.adjust",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.stock.reconcile",
           "scope": "ORG"
         },
         {

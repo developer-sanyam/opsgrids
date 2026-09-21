@@ -13,8 +13,9 @@ rather than a horizontal layer. Nothing is "done" until its tests pass.
 ## Inventory & manufacturing (Operations)
 
 Phased plan: [inventory/plan.md](inventory/plan.md), decisions in
-[ADR-0014](adr/0014-inventory-and-manufacturing.md). **Next: Phase 0** — module split,
-scaled-integer quantities, ledger/balance migration, posting kernel.
+[ADR-0014](adr/0014-inventory-and-manufacturing.md). **Phase 0 done** (ledger, milli-unit
+quantities, posting kernel, reconciler — [inventory/ledger.md](inventory/ledger.md)).
+**Next: Phase 1** — item master, UOMs, lots, rolls, locations (scope and exit criteria in the plan).
 
 ## Blocked, and first
 

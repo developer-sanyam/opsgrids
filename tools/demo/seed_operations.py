@@ -668,6 +668,8 @@ async def seed(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
     transaction the caller opens.
     """
     from app import selectors, services  # type: ignore[import-not-found]
+    from app.inventory import selectors as inv_selectors  # type: ignore[import-not-found]
+    from app.inventory import services as inv_services
 
     counts = {
         "warehouses": 0,
@@ -679,10 +681,10 @@ async def seed(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
     }
 
     for code, name, location in WAREHOUSES:
-        if await selectors.get_warehouse_by_code(session, ctx.organization_id, code):
+        if await inv_selectors.get_warehouse_by_code(session, ctx.organization_id, code):
             counts["skipped"] += 1
             continue
-        await services.create_warehouse(session, ctx, code=code, name=name, location=location)
+        await inv_services.create_warehouse(session, ctx, code=code, name=name, location=location)
         counts["warehouses"] += 1
 
     for (
@@ -757,10 +759,10 @@ async def seed(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
         counts["purchase_order_lines"] += len(lines)
 
     for sku, name, category, warehouse, on_hand, reorder, uom, unit_value, stocked in INVENTORY:
-        if await selectors.get_inventory_by_sku(session, ctx.organization_id, sku):
+        if await inv_selectors.get_inventory_by_sku(session, ctx.organization_id, sku):
             counts["skipped"] += 1
             continue
-        await services.create_inventory_item(
+        await inv_services.create_inventory_item(
             session,
             ctx,
             sku=sku,

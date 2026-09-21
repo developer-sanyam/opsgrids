@@ -13,6 +13,7 @@
  */
 
 import { apiRequest, settle } from "@opsgrids/client";
+import { milliToQty } from "@/lib/quantity";
 import {
   FIXTURE_TODAY,
   INVENTORY,
@@ -89,6 +90,24 @@ function paginateFixture<T>(items: T[], page: number, size: number): Page<T> {
 
 function fixtureId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;
+}
+
+/** Fixture stock is whole units; these fill in the exact fields the live API returns beside
+ *  them, so fixture mode renders exactly what live mode does. */
+function stockFields(onHand: number) {
+  const qty = milliToQty(onHand * 1000);
+  return { on_hand: onHand, on_hand_qty: qty, reserved_qty: "0", available_qty: qty };
+}
+
+function movementFields(delta: number, after: number) {
+  return {
+    quantity_delta: delta,
+    on_hand_after: after,
+    quantity: milliToQty(delta * 1000),
+    balance_after: milliToQty(after * 1000),
+    location_id: "fixture-default-bin",
+    status: "AVAILABLE" as const,
+  };
 }
 
 /* -------------------------------- suppliers ------------------------------- */
@@ -470,15 +489,14 @@ export async function receivePurchaseOrder(id: string, input: ReceiveIn = {}): P
         continue;
       }
       const after = item.on_hand + line.quantity;
-      item.on_hand = after;
+      Object.assign(item, stockFields(after));
       item.updated_at = landed;
       const list = MOVEMENTS[item.id] ?? [];
       list.unshift({
         id: fixtureId("mv"),
         kind: "receipt",
         reason: null,
-        quantity_delta: line.quantity,
-        on_hand_after: after,
+        ...movementFields(line.quantity, after),
         reference_type: "purchase_order",
         reference_id: po.id,
         note: "",
@@ -617,7 +635,7 @@ export async function createInventoryItem(input: InventoryItemIn): Promise<Inven
       name: input.name,
       category: input.category,
       warehouse: input.warehouse,
-      on_hand: input.opening_on_hand ?? 0,
+      ...stockFields(input.opening_on_hand ?? 0),
       reorder_point: input.reorder_point ?? 0,
       uom: input.uom,
       unit_value_minor: input.unit_value_minor ?? 0,
@@ -630,8 +648,7 @@ export async function createInventoryItem(input: InventoryItemIn): Promise<Inven
         id: fixtureId("mv"),
         kind: "opening",
         reason: null,
-        quantity_delta: item.on_hand,
-        on_hand_after: item.on_hand,
+        ...movementFields(item.on_hand, item.on_hand),
         reference_type: null,
         reference_id: null,
         note: "Opening balance",
@@ -694,7 +711,11 @@ export async function deleteInventoryItem(id: string): Promise<void> {
 
 /** `POST /operations/inventory/{id}/adjustments` — `operations.inventory.stock.adjust`. Exactly
  *  one of `quantity_delta` or `counted_on_hand`. 409 if the result would go negative. */
-export async function adjustStock(id: string, input: StockAdjustmentIn): Promise<InventoryItemOut> {
+export async function adjustStock(
+  id: string,
+  input: StockAdjustmentIn,
+  options: { idempotencyKey?: string } = {},
+): Promise<InventoryItemOut> {
   if (USE_FIXTURES) {
     const index = INVENTORY.findIndex((i) => i.id === id);
     if (index === -1) throw new NotFoundError("That inventory item could not be found.");
@@ -707,15 +728,14 @@ export async function adjustStock(id: string, input: StockAdjustmentIn): Promise
       throw new Error(`That would take ${current.sku} below zero — ${current.on_hand} ${current.uom} on hand.`);
     }
     const occurred = input.occurred_on ?? FIXTURE_TODAY;
-    const updated: InventoryItemOut = { ...current, on_hand: after, updated_at: occurred };
+    const updated: InventoryItemOut = { ...current, ...stockFields(after), updated_at: occurred };
     INVENTORY[index] = updated;
     const list = MOVEMENTS[id] ?? [];
     list.unshift({
       id: fixtureId("mv"),
       kind: input.quantity_delta !== undefined ? "adjustment" : "count",
       reason: input.reason ?? null,
-      quantity_delta: delta,
-      on_hand_after: after,
+      ...movementFields(delta, after),
       reference_type: null,
       reference_id: null,
       note: input.note ?? "",
@@ -729,6 +749,7 @@ export async function adjustStock(id: string, input: StockAdjustmentIn): Promise
   return apiRequest<InventoryItemOut>(`/operations/inventory/${encodeURIComponent(id)}/adjustments`, {
     method: "POST",
     body: input,
+    ...(options.idempotencyKey ? { headers: { "Idempotency-Key": options.idempotencyKey } } : {}),
   });
 }
 

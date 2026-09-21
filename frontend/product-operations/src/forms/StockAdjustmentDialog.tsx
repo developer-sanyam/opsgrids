@@ -44,9 +44,24 @@ export function StockAdjustmentDialog({ item, onClose, onSaved }: StockAdjustmen
   const [dateError, setDateError] = useState<string | undefined>(undefined);
   const firstFieldRef = useRef<HTMLInputElement>(null);
 
-  const save = useMutation((input: StockAdjustmentIn) => adjustStock(item.id, input), {
-    onSuccess: (saved) => onSaved(saved),
-  });
+  // One idempotency key per distinct request made from this dialog: a double-click or a retry
+  // after a dropped response replays the adjustment instead of posting it twice, while a
+  // corrected value is a new request with a new key.
+  const keys = useRef(new Map<string, string>());
+  const keyFor = (input: StockAdjustmentIn): string => {
+    const body = JSON.stringify(input);
+    let key = keys.current.get(body);
+    if (!key) {
+      key = crypto.randomUUID();
+      keys.current.set(body, key);
+    }
+    return key;
+  };
+
+  const save = useMutation(
+    (input: StockAdjustmentIn) => adjustStock(item.id, input, { idempotencyKey: keyFor(input) }),
+    { onSuccess: (saved) => onSaved(saved) },
+  );
 
   const deltaValue = Number.parseInt(delta, 10);
   const countedValue = Number.parseInt(counted, 10);

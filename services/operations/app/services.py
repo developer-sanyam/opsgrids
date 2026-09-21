@@ -12,6 +12,9 @@ unit_price_minor` at write time, so the lines foot to the derived PO total by co
 These writers serve both the HTTP surface (`create_purchase_order`, `receive_purchase_order`) and
 the demo seed, which calls the same functions with explicit numbers and dates so the live screens
 mirror the fixtures the user already approved.
+
+Suppliers and purchase orders live here; inventory items, warehouses and every stock write live
+in `app.inventory` (ADR-0014 §1). A receipt posts through `app.inventory.services`.
 """
 
 from __future__ import annotations
@@ -27,21 +30,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import domain, selectors
+from app.inventory import selectors as inv_selectors
+from app.inventory import services as inv_services
 from app.models import (
     AuditLog,
-    InventoryItem,
     OutboxEvent,
     PurchaseOrder,
     PurchaseOrderLine,
-    StockMovement,
     Supplier,
-    Warehouse,
 )
 from app.schemas import (
-    InventoryItemPatch,
     PurchaseOrderPatch,
     SupplierPatch,
-    WarehousePatch,
 )
 from platform_core.audit import record_audit
 from platform_core.auth import Scope, ScopeContext
@@ -57,9 +57,6 @@ from platform_core.events import publish_event
 EVT_SUPPLIER_CREATED = "operations.procurement.supplier.created"
 EVT_SUPPLIER_UPDATED = "operations.procurement.supplier.updated"
 EVT_SUPPLIER_DELETED = "operations.procurement.supplier.deleted"
-EVT_WAREHOUSE_CREATED = "operations.inventory.warehouse.created"
-EVT_WAREHOUSE_UPDATED = "operations.inventory.warehouse.updated"
-EVT_WAREHOUSE_DELETED = "operations.inventory.warehouse.deleted"
 EVT_PO_RAISED = "operations.procurement.purchase_order.raised"
 EVT_PO_UPDATED = "operations.procurement.purchase_order.updated"
 EVT_PO_DELETED = "operations.procurement.purchase_order.deleted"
@@ -67,10 +64,6 @@ EVT_PO_APPROVED = "operations.procurement.purchase_order.approved"
 EVT_PO_RECEIVED = "operations.procurement.purchase_order.received"
 EVT_PO_CLOSED = "operations.procurement.purchase_order.closed"
 EVT_PO_CANCELLED = "operations.procurement.purchase_order.cancelled"
-EVT_INVENTORY_CREATED = "operations.inventory.item.created"
-EVT_INVENTORY_UPDATED = "operations.inventory.item.updated"
-EVT_INVENTORY_DELETED = "operations.inventory.item.deleted"
-EVT_STOCK_ADJUSTED = "operations.inventory.stock.adjusted"
 
 
 def _actor(ctx: ScopeContext) -> dict[str, Any]:
@@ -79,54 +72,6 @@ def _actor(ctx: ScopeContext) -> dict[str, Any]:
         "id": str(ctx.principal.sub),
         "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
     }
-
-
-async def _post_stock_movement(
-    session: AsyncSession,
-    ctx: ScopeContext,
-    item: InventoryItem,
-    *,
-    kind: str,
-    quantity_delta: int,
-    reason: str | None = None,
-    reference_type: str | None = None,
-    reference_id: uuid.UUID | None = None,
-    note: str = "",
-    occurred_on: date,
-) -> StockMovement:
-    """Append one stock movement and update the item's cached `on_hand` balance — the **only**
-    place either happens, so `on_hand` can never drift from the sum of its movements.
-
-    The caller is responsible for having locked `item` (`selectors.get_inventory_item(...,
-    for_update=True)` or the equivalent) before this runs, so two concurrent adjustments on the
-    same item serialise rather than lose one's update. 409s rather than writes anything when the
-    result would go negative — the `on_hand_after >= 0` CHECK is a backstop, not the primary
-    guard, so the caller gets a clean `ConflictProblem` instead of a raw `IntegrityError`.
-    """
-    new_on_hand = item.on_hand + quantity_delta
-    if new_on_hand < 0:
-        raise ConflictProblem(
-            f"Adjusting {item.sku} by {quantity_delta} would take on-hand below zero "
-            f"({item.on_hand} on hand)"
-        )
-    movement = StockMovement(
-        organization_id=ctx.organization_id,
-        created_by=str(ctx.principal.sub),
-        inventory_item_id=item.id,
-        kind=kind,
-        reason=reason,
-        quantity_delta=quantity_delta,
-        on_hand_after=new_on_hand,
-        reference_type=reference_type,
-        reference_id=reference_id,
-        note=note,
-        occurred_on=occurred_on,
-    )
-    session.add(movement)
-    item.on_hand = new_on_hand
-    item.stocked_at = occurred_on
-    await session.flush()
-    return movement
 
 
 async def _bump_supplier(
@@ -356,216 +301,6 @@ async def delete_supplier(
     )
 
 
-# ------------------------------------------------------------------ warehouses
-
-
-async def create_warehouse(
-    session: AsyncSession,
-    ctx: ScopeContext,
-    *,
-    code: str,
-    name: str,
-    location: str = "",
-    request: Request | None = None,
-) -> Warehouse:
-    """Create a warehouse (stocking location). `name` is a unique join key too — it is what
-    `inventory_items.warehouse` and `purchase_orders.warehouse` carry — so a duplicate name is
-    refused exactly like a duplicate code."""
-    if await selectors.get_warehouse_by_code(session, ctx.organization_id, code):
-        raise ConflictProblem(
-            f"A warehouse coded {code!r} already exists",
-            errors=[
-                {
-                    "field": "code",
-                    "code": "duplicate",
-                    "message": f"A warehouse coded {code!r} already exists",
-                }
-            ],
-        )
-    if await selectors.get_warehouse_by_name(session, ctx.organization_id, name):
-        raise ConflictProblem(
-            f"A warehouse named {name!r} already exists",
-            errors=[
-                {
-                    "field": "name",
-                    "code": "duplicate",
-                    "message": f"A warehouse named {name!r} already exists",
-                }
-            ],
-        )
-
-    warehouse = Warehouse(
-        organization_id=ctx.organization_id,
-        created_by=str(ctx.principal.sub),
-        code=code,
-        name=name,
-        location=location,
-    )
-    session.add(warehouse)
-    await session.flush()
-
-    record_audit(
-        session,
-        AuditLog,
-        organization_id=ctx.organization_id,
-        actor_id=ctx.principal.sub,
-        action="warehouse.created",
-        entity="warehouse",
-        entity_id=warehouse.id,
-        after={"code": code, "name": name},
-        request=request,
-    )
-    publish_event(
-        session,
-        OutboxEvent,
-        organization_id=ctx.organization_id,
-        event_type=EVT_WAREHOUSE_CREATED,
-        aggregate_type="warehouse",
-        aggregate_id=warehouse.id,
-        payload={
-            "organization_id": str(ctx.organization_id),
-            "warehouse_id": str(warehouse.id),
-            "code": code,
-        },
-        actor=_actor(ctx),
-    )
-    return warehouse
-
-
-async def update_warehouse(
-    session: AsyncSession,
-    ctx: ScopeContext,
-    warehouse: Warehouse,
-    payload: WarehousePatch,
-    *,
-    request: Request | None = None,
-) -> Warehouse:
-    """Patch `name`/`location`. `code` is immutable — `WarehousePatch` carries no such field.
-    A rename cascades to the denormalised `warehouse` string on every live purchase order and
-    inventory item in the same transaction, or every existing row keeps the stale name."""
-    changes = payload.model_dump(exclude_unset=True)
-    if "name" in changes and changes["name"] != warehouse.name:
-        existing = await selectors.get_warehouse_by_name(
-            session, ctx.organization_id, changes["name"]
-        )
-        if existing is not None and existing.id != warehouse.id:
-            raise ConflictProblem(
-                f"A warehouse named {changes['name']!r} already exists",
-                errors=[
-                    {
-                        "field": "name",
-                        "code": "duplicate",
-                        "message": f"A warehouse named {changes['name']!r} already exists",
-                    }
-                ],
-            )
-
-    old_name = warehouse.name
-    before = {field: getattr(warehouse, field) for field in changes}
-    for field, value in changes.items():
-        setattr(warehouse, field, value)
-    warehouse.updated_by = str(ctx.principal.sub)
-    await session.flush()
-
-    if "name" in changes and changes["name"] != old_name:
-        new_name = changes["name"]
-        await session.execute(
-            update(PurchaseOrder)
-            .where(
-                PurchaseOrder.organization_id == ctx.organization_id,
-                PurchaseOrder.warehouse == old_name,
-            )
-            .values(warehouse=new_name, updated_by=str(ctx.principal.sub))
-        )
-        await session.execute(
-            update(InventoryItem)
-            .where(
-                InventoryItem.organization_id == ctx.organization_id,
-                InventoryItem.warehouse == old_name,
-            )
-            .values(warehouse=new_name, updated_by=str(ctx.principal.sub))
-        )
-        await session.flush()
-
-    record_audit(
-        session,
-        AuditLog,
-        organization_id=ctx.organization_id,
-        actor_id=ctx.principal.sub,
-        action="warehouse.updated",
-        entity="warehouse",
-        entity_id=warehouse.id,
-        before=before,
-        after=changes,
-        request=request,
-    )
-    publish_event(
-        session,
-        OutboxEvent,
-        organization_id=ctx.organization_id,
-        event_type=EVT_WAREHOUSE_UPDATED,
-        aggregate_type="warehouse",
-        aggregate_id=warehouse.id,
-        payload={
-            "organization_id": str(ctx.organization_id),
-            "warehouse_id": str(warehouse.id),
-            "changed": sorted(changes),
-        },
-        actor=_actor(ctx),
-    )
-    return warehouse
-
-
-async def delete_warehouse(
-    session: AsyncSession,
-    ctx: ScopeContext,
-    warehouse: Warehouse,
-    *,
-    request: Request | None = None,
-) -> None:
-    """Soft-delete a warehouse. Refused (409) while it still holds any live inventory item or
-    names a `draft`/`approved` purchase order's destination."""
-    item_count = await selectors.count_inventory_for_warehouse(
-        session, ctx.organization_id, warehouse.name
-    )
-    po_count = await selectors.count_open_purchase_orders_for_warehouse(
-        session, ctx.organization_id, warehouse.name
-    )
-    if item_count or po_count:
-        raise ConflictProblem(
-            f"{warehouse.name} still holds {item_count} inventory item(s) and {po_count} open "
-            "purchase order(s); move or clear them first"
-        )
-
-    before_deleted_at = warehouse.deleted_at
-    warehouse.deleted_at = datetime.now(UTC)
-    warehouse.updated_by = str(ctx.principal.sub)
-    await session.flush()
-
-    record_audit(
-        session,
-        AuditLog,
-        organization_id=ctx.organization_id,
-        actor_id=ctx.principal.sub,
-        action="warehouse.deleted",
-        entity="warehouse",
-        entity_id=warehouse.id,
-        before={"deleted_at": before_deleted_at},
-        after={"deleted_at": warehouse.deleted_at},
-        request=request,
-    )
-    publish_event(
-        session,
-        OutboxEvent,
-        organization_id=ctx.organization_id,
-        event_type=EVT_WAREHOUSE_DELETED,
-        aggregate_type="warehouse",
-        aggregate_id=warehouse.id,
-        payload={"organization_id": str(ctx.organization_id), "warehouse_id": str(warehouse.id)},
-        actor=_actor(ctx),
-    )
-
-
 # ------------------------------------------------------------------ purchase orders
 
 
@@ -731,7 +466,7 @@ async def raise_purchase_order(
         raise ConflictProblem(
             f"Supplier {supplier.code} is {supplier.status} and cannot receive a new purchase order"
         )
-    if await selectors.get_warehouse_by_name(session, ctx.organization_id, warehouse) is None:
+    if await inv_selectors.get_warehouse_by_name(session, ctx.organization_id, warehouse) is None:
         raise ValidationProblem(f"{warehouse!r} does not match an existing warehouse")
 
     number = await next_po_number(session, ctx)
@@ -792,7 +527,9 @@ async def update_purchase_order(
             )
 
     if "warehouse" in changes and (
-        await selectors.get_warehouse_by_name(session, ctx.organization_id, changes["warehouse"])
+        await inv_selectors.get_warehouse_by_name(
+            session, ctx.organization_id, changes["warehouse"]
+        )
         is None
     ):
         raise ValidationProblem(f"{changes['warehouse']!r} does not match an existing warehouse")
@@ -1026,24 +763,24 @@ async def receive_purchase_order(
     for line in lines:
         line.received_qty = line.quantity
         line.updated_by = str(ctx.principal.sub)
-        item = await selectors.get_inventory_by_sku(
+        item = await inv_selectors.get_inventory_by_sku(
             session, ctx.organization_id, line.sku, for_update=True
         )
         if item is None:
             unmatched_skus.append(line.sku)
             continue
-        movement = await _post_stock_movement(
+        movement_id = await inv_services.receive_into_home(
             session,
             ctx,
             item,
-            kind="receipt",
-            quantity_delta=line.quantity,
-            reference_type="purchase_order",
-            reference_id=po.id,
+            quantity=line.quantity,
+            purchase_order_id=po.id,
             occurred_on=landed,
+            unit_cost_minor=line.unit_price_minor,
+            request=request,
         )
         matched_lines.append(
-            {"sku": line.sku, "movement_id": str(movement.id), "quantity": line.quantity}
+            {"sku": line.sku, "movement_id": str(movement_id), "quantity": line.quantity}
         )
     await session.flush()
 
@@ -1206,262 +943,3 @@ async def cancel_purchase_order(
         actor=_actor(ctx),
     )
     return po
-
-
-# ------------------------------------------------------------------ inventory
-
-
-async def create_inventory_item(
-    session: AsyncSession,
-    ctx: ScopeContext,
-    *,
-    sku: str,
-    name: str,
-    category: str,
-    warehouse: str = "",
-    on_hand: int = 0,
-    reorder_point: int = 0,
-    uom: str = "",
-    unit_value_minor: int = 0,
-    currency: str = "INR",
-    stocked_at: date | None = None,
-    request: Request | None = None,
-) -> InventoryItem:
-    """Create an inventory item. `unit_value_minor` is per-unit stock value in integer minor
-    units of `currency`; low-stock is derived, never stored. `stocked_at` defaults to today
-    rather than staying null (`InventoryItemOut.updated_at` is a required field over a nullable
-    column — a row created with neither used to be an unconditional 500).
-
-    `on_hand` — the seed's existing keyword for the opening quantity — is never written as a
-    bare column: the row starts at zero and, if non-zero, an `opening` movement through
-    `_post_stock_movement` brings it up, so `on_hand` is the sum of its movements from the
-    moment the row exists rather than overwritten-in-place state.
-    """
-    if await selectors.get_inventory_by_sku(session, ctx.organization_id, sku):
-        raise ConflictProblem(f"An inventory item with SKU {sku!r} already exists")
-
-    opening_date = stocked_at or date.today()
-    item = InventoryItem(
-        organization_id=ctx.organization_id,
-        created_by=str(ctx.principal.sub),
-        sku=sku,
-        name=name,
-        category=category,
-        warehouse=warehouse,
-        on_hand=0,
-        reorder_point=reorder_point,
-        uom=uom,
-        unit_value_minor=unit_value_minor,
-        currency=currency.upper(),
-        stocked_at=opening_date,
-    )
-    session.add(item)
-    await session.flush()
-
-    if on_hand:
-        await _post_stock_movement(
-            session,
-            ctx,
-            item,
-            kind="opening",
-            quantity_delta=on_hand,
-            occurred_on=opening_date,
-        )
-
-    record_audit(
-        session,
-        AuditLog,
-        organization_id=ctx.organization_id,
-        actor_id=ctx.principal.sub,
-        action="inventory_item.created",
-        entity="inventory_item",
-        entity_id=item.id,
-        after={"sku": sku, "warehouse": warehouse, "on_hand": item.on_hand},
-        request=request,
-    )
-    publish_event(
-        session,
-        OutboxEvent,
-        organization_id=ctx.organization_id,
-        event_type=EVT_INVENTORY_CREATED,
-        aggregate_type="inventory_item",
-        aggregate_id=item.id,
-        payload={
-            "organization_id": str(ctx.organization_id),
-            "inventory_item_id": str(item.id),
-            "sku": sku,
-        },
-        actor=_actor(ctx),
-    )
-    return item
-
-
-async def update_inventory_item(
-    session: AsyncSession,
-    ctx: ScopeContext,
-    item: InventoryItem,
-    payload: InventoryItemPatch,
-    *,
-    request: Request | None = None,
-) -> InventoryItem:
-    """Patch the item's card. `sku`, `currency` and `on_hand` never appear on
-    `InventoryItemPatch` — `sku` is the join key a PO line matches on, `currency` is the unit
-    the stock value accumulated in, and `on_hand` may only move through a movement."""
-    changes = payload.model_dump(exclude_unset=True)
-    if "warehouse" in changes and (
-        await selectors.get_warehouse_by_name(session, ctx.organization_id, changes["warehouse"])
-        is None
-    ):
-        raise ValidationProblem(f"{changes['warehouse']!r} does not match an existing warehouse")
-
-    before = {field: getattr(item, field) for field in changes}
-    for field, value in changes.items():
-        setattr(item, field, value)
-    item.updated_by = str(ctx.principal.sub)
-    item.updated_at = datetime.now(UTC)
-    await session.flush()
-
-    record_audit(
-        session,
-        AuditLog,
-        organization_id=ctx.organization_id,
-        actor_id=ctx.principal.sub,
-        action="inventory_item.updated",
-        entity="inventory_item",
-        entity_id=item.id,
-        before=before,
-        after=changes,
-        request=request,
-    )
-    publish_event(
-        session,
-        OutboxEvent,
-        organization_id=ctx.organization_id,
-        event_type=EVT_INVENTORY_UPDATED,
-        aggregate_type="inventory_item",
-        aggregate_id=item.id,
-        payload={
-            "organization_id": str(ctx.organization_id),
-            "inventory_item_id": str(item.id),
-            "changed": sorted(changes),
-        },
-        actor=_actor(ctx),
-    )
-    return item
-
-
-async def delete_inventory_item(
-    session: AsyncSession,
-    ctx: ScopeContext,
-    item: InventoryItem,
-    *,
-    request: Request | None = None,
-) -> None:
-    """Soft-delete an inventory item. Refused (409) while `on_hand != 0` — value must never
-    vanish without a movement; adjust stock to zero first. Movements stay, unaffected."""
-    if item.on_hand != 0:
-        raise ConflictProblem(
-            f"{item.sku} still has {item.on_hand} on hand; adjust stock to zero first"
-        )
-
-    before_deleted_at = item.deleted_at
-    item.deleted_at = datetime.now(UTC)
-    item.updated_by = str(ctx.principal.sub)
-    await session.flush()
-
-    record_audit(
-        session,
-        AuditLog,
-        organization_id=ctx.organization_id,
-        actor_id=ctx.principal.sub,
-        action="inventory_item.deleted",
-        entity="inventory_item",
-        entity_id=item.id,
-        before={"deleted_at": before_deleted_at},
-        after={"deleted_at": item.deleted_at},
-        request=request,
-    )
-    publish_event(
-        session,
-        OutboxEvent,
-        organization_id=ctx.organization_id,
-        event_type=EVT_INVENTORY_DELETED,
-        aggregate_type="inventory_item",
-        aggregate_id=item.id,
-        payload={"organization_id": str(ctx.organization_id), "inventory_item_id": str(item.id)},
-        actor=_actor(ctx),
-    )
-
-
-async def adjust_stock(
-    session: AsyncSession,
-    ctx: ScopeContext,
-    item: InventoryItem,
-    *,
-    quantity_delta: int | None = None,
-    counted_on_hand: int | None = None,
-    reason: str | None = None,
-    note: str = "",
-    occurred_on: date | None = None,
-    request: Request | None = None,
-) -> InventoryItem:
-    """Adjust (`quantity_delta`) or count (`counted_on_hand`) one item's stock. A count's delta
-    is `counted_on_hand - on_hand`, recorded even when it is zero — a zero-delta count is still a
-    fact, and is what moves `stocked_at`. `item` must already be locked by the caller
-    (`selectors.get_inventory_item(..., for_update=True)`), and `_post_stock_movement` answers
-    409 rather than writing anything if the result would go negative.
-    """
-    effective_date = occurred_on or date.today()
-    before_on_hand = item.on_hand
-    if counted_on_hand is not None:
-        kind = "count"
-        delta = counted_on_hand - item.on_hand
-    else:
-        kind = "adjustment"
-        delta = quantity_delta if quantity_delta is not None else 0
-
-    movement = await _post_stock_movement(
-        session,
-        ctx,
-        item,
-        kind=kind,
-        quantity_delta=delta,
-        reason=reason,
-        note=note,
-        occurred_on=effective_date,
-    )
-    item.updated_by = str(ctx.principal.sub)
-    item.updated_at = datetime.now(UTC)
-    await session.flush()
-
-    record_audit(
-        session,
-        AuditLog,
-        organization_id=ctx.organization_id,
-        actor_id=ctx.principal.sub,
-        action="inventory_item.stock_adjusted",
-        entity="inventory_item",
-        entity_id=item.id,
-        before={"on_hand": before_on_hand},
-        after={"on_hand": item.on_hand, "delta": delta, "kind": kind, "reason": reason},
-        request=request,
-    )
-    publish_event(
-        session,
-        OutboxEvent,
-        organization_id=ctx.organization_id,
-        event_type=EVT_STOCK_ADJUSTED,
-        aggregate_type="inventory_item",
-        aggregate_id=item.id,
-        payload={
-            "organization_id": str(ctx.organization_id),
-            "inventory_item_id": str(item.id),
-            "sku": item.sku,
-            "movement_id": str(movement.id),
-            "quantity_delta": delta,
-            "on_hand_after": item.on_hand,
-            "kind": kind,
-        },
-        actor=_actor(ctx),
-    )
-    return item
