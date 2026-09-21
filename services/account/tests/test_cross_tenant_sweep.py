@@ -239,13 +239,16 @@ async def tenant_a(
             ctx("core.org.location.write"),
             LocationIn(name="Acme Mumbai", code=A_LOCATION_CODE),
         )
+        # `manager` holds `ORG_ADMIN`, which does not carry `identity.audit.read` — the
+        # grant has to be something the caller actually holds, now that `create_role`
+        # enforces the same ceiling `invite` and `set_member_roles` do.
         role = await services.create_role(
             session,
             ctx("core.identity.role.write"),
             RoleIn(
                 code=A_ROLE_CODE,
                 name="Acme Auditor",
-                grants=[GrantIn(permission_code="core.identity.audit.read", scope="ORG")],
+                grants=[GrantIn(permission_code="core.identity.role.read", scope="ORG")],
             ),
         )
         invitation, token = await services.invite(

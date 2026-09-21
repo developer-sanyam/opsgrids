@@ -947,6 +947,39 @@ async def revoke_member(
     return membership
 
 
+async def _caller_grant_ceiling(session: AsyncSession, ctx: ScopeContext) -> dict[str, str]:
+    """The caller's own resolved grants, as a `{code: widest_scope}` map.
+
+    The single source every "can this caller hand out this code at this scope" check in
+    the service reads from — assigning a role (`_resolve_assignable_roles`, used by
+    `invite` and `set_member_roles`) and writing a role's own grants (`_replace_grants`,
+    used by `create_role` and `replace_role_grants`). One helper, so there is exactly one
+    definition of the ceiling rather than two that can drift apart.
+
+    Read via `selectors.resolve_grants` against the caller's **own** membership — a
+    database read of their actual role assignments, not `ctx.principal.perms`. The token's
+    perms claim is exactly what the caller presented to get here and is refreshed on the
+    gateway's cadence, not this request's; the roles a person actually holds right now is
+    the question being asked, and the database is the one place that can answer it without
+    trusting the same credential the whole check exists to look past.
+
+    No `ORG_OWNER` special case: the role is `CORE.all("ORG")` plus every activated
+    product's admin role granted on activation, so resolving the owner's real grants
+    already covers "the owner can build any role" — deriving it from a role code would be
+    a second, looser definition of the same thing.
+    """
+    if ctx.principal.membership_id is None:
+        raise ForbiddenProblem("No membership to grant permissions from")
+    caller_grants = await selectors.resolve_grants(session, ctx.principal.membership_id)
+    return dict(grant.split(":", 1) for grant in caller_grants)
+
+
+def _caller_holds(ceiling: dict[str, str], code: str, scope: str) -> bool:
+    """Whether the caller's own ceiling covers `code` at `scope` or wider."""
+    held = ceiling.get(code)
+    return held is not None and _SCOPE_RANK[held] >= _SCOPE_RANK[scope]
+
+
 async def _resolve_assignable_roles(
     session: AsyncSession, ctx: ScopeContext, role_codes: list[str]
 ) -> list[Role]:
@@ -958,13 +991,6 @@ async def _resolve_assignable_roles(
     control into a role that outranks them: an `ORG_ADMIN` naming `ORG_OWNER` in
     `role_codes` was accepted with nothing else checked. Every grant the target role carries
     now has to be something the caller already holds themselves, at that scope or wider.
-
-    Checked against `selectors.resolve_grants` for the caller's **own** membership — a
-    database read of their actual role assignments, not `ctx.principal.perms`. The token's
-    perms claim is exactly what the caller presented to get here and is refreshed on the
-    gateway's cadence, not this request's; the roles a person actually holds right now is
-    the question being asked, and the database is the one place that can answer it without
-    trusting the same credential the whole check exists to look past.
     """
     resolved: list[Role] = []
     for code in role_codes:
@@ -975,18 +1001,12 @@ async def _resolve_assignable_roles(
 
     if not resolved:
         return resolved
-    if ctx.principal.membership_id is None:
-        raise ForbiddenProblem("No membership to assign roles from")
 
-    caller_grants = await selectors.resolve_grants(session, ctx.principal.membership_id)
-    held_scope = dict(grant.split(":", 1) for grant in caller_grants)
-
+    ceiling = await _caller_grant_ceiling(session, ctx)
     for role in resolved:
         for grant in role.grants:
             code = grant.permission.code
-            wanted = _SCOPE_RANK[grant.scope]
-            scope = held_scope.get(code)
-            if scope is None or _SCOPE_RANK[scope] < wanted:
+            if not _caller_holds(ceiling, code, grant.scope):
                 raise ForbiddenProblem(
                     f"You cannot assign {role.code!r}: it grants {code} at {grant.scope}, "
                     "which you do not hold yourself at that scope or wider."
@@ -1076,7 +1096,7 @@ async def create_role(
     )
     session.add(role)
     await session.flush()
-    await _replace_grants(session, role, payload.grants)
+    await _replace_grants(session, ctx, role, payload.grants)
     await session.refresh(role, ["grants"])
 
     record_audit(
@@ -1120,7 +1140,7 @@ async def replace_role_grants(
     }
     role.name = payload.name
     role.description = payload.description
-    await _replace_grants(session, role, payload.grants)
+    await _replace_grants(session, ctx, role, payload.grants)
     await session.refresh(role, ["grants"])
 
     record_audit(
@@ -1199,12 +1219,23 @@ async def delete_role(
     await _invalidate_grants(ctx.organization_id)
 
 
-async def _replace_grants(session: AsyncSession, role: Role, grants: list[GrantIn]) -> None:
-    """Set a role's grants, refusing anything wider than the permission allows.
+async def _replace_grants(
+    session: AsyncSession, ctx: ScopeContext, role: Role, grants: list[GrantIn]
+) -> None:
+    """Set a role's grants, refusing anything wider than the permission allows, or that
+    the caller does not hold themselves.
 
     `max_scope` is the reason a role editor cannot quietly turn a self-service permission
-    into an organization-wide one.
+    into an organization-wide one. The ceiling check below is the reason a holder of
+    `role.write` alone — who can edit any non-system role, including one they already
+    hold — cannot use that edit to hand the role a permission `_resolve_assignable_roles`
+    would have refused them for the same role via `invite` or `set_member_roles`. Editing
+    a role they cannot yet fully act as is otherwise indistinguishable from assigning
+    themselves a role they cannot hold: both end with the caller's own effective grants
+    wider than before the call.
     """
+    ceiling = await _caller_grant_ceiling(session, ctx)
+
     # An explicit DELETE rather than mutating the collection: touching `role.grants` on a
     # freshly flushed object triggers a lazy load, which raises MissingGreenlet under
     # asyncio. It is also one statement instead of N.
@@ -1218,6 +1249,11 @@ async def _replace_grants(session: AsyncSession, role: Role, grants: list[GrantI
             raise BusinessRuleProblem(
                 f"{permission.code} cannot be granted at {grant.scope}; "
                 f"the widest it supports is {permission.max_scope}"
+            )
+        if not _caller_holds(ceiling, permission.code, grant.scope):
+            raise ForbiddenProblem(
+                f"You cannot grant {permission.code} at {grant.scope}: you do not hold "
+                "it yourself at that scope or wider."
             )
         session.add(RolePermission(role_id=role.id, permission_id=permission.id, scope=grant.scope))
 

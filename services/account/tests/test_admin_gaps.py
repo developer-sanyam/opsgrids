@@ -12,14 +12,17 @@ permission gets 403 — and the business rules each new write enforces.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
 from app.main import app
-from app.models import Membership, Organization
+from app.models import Membership, Organization, Role
 from app.schemas import (
+    GrantIn,
     InvitationIn,
     LocationIn,
     LocationPatch,
@@ -240,6 +243,229 @@ class TestPrivilegeEscalation:
             )
 
         assert response.status_code == 403
+
+
+class TestRoleGrantCeiling:
+    """`PUT /roles/{id}` and `POST /roles` are the sibling hole `_resolve_assignable_roles`
+    closed for `invite`/`set_member_roles`: only holding `core.identity.role.write` let a
+    caller edit *any* non-system role — including one they already hold — into carrying a
+    permission they could never have assigned through those two routes, because
+    `_replace_grants` checked a grant's `max_scope` and nothing about the caller
+    (SECURITY-FIX M3). `_replace_grants` now shares `_caller_grant_ceiling` with
+    `_resolve_assignable_roles`, so there is one definition of "the caller holds this code
+    at this scope or wider" for every way a grant reaches a role.
+    """
+
+    async def _editor(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        owner_ctx,
+        *,
+        grants: list[GrantIn],
+    ) -> tuple[Membership, Role]:
+        """A membership holding a fresh custom role granting exactly `grants`, and the role."""
+        async with session.begin():
+            role = await services.create_role(
+                session, owner_ctx, RoleIn(code="ROLE_EDITOR", name="Role editor", grants=grants)
+            )
+        async with session.begin():
+            await session.refresh(people["outsider"], ["roles"])
+            await services.set_member_roles(session, owner_ctx, people["outsider"], [role.code])
+        return people["outsider"], role
+
+    async def test_cannot_add_a_permission_it_does_not_hold(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        owner = await _owner(session, org)
+        owner_ctx = ctx_for(org, owner, "core.identity.role.write", Scope.ORG)
+        editor, role = await self._editor(
+            session,
+            org,
+            people,
+            owner_ctx,
+            grants=[GrantIn(permission_code="core.identity.role.write", scope="ORG")],
+        )
+        editor_ctx = ctx_for(org, editor, "core.identity.role.write", Scope.ORG)
+
+        with pytest.raises(ForbiddenProblem, match=re.escape("core.billing.invoice.read")):
+            async with session.begin():
+                await session.refresh(role, ["grants"])
+                await services.replace_role_grants(
+                    session,
+                    editor_ctx,
+                    role,
+                    RoleIn(
+                        code=role.code,
+                        name=role.name,
+                        grants=[
+                            GrantIn(permission_code="core.identity.role.write", scope="ORG"),
+                            GrantIn(permission_code="core.billing.invoice.read", scope="ORG"),
+                        ],
+                    ),
+                )
+
+        # Refused, not applied: the billing grant never reached the role.
+        async with session.begin():
+            await session.refresh(role, ["grants"])
+            codes = {g.permission.code for g in role.grants}
+        assert "core.billing.invoice.read" not in codes
+
+    async def test_cannot_widen_a_scope_beyond_what_it_holds(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        owner = await _owner(session, org)
+        owner_ctx = ctx_for(org, owner, "core.identity.role.write", Scope.ORG)
+        editor, role = await self._editor(
+            session,
+            org,
+            people,
+            owner_ctx,
+            grants=[
+                GrantIn(permission_code="core.identity.role.write", scope="ORG"),
+                GrantIn(permission_code="core.identity.membership.write", scope="TEAM"),
+            ],
+        )
+        editor_ctx = ctx_for(org, editor, "core.identity.role.write", Scope.ORG)
+
+        with pytest.raises(ForbiddenProblem, match=re.escape("core.identity.membership.write")):
+            async with session.begin():
+                await session.refresh(role, ["grants"])
+                await services.replace_role_grants(
+                    session,
+                    editor_ctx,
+                    role,
+                    RoleIn(
+                        code=role.code,
+                        name=role.name,
+                        grants=[
+                            GrantIn(permission_code="core.identity.role.write", scope="ORG"),
+                            GrantIn(permission_code="core.identity.membership.write", scope="ORG"),
+                        ],
+                    ),
+                )
+
+    async def test_can_still_edit_within_what_it_holds(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        owner = await _owner(session, org)
+        owner_ctx = ctx_for(org, owner, "core.identity.role.write", Scope.ORG)
+        editor, role = await self._editor(
+            session,
+            org,
+            people,
+            owner_ctx,
+            grants=[
+                GrantIn(permission_code="core.identity.role.write", scope="ORG"),
+                GrantIn(permission_code="core.identity.membership.write", scope="TEAM"),
+            ],
+        )
+        editor_ctx = ctx_for(org, editor, "core.identity.role.write", Scope.ORG)
+
+        async with session.begin():
+            await session.refresh(role, ["grants"])
+            updated = await services.replace_role_grants(
+                session,
+                editor_ctx,
+                role,
+                RoleIn(
+                    code=role.code,
+                    name="Role editor, renamed",
+                    grants=[
+                        GrantIn(permission_code="core.identity.role.write", scope="ORG"),
+                        GrantIn(permission_code="core.identity.membership.write", scope="TEAM"),
+                    ],
+                ),
+            )
+        assert updated.name == "Role editor, renamed"
+        assert {g.permission.code for g in updated.grants} == {
+            "core.identity.role.write",
+            "core.identity.membership.write",
+        }
+
+    async def test_the_owner_can_still_build_an_arbitrary_role(
+        self, session: AsyncSession, org: Organization
+    ) -> None:
+        owner = await _owner(session, org)
+        owner_ctx = ctx_for(org, owner, "core.identity.role.write", Scope.ORG)
+        async with session.begin():
+            role = await services.create_role(
+                session,
+                owner_ctx,
+                RoleIn(
+                    code="FINANCE",
+                    name="Finance",
+                    grants=[
+                        GrantIn(permission_code="core.billing.invoice.read", scope="ORG"),
+                        GrantIn(permission_code="core.billing.credit.read", scope="ORG"),
+                    ],
+                ),
+            )
+        assert {g.permission.code for g in role.grants} == {
+            "core.billing.invoice.read",
+            "core.billing.credit.read",
+        }
+
+    async def test_creating_a_role_is_bounded_the_same_way(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        owner = await _owner(session, org)
+        owner_ctx = ctx_for(org, owner, "core.identity.role.write", Scope.ORG)
+        editor, _role = await self._editor(
+            session,
+            org,
+            people,
+            owner_ctx,
+            grants=[GrantIn(permission_code="core.identity.role.write", scope="ORG")],
+        )
+        editor_ctx = ctx_for(org, editor, "core.identity.role.write", Scope.ORG)
+
+        with pytest.raises(ForbiddenProblem, match=re.escape("core.billing.invoice.read")):
+            async with session.begin():
+                await services.create_role(
+                    session,
+                    editor_ctx,
+                    RoleIn(
+                        code="NEW_ROLE",
+                        name="New role",
+                        grants=[GrantIn(permission_code="core.billing.invoice.read", scope="ORG")],
+                    ),
+                )
+
+    async def test_the_route_answers_403_naming_the_permission(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+    ) -> None:
+        owner = await _owner(session, org)
+        owner_ctx = ctx_for(org, owner, "core.identity.role.write", Scope.ORG)
+        editor, role = await self._editor(
+            session,
+            org,
+            people,
+            owner_ctx,
+            grants=[GrantIn(permission_code="core.identity.role.write", scope="ORG")],
+        )
+        principal = principal_for(org.id, editor, ["core.identity.role.write:ORG"])
+
+        async with _AsPrincipal(principal):
+            response = await client.put(
+                f"/api/v1/roles/{role.id}",
+                json={
+                    "code": role.code,
+                    "name": role.name,
+                    "grants": [
+                        {"permission_code": "core.identity.role.write", "scope": "ORG"},
+                        {"permission_code": "core.billing.invoice.read", "scope": "ORG"},
+                    ],
+                },
+            )
+
+        assert response.status_code == 403
+        assert "core.billing.invoice.read" in response.json()["detail"]
 
 
 class TestOrgUnitPatch:
