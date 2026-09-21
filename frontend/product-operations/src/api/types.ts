@@ -79,6 +79,34 @@ export interface PurchaseOrderOut {
   notes: string | null;
 }
 
+/**
+ * `POST /operations/purchase-orders` request body — mirrors `PurchaseOrderIn` / `PoLineIn`
+ * (`services/operations/app/schemas.py`). Exactly one of `supplier_id` / `supplier_code` is
+ * required; the form always sends `supplier_code`. `status` is narrowed to `draft | approved` —
+ * `received` and `closed` only ever happen through the separate receiving endpoint. The server
+ * derives and refuses the PO total, each line's `amount_minor`, `category` (denormalised from the
+ * supplier) and `raised_by_id` (the caller) — none of those belong in this shape.
+ */
+export interface PoLineItemIn {
+  sku: string;
+  description: string;
+  quantity: number;
+  unit_price_minor: number;
+  uom: string;
+}
+
+export interface PurchaseOrderCreateIn {
+  number: string;
+  supplier_code?: string;
+  supplier_id?: string;
+  status: Extract<PoStatus, "draft" | "approved">;
+  warehouse: string;
+  currency: string;
+  expected_date: string;
+  notes?: string | null;
+  lines: PoLineItemIn[];
+}
+
 /* ------------------------------- inventory ------------------------------- */
 
 /** Mirrors `InventoryItemOut`. Stock value = `on_hand * unit_value_minor`. */
