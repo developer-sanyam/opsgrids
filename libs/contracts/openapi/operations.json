@@ -99,6 +99,84 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "InventoryItemIn": {
+        "description": "Stock an item at a warehouse.\n\nStock value (`on_hand * unit_value_minor`) and low-stock (`on_hand <= reorder_point`) are\nderived on read and never sent. `stocked_at` \u2014 the date of the count, surfaced as\n`updated_at` \u2014 defaults to today.",
+        "properties": {
+          "category": {
+            "enum": [
+              "raw_materials",
+              "packaging",
+              "components",
+              "mro",
+              "logistics",
+              "services"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "currency": {
+            "default": "INR",
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Currency",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "on_hand": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "On Hand",
+            "type": "integer"
+          },
+          "reorder_point": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Reorder Point",
+            "type": "integer"
+          },
+          "sku": {
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Sku",
+            "type": "string"
+          },
+          "stocked_at": {
+            "format": "date",
+            "title": "Stocked At",
+            "type": "string"
+          },
+          "unit_value_minor": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Unit Value Minor",
+            "type": "integer"
+          },
+          "uom": {
+            "default": "",
+            "maxLength": 20,
+            "title": "Uom",
+            "type": "string"
+          },
+          "warehouse": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Warehouse",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sku",
+          "name",
+          "category"
+        ],
+        "title": "InventoryItemIn",
+        "type": "object"
+      },
       "InventoryItemOut": {
         "description": "Mirrors the SPA's `InventoryItemOut`. Stock value = `on_hand * unit_value_minor`;\nlow-stock is derived by the client (and the overview) as `on_hand <= reorder_point`.",
         "properties": {
@@ -385,6 +463,46 @@
         "title": "Page[WarehouseOut]",
         "type": "object"
       },
+      "PoLineIn": {
+        "description": "One requested line. `amount_minor` is not accepted \u2014 the server computes it as\n`quantity * unit_price_minor`, so the lines foot to the derived total by construction and a\nclient cannot assert a total of its own. `received_qty` is not accepted either: a line has\nreceived nothing until the PO is received.",
+        "properties": {
+          "description": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Description",
+            "type": "string"
+          },
+          "quantity": {
+            "exclusiveMinimum": 0.0,
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "sku": {
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Sku",
+            "type": "string"
+          },
+          "unit_price_minor": {
+            "minimum": 0.0,
+            "title": "Unit Price Minor",
+            "type": "integer"
+          },
+          "uom": {
+            "default": "",
+            "maxLength": 20,
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sku",
+          "quantity",
+          "unit_price_minor"
+        ],
+        "title": "PoLineIn",
+        "type": "object"
+      },
       "PoLineItem": {
         "description": "One line on a purchase order. `unit_price_minor` is per-unit minor units of the PO\ncurrency; the line total (`quantity * unit_price_minor`) is summed into the PO total.",
         "properties": {
@@ -427,6 +545,104 @@
           "received_qty"
         ],
         "title": "PoLineItem",
+        "type": "object"
+      },
+      "PurchaseOrderIn": {
+        "description": "Raise a purchase order, naming the supplier by `supplier_id` or by `supplier_code`.\n\nWhat the server derives does not appear here: the total (summed from the lines), each line's\n`amount_minor`, the PO's `category` (denormalised from the supplier) and `raised_by_id` \u2014\nthe raiser is the caller, because that column is what OWN scope narrows on.",
+        "properties": {
+          "created_date": {
+            "format": "date",
+            "title": "Created Date",
+            "type": "string"
+          },
+          "currency": {
+            "default": "INR",
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Currency",
+            "type": "string"
+          },
+          "expected_date": {
+            "format": "date",
+            "title": "Expected Date",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/PoLineIn"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "number": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Number",
+            "type": "string"
+          },
+          "raised_by": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Raised By",
+            "type": "string"
+          },
+          "status": {
+            "default": "draft",
+            "enum": [
+              "draft",
+              "approved"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "supplier_code": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supplier Code"
+          },
+          "supplier_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supplier Id"
+          },
+          "warehouse": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Warehouse",
+            "type": "string"
+          }
+        },
+        "required": [
+          "number",
+          "expected_date"
+        ],
+        "title": "PurchaseOrderIn",
         "type": "object"
       },
       "PurchaseOrderOut": {
@@ -613,6 +829,89 @@
         "title": "StatusSlice",
         "type": "object"
       },
+      "SupplierIn": {
+        "description": "Add a supplier to the directory.\n\nThe performance figures on `SupplierOut` are not accepted here. `spend_minor` and `open_pos`\nare rollups of this organization's own purchase orders and `on_time_pct` is a trailing\ndelivery rate: all three are things the platform observes, not things a client asserts, and a\nsupplier being added has no history yet. `since` defaults to today because the read contract\nis not nullable.",
+        "properties": {
+          "category": {
+            "enum": [
+              "raw_materials",
+              "packaging",
+              "components",
+              "mro",
+              "logistics",
+              "services"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "code": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "contact_email": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Contact Email",
+            "type": "string"
+          },
+          "contact_name": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Contact Name",
+            "type": "string"
+          },
+          "currency": {
+            "default": "INR",
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Currency",
+            "type": "string"
+          },
+          "lead_time_days": {
+            "default": 0,
+            "maximum": 365.0,
+            "minimum": 0.0,
+            "title": "Lead Time Days",
+            "type": "integer"
+          },
+          "location": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Location",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "since": {
+            "format": "date",
+            "title": "Since",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "enum": [
+              "active",
+              "on_hold",
+              "pending"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "category"
+        ],
+        "title": "SupplierIn",
+        "type": "object"
+      },
       "SupplierOut": {
         "description": "Mirrors the SPA's `SupplierOut`. `spend_minor` is lifetime spend in minor units of\n`currency`; `on_time_pct` is the trailing on-time delivery rate, 0-100.",
         "properties": {
@@ -786,6 +1085,35 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WarehouseIn": {
+        "description": "Open a stocking location. `code` (`WH-PUN`) is its identity within the organization.",
+        "properties": {
+          "code": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "location": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Location",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "name"
+        ],
+        "title": "WarehouseIn",
         "type": "object"
       },
       "WarehouseOut": {
@@ -987,6 +1315,45 @@
         "tags": [
           "operations"
         ]
+      },
+      "post": {
+        "operationId": "create_inventory_item_api_v1_operations_inventory_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InventoryItemIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InventoryItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stock an inventory item",
+        "tags": [
+          "operations"
+        ]
       }
     },
     "/api/v1/operations/overview": {
@@ -1129,6 +1496,45 @@
           }
         },
         "summary": "Purchase orders, with their line items",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "raise_purchase_order_api_v1_operations_purchase_orders_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurchaseOrderIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseOrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Raise a purchase order against a supplier",
         "tags": [
           "operations"
         ]
@@ -1342,6 +1748,45 @@
         "tags": [
           "operations"
         ]
+      },
+      "post": {
+        "operationId": "create_supplier_api_v1_operations_suppliers_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupplierIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a supplier to the directory",
+        "tags": [
+          "operations"
+        ]
       }
     },
     "/api/v1/operations/suppliers/{supplier_id}": {
@@ -1438,6 +1883,45 @@
           }
         },
         "summary": "The org's warehouses",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "create_warehouse_api_v1_operations_warehouses_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WarehouseIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarehouseOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open a stocking location",
         "tags": [
           "operations"
         ]

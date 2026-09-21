@@ -14,11 +14,12 @@ staleness clock the Overview reads.
 Stage moves go through `move_stage`, which enforces `domain.can_transition`: open deals
 move freely and close either way; a closed deal is a record and moves nowhere.
 
-The CRM SPA is read-only in this slice — its client has no create or update calls — so
-these writers are not yet exposed as public routes. They exist to finalise the domain
-rules and to drive the demo seed through the real, RLS-bound path (the finance-service
-precedent), so every seeded row lands with an audit row and an outbox event exactly as the
-live product will produce them.
+Each of these has a route in front of it (`app.api.routes`): `create_deal` is
+`POST /deals`, `move_stage` is `POST /deals/{deal_id}/stage` — a transition, not a PATCH
+of a field — and `log_activity` is `POST /deals/{deal_id}/activities`. The demo seed calls
+the same functions directly (the finance-service precedent) rather than a parallel insert
+path, so every seeded row lands through the real, RLS-bound path with an audit row and an
+outbox event exactly as the live product produces them.
 """
 
 from __future__ import annotations

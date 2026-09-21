@@ -49,3 +49,14 @@ def test_a_foreign_product_grant_is_refused_at_validation() -> None:
 def test_the_registration_validates_at_construction() -> None:
     assert PULSEBOARD_REGISTRATION.product == "pulseboard"
     assert PULSEBOARD_REGISTRATION.catalogue is PULSEBOARD
+
+
+def test_the_default_member_role_cannot_write_the_roster() -> None:
+    """A seat-holder reads the team and works their own cards; curating who is *on* the team is
+    the delivery administrator's job. `pick` is explicit, so this stays true as the catalogue
+    grows — unlike the admin template, which takes every new permission by construction."""
+    member = next(t for t in PULSEBOARD_ROLE_TEMPLATES if t.code == "PULSEBOARD_MEMBER")
+    codes = {g.code for g in member.grants}
+    assert "pulseboard.team.person.read" in codes
+    assert "pulseboard.team.person.write" not in codes
+    assert "pulseboard.team.person.write" in PULSEBOARD.codes()

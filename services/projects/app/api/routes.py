@@ -34,9 +34,11 @@ from app.schemas import (
     BoardColumn,
     BoardOut,
     HealthSlice,
+    MemberIn,
     MilestoneIn,
     MilestoneOut,
     OverviewOut,
+    Person,
     ProjectIn,
     ProjectOut,
     ServiceInfo,
@@ -71,11 +73,42 @@ MilestoneRead = Annotated[ScopeContext, Depends(require("projects.delivery.miles
 MilestoneWrite = Annotated[ScopeContext, Depends(require("projects.delivery.milestone.write"))]
 TaskRead = Annotated[ScopeContext, Depends(require("projects.board.task.read"))]
 TaskWrite = Annotated[ScopeContext, Depends(require("projects.board.task.write"))]
+#: Staffing the roster. There is no OWN reading of "the people I am" — nobody owns the member
+#: they are adding — so the catalogue floors this permission at ORG.
+MemberWrite = Annotated[ScopeContext, Depends(require("projects.team.member.write"))]
 
 
 @router.get("/projects-workspace/info", response_model=ServiceInfo, summary="What this service is")
 async def info() -> ServiceInfo:
     return ServiceInfo(service=settings().service_name, schema_name=SCHEMA)
+
+
+# ------------------------------------------------------------------ the delivery team
+
+
+@router.post(
+    "/projects-workspace/members",
+    response_model=Person,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a member to the delivery team",
+    dependencies=[Entitled],
+)
+async def create_member(payload: MemberIn, session: SessionDep, ctx: MemberWrite) -> Person:
+    """Create the roster row a project owner or task assignee is addressed by.
+
+    `services.create_member` refuses a `ref` already taken in this organization (409), which is
+    what makes the human handle safe to key on. It stages no event: a roster row is a local
+    directory entry, not a delivery fact another service reacts to.
+    """
+    member = await services.create_member(
+        session,
+        ctx,
+        ref=payload.ref,
+        name=payload.name,
+        role=payload.role,
+        directory_id=payload.directory_id,
+    )
+    return selectors.person_out(member)
 
 
 # ------------------------------------------------------------------ portfolio

@@ -13,6 +13,7 @@ member's `ref` (`p-01`). Money (`budget_minor` / `spent_minor`) is integer minor
 
 from __future__ import annotations
 
+import uuid
 from datetime import date
 from typing import Literal
 
@@ -42,6 +43,24 @@ class Person(BaseModel):
     id: str
     name: str
     role: str
+
+
+class MemberIn(BaseModel):
+    """Add a member to the delivery team.
+
+    `ref` is the stable human handle (`p-01`) the rest of the API addresses this person by; it
+    is unique within the organization, so a repeat is a conflict rather than a second row. The
+    organization is never part of the payload — it comes from the tenant context.
+
+    `directory_id` is the account-service id of this person's platform login, when they have
+    one. A plain UUID, never a cross-schema foreign key, and legitimately absent: a delivery-org
+    member need not hold a seat.
+    """
+
+    ref: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=200)
+    role: str = Field(default="", max_length=120)
+    directory_id: uuid.UUID | None = None
 
 
 # ------------------------------------------------------------------ projects

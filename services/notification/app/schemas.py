@@ -7,6 +7,7 @@ exists, because those are the identifiers that appear in a rule and in a support
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Literal
 
@@ -238,3 +239,137 @@ class PreferenceIn(BaseModel):
     category: str = Field(default="*", max_length=40)
     suppressed: bool = True
     reason: str | None = Field(default=None, max_length=200)
+
+
+# --------------------------------------------------------------------- engage sending identity
+#
+# The `engage` product's contract, in this module rather than a second one because both surfaces
+# are served by the same process and splitting a service's published shapes across two files
+# makes "what does this service return" a question with two answers. The vocabularies do not
+# overlap: nothing below is reachable from a notification route.
+
+ConnectionKind = Literal["google", "microsoft", "smtp", "platform"]
+ConnectionStatus = Literal["connected", "disconnected"]
+DomainStatus = Literal["pending", "verified", "failed"]
+DnsRecordKind = Literal["spf", "dkim", "dmarc", "return_path", "tracking"]
+
+
+class ConnectionIn(BaseModel):
+    """Connect the organization's email provider.
+
+    `platform` is in the enum although the writer refuses it. It is a choice the wizard really
+    offers, and "platform-managed sending is not available yet, connect Workspace or your own
+    SMTP" is a better answer than an enum error listing three values and explaining none.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: ConnectionKind
+    username: str = Field(min_length=1, max_length=255)
+    #: Write-only, and the only field of that kind in this module. It is sealed on the way in
+    #: and has no counterpart on the way out — not masked, not truncated, not counted.
+    secret: str = Field(min_length=1, max_length=2000)
+    #: An `smtp` connection has no submission host implied by its kind, so it must give one.
+    #: A named provider derives both, and sending them anyway overrides the derived values —
+    #: which is what keeps a customer whose mail goes through a relay in front of Workspace
+    #: supported without inventing a fifth kind for them.
+    host: str = Field(default="", max_length=255)
+    port: int | None = Field(default=None, ge=1, le=65535)
+
+
+class ConnectionOut(BaseModel):
+    """How this organization sends, minus the one value that must never leave the process.
+
+    There is no secret here in any form. A mask, a length or a last-four would each be the
+    credential with a hint attached. The shape is asserted key-for-key by a test, so adding one
+    later is a red build rather than a leak nobody notices.
+    """
+
+    kind: ConnectionKind
+    username: str
+    host: str
+    port: int
+    status: ConnectionStatus
+    #: What the provider accepts in a day. Shown because a campaign larger than this is refused,
+    #: and the customer should learn the number before they build one.
+    daily_cap: int
+
+
+class DomainIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    domain: str = Field(min_length=3, max_length=253)
+
+
+class DnsRecordOut(BaseModel):
+    """One record the customer publishes at their registrar, and whether DNS has it yet.
+
+    The DKIM record's `value` carries the public half of the signing key. The private half has
+    no field anywhere in this module: it is sealed in the row and read only when mail is signed.
+    """
+
+    kind: DnsRecordKind
+    type: str
+    host: str
+    value: str
+    #: DMARC is the one that is recommended rather than required — a domain whose security team
+    #: has not settled a policy yet still sends.
+    required: bool
+    verified: bool
+
+
+class DomainOut(BaseModel):
+    id: str
+    domain: str
+    status: DomainStatus
+    #: Returned in full on every read, because the setup screen's job is to show the customer
+    #: exactly what to paste — and to show the same values it showed yesterday.
+    records: list[DnsRecordOut]
+    last_checked_at: datetime | None
+    created_at: datetime
+
+
+class SenderIn(BaseModel):
+    """Add a named identity mail may go out as.
+
+    The address is checked against the domain by the writer rather than here: whether
+    `sales@company.com` belongs to a domain this organization has proven is a fact about rows,
+    not about the string.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    domain_id: uuid.UUID
+    name: str = Field(min_length=1, max_length=120)
+    address: str = Field(min_length=3, max_length=254)
+    reply_to: str = Field(default="", max_length=254)
+    signature: str = ""
+    department: str = Field(default="", max_length=80)
+
+
+class SenderOut(BaseModel):
+    id: str
+    domain_id: str
+    name: str
+    address: str
+    reply_to: str
+    signature: str
+    department: str
+    #: Derived from `verified_at` rather than stored, so it cannot disagree with the one fact
+    #: that decides it: a test message actually reached the provider.
+    usable: bool
+    verified_at: datetime | None
+    created_at: datetime
+
+
+class TestSendIn(BaseModel):
+    """Where to send the message that opens the gate.
+
+    The subject and body are fixed by the service. Their only job is to prove the path works,
+    and a customisable test message is a send nobody reviewed going to an address of the
+    caller's choosing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    to_address: str = Field(min_length=3, max_length=254)

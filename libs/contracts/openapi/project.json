@@ -201,6 +201,49 @@
         "title": "Page[TaskOut]",
         "type": "object"
       },
+      "PersonIn": {
+        "description": "Add someone to the delivery-team roster. `ref` (`p01`) is the stable handle every\n`owner_ref` / `assignee_ref` on the wire joins against, unique within the organization.\n`capacity_hours` is the weekly billable target \u2014 the utilization denominator.\n\nThe opaque primary key and the account-directory link are not on the wire: the seed sets a\ndeterministic `person_id` so sibling services share it, and `directory_id` is a platform\nconcern, not something a roster caller supplies.",
+        "properties": {
+          "capacity_hours": {
+            "default": 40,
+            "maximum": 168.0,
+            "minimum": 0.0,
+            "title": "Capacity Hours",
+            "type": "integer"
+          },
+          "location": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Location",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "ref": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Ref",
+            "type": "string"
+          },
+          "role": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "name"
+        ],
+        "title": "PersonIn",
+        "type": "object"
+      },
       "PersonOut": {
         "description": "Mirrors the SPA's `Person`. `id` is the person's stable `ref` (`p01`) \u2014 the value every\n`owner_id` / `assignee_id` / timesheet `person_id` on the wire joins against.",
         "properties": {
@@ -973,6 +1016,46 @@
           }
         },
         "summary": "The delivery-team roster",
+        "tags": [
+          "projects"
+        ]
+      },
+      "post": {
+        "description": "Create a roster person. Unlike the engagement and card writers this one takes no\n`request`: `services.create_person` stages neither an audit row nor an event, because the\nroster was built for the seed to call. Wiring one in is a change to the writer, not to this\nroute, and is deliberately left for the change that adds it.",
+        "operationId": "create_person_api_v1_projects_people_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add someone to the delivery-team roster",
         "tags": [
           "projects"
         ]

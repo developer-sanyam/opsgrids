@@ -7,6 +7,7 @@ import { CATEGORY_LABEL, poItemCount, poTotalMinor } from "@/data/derive";
 import { useAsync } from "@opsgrids/client";
 import { formatDate, formatMoney } from "@/lib/format";
 import {
+  Button,
   Card,
   DataTable,
   EmptyState,
@@ -18,7 +19,8 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { ClipboardListIcon } from "@opsgrids/ui";
+import { NewPurchaseOrderDialog } from "@/ui/NewPurchaseOrderDialog";
+import { Announcer, ClipboardListIcon, PlusIcon } from "@opsgrids/ui";
 
 type StatusFilter = PoStatus | "all";
 
@@ -44,20 +46,27 @@ interface Row extends PurchaseOrderOut {
   _items: number;
 }
 
-export function PurchaseOrdersPage() {
+function PurchaseOrdersScreen() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [sort, setSort] = useState<Sort>({ key: "expected_date", dir: "asc" });
+  const [creating, setCreating] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     const q = searchParams.get("q");
     if (q !== null) setSearch(q);
   }, [searchParams]);
 
-  const state = useAsync(listPurchaseOrders, []);
+  const state = useAsync(listPurchaseOrders, [attempt]);
   const items = state.status === "success" ? state.data.items : NO_ROWS;
+
+  function handleCreated() {
+    setCreating(false);
+    setAttempt((current) => current + 1);
+  }
 
   const rows: Row[] = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -153,11 +162,16 @@ export function PurchaseOrdersPage() {
         eyebrow="Procurement"
         title="Purchase Orders"
         actions={
-          <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
-            <ClipboardListIcon className="size-4 text-muted" />
-            <span className="tnum">{items.length}</span>
-            <span className="text-muted font-medium">orders</span>
-          </span>
+          <>
+            <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
+              <ClipboardListIcon className="size-4 text-muted" />
+              <span className="tnum">{items.length}</span>
+              <span className="text-muted font-medium">orders</span>
+            </span>
+            <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
+              New purchase order
+            </Button>
+          </>
         }
       />
 
@@ -208,6 +222,20 @@ export function PurchaseOrdersPage() {
           />
         )}
       </Card>
+
+      <NewPurchaseOrderDialog
+        open={creating}
+        onClose={() => setCreating(false)}
+        onCreated={handleCreated}
+      />
     </div>
+  );
+}
+
+export function PurchaseOrdersPage() {
+  return (
+    <Announcer>
+      <PurchaseOrdersScreen />
+    </Announcer>
   );
 }

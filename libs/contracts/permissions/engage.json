@@ -1,0 +1,121 @@
+{
+  "manifest_version": 1,
+  "permissions": [
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See how the organization sends email",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "setup",
+      "resource": "connection"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Connect or disconnect the email provider",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "setup",
+      "resource": "connection"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See sending domains and their DNS state",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "setup",
+      "resource": "domain"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Add a sending domain and verify its DNS",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "setup",
+      "resource": "domain"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See the senders mail can go out as",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "setup",
+      "resource": "sender"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Add and edit senders, and run the test send that makes one usable",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "setup",
+      "resource": "sender"
+    }
+  ],
+  "product": "engage",
+  "role_templates": [
+    {
+      "code": "ENGAGE_ADMIN",
+      "cross_product": false,
+      "description": "Owns how the organization sends: the provider connection, its domains and its senders. Built from the Engage catalogue alone.",
+      "grants": [
+        {
+          "code": "engage.setup.connection.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.setup.connection.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.setup.domain.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.setup.domain.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.setup.sender.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.setup.sender.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": true,
+      "is_default": false,
+      "name": "Engage administrator"
+    },
+    {
+      "code": "ENGAGE_VIEWER",
+      "cross_product": false,
+      "description": "Every person with an Engage seat. Reads the sending setup without being able to change it \u2014 a new seat should not be able to repoint the organization's mail.",
+      "grants": [
+        {
+          "code": "engage.setup.connection.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.setup.domain.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.setup.sender.read",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": true,
+      "name": "Engage viewer"
+    }
+  ],
+  "sources": [
+    "notification"
+  ]
+}

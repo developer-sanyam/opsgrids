@@ -27,15 +27,17 @@ from app.models import SCHEMA
 from app.schemas import (
     AssetIn,
     AssetOut,
+    CatalogItemIn,
     CatalogItemOut,
     IncidentIn,
     IncidentOut,
     OverviewOut,
     ServiceInfo,
+    ServiceRequestIn,
     ServiceRequestOut,
     WorklogIn,
 )
-from platform_core.auth import ScopeContext, require, require_product
+from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.db import get_tenant_session
 from platform_core.errors import NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
@@ -56,6 +58,13 @@ Entitled = Depends(require_product("itsm"))
 IncidentRead = Annotated[ScopeContext, Depends(require("itsm.service.incident.read"))]
 IncidentWrite = Annotated[ScopeContext, Depends(require("itsm.service.incident.write"))]
 RequestRead = Annotated[ScopeContext, Depends(require("itsm.service.request.read"))]
+RequestWrite = Annotated[ScopeContext, Depends(require("itsm.service.request.write"))]
+#: The catalog is org-wide reference data — an offering is nobody's own row — so writing it is
+#: floored at ORG here as well as in the catalogue, and an OWN grant is refused rather than
+#: silently narrowed to nothing.
+CatalogWrite = Annotated[
+    ScopeContext, Depends(require("itsm.service.catalog.write", minimum=Scope.ORG))
+]
 AssetRead = Annotated[ScopeContext, Depends(require("itsm.cmdb.asset.read"))]
 AssetWrite = Annotated[ScopeContext, Depends(require("itsm.cmdb.asset.write"))]
 
@@ -182,6 +191,33 @@ async def list_requests(
     return Page.build(items, total=total, params=params)
 
 
+@router.post(
+    "/itsm/service-requests",
+    response_model=ServiceRequestOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Raise a service request",
+    dependencies=[Entitled],
+)
+async def raise_request(
+    payload: ServiceRequestIn, session: SessionDep, ctx: RequestWrite, request: Request
+) -> ServiceRequestOut:
+    req = await services.create_request(
+        session,
+        ctx,
+        number=payload.number,
+        catalog_item_code=payload.catalog_item_code,
+        requester=payload.requester,
+        requester_id=ctx.principal.subject_ref,
+        subject=payload.subject,
+        assignee=payload.assignee,
+        request=request,
+    )
+    names = await selectors.catalog_name_map(session, ctx.organization_id)
+    return selectors.request_out(
+        req, catalog_name=names.get(req.catalog_item_code, req.catalog_item_code)
+    )
+
+
 @router.get(
     "/itsm/catalog",
     response_model=Page[CatalogItemOut],
@@ -194,6 +230,29 @@ async def list_catalog(
     stmt = selectors.catalog_stmt(ctx.organization_id)
     rows, total = await paginate(session, stmt, params)
     return Page.build([selectors.catalog_out(i) for i in rows], total=total, params=params)
+
+
+@router.post(
+    "/itsm/catalog",
+    response_model=CatalogItemOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add an offering to the service catalog",
+    dependencies=[Entitled],
+)
+async def create_catalog_item(
+    payload: CatalogItemIn, session: SessionDep, ctx: CatalogWrite, request: Request
+) -> CatalogItemOut:
+    item = await services.create_catalog_item(
+        session,
+        ctx,
+        code=payload.code,
+        name=payload.name,
+        category=payload.category,
+        description=payload.description,
+        sla_days=payload.sla_days,
+        request=request,
+    )
+    return selectors.catalog_out(item)
 
 
 # ------------------------------------------------------------------ assets (CMDB)

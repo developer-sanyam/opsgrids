@@ -180,6 +180,151 @@ class TestEndpointAuthorization:
         numbers = {item["id"] for item in response.json()["items"]}
         assert numbers == {"INC-4821"}
 
+    # ---------------------------------------------------------------- the catalog
+
+    async def test_request_write_does_not_carry_the_catalog(self, client, org_id, data) -> None:
+        """The catalog is *read* with `request.read`, but writing it is guarded by its own name:
+        raising requests must not let a seat-holder change what the organization offers."""
+        principal = principal_for(
+            org_id,
+            ["itsm.service.request.read:ORG", "itsm.service.request.write:ORG"],
+            subject_ref=data["subject_a"],
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/itsm/catalog",
+                json={"code": "CAT-99", "name": "Rogue offering", "category": "access"},
+            )
+        assert response.status_code == 403
+        assert response.headers["content-type"].startswith("application/problem+json")
+
+    async def test_an_own_grant_cannot_write_the_catalog(self, client, org_id, data) -> None:
+        """Catalog write floors at ORG — there is no offering a person owns."""
+        principal = principal_for(
+            org_id, ["itsm.service.catalog.write:OWN"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/itsm/catalog",
+                json={"code": "CAT-98", "name": "Narrow offering", "category": "access"},
+            )
+        assert response.status_code == 403
+
+    async def test_a_catalog_writer_may_add_an_offering(
+        self, client, session, org_id, data
+    ) -> None:
+        principal = principal_for(
+            org_id, ["itsm.service.catalog.write:ORG"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/itsm/catalog",
+                json={
+                    "code": "CAT-09",
+                    "name": "Replacement laptop",
+                    "category": "hardware",
+                    "description": "Swap a failed machine.",
+                    "sla_days": 2,
+                    # The trailing rollup is the server's to count; sending it changes nothing.
+                    "requests_30d": 999,
+                },
+            )
+        assert response.status_code == 201
+        assert response.json() == {
+            "id": "CAT-09",
+            "name": "Replacement laptop",
+            "category": "hardware",
+            "description": "Swap a failed machine.",
+            "sla_days": 2,
+            "requests_30d": 0,
+        }
+        item = await selectors.get_catalog_item(session, org_id, "CAT-09")
+        assert item is not None
+        assert (item.name, item.category, item.sla_days) == ("Replacement laptop", "hardware", 2)
+
+    async def test_a_duplicate_catalog_code_is_a_conflict(self, client, org_id, data) -> None:
+        principal = principal_for(
+            org_id, ["itsm.service.catalog.write:ORG"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/itsm/catalog",
+                json={"code": "CAT-01", "name": "Second onboarding", "category": "onboarding"},
+            )
+        assert response.status_code == 409
+
+    # ---------------------------------------------------------------- service requests
+
+    async def test_a_reader_cannot_raise_a_service_request(self, client, org_id, data) -> None:
+        principal = principal_for(
+            org_id, ["itsm.service.request.read:ORG"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/itsm/service-requests",
+                json={
+                    "number": "REQ-3001",
+                    "catalog_item_code": "CAT-01",
+                    "requester": "Nobody",
+                    "subject": "Nobody at all",
+                },
+            )
+        assert response.status_code == 403
+        assert response.headers["content-type"].startswith("application/problem+json")
+
+    async def test_a_writer_may_raise_a_service_request(
+        self, client, session, org_id, data
+    ) -> None:
+        """OWN write is enough to raise your own request. The category is denormalised from the
+        catalog item, and the request starts awaiting approval whatever the payload claims."""
+        principal = principal_for(
+            org_id, ["itsm.service.request.write:OWN"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/itsm/service-requests",
+                json={
+                    "number": "REQ-3001",
+                    "catalog_item_code": "CAT-01",
+                    "requester": "Sneha Kulkarni",
+                    "subject": "Kiran Rao (joins 14 Oct)",
+                    "assignee": "Meera Raghavan",
+                    # Neither of these is part of the contract; both must be ignored.
+                    "category": "access",
+                    "status": "fulfilled",
+                },
+            )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["id"] == "REQ-3001"
+        assert body["status"] == "approval"
+        assert body["category"] == "onboarding"
+        assert body["catalog_item_name"] == "New joiner onboarding"
+
+        raised = await selectors.get_request(session, org_id, "REQ-3001")
+        assert raised is not None
+        # The caller's directory id is stamped as the requester — what OWN scope reads back.
+        assert raised.requester_id == data["subject_a"]
+        assert raised.status == "approval"
+
+    async def test_a_request_against_an_unknown_item_is_not_found_over_http(
+        self, client, org_id, data
+    ) -> None:
+        principal = principal_for(
+            org_id, ["itsm.service.request.write:ORG"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/itsm/service-requests",
+                json={
+                    "number": "REQ-3002",
+                    "catalog_item_code": "CAT-NOPE",
+                    "requester": "Sneha Kulkarni",
+                    "subject": "Something unoffered",
+                },
+            )
+        assert response.status_code == 404
+
 
 # --------------------------------------------------------------------- validation
 
@@ -247,3 +392,53 @@ class TestValidation:
         assert len(events) == 1
         assert events[0].event_type == "itsm.service.incident.raised"
         assert events[0].published_at is None
+
+
+class TestWritePayloadValidation:
+    """A malformed payload is refused by the contract, before it reaches the service layer."""
+
+    async def test_an_unknown_catalog_category_is_unprocessable(self, client, org_id, data) -> None:
+        principal = principal_for(
+            org_id, ["itsm.service.catalog.write:ORG"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/itsm/catalog",
+                json={"code": "CAT-10", "name": "Odd one", "category": "teleportation"},
+            )
+        assert response.status_code == 422
+
+    async def test_a_catalog_item_needs_a_target_of_at_least_a_day(
+        self, client, org_id, data
+    ) -> None:
+        principal = principal_for(
+            org_id, ["itsm.service.catalog.write:ORG"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/itsm/catalog",
+                json={
+                    "code": "CAT-11",
+                    "name": "Instant everything",
+                    "category": "access",
+                    "sla_days": 0,
+                },
+            )
+        assert response.status_code == 422
+
+    async def test_a_service_request_without_a_subject_is_unprocessable(
+        self, client, org_id, data
+    ) -> None:
+        principal = principal_for(
+            org_id, ["itsm.service.request.write:ORG"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/itsm/service-requests",
+                json={
+                    "number": "REQ-3003",
+                    "catalog_item_code": "CAT-01",
+                    "requester": "Sneha Kulkarni",
+                },
+            )
+        assert response.status_code == 422

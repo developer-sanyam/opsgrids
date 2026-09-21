@@ -45,6 +45,23 @@ class PersonOut(BaseModel):
     capacity_hours: int
 
 
+class PersonIn(BaseModel):
+    """Add someone to the delivery-team roster. `ref` (`p01`) is the stable handle every
+    `owner_ref` / `assignee_ref` on the wire joins against, unique within the organization.
+    `capacity_hours` is the weekly billable target — the utilization denominator.
+
+    The opaque primary key and the account-directory link are not on the wire: the seed sets a
+    deterministic `person_id` so sibling services share it, and `directory_id` is a platform
+    concern, not something a roster caller supplies.
+    """
+
+    ref: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=200)
+    role: str = Field(default="", max_length=120)
+    location: str = Field(default="", max_length=120)
+    capacity_hours: int = Field(default=40, ge=0, le=168)
+
+
 # ------------------------------------------------------------------ projects
 
 

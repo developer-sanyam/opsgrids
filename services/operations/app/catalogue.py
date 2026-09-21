@@ -107,12 +107,21 @@ OPERATIONS = PermissionCatalogue(
             "procurement", "purchase_order", "write", "Raise and receive purchase orders", "OWN"
         ),
         # Suppliers are org reference data — no per-person owner — so the natural reading is ORG.
+        # Writing is the same shape: curating the directory is an org-wide act, not a personal
+        # one, so there is no OWN rung to offer and the write tops out where the read does.
         PermissionSpec(
             "procurement", "supplier", "read", "See the supplier directory", "ORG", "ORG"
         ),
-        # Inventory and warehouses are org infrastructure; ORG for everyone with a seat.
+        PermissionSpec(
+            "procurement", "supplier", "write", "Add suppliers to the directory", "ORG", "ORG"
+        ),
+        # Inventory and warehouses are org infrastructure; reading is ORG for everyone with a
+        # seat, and writing is ORG too — it is held by the roles that curate the reference data,
+        # not by every seat.
         PermissionSpec("inventory", "item", "read", "See inventory on hand", "ORG", "ORG"),
+        PermissionSpec("inventory", "item", "write", "Add inventory items", "ORG", "ORG"),
         PermissionSpec("inventory", "warehouse", "read", "See warehouses", "ORG", "ORG"),
+        PermissionSpec("inventory", "warehouse", "write", "Open warehouses", "ORG", "ORG"),
     ],
 )
 
@@ -134,14 +143,19 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
         name="Procurement manager",
         product=PRODUCT,
         description=(
-            "Raises and receives purchase orders org-wide and reads suppliers, inventory and "
-            "warehouses."
+            "Raises and receives purchase orders org-wide, and curates the supplier directory "
+            "and the inventory records. Reads warehouses but does not open them — a stocking "
+            "site is administered, not procured."
         ),
+        # An explicit list, so a permission added to the catalogue does not silently widen this
+        # role the way `.all()` would.
         grants=OPERATIONS.pick(
             ("operations.procurement.purchase_order.read", "ORG"),
             ("operations.procurement.purchase_order.write", "ORG"),
             ("operations.procurement.supplier.read", "ORG"),
+            ("operations.procurement.supplier.write", "ORG"),
             ("operations.inventory.item.read", "ORG"),
+            ("operations.inventory.item.write", "ORG"),
             ("operations.inventory.warehouse.read", "ORG"),
         ),
     ),
@@ -151,7 +165,8 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
         product=PRODUCT,
         description=(
             "Every person with an Operations seat. Raises and sees their own purchase orders, and "
-            "reads the shared suppliers, inventory and warehouses."
+            "reads the shared suppliers, inventory and warehouses — reference data is curated by "
+            "the manager and administrator roles, not by every seat."
         ),
         is_default=True,
         grants=OPERATIONS.pick(

@@ -18,6 +18,12 @@ The shape:
 `Message` carries the rendered subject and body rather than a reference to the template that
 produced them. A template edited next month must not change what last month's message says it
 said: the sent text is a record, not a view.
+
+`EmailConnection`, `EmailDomain` and `Sender` are the **Engage** product surface — how an
+organization sends as itself. They live in this schema rather than a new service's because
+everything Engage reports on is a local join against `messages` and `deliveries`, and no service
+may read another's tables. One schema, two product catalogues; a product is an entitlement and a
+vocabulary, not a process.
 """
 
 from __future__ import annotations
@@ -402,6 +408,114 @@ class Preference(Base, TenantBase):
             name="uq_preferences_org_recipient",
         ),
     )
+
+
+class EmailConnection(Base, TenantBase):
+    """How one organization sends email.
+
+    Deliberately not a row in `provider_accounts`. That table's only unique constraint is
+    `phone_number_id` — Meta's webhook routing key, globally unique on purpose — and its
+    WhatsApp columns are NOT NULL. Email has no routing key of that kind and needs transport
+    settings that table has no room for, so borrowing it would mean weakening a constraint
+    WhatsApp depends on in order to reuse three columns.
+
+    `secret_enc` is an app password or an API key, sealed like any other secret at rest. No
+    route returns it, not even masked: a masked secret is still a secret with a hint attached.
+    """
+
+    __tablename__ = "email_connections"
+
+    #: google | microsoft | smtp | platform. The customer picks a name, not a port — the
+    #: transport settings are derived from this (see `domain.transport_for`).
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    port: Mapped[int] = mapped_column(Integer, nullable=False, default=587)
+    use_tls: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    username: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+
+    #: What this connection can be asked to send in a day. Derived from `kind` at creation and
+    #: then editable, because a customer who raises their provider quota should be able to say so.
+    daily_cap: Mapped[int] = mapped_column(Integer, nullable=False, default=2000)
+
+    #: connected | disconnected.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="connected")
+
+    __table_args__ = (
+        # One connection per organization for now. A second would make "which one sent this"
+        # ambiguous before anything records the answer.
+        UniqueConstraint("organization_id", name="uq_email_connection_org"),
+    )
+
+
+class EmailDomain(Base, TenantBase):
+    """A domain an organization may send from, and the state of its DNS.
+
+    `records` is the generated record set — SPF, DKIM, DMARC, return-path, tracking — stored so
+    the setup screen can show the same values it showed yesterday rather than regenerating a
+    DKIM selector the customer has already pasted into their registrar.
+    """
+
+    __tablename__ = "email_domains"
+
+    domain: Mapped[str] = mapped_column(String(253), nullable=False)
+    #: pending | verified | failed. Derived from `records` by `domain.fold_domain_status`.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    records: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    #: The DKIM signing key, sealed by `platform_core.pii.seal`. Minted when the domain is
+    #: created, because its public half *is* the DKIM record's value — generating the record set
+    #: without a keypair publishes a record that can never verify.
+    #:
+    #: Nullable, like every sealed column here: there is no such thing as a default private key,
+    #: and a domain row whose key is missing must read as missing rather than as an empty
+    #: envelope that fails to open at signing time.
+    dkim_private_key_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "domain", name="uq_email_domain_org_domain"),
+        # Leads with the tenant column like every index here: the RLS policy qual is ANDed into
+        # every query, so one that did not would scan the platform and discard almost all of it
+        # (ADR-0002).
+        Index("ix_email_domains_org_status", "organization_id", "status"),
+    )
+
+
+class Sender(Base, TenantBase):
+    """A named identity mail goes out as: Sales, Support, Accounts.
+
+    `verified_at` is set by one thing only — a test send that actually reached the provider.
+    Until then `usable` is False and a campaign may not select this sender. That gate is the
+    whole point of the setup wizard: it converts "we filled in a form" into "mail left the
+    building".
+
+    `domain_id` references `email_domains` by plain UUID rather than a foreign key, for the
+    same reason nothing else here does either — a constraint is fine inside this schema, but
+    the rule that keeps a database-per-service split a config change is applied uniformly
+    rather than case by case (ADR-0000 §10).
+    """
+
+    __tablename__ = "senders"
+
+    domain_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    address: Mapped[str] = mapped_column(String(254), nullable=False)
+    reply_to: Mapped[str] = mapped_column(String(254), nullable=False, default="")
+    signature: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    department: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "address", name="uq_sender_org_address"),
+        Index("ix_senders_org_domain", "organization_id", "domain_id"),
+    )
+
+    @property
+    def usable(self) -> bool:
+        """Whether a campaign may send as this sender."""
+        return self.verified_at is not None
 
 
 class OutboxEvent(Base, OutboxMixin):

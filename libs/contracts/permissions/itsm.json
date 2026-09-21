@@ -20,6 +20,15 @@
       "resource": "asset"
     },
     {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Add and change catalog offerings",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "service",
+      "resource": "catalog"
+    },
+    {
       "action": "read",
       "default_scope": "OWN",
       "description": "See incidents and their worklog",
@@ -72,6 +81,10 @@
           "scope": "ORG"
         },
         {
+          "code": "itsm.service.catalog.write",
+          "scope": "ORG"
+        },
+        {
           "code": "itsm.service.incident.read",
           "scope": "ORG"
         },
@@ -95,7 +108,7 @@
     {
       "code": "ITSM_AGENT",
       "cross_product": false,
-      "description": "Works the incident and request queues org-wide and reads the CMDB, but does not administer assets.",
+      "description": "Works the incident and request queues org-wide and reads the CMDB, but does not administer assets or the service catalog.",
       "grants": [
         {
           "code": "itsm.cmdb.asset.read",

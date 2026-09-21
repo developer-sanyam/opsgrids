@@ -1,6 +1,109 @@
 {
   "components": {
     "schemas": {
+      "ConnectionIn": {
+        "additionalProperties": false,
+        "description": "Connect the organization's email provider.\n\n`platform` is in the enum although the writer refuses it. It is a choice the wizard really\noffers, and \"platform-managed sending is not available yet, connect Workspace or your own\nSMTP\" is a better answer than an enum error listing three values and explaining none.",
+        "properties": {
+          "host": {
+            "default": "",
+            "maxLength": 255,
+            "title": "Host",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "google",
+              "microsoft",
+              "smtp",
+              "platform"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "maximum": 65535.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Port"
+          },
+          "secret": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Secret",
+            "type": "string"
+          },
+          "username": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "username",
+          "secret"
+        ],
+        "title": "ConnectionIn",
+        "type": "object"
+      },
+      "ConnectionOut": {
+        "description": "How this organization sends, minus the one value that must never leave the process.\n\nThere is no secret here in any form. A mask, a length or a last-four would each be the\ncredential with a hint attached. The shape is asserted key-for-key by a test, so adding one\nlater is a red build rather than a leak nobody notices.",
+        "properties": {
+          "daily_cap": {
+            "title": "Daily Cap",
+            "type": "integer"
+          },
+          "host": {
+            "title": "Host",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "google",
+              "microsoft",
+              "smtp",
+              "platform"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "port": {
+            "title": "Port",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "connected",
+              "disconnected"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "username",
+          "host",
+          "port",
+          "status",
+          "daily_cap"
+        ],
+        "title": "ConnectionOut",
+        "type": "object"
+      },
       "DeliveryOut": {
         "properties": {
           "at": {
@@ -44,6 +147,123 @@
           "at"
         ],
         "title": "DeliveryOut",
+        "type": "object"
+      },
+      "DnsRecordOut": {
+        "description": "One record the customer publishes at their registrar, and whether DNS has it yet.\n\nThe DKIM record's `value` carries the public half of the signing key. The private half has\nno field anywhere in this module: it is sealed in the row and read only when mail is signed.",
+        "properties": {
+          "host": {
+            "title": "Host",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "spf",
+              "dkim",
+              "dmarc",
+              "return_path",
+              "tracking"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          },
+          "verified": {
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "type",
+          "host",
+          "value",
+          "required",
+          "verified"
+        ],
+        "title": "DnsRecordOut",
+        "type": "object"
+      },
+      "DomainIn": {
+        "additionalProperties": false,
+        "properties": {
+          "domain": {
+            "maxLength": 253,
+            "minLength": 3,
+            "title": "Domain",
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain"
+        ],
+        "title": "DomainIn",
+        "type": "object"
+      },
+      "DomainOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "domain": {
+            "title": "Domain",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "last_checked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Checked At"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/DnsRecordOut"
+            },
+            "title": "Records",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "verified",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "domain",
+          "status",
+          "records",
+          "last_checked_at",
+          "created_at"
+        ],
+        "title": "DomainOut",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -199,6 +419,78 @@
         "title": "MessageOut",
         "type": "object"
       },
+      "Page_ConnectionOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectionOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ConnectionOut]",
+        "type": "object"
+      },
+      "Page_DomainOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DomainOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[DomainOut]",
+        "type": "object"
+      },
       "Page_MessageOut_": {
         "properties": {
           "items": {
@@ -341,6 +633,42 @@
           "pages"
         ],
         "title": "Page[RuleOut]",
+        "type": "object"
+      },
+      "Page_SenderOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SenderOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[SenderOut]",
         "type": "object"
       },
       "Page_TemplateOut_": {
@@ -987,6 +1315,120 @@
         "title": "SendIn",
         "type": "object"
       },
+      "SenderIn": {
+        "additionalProperties": false,
+        "description": "Add a named identity mail may go out as.\n\nThe address is checked against the domain by the writer rather than here: whether\n`sales@company.com` belongs to a domain this organization has proven is a fact about rows,\nnot about the string.",
+        "properties": {
+          "address": {
+            "maxLength": 254,
+            "minLength": 3,
+            "title": "Address",
+            "type": "string"
+          },
+          "department": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Department",
+            "type": "string"
+          },
+          "domain_id": {
+            "format": "uuid",
+            "title": "Domain Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "reply_to": {
+            "default": "",
+            "maxLength": 254,
+            "title": "Reply To",
+            "type": "string"
+          },
+          "signature": {
+            "default": "",
+            "title": "Signature",
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain_id",
+          "name",
+          "address"
+        ],
+        "title": "SenderIn",
+        "type": "object"
+      },
+      "SenderOut": {
+        "properties": {
+          "address": {
+            "title": "Address",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "department": {
+            "title": "Department",
+            "type": "string"
+          },
+          "domain_id": {
+            "title": "Domain Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reply_to": {
+            "title": "Reply To",
+            "type": "string"
+          },
+          "signature": {
+            "title": "Signature",
+            "type": "string"
+          },
+          "usable": {
+            "title": "Usable",
+            "type": "boolean"
+          },
+          "verified_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified At"
+          }
+        },
+        "required": [
+          "id",
+          "domain_id",
+          "name",
+          "address",
+          "reply_to",
+          "signature",
+          "department",
+          "usable",
+          "verified_at",
+          "created_at"
+        ],
+        "title": "SenderOut",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -1227,6 +1669,23 @@
         "title": "TemplateVariableOut",
         "type": "object"
       },
+      "TestSendIn": {
+        "additionalProperties": false,
+        "description": "Where to send the message that opens the gate.\n\nThe subject and body are fixed by the service. Their only job is to prove the path works,\nand a customisable test message is a send nobody reviewed going to an address of the\ncaller's choosing.",
+        "properties": {
+          "to_address": {
+            "maxLength": 254,
+            "minLength": 3,
+            "title": "To Address",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to_address"
+        ],
+        "title": "TestSendIn",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -1276,6 +1735,426 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/engage/connection": {
+      "get": {
+        "description": "A page of at most one.\n\nA list shape for a singleton reads oddly until you ask what the alternative costs: a route\nreturning `ConnectionOut | None` puts \"is there one yet?\" in the router, where every other\nread in this service keeps it in the selector, and makes the unconnected case a null the\nsetup screen has to special-case rather than an empty page it already handles.",
+        "operationId": "read_connection_api_v1_engage_connection_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ConnectionOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "How this organization sends email",
+        "tags": [
+          "engage"
+        ]
+      },
+      "post": {
+        "description": "POST rather than PUT, because one organization gets one connection and a second is\nrefused. A verb that promises to be repeatable, and then fails the second time it is\nrepeated, promises something the writer does not deliver.",
+        "operationId": "connect_provider_api_v1_engage_connection_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Connect the organization's email provider",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/domains": {
+      "get": {
+        "operationId": "list_domains_api_v1_engage_domains_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_DomainOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sending domains and the state of their DNS",
+        "tags": [
+          "engage"
+        ]
+      },
+      "post": {
+        "operationId": "add_domain_api_v1_engage_domains_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DomainIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a sending domain and generate its DNS records",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/domains/{domain_id}/verify": {
+      "post": {
+        "description": "Takes the write permission although it publishes nothing: it rewrites `records` and\n`status`, and a domain flipping to verified is what lets mail go out as that name.",
+        "operationId": "verify_domain_api_v1_engage_domains__domain_id__verify_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Re-read DNS and fold the answer into the domain's status",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/senders": {
+      "get": {
+        "operationId": "list_senders_api_v1_engage_senders_get",
+        "parameters": [
+          {
+            "description": "Only senders on this domain",
+            "in": "query",
+            "name": "domain_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only senders on this domain",
+              "title": "Domain Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_SenderOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The named identities mail can go out as",
+        "tags": [
+          "engage"
+        ]
+      },
+      "post": {
+        "operationId": "add_sender_api_v1_engage_senders_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SenderIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SenderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a sender on a verified domain",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/senders/{sender_id}/test": {
+      "post": {
+        "description": "The gate, over HTTP. The caller waits for the provider's answer because that answer *is*\nthe state change \u2014 there is nothing to enqueue until mail has actually left.",
+        "operationId": "send_test_message_api_v1_engage_senders__sender_id__test_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sender_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Sender Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestSendIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SenderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send a test message and, if it arrives, make the sender usable",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
     "/api/v1/notifications/info": {
       "get": {
         "operationId": "info_api_v1_notifications_info_get",

@@ -103,6 +103,21 @@ class CatalogItemOut(BaseModel):
     requests_30d: int
 
 
+class CatalogItemIn(BaseModel):
+    """Add an offering to the service catalog.
+
+    `requests_30d` is not accepted: the trailing-30-day rollup is counted from the requests
+    themselves, so it is the server's to state and never the client's to assert.
+    """
+
+    code: str = Field(min_length=1, max_length=20, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=160)
+    category: CatalogCategory
+    description: str = Field(default="", max_length=8000)
+    #: Target fulfilment time in working days.
+    sla_days: int = Field(default=1, ge=1, le=365)
+
+
 class ServiceRequestOut(BaseModel):
     """Mirrors the SPA's `ServiceRequest`. `id` is the human number; `catalog_item_id` is the
     catalog item's code, with its name denormalised so a table row renders without a lookup."""
@@ -117,6 +132,24 @@ class ServiceRequestOut(BaseModel):
     assignee: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class ServiceRequestIn(BaseModel):
+    """Raise a service request against a catalog item.
+
+    `number` is the organization's own `REQ-2051` identity, minted the way an asset carries its
+    tag — a clash is refused rather than quietly renumbered. `category` is not accepted: it is
+    denormalised from the catalog item the request names. Neither is `status` — a new request
+    always starts awaiting approval, so no payload can skip the approval step. The requester's
+    directory id comes from the caller, which is what OWN scope later reads back.
+    """
+
+    number: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    catalog_item_code: str = Field(min_length=1, max_length=20, pattern=r"^[A-Za-z0-9_-]+$")
+    requester: str = Field(min_length=1, max_length=120)
+    #: Who the request is for — often the requester, but not for JML flows.
+    subject: str = Field(min_length=1, max_length=200)
+    assignee: str | None = Field(default=None, max_length=120)
 
 
 # ------------------------------------------------------------------ assets

@@ -14,28 +14,50 @@ point: a direct send cannot reach someone a rule-driven send would have skipped.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import domain, selectors
+from app import dns_check, domain, selectors
+from app.config import settings
 from app.models import (
     AuditLog,
     Delivery,
+    EmailConnection,
+    EmailDomain,
     Message,
     OutboxEvent,
     Preference,
     ProviderTemplate,
     Rule,
+    Sender,
     Template,
 )
 from app.targets import TargetResolver
+from app.transports import (
+    Outgoing,
+    SmtpTransport,
+    Transport,
+    TransportRefused,
+    TransportUnavailable,
+)
+from platform_core import pii
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
-from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
+from platform_core.errors import (
+    BusinessRuleProblem,
+    ConflictProblem,
+    NotFoundProblem,
+    UpstreamUnavailableProblem,
+    ValidationProblem,
+)
 from platform_core.events import publish_event
 from platform_core.logging import get_logger
 
@@ -983,3 +1005,523 @@ async def fold_status(
             actor={"type": "system", "id": SYSTEM_ACTOR},
         )
     return message
+
+
+# --------------------------------------------------------------------- engage sending identity
+#
+# How an organization sends as itself: one provider connection, the domains it has proven it
+# owns, and the named senders mail goes out as. The order is a gate, not a wizard's convenience
+# — a sender is unusable until a test message has actually left the building.
+
+#: The pure-rules module under a second name. `domain` is also what a customer calls the name
+#: they send from, and the writers below take `domain=` because that is the field the API and the
+#: setup screen use — so the module yields the word rather than the parameter taking a worse one.
+_rules = domain
+
+EVT_CONNECTION_CREATED = "engage.setup.connection.created"
+EVT_DOMAIN_CREATED = "engage.setup.domain.created"
+EVT_DOMAIN_VERIFIED = "engage.setup.domain.verified"
+EVT_SENDER_CREATED = "engage.setup.sender.created"
+EVT_SENDER_VERIFIED = "engage.setup.sender.verified"
+
+#: 2048 bits, and not a choice of ours: 1024 is being retired by the large mailbox providers, and
+#: a 4096-bit public key does not fit one 255-byte TXT character-string — a registrar that will
+#: not split it publishes a record no verifier can read.
+_DKIM_KEY_BITS = 2048
+
+#: What a test message says. Fixed text, because its only job is to prove the path: a customer
+#: reading it needs to know which address it came from and that nothing else is expected of them.
+TEST_SEND_SUBJECT = "OpsGrids test message"
+TEST_SEND_BODY = (
+    "This is a test message from OpsGrids.\n\n"
+    "Receiving it means {address} can send mail through your provider, and that sender is now "
+    "usable in your campaigns.\n"
+)
+
+
+def dkim_selector(organization_id: uuid.UUID, domain_name: str) -> str:
+    """The DKIM selector for one organization's domain. Derived, never random.
+
+    The record set is stored so the setup screen shows the values it showed yesterday; a selector
+    minted from a uuid or a clock would hand the customer a different record to paste every time
+    anything regenerated it.
+
+    Derived from the organization as well as the name so two organizations adding the same domain
+    get different selectors. Only one of them owns the zone at a time, but a hand-over between
+    them is then two records published side by side rather than one record they take turns
+    breaking.
+    """
+    digest = hashlib.sha256(f"{organization_id}:{domain_name}".encode()).hexdigest()
+    return f"og{digest[:12]}"
+
+
+def _dkim_keypair() -> tuple[str, str]:
+    """A fresh signing key as `(private PEM, base64 public key)`.
+
+    The public half is base64 of the DER SubjectPublicKeyInfo, which is what `p=` in a DKIM
+    record is defined to carry — not a PEM, whose header lines and newlines no verifier strips.
+    The private half is unencrypted PEM because it is sealed by the caller a line later; a
+    passphrase on top would only move the problem to wherever that passphrase lived.
+    """
+    key = rsa.generate_private_key(public_exponent=65537, key_size=_DKIM_KEY_BITS)
+    private_pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("utf-8")
+    public_der = key.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return private_pem, base64.b64encode(public_der).decode("ascii")
+
+
+async def create_connection(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    kind: str,
+    username: str,
+    secret: str,
+    host: str = "",
+    port: int | None = None,
+    request: Request | None = None,
+) -> EmailConnection:
+    """Record how one organization sends email, its credential sealed on the way in.
+
+    The transport is derived from the kind rather than asked for: the customer chose "Google
+    Workspace", and a wizard that then asked them for a port would be asking them to look up
+    something we already know.
+
+    One per organization, refused here as well as by the unique constraint. The constraint is the
+    net; a caller deserves a sentence naming the connection that already exists rather than an
+    IntegrityError from the driver.
+    """
+    try:
+        transport = _rules.transport_for(kind, username)
+    except ValueError as exc:
+        raise ValidationProblem(str(exc)) from exc
+
+    if kind == "platform":
+        # Modelled in `domain.transport_for` and deliberately unreachable: platform-managed
+        # sending needs an MTA the platform does not run. Accepting the connection would let a
+        # customer finish setup and discover at their first campaign that nothing sends.
+        raise BusinessRuleProblem(
+            "Platform-managed sending is not available yet — connect Google Workspace, "
+            "Microsoft 365, or your own SMTP server."
+        )
+
+    existing = await selectors.get_connection(session, ctx.organization_id)
+    if existing is not None:
+        raise BusinessRuleProblem(
+            f"This organization already sends through {existing.username or existing.kind}. "
+            "Disconnect that connection before adding another."
+        )
+
+    submission_host = (host or transport.host).strip()
+    if not submission_host:
+        raise ValidationProblem("An SMTP connection needs the host its provider submits on")
+
+    # `seal` returns (ciphertext, mask); the mask is discarded deliberately. A hint of an app
+    # password is a hint of a credential, and nothing in this product displays one.
+    sealed, _ = pii.seal(secret, kind="generic", settings=settings())
+
+    connection = EmailConnection(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        kind=kind,
+        host=submission_host,
+        port=port or transport.port,
+        use_tls=transport.use_tls,
+        username=username,
+        secret_enc=sealed,
+        daily_cap=transport.daily_cap,
+        status="connected",
+    )
+    session.add(connection)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.connection.created",
+        entity="email_connection",
+        entity_id=connection.id,
+        # Never the secret, and never the envelope either: an audit row is read by more people
+        # than a credential should be, and ciphertext in it is one key away from plaintext.
+        after={
+            "kind": kind,
+            "username": username,
+            "host": submission_host,
+            "port": connection.port,
+            "daily_cap": connection.daily_cap,
+        },
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_CONNECTION_CREATED,
+        aggregate_type="email_connection",
+        aggregate_id=connection.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "connection_id": str(connection.id),
+            "kind": kind,
+            "daily_cap": connection.daily_cap,
+        },
+        actor=_actor(ctx),
+    )
+    return connection
+
+
+async def create_domain(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    domain: str,
+    request: Request | None = None,
+) -> EmailDomain:
+    """Add a sending domain and generate everything the customer has to publish for it.
+
+    The DKIM keypair is minted **here**, because `domain.dns_records_for` is pure and cannot:
+    the record it returns carries an empty value until a public key exists to fill it, and a
+    domain created without one publishes a record that can never verify — a setup flow that
+    looks complete and signs nothing.
+
+    The private half is sealed like any other secret at rest. It is the thing that lets anyone
+    sign mail as this customer, which makes it the most dangerous value in the schema.
+    """
+    name = domain.strip().lower().rstrip(".")
+    if not name or "@" in name or " " in name or "." not in name:
+        raise ValidationProblem(f"{domain!r} is not a domain name")
+
+    if await selectors.get_domain_by_name(session, ctx.organization_id, name) is not None:
+        raise ConflictProblem(f"{name} is already a sending domain for this organization")
+
+    selector = dkim_selector(ctx.organization_id, name)
+    private_pem, public_key = _dkim_keypair()
+    records = _rules.dns_records_for(name, selector, f"track.{name}")
+    for record in records:
+        if record["kind"] == "dkim":
+            record["value"] = f"v=DKIM1; k=rsa; p={public_key}"
+
+    sealed, _ = pii.seal(private_pem, kind="generic", settings=settings())
+    row = EmailDomain(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        domain=name,
+        # Folded rather than written as "pending", so one function owns what a record set means.
+        # A freshly generated set has verified nothing, so it folds to pending — which is the
+        # point: the customer has published none of this yet.
+        status=_rules.fold_domain_status(records),
+        records=records,
+        dkim_private_key_enc=sealed,
+    )
+    session.add(row)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.domain.created",
+        entity="email_domain",
+        entity_id=row.id,
+        after={"domain": name, "dkim_selector": selector, "status": row.status},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_DOMAIN_CREATED,
+        aggregate_type="email_domain",
+        aggregate_id=row.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "domain_id": str(row.id),
+            "domain": name,
+            "status": row.status,
+        },
+        actor=_actor(ctx),
+    )
+    return row
+
+
+async def verify_domain(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    domain_id: uuid.UUID,
+    request: Request | None = None,
+    resolver: dns_check.Resolver | None = None,
+) -> EmailDomain:
+    """Re-read what DNS actually publishes for one domain and fold the answer into its status.
+
+    The lookups happen inside the caller's transaction, which is the one place in this service
+    that is true. It is a bounded read of a handful of names, run because an operator pressed
+    *verify* and is waiting for the answer; splitting it into two transactions would mean a route
+    that commits twice and a row that can be left claiming it was checked when it was not.
+
+    `records` is replaced rather than mutated: `check_records` returns a copy, and JSONB only
+    notices a reassignment.
+    """
+    row = await selectors.get_domain(session, ctx.organization_id, domain_id)
+    if row is None:
+        raise NotFoundProblem("No such sending domain")
+
+    was = row.status
+    checked = await dns_check.check_records(row.records, resolver=resolver)
+    row.records = checked
+    row.status = _rules.fold_domain_status(checked)
+    row.last_checked_at = datetime.now(UTC)
+    row.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.domain.checked",
+        entity="email_domain",
+        entity_id=row.id,
+        before={"status": was},
+        after={
+            "status": row.status,
+            "records": {record["kind"]: record["verified"] for record in checked},
+        },
+        request=request,
+    )
+
+    if row.status == "verified" and was != "verified":
+        # Only on the transition. Everything downstream reads this event as permission to send
+        # as the name, and republishing it on every re-check would make "when did this domain
+        # become usable" unanswerable from the log.
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=ctx.organization_id,
+            event_type=EVT_DOMAIN_VERIFIED,
+            aggregate_type="email_domain",
+            aggregate_id=row.id,
+            payload={
+                "organization_id": str(ctx.organization_id),
+                "domain_id": str(row.id),
+                "domain": row.domain,
+            },
+            actor=_actor(ctx),
+        )
+    return row
+
+
+async def create_sender(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    domain_id: uuid.UUID,
+    name: str,
+    address: str,
+    reply_to: str = "",
+    signature: str = "",
+    department: str = "",
+    request: Request | None = None,
+) -> Sender:
+    """Add a named identity mail may go out as. Unusable until a test send proves it.
+
+    Two rules, and they are the same rule seen from both ends: the domain must be verified, and
+    the address must be on it. Without the second, one verified domain becomes a licence to send
+    as any name at all — which is the thing domain verification exists to prevent.
+    """
+    try:
+        sender_address = _rules.normalize_recipient("email", address)
+    except _rules.RuleError as exc:
+        raise ValidationProblem(str(exc)) from exc
+
+    email_domain = await selectors.get_domain(session, ctx.organization_id, domain_id)
+    if email_domain is None:
+        raise NotFoundProblem("No such sending domain")
+    if email_domain.status != "verified":
+        raise BusinessRuleProblem(
+            f"{email_domain.domain} has not been verified yet. Publish its DNS records and "
+            "verify it before adding senders."
+        )
+    if not sender_address.endswith(f"@{email_domain.domain}"):
+        raise BusinessRuleProblem(f"{sender_address} is not an address on {email_domain.domain}")
+
+    taken = await selectors.get_sender_by_address(session, ctx.organization_id, sender_address)
+    if taken is not None:
+        raise ConflictProblem(f"{sender_address} is already a sender")
+
+    sender = Sender(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        domain_id=email_domain.id,
+        name=name,
+        address=sender_address,
+        reply_to=reply_to,
+        signature=signature,
+        department=department,
+    )
+    session.add(sender)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.sender.created",
+        entity="sender",
+        entity_id=sender.id,
+        after={"name": name, "address": sender_address, "domain": email_domain.domain},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_SENDER_CREATED,
+        aggregate_type="sender",
+        aggregate_id=sender.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "sender_id": str(sender.id),
+            "domain_id": str(email_domain.id),
+            "address": sender_address,
+        },
+        actor=_actor(ctx),
+    )
+    return sender
+
+
+def _transport_for_connection(connection: EmailConnection, *, from_address: str) -> Transport:
+    """The transport this connection describes, credential unsealed for the send.
+
+    Unsealing here is machine-to-machine: the plaintext reaches an SMTP handshake and nothing
+    else — no response body, no log line, no audit `after`. That is why this is not a sensitive
+    *read* in the PII sense, and why the audit row the caller writes records that a test send
+    happened rather than what it used.
+    """
+    cfg = settings()
+    password = (
+        pii.open_sealed(connection.secret_enc, settings=cfg) if connection.secret_enc else None
+    )
+    return SmtpTransport(
+        host=connection.host,
+        port=connection.port,
+        username=connection.username or None,
+        password=password,
+        use_tls=connection.use_tls,
+        timeout=cfg.smtp_timeout_seconds,
+        from_address=from_address,
+    )
+
+
+async def send_test(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    sender_id: uuid.UUID,
+    to_address: str,
+    request: Request | None = None,
+    transport: Transport | None = None,
+) -> Sender:
+    """**The gate.** Send a real message through the customer's own connection, and only if it
+    arrives, mark the sender usable.
+
+    Nothing else writes `verified_at`. That is what converts "we filled in a form" into "mail
+    left the building", and it is the reason every check above it is worth having: a campaign
+    selecting this sender is selecting a path somebody has actually walked.
+
+    The send is not staged through the outbox, and that is not a violation of the rule that
+    background work is enqueued after commit — this is not background work. Its result *is* the
+    state change, and a customer pressing *send test* is waiting for the provider's answer, not
+    for a queue. Nothing is written until the provider has given one.
+
+    A failure raises carrying the provider's own words. "Check your settings" is not a
+    diagnosis; `535 5.7.8 Username and Password not accepted` tells the customer which of the
+    fourteen things they typed is wrong.
+    """
+    sender = await selectors.get_sender(session, ctx.organization_id, sender_id)
+    if sender is None:
+        raise NotFoundProblem("No such sender")
+
+    connection = await selectors.get_connection(session, ctx.organization_id)
+    if connection is None or connection.status != "connected":
+        raise BusinessRuleProblem("Connect an email provider before sending a test message.")
+
+    email_domain = await selectors.get_domain(session, ctx.organization_id, sender.domain_id)
+    if email_domain is None or email_domain.status != "verified":
+        # Checked again at send time rather than trusted from creation, for the same reason the
+        # dispatcher re-checks suppression: a domain can fall out of verification between the
+        # two moments, and of the two answers the later one is the true one.
+        raise BusinessRuleProblem(
+            f"The domain behind {sender.address} is no longer verified. Re-verify its DNS "
+            "records before sending as it."
+        )
+
+    try:
+        recipient = _rules.normalize_recipient("email", to_address)
+    except _rules.RuleError as exc:
+        raise ValidationProblem(str(exc)) from exc
+
+    outgoing = Outgoing(
+        to_address=recipient,
+        subject=TEST_SEND_SUBJECT,
+        body=TEST_SEND_BODY.format(address=sender.address),
+    )
+    wire = transport or _transport_for_connection(connection, from_address=sender.address)
+    try:
+        receipt = await wire.send(outgoing)
+    except TransportRefused as exc:
+        # Nothing is written, so nothing is audited: the audit row would be rolled back with the
+        # rest of the transaction and only the log would remember. The provider's text is carried
+        # to the caller intact.
+        log.warning("engage.test_send.refused", sender_id=str(sender.id), error=str(exc))
+        raise BusinessRuleProblem(f"The provider refused the test message: {exc}") from exc
+    except TransportUnavailable as exc:
+        log.warning("engage.test_send.unavailable", sender_id=str(sender.id), error=str(exc))
+        raise UpstreamUnavailableProblem(f"The provider could not be reached: {exc}") from exc
+
+    sender.verified_at = datetime.now(UTC)
+    sender.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.sender.verified",
+        entity="sender",
+        entity_id=sender.id,
+        after={
+            "address": sender.address,
+            "tested_with": recipient,
+            "provider": receipt.provider,
+        },
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_SENDER_VERIFIED,
+        aggregate_type="sender",
+        aggregate_id=sender.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "sender_id": str(sender.id),
+            "address": sender.address,
+            "provider": receipt.provider,
+            "provider_message_id": receipt.provider_message_id,
+        },
+        actor=_actor(ctx),
+    )
+    return sender

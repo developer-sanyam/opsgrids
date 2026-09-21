@@ -197,6 +197,71 @@ class TestEndpointAuthorization:
         assert body["owner_id"] == "p01"
         assert body["budget_minor"] == 5_000_000
 
+    async def test_a_roster_reader_cannot_add_a_person(self, client, session, org_id, data) -> None:
+        """Holding person.read but not person.write cannot add to the roster."""
+        principal = principal_for(
+            org_id, ["pulseboard.team.person.read:ORG"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/projects/people",
+                json={"ref": "p90", "name": "Intruder"},
+            )
+        assert response.status_code == 403
+        assert await selectors.get_person_by_ref(session, org_id, "p90") is None
+
+    async def test_a_writer_may_add_a_person_to_the_roster(
+        self, client, session, org_id, data
+    ) -> None:
+        """The written row is the row the roster then lists — the SPA's `Person` shape."""
+        principal = principal_for(
+            org_id, ["pulseboard.team.person.write:ORG", "pulseboard.team.person.read:ORG"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/projects/people",
+                json={
+                    "ref": "p03",
+                    "name": "Iris Fernandes",
+                    "role": "QA Lead",
+                    "location": "Pune",
+                    "capacity_hours": 35,
+                },
+            )
+            listed = await client.get("/api/v1/projects/people")
+
+        assert response.status_code == 201
+        assert response.json() == {
+            "id": "p03",
+            "name": "Iris Fernandes",
+            "role": "QA Lead",
+            "location": "Pune",
+            "capacity_hours": 35,
+        }
+        assert [p["id"] for p in listed.json()["items"]] == ["p01", "p02", "p03"]
+
+        stored = await selectors.get_person_by_ref(session, org_id, "p03")
+        assert stored is not None
+        assert stored.organization_id == org_id
+        assert stored.capacity_hours == 35
+
+    async def test_a_new_person_takes_the_writer_defaults(self, client, session, org_id) -> None:
+        """Only `ref` and `name` are required; the rest default as `create_person` does."""
+        principal = principal_for(org_id, ["pulseboard.team.person.write:ORG"])
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/projects/people",
+                json={"ref": "p07", "name": "Devika Nair"},
+            )
+        assert response.status_code == 201
+        assert response.json() == {
+            "id": "p07",
+            "name": "Devika Nair",
+            "role": "",
+            "location": "",
+            "capacity_hours": 40,
+        }
+
     async def test_an_own_reader_sees_only_their_own_projects_over_http(
         self, client, org_id, data
     ) -> None:
@@ -299,6 +364,53 @@ class TestValidation:
                     ctx,
                     TaskIn(key="PB-902", project_code="PB-01", title="x", assignee_ref="p99"),
                 )
+
+    async def test_an_invalid_roster_payload_is_unprocessable(
+        self, client, session, org_id, data
+    ) -> None:
+        """Each of these is refused by the contract, before any writer runs."""
+        principal = principal_for(org_id, ["pulseboard.team.person.write:ORG"])
+        rejected = [
+            {"ref": "p 03", "name": "Space In Ref"},
+            {"ref": "p03", "name": ""},
+            {"ref": "p03", "name": "Negative Capacity", "capacity_hours": -1},
+            {"name": "No Ref At All"},
+        ]
+        with as_principal(principal):
+            for payload in rejected:
+                response = await client.post("/api/v1/projects/people", json=payload)
+                assert response.status_code == 422, payload
+        assert await selectors.get_person_by_ref(session, org_id, "p03") is None
+
+    async def test_the_roster_payload_cannot_choose_its_own_tenant(
+        self, client, session, org_id, data
+    ) -> None:
+        """`organization_id` comes from the tenant context, never the body: an extra field is
+        ignored and the row lands in the caller's own organization."""
+        principal = principal_for(org_id, ["pulseboard.team.person.write:ORG"])
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/projects/people",
+                json={
+                    "ref": "p08",
+                    "name": "Tenant Hopper",
+                    "organization_id": "00000000-0000-0000-0000-0000000000ff",
+                },
+            )
+        assert response.status_code == 201
+        stored = await selectors.get_person_by_ref(session, org_id, "p08")
+        assert stored is not None
+        assert stored.organization_id == org_id
+
+    async def test_a_duplicate_person_ref_is_refused_over_http(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.team.person.write:ORG"])
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/projects/people",
+                json={"ref": "p01", "name": "Clashes with Nadia"},
+            )
+        assert response.status_code == 409
+        assert response.headers["content-type"].startswith("application/problem+json")
 
     async def test_creating_stages_an_audit_row_and_an_outbox_event(
         self, session, org_id, data

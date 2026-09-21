@@ -13,16 +13,21 @@ the read models (`supplier_name`, `warehouse`) so a list renders without a cross
 
 from __future__ import annotations
 
+import uuid
 from datetime import date
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # ------------------------------------------------------------------ vocabularies (match the SPA)
 
 Category = Literal["raw_materials", "packaging", "components", "mro", "logistics", "services"]
 SupplierStatus = Literal["active", "on_hold", "pending"]
 PoStatus = Literal["draft", "approved", "received", "closed"]
+#: The statuses a PO may be *raised* in. `received` is reached through the receive endpoint —
+#: which also fills the line quantities — and `closed` is a later transition, so neither is
+#: something a client may assert at creation.
+PoRaiseStatus = Literal["draft", "approved"]
 AttentionKind = Literal["low_stock", "out_of_stock", "late_delivery"]
 AttentionTone = Literal["danger", "late"]
 
@@ -53,6 +58,28 @@ class SupplierOut(BaseModel):
     contact_email: str
     location: str
     since: date
+
+
+class SupplierIn(BaseModel):
+    """Add a supplier to the directory.
+
+    The performance figures on `SupplierOut` are not accepted here. `spend_minor` and `open_pos`
+    are rollups of this organization's own purchase orders and `on_time_pct` is a trailing
+    delivery rate: all three are things the platform observes, not things a client asserts, and a
+    supplier being added has no history yet. `since` defaults to today because the read contract
+    is not nullable.
+    """
+
+    code: str = Field(min_length=1, max_length=40)
+    name: str = Field(min_length=1, max_length=200)
+    category: Category
+    status: SupplierStatus = "active"
+    lead_time_days: int = Field(default=0, ge=0, le=365)
+    currency: str = Field(default="INR", min_length=3, max_length=3)
+    contact_name: str = Field(default="", max_length=120)
+    contact_email: str = Field(default="", max_length=200)
+    location: str = Field(default="", max_length=160)
+    since: date = Field(default_factory=date.today)
 
 
 # ------------------------------------------------------------------ purchase orders
@@ -91,6 +118,48 @@ class PurchaseOrderOut(BaseModel):
     notes: str | None
 
 
+class PoLineIn(BaseModel):
+    """One requested line. `amount_minor` is not accepted — the server computes it as
+    `quantity * unit_price_minor`, so the lines foot to the derived total by construction and a
+    client cannot assert a total of its own. `received_qty` is not accepted either: a line has
+    received nothing until the PO is received."""
+
+    sku: str = Field(min_length=1, max_length=60)
+    description: str = Field(default="", max_length=300)
+    quantity: int = Field(gt=0)
+    #: Per-unit price, integer minor units of the PO currency. Never a float (ADR-0000 §8).
+    unit_price_minor: int = Field(ge=0)
+    uom: str = Field(default="", max_length=20)
+
+
+class PurchaseOrderIn(BaseModel):
+    """Raise a purchase order, naming the supplier by `supplier_id` or by `supplier_code`.
+
+    What the server derives does not appear here: the total (summed from the lines), each line's
+    `amount_minor`, the PO's `category` (denormalised from the supplier) and `raised_by_id` —
+    the raiser is the caller, because that column is what OWN scope narrows on.
+    """
+
+    number: str = Field(min_length=1, max_length=40)
+    supplier_id: uuid.UUID | None = None
+    supplier_code: str | None = Field(default=None, max_length=40)
+    status: PoRaiseStatus = "draft"
+    warehouse: str = Field(default="", max_length=120)
+    #: Display name of the raiser; the identity OWN scope uses comes from the caller, not here.
+    raised_by: str = Field(default="", max_length=120)
+    currency: str = Field(default="INR", min_length=3, max_length=3)
+    created_date: date = Field(default_factory=date.today)
+    expected_date: date
+    notes: str | None = Field(default=None, max_length=8000)
+    lines: list[PoLineIn] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _names_a_supplier(self) -> Self:
+        if self.supplier_id is None and not self.supplier_code:
+            raise ValueError("Name the supplier with supplier_id or supplier_code")
+        return self
+
+
 # ------------------------------------------------------------------ inventory
 
 
@@ -111,6 +180,27 @@ class InventoryItemOut(BaseModel):
     updated_at: date
 
 
+class InventoryItemIn(BaseModel):
+    """Stock an item at a warehouse.
+
+    Stock value (`on_hand * unit_value_minor`) and low-stock (`on_hand <= reorder_point`) are
+    derived on read and never sent. `stocked_at` — the date of the count, surfaced as
+    `updated_at` — defaults to today.
+    """
+
+    sku: str = Field(min_length=1, max_length=60)
+    name: str = Field(min_length=1, max_length=200)
+    category: Category
+    warehouse: str = Field(default="", max_length=120)
+    on_hand: int = Field(default=0, ge=0)
+    reorder_point: int = Field(default=0, ge=0)
+    uom: str = Field(default="", max_length=20)
+    #: Per-unit stock value, integer minor units of `currency`.
+    unit_value_minor: int = Field(default=0, ge=0)
+    currency: str = Field(default="INR", min_length=3, max_length=3)
+    stocked_at: date = Field(default_factory=date.today)
+
+
 # ------------------------------------------------------------------ warehouses (reference)
 
 
@@ -122,6 +212,14 @@ class WarehouseOut(BaseModel):
     code: str
     name: str
     location: str
+
+
+class WarehouseIn(BaseModel):
+    """Open a stocking location. `code` (`WH-PUN`) is its identity within the organization."""
+
+    code: str = Field(min_length=1, max_length=40)
+    name: str = Field(min_length=1, max_length=120)
+    location: str = Field(default="", max_length=160)
 
 
 # ------------------------------------------------------------------ overview rollups

@@ -249,6 +249,55 @@
         "title": "Breakdown",
         "type": "object"
       },
+      "CatalogItemIn": {
+        "description": "Add an offering to the service catalog.\n\n`requests_30d` is not accepted: the trailing-30-day rollup is counted from the requests\nthemselves, so it is the server's to state and never the client's to assert.",
+        "properties": {
+          "category": {
+            "enum": [
+              "onboarding",
+              "offboarding",
+              "access",
+              "hardware",
+              "software"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "code": {
+            "maxLength": 20,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Code",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 8000,
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "sla_days": {
+            "default": 1,
+            "maximum": 365.0,
+            "minimum": 1.0,
+            "title": "Sla Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "category"
+        ],
+        "title": "CatalogItemIn",
+        "type": "object"
+      },
       "CatalogItemOut": {
         "description": "Mirrors the SPA's `CatalogItem`. `id` is the human `CAT-01` code.",
         "properties": {
@@ -716,6 +765,57 @@
           "schema_name"
         ],
         "title": "ServiceInfo",
+        "type": "object"
+      },
+      "ServiceRequestIn": {
+        "description": "Raise a service request against a catalog item.\n\n`number` is the organization's own `REQ-2051` identity, minted the way an asset carries its\ntag \u2014 a clash is refused rather than quietly renumbered. `category` is not accepted: it is\ndenormalised from the catalog item the request names. Neither is `status` \u2014 a new request\nalways starts awaiting approval, so no payload can skip the approval step. The requester's\ndirectory id comes from the caller, which is what OWN scope later reads back.",
+        "properties": {
+          "assignee": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee"
+          },
+          "catalog_item_code": {
+            "maxLength": 20,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Catalog Item Code",
+            "type": "string"
+          },
+          "number": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Number",
+            "type": "string"
+          },
+          "requester": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Requester",
+            "type": "string"
+          },
+          "subject": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "number",
+          "catalog_item_code",
+          "requester",
+          "subject"
+        ],
+        "title": "ServiceRequestIn",
         "type": "object"
       },
       "ServiceRequestOut": {
@@ -1189,6 +1289,45 @@
         "tags": [
           "itsm"
         ]
+      },
+      "post": {
+        "operationId": "create_catalog_item_api_v1_itsm_catalog_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CatalogItemIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add an offering to the service catalog",
+        "tags": [
+          "itsm"
+        ]
       }
     },
     "/api/v1/itsm/incidents": {
@@ -1575,6 +1714,45 @@
           }
         },
         "summary": "Service requests (the JML and fulfilment flows)",
+        "tags": [
+          "itsm"
+        ]
+      },
+      "post": {
+        "operationId": "raise_request_api_v1_itsm_service_requests_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceRequestIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Raise a service request",
         "tags": [
           "itsm"
         ]

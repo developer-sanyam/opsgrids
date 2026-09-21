@@ -82,6 +82,31 @@ async def owner(session: AsyncSession, org: Organization) -> Membership:
     return membership
 
 
+def _support_admin_grant_count() -> int:
+    """How many grants SUPPORT_ADMIN *should* have, read from the shipped manifest.
+
+    Derived rather than written down. These tests are about idempotency — that installing
+    twice grants once — and a literal here turns every honest addition to the Support
+    catalogue into a failure in account's suite, which is how it last broke: two write
+    permissions were added to Support and this file, which never mentions them, went red.
+    """
+    template = next(
+        t for t in _support_manifest().registration.role_templates if t.code == "SUPPORT_ADMIN"
+    )
+    return len(template.grants)
+
+
+def _support_manifest():  # type: ignore[no-untyped-def]
+    manifest = load_product_manifest("support")
+    assert manifest is not None, "support ships no permission manifest; run `make openapi`"
+    return manifest
+
+
+def _support_permission_count() -> int:
+    """How many permissions the Support catalogue declares, for the same reason as above."""
+    return len(_support_manifest().registration.catalogue.specs)
+
+
 async def _support_role_grant_count(session: AsyncSession, org: Organization) -> int:
     role = await selectors.get_role_by_code(session, org.id, "SUPPORT_ADMIN")
     assert role is not None
@@ -185,7 +210,7 @@ class TestIdempotency:
         await install_registration_on_activation(envelope)
 
         async with session.begin():
-            assert await _support_role_grant_count(session, org) == 2
+            assert await _support_role_grant_count(session, org) == _support_admin_grant_count()
             owner_roles = await session.execute(
                 select(func.count())
                 .select_from(MembershipRole)
@@ -202,11 +227,11 @@ class TestIdempotency:
         await install_registration_on_activation(_activation_envelope(org.id, "support"))
 
         async with session.begin():
-            assert await _support_role_grant_count(session, org) == 2
+            assert await _support_role_grant_count(session, org) == _support_admin_grant_count()
             permissions = await session.execute(
                 select(func.count()).select_from(Permission).where(Permission.product == "support")
             )
-            assert int(permissions.scalar_one()) == 2
+            assert int(permissions.scalar_one()) == _support_permission_count()
 
 
 class TestNegativeCases:

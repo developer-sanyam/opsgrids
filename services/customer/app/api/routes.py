@@ -7,6 +7,11 @@ flips the CRM SPA from fixtures to live, and each returns exactly the shape
 calls map onto `/customers` and `/customers/owners` — the entity is the same, the gateway
 prefix is already routed).
 
+The writes POST to those same collections, and they add no rules of their own: the domain
+lives in `services`, which is also what the demo seed calls, so a row created over HTTP and
+a row created by the seed are the same row made the same way. A create answers 201 with the
+resource it made, in the shape a subsequent read returns.
+
 Every route declares the permission it needs and is guarded by `require_product("crm")`
 as defence in depth behind the gateway's own entitlement gate. Reads go through
 `selectors`; a router never builds its own query. Every route takes the tenant-bound
@@ -29,14 +34,17 @@ from app import scope, selectors, services
 from app.config import settings
 from app.models import SCHEMA
 from app.schemas import (
+    CompanyIn,
     CompanyOut,
+    ContactIn,
     ContactOut,
     ContactPhoneIn,
     ContactPhoneRevealed,
+    OwnerIn,
     OwnerOut,
     ServiceInfo,
 )
-from platform_core.auth import ScopeContext, require, require_product
+from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.db import get_tenant_session
 from platform_core.errors import NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
@@ -55,8 +63,16 @@ SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
 Entitled = Depends(require_product("crm"))
 
 CompanyRead = Annotated[ScopeContext, Depends(require("crm.book.company.read"))]
+CompanyWrite = Annotated[ScopeContext, Depends(require("crm.book.company.write"))]
 ContactRead = Annotated[ScopeContext, Depends(require("crm.book.contact.read"))]
 ContactWrite = Annotated[ScopeContext, Depends(require("crm.book.contact.write"))]
+#: Writing the rep directory. Reference data for the whole product, so there is no "own"
+#: reading of it — `minimum` makes that a floor rather than a convention, the way the
+#: platform intends for actions with no OWN meaning.
+OwnerWrite = Annotated[
+    ScopeContext,
+    Depends(require("crm.book.owner.write", minimum=Scope.ORG)),
+]
 #: Revealing a real phone number. The dangerous permission **and** a second factor, the
 #: same pairing employee-service requires to unmask an employee's personal details — an
 #: ordinary CRM session must not be a route to a customer's phone book.
@@ -95,6 +111,45 @@ async def list_companies(
     return Page.build([selectors.company_out(c) for c in rows], total=total, params=params)
 
 
+@router.post(
+    "/customers",
+    response_model=CompanyOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Open an account in the book",
+    dependencies=[Entitled],
+)
+async def create_company(
+    payload: CompanyIn, session: SessionDep, ctx: CompanyWrite, request: Request
+) -> CompanyOut:
+    """Create a company through the service writer, which stages the audit row and the
+    `crm.book.company.created` event in the same transaction as the insert.
+
+    Scope is checked against the owner the payload *names*, because there is no row yet to
+    check against: a rep holding OWN scope may open an account they will own, and is refused
+    one they would hand to a colleague. Skipping the check here would make create the way
+    around a detail route that has one.
+
+    `request` is threaded through so the audit row records who acted and from where.
+    """
+    ctx.assert_can_touch(owner_id=payload.owner_id)
+    company = await services.create_company(
+        session,
+        ctx,
+        name=payload.name,
+        owner_id=payload.owner_id,
+        domain=payload.domain,
+        industry=payload.industry,
+        size_band=payload.size_band,
+        city=payload.city,
+        country=payload.country,
+        status=payload.status,
+        annual_revenue_minor=payload.annual_revenue_minor,
+        currency=payload.currency,
+        request=request,
+    )
+    return selectors.company_out(company)
+
+
 @router.get(
     "/customers/owners",
     response_model=list[OwnerOut],
@@ -107,6 +162,35 @@ async def list_owners(session: SessionDep, ctx: CompanyRead) -> list[OwnerOut]:
     org-scoped but not scope-narrowed — a name must resolve on any row a caller sees."""
     reps = await selectors.owners(session, ctx.organization_id)
     return [selectors.owner_out(o) for o in reps]
+
+
+@router.post(
+    "/customers/owners",
+    response_model=OwnerOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a rep to the directory",
+    dependencies=[Entitled],
+)
+async def create_owner(payload: OwnerIn, session: SessionDep, ctx: OwnerWrite) -> OwnerOut:
+    """Add a sales rep to the org's directory — its own permission, at ORG scope.
+
+    Not `company.write`: a rep who maintains their own accounts has no business extending the
+    directory those accounts point at, and riding on the company permission would have handed
+    every seat that power the moment this route existed.
+
+    A duplicate email is refused by the service as a conflict rather than inserted, so
+    `email` stays the per-organization natural key the seeds and the SPA rely on. The writer
+    takes no `request` — a rep row is reference data and its audit row records no origin — so
+    the route does not invent one.
+    """
+    owner = await services.create_owner(
+        session,
+        ctx,
+        full_name=payload.full_name,
+        email=payload.email,
+        role=payload.role,
+    )
+    return selectors.owner_out(owner)
 
 
 @router.get(
@@ -142,6 +226,43 @@ async def list_contacts(
     stmt = selectors.contacts_stmt(ctx, q=q, status=contact_status)
     rows, total = await paginate(session, stmt, params)
     return Page.build([selectors.contact_out(c) for c in rows], total=total, params=params)
+
+
+@router.post(
+    "/contacts",
+    response_model=ContactOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a person to an account",
+    dependencies=[Entitled],
+)
+async def create_contact(
+    payload: ContactIn, session: SessionDep, ctx: ContactWrite, request: Request
+) -> ContactOut:
+    """Create a contact through the service writer — audit row and `contact.created` event
+    staged in the same transaction as the insert.
+
+    Scope is checked against the owner the payload names, as on a company. The company itself
+    is validated inside the service: a company belonging to another organization reads as
+    not-found, never as a constraint error, so an id cannot be probed for existence.
+
+    A supplied `raw_phone` is sealed and its mask derived. The response is the ordinary masked
+    `ContactOut`, so creating a contact is not a way to read a number back — the only route
+    that returns one is the stepped-up, audited reveal below.
+    """
+    ctx.assert_can_touch(owner_id=payload.owner_id)
+    contact = await services.create_contact(
+        session,
+        ctx,
+        full_name=payload.full_name,
+        email=payload.email,
+        company_id=payload.company_id,
+        owner_id=payload.owner_id,
+        title=payload.title,
+        raw_phone=payload.raw_phone,
+        status=payload.status,
+        request=request,
+    )
+    return selectors.contact_out(contact)
 
 
 @router.get(
