@@ -105,6 +105,85 @@ export interface TestSendIn {
   to_address: string;
 }
 
+/* ----------------------------- whatsapp connection ----------------------------- */
+
+/** `POST /engage/whatsapp/connection`. One account per organization; a second is refused. */
+export interface WhatsAppConnectionIn {
+  waba_id: string;
+  phone_number_id: string;
+  display_number?: string;
+  /** Write-only. Sealed on the way in, with no counterpart on the way out. */
+  access_token: string;
+}
+
+/** How this organization sends WhatsApp. Every field the service returns, and nothing else —
+ *  no field here is derived from the access token, not masked, not a length. */
+export interface WhatsAppConnectionOut {
+  waba_id: string;
+  phone_number_id: string;
+  display_number: string;
+  status: ConnectionStatus;
+}
+
+/* ------------------------------- provider templates ------------------------------ */
+//
+// `services/notification`'s templates, transcribed from the `engage` section of `schemas.py` in
+// shape only — these routes are mounted at `/api/v1/notifications`, gated on the `notification`
+// product rather than `engage` (`services/app-gateway/routes.json`). See `client.ts` for what
+// that means for this screen.
+
+export type TemplateCategory = "utility" | "marketing" | "authentication";
+export type ParameterFormat = "positional" | "named";
+/** The provider's own words. Never fabricated on this side — `approved` here means the service
+ *  read it from a sync, not that a screen decided to say so. */
+export type TemplateStatus = "draft" | "pending" | "approved" | "rejected" | "paused" | "disabled";
+export type VariableComponent = "body" | "header" | "button";
+export type VariableKind = "text" | "payload";
+
+export interface TemplateVariableIn {
+  key: string;
+  component?: VariableComponent;
+  position?: number;
+  button_index?: number;
+  kind?: VariableKind;
+  parameter_name?: string;
+}
+
+export type TemplateVariableOut = Required<TemplateVariableIn>;
+
+/** `PUT /notifications/provider-templates`. */
+export interface ProviderTemplateIn {
+  code: string;
+  channel: "whatsapp" | "email";
+  provider_name: string;
+  language?: string;
+  category?: TemplateCategory;
+  parameter_format?: ParameterFormat;
+  variables?: TemplateVariableIn[];
+  preview_text?: string;
+}
+
+/** `GET /notifications/provider-templates`. `status` and `sendable` are the provider's own
+ *  answer — `sendable` is derived by the service from `status` so it can never disagree with
+ *  it, and neither is ever set by this app. */
+export interface ProviderTemplateOut {
+  id: string;
+  channel: "whatsapp" | "email";
+  provider_name: string;
+  provider_template_id: string | null;
+  language: string;
+  category: TemplateCategory;
+  parameter_format: ParameterFormat;
+  status: TemplateStatus;
+  status_reason: string | null;
+  status_checked_at: string | null;
+  variables: TemplateVariableOut[];
+  preview_text: string;
+  sendable: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 /**
  * `platform_core.pagination.Page` — the envelope every list route on this service returns. All
  * five fields are present on the wire; `pages` is `0` for an empty result rather than `1`.

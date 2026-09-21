@@ -251,6 +251,26 @@ ENGAGE = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # WhatsApp is a second channel on the same sending-identity setup, not a separate
+        # product: the credential is as sensitive as the email connection's, so it gets its own
+        # resource for the same reason `connection` did.
+        PermissionSpec(
+            "setup",
+            "whatsapp",
+            "read",
+            "See how the organization sends WhatsApp messages",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "setup",
+            "whatsapp",
+            "write",
+            "Connect or replace the organization's WhatsApp Business account",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
         # The audience. Contacts are an organization's list of people, not a salesperson's own
         # book, so they top out at ORG like everything else here. Addresses are sealed at rest
         # and every read returns them masked; there is no unmasking route in this slice.
@@ -317,6 +337,7 @@ ENGAGE_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("engage.setup.connection.read", "ORG"),
             ("engage.setup.domain.read", "ORG"),
             ("engage.setup.sender.read", "ORG"),
+            ("engage.setup.whatsapp.read", "ORG"),
             ("engage.audience.contact.read", "ORG"),
             ("engage.audience.suppression.read", "ORG"),
         ),

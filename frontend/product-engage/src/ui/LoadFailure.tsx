@@ -1,4 +1,4 @@
-import { ArrowUpRight, Card, EmptyState, ErrorState, MailIcon } from "@opsgrids/ui";
+import { ArrowUpRight, Card, EmptyState, ErrorState, MailIcon, MessageSquareIcon } from "@opsgrids/ui";
 
 import { DASHBOARD_PRODUCTS_URL } from "@/lib/dashboard";
 import { isNotActivated } from "@/lib/errors";
@@ -38,6 +38,33 @@ export function EngageNotActive() {
 }
 
 /**
+ * WhatsApp templates are not this screen's `402` — `GET /notifications/provider-templates` is
+ * gated on the `notification` product, not `engage` (`services/app-gateway/routes.json`), so an
+ * organization can see this even with Engage fully active. `EngageNotActive`'s copy would tell
+ * that customer the wrong product is missing, so `TemplatesPage` reaches for this instead.
+ */
+export function NotificationNotActive() {
+  return (
+    <Card className="p-6">
+      <EmptyState
+        icon={<MessageSquareIcon className="size-6" />}
+        title="Template approval status needs the notification product"
+        description="WhatsApp templates are read from OpsGrids' notification service, which is a separate product from Engage. Someone who manages your organization's products can start it from Products in the OpsGrids dashboard."
+        action={
+          <a
+            href={DASHBOARD_PRODUCTS_URL}
+            className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-accent px-5 text-[0.95rem] font-semibold text-white transition-colors duration-150 hover:bg-accent-strong active:bg-accent-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            Open Products in the dashboard
+            <ArrowUpRight className="size-4" aria-hidden />
+          </a>
+        }
+      />
+    </Card>
+  );
+}
+
+/**
  * What a screen shows when its read fails: the not-active state for a `402`, and the error it
  * always showed for anything else. Every Engage read goes through the gateway's `engage` prefix,
  * so every screen can meet the `402` — and routing them all through here is what keeps it one
@@ -46,8 +73,20 @@ export function EngageNotActive() {
  * `title` is the screen's own heading for a real failure ("Couldn't load your domains"). A `500`
  * or a network failure is a real failure and keeps it.
  */
-export function LoadFailure({ error, title }: { error: Error; title: string }) {
-  if (isNotActivated(error)) return <EngageNotActive />;
+export function LoadFailure({
+  error,
+  title,
+  notActive = "engage",
+}: {
+  error: Error;
+  title: string;
+  /** Which product a `402` on this particular read is missing. Defaults to `engage`, true for
+   *  every screen except the one WhatsApp templates read, which crosses into `notification`. */
+  notActive?: "engage" | "notification";
+}) {
+  if (isNotActivated(error)) {
+    return notActive === "notification" ? <NotificationNotActive /> : <EngageNotActive />;
+  }
   return (
     <Card className="p-6">
       <ErrorState message={error.message} title={title} />

@@ -1,7 +1,9 @@
 import { useAuth } from "@opsgrids/client";
 import {
+  FileTextIcon,
   GlobeIcon,
   HomeIcon,
+  MessageSquareIcon,
   PlugIcon,
   Sidebar as SidebarShell,
   UsersIcon,
@@ -11,14 +13,17 @@ import type { NavEntry, NavGroup } from "@opsgrids/ui";
 import { LogoMark } from "./LogoMark";
 
 /**
- * Phase 1 of Engage is the sending identity and nothing else: the provider connection, the
- * domains an organization has proven, and the named senders mail may go out as. Campaigns,
- * templates, lists and reporting are later phases and **are deliberately absent from this
- * navigation** — an entry that routes to a "coming soon" panel teaches people the rail lies, and
- * this codebase already has that bug elsewhere. They arrive here when their screens do.
+ * Phase 1 of Engage is the sending identity and nothing else: the provider connections, the
+ * domains an organization has proven, the named senders mail may go out as, and — for WhatsApp —
+ * the Cloud API account and its templates. Campaigns, lists and reporting are later phases and
+ * **are deliberately absent from this navigation** — an entry that routes to a "coming soon"
+ * panel teaches people the rail lies, and this codebase already has that bug elsewhere. They
+ * arrive here when their screens do.
  *
  * The three Email entries are the three setup steps in the order they have to happen: there is
- * nothing to prove without a connection, and no sender to name without a proven domain.
+ * nothing to prove without a connection, and no sender to name without a proven domain. WhatsApp
+ * has no domain to prove, so it is two steps: connect the account, then track what Meta has
+ * approved to send through it.
  */
 const GROUPS: NavGroup[] = [
   {
@@ -31,6 +36,13 @@ const GROUPS: NavGroup[] = [
       { to: "/connection", label: "Connections", icon: PlugIcon },
       { to: "/domains", label: "Domains", icon: GlobeIcon },
       { to: "/senders", label: "Senders", icon: UsersIcon },
+    ],
+  },
+  {
+    title: "WhatsApp",
+    items: [
+      { to: "/whatsapp/connection", label: "Connection", icon: MessageSquareIcon },
+      { to: "/whatsapp/templates", label: "Templates", icon: FileTextIcon },
     ],
   },
 ];

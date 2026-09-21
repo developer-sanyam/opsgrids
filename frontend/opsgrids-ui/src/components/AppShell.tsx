@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 
 import { CloseIcon, MenuIcon } from "../icons";
+import { useFocusTrap } from "../lib/useFocusTrap";
 import { ThemeToggle } from "./ThemeToggle";
 
 interface AppShellProps {
@@ -25,23 +26,45 @@ interface AppShellProps {
 export function AppShell({ logo, productName, renderSidebar }: AppShellProps) {
   const { pathname } = useLocation();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const drawerCloseRef = useRef<HTMLButtonElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
+  const isFirstRender = useRef(true);
 
   useEffect(() => {
     window.scrollTo({ top: 0 });
     setDrawerOpen(false);
+    // Skip on mount: the initial screen owns its own focus (the browser's default, or wherever a
+    // deep link put it). Only a route *change* should steal focus onto `<main>`.
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    mainRef.current?.focus();
   }, [pathname]);
 
-  useEffect(() => {
-    if (!drawerOpen) return;
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") setDrawerOpen(false);
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [drawerOpen]);
+  useFocusTrap({
+    open: drawerOpen,
+    panelRef: drawerRef,
+    onClose: () => setDrawerOpen(false),
+    initialFocusRef: drawerCloseRef,
+  });
 
   return (
     <div className="min-h-dvh bg-ground">
+      <a
+        href="#main-content"
+        onClick={(event) => {
+          // The default fragment jump moves the page's scroll position but not focus in every
+          // browser, and never announces anything to a screen reader. Doing it here guarantees
+          // both: the skip link's entire job is to hand focus straight to `<main>`.
+          event.preventDefault();
+          mainRef.current?.focus();
+        }}
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[60] focus:rounded-full focus:bg-surface focus:px-4 focus:py-2 focus:text-sm focus:font-bold focus:text-ink focus:shadow-float"
+      >
+        Skip to main content
+      </a>
       <div className="mx-auto flex max-w-[1600px] gap-4 p-3 sm:p-4">
         {/* Desktop sidebar */}
         <div className="hidden w-[248px] shrink-0 lg:block">
@@ -66,7 +89,12 @@ export function AppShell({ logo, productName, renderSidebar }: AppShellProps) {
             <ThemeToggle />
           </div>
 
-          <main className="mx-auto max-w-[1400px] pb-16">
+          <main
+            id="main-content"
+            ref={mainRef}
+            tabIndex={-1}
+            className="mx-auto max-w-[1400px] pb-16 focus:outline-none"
+          >
             <Outlet />
           </main>
         </div>
@@ -75,6 +103,7 @@ export function AppShell({ logo, productName, renderSidebar }: AppShellProps) {
       {/* Mobile drawer */}
       {drawerOpen ? (
         <div
+          ref={drawerRef}
           className="fixed inset-0 z-50 lg:hidden"
           role="dialog"
           aria-modal="true"
@@ -88,6 +117,7 @@ export function AppShell({ logo, productName, renderSidebar }: AppShellProps) {
           <div className="absolute left-0 top-0 flex h-full w-[280px] max-w-[85vw] flex-col p-3">
             <div className="mb-2 flex justify-end">
               <button
+                ref={drawerCloseRef}
                 type="button"
                 onClick={() => setDrawerOpen(false)}
                 aria-label="Close navigation"

@@ -359,3 +359,43 @@ describe("replacing a connection", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
+
+/**
+ * A step change inside an already-mounted wizard moves no focus of its own — `Dialog` only
+ * focuses its heading when it *opens*, not when the step inside it changes, and the inline Card
+ * in `"connect"` mode never had a Dialog to do it in the first place. Each step's own heading is
+ * the fix, focused explicitly on every "kind" → "credentials" → "confirm" transition and back.
+ */
+describe("focus on a step change", () => {
+  it("moves focus to the credentials heading in the inline Card, leaving the 'Continue' button behind", async () => {
+    const { user } = mount();
+    await chooseKind(user, /Custom SMTP/);
+    expect(document.activeElement?.textContent).toBe("Enter your credentials");
+  });
+
+  it("moves focus back to the kind question when 'Change' is used to step back", async () => {
+    const { user } = mount();
+    await chooseKind(user, /Google Workspace/);
+    await user.click(screen.getByRole("button", { name: "Change" }));
+    expect(document.activeElement?.textContent).toBe("How does your organization send email?");
+  });
+
+  it("moves focus to the credentials heading inside the replace dialog on 'Continue'", async () => {
+    const { user } = mountReplace();
+    await chooseKind(user, /Google Workspace/);
+    expect(document.activeElement?.textContent).toBe("Enter your credentials");
+  });
+
+  it("moves focus to the confirmation step's own heading inside the replace dialog", async () => {
+    const { user } = mountReplace();
+    await reachConfirmStep(user);
+    expect(document.activeElement?.textContent).toBe("Review before confirming");
+  });
+
+  it("moves focus back to the credentials heading when 'Back' is used from the confirmation step", async () => {
+    const { user } = mountReplace();
+    await reachConfirmStep(user);
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(document.activeElement?.textContent).toBe("Enter your credentials");
+  });
+});

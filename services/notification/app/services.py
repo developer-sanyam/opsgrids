@@ -38,6 +38,7 @@ from app.models import (
     Message,
     OutboxEvent,
     Preference,
+    ProviderAccount,
     ProviderTemplate,
     Rule,
     Sender,
@@ -1025,6 +1026,8 @@ _rules = domain
 
 EVT_CONNECTION_CREATED = "engage.setup.connection.created"
 EVT_CONNECTION_REPLACED = "engage.setup.connection.replaced"
+EVT_WHATSAPP_CONNECTION_CREATED = "engage.setup.whatsapp.created"
+EVT_WHATSAPP_CONNECTION_REPLACED = "engage.setup.whatsapp.replaced"
 EVT_DOMAIN_CREATED = "engage.setup.domain.created"
 EVT_DOMAIN_VERIFIED = "engage.setup.domain.verified"
 EVT_SENDER_CREATED = "engage.setup.sender.created"
@@ -1395,6 +1398,157 @@ async def replace_connection(
             "connection_id": str(existing.id),
             "kind": kind,
             "daily_cap": existing.daily_cap,
+        },
+        actor=_actor(ctx),
+    )
+    return existing
+
+
+async def create_whatsapp_connection(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    waba_id: str,
+    phone_number_id: str,
+    display_number: str,
+    access_token: str,
+    request: Request | None = None,
+) -> ProviderAccount:
+    """Record one organization's WhatsApp Cloud API account, its token sealed on the way in.
+
+    One per organization, refused here as well as by the org+channel index — mirrors
+    `create_connection`'s reasoning for email. `phone_number_id` is also globally unique (see
+    `ProviderAccount`'s docstring: it is the webhook routing key), so a number already claimed
+    by another organization is refused with a sentence rather than surfaced as an IntegrityError.
+    """
+    existing = await selectors.get_whatsapp_connection(session, ctx.organization_id)
+    if existing is not None:
+        raise BusinessRuleProblem(
+            "This organization already has a WhatsApp account connected. Disconnect it before "
+            "adding another."
+        )
+
+    claimed = await selectors.account_for_phone_number(session, phone_number_id)
+    if claimed is not None:
+        raise ConflictProblem("This WhatsApp phone number is already connected elsewhere.")
+
+    sealed, _ = pii.seal(access_token, kind="generic", settings=settings())
+
+    account = ProviderAccount(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        channel="whatsapp",
+        waba_id=waba_id,
+        phone_number_id=phone_number_id,
+        display_number=display_number,
+        access_token_enc=sealed,
+        status="connected",
+    )
+    session.add(account)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.whatsapp.created",
+        entity="provider_account",
+        entity_id=account.id,
+        # Never the token or its ciphertext — same rule as the email connection's audit row.
+        after={
+            "waba_id": waba_id,
+            "phone_number_id": phone_number_id,
+            "display_number": display_number,
+        },
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_WHATSAPP_CONNECTION_CREATED,
+        aggregate_type="provider_account",
+        aggregate_id=account.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "provider_account_id": str(account.id),
+            "channel": "whatsapp",
+        },
+        actor=_actor(ctx),
+    )
+    return account
+
+
+async def replace_whatsapp_connection(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    waba_id: str,
+    phone_number_id: str,
+    display_number: str,
+    access_token: str,
+    request: Request | None = None,
+) -> ProviderAccount:
+    """Replace the one WhatsApp account `create_whatsapp_connection` refuses to add a second of.
+
+    In place, not delete-then-create, for the same reason `replace_connection` is: no window
+    with no connection at all. The old token is overwritten, not archived — there is no history
+    column for it and there must not become one.
+    """
+    existing = await selectors.get_whatsapp_connection(session, ctx.organization_id)
+    if existing is None:
+        raise NotFoundProblem("No WhatsApp account to replace. Connect one first.")
+
+    if phone_number_id != existing.phone_number_id:
+        claimed = await selectors.account_for_phone_number(session, phone_number_id)
+        if claimed is not None:
+            raise ConflictProblem("This WhatsApp phone number is already connected elsewhere.")
+
+    before = {
+        "waba_id": existing.waba_id,
+        "phone_number_id": existing.phone_number_id,
+        "display_number": existing.display_number,
+    }
+
+    sealed, _ = pii.seal(access_token, kind="generic", settings=settings())
+
+    existing.waba_id = waba_id
+    existing.phone_number_id = phone_number_id
+    existing.display_number = display_number
+    existing.access_token_enc = sealed
+    existing.status = "connected"
+    existing.updated_by = str(ctx.principal.sub)
+
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.whatsapp.replaced",
+        entity="provider_account",
+        entity_id=existing.id,
+        before=before,
+        after={
+            "waba_id": waba_id,
+            "phone_number_id": phone_number_id,
+            "display_number": display_number,
+        },
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_WHATSAPP_CONNECTION_REPLACED,
+        aggregate_type="provider_account",
+        aggregate_id=existing.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "provider_account_id": str(existing.id),
+            "channel": "whatsapp",
         },
         actor=_actor(ctx),
     )
