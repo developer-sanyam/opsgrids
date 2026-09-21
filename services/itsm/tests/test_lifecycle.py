@@ -65,6 +65,40 @@ class TestUpdateIncident:
             )
         assert response.status_code == 403
 
+    async def test_an_own_caller_cannot_raise_an_already_assigned_incident(
+        self, client, org_id, data
+    ) -> None:
+        """The same ORG floor `update_incident` enforces on `assignee` must hold on create too
+        — otherwise an OWN-scoped caller opens the ticket pre-assigned instead of being refused
+        the reassignment they cannot make a moment later via PATCH."""
+        principal = principal_for(org_id, [INCIDENT_WRITE_OWN], subject_ref=data["subject_a"])
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/itsm/incidents",
+                json={
+                    "summary": "Printer jam",
+                    "requester": "Nobody",
+                    "assignee": "Farah Naidu",
+                },
+            )
+        assert response.status_code == 403
+
+    async def test_an_org_caller_may_raise_an_already_assigned_incident(
+        self, client, org_id, data
+    ) -> None:
+        principal = principal_for(org_id, [INCIDENT_WRITE_ORG], subject_ref=data["subject_a"])
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/itsm/incidents",
+                json={
+                    "summary": "Printer jam",
+                    "requester": "Nobody",
+                    "assignee": "Farah Naidu",
+                },
+            )
+        assert response.status_code == 201
+        assert response.json()["assignee"] == "Farah Naidu"
+
     async def test_an_org_caller_may_reprioritise_and_the_sla_clock_is_restamped(
         self, client, org_id, data
     ) -> None:
@@ -361,6 +395,59 @@ class TestServiceRequestFlow:
         assert fulfilled.status_code == 200
         assert fulfilled.json()["status"] == "fulfilled"
         assert fulfilled.json()["assignee"] is None
+
+    async def test_self_approval_is_refused_even_with_org_scope(self, client, org_id, data) -> None:
+        """The ORG floor on `RequestWriteOrg` is not the same guarantee as "not your own
+        request" — an agent who happens to hold ORG scope on their own raised request must
+        still be refused the decision, per the docstring's promise."""
+        subject = data["subject_a"]
+        with as_principal(principal_for(org_id, [REQUEST_WRITE_OWN], subject_ref=subject)):
+            created = await client.post(
+                "/api/v1/itsm/service-requests",
+                json={
+                    "catalog_item_id": "CAT-01",
+                    "subject": "Nikhil Bose (joins 01 Oct)",
+                    "requester": "Nikhil Bose",
+                },
+            )
+        assert created.status_code == 201
+        number = created.json()["id"]
+
+        with as_principal(principal_for(org_id, [REQUEST_WRITE_ORG], subject_ref=subject)):
+            self_approve = await client.post(
+                f"/api/v1/itsm/service-requests/{number}/decision", json={"decision": "approve"}
+            )
+        assert self_approve.status_code == 403
+
+    async def test_self_fulfilment_is_refused_even_with_org_scope(
+        self, client, org_id, data
+    ) -> None:
+        """Same conflict of interest as approval, applied to fulfil: `RequestWriteOrg`'s
+        docstring promises a requester cannot fulfil their own request either."""
+        subject = data["subject_a"]
+        with as_principal(principal_for(org_id, [REQUEST_WRITE_OWN], subject_ref=subject)):
+            created = await client.post(
+                "/api/v1/itsm/service-requests",
+                json={
+                    "catalog_item_id": "CAT-01",
+                    "subject": "Nikhil Bose (joins 01 Oct)",
+                    "requester": "Nikhil Bose",
+                },
+            )
+        assert created.status_code == 201
+        number = created.json()["id"]
+
+        with as_principal(
+            principal_for(org_id, [REQUEST_WRITE_ORG], subject_ref=data["subject_b"])
+        ):
+            approved = await client.post(
+                f"/api/v1/itsm/service-requests/{number}/decision", json={"decision": "approve"}
+            )
+        assert approved.status_code == 200
+
+        with as_principal(principal_for(org_id, [REQUEST_WRITE_ORG], subject_ref=subject)):
+            self_fulfil = await client.post(f"/api/v1/itsm/service-requests/{number}/fulfil")
+        assert self_fulfil.status_code == 403
 
     async def test_rejecting_requires_a_note_and_stores_it(self, client, org_id, data) -> None:
         with as_principal(

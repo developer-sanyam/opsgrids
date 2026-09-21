@@ -152,6 +152,74 @@ class TestEndpointAuthorization:
         assert response.status_code == 403
 
 
+# --------------------------------------------------------------------- OWN scope has no purchase
+
+
+class TestOwnScopeIsAlwaysRefused:
+    """Campaigns and audiences are org-wide analytics rows with no owner column — there is no
+    person a narrower-than-ORG grant could ever match. The permission catalogue only ever issues
+    ORG-scope grants for `campaign.read`/`campaign.write` today, but the dependency floor, not
+    the catalogue, is what must refuse a synthetic `:OWN` grant if one is ever issued."""
+
+    async def test_an_own_scope_reader_cannot_list_campaigns(self, client, org_id, seeded) -> None:
+        """`Reader` now floors at ORG the same way `Writer` always has, so this is refused at
+        the dependency before the route body — and before `selectors.campaigns_stmt`'s `ctx.
+        apply` would have had to fall back to its own "matches nothing" safety net."""
+        with as_principal(principal_for(org_id, [f"{READ}:OWN"])):
+            response = await client.get("/api/v1/marketing/campaigns")
+        assert response.status_code == 403
+
+    async def test_an_own_scope_reader_cannot_read_a_campaign(self, client, org_id, seeded) -> None:
+        target = seeded["campaigns"][0].id
+        with as_principal(principal_for(org_id, [f"{READ}:OWN"])):
+            response = await client.get(f"/api/v1/marketing/campaigns/{target}")
+        assert response.status_code == 403
+
+    async def test_an_own_scope_reader_cannot_read_campaign_performance(
+        self, client, org_id, seeded
+    ) -> None:
+        target = seeded["campaigns"][0].id
+        with as_principal(principal_for(org_id, [f"{READ}:OWN"])):
+            response = await client.get(f"/api/v1/marketing/campaigns/{target}/performance")
+        assert response.status_code == 403
+
+    async def test_an_own_scope_writer_cannot_update_a_campaign(
+        self, client, org_id, seeded
+    ) -> None:
+        target = seeded["campaigns"][0].id
+        with as_principal(principal_for(org_id, [f"{WRITE}:OWN"])):
+            response = await client.patch(
+                f"/api/v1/marketing/campaigns/{target}", json={"name": "Sneaky"}
+            )
+        assert response.status_code == 403
+
+    async def test_an_own_scope_writer_cannot_delete_a_campaign(
+        self, client, org_id, seeded
+    ) -> None:
+        target = seeded["campaigns"][0].id
+        with as_principal(principal_for(org_id, [f"{WRITE}:OWN"])):
+            response = await client.delete(f"/api/v1/marketing/campaigns/{target}")
+        assert response.status_code == 403
+
+    async def test_an_own_scope_writer_cannot_update_an_audience(
+        self, client, org_id, seeded
+    ) -> None:
+        target = seeded["audiences"][0].id
+        with as_principal(principal_for(org_id, [f"{WRITE}:OWN"])):
+            response = await client.patch(
+                f"/api/v1/marketing/audiences/{target}", json={"name": "Sneaky"}
+            )
+        assert response.status_code == 403
+
+    async def test_an_own_scope_writer_cannot_delete_an_audience(
+        self, client, org_id, seeded
+    ) -> None:
+        target = seeded["audiences"][1].id
+        with as_principal(principal_for(org_id, [f"{WRITE}:OWN"])):
+            response = await client.delete(f"/api/v1/marketing/audiences/{target}")
+        assert response.status_code == 403
+
+
 # --------------------------------------------------------------------- update / delete campaign
 
 

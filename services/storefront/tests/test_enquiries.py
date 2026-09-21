@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models import AuditLog
-from tests.helpers import all_perms, principal_for, seed_store
+from tests.helpers import all_perms, principal_for, seed_category, seed_product, seed_store
 
 pytestmark = pytest.mark.integration
 
@@ -62,6 +62,112 @@ class TestPublicSubmission:
         del payload["email"]
 
         response = await client.post(PUBLIC_ENQUIRY, json=payload)
+
+        assert response.status_code == 422
+
+    async def test_a_fabricated_product_id_is_rejected(
+        self, client, admin_session, org_id: uuid.UUID, slug: str
+    ) -> None:
+        """A `product_id` that is not part of this published store's active catalogue at all
+        must not be silently accepted as a real line."""
+        await seed_store(admin_session, org_id, slug, status="published")
+
+        response = await client.post(
+            PUBLIC_ENQUIRY,
+            json=_payload(
+                slug,
+                lines=[{"product_id": str(uuid.uuid4()), "name": "Anything", "quantity": 5}],
+            ),
+        )
+
+        assert response.status_code == 422
+
+    async def test_a_product_from_another_store_is_rejected_the_same_way(
+        self,
+        client,
+        admin_session,
+        org_id: uuid.UUID,
+        other_org: uuid.UUID,
+        slug: str,
+    ) -> None:
+        """A real product, just not *this* store's — refused identically to an unknown id, so
+        the response never discloses that the id belongs to someone else's catalogue."""
+        await seed_store(admin_session, org_id, slug, status="published")
+        other_category = await seed_category(admin_session, other_org)
+        other_product = await seed_product(admin_session, other_org, other_category.id)
+
+        fabricated = await client.post(
+            PUBLIC_ENQUIRY,
+            json=_payload(
+                slug,
+                lines=[{"product_id": str(uuid.uuid4()), "name": "Anything", "quantity": 5}],
+            ),
+        )
+        cross_store = await client.post(
+            PUBLIC_ENQUIRY,
+            json=_payload(
+                slug,
+                lines=[{"product_id": str(other_product.id), "name": "Anything", "quantity": 5}],
+            ),
+        )
+
+        assert fabricated.status_code == cross_store.status_code == 422
+        assert fabricated.json()["errors"] == cross_store.json()["errors"]
+
+    async def test_a_real_products_name_is_taken_from_the_catalogue_not_the_body(
+        self, client, as_principal, admin_session, org_id: uuid.UUID, slug: str
+    ) -> None:
+        await seed_store(admin_session, org_id, slug, status="published")
+        category = await seed_category(admin_session, org_id)
+        product = await seed_product(admin_session, org_id, category.id, name="Basmati Rice 25kg")
+
+        response = await client.post(
+            PUBLIC_ENQUIRY,
+            json=_payload(
+                slug,
+                lines=[
+                    {
+                        "product_id": str(product.id),
+                        "name": "Fabricated Item Name",
+                        "quantity": 5,
+                    }
+                ],
+            ),
+        )
+        assert response.status_code == 201
+
+        with as_principal(all_perms(org_id)):
+            listed = await client.get(ENQUIRIES)
+        line = listed.json()["items"][0]["lines"][0]
+        assert line["name"] == "Basmati Rice 25kg"
+        assert line["product_id"] == str(product.id)
+        assert line["quantity"] == 5
+
+    async def test_a_quantity_over_the_bound_is_422(
+        self, client, admin_session, org_id: uuid.UUID, slug: str
+    ) -> None:
+        await seed_store(admin_session, org_id, slug, status="published")
+        category = await seed_category(admin_session, org_id)
+        product = await seed_product(admin_session, org_id, category.id)
+
+        response = await client.post(
+            PUBLIC_ENQUIRY,
+            json=_payload(
+                slug,
+                lines=[
+                    {"product_id": str(product.id), "name": "Basmati Rice 25kg", "quantity": 2**31}
+                ],
+            ),
+        )
+
+        assert response.status_code == 422
+
+    async def test_a_malformed_email_is_422(
+        self, client, admin_session, org_id: uuid.UUID, slug: str
+    ) -> None:
+        await seed_store(admin_session, org_id, slug, status="published")
+
+        response = await client.post(PUBLIC_ENQUIRY, json=_payload(slug, email="not-an-email"))
 
         assert response.status_code == 422
 

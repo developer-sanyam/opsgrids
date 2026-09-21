@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 
 import { createIncident, listAssets } from "@/api/client";
 import type { Incident, IncidentCategory, IncidentIn, Priority } from "@/api/types";
-import { ApiError, problemMessage, useAuth, useMutation } from "@opsgrids/client";
+import { ApiError, problemMessage, useAuth, useCan, useMutation } from "@opsgrids/client";
 import { Combobox, FormDialog, Select, TextArea, TextField } from "@opsgrids/ui";
 import type { ComboboxOption } from "@opsgrids/ui";
 
@@ -42,6 +42,9 @@ export function RaiseIncidentDialog({ onClose, onCreated }: RaiseIncidentDialogP
   const [category, setCategory] = useState<IncidentCategory>("software");
   const [requester, setRequester] = useState(user?.full_name ?? "");
   const [assignee, setAssignee] = useState("");
+  // Assigning is an organization-wide act: the service refuses an assignee from anyone who may
+  // only work their own incidents, so the field is not offered to them at all.
+  const canAssign = useCan("itsm.service.incident.write", "ORG");
   const [asset, setAsset] = useState<ComboboxOption | null>(null);
 
   const [summaryError, setSummaryError] = useState<string | undefined>(undefined);
@@ -71,7 +74,7 @@ export function RaiseIncidentDialog({ onClose, onCreated }: RaiseIncidentDialogP
       priority,
       category,
       requester: requester.trim(),
-      assignee: assignee.trim(),
+      assignee: canAssign ? assignee.trim() : "",
       affected_asset_tag: asset?.id ?? null,
     });
   }
@@ -141,15 +144,17 @@ export function RaiseIncidentDialog({ onClose, onCreated }: RaiseIncidentDialogP
           helper="Who this is raised for."
           error={requesterError ?? save.fieldErrors.requester}
         />
-        <TextField
-          label="Assignee"
-          value={assignee}
-          onChange={(e) => setAssignee(e.target.value)}
-          optional
-          maxLength={120}
-          helper="No agent directory yet — a free-text name."
-          error={save.fieldErrors.assignee}
-        />
+        {canAssign ? (
+          <TextField
+            label="Assignee"
+            value={assignee}
+            onChange={(e) => setAssignee(e.target.value)}
+            optional
+            maxLength={120}
+            helper="No agent directory yet — a free-text name."
+            error={save.fieldErrors.assignee}
+          />
+        ) : null}
       </div>
       <Combobox
         label="Affected asset"

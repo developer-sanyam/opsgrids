@@ -22,7 +22,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Integer, cast, func, select
+from sqlalchemy import Integer, cast, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -191,8 +191,19 @@ async def create_incident(
     return incident
 
 
+async def _advisory_lock(session: AsyncSession, key: str) -> None:
+    """Transaction-scoped, keyed lock — releases automatically at commit or rollback. Mirrors
+    `services/support/app/services.py::_advisory_lock`."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": key}
+    )
+
+
 async def next_incident_number(session: AsyncSession, org_id: uuid.UUID) -> str:
-    """The next `INC-####` for this organization — max existing suffix + 1, floor 4801."""
+    """The next `INC-####` for this organization — max existing suffix + 1, floor 4801, under an
+    advisory lock keyed by the organization so two concurrent creates cannot compute the same
+    number and collide on `uq_incidents_org_number`."""
+    await _advisory_lock(session, f"itsm.incidents:{org_id}")
     stmt = select(func.max(cast(func.substring(Incident.number, 5), Integer))).where(
         Incident.organization_id == org_id, Incident.number.like("INC-%")
     )
@@ -208,7 +219,15 @@ async def raise_incident(
     request: Request | None = None,
 ) -> Incident:
     """The HTTP raise path: generate a number, resolve the affected asset, stamp the SLA clock
-    and open the thread with a first note. New incidents start `new` and `on_track`."""
+    and open the thread with a first note. New incidents start `new` and `on_track`.
+
+    `assignee` requires ORG scope, same floor `update_incident` holds — an OWN-scoped caller
+    must not open an already-assigned ticket any more than they may reassign one afterwards."""
+    if payload.assignee and ctx.scope is not Scope.ORG:
+        raise ForbiddenProblem(
+            "Setting an assignee requires ORG scope on itsm.service.incident.write"
+        )
+
     affected_asset_id: uuid.UUID | None = None
     if payload.affected_asset_tag:
         asset = await selectors.get_asset(session, ctx.organization_id, payload.affected_asset_tag)
@@ -969,7 +988,8 @@ async def create_request(
 
 async def next_request_number(session: AsyncSession, org_id: uuid.UUID) -> str:
     """The next `REQ-####` for this organization — max existing suffix + 1, floor 2050, mirroring
-    `next_incident_number`."""
+    `next_incident_number`, under the same kind of organization-keyed advisory lock."""
+    await _advisory_lock(session, f"itsm.requests:{org_id}")
     stmt = select(func.max(cast(func.substring(ServiceRequest.number, 5), Integer))).where(
         ServiceRequest.organization_id == org_id, ServiceRequest.number.like("REQ-%")
     )
@@ -1019,6 +1039,8 @@ async def decide_request(
         raise ConflictProblem(
             f"Request {req.number} is {req.status} and cannot be {_DECISION_PAST[payload.decision]}"
         )
+    if req.requester_id == ctx.principal.subject_ref:
+        raise ForbiddenProblem("You cannot decide your own request")
 
     before_status = req.status
     req.status = "in_progress" if payload.decision == "approve" else "rejected"
@@ -1073,9 +1095,12 @@ async def fulfil_request(
     request: Request | None = None,
 ) -> ServiceRequest:
     """`in_progress -> fulfilled`, clearing the assignee — the fulfilment step has nobody left to
-    hold the next action. ORG scope only."""
+    hold the next action. ORG scope only; the requester must not fulfil their own request either,
+    same reasoning as `decide_request` — see `RequestWriteOrg`'s docstring in `routes.py`."""
     if req.status != "in_progress":
         raise ConflictProblem(f"Request {req.number} is {req.status} and cannot be fulfilled")
+    if req.requester_id == ctx.principal.subject_ref:
+        raise ForbiddenProblem("You cannot fulfil your own request")
 
     before_status = req.status
     req.status = "fulfilled"

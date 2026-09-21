@@ -21,7 +21,7 @@ import datetime as dt
 import uuid
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, EmailStr, Field
 
 from app import domain
 
@@ -841,16 +841,25 @@ class PublicCatalogueOut(BaseModel):
 EnquiryStatus = Literal["new", "contacted", "won", "lost"]
 
 
+#: A buyer's paste is trusted for shape, never for content: `quantity` is bounded the same
+#: order of magnitude `Product.moq`/`ProductIn.moq` are, so a fabricated line cannot read back
+#: as a plausible-looking bulk order.
+MAX_ENQUIRY_LINE_QUANTITY = 1_000_000
+
+
 class EnquiryLineIn(BaseModel):
-    """One line of the buyer's list, echoed back rather than joined at read time — a product
-    referenced here may since have been edited or deleted, and the enquiry is a record of what
-    was asked for, not a live view of the catalogue."""
+    """One line of the buyer's list. `product_id` is validated against *this* published store's
+    active catalogue and `name` is taken from the product there, never from this body — kept
+    accepting `name` here only because the buyer bundle's form still sends it, and it is ignored
+    server-side (`services.create_enquiry_for_store`). The enquiry is still a record of what was
+    asked for at the time, not a live view: it stores the catalogue name as of the enquiry, so a
+    later rename does not rewrite history."""
 
     model_config = ConfigDict(extra="forbid")
 
     product_id: uuid.UUID
     name: Annotated[str, Field(min_length=1, max_length=200)]
-    quantity: Annotated[int, Field(ge=1)]
+    quantity: Annotated[int, Field(ge=1, le=MAX_ENQUIRY_LINE_QUANTITY)]
 
 
 #: Bounds a buyer's paste the same way `ZonePostalCodesPut` bounds a merchant's — a line list
@@ -868,7 +877,7 @@ class EnquiryCreate(BaseModel):
     store: Slug
     name: Annotated[str, Field(min_length=1, max_length=ENQUIRY_NAME_LENGTH)]
     company: Annotated[str, Field(min_length=1, max_length=ENQUIRY_COMPANY_LENGTH)]
-    email: Annotated[str, Field(min_length=1, max_length=254)]
+    email: Annotated[EmailStr, Field(max_length=254)]
     phone: Annotated[str, Field(max_length=40)] | None = None
     gstin: Annotated[str, Field(max_length=ENQUIRY_GSTIN_LENGTH)] | None = None
     requirement: Annotated[str, Field(min_length=1, max_length=4000)]

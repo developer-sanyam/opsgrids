@@ -2,8 +2,8 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AuthContext, ApiError } from "@opsgrids/client";
-import type { AuthContextValue, MeOut } from "@opsgrids/client";
+import { AuthContext, ApiError, PermissionContext } from "@opsgrids/client";
+import type { AuthContextValue, MeOut, PermissionState } from "@opsgrids/client";
 
 import * as client from "@/api/client";
 import type { Incident } from "@/api/types";
@@ -52,16 +52,55 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function open(onCreated = vi.fn()) {
+function permissions(grants: string[]): PermissionState {
+  return {
+    grants,
+    entitlements: ["itsm"],
+    status: "ready",
+    membershipId: "mem-1",
+    pv: 1,
+    error: null,
+    reloadGrants: vi.fn(),
+  };
+}
+
+function open(onCreated = vi.fn(), grants: string[] = ["itsm.service.incident.write:ORG"]) {
   render(
     <AuthContext.Provider value={AUTH_VALUE}>
-      <RaiseIncidentDialog onClose={vi.fn()} onCreated={onCreated} />
+      <PermissionContext.Provider value={permissions(grants)}>
+        <RaiseIncidentDialog onClose={vi.fn()} onCreated={onCreated} />
+      </PermissionContext.Provider>
     </AuthContext.Provider>,
   );
   return { user: userEvent.setup(), onCreated };
 }
 
 describe("RaiseIncidentDialog", () => {
+  it("lets an organization-wide writer name an assignee, and sends it", async () => {
+    const spy = vi.spyOn(client, "createIncident").mockResolvedValue(INCIDENT);
+    const { user } = open();
+
+    await user.type(screen.getByLabelText(/summary/i), "VPN down for finance team");
+    await user.type(screen.getByLabelText(/assignee/i), "Arjun Mehta");
+    await user.click(screen.getByRole("button", { name: /raise incident/i }));
+
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    expect(spy.mock.calls[0]?.[0]).toMatchObject({ assignee: "Arjun Mehta" });
+  });
+
+  it("does not offer Assignee to someone who may only work their own incidents", async () => {
+    const spy = vi.spyOn(client, "createIncident").mockResolvedValue(INCIDENT);
+    const { user } = open(vi.fn(), ["itsm.service.incident.write:OWN"]);
+
+    expect(screen.queryByLabelText(/assignee/i)).toBeNull();
+
+    await user.type(screen.getByLabelText(/summary/i), "VPN down for finance team");
+    await user.click(screen.getByRole("button", { name: /raise incident/i }));
+
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    expect(spy.mock.calls[0]?.[0]).toMatchObject({ assignee: "" });
+  });
+
   it("blocks submission with no summary and shows a validation message", async () => {
     const spy = vi.spyOn(client, "createIncident");
     const { user } = open();

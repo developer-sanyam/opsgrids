@@ -1463,6 +1463,13 @@ async def create_enquiry_for_store(
     AES-256-GCM envelope (`platform_core.pii.seal`) plus a masked hint, and no raw value is
     stored in the clear at any point.
 
+    Every `product_id` on `payload.lines` is validated against *this* store's active catalogue
+    in one batched query — an anonymous buyer's fabricated or cross-tenant id must not read back
+    to the merchant as a real line — and each line's `name` is taken from the catalogue rather
+    than trusted from the body (`EnquiryLineIn`'s docstring). An unknown or cross-store id is a
+    422 that names no product, so the response cannot be used to probe whether an id belongs to
+    another organization's catalogue.
+
     The outbox event is staged in the same transaction, so a notification can never fire for an
     enquiry that failed to commit — and never silently vanish for one that did.
     """
@@ -1475,6 +1482,25 @@ async def create_enquiry_for_store(
         phone_enc, phone_masked = seal(payload.phone, kind="phone", settings=cfg)
 
     async with session_scope(organization_id=store.organization_id) as session:
+        product_ids = {line.product_id for line in payload.lines}
+        products = await selectors.public_products_by_id(
+            session, store.organization_id, product_ids
+        )
+        if any(line.product_id not in products for line in payload.lines):
+            raise domain.Rejected(
+                "enquiry_unknown_product",
+                "One or more items are not available from this store.",
+                field="lines",
+            )
+        lines = [
+            {
+                "product_id": str(line.product_id),
+                "name": products[line.product_id].name,
+                "quantity": line.quantity,
+            }
+            for line in payload.lines
+        ]
+
         enquiry = Enquiry(
             organization_id=store.organization_id,
             name=payload.name,
@@ -1486,7 +1512,7 @@ async def create_enquiry_for_store(
             gstin=payload.gstin,
             requirement=payload.requirement,
             quantity=payload.quantity,
-            lines=[line.model_dump(mode="json") for line in payload.lines],
+            lines=lines,
             status="new",
         )
         session.add(enquiry)

@@ -893,6 +893,26 @@ async def public_variants_for_products(
     return out
 
 
+async def public_products_by_id(
+    session: AsyncSession, organization_id: uuid.UUID, product_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, Product]:
+    """The batched, anonymous-path lookup an enquiry's lines are validated against: *this*
+    store's active, live products only, in one statement rather than one query per line. A
+    `product_id` absent from the returned mapping is either unknown altogether or belongs to
+    another organization — the caller must not distinguish the two."""
+    if not product_ids:
+        return {}
+    stmt = select(Product).where(
+        Product.organization_id == organization_id,
+        Product.id.in_(product_ids),
+        Product.deleted_at.is_(None),
+        Product.status == "active",
+        Product.is_active.is_(True),
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return {row.id: row for row in rows}
+
+
 async def public_categories_by_id(
     session: AsyncSession, organization_id: uuid.UUID, category_ids: set[uuid.UUID]
 ) -> dict[uuid.UUID, Category]:
