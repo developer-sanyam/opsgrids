@@ -10,6 +10,12 @@ rather than a horizontal layer. Nothing is "done" until its tests pass.
 
 ---
 
+## Inventory & manufacturing (Operations)
+
+Phased plan: [inventory/plan.md](inventory/plan.md), decisions in
+[ADR-0014](adr/0014-inventory-and-manufacturing.md). **Next: Phase 0** — module split,
+scaled-integer quantities, ledger/balance migration, posting kernel.
+
 ## Blocked, and first
 
 ### Row-level security
