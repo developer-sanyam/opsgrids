@@ -171,6 +171,37 @@ async def connect_provider(
     return _connection_out(row)
 
 
+@router.put(
+    "/engage/connection",
+    response_model=ConnectionOut,
+    summary="Replace the organization's email connection",
+    dependencies=[Entitled],
+)
+async def replace_provider(
+    body: ConnectionIn, session: SessionDep, ctx: ConnectionWrite, request: Request
+) -> ConnectionOut:
+    """PUT rather than POST, for the reverse of `connect_provider`'s reason: this replaces the
+    one connection a caller already knows exists, and calling it twice with the same body
+    leaves the same state — an app password rotated to the same value, or a provider switched
+    to the same provider, is not a new fact each time.
+
+    Same request shape as the POST, because what a caller supplies to replace a connection is
+    exactly what they supply to create one — a second schema for the same four fields would be
+    a distinction with no difference for anyone filling in the form.
+    """
+    row = await services.replace_connection(
+        session,
+        ctx,
+        kind=body.kind,
+        username=body.username,
+        secret=body.secret,
+        host=body.host,
+        port=body.port,
+        request=request,
+    )
+    return _connection_out(row)
+
+
 # --------------------------------------------------------------------- sending domains
 
 
