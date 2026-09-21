@@ -240,10 +240,13 @@ class ServiceRequest(Base, TenantBase):
     requester: Mapped[str] = mapped_column(String(120), nullable=False)
     #: Who the request is for — often the requester, but not for JML flows.
     subject: Mapped[str] = mapped_column(String(200), nullable=False)
-    #: approval | in_progress | fulfilled.
+    #: approval | in_progress | fulfilled | rejected.
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="approval")
     #: Who holds the next step, while awaiting approval / in progress. NULL once fulfilled.
     assignee: Mapped[str | None] = mapped_column(String(120))
+    #: Why a request was rejected (or any other decision note). NULL until a decision is made —
+    #: a rejection with no visible reason is not usable, so this rides the decision endpoint.
+    decision_note: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
         UniqueConstraint("organization_id", "number", name="uq_requests_org_number"),

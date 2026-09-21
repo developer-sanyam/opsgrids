@@ -341,6 +341,7 @@ def request_out(request: ServiceRequest, *, catalog_name: str) -> ServiceRequest
         subject=request.subject,
         status=request.status,
         assignee=request.assignee,
+        decision_note=request.decision_note,
         created_at=request.created_at,
         updated_at=request.updated_at,
     )

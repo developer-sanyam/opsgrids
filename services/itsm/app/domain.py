@@ -44,6 +44,23 @@ CATEGORY_LABELS: dict[str, str] = {
 OPEN_STATUSES: frozenset[str] = frozenset({"new", "in_progress", "on_hold"})
 RESOLVED_STATUSES: frozenset[str] = frozenset({"resolved", "closed"})
 
+#: The incident lifecycle: `new` can start work, go on hold or resolve directly; `in_progress`
+#: and `on_hold` can each resolve or swap into the other; `resolved` either closes or reopens
+#: back to `in_progress`; `closed` is terminal — a corrected ticket is a new one, not a reopened
+#: old one. A no-op "move" to the current status is not in its own frozenset, so it is a 409 too.
+INCIDENT_TRANSITIONS: dict[str, frozenset[str]] = {
+    "new": frozenset({"in_progress", "on_hold", "resolved"}),
+    "in_progress": frozenset({"on_hold", "resolved"}),
+    "on_hold": frozenset({"in_progress", "resolved"}),
+    "resolved": frozenset({"closed", "in_progress"}),
+    "closed": frozenset(),
+}
+
+
+def can_transition_incident(current: str, new: str) -> bool:
+    """Whether an incident may move `current` -> `new`. Every other move answers 409."""
+    return new in INCIDENT_TRANSITIONS.get(current, frozenset())
+
 
 def is_open(incident: Incident) -> bool:
     """An incident still on someone's plate — anything not yet resolved or closed."""
