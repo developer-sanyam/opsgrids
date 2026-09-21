@@ -11,8 +11,8 @@ import {
   Button,
   Card,
   ConnectionStatusTag,
-  ErrorState,
   InlineAlert,
+  LoadFailure,
   PageHeader,
   Skeleton,
 } from "@/ui";
@@ -126,9 +126,7 @@ function Connection() {
       ) : null}
 
       {state.status === "error" ? (
-        <Card className="p-6">
-          <ErrorState message={state.error.message} title="Couldn't load the connection" />
-        </Card>
+        <LoadFailure error={state.error} title="Couldn't load the connection" />
       ) : null}
 
       {justConnected !== null ? (

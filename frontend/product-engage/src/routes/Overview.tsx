@@ -8,7 +8,7 @@ import { ArrowRightIcon, GlobeIcon, PlugIcon, UsersIcon } from "@opsgrids/ui";
 import { getConnection, listDomains, listSenders } from "@/api/client";
 import type { ConnectionOut, DomainOut, SenderOut } from "@/api/types";
 import { connectionKindLabel, formatNumber } from "@/lib/format";
-import { Card, ErrorState, PageHeader, Skeleton } from "@/ui";
+import { Card, LoadFailure, PageHeader, Skeleton } from "@/ui";
 
 /**
  * Where an organization stands on the three things that have to be true before Engage sends
@@ -177,12 +177,7 @@ export function OverviewPage() {
       {state.status === "loading" ? <OverviewSkeleton /> : null}
 
       {state.status === "error" ? (
-        <Card className="p-6">
-          <ErrorState
-            message={state.error.message}
-            title="Couldn't load your sending identity"
-          />
-        </Card>
+        <LoadFailure error={state.error} title="Couldn't load your sending identity" />
       ) : null}
 
       {state.status === "success" ? (

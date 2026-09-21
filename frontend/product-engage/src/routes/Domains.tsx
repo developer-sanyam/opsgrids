@@ -15,8 +15,8 @@ import {
   Card,
   DomainStatusTag,
   EmptyState,
-  ErrorState,
   InlineAlert,
+  LoadFailure,
   PageHeader,
   SectionHeader,
   Skeleton,
@@ -240,9 +240,7 @@ function Domains() {
       ) : null}
 
       {state.status === "error" ? (
-        <Card className="p-6">
-          <ErrorState message={state.error.message} title="Couldn't load your domains" />
-        </Card>
+        <LoadFailure error={state.error} title="Couldn't load your domains" />
       ) : null}
 
       {/* The form is the empty state when there is nothing yet: a panel saying "no domains"
