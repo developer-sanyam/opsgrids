@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
-from app.models import EmailConnection, EmailDomain, Sender
+from app.models import EmailConnection, EmailDomain, ProviderAccount, Sender
 from app.schemas import (
     ConnectionIn,
     ConnectionOut,
@@ -35,6 +35,8 @@ from app.schemas import (
     SenderIn,
     SenderOut,
     TestSendIn,
+    WhatsAppConnectionIn,
+    WhatsAppConnectionOut,
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.db import get_tenant_session
@@ -74,6 +76,12 @@ SenderRead = Annotated[
 SenderWrite = Annotated[
     ScopeContext, Depends(require("engage.setup.sender.write", minimum=Scope.ORG))
 ]
+WhatsAppRead = Annotated[
+    ScopeContext, Depends(require("engage.setup.whatsapp.read", minimum=Scope.ORG))
+]
+WhatsAppWrite = Annotated[
+    ScopeContext, Depends(require("engage.setup.whatsapp.write", minimum=Scope.ORG))
+]
 
 
 # --------------------------------------------------------------------- assemblers
@@ -92,6 +100,17 @@ def _connection_out(row: EmailConnection) -> ConnectionOut:
         port=row.port,
         status=row.status,
         daily_cap=row.daily_cap,
+    )
+
+
+def _whatsapp_connection_out(row: ProviderAccount) -> WhatsAppConnectionOut:
+    """Everything about the WhatsApp account except the access token, which never leaves the
+    process — see `ConnectionOut`'s counterpart for the same rule on the email side."""
+    return WhatsAppConnectionOut(
+        waba_id=row.waba_id,
+        phone_number_id=row.phone_number_id,
+        display_number=row.display_number,
+        status=row.status,
     )
 
 
@@ -200,6 +219,70 @@ async def replace_provider(
         request=request,
     )
     return _connection_out(row)
+
+
+# --------------------------------------------------------------------- the whatsapp connection
+
+
+@router.get(
+    "/engage/whatsapp/connection",
+    response_model=Page[WhatsAppConnectionOut],
+    summary="How this organization sends WhatsApp",
+    dependencies=[Entitled],
+)
+async def read_whatsapp_connection(
+    session: SessionDep, ctx: WhatsAppRead, params: PageQuery
+) -> Page[WhatsAppConnectionOut]:
+    """A page of at most one, same shape as `read_connection` and for the same reason: the
+    setup screen already handles an empty page, so "not connected yet" needs no special case."""
+    stmt = selectors.whatsapp_connection_stmt(ctx)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([_whatsapp_connection_out(r) for r in rows], total=total, params=params)
+
+
+@router.post(
+    "/engage/whatsapp/connection",
+    response_model=WhatsAppConnectionOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Connect the organization's WhatsApp Business account",
+    dependencies=[Entitled],
+)
+async def connect_whatsapp(
+    body: WhatsAppConnectionIn, session: SessionDep, ctx: WhatsAppWrite, request: Request
+) -> WhatsAppConnectionOut:
+    """POST rather than PUT, for the reason `connect_provider` is: one organization gets one
+    WhatsApp account and a second POST is refused rather than silently accepted."""
+    row = await services.create_whatsapp_connection(
+        session,
+        ctx,
+        waba_id=body.waba_id,
+        phone_number_id=body.phone_number_id,
+        display_number=body.display_number,
+        access_token=body.access_token,
+        request=request,
+    )
+    return _whatsapp_connection_out(row)
+
+
+@router.put(
+    "/engage/whatsapp/connection",
+    response_model=WhatsAppConnectionOut,
+    summary="Replace the organization's WhatsApp Business account",
+    dependencies=[Entitled],
+)
+async def replace_whatsapp(
+    body: WhatsAppConnectionIn, session: SessionDep, ctx: WhatsAppWrite, request: Request
+) -> WhatsAppConnectionOut:
+    row = await services.replace_whatsapp_connection(
+        session,
+        ctx,
+        waba_id=body.waba_id,
+        phone_number_id=body.phone_number_id,
+        display_number=body.display_number,
+        access_token=body.access_token,
+        request=request,
+    )
+    return _whatsapp_connection_out(row)
 
 
 # --------------------------------------------------------------------- sending domains

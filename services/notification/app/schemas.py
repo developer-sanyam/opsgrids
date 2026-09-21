@@ -300,6 +300,31 @@ class ConnectionOut(BaseModel):
     daily_cap: int
 
 
+class WhatsAppConnectionIn(BaseModel):
+    """Connect the organization's WhatsApp Cloud API account.
+
+    `access_token` is write-only, sealed on the way in the same way an email connection's
+    secret is — it has no counterpart on the way out, not masked, not truncated.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    waba_id: str = Field(min_length=1, max_length=80)
+    phone_number_id: str = Field(min_length=1, max_length=80)
+    display_number: str = Field(default="", max_length=40)
+    access_token: str = Field(min_length=1, max_length=4000)
+
+
+class WhatsAppConnectionOut(BaseModel):
+    """How this organization sends WhatsApp, minus the one value that must never leave the
+    process. No field here is derived from the access token — no mask, no length, no hint."""
+
+    waba_id: str
+    phone_number_id: str
+    display_number: str
+    status: ConnectionStatus
+
+
 class DomainIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

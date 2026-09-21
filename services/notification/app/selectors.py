@@ -300,6 +300,32 @@ async def get_connection(session: AsyncSession, org_id: uuid.UUID) -> EmailConne
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+def whatsapp_connection_stmt(ctx: ScopeContext) -> Select[Any]:
+    """The organization's WhatsApp provider account, as a statement a route can page or count.
+
+    Same list-or-nothing shape as `connection_stmt`, for the same reason: "is there one yet?"
+    stays a selector concern, not a router branch.
+    """
+    stmt = select(ProviderAccount).where(
+        ProviderAccount.organization_id == ctx.organization_id,
+        ProviderAccount.channel == "whatsapp",
+        ProviderAccount.deleted_at.is_(None),
+    )
+    return ctx.apply(stmt, owner_col=ProviderAccount.created_by)
+
+
+async def get_whatsapp_connection(
+    session: AsyncSession, org_id: uuid.UUID
+) -> ProviderAccount | None:
+    """The one WhatsApp account an organization sends through, or None."""
+    stmt = select(ProviderAccount).where(
+        ProviderAccount.organization_id == org_id,
+        ProviderAccount.channel == "whatsapp",
+        ProviderAccount.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 def domains_stmt(ctx: ScopeContext, *, status: str | None = None) -> Select[Any]:
     """Scope-filtered sending-domain list, oldest first — a setup list is read in the order it
     was built, not newest-first like a log."""
