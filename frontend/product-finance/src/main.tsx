@@ -1,9 +1,10 @@
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
+import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
 import { configureSession } from "@opsgrids/client";
-import { LifeBuoyIcon, PlugIcon, SettingsIcon, ThemeProvider } from "@opsgrids/ui";
+import { ThemeProvider, Toaster } from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
@@ -11,13 +12,53 @@ import { RequireAuth } from "./auth/RequireAuth";
 import { OverviewPage } from "./routes/Overview";
 import { InvoicesPage } from "./routes/Invoices";
 import { InvoiceDetailPage } from "./routes/InvoiceDetail";
-import { ImsPage } from "./routes/Ims";
-import { ImsDetailPage } from "./routes/ImsDetail";
-import { PaymentsPage } from "./routes/Payments";
-import { LedgerPage } from "./routes/Ledger";
-import { CustomersPage } from "./routes/Customers";
 import { LoginPage } from "./routes/Login";
 import { ComingSoonPage } from "./routes/ComingSoon";
+import { RouteFallback } from "./routes/RouteFallback";
+
+/**
+ * Overview, Invoices and an invoice's own detail are where a session spends most of its time, so
+ * they stay on the critical path along with Login. Everything else — the multi-line issue form,
+ * the compliance registers, purchases, GST returns and settings — is real weight a person who
+ * only ever checks today's invoices should never download; each gets its own chunk, loaded once
+ * its route is visited.
+ */
+const InvoiceNewPage = lazy(() =>
+  import("./routes/InvoiceNew").then((m) => ({ default: m.InvoiceNewPage })),
+);
+const ImsPage = lazy(() => import("./routes/Ims").then((m) => ({ default: m.ImsPage })));
+const ImsDetailPage = lazy(() =>
+  import("./routes/ImsDetail").then((m) => ({ default: m.ImsDetailPage })),
+);
+const PaymentsPage = lazy(() =>
+  import("./routes/Payments").then((m) => ({ default: m.PaymentsPage })),
+);
+const LedgerPage = lazy(() => import("./routes/Ledger").then((m) => ({ default: m.LedgerPage })));
+const CustomersPage = lazy(() =>
+  import("./routes/Customers").then((m) => ({ default: m.CustomersPage })),
+);
+const PurchasesPage = lazy(() =>
+  import("./routes/Purchases").then((m) => ({ default: m.PurchasesPage })),
+);
+const GstReturnsPage = lazy(() =>
+  import("./routes/GstReturns").then((m) => ({ default: m.GstReturnsPage })),
+);
+const GstReturnDetailPage = lazy(() =>
+  import("./routes/GstReturnDetail").then((m) => ({ default: m.GstReturnDetailPage })),
+);
+const EwayBillsPage = lazy(() =>
+  import("./routes/EwayBills").then((m) => ({ default: m.EwayBillsPage })),
+);
+const WithholdingPage = lazy(() =>
+  import("./routes/Withholding").then((m) => ({ default: m.WithholdingPage })),
+);
+const SettingsPage = lazy(() =>
+  import("./routes/Settings").then((m) => ({ default: m.SettingsPage })),
+);
+
+function lazyRoute(path: string, element: ReactNode) {
+  return { path, element: <Suspense fallback={<RouteFallback />}>{element}</Suspense> };
+}
 
 const router = createBrowserRouter([
   {
@@ -39,42 +80,19 @@ const router = createBrowserRouter([
         children: [
           { index: true, element: <OverviewPage /> },
           { path: "invoices", element: <InvoicesPage /> },
+          lazyRoute("invoices/new", <InvoiceNewPage />),
           { path: "invoices/:id", element: <InvoiceDetailPage /> },
-          { path: "payments", element: <PaymentsPage /> },
-          { path: "compliance/ims", element: <ImsPage /> },
-          { path: "compliance/ims/:id", element: <ImsDetailPage /> },
-          { path: "ledger", element: <LedgerPage /> },
-          { path: "customers", element: <CustomersPage /> },
-          {
-            path: "integrations",
-            element: (
-              <ComingSoonPage
-                icon={<PlugIcon className="size-6" />}
-                title="Integrations"
-                description="Bank feeds, GST filing and payment-gateway reconciliation connectors will plug in here."
-              />
-            ),
-          },
-          {
-            path: "settings",
-            element: (
-              <ComingSoonPage
-                icon={<SettingsIcon className="size-6" />}
-                title="Settings"
-                description="Invoice numbering, tax rates, payment terms and workspace roles will live here."
-              />
-            ),
-          },
-          {
-            path: "help",
-            element: (
-              <ComingSoonPage
-                icon={<LifeBuoyIcon className="size-6" />}
-                title="Help & Getting Started"
-                description="Guides for setting up your billing workspace and closing the books are on the way."
-              />
-            ),
-          },
+          lazyRoute("payments", <PaymentsPage />),
+          lazyRoute("compliance/ims", <ImsPage />),
+          lazyRoute("compliance/ims/:id", <ImsDetailPage />),
+          lazyRoute("compliance/returns", <GstReturnsPage />),
+          lazyRoute("compliance/returns/:id", <GstReturnDetailPage />),
+          lazyRoute("compliance/eway", <EwayBillsPage />),
+          lazyRoute("compliance/withholding", <WithholdingPage />),
+          lazyRoute("ledger", <LedgerPage />),
+          lazyRoute("customers", <CustomersPage />),
+          lazyRoute("purchases", <PurchasesPage />),
+          lazyRoute("settings", <SettingsPage />),
           {
             path: "*",
             element: (
@@ -100,7 +118,9 @@ if (!rootEl) throw new Error("Root element #root not found");
 createRoot(rootEl).render(
   <StrictMode>
     <ThemeProvider storageKey="opsgrids.finance.theme">
-      <RouterProvider router={router} />
+      <Toaster>
+        <RouterProvider router={router} />
+      </Toaster>
     </ThemeProvider>
   </StrictMode>,
 );

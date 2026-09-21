@@ -10,17 +10,19 @@
  */
 
 import { FIXTURE_CUSTOMERS } from "@/data/customers";
-import { listCustomers, USE_FIXTURES } from "./client";
+import { listCustomers, MAX_PAGE_SIZE, USE_FIXTURES } from "./client";
 import type { Customer } from "./types";
 
 /**
  * The customers this org bills, keyed by id. In fixture mode this is the static reference list;
- * live it is built from the customers ledger. Degrades to an empty map on any failure.
+ * live it is built from the customers ledger, read at the backend's own page-size ceiling (200) —
+ * an org with more customers than that is a known limit of a name-resolution convenience, not the
+ * page a person browses (`/customers` pages properly). Degrades to an empty map on any failure.
  */
 export async function getCustomerById(): Promise<ReadonlyMap<string, Customer>> {
   if (USE_FIXTURES) return FIXTURE_CUSTOMERS;
   try {
-    const page = await listCustomers({ sort: "name_asc" });
+    const page = await listCustomers({ sort: "name_asc", size: MAX_PAGE_SIZE });
     return new Map(page.items.map((row) => [row.customer.id, row.customer]));
   } catch {
     // A 403, an empty org, or a transient read failure degrades to no resolved names — the

@@ -1,24 +1,28 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { listPayments } from "@/api/client";
+import { listPayments, MAX_PAGE_SIZE } from "@/api/client";
+import { listCustomers } from "@/api/client";
 import { getCustomerById } from "@/api/customers";
 import type { Payment } from "@/api/types";
 import { customerName } from "@/data/customers";
 import { formatDate } from "@/lib/format";
 import { formatMoney, sumMinor } from "@/lib/money";
-import { useAsync } from "@opsgrids/client";
+import { Can, problemMessage, useAsync } from "@opsgrids/client";
 import {
   Card,
   DataTable,
   EmptyState,
   ErrorState,
   PageHeader,
+  Pagination,
   PaymentMethodBadge,
   Skeleton,
+  Button,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { CreditCardIcon } from "@opsgrids/ui";
+import { CreditCardIcon, PlusIcon, useToast } from "@opsgrids/ui";
+import { PaymentFormDialog } from "@/forms/PaymentFormDialog";
 
 /** The invoices a payment was applied to, each a link to that invoice. */
 function Allocations({ payment }: { payment: Payment }) {
@@ -39,10 +43,15 @@ function Allocations({ payment }: { payment: Payment }) {
 }
 
 export function PaymentsPage() {
-  const payments = useAsync(listPayments, []);
+  const toast = useToast();
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(25);
+  const [recording, setRecording] = useState(false);
+  const payments = useAsync(() => listPayments({ page, size }), [page, size]);
   // The directory resolves `customer_id` to a name; it never gates the table from rendering.
   const customers = useAsync(getCustomerById, []);
   const customerById = customers.status === "success" ? customers.data : undefined;
+  const customerList = useAsync(() => listCustomers({ sort: "name_asc", size: MAX_PAGE_SIZE }), []);
 
   const rows = useMemo(
     () => (payments.status === "success" ? payments.data.items : []),
@@ -108,12 +117,19 @@ export function PaymentsPage() {
         eyebrow="Cash received"
         title="Payments"
         actions={
-          payments.status === "success" ? (
-            <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
-              <span className="text-muted font-medium">Received</span>
-              <span className="money">{formatMoney(totalReceived)}</span>
-            </span>
-          ) : undefined
+          <div className="flex items-center gap-2">
+            {payments.status === "success" ? (
+              <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
+                <span className="text-muted font-medium">Received</span>
+                <span className="money">{formatMoney(totalReceived)}</span>
+              </span>
+            ) : null}
+            <Can permission="finance.billing.payment.record" scope="ORG">
+              <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setRecording(true)}>
+                Record payment
+              </Button>
+            </Can>
+          </div>
         }
       />
 
@@ -130,23 +146,62 @@ export function PaymentsPage() {
             ))}
           </div>
         ) : null}
-        {payments.status === "error" ? <ErrorState message={payments.error.message} /> : null}
-        {payments.status === "success" ? (
-          <DataTable
-            columns={columns}
-            rows={rows}
-            rowKey={(p) => p.id}
-            caption="Payments received"
-            emptyState={
-              <EmptyState
-                icon={<CreditCardIcon className="size-6" />}
-                title="No payments yet"
-                description="Received payments will appear here once they're recorded against invoices."
-              />
-            }
+        {payments.status === "error" ? (
+          <ErrorState
+            title="Couldn't load payments"
+            message={problemMessage(payments.error)}
+            onRetry={payments.reload}
           />
         ) : null}
+        {payments.status === "success" ? (
+          <>
+            <DataTable
+              columns={columns}
+              rows={rows}
+              rowKey={(p) => p.id}
+              caption="Payments received"
+              emptyState={
+                <EmptyState
+                  icon={<CreditCardIcon className="size-6" />}
+                  title="No payments yet"
+                  description="Received payments will appear here once they're recorded against invoices."
+                  action={
+                    <Can permission="finance.billing.payment.record" scope="ORG">
+                      <Button size="sm" onClick={() => setRecording(true)}>
+                        Record payment
+                      </Button>
+                    </Can>
+                  }
+                />
+              }
+            />
+            <Pagination
+              page={payments.data.page}
+              pages={payments.data.pages}
+              total={payments.data.total}
+              size={payments.data.size}
+              noun="payments"
+              onPageChange={setPage}
+              onSizeChange={(n) => {
+                setSize(n);
+                setPage(1);
+              }}
+            />
+          </>
+        ) : null}
       </Card>
+
+      {recording && customerList.status === "success" ? (
+        <PaymentFormDialog
+          customers={customerList.data.items.map((row) => ({ value: row.customer.id, label: row.customer.name }))}
+          onClose={() => setRecording(false)}
+          onSaved={(payment) => {
+            setRecording(false);
+            toast.success(`Payment ${payment.reference} recorded.`);
+            payments.reload();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

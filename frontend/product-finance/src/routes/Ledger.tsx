@@ -4,12 +4,13 @@ import { getLedger } from "@/api/client";
 import type { LedgerAccount, LedgerReport } from "@/api/types";
 import { formatDate } from "@/lib/format";
 import { formatAmount, formatMoney } from "@/lib/money";
-import { useAsync } from "@opsgrids/client";
+import { problemMessage, useAsync } from "@opsgrids/client";
 import {
   Button,
   Card,
   ErrorState,
   PageHeader,
+  SampleChip,
   SectionHeader,
   Skeleton,
 } from "@/ui";
@@ -109,21 +110,24 @@ export function LedgerPage() {
         eyebrow="Books"
         title="Ledger & Reports"
         actions={
-          <Button
-            variant="outline"
-            size="md"
-            leadingIcon={<DownloadIcon className="size-4" />}
-            disabled={ledger.status !== "success"}
-            onClick={() => {
-              if (ledger.status === "success") {
-                exportCsv(ledger.data);
-                setExported(true);
-                window.setTimeout(() => setExported(false), 4000);
-              }
-            }}
-          >
-            Export CSV
-          </Button>
+          <div className="flex items-center gap-2">
+            {ledger.status === "success" && ledger.data.sample ? <SampleChip /> : null}
+            <Button
+              variant="outline"
+              size="md"
+              leadingIcon={<DownloadIcon className="size-4" />}
+              disabled={ledger.status !== "success"}
+              onClick={() => {
+                if (ledger.status === "success") {
+                  exportCsv(ledger.data);
+                  setExported(true);
+                  window.setTimeout(() => setExported(false), 4000);
+                }
+              }}
+            >
+              Export CSV
+            </Button>
+          </div>
         }
       />
 
@@ -131,7 +135,7 @@ export function LedgerPage() {
         {exported
           ? "Trial balance exported as CSV."
           : ledger.status === "success"
-            ? `Profit & loss and trial balance for ${ledger.data.period_label}, as of ${formatDate(ledger.data.as_of)}.`
+            ? `Representative figures for ${ledger.data.period_label}, as of ${formatDate(ledger.data.as_of)} — there is no general ledger behind this report yet, so nothing here is this organization's own booked data.`
             : "Profit & loss and trial balance, straight from the ledger."}
       </p>
 
@@ -152,7 +156,7 @@ export function LedgerPage() {
 
       {ledger.status === "error" ? (
         <Card className="p-6">
-          <ErrorState message={ledger.error.message} />
+          <ErrorState message={problemMessage(ledger.error)} onRetry={ledger.reload} />
         </Card>
       ) : null}
 

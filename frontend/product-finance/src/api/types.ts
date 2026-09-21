@@ -20,6 +20,40 @@ export interface Customer {
   gstin: string | null;
   city: string;
   state: string;
+  /**
+   * Withholding facts about this buyer, decided by the customer record and applied to **future**
+   * invoices only — a document already finalized keeps what it assessed at the time.
+   */
+  is_tds_deductor: boolean;
+  /** Mutually exclusive with `tcs_applicable` — the server refuses a write that sets both. */
+  deducts_tds_194q: boolean;
+  tcs_applicable: boolean;
+}
+
+/** `POST /finance/customers`. */
+export interface CustomerCreate {
+  name: string;
+  contact_name?: string;
+  email?: string;
+  gstin?: string | null;
+  city?: string;
+  state?: string;
+  is_tds_deductor?: boolean;
+  deducts_tds_194q?: boolean;
+  tcs_applicable?: boolean;
+}
+
+/** `PATCH /finance/customers/{id}` — every field optional; only what is sent is applied. */
+export interface CustomerUpdate {
+  name?: string;
+  contact_name?: string;
+  email?: string;
+  gstin?: string | null;
+  city?: string;
+  state?: string;
+  is_tds_deductor?: boolean;
+  deducts_tds_194q?: boolean;
+  tcs_applicable?: boolean;
 }
 
 /**
@@ -122,6 +156,18 @@ export interface GstRegistration {
   is_primary: boolean;
 }
 
+/** `regular | composition | casual`. */
+export type GstRegistrationType = "regular" | "composition" | "casual";
+
+/** `PUT /finance/gst/registration`. */
+export interface GstRegistrationUpsert {
+  gstin: string;
+  legal_name: string;
+  trade_name?: string;
+  registration_type?: GstRegistrationType;
+  is_primary?: boolean;
+}
+
 /**
  * An invoice or credit note. Totals foot exactly:
  * `subtotal_minor = Σ line.amount_minor`, `total_minor = subtotal_minor + tax_minor`. A credit
@@ -161,6 +207,38 @@ export interface Invoice {
   igst_minor?: Minor;
   /** Where this document stands with the portal. Never null from the live API. */
   einvoice?: EInvoiceState;
+}
+
+/** One line as typed into the issue-invoice form. */
+export interface InvoiceLineCreate {
+  description: string;
+  /** Possibly fractional (tonnes, cft), and negative on a credit note line. */
+  quantity: number;
+  unit_price_minor: Minor;
+  /** HSN (goods) or SAC (services) code — 4, 6 or 8 digits. */
+  hsn_sac?: string | null;
+  /** Overrides the document's rate for this line. */
+  tax_rate_pct?: number | null;
+}
+
+/**
+ * `POST /finance/invoices` — the principal route's own contract. Deliberately not `number` or
+ * `status`: the server allocates the number and always derives the lifecycle status.
+ */
+export interface InvoiceIssueIn {
+  customer_id: string;
+  issued_date: string;
+  due_date: string;
+  tax_rate_pct: number;
+  lines: InvoiceLineCreate[];
+  document_type: DocumentType;
+  currency?: string;
+  notes?: string | null;
+  /** Required when `document_type` is `credit_note`; refused otherwise. */
+  corrects_invoice_id?: string | null;
+  supply_type?: SupplyType | null;
+  place_of_supply?: string | null;
+  reverse_charge?: boolean;
 }
 
 /* --------------------------------------------------------------------- IMS reconciliation
@@ -267,6 +345,22 @@ export interface PurchaseDocument {
 }
 
 /**
+ * `POST /finance/purchases`. The tax split is computed server-side from `taxable_minor` and
+ * `tax_rate_pct` — never supplied.
+ */
+export interface PurchaseDocumentCreate {
+  supplier_gstin: string;
+  number: string;
+  document_date: string;
+  taxable_minor: Minor;
+  tax_rate_pct: number;
+  supplier_name?: string;
+  document_type?: DocumentType;
+  currency?: string;
+  notes?: string | null;
+}
+
+/**
  * One inbound document with the evidence behind its suggestion.
  *
  * The evidence is the point of the detail view: an operator asked to accept or reject somebody
@@ -302,6 +396,23 @@ export interface Payment {
   note: string | null;
 }
 
+/** One allocation as typed into the record-payment form. */
+export interface PaymentAllocationCreate {
+  invoice_id: string;
+  amount_minor: Minor;
+}
+
+/** `POST /finance/payments`. */
+export interface PaymentCreate {
+  /** Bank UTR / cheque number / gateway reference. Unique per organization (409 on a repeat). */
+  reference: string;
+  customer_id: string;
+  received_date: string;
+  method: PaymentMethod;
+  allocations: PaymentAllocationCreate[];
+  note?: string | null;
+}
+
 /** One AR-aging bucket: how much receivable sits in a given age band. */
 export interface AgingBucket {
   key: string;
@@ -327,6 +438,14 @@ export interface OverviewKpi {
   /** A short trend series (already scaled to whatever unit reads best) for the sparkline. */
   series: number[];
   caption: string;
+  /**
+   * True when `value_minor` itself is representative rather than derived from this tenant's own
+   * invoices and payments — true only for `cash` today, since there is no bank feed or ledger to
+   * derive a balance from.
+   */
+  sample?: boolean;
+  /** True when the trend (`deltaPct` + `series`) is representative even though the headline is real. */
+  trend_sample?: boolean;
 }
 
 /** Everything the Overview screen needs, in one payload. */
@@ -337,6 +456,8 @@ export interface OverviewSummary {
   aging: AgingBucket[];
   /** Overdue invoices, largest outstanding first — the "needs attention" list. */
   attention: Invoice[];
+  /** True: the six-month cashflow chart is a representative aggregate, not a real cash ledger. */
+  cashflow_sample?: boolean;
 }
 
 /** One line of the P&L / trial-balance summary. */
@@ -353,6 +474,8 @@ export interface LedgerReport {
   period_label: string;
   as_of: string;
   accounts: LedgerAccount[];
+  /** Always true today: there is no general ledger table behind this report. */
+  sample?: boolean;
 }
 
 /** A customer's account standing, rolled up from their invoices. */
@@ -368,8 +491,297 @@ export interface CustomerSummary {
   standing: CustomerStanding;
 }
 
-/** Small envelope every list endpoint returns. */
+/** The envelope every list endpoint returns: `items`, plus enough to drive a real pager. */
 export interface Page<T> {
   items: T[];
   total: number;
+  page: number;
+  size: number;
+  pages: number;
+}
+
+/* --------------------------------------------------------------------- GST returns
+ * The outward-supplies return, assembled from the invoices already recorded. */
+
+export type ReturnType = "gstr1" | "gstr7";
+export type ReturnStatus = "draft" | "generated" | "filed";
+
+/** One period's return: the record, not the snapshot. What the list page renders. */
+export interface GstReturn {
+  id: string;
+  gst_registration_id: string;
+  gstin: string;
+  state_code: string;
+  period: string;
+  return_type: ReturnType;
+  status: ReturnStatus;
+  total_taxable_minor: Minor;
+  total_cgst_minor: Minor;
+  total_sgst_minor: Minor;
+  total_igst_minor: Minor;
+  document_count: number;
+  line_count: number;
+  generated_at: string | null;
+  filed_at: string | null;
+  arn: string | null;
+}
+
+/** One movement between statuses — a row of the append-only trail. */
+export interface GstReturnTransition {
+  id: string;
+  from_status: ReturnStatus | null;
+  to_status: ReturnStatus;
+  arn: string | null;
+  note: string | null;
+  total_taxable_minor: Minor;
+  total_tax_minor: Minor;
+  transitioned_by: string;
+  transitioned_at: string;
+}
+
+/** One rate group inside a section — the grain GSTR-1 is actually declared at. */
+export interface RateGroup {
+  rate_pct: number;
+  taxable_minor: Minor;
+  cgst_minor: Minor;
+  sgst_minor: Minor;
+  igst_minor: Minor;
+  total_minor: Minor;
+}
+
+/** One document as B2B, B2CL, CDNR, CDNUR or EXP declares it. */
+export interface ReturnInvoice {
+  document_id: string;
+  number: string;
+  document_type: DocumentType;
+  issued_date: string;
+  place_of_supply: string | null;
+  counterparty_gstin: string | null;
+  counterparty_name: string;
+  reverse_charge: boolean;
+  invoice_value_minor: Minor;
+  corrects_number: string | null;
+  items: RateGroup[];
+}
+
+/** One aggregated B2C-small figure: place of supply x rate x inter/intra-state. */
+export interface B2cs {
+  place_of_supply: string | null;
+  rate_pct: number;
+  inter_state: boolean;
+  taxable_minor: Minor;
+  cgst_minor: Minor;
+  sgst_minor: Minor;
+  igst_minor: Minor;
+  total_minor: Minor;
+  document_count: number;
+}
+
+/** One row of the HSN summary. */
+export interface HsnSummary {
+  hsn_sac: string | null;
+  rate_pct: number;
+  quantity: number;
+  taxable_minor: Minor;
+  cgst_minor: Minor;
+  sgst_minor: Minor;
+  igst_minor: Minor;
+  total_minor: Minor;
+}
+
+/** One declared document series — numbers issued and how many were cancelled. */
+export interface DocumentSeries {
+  document_type: DocumentType;
+  from_number: string;
+  to_number: string;
+  total_count: number;
+  cancelled_count: number;
+  net_count: number;
+}
+
+/** Every section of one GSTR-1, and the shape the snapshot is stored in. */
+export interface Gstr1Sections {
+  b2b: ReturnInvoice[];
+  b2cl: ReturnInvoice[];
+  b2cs: B2cs[];
+  cdnr: ReturnInvoice[];
+  cdnur: ReturnInvoice[];
+  exp: ReturnInvoice[];
+  hsn: HsnSummary[];
+  docs: DocumentSeries[];
+}
+
+/** The return with its sections and its whole status trail. `sections` is null on a `draft`. */
+export interface GstReturnDetail {
+  ret: GstReturn;
+  sections: Gstr1Sections | null;
+  transitions: GstReturnTransition[];
+}
+
+/** The return's one-line declaration. Every section sums to exactly this. */
+export interface ReturnTotals {
+  taxable_minor: Minor;
+  cgst_minor: Minor;
+  sgst_minor: Minor;
+  igst_minor: Minor;
+  tax_minor: Minor;
+  total_minor: Minor;
+  document_count: number;
+  line_count: number;
+}
+
+/** How one section moved between the snapshot and the book as it stands now. */
+export interface SectionDelta {
+  section: string;
+  snapshot: ReturnTotals;
+  current: ReturnTotals;
+  delta: ReturnTotals;
+  changed: boolean;
+}
+
+/** What has changed since the return was generated — never a rewrite of the return itself. */
+export interface ReturnDiff {
+  ret: GstReturn;
+  current: ReturnTotals;
+  snapshot: ReturnTotals;
+  delta: ReturnTotals;
+  sections: SectionDelta[];
+  changed: boolean;
+  computed_at: string;
+}
+
+/** `POST /finance/gst/returns`. */
+export interface GenerateReturnIn {
+  period: string;
+  return_type?: ReturnType;
+  gst_registration_id?: string | null;
+}
+
+/** `POST /finance/gst/returns/{id}/filing`. */
+export interface FileReturnIn {
+  arn: string;
+  note?: string | null;
+}
+
+/* --------------------------------------------------------------------- e-Way bills */
+
+export type EwayStatus = "pending" | "generated" | "failed" | "cancelled" | "expired";
+
+/** One recorded attempt to raise an e-Way bill. Append-only: a retry is a further row. */
+export interface EwayBill {
+  id: string;
+  invoice_id: string;
+  status: EwayStatus;
+  /** The status as of now — `expired` once `valid_until` has passed. */
+  effective_status: EwayStatus;
+  eway_bill_no: string | null;
+  transport_mode: string;
+  distance_km: number;
+  vehicle_no: string | null;
+  transporter_id: string | null;
+  transport_doc_no: string | null;
+  transport_doc_date: string | null;
+  over_dimensional: boolean;
+  consignment_value_minor: Minor;
+  valid_from: string | null;
+  valid_until: string | null;
+  /** `cancel` while the 24-hour window is open, null once it has closed. Read-only in this app. */
+  remedy: "cancel" | null;
+  error_code: string | null;
+  error: string | null;
+  attempted_at: string;
+}
+
+/** One bill on a list page, with enough of its document to be recognisable. */
+export interface EwayBillWithInvoice {
+  bill: EwayBill;
+  invoice_number: string;
+  customer_name: string;
+}
+
+/** A document's current e-Way position, derived from its newest attempt. */
+export interface EwayState {
+  required: boolean;
+  status: EwayStatus | null;
+  eway_bill_no: string | null;
+  valid_from: string | null;
+  valid_until: string | null;
+  terminal: boolean;
+  cancellable_until: string | null;
+  remedy: "cancel" | null;
+  attempts: number;
+}
+
+/* --------------------------------------------------------------------- withholding: TDS / TCS */
+
+export type WithholdingCode = "gst_tds_51" | "itax_194q" | "itax_206c_1h";
+export type WithholdingBasis = "supply" | "aggregate";
+export type WithholdingDirection = "deducted" | "collected";
+
+/** One version of one withholding head. Global vocabulary, versioned by `effective_from`. */
+export interface WithholdingRate {
+  id: string;
+  code: WithholdingCode;
+  name: string;
+  rate_pct: number;
+  threshold_minor: Minor;
+  basis: WithholdingBasis;
+  jurisdiction: string;
+  effective_from: string;
+  effective_to: string | null;
+}
+
+/** One deduction or collection on one document — a row of the register. */
+export interface InvoiceWithholding {
+  id: string;
+  invoice_id: string;
+  code: WithholdingCode;
+  direction: WithholdingDirection;
+  withholding_rate_id: string;
+  rate_pct: number;
+  threshold_minor: Minor;
+  basis: WithholdingBasis;
+  basis_minor: Minor;
+  amount_minor: Minor;
+  cgst_minor: Minor;
+  sgst_minor: Minor;
+  igst_minor: Minor;
+  counterparty_gstin: string | null;
+  counterparty_name: string;
+  resolved_on: string;
+  period: string;
+}
+
+/** One register row on a list page, with enough of its document to be recognisable. */
+export interface WithholdingWithInvoice {
+  withholding: InvoiceWithholding;
+  invoice_number: string;
+  invoice_issued_date: string;
+  invoice_total_minor: Minor;
+}
+
+/** One counterparty's line in the GSTR-7-style summary. */
+export interface WithholdingDeductorRow {
+  counterparty_gstin: string | null;
+  counterparty_name: string;
+  document_count: number;
+  basis_minor: Minor;
+  amount_minor: Minor;
+  cgst_minor: Minor;
+  sgst_minor: Minor;
+  igst_minor: Minor;
+}
+
+/** One period's withholding, grouped the way the return declares it, and footed. */
+export interface WithholdingSummary {
+  period: string;
+  code: WithholdingCode | null;
+  direction: WithholdingDirection | null;
+  rows: WithholdingDeductorRow[];
+  document_count: number;
+  total_basis_minor: Minor;
+  total_amount_minor: Minor;
+  total_cgst_minor: Minor;
+  total_sgst_minor: Minor;
+  total_igst_minor: Minor;
 }

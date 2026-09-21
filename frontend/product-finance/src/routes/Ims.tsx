@@ -4,10 +4,11 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { listImsDocuments } from "@/api/client";
 import type { ImsReasonFilter, ImsSort, ImsStatusFilter } from "@/api/client";
 import type { ImsDocument } from "@/api/types";
-import { isOutstanding, reasonLabel, suggestionSentence } from "@/data/compliance";
+import { reasonLabel, suggestionSentence } from "@/data/compliance";
 import { readErrorMessage } from "@/lib/errors";
 import { formatDate } from "@/lib/format";
 import { formatAmount } from "@/lib/money";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { useAsync } from "@opsgrids/client";
 import {
   Card,
@@ -16,9 +17,11 @@ import {
   ErrorState,
   ImsStatusPill,
   PageHeader,
+  Pagination,
   Pill,
   SampleDataChip,
   SearchInput,
+  Select,
   Skeleton,
   SuggestedAction,
   Tag,
@@ -92,21 +95,23 @@ export function ImsPage() {
   const [searchParams] = useSearchParams();
 
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [status, setStatus] = useState<ImsStatusFilter>(() => {
     const initial = searchParams.get("status");
     return isStatusFilter(initial) ? initial : "all";
   });
   const [reason, setReason] = useState<ImsReasonFilter>("all");
   const [sort, setSort] = useState<ImsSort>("date_asc");
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(25);
 
   const loader = useCallback(
-    () => listImsDocuments({ search, status, reason, sort }),
-    [search, status, reason, sort],
+    () => listImsDocuments({ search: debouncedSearch, status, reason, sort, page, size }),
+    [debouncedSearch, status, reason, sort, page, size],
   );
-  const queue = useAsync(loader, [search, status, reason, sort]);
+  const queue = useAsync(loader, [debouncedSearch, status, reason, sort, page, size]);
 
   const rows = useMemo(() => (queue.status === "success" ? queue.data.items : []), [queue]);
-  const outstanding = rows.filter((row) => isOutstanding(row.status)).length;
 
   const columns: Column<ImsDocument>[] = [
     {
@@ -170,8 +175,8 @@ export function ImsPage() {
             <SampleDataChip />
             <span className="inline-flex h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold shadow-card">
               <InboxIcon className="size-4 text-muted" />
-              <span className="tnum">{queue.status === "success" ? outstanding : "—"}</span>
-              <span className="font-medium text-muted">awaiting you</span>
+              <span className="tnum">{queue.status === "success" ? queue.data.total : "—"}</span>
+              <span className="font-medium text-muted">documents</span>
             </span>
           </span>
         }
@@ -191,23 +196,19 @@ export function ImsPage() {
             label="Search supplier documents"
             placeholder="Search by supplier, GSTIN or document number…"
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              setPage(1);
+            }}
             containerClassName="lg:max-w-sm"
           />
-          <label className="inline-flex h-11 items-center gap-2 self-start rounded-full bg-ground px-4 lg:self-auto">
-            <span className="text-xs font-semibold uppercase tracking-wide text-faint">Sort</span>
-            <select
-              value={sort}
-              onChange={(event) => setSort(event.target.value as ImsSort)}
-              className="h-full cursor-pointer bg-transparent text-sm font-semibold text-ink focus:outline-none"
-            >
-              {SORTS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          <Select
+            label="Sort supplier documents"
+            containerClassName="lg:w-56"
+            value={sort}
+            onChange={(event) => setSort(event.target.value as ImsSort)}
+            options={SORTS}
+          />
         </div>
 
         <div className="flex flex-col gap-3 border-t border-line pt-4">
@@ -219,7 +220,10 @@ export function ImsPage() {
               <Pill
                 key={filter.value}
                 active={status === filter.value}
-                onClick={() => setStatus(filter.value)}
+                onClick={() => {
+                  setStatus(filter.value);
+                  setPage(1);
+                }}
               >
                 {filter.label}
               </Pill>
@@ -233,7 +237,10 @@ export function ImsPage() {
               <Pill
                 key={filter.value}
                 active={reason === filter.value}
-                onClick={() => setReason(filter.value)}
+                onClick={() => {
+                  setReason(filter.value);
+                  setPage(1);
+                }}
               >
                 {filter.label}
               </Pill>
@@ -254,20 +261,34 @@ export function ImsPage() {
           <ErrorState message={readErrorMessage(queue.error, "the reconciliation queue")} />
         ) : null}
         {queue.status === "success" ? (
-          <DataTable
-            columns={columns}
-            rows={rows}
-            rowKey={(doc) => doc.id}
-            onRowClick={(doc) => navigate(`/compliance/ims/${doc.id}`)}
-            caption="Inbound supplier documents awaiting reconciliation"
-            emptyState={
-              <EmptyState
-                icon={<InboxIcon className="size-6" />}
-                title="Nothing in this view"
-                description="No supplier document matches these filters. Clear the search, or widen the decision and reason filters."
-              />
-            }
-          />
+          <>
+            <DataTable
+              columns={columns}
+              rows={rows}
+              rowKey={(doc) => doc.id}
+              onRowClick={(doc) => navigate(`/compliance/ims/${doc.id}`)}
+              caption="Inbound supplier documents awaiting reconciliation"
+              emptyState={
+                <EmptyState
+                  icon={<InboxIcon className="size-6" />}
+                  title="Nothing in this view"
+                  description="No supplier document matches these filters. Clear the search, or widen the decision and reason filters."
+                />
+              }
+            />
+            <Pagination
+              page={queue.data.page}
+              pages={queue.data.pages}
+              total={queue.data.total}
+              size={queue.data.size}
+              noun="documents"
+              onPageChange={setPage}
+              onSizeChange={(n) => {
+                setSize(n);
+                setPage(1);
+              }}
+            />
+          </>
         ) : null}
       </Card>
     </div>

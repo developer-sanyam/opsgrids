@@ -7,10 +7,12 @@ import { getCustomerById } from "@/api/customers";
 import type { Invoice } from "@/api/types";
 import { customerName } from "@/data/customers";
 import { outstandingMinor } from "@/data/derive";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { formatDate } from "@/lib/format";
 import { formatAmount } from "@/lib/money";
-import { useAsync } from "@opsgrids/client";
+import { Can, problemMessage, useAsync } from "@opsgrids/client";
 import {
+  Button,
   Card,
   DataTable,
   EmptyState,
@@ -18,13 +20,15 @@ import {
   FilingStatusPill,
   InvoiceStatusPill,
   PageHeader,
+  Pagination,
   Pill,
   SearchInput,
+  Select,
   Skeleton,
   Tag,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { ReceiptIcon } from "@opsgrids/ui";
+import { PlusIcon, ReceiptIcon } from "@opsgrids/ui";
 
 const STATUS_FILTERS: { value: InvoiceStatusFilter; label: string }[] = [
   { value: "all", label: "All" },
@@ -69,11 +73,14 @@ export function InvoicesPage() {
   const [searchParams] = useSearchParams();
 
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
+  const debouncedSearch = useDebouncedValue(search);
   const [status, setStatus] = useState<InvoiceStatusFilter>(() => {
     const s = searchParams.get("status");
     return isStatusFilter(s) ? s : "all";
   });
   const [sort, setSort] = useState<InvoiceSort>("issued_desc");
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(25);
 
   // Re-seed from the URL when arriving via a link (sidebar search, "view all" on the overview).
   useEffect(() => {
@@ -84,10 +91,10 @@ export function InvoicesPage() {
   }, [searchParams]);
 
   const loader = useCallback(
-    () => listInvoices({ search, status, sort }),
-    [search, status, sort],
+    () => listInvoices({ search: debouncedSearch, status, sort, page, size }),
+    [debouncedSearch, status, sort, page, size],
   );
-  const invoices = useAsync(loader, [search, status, sort]);
+  const invoices = useAsync(loader, [debouncedSearch, status, sort, page, size]);
   // The directory resolves `customer_id` to a name; it never gates the table from rendering.
   const customers = useAsync(getCustomerById, []);
   const customerById = customers.status === "success" ? customers.data : undefined;
@@ -177,11 +184,18 @@ export function InvoicesPage() {
         eyebrow="Accounts receivable"
         title="Invoices"
         actions={
-          <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
-            <ReceiptIcon className="size-4 text-muted" />
-            <span className="tnum">{invoices.status === "success" ? invoices.data.total : "—"}</span>
-            <span className="text-muted font-medium">documents</span>
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
+              <ReceiptIcon className="size-4 text-muted" />
+              <span className="tnum">{invoices.status === "success" ? invoices.data.total : "—"}</span>
+              <span className="text-muted font-medium">documents</span>
+            </span>
+            <Can permission="finance.billing.invoice.issue" scope="ORG">
+              <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => navigate("/invoices/new")}>
+                New invoice
+              </Button>
+            </Can>
+          </div>
         }
       />
 
@@ -198,27 +212,30 @@ export function InvoicesPage() {
             label="Search invoices"
             placeholder="Search by number or customer…"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
             containerClassName="lg:max-w-xs"
           />
-          <label className="inline-flex h-11 items-center gap-2 rounded-full bg-ground px-4 self-start lg:self-auto">
-            <span className="text-xs font-semibold uppercase tracking-wide text-faint">Sort</span>
-            <select
-              value={sort}
-              onChange={(e) => setSort(e.target.value as InvoiceSort)}
-              className="h-full cursor-pointer bg-transparent text-sm font-semibold text-ink focus:outline-none"
-            >
-              {SORTS.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          <Select
+            label="Sort invoices"
+            containerClassName="lg:w-56"
+            value={sort}
+            onChange={(e) => setSort(e.target.value as InvoiceSort)}
+            options={SORTS}
+          />
         </div>
         <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1 border-t border-line pt-4">
           {STATUS_FILTERS.map((f) => (
-            <Pill key={f.value} active={status === f.value} onClick={() => setStatus(f.value)}>
+            <Pill
+              key={f.value}
+              active={status === f.value}
+              onClick={() => {
+                setStatus(f.value);
+                setPage(1);
+              }}
+            >
               {f.label}
             </Pill>
           ))}
@@ -234,22 +251,55 @@ export function InvoicesPage() {
             ))}
           </div>
         ) : null}
-        {invoices.status === "error" ? <ErrorState message={invoices.error.message} /> : null}
-        {invoices.status === "success" ? (
-          <DataTable
-            columns={columns}
-            rows={rows}
-            rowKey={(inv) => inv.id}
-            onRowClick={(inv) => navigate(`/invoices/${inv.id}`)}
-            caption="Invoices and credit notes"
-            emptyState={
-              <EmptyState
-                icon={<ReceiptIcon className="size-6" />}
-                title="No invoices match"
-                description="Nothing matches these filters. Try a different status or clear the search."
-              />
-            }
+        {invoices.status === "error" ? (
+          <ErrorState
+            title="Couldn't load invoices"
+            message={problemMessage(invoices.error)}
+            onRetry={invoices.reload}
           />
+        ) : null}
+        {invoices.status === "success" ? (
+          <>
+            <DataTable
+              columns={columns}
+              rows={rows}
+              rowKey={(inv) => inv.id}
+              onRowClick={(inv) => navigate(`/invoices/${inv.id}`)}
+              caption="Invoices and credit notes"
+              emptyState={
+                <EmptyState
+                  icon={<ReceiptIcon className="size-6" />}
+                  title={debouncedSearch || status !== "all" ? "No invoices match" : "No invoices yet"}
+                  description={
+                    debouncedSearch || status !== "all"
+                      ? "Nothing matches these filters. Try a different status or clear the search."
+                      : "Issue the first invoice to start billing."
+                  }
+                  action={
+                    debouncedSearch || status !== "all" ? null : (
+                      <Can permission="finance.billing.invoice.issue" scope="ORG">
+                        <Button size="sm" onClick={() => navigate("/invoices/new")}>
+                          New invoice
+                        </Button>
+                      </Can>
+                    )
+                  }
+                />
+              }
+            />
+            <Pagination
+              page={invoices.data.page}
+              pages={invoices.data.pages}
+              total={invoices.data.total}
+              size={invoices.data.size}
+              noun="invoices"
+              onPageChange={setPage}
+              onSizeChange={(n) => {
+                setSize(n);
+                setPage(1);
+              }}
+            />
+          </>
         ) : null}
       </Card>
     </div>

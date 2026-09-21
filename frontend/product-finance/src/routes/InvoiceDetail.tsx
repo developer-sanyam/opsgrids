@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { getInvoice } from "@/api/client";
 import { getCustomerById } from "@/api/customers";
@@ -8,7 +8,7 @@ import { customerName, getCustomer } from "@/data/customers";
 import { outstandingMinor } from "@/data/derive";
 import { formatDate } from "@/lib/format";
 import { formatAmount, formatMoney } from "@/lib/money";
-import { useAsync } from "@opsgrids/client";
+import { Can, problemMessage, useAsync } from "@opsgrids/client";
 import {
   Avatar,
   Button,
@@ -19,7 +19,8 @@ import {
   Skeleton,
   Tag,
 } from "@/ui";
-import { ArrowLeftIcon, CheckCircleIcon, PlusIcon } from "@opsgrids/ui";
+import { ArrowLeftIcon, CheckCircleIcon, PlusIcon, useToast } from "@opsgrids/ui";
+import { PaymentFormDialog } from "@/forms/PaymentFormDialog";
 
 /** A labelled figure in the totals footer. */
 function TotalRow({
@@ -44,98 +45,6 @@ function TotalRow({
         {value}
       </span>
     </div>
-  );
-}
-
-/**
- * The record-payment affordance. In fixtures mode it can't post to a ledger, so it captures the
- * amount and method and shows an optimistic confirmation — the shape of the interaction the live
- * mutation will take, with every field validated. Never available on a settled, void, or draft doc.
- */
-function RecordPayment({ invoice }: { invoice: Invoice }) {
-  const outstanding = outstandingMinor(invoice);
-  const [open, setOpen] = useState(false);
-  const [confirmed, setConfirmed] = useState(false);
-  const [rupees, setRupees] = useState(() => (outstanding / 100).toFixed(2));
-  const [method, setMethod] = useState("bank_transfer");
-
-  if (confirmed) {
-    return (
-      <div className="flex items-start gap-3 rounded-tile bg-present-soft px-4 py-3 text-present" role="status">
-        <CheckCircleIcon className="mt-0.5 size-5 shrink-0" />
-        <div className="flex flex-col gap-0.5">
-          <span className="text-sm font-bold">Payment recorded</span>
-          <span className="text-xs text-present/90">
-            Allocated to {invoice.number}. It will post to the cash ledger as a new entry —
-            corrections are never edits.
-          </span>
-        </div>
-      </div>
-    );
-  }
-
-  if (!open) {
-    return (
-      <Button
-        variant="primary"
-        size="md"
-        leadingIcon={<PlusIcon className="size-4" />}
-        onClick={() => setOpen(true)}
-      >
-        Record payment
-      </Button>
-    );
-  }
-
-  return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        setConfirmed(true);
-      }}
-      className="flex flex-col gap-3 rounded-tile border border-line p-4"
-    >
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="pay-amount" className="text-xs font-semibold uppercase tracking-wide text-faint">
-          Amount received (₹)
-        </label>
-        <input
-          id="pay-amount"
-          type="number"
-          min="0"
-          step="0.01"
-          required
-          value={rupees}
-          onChange={(e) => setRupees(e.target.value)}
-          className="money h-11 rounded-tile bg-ground px-3 text-sm text-ink focus:outline-none focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
-        />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="pay-method" className="text-xs font-semibold uppercase tracking-wide text-faint">
-          Method
-        </label>
-        <select
-          id="pay-method"
-          value={method}
-          onChange={(e) => setMethod(e.target.value)}
-          className="h-11 rounded-tile bg-ground px-3 text-sm font-semibold text-ink focus:outline-none focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
-        >
-          <option value="bank_transfer">Bank transfer</option>
-          <option value="upi">UPI</option>
-          <option value="card">Card</option>
-          <option value="cheque">Cheque</option>
-          <option value="cash">Cash</option>
-        </select>
-      </div>
-      <div className="flex items-center gap-2 pt-1">
-        <Button type="submit" size="sm">
-          Confirm
-        </Button>
-        <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
-          Cancel
-        </Button>
-      </div>
-    </form>
   );
 }
 
@@ -172,16 +81,20 @@ export function InvoiceDetailPage() {
 
       {invoice.status === "error" ? (
         <Card className="p-6">
-          <ErrorState message={invoice.error.message} />
+          <ErrorState message={problemMessage(invoice.error)} onRetry={invoice.reload} />
         </Card>
       ) : null}
 
-      {invoice.status === "success" ? <InvoiceBody invoice={invoice.data} /> : null}
+      {invoice.status === "success" ? (
+        <InvoiceBody invoice={invoice.data} onReload={invoice.reload} />
+      ) : null}
     </div>
   );
 }
 
-function InvoiceBody({ invoice }: { invoice: Invoice }) {
+function InvoiceBody({ invoice, onReload }: { invoice: Invoice; onReload: () => void }) {
+  const navigate = useNavigate();
+  const toast = useToast();
   // The directory resolves `customer_id` to a display record; it never gates the document.
   const customers = useAsync(getCustomerById, []);
   const customerById = customers.status === "success" ? customers.data : undefined;
@@ -191,7 +104,10 @@ function InvoiceBody({ invoice }: { invoice: Invoice }) {
   const outstanding = outstandingMinor(invoice);
   const canRecord =
     !isCreditNote && (invoice.status === "sent" || invoice.status === "overdue") && outstanding > 0;
+  const canCorrect =
+    !isCreditNote && (invoice.status === "sent" || invoice.status === "overdue" || invoice.status === "paid");
   const sign = (v: number) => (v < 0 ? "−" : "");
+  const [recording, setRecording] = useState(false);
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-3 items-start">
@@ -211,15 +127,41 @@ function InvoiceBody({ invoice }: { invoice: Invoice }) {
               <Tag>{invoice.currency}</Tag>
             </div>
           </div>
-          <div className="flex flex-col items-end gap-1 text-sm">
-            <span className="text-muted">
-              Issued <span className="font-semibold text-ink-soft tnum">{formatDate(invoice.issued_date)}</span>
-            </span>
-            <span className="text-muted">
-              Due <span className="font-semibold text-ink-soft tnum">{formatDate(invoice.due_date)}</span>
-            </span>
+          <div className="flex flex-wrap items-start gap-3">
+            <div className="flex flex-col items-end gap-1 text-sm">
+              <span className="text-muted">
+                Issued <span className="font-semibold text-ink-soft tnum">{formatDate(invoice.issued_date)}</span>
+              </span>
+              <span className="text-muted">
+                Due <span className="font-semibold text-ink-soft tnum">{formatDate(invoice.due_date)}</span>
+              </span>
+            </div>
+            {canCorrect ? (
+              <Can permission="finance.billing.invoice.issue" scope="ORG">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigate(`/invoices/new?corrects=${invoice.id}`)}
+                >
+                  Issue credit note
+                </Button>
+              </Can>
+            ) : null}
           </div>
         </div>
+
+        <p className="rounded-tile bg-ground px-4 py-3 text-sm text-muted">
+          An issued invoice cannot be edited or deleted. A mistake here is corrected by{" "}
+          <button
+            type="button"
+            onClick={() => canCorrect && navigate(`/invoices/new?corrects=${invoice.id}`)}
+            disabled={!canCorrect}
+            className="font-semibold text-ink-soft underline decoration-dotted underline-offset-2 disabled:cursor-not-allowed disabled:no-underline"
+          >
+            issuing a credit note
+          </button>{" "}
+          against it, never by editing this document.
+        </p>
 
         {invoice.corrects_invoice_id ? (
           <Link
@@ -315,7 +257,16 @@ function InvoiceBody({ invoice }: { invoice: Invoice }) {
             </div>
 
             {canRecord ? (
-              <RecordPayment invoice={invoice} />
+              <Can permission="finance.billing.payment.record" scope="ORG">
+                <Button
+                  variant="primary"
+                  size="md"
+                  leadingIcon={<PlusIcon className="size-4" />}
+                  onClick={() => setRecording(true)}
+                >
+                  Record payment
+                </Button>
+              </Can>
             ) : (
               <div className="flex items-center gap-2 rounded-tile bg-ground px-4 py-3 text-sm font-medium text-muted">
                 {invoice.status === "paid" ? (
@@ -338,6 +289,18 @@ function InvoiceBody({ invoice }: { invoice: Invoice }) {
           attempt history are what a person opens this screen for when something has gone wrong,
           and none of them fit in a sidebar column. */}
       <CompliancePanel invoice={invoice} />
+
+      {recording ? (
+        <PaymentFormDialog
+          invoice={invoice}
+          onClose={() => setRecording(false)}
+          onSaved={(payment) => {
+            setRecording(false);
+            toast.success(`Payment ${payment.reference} recorded.`);
+            onReload();
+          }}
+        />
+      ) : null}
     </div>
   );
 }
