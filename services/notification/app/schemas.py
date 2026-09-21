@@ -489,3 +489,118 @@ class SuppressionOut(BaseModel):
 
 class UnsubscribeOut(BaseModel):
     unsubscribed: bool
+
+
+# --------------------------------------------------------------------- engage lists
+
+LIST_MEMBERS_MAX = 1000
+
+
+class ContactListIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
+
+
+class ContactListPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=2000)
+
+
+class ContactListOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    member_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ListMembersIn(BaseModel):
+    """Contact ids to add or remove. Ids that are not this organization's contacts are reported
+    back rather than failing the batch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    contact_ids: list[uuid.UUID] = Field(min_length=1, max_length=LIST_MEMBERS_MAX)
+
+
+class ListMembersOut(BaseModel):
+    changed: int
+    unknown: list[str]
+
+
+# --------------------------------------------------------------------- engage campaigns
+
+CampaignStatus = Literal["draft", "scheduled", "sending", "sent", "cancelled"]
+CampaignAudience = Literal["list", "all_sendable"]
+RecipientStatus = Literal["queued", "sent", "failed", "suppressed"]
+
+
+class CampaignIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    sender_id: uuid.UUID
+    subject: str = Field(default="", max_length=255)
+    html_body: str = Field(default="", max_length=500_000)
+    text_body: str = Field(default="", max_length=500_000)
+    audience: CampaignAudience = "all_sendable"
+    list_id: uuid.UUID | None = None
+    scheduled_at: datetime | None = None
+
+
+class CampaignPatch(BaseModel):
+    """Partial edit of a draft. An absent field is left alone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    sender_id: uuid.UUID | None = None
+    subject: str | None = Field(default=None, max_length=255)
+    html_body: str | None = Field(default=None, max_length=500_000)
+    text_body: str | None = Field(default=None, max_length=500_000)
+    audience: CampaignAudience | None = None
+    list_id: uuid.UUID | None = None
+    scheduled_at: datetime | None = None
+
+
+class CampaignStats(BaseModel):
+    recipients: int
+    queued: int
+    sent: int
+    failed: int
+    suppressed: int
+
+
+class CampaignOut(BaseModel):
+    id: str
+    name: str
+    sender_id: str
+    subject: str
+    html_body: str
+    text_body: str
+    audience: CampaignAudience
+    list_id: str | None
+    status: CampaignStatus
+    scheduled_at: datetime | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    cancelled_at: datetime | None
+    stats: CampaignStats
+    created_at: datetime
+    updated_at: datetime
+
+
+class CampaignRecipientOut(BaseModel):
+    id: str
+    contact_id: str
+    #: Masked. Copied sealed at expansion; no read route opens it.
+    email: str
+    status: RecipientStatus
+    provider_message_id: str | None
+    error: str
+    sent_at: datetime | None

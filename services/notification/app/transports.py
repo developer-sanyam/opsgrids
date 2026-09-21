@@ -56,6 +56,11 @@ class Outgoing:
     subject: str | None
     body: str
     template: dict[str, Any] | None = None
+    #: An HTML alternative to `body`, for transports that carry one (email). `body` stays the
+    #: plain-text part, so a client that cannot render HTML still reads the message.
+    html: str | None = None
+    #: Extra headers — `List-Unsubscribe` on campaign mail. Ignored by transports with none.
+    headers: dict[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,7 +160,11 @@ class SmtpTransport:
         mail["From"] = self._from
         mail["To"] = message.to_address
         mail["Subject"] = message.subject or ""
+        for key, value in (message.headers or {}).items():
+            mail[key] = value
         mail.set_content(message.body)
+        if message.html:
+            mail.add_alternative(message.html, subtype="html")
         try:
             with smtplib.SMTP(self._host, self._port, timeout=self._timeout) as client:
                 if self._use_tls:

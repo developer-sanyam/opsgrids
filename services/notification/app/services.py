@@ -18,11 +18,12 @@ import base64
 import hashlib
 import uuid
 from datetime import UTC, datetime
+from html import escape as html_escape
 from typing import Any, Final
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from sqlalchemy import update
+from sqlalchemy import delete, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -31,7 +32,11 @@ from app import dns_check, domain, selectors
 from app.config import settings
 from app.models import (
     AuditLog,
+    Campaign,
+    CampaignRecipient,
     Contact,
+    ContactList,
+    ContactListMember,
     Delivery,
     EmailConnection,
     EmailDomain,
@@ -47,6 +52,7 @@ from app.models import (
 )
 from app.targets import TargetResolver
 from app.transports import (
+    LogTransport,
     Outgoing,
     SmtpTransport,
     Transport,
@@ -55,7 +61,7 @@ from app.transports import (
 )
 from platform_core import pii
 from platform_core.audit import record_audit
-from platform_core.auth import ScopeContext
+from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.cache import enforce_rate_limit
 from platform_core.errors import (
     BusinessRuleProblem,
@@ -2308,3 +2314,648 @@ async def unsubscribe(
         request=request,
     )
     return True
+
+
+# --------------------------------------------------------------------- engage lists
+#
+# A list is a named set of contacts. Membership rows cascade with either end, so deleting a
+# contact takes them off every list, and a list is refused deletion while a campaign names it —
+# a draft whose audience silently vanished would send to nobody, or be edited into sending to
+# everybody.
+
+
+async def create_list(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    name: str,
+    description: str = "",
+    request: Request | None = None,
+) -> ContactList:
+    if await selectors.get_list_by_name(session, ctx.organization_id, name):
+        raise ConflictProblem(f"A list named {name!r} already exists")
+    row = ContactList(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        name=name,
+        description=description,
+    )
+    session.add(row)
+    await session.flush()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.list.created",
+        entity="contact_list",
+        entity_id=row.id,
+        after={"name": name},
+        request=request,
+    )
+    return row
+
+
+async def update_list(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    list_id: uuid.UUID,
+    name: str | None = None,
+    description: str | None = None,
+    request: Request | None = None,
+) -> ContactList:
+    row = await selectors.get_list(session, ctx.organization_id, list_id)
+    if row is None:
+        raise NotFoundProblem("No such list")
+    before = {"name": row.name, "description": row.description}
+    if name is not None and name != row.name:
+        if await selectors.get_list_by_name(session, ctx.organization_id, name):
+            raise ConflictProblem(f"A list named {name!r} already exists")
+        row.name = name
+    if description is not None:
+        row.description = description
+    row.updated_by = str(ctx.principal.sub)
+    row.updated_at = datetime.now(UTC)
+    await session.flush()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.list.updated",
+        entity="contact_list",
+        entity_id=row.id,
+        before=before,
+        after={"name": row.name, "description": row.description},
+        request=request,
+    )
+    return row
+
+
+async def delete_list(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    list_id: uuid.UUID,
+    request: Request | None = None,
+) -> None:
+    row = await selectors.get_list(session, ctx.organization_id, list_id)
+    if row is None:
+        raise NotFoundProblem("No such list")
+    if await selectors.campaigns_using_list(session, ctx.organization_id, list_id):
+        raise ConflictProblem("A campaign is addressed to this list; delete or re-target it first")
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.list.deleted",
+        entity="contact_list",
+        entity_id=row.id,
+        before={"name": row.name},
+        request=request,
+    )
+    await session.delete(row)
+    await session.flush()
+
+
+async def change_list_members(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    list_id: uuid.UUID,
+    contact_ids: list[uuid.UUID],
+    add: bool,
+    request: Request | None = None,
+) -> tuple[int, list[uuid.UUID]]:
+    """Add or remove members. Returns `(changed, unknown_ids)`.
+
+    Idempotent both ways: adding someone already on the list, or removing someone who is not,
+    changes nothing and is not an error. An id that is not one of this organization's contacts
+    is reported back as unknown — the same answer whether it is absent or another tenant's.
+    """
+    row = await selectors.get_list(session, ctx.organization_id, list_id)
+    if row is None:
+        raise NotFoundProblem("No such list")
+    wanted = list(dict.fromkeys(contact_ids))
+    known = await selectors.existing_contact_ids(session, ctx.organization_id, wanted)
+    unknown = [cid for cid in wanted if cid not in known]
+    ids = [cid for cid in wanted if cid in known]
+    changed = 0
+    if ids and add:
+        stmt = (
+            pg_insert(ContactListMember)
+            .values(
+                [
+                    {
+                        "id": uuid.uuid4(),
+                        "organization_id": ctx.organization_id,
+                        "created_by": str(ctx.principal.sub),
+                        "list_id": list_id,
+                        "contact_id": cid,
+                    }
+                    for cid in ids
+                ]
+            )
+            .on_conflict_do_nothing(constraint="uq_contact_list_member")
+            .returning(ContactListMember.id)
+        )
+        changed = len((await session.execute(stmt)).scalars().all())
+    elif ids:
+        result = await session.execute(
+            delete(ContactListMember)
+            .where(
+                ContactListMember.organization_id == ctx.organization_id,
+                ContactListMember.list_id == list_id,
+                ContactListMember.contact_id.in_(ids),
+            )
+            .returning(ContactListMember.id)
+        )
+        changed = len(result.scalars().all())
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.list.members_added" if add else "engage.list.members_removed",
+        entity="contact_list",
+        entity_id=list_id,
+        after={"changed": changed, "unknown": len(unknown)},
+        request=request,
+    )
+    return changed, unknown
+
+
+# --------------------------------------------------------------------- engage campaigns
+#
+# A campaign is drafted, sent, and fanned out. `request_send` is the gate and the only writer of
+# `sending`; it stages `EVT_CAMPAIGN_SEND_REQUESTED` in the same transaction, so the fan-out
+# starts only after the commit (the relay publishes it) and never inline. The fan-out is
+# `expand_campaign` once and then `send_campaign_batch` until it says stop — each its own
+# transaction, driven by `consumers.fan_out`.
+
+EVT_CAMPAIGN_SEND_REQUESTED = "engage.campaign.campaign.send_requested"
+EVT_CAMPAIGN_CANCELLED = "engage.campaign.campaign.cancelled"
+
+#: What the fan-out stamps on rows it creates. It acts on an event, not for a person.
+CAMPAIGN_ACTOR = "system:engage-campaign"
+
+_CANCELLABLE: Final[frozenset[str]] = frozenset({"draft", "scheduled", "sending"})
+
+#: The recipient-facing wording of a refused send. The provider's own words go to the log only.
+_RECIPIENT_REFUSED = "The provider refused this message"
+
+
+def system_ctx(organization_id: uuid.UUID) -> ScopeContext:
+    """An ORG-scoped context for the fan-out, which has no principal. ORG narrows nothing, so
+    it lets the consumer reuse `selectors.sendable_contacts` rather than a second copy of it."""
+    principal = Principal(sub=uuid.UUID(int=0), organization_id=organization_id)
+    return ScopeContext(
+        principal=principal, scope=Scope.ORG, permission="engage.campaign.campaign.send"
+    )
+
+
+async def _check_audience(
+    session: AsyncSession, org_id: uuid.UUID, audience: str, list_id: uuid.UUID | None
+) -> None:
+    if audience == "list":
+        if list_id is None:
+            raise ValidationProblem("A list audience needs a list_id")
+        if await selectors.get_list(session, org_id, list_id) is None:
+            raise ValidationProblem("No such list")
+    elif list_id is not None:
+        raise ValidationProblem("list_id is only meaningful when the audience is a list")
+
+
+async def _check_sender_exists(
+    session: AsyncSession, org_id: uuid.UUID, sender_id: uuid.UUID
+) -> None:
+    if await selectors.get_sender(session, org_id, sender_id) is None:
+        raise ValidationProblem("No such sender")
+
+
+async def create_campaign(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    fields: dict[str, Any],
+    request: Request | None = None,
+) -> Campaign:
+    await _check_sender_exists(session, ctx.organization_id, fields["sender_id"])
+    await _check_audience(session, ctx.organization_id, fields["audience"], fields.get("list_id"))
+    row = Campaign(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        status="draft",
+        **fields,
+    )
+    session.add(row)
+    await session.flush()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.campaign.created",
+        entity="campaign",
+        entity_id=row.id,
+        after={"name": row.name, "audience": row.audience},
+        request=request,
+    )
+    return row
+
+
+async def update_campaign(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    campaign_id: uuid.UUID,
+    changes: dict[str, Any],
+    request: Request | None = None,
+) -> Campaign:
+    """Edit a draft. Anything past draft is a record of what went out, and is refused."""
+    row = await selectors.get_campaign(session, ctx.organization_id, campaign_id, lock=True)
+    if row is None:
+        raise NotFoundProblem("No such campaign")
+    if row.status != "draft":
+        raise ConflictProblem(f"Only a draft can be edited; this campaign is {row.status}")
+    if "sender_id" in changes and changes["sender_id"] is not None:
+        await _check_sender_exists(session, ctx.organization_id, changes["sender_id"])
+    audience = changes.get("audience") or row.audience
+    list_id = changes.get("list_id", row.list_id)
+    if audience == "all_sendable" and "audience" in changes and "list_id" not in changes:
+        list_id = None
+    await _check_audience(session, ctx.organization_id, audience, list_id)
+    for key, value in changes.items():
+        if key in ("audience", "list_id"):
+            continue
+        if value is not None or key == "scheduled_at":
+            setattr(row, key, value)
+    row.audience = audience
+    row.list_id = list_id
+    row.updated_by = str(ctx.principal.sub)
+    row.updated_at = datetime.now(UTC)
+    await session.flush()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.campaign.updated",
+        entity="campaign",
+        entity_id=row.id,
+        after={"fields": sorted(changes)},
+        request=request,
+    )
+    return row
+
+
+async def delete_campaign(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    campaign_id: uuid.UUID,
+    request: Request | None = None,
+) -> None:
+    """Delete a draft. A campaign that started sending is kept: its recipients are a record."""
+    row = await selectors.get_campaign(session, ctx.organization_id, campaign_id, lock=True)
+    if row is None:
+        raise NotFoundProblem("No such campaign")
+    if row.status != "draft":
+        raise ConflictProblem(f"Only a draft can be deleted; this campaign is {row.status}")
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.campaign.deleted",
+        entity="campaign",
+        entity_id=row.id,
+        before={"name": row.name},
+        request=request,
+    )
+    await session.delete(row)
+    await session.flush()
+
+
+async def request_send(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    campaign_id: uuid.UUID,
+    request: Request | None = None,
+) -> Campaign:
+    """**The send gate.** Moves a draft to `sending` and stages the fan-out event.
+
+    409 when the campaign is not a draft (sent twice, or cancelled). 422 when it is a draft
+    that may not go: no subject or body, a sender that never passed its test send, a domain
+    that fell out of verification, no connected provider, a missing list, or unsubscribe links
+    that cannot be signed — mail without a working unsubscribe link is not sent at all.
+    """
+    row = await selectors.get_campaign(session, ctx.organization_id, campaign_id, lock=True)
+    if row is None:
+        raise NotFoundProblem("No such campaign")
+    if row.status != "draft":
+        raise ConflictProblem(f"Only a draft can be sent; this campaign is {row.status}")
+    if not row.subject.strip():
+        raise BusinessRuleProblem("Add a subject before sending.")
+    if not (row.text_body.strip() or row.html_body.strip()):
+        raise BusinessRuleProblem("Add a body before sending.")
+
+    sender = await selectors.get_sender(session, ctx.organization_id, row.sender_id)
+    if sender is None:
+        raise BusinessRuleProblem("The campaign's sender no longer exists. Choose another.")
+    if not sender.usable:
+        raise BusinessRuleProblem(
+            f"{sender.address} has not passed a test send. Verify the sender before sending."
+        )
+    email_domain = await selectors.get_domain(session, ctx.organization_id, sender.domain_id)
+    if email_domain is None or email_domain.status != "verified":
+        raise BusinessRuleProblem(
+            f"The domain behind {sender.address} is no longer verified. Re-verify its DNS "
+            "records before sending."
+        )
+    connection = await selectors.get_connection(session, ctx.organization_id)
+    if connection is None or connection.status != "connected":
+        raise BusinessRuleProblem("Connect an email provider before sending a campaign.")
+    if (
+        row.audience == "list"
+        and (
+            row.list_id is None
+            or await selectors.get_list(session, ctx.organization_id, row.list_id)
+        )
+        is None
+    ):
+        raise BusinessRuleProblem("The campaign's list no longer exists.")
+    if unsubscribe_key() is None:
+        raise BusinessRuleProblem(
+            "Unsubscribe links are not configured for this environment, so campaigns cannot "
+            "be sent."
+        )
+
+    row.status = "sending"
+    row.started_at = datetime.now(UTC)
+    row.updated_by = str(ctx.principal.sub)
+    row.updated_at = row.started_at
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.campaign.send_requested",
+        entity="campaign",
+        entity_id=row.id,
+        after={"sender": sender.address, "audience": row.audience},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_CAMPAIGN_SEND_REQUESTED,
+        aggregate_type="campaign",
+        aggregate_id=row.id,
+        payload={"organization_id": str(ctx.organization_id), "campaign_id": str(row.id)},
+        actor=_actor(ctx),
+    )
+    return row
+
+
+async def cancel_campaign(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    campaign_id: uuid.UUID,
+    request: Request | None = None,
+) -> Campaign:
+    """Stop a campaign. Recipients not yet sent stay `queued` and are never sent: the fan-out
+    re-reads the status before every batch and stops at the first one that is not `sending`."""
+    row = await selectors.get_campaign(session, ctx.organization_id, campaign_id, lock=True)
+    if row is None:
+        raise NotFoundProblem("No such campaign")
+    if row.status not in _CANCELLABLE:
+        raise ConflictProblem(f"A {row.status} campaign cannot be cancelled")
+    before = row.status
+    row.status = "cancelled"
+    row.cancelled_at = datetime.now(UTC)
+    row.updated_by = str(ctx.principal.sub)
+    row.updated_at = row.cancelled_at
+    await session.flush()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.campaign.cancelled",
+        entity="campaign",
+        entity_id=row.id,
+        before={"status": before},
+        after={"status": "cancelled"},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_CAMPAIGN_CANCELLED,
+        aggregate_type="campaign",
+        aggregate_id=row.id,
+        payload={"organization_id": str(ctx.organization_id), "campaign_id": str(row.id)},
+        actor=_actor(ctx),
+    )
+    return row
+
+
+async def expand_campaign(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    campaign_id: uuid.UUID,
+    batch_size: int,
+) -> bool:
+    """Write one `queued` recipient per sendable contact in the audience. Returns whether the
+    campaign is still `sending` (and so worth sending batches for).
+
+    Keyset-paged through `selectors.sendable_contacts`, so suppressed addresses are never
+    expanded at all. `ON CONFLICT DO NOTHING` on `(campaign_id, contact_id)` makes a redelivered
+    event, or two workers racing, insert each recipient once.
+    """
+    campaign = await selectors.get_campaign(session, organization_id, campaign_id)
+    if campaign is None or campaign.status != "sending":
+        return False
+    ctx = system_ctx(organization_id)
+    after: uuid.UUID | None = None
+    while True:
+        contacts = await selectors.sendable_contacts(
+            session,
+            ctx,
+            limit=batch_size,
+            after_id=after,
+            list_id=campaign.list_id if campaign.audience == "list" else None,
+        )
+        if not contacts:
+            break
+        await session.execute(
+            pg_insert(CampaignRecipient)
+            .values(
+                [
+                    {
+                        "id": uuid.uuid4(),
+                        "organization_id": organization_id,
+                        "created_by": CAMPAIGN_ACTOR,
+                        "campaign_id": campaign_id,
+                        "contact_id": c.id,
+                        "email_enc": c.email_enc,
+                        "email_masked": c.email_masked,
+                        "email_index": c.email_index,
+                        "status": "queued",
+                        "error": "",
+                    }
+                    for c in contacts
+                ]
+            )
+            .on_conflict_do_nothing(constraint="uq_campaign_recipient")
+        )
+        after = contacts[-1].id
+    await _fold_campaign_counts(session, campaign)
+    return True
+
+
+async def _fold_campaign_counts(session: AsyncSession, campaign: Campaign) -> dict[str, int]:
+    counts = (
+        await selectors.recipient_status_counts(session, campaign.organization_id, [campaign.id])
+    ).get(campaign.id, {})
+    campaign.recipient_count = sum(counts.values())
+    campaign.sent_count = counts.get("sent", 0)
+    campaign.failed_count = counts.get("failed", 0)
+    campaign.suppressed_count = counts.get("suppressed", 0)
+    await session.flush()
+    return counts
+
+
+def unsubscribe_url(organization_id: uuid.UUID, email: str) -> str:
+    base = settings().engage_public_api_base.rstrip("/")
+    return f"{base}/engage/unsubscribe/{unsubscribe_token(organization_id, email)}"
+
+
+def campaign_message(campaign: Campaign, *, to_address: str, unsubscribe: str) -> Outgoing:
+    """One recipient's copy: the campaign body plus the unsubscribe footer, and the RFC 8058
+    one-click headers. Built per recipient because the link is per address."""
+    text = campaign.text_body.rstrip()
+    footer = f"Unsubscribe: {unsubscribe}\n"
+    text = f"{text}\n\n--\n{footer}" if text else footer
+    html: str | None = None
+    if campaign.html_body.strip():
+        link = html_escape(unsubscribe, quote=True)
+        html = (
+            f'{campaign.html_body}\n<p style="font-size:12px;color:#666">'
+            f'<a href="{link}">Unsubscribe</a></p>'
+        )
+    return Outgoing(
+        to_address=to_address,
+        subject=campaign.subject,
+        body=text,
+        html=html,
+        headers={
+            "List-Unsubscribe": f"<{unsubscribe}>",
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
+    )
+
+
+async def campaign_transport(connection: EmailConnection, sender: Sender) -> Transport:
+    """The wire a campaign goes out on.
+
+    The organization's own connection — unless this process runs with `EMAIL_TRANSPORT=log`,
+    which is the platform's "send nothing real" switch and is honoured here as everywhere: a
+    staging deploy must not mail real audiences because a customer's credential happened to be
+    in its database.
+    """
+    if settings().email_transport == "log":
+        return LogTransport("email")
+    return await _transport_for_connection(connection, from_address=sender.address)
+
+
+async def send_campaign_batch(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    campaign_id: uuid.UUID,
+    batch_size: int,
+    transport: Transport | None = None,
+) -> str:
+    """Send the next batch of queued recipients. Returns what the caller should do next:
+
+    - `more` — sent a batch; call again.
+    - `done` — nothing left queued; the campaign is now `sent`.
+    - `stopped` — the campaign is no longer `sending` (cancelled); send nothing more.
+    - `capped` — the connection's `daily_cap` is used up for today; remaining stay `queued`.
+    - `unavailable` — the provider could not be reached; what was sent is recorded and the
+      rest stay `queued` for a redelivery to pick up.
+
+    Suppression is re-checked for every recipient at send time: an address that unsubscribed
+    after expansion is recorded `suppressed` and not sent. The provider call is made with the
+    recipient rows locked (`FOR UPDATE SKIP LOCKED`), so a concurrent worker skips them; a
+    crash mid-batch rolls the batch back to `queued`, which can re-send that batch — at-least-
+    once, bounded by the batch size.
+    """
+    campaign = await selectors.get_campaign(session, organization_id, campaign_id)
+    if campaign is None or campaign.status != "sending":
+        return "stopped"
+
+    connection = await selectors.get_connection(session, organization_id)
+    sender = await selectors.get_sender(session, organization_id, campaign.sender_id)
+    if connection is None or connection.status != "connected" or sender is None:
+        log.warning("engage.campaign.no_route", campaign_id=str(campaign_id))
+        return "stopped"
+
+    today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    used = await selectors.campaign_mail_sent_since(session, organization_id, today)
+    room = connection.daily_cap - used
+    if room <= 0:
+        log.info("engage.campaign.capped", campaign_id=str(campaign_id), cap=connection.daily_cap)
+        return "capped"
+
+    batch = await selectors.queued_recipients(
+        session, organization_id, campaign_id, limit=min(batch_size, room)
+    )
+    if not batch:
+        counts = await _fold_campaign_counts(session, campaign)
+        if counts.get("queued", 0) == 0:
+            campaign.status = "sent"
+            campaign.completed_at = datetime.now(UTC)
+            await session.flush()
+            return "done"
+        return "more"  # Rows locked by another worker; let it finish them.
+
+    wire = transport or await campaign_transport(connection, sender)
+    cfg = settings()
+    outcome = "more"
+    for recipient in batch:
+        if await selectors.is_suppressed(session, organization_id, recipient.email_index):
+            recipient.status = "suppressed"
+            continue
+        address = pii.open_sealed(recipient.email_enc, settings=cfg)
+        message = campaign_message(
+            campaign, to_address=address, unsubscribe=unsubscribe_url(organization_id, address)
+        )
+        try:
+            receipt = await wire.send(message)
+        except TransportRefused as exc:
+            log.warning("engage.campaign.refused", recipient_id=str(recipient.id), error=str(exc))
+            recipient.status = "failed"
+            recipient.error = _RECIPIENT_REFUSED
+            continue
+        except TransportUnavailable as exc:
+            log.warning("engage.campaign.unavailable", campaign_id=str(campaign_id), error=str(exc))
+            outcome = "unavailable"
+            break
+        recipient.status = "sent"
+        recipient.sent_at = datetime.now(UTC)
+        recipient.provider_message_id = receipt.provider_message_id
+    await session.flush()
+    await _fold_campaign_counts(session, campaign)
+    return outcome

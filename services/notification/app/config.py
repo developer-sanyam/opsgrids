@@ -87,6 +87,15 @@ class Settings(ServiceSettings):
     #: Rotating it invalidates every link already sent — rotate only with that accepted.
     engage_unsubscribe_secret: SecretStr = SecretStr("dev-only-engage-unsubscribe-secret")
 
+    #: Where the unsubscribe link in campaign mail points: the public API base the gateway serves
+    #: `/engage/unsubscribe/{token}` under. The link is the one URL a recipient must be able to
+    #: open without signing in, so it is configuration rather than derived from a request.
+    engage_public_api_base: str = "http://localhost:8080/api/v1"
+
+    # ----------------------------------------------------------------- engage campaigns
+    #: Recipients expanded, and then sent, per transaction by the campaign fan-out.
+    engage_campaign_batch_size: int = 200
+
     # ----------------------------------------------------------------- dispatcher
     #: Rows claimed per dispatcher pass.
     dispatch_batch_size: int = 50

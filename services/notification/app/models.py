@@ -578,6 +578,120 @@ class Suppression(Base, TenantBase):
     )
 
 
+class ContactList(Base, TenantBase):
+    """A named slice of the audience a campaign can be addressed to.
+
+    Membership is its own table rather than an array on the list, so "is this contact on that
+    list" is a unique index and removing a contact takes their memberships with it.
+    """
+
+    __tablename__ = "contact_lists"
+
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_contact_list_org_name"),)
+
+
+class ContactListMember(Base, TenantBase):
+    """One contact on one list. Foreign keys are fine here — both ends live in this schema — and
+    cascade, so deleting a contact or a list leaves no dangling membership."""
+
+    __tablename__ = "contact_list_members"
+
+    list_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.contact_lists.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    contact_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.contacts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("list_id", "contact_id", name="uq_contact_list_member"),
+        Index("ix_contact_list_members_org_list", "organization_id", "list_id", "contact_id"),
+    )
+
+
+class Campaign(Base, TenantBase):
+    """One email sent to an audience: a list, or every sendable contact.
+
+    `status` moves draft -> sending -> sent, and to cancelled from any state before sent. Only a
+    draft is editable; what a campaign said once it started going out is a record. The counts are
+    folded from `campaign_recipients` by the sender as it goes, so a stats read is one row.
+    """
+
+    __tablename__ = "campaigns"
+
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    sender_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    subject: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    html_body: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    text_body: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: list | all_sendable. `list_id` is set exactly when the audience is a list.
+    audience: Mapped[str] = mapped_column(String(20), nullable=False, default="all_sendable")
+    list_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.contact_lists.id")
+    )
+    #: draft | scheduled | sending | sent | cancelled.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    recipient_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    suppressed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'scheduled', 'sending', 'sent', 'cancelled')", name="status"
+        ),
+        CheckConstraint("audience IN ('list', 'all_sendable')", name="audience"),
+        CheckConstraint("(audience = 'list') = (list_id IS NOT NULL)", name="audience_list"),
+        Index("ix_campaigns_org_status", "organization_id", "status"),
+    )
+
+
+class CampaignRecipient(Base, TenantBase):
+    """One contact a campaign was addressed to, and what happened.
+
+    The address is copied, sealed, at expansion: the contact may be edited or deleted while the
+    campaign is going out, and what this row records is who it was sent to. `(campaign_id,
+    contact_id)` is unique, which is what makes expansion idempotent — a redelivered send event
+    inserts nothing twice.
+    """
+
+    __tablename__ = "campaign_recipients"
+
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: Plain UUID: the contact may be deleted, and this row must outlive it.
+    contact_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    email_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    email_masked: Mapped[str] = mapped_column(String(254), nullable=False)
+    email_index: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: queued | sent | failed | suppressed.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    provider_message_id: Mapped[str | None] = mapped_column(String(255))
+    error: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "contact_id", name="uq_campaign_recipient"),
+        CheckConstraint("status IN ('queued', 'sent', 'failed', 'suppressed')", name="status"),
+        Index("ix_campaign_recipients_org_campaign", "organization_id", "campaign_id", "status"),
+        Index("ix_campaign_recipients_org_sent_at", "organization_id", "sent_at"),
+    )
+
+
 class OutboxEvent(Base, OutboxMixin):
     """Domain events staged in the same transaction as the change they describe."""
 
