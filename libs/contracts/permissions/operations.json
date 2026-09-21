@@ -11,6 +11,24 @@
       "resource": "item"
     },
     {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Create, edit and delete inventory items",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "item"
+    },
+    {
+      "action": "adjust",
+      "default_scope": "ORG",
+      "description": "Adjust or count an item's stock on hand",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "stock"
+    },
+    {
       "action": "read",
       "default_scope": "ORG",
       "description": "See warehouses",
@@ -18,6 +36,24 @@
       "max_scope": "ORG",
       "module": "inventory",
       "resource": "warehouse"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Create, edit and delete warehouses",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "warehouse"
+    },
+    {
+      "action": "approve",
+      "default_scope": "ORG",
+      "description": "Approve a purchase order",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "purchase_order"
     },
     {
       "action": "read",
@@ -31,7 +67,7 @@
     {
       "action": "write",
       "default_scope": "OWN",
-      "description": "Raise and receive purchase orders",
+      "description": "Raise, edit and delete draft purchase orders; receive, close and cancel them",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "procurement",
@@ -41,6 +77,15 @@
       "action": "read",
       "default_scope": "ORG",
       "description": "See the supplier directory",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "supplier"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Create, edit and delete suppliers",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "procurement",
@@ -59,7 +104,23 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.item.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.stock.adjust",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.warehouse.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.warehouse.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.purchase_order.approve",
           "scope": "ORG"
         },
         {
@@ -72,6 +133,10 @@
         },
         {
           "code": "operations.procurement.supplier.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.supplier.write",
           "scope": "ORG"
         }
       ],
@@ -82,14 +147,26 @@
     {
       "code": "OPERATIONS_MANAGER",
       "cross_product": false,
-      "description": "Raises and receives purchase orders org-wide and reads suppliers, inventory and warehouses.",
+      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Does not create or rename warehouses \u2014 that stays with the admin.",
       "grants": [
         {
           "code": "operations.inventory.item.read",
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.item.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.stock.adjust",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.warehouse.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.purchase_order.approve",
           "scope": "ORG"
         },
         {
@@ -102,6 +179,10 @@
         },
         {
           "code": "operations.procurement.supplier.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.supplier.write",
           "scope": "ORG"
         }
       ],

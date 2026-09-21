@@ -1,6 +1,122 @@
 {
   "components": {
     "schemas": {
+      "ActivityIn": {
+        "additionalProperties": false,
+        "description": "Log one entry on the timeline. Append-only: there is no matching `Patch` \u2014 a wrong\nentry is corrected by logging a new one, not by editing this one.\n\nAt least one of `deal_id` / `company_id` / `contact_id` must be given \u2014 an activity\nnaming nothing is not a timeline entry. `direction` only means something for a call or\nan email; naming it on a meeting, note or task is refused. `occurred_at` defaults to\nnow and may backfill the past, but never the future \u2014 a touch cannot be logged before\nit happens.\n\n`owner_id` is deliberately absent here: an OWN-scoped caller can only ever log against\nthemselves, and the route forces it; only an ORG-scoped caller may attribute the entry\nto someone else, which is why the field lives on the model but not on this contract \u2014\nsee `app/api/routes.py`.",
+        "properties": {
+          "body": {
+            "anyOf": [
+              {
+                "maxLength": 10000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
+          },
+          "company_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Company Id"
+          },
+          "contact_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Id"
+          },
+          "deal_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deal Id"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "inbound",
+                  "outbound"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "subject": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Subject",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "call",
+              "email",
+              "meeting",
+              "note",
+              "task"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "subject"
+        ],
+        "title": "ActivityIn",
+        "type": "object"
+      },
       "ActivityOut": {
         "description": "Mirrors the SPA's `Activity`. `type` is the wire name for the touch kind; exactly\none of the target ids is usually set, and the owner always is.",
         "properties": {
@@ -107,6 +223,98 @@
         "title": "ActivityOut",
         "type": "object"
       },
+      "DealIn": {
+        "additionalProperties": false,
+        "description": "Open an opportunity. `company_id` / `primary_contact_id` / `owner_id` are plain\nUUIDs into customer-service's schema \u2014 deal-service cannot verify they resolve there\n(no cross-schema FK, no cross-schema query), so none of the three is checked here.",
+        "properties": {
+          "close_date": {
+            "format": "date",
+            "title": "Close Date",
+            "type": "string"
+          },
+          "company_id": {
+            "format": "uuid",
+            "title": "Company Id",
+            "type": "string"
+          },
+          "currency": {
+            "default": "INR",
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Currency",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "owner_id": {
+            "format": "uuid",
+            "title": "Owner Id",
+            "type": "string"
+          },
+          "primary_contact_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Contact Id"
+          },
+          "probability": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability"
+          },
+          "source": {
+            "default": "",
+            "maxLength": 60,
+            "title": "Source",
+            "type": "string"
+          },
+          "stage": {
+            "default": "lead",
+            "enum": [
+              "lead",
+              "qualified",
+              "proposal",
+              "negotiation",
+              "closed_won",
+              "closed_lost"
+            ],
+            "title": "Stage",
+            "type": "string"
+          },
+          "value_minor": {
+            "minimum": 0.0,
+            "title": "Value Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "company_id",
+          "owner_id",
+          "value_minor",
+          "close_date"
+        ],
+        "title": "DealIn",
+        "type": "object"
+      },
       "DealOut": {
         "description": "Mirrors the SPA's `Deal`. `value_minor` is minor units of `currency`; `probability`\nis 0-100; a past `close_date` on an open deal reads as overdue; `last_activity_at` is\nthe staleness clock (NULL: never touched).",
         "properties": {
@@ -204,6 +412,125 @@
           "source"
         ],
         "title": "DealOut",
+        "type": "object"
+      },
+      "DealPatch": {
+        "additionalProperties": false,
+        "description": "Partial update of the plain deal fields. Deliberately **no `stage`** \u2014 a stage\nmove only ever goes through `POST /deals/{id}/stage`, so the transition rule and its\nevent can never be bypassed by a patch.",
+        "properties": {
+          "close_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Close Date"
+          },
+          "company_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Company Id"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "maxLength": 3,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "primary_contact_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Contact Id"
+          },
+          "probability": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "value_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Minor"
+          }
+        },
+        "title": "DealPatch",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -307,6 +634,42 @@
           "schema_name"
         ],
         "title": "ServiceInfo",
+        "type": "object"
+      },
+      "StageMoveIn": {
+        "additionalProperties": false,
+        "description": "Move a deal through the pipeline. `domain.can_transition` is the enforcement\npoint \u2014 an illegal move (out of a closed stage, or to the same stage) answers 409.",
+        "properties": {
+          "probability": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability"
+          },
+          "stage": {
+            "enum": [
+              "lead",
+              "qualified",
+              "proposal",
+              "negotiation",
+              "closed_won",
+              "closed_lost"
+            ],
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage"
+        ],
+        "title": "StageMoveIn",
         "type": "object"
       },
       "StageRollupOut": {
@@ -554,6 +917,25 @@
             }
           },
           {
+            "description": "One account's deals only",
+            "in": "query",
+            "name": "company_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One account's deals only",
+              "title": "Company Id"
+            }
+          },
+          {
             "in": "query",
             "name": "page",
             "required": false,
@@ -600,6 +982,45 @@
           }
         },
         "summary": "Deals in the pipeline",
+        "tags": [
+          "deal"
+        ]
+      },
+      "post": {
+        "operationId": "create_deal_api_v1_deals_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DealIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DealOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open a deal",
         "tags": [
           "deal"
         ]
@@ -726,6 +1147,46 @@
         "tags": [
           "deal"
         ]
+      },
+      "post": {
+        "description": "Append one entry to the timeline.\n\nAn OWN-scoped caller can only ever log against themselves: `owner_id` is forced to\n`ctx.subject_ref` regardless of what the payload says. Only an ORG-scoped caller may\nattribute the entry to a different rep, and only if they name one. When `deal_id` is\ngiven, the object-level check re-applies the caller's scope to that deal \u2014 logging\nagainst a deal you cannot touch is refused exactly like reading or moving it would be.",
+        "operationId": "log_activity_api_v1_deals_activities_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActivityIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Log a call, email, meeting, note or task",
+        "tags": [
+          "deal"
+        ]
       }
     },
     "/api/v1/deals/summary": {
@@ -751,6 +1212,40 @@
       }
     },
     "/api/v1/deals/{deal_id}": {
+      "delete": {
+        "operationId": "delete_deal_api_v1_deals__deal_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Deal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a deal",
+        "tags": [
+          "deal"
+        ]
+      },
       "get": {
         "operationId": "read_deal_api_v1_deals__deal_id__get",
         "parameters": [
@@ -788,6 +1283,110 @@
           }
         },
         "summary": "One deal",
+        "tags": [
+          "deal"
+        ]
+      },
+      "patch": {
+        "operationId": "update_deal_api_v1_deals__deal_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Deal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DealPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DealOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update a deal",
+        "tags": [
+          "deal"
+        ]
+      }
+    },
+    "/api/v1/deals/{deal_id}/stage": {
+      "post": {
+        "operationId": "move_deal_stage_api_v1_deals__deal_id__stage_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Deal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StageMoveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DealOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Move a deal through the pipeline",
         "tags": [
           "deal"
         ]

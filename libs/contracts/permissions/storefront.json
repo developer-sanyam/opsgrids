@@ -4,6 +4,24 @@
     {
       "action": "read",
       "default_scope": "ORG",
+      "description": "See the product and category catalogue \u2014 products, their variants and categories",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "catalogue",
+      "resource": "product"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Create, edit, archive and delete products, their variants, and categories",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "catalogue",
+      "resource": "product"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
       "description": "See delivery zones and their postal codes, test a postal code, and read the out-of-zone demand report",
       "is_dangerous": false,
       "max_scope": "ORG",
@@ -18,6 +36,33 @@
       "max_scope": "ORG",
       "module": "delivery",
       "resource": "zone"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See enquiries and their status, with buyer contact details masked",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "sales",
+      "resource": "enquiry"
+    },
+    {
+      "action": "unmask",
+      "default_scope": "ORG",
+      "description": "Reveal an enquiry's real email and phone number (audited, requires step-up)",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "sales",
+      "resource": "enquiry"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Change an enquiry's status (new, contacted, won, lost)",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "sales",
+      "resource": "enquiry"
     },
     {
       "action": "read",
@@ -43,14 +88,34 @@
     {
       "code": "STOREFRONT_ADMIN",
       "cross_product": false,
-      "description": "Runs the store: its published identity and its delivery map. Built from the Storefront catalogue alone \u2014 publishing a store is not the same job as owning the account.",
+      "description": "Runs the store: its published identity, its delivery map, its catalogue and its enquiries. Built from the Storefront catalogue alone \u2014 publishing a store is not the same job as owning the account.",
       "grants": [
+        {
+          "code": "storefront.catalogue.product.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "storefront.catalogue.product.write",
+          "scope": "ORG"
+        },
         {
           "code": "storefront.delivery.zone.read",
           "scope": "ORG"
         },
         {
           "code": "storefront.delivery.zone.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "storefront.sales.enquiry.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "storefront.sales.enquiry.unmask",
+          "scope": "ORG"
+        },
+        {
+          "code": "storefront.sales.enquiry.write",
           "scope": "ORG"
         },
         {
@@ -69,8 +134,12 @@
     {
       "code": "STOREFRONT_STAFF",
       "cross_product": false,
-      "description": "Every person with a Storefront seat. Reads the store's settings and its delivery zones, including which postal codes were turned away, and changes neither.",
+      "description": "Every person with a Storefront seat. Reads the store's settings, its delivery zones and its catalogue, including which postal codes were turned away, and changes neither. Holds no enquiry permission \u2014 enquiries carry buyer PII and stay with the admin role until a narrower reading is asked for.",
       "grants": [
+        {
+          "code": "storefront.catalogue.product.read",
+          "scope": "ORG"
+        },
         {
           "code": "storefront.delivery.zone.read",
           "scope": "ORG"

@@ -1,6 +1,83 @@
 {
   "components": {
     "schemas": {
+      "CompanyIn": {
+        "additionalProperties": false,
+        "description": "Create an account. `owner_id` must resolve to a rep in this organization's\ndirectory (`GET /customers/owners`). `annual_revenue_minor` is integer minor units of\n`currency`; no float is accepted on this path.",
+        "properties": {
+          "annual_revenue_minor": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Annual Revenue Minor",
+            "type": "integer"
+          },
+          "city": {
+            "default": "",
+            "maxLength": 120,
+            "title": "City",
+            "type": "string"
+          },
+          "country": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Country",
+            "type": "string"
+          },
+          "currency": {
+            "default": "INR",
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Currency",
+            "type": "string"
+          },
+          "domain": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Domain",
+            "type": "string"
+          },
+          "industry": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Industry",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "owner_id": {
+            "format": "uuid",
+            "title": "Owner Id",
+            "type": "string"
+          },
+          "size_band": {
+            "default": "",
+            "maxLength": 20,
+            "title": "Size Band",
+            "type": "string"
+          },
+          "status": {
+            "default": "prospect",
+            "enum": [
+              "customer",
+              "prospect",
+              "lead",
+              "churned"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "owner_id"
+        ],
+        "title": "CompanyIn",
+        "type": "object"
+      },
       "CompanyOut": {
         "description": "Mirrors the SPA's `Company`. `annual_revenue_minor` is minor units of `currency`;\n`size_band` is a display band (\"201-500\"), not a number.",
         "properties": {
@@ -77,6 +154,207 @@
         "title": "CompanyOut",
         "type": "object"
       },
+      "CompanyPatch": {
+        "additionalProperties": false,
+        "description": "Partial update. Absent means \"leave alone\"; every field is the same shape as\n`CompanyIn`, just optional.",
+        "properties": {
+          "annual_revenue_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Annual Revenue Minor"
+          },
+          "city": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "City"
+          },
+          "country": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "maxLength": 3,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "domain": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain"
+          },
+          "industry": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Industry"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "size_band": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Band"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "customer",
+                  "prospect",
+                  "lead",
+                  "churned"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "title": "CompanyPatch",
+        "type": "object"
+      },
+      "ContactIn": {
+        "additionalProperties": false,
+        "description": "Add a person to an account. Deliberately **no `phone` field** \u2014 the mask is a\nserver-derived projection and must never be writable. Give a real number, if there is\none, through `raw_phone`; it is sealed and the mask derived from it (see\n`services.create_contact`). `extra=\"forbid\"` so a caller can never smuggle `phone` in.",
+        "properties": {
+          "company_id": {
+            "format": "uuid",
+            "title": "Company Id",
+            "type": "string"
+          },
+          "email": {
+            "format": "email",
+            "maxLength": 254,
+            "title": "Email",
+            "type": "string"
+          },
+          "full_name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Full Name",
+            "type": "string"
+          },
+          "owner_id": {
+            "format": "uuid",
+            "title": "Owner Id",
+            "type": "string"
+          },
+          "raw_phone": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 4,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Phone"
+          },
+          "status": {
+            "default": "lead",
+            "enum": [
+              "customer",
+              "qualified",
+              "lead",
+              "dormant"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "full_name",
+          "email",
+          "company_id",
+          "owner_id"
+        ],
+        "title": "ContactIn",
+        "type": "object"
+      },
       "ContactOut": {
         "description": "Mirrors the SPA's `Contact`. `phone` is the masked read shape the service returns by\ndefault; `last_activity_at` is NULL for a contact never touched.",
         "properties": {
@@ -151,6 +429,93 @@
         "title": "ContactOut",
         "type": "object"
       },
+      "ContactPatch": {
+        "additionalProperties": false,
+        "description": "Partial update of the plain contact fields. Deliberately **no `phone`, no\n`raw_phone`** \u2014 the number stays on its own dedicated route\n(`PUT /contacts/{id}/phone`), so a masked value can never be written back over a\nsealed one and a PATCH can never smuggle a raw number in unaudited.",
+        "properties": {
+          "company_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Company Id"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "format": "email",
+                "maxLength": 254,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "customer",
+                  "qualified",
+                  "lead",
+                  "dormant"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "ContactPatch",
+        "type": "object"
+      },
       "ContactPhoneIn": {
         "additionalProperties": false,
         "description": "Set a contact's real number. The mask is derived from it, never supplied.",
@@ -205,6 +570,36 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "OwnerIn": {
+        "additionalProperties": false,
+        "description": "Add a rep to the directory. A production org starts with zero owners, and every\ncompany / contact / deal create needs an `owner_id`, so this is the first write.",
+        "properties": {
+          "email": {
+            "format": "email",
+            "maxLength": 254,
+            "title": "Email",
+            "type": "string"
+          },
+          "full_name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Full Name",
+            "type": "string"
+          },
+          "role": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "full_name",
+          "email"
+        ],
+        "title": "OwnerIn",
         "type": "object"
       },
       "OwnerOut": {
@@ -414,6 +809,25 @@
             }
           },
           {
+            "description": "One account's contacts only",
+            "in": "query",
+            "name": "company_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One account's contacts only",
+              "title": "Company Id"
+            }
+          },
+          {
             "in": "query",
             "name": "page",
             "required": false,
@@ -463,9 +877,82 @@
         "tags": [
           "customer"
         ]
+      },
+      "post": {
+        "operationId": "create_contact_api_v1_contacts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a contact to an account",
+        "tags": [
+          "customer"
+        ]
       }
     },
     "/api/v1/contacts/{contact_id}": {
+      "delete": {
+        "operationId": "delete_contact_api_v1_contacts__contact_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Contact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a contact",
+        "tags": [
+          "customer"
+        ]
+      },
       "get": {
         "operationId": "read_contact_api_v1_contacts__contact_id__get",
         "parameters": [
@@ -503,6 +990,57 @@
           }
         },
         "summary": "One contact",
+        "tags": [
+          "customer"
+        ]
+      },
+      "patch": {
+        "operationId": "update_contact_api_v1_contacts__contact_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Contact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update a contact",
         "tags": [
           "customer"
         ]
@@ -715,6 +1253,45 @@
         "tags": [
           "customer"
         ]
+      },
+      "post": {
+        "operationId": "create_company_api_v1_customers_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompanyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a company to the account book",
+        "tags": [
+          "customer"
+        ]
       }
     },
     "/api/v1/customers/owners": {
@@ -741,9 +1318,83 @@
         "tags": [
           "customer"
         ]
+      },
+      "post": {
+        "description": "The prerequisite for everything else: a production org starts with zero owners,\nand every company / contact / deal create needs an `owner_id` that resolves to one.",
+        "operationId": "create_owner_api_v1_customers_owners_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a rep to the directory",
+        "tags": [
+          "customer"
+        ]
       }
     },
     "/api/v1/customers/{company_id}": {
+      "delete": {
+        "operationId": "delete_company_api_v1_customers__company_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "company_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Company Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a company",
+        "tags": [
+          "customer"
+        ]
+      },
       "get": {
         "operationId": "read_company_api_v1_customers__company_id__get",
         "parameters": [
@@ -781,6 +1432,57 @@
           }
         },
         "summary": "One company",
+        "tags": [
+          "customer"
+        ]
+      },
+      "patch": {
+        "operationId": "update_company_api_v1_customers__company_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "company_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Company Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompanyPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update a company",
         "tags": [
           "customer"
         ]

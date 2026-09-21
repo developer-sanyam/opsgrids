@@ -65,6 +65,15 @@
       "resource": "person"
     },
     {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Add and edit roster people",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "team",
+      "resource": "person"
+    },
+    {
       "action": "read",
       "default_scope": "OWN",
       "description": "See timesheets and the weekly grid",
@@ -116,6 +125,10 @@
         },
         {
           "code": "pulseboard.team.person.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "pulseboard.team.person.write",
           "scope": "ORG"
         },
         {

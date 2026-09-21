@@ -334,6 +334,18 @@
       },
       "LocationOut": {
         "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
           "code": {
             "title": "Code",
             "type": "string"
@@ -373,9 +385,77 @@
           "code",
           "timezone",
           "country",
+          "address",
           "is_active"
         ],
         "title": "LocationOut",
+        "type": "object"
+      },
+      "LocationPatch": {
+        "description": "Partial update. `code` is immutable \u2014 it is embedded in members' `location_codes`\nand in tokens.",
+        "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "country": {
+            "anyOf": [
+              {
+                "maxLength": 2,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          }
+        },
+        "title": "LocationPatch",
         "type": "object"
       },
       "MemberOut": {
@@ -616,6 +696,40 @@
         "title": "MemberPatch",
         "type": "object"
       },
+      "MyGrantsOut": {
+        "description": "What the caller may do, for the browser to hide controls with.\n\nNever the enforcement itself \u2014 every write still checks the permission server-side \u2014\nbut the one call every product's front end shares rather than re-deriving.",
+        "properties": {
+          "grants": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Grants",
+            "type": "array"
+          },
+          "membership_id": {
+            "format": "uuid",
+            "title": "Membership Id",
+            "type": "string"
+          },
+          "pv": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pv"
+          }
+        },
+        "required": [
+          "membership_id",
+          "grants"
+        ],
+        "title": "MyGrantsOut",
+        "type": "object"
+      },
       "OrgUnitIn": {
         "properties": {
           "code": {
@@ -785,6 +899,61 @@
         "title": "OrgUnitOut",
         "type": "object"
       },
+      "OrgUnitPatch": {
+        "description": "Partial update. `code` is immutable \u2014 other services and tokens key on it.",
+        "properties": {
+          "head_membership_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Membership Id"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "maxLength": 24,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "OrgUnitPatch",
+        "type": "object"
+      },
       "OrganizationOut": {
         "properties": {
           "country": {
@@ -858,6 +1027,29 @@
             ],
             "title": "Parent Org Id"
           },
+          "primary_contact_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Contact Email"
+          },
+          "registered_address": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Registered Address"
+          },
           "settings": {
             "additionalProperties": true,
             "title": "Settings",
@@ -918,6 +1110,8 @@
           "locale",
           "fiscal_year_start_month",
           "tax_ids",
+          "registered_address",
+          "primary_contact_email",
           "settings",
           "parent_org_id",
           "trial_ends_at",
@@ -1713,6 +1907,59 @@
         ]
       }
     },
+    "/api/v1/locations/{location_id}": {
+      "patch": {
+        "operationId": "update_location_api_v1_locations__location_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "location_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Location Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LocationPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename or deactivate a site",
+        "tags": [
+          "account"
+        ]
+      }
+    },
     "/api/v1/members": {
       "get": {
         "operationId": "list_members_api_v1_members_get",
@@ -1833,6 +2080,28 @@
           }
         },
         "summary": "People in the organization",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/members/me/grants": {
+      "get": {
+        "description": "What the caller may do, so the front end can hide controls it holds no grant for.\n\nDeclared **before** `/members/{membership_id}` so `me` is never captured as a UUID\npath parameter. No permission is required \u2014 every authenticated member may read their\nown grants \u2014 and there is no id to ask for somebody else's: the membership looked up is\nalways `principal.membership_id`, the one the caller's own token names.\n\nComputed by `selectors.get_membership_grants`, the same selector\n`GET /internal/v1/memberships/{id}/grants` uses, so the two can never disagree about\nwhat \"the widest scope wins\" means. This is a convenience for the browser only \u2014 every\nwrite still checks the permission itself, server-side, regardless of what this says.",
+        "operationId": "read_my_grants_api_v1_members_me_grants_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyGrantsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The caller's own grants",
         "tags": [
           "account"
         ]
@@ -2099,6 +2368,59 @@
         ]
       }
     },
+    "/api/v1/org-units/{unit_id}": {
+      "patch": {
+        "operationId": "update_org_unit_api_v1_org_units__unit_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "unit_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Unit Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrgUnitPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgUnitOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename or deactivate a department",
+        "tags": [
+          "account"
+        ]
+      }
+    },
     "/api/v1/org-units/{unit_id}/move": {
       "post": {
         "operationId": "move_org_unit_api_v1_org_units__unit_id__move_post",
@@ -2337,6 +2659,40 @@
       }
     },
     "/api/v1/roles/{role_id}": {
+      "delete": {
+        "operationId": "delete_role_api_v1_roles__role_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "role_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Role Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a custom role",
+        "tags": [
+          "account"
+        ]
+      },
       "put": {
         "operationId": "replace_role_grants_api_v1_roles__role_id__put",
         "parameters": [
@@ -2383,7 +2739,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Replace a role's permissions",
+        "summary": "Rename a role, or replace its grants",
         "tags": [
           "account"
         ]

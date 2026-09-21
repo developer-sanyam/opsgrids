@@ -1553,6 +1553,40 @@
       }
     },
     "/api/v1/geofences/{geofence_id}": {
+      "delete": {
+        "operationId": "delete_geofence_api_v1_geofences__geofence_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "geofence_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Geofence Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retire a geo-fence",
+        "tags": [
+          "attendance"
+        ]
+      },
       "patch": {
         "operationId": "update_geofence_api_v1_geofences__geofence_id__patch",
         "parameters": [
@@ -1701,6 +1735,40 @@
       }
     },
     "/api/v1/shifts/{shift_id}": {
+      "delete": {
+        "operationId": "delete_shift_api_v1_shifts__shift_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shift_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Shift Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retire a shift",
+        "tags": [
+          "attendance"
+        ]
+      },
       "patch": {
         "operationId": "update_shift_api_v1_shifts__shift_id__patch",
         "parameters": [

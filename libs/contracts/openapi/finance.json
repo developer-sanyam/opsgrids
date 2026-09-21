@@ -113,6 +113,75 @@
         "title": "CashflowPoint",
         "type": "object"
       },
+      "CustomerCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "city": {
+            "default": "",
+            "maxLength": 120,
+            "title": "City",
+            "type": "string"
+          },
+          "contact_name": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Contact Name",
+            "type": "string"
+          },
+          "deducts_tds_194q": {
+            "default": false,
+            "title": "Deducts Tds 194Q",
+            "type": "boolean"
+          },
+          "email": {
+            "default": "",
+            "maxLength": 200,
+            "pattern": "(^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$)|^$",
+            "title": "Email",
+            "type": "string"
+          },
+          "gstin": {
+            "anyOf": [
+              {
+                "maxLength": 15,
+                "minLength": 15,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gstin"
+          },
+          "is_tds_deductor": {
+            "default": false,
+            "title": "Is Tds Deductor",
+            "type": "boolean"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "state": {
+            "default": "",
+            "maxLength": 120,
+            "title": "State",
+            "type": "string"
+          },
+          "tcs_applicable": {
+            "default": false,
+            "title": "Tcs Applicable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "CustomerCreate",
+        "type": "object"
+      },
       "CustomerOut": {
         "description": "A billed party. `id` is the finance customer id invoices and payments reference.",
         "properties": {
@@ -123,6 +192,11 @@
           "contact_name": {
             "title": "Contact Name",
             "type": "string"
+          },
+          "deducts_tds_194q": {
+            "default": false,
+            "title": "Deducts Tds 194Q",
+            "type": "boolean"
           },
           "email": {
             "title": "Email",
@@ -144,6 +218,11 @@
             "title": "Id",
             "type": "string"
           },
+          "is_tds_deductor": {
+            "default": false,
+            "title": "Is Tds Deductor",
+            "type": "boolean"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -151,6 +230,11 @@
           "state": {
             "title": "State",
             "type": "string"
+          },
+          "tcs_applicable": {
+            "default": false,
+            "title": "Tcs Applicable",
+            "type": "boolean"
           }
         },
         "required": [
@@ -209,6 +293,122 @@
           "standing"
         ],
         "title": "CustomerSummary",
+        "type": "object"
+      },
+      "CustomerUpdate": {
+        "additionalProperties": false,
+        "description": "PATCH: every field optional, only what is sent is applied\n(`model_dump(exclude_unset=True)`); everything else is validated exactly as on create.",
+        "properties": {
+          "city": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "City"
+          },
+          "contact_name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Name"
+          },
+          "deducts_tds_194q": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deducts Tds 194Q"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "pattern": "(^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$)|^$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "gstin": {
+            "anyOf": [
+              {
+                "maxLength": 15,
+                "minLength": 15,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gstin"
+          },
+          "is_tds_deductor": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Tds Deductor"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "tcs_applicable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tcs Applicable"
+          }
+        },
+        "title": "CustomerUpdate",
         "type": "object"
       },
       "DocumentSeriesOut": {
@@ -1604,6 +1804,159 @@
         "title": "ImsSuggestion",
         "type": "object"
       },
+      "InvoiceIssueIn": {
+        "additionalProperties": false,
+        "description": "The principal route's own contract for issuing an invoice or a credit note.\n\nDeliberately **not** `InvoiceCreate`: that schema carries `number` and `status`, and a public\ncaller may set neither. The server owns the numbering series\n(`services.allocate_invoice_number`, race-safe per organization/document-type/financial-year)\nand the lifecycle status is always derived \u2014 there is no draft -> issued transition and no way\nto force `paid` or `void` through this route. Unknown fields are rejected rather than silently\nignored.",
+        "properties": {
+          "corrects_invoice_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Corrects Invoice Id"
+          },
+          "currency": {
+            "default": "INR",
+            "maxLength": 3,
+            "minLength": 3,
+            "pattern": "^[A-Z]{3}$",
+            "title": "Currency",
+            "type": "string"
+          },
+          "customer_id": {
+            "format": "uuid",
+            "title": "Customer Id",
+            "type": "string"
+          },
+          "document_type": {
+            "default": "invoice",
+            "title": "Document Type",
+            "type": "string"
+          },
+          "due_date": {
+            "format": "date",
+            "title": "Due Date",
+            "type": "string"
+          },
+          "issued_date": {
+            "format": "date",
+            "title": "Issued Date",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/InvoiceLineCreate"
+            },
+            "minItems": 1,
+            "title": "Lines",
+            "type": "array"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "place_of_supply": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place Of Supply"
+          },
+          "reverse_charge": {
+            "default": false,
+            "title": "Reverse Charge",
+            "type": "boolean"
+          },
+          "supply_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supply Type"
+          },
+          "tax_rate_pct": {
+            "title": "Tax Rate Pct",
+            "type": "number"
+          }
+        },
+        "required": [
+          "customer_id",
+          "issued_date",
+          "due_date",
+          "tax_rate_pct",
+          "lines"
+        ],
+        "title": "InvoiceIssueIn",
+        "type": "object"
+      },
+      "InvoiceLineCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "hsn_sac": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hsn Sac"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "number"
+          },
+          "tax_rate_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tax Rate Pct"
+          },
+          "unit_price_minor": {
+            "title": "Unit Price Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "description",
+          "quantity",
+          "unit_price_minor"
+        ],
+        "title": "InvoiceLineCreate",
+        "type": "object"
+      },
       "InvoiceLineOut": {
         "description": "One line on an invoice. `amount_minor` foots to `quantity x unit_price_minor`, and is the\n**taxable value** the line's GST is computed on.\n\nExactly one tax shape is populated: `cgst_minor` + `sgst_minor` on an intra-state supply,\n`igst_minor` on an inter-state one. The three always sum to the tax actually charged.",
         "properties": {
@@ -1998,6 +2351,11 @@
           "period_label": {
             "title": "Period Label",
             "type": "string"
+          },
+          "sample": {
+            "default": true,
+            "title": "Sample",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2027,12 +2385,22 @@
             "title": "Label",
             "type": "string"
           },
+          "sample": {
+            "default": false,
+            "title": "Sample",
+            "type": "boolean"
+          },
           "series": {
             "items": {
               "type": "number"
             },
             "title": "Series",
             "type": "array"
+          },
+          "trend_sample": {
+            "default": true,
+            "title": "Trend Sample",
+            "type": "boolean"
           },
           "value_minor": {
             "title": "Value Minor",
@@ -2073,6 +2441,11 @@
             },
             "title": "Cashflow",
             "type": "array"
+          },
+          "cashflow_sample": {
+            "default": true,
+            "title": "Cashflow Sample",
+            "type": "boolean"
           },
           "kpis": {
             "items": {
@@ -2312,6 +2685,42 @@
         "title": "Page[PaymentOut]",
         "type": "object"
       },
+      "Page_PurchaseDocumentOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PurchaseDocumentOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[PurchaseDocumentOut]",
+        "type": "object"
+      },
       "Page_WithholdingWithInvoice_": {
         "properties": {
           "items": {
@@ -2348,6 +2757,27 @@
         "title": "Page[WithholdingWithInvoice]",
         "type": "object"
       },
+      "PaymentAllocationCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "amount_minor": {
+            "exclusiveMinimum": 0.0,
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "invoice_id": {
+            "format": "uuid",
+            "title": "Invoice Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "invoice_id",
+          "amount_minor"
+        ],
+        "title": "PaymentAllocationCreate",
+        "type": "object"
+      },
       "PaymentAllocationOut": {
         "description": "How much of a received payment was applied to one invoice.",
         "properties": {
@@ -2371,6 +2801,59 @@
           "amount_minor"
         ],
         "title": "PaymentAllocationOut",
+        "type": "object"
+      },
+      "PaymentCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "allocations": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentAllocationCreate"
+            },
+            "minItems": 1,
+            "title": "Allocations",
+            "type": "array"
+          },
+          "customer_id": {
+            "format": "uuid",
+            "title": "Customer Id",
+            "type": "string"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "received_date": {
+            "format": "date",
+            "title": "Received Date",
+            "type": "string"
+          },
+          "reference": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Reference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reference",
+          "customer_id",
+          "received_date",
+          "method",
+          "allocations"
+        ],
+        "title": "PaymentCreate",
         "type": "object"
       },
       "PaymentOut": {
@@ -2433,6 +2916,77 @@
           "note"
         ],
         "title": "PaymentOut",
+        "type": "object"
+      },
+      "PurchaseDocumentCreate": {
+        "additionalProperties": false,
+        "description": "Record what a supplier billed. The tax split is **computed**, never supplied: the service\nderives CGST/SGST/IGST from the taxable value and the rate with the same `domain.split_gst`\nan invoice uses, so the purchase book and the sales book cannot disagree about arithmetic.",
+        "properties": {
+          "currency": {
+            "default": "INR",
+            "maxLength": 3,
+            "minLength": 3,
+            "pattern": "^[A-Z]{3}$",
+            "title": "Currency",
+            "type": "string"
+          },
+          "document_date": {
+            "format": "date",
+            "title": "Document Date",
+            "type": "string"
+          },
+          "document_type": {
+            "default": "invoice",
+            "title": "Document Type",
+            "type": "string"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "number": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Number",
+            "type": "string"
+          },
+          "supplier_gstin": {
+            "maxLength": 15,
+            "minLength": 15,
+            "title": "Supplier Gstin",
+            "type": "string"
+          },
+          "supplier_name": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Supplier Name",
+            "type": "string"
+          },
+          "tax_rate_pct": {
+            "title": "Tax Rate Pct",
+            "type": "number"
+          },
+          "taxable_minor": {
+            "exclusiveMinimum": 0.0,
+            "title": "Taxable Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "supplier_gstin",
+          "number",
+          "document_date",
+          "taxable_minor",
+          "tax_rate_pct"
+        ],
+        "title": "PurchaseDocumentCreate",
         "type": "object"
       },
       "PurchaseDocumentOut": {
@@ -3148,6 +3702,175 @@
           }
         },
         "summary": "Customers and their receivable positions",
+        "tags": [
+          "finance"
+        ]
+      },
+      "post": {
+        "operationId": "create_customer_api_v1_finance_customers_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a customer",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/customers/{customer_id}": {
+      "delete": {
+        "description": "Soft delete. Refused with 409 while any invoice or payment still names this customer \u2014\nsee `services.archive_customer`.",
+        "operationId": "archive_customer_api_v1_finance_customers__customer_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "customer_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Customer Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Archive a customer",
+        "tags": [
+          "finance"
+        ]
+      },
+      "get": {
+        "operationId": "read_customer_api_v1_finance_customers__customer_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "customer_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Customer Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One customer",
+        "tags": [
+          "finance"
+        ]
+      },
+      "patch": {
+        "description": "The only mutable billing entity: invoices snapshot `buyer_gstin` and never rewrite what\nthey were raised with, so editing a customer's directory record cannot rewrite history.",
+        "operationId": "update_customer_api_v1_finance_customers__customer_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "customer_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Customer Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a customer",
         "tags": [
           "finance"
         ]
@@ -4131,6 +4854,25 @@
             }
           },
           {
+            "description": "One customer's documents",
+            "in": "query",
+            "name": "customer_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One customer's documents",
+              "title": "Customer Id"
+            }
+          },
+          {
             "description": "issued_desc|issued_asc|amount_desc|amount_asc|due_asc",
             "in": "query",
             "name": "sort",
@@ -4189,6 +4931,46 @@
           }
         },
         "summary": "Invoices and credit notes",
+        "tags": [
+          "finance"
+        ]
+      },
+      "post": {
+        "description": "Finalize a new document. There is no edit, delete, void or draft -> issued transition \u2014\nthe only legitimate corrections are a credit note (this same route, `document_type` =\n`credit_note` and `corrects_invoice_id` set) and, for an e-invoiced document, an IRN\ncancellation inside its 24-hour window.\n\nThe number is never taken from the caller: the server allocates the next one in this\norganization's own series (`services.allocate_invoice_number`), so a duplicate is\nstructurally impossible rather than merely checked for. The lifecycle status is always\nderived, never forced \u2014 `InvoiceIssueIn` carries no `status` field at all.",
+        "operationId": "issue_invoice_api_v1_finance_invoices_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvoiceIssueIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Issue an invoice, or a credit note against one",
         "tags": [
           "finance"
         ]
@@ -4470,6 +5252,160 @@
           }
         },
         "summary": "Payments received",
+        "tags": [
+          "finance"
+        ]
+      },
+      "post": {
+        "description": "Append-only: there is no edit, delete or \"unapply\" for a payment or an allocation.\n\nSettling an invoice in full moves its status to `paid` in the same transaction as this\nwrite \u2014 see `services.record_payment` for the rules an allocation is checked against\n(open, correct customer, no double allocation, never over the outstanding balance).",
+        "operationId": "record_payment_api_v1_finance_payments_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaymentCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record a payment received and allocate it to invoices",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/purchases": {
+      "get": {
+        "operationId": "list_purchases_api_v1_finance_purchases_get",
+        "parameters": [
+          {
+            "description": "Supplier name, GSTIN or document number",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Supplier name, GSTIN or document number",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PurchaseDocumentOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Purchase documents recorded against this organization",
+        "tags": [
+          "finance"
+        ]
+      },
+      "post": {
+        "description": "No update or delete path (`models.py:451-452`): a supplier's own correction is recorded as\ntheir credit or debit note, a new document, never an edit to this one.",
+        "operationId": "record_purchase_api_v1_finance_purchases_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurchaseDocumentCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseDocumentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record what a supplier billed this organization",
         "tags": [
           "finance"
         ]

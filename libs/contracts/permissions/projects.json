@@ -54,6 +54,24 @@
       "max_scope": "ORG",
       "module": "portfolio",
       "resource": "project"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See delivery-org members",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "workspace",
+      "resource": "member"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Add and edit delivery-org members",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "workspace",
+      "resource": "member"
     }
   ],
   "product": "projects",
@@ -85,6 +103,14 @@
         },
         {
           "code": "projects.portfolio.project.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.workspace.member.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.workspace.member.write",
           "scope": "ORG"
         }
       ],
@@ -120,6 +146,14 @@
         {
           "code": "projects.portfolio.project.write",
           "scope": "ORG"
+        },
+        {
+          "code": "projects.workspace.member.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.workspace.member.write",
+          "scope": "ORG"
         }
       ],
       "is_admin": false,
@@ -145,6 +179,10 @@
         },
         {
           "code": "projects.portfolio.project.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.workspace.member.read",
           "scope": "ORG"
         }
       ],

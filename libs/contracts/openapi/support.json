@@ -1,6 +1,52 @@
 {
   "components": {
     "schemas": {
+      "AgentIn": {
+        "additionalProperties": false,
+        "description": "Add an agent to the desk. `ref` (`ag-04`) is server-allocated, not accepted here.",
+        "properties": {
+          "email": {
+            "format": "email",
+            "maxLength": 254,
+            "title": "Email",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "online": {
+            "default": false,
+            "title": "Online",
+            "type": "boolean"
+          },
+          "role": {
+            "default": "agent",
+            "enum": [
+              "agent",
+              "senior_agent",
+              "team_lead"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "team": {
+            "default": "Tier 1",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Team",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "email"
+        ],
+        "title": "AgentIn",
+        "type": "object"
+      },
       "AgentOut": {
         "properties": {
           "avg_first_response_min": {
@@ -62,6 +108,80 @@
           "online"
         ],
         "title": "AgentOut",
+        "type": "object"
+      },
+      "AgentPatch": {
+        "additionalProperties": false,
+        "description": "Edit an agent. Absent means \"leave alone\". The four metric columns\n(`open_load`, `avg_first_response_min`, `csat_pct`, `solved_7d`) are a desk projection and\nare never writable here.",
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "format": "email",
+                "maxLength": 254,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "online": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Online"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "enum": [
+                  "agent",
+                  "senior_agent",
+                  "team_lead"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "team": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team"
+          }
+        },
+        "title": "AgentPatch",
         "type": "object"
       },
       "AssignIn": {
@@ -266,22 +386,12 @@
       },
       "ReplyIn": {
         "additionalProperties": false,
-        "description": "Append one message to a ticket's thread.\n\n`author_type` defaults to `agent` \u2014 a reply from the desk is the common case; a `system`\nnote or a logged `customer` message names itself.",
+        "description": "Append one message to a ticket's thread, written by the authenticated caller.\n\n`author_type` is **not** a field here: every reply through this endpoint is the desk\nreplying, and the caller is the one holding `support.desk.ticket.write` \u2014 the server fixes\nthe type to `agent` rather than trusting the client to declare it, so nobody can use this\nendpoint to post a message that reads as if the customer or the system said it.\n`author_name` stays client-supplied: the forwarded principal carries no display name\n(`platform_core.auth.Principal` has no name claim) and no `Agent` row is linked to a\ncalling membership in this slice, so the server has nothing else to derive it from.",
         "properties": {
           "author_name": {
             "maxLength": 160,
             "minLength": 1,
             "title": "Author Name",
-            "type": "string"
-          },
-          "author_type": {
-            "default": "agent",
-            "enum": [
-              "customer",
-              "agent",
-              "system"
-            ],
-            "title": "Author Type",
             "type": "string"
           },
           "body": {
@@ -334,6 +444,45 @@
         "title": "Requester",
         "type": "object"
       },
+      "RequesterIn": {
+        "additionalProperties": false,
+        "description": "The requester snapshot taken when a ticket opens.",
+        "properties": {
+          "company": {
+            "maxLength": 200,
+            "title": "Company",
+            "type": "string"
+          },
+          "email": {
+            "format": "email",
+            "maxLength": 254,
+            "title": "Email",
+            "type": "string"
+          },
+          "kind": {
+            "default": "customer",
+            "enum": [
+              "customer",
+              "staff"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "email",
+          "company"
+        ],
+        "title": "RequesterIn",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -350,6 +499,42 @@
           "schema_name"
         ],
         "title": "ServiceInfo",
+        "type": "object"
+      },
+      "SlaPolicyIn": {
+        "additionalProperties": false,
+        "description": "Replace the organization's one SLA policy. `targets` must carry exactly one row per\npriority \u2014 the policy is total, not a sparse override.",
+        "properties": {
+          "business_hours": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Business Hours",
+            "type": "string"
+          },
+          "coverage": {
+            "default": "",
+            "title": "Coverage",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/SlaTargetIn"
+            },
+            "title": "Targets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "targets"
+        ],
+        "title": "SlaPolicyIn",
         "type": "object"
       },
       "SlaPolicyOut": {
@@ -383,6 +568,38 @@
         "title": "SlaPolicyOut",
         "type": "object"
       },
+      "SlaTargetIn": {
+        "additionalProperties": false,
+        "properties": {
+          "first_response_min": {
+            "minimum": 1.0,
+            "title": "First Response Min",
+            "type": "integer"
+          },
+          "priority": {
+            "enum": [
+              "urgent",
+              "high",
+              "normal",
+              "low"
+            ],
+            "title": "Priority",
+            "type": "string"
+          },
+          "resolution_min": {
+            "minimum": 1.0,
+            "title": "Resolution Min",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "priority",
+          "first_response_min",
+          "resolution_min"
+        ],
+        "title": "SlaTargetIn",
+        "type": "object"
+      },
       "SlaTargetOut": {
         "properties": {
           "first_response_min": {
@@ -410,6 +627,97 @@
           "resolution_min"
         ],
         "title": "SlaTargetOut",
+        "type": "object"
+      },
+      "StatusIn": {
+        "additionalProperties": false,
+        "description": "Move a ticket through the lifecycle. The target must be a legal next state\n(`app.domain.ALLOWED_TRANSITIONS`) \u2014 anything else is a 409, not a free-form set.",
+        "properties": {
+          "status": {
+            "enum": [
+              "new",
+              "open",
+              "pending",
+              "on_hold",
+              "solved"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "StatusIn",
+        "type": "object"
+      },
+      "TicketCreateIn": {
+        "additionalProperties": false,
+        "description": "Open a ticket with its first message.\n\nServer-owned, never accepted here: `number` (allocated per organization), `status`\n(always starts `new`), `created_at`, `first_response_at`, `sla_due`, `sla_breached` and\n`satisfaction` \u2014 all stored server truth, not form fields (`Must not be built`).",
+        "properties": {
+          "assignee_id": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Id"
+          },
+          "body": {
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "channel": {
+            "default": "web",
+            "enum": [
+              "email",
+              "chat",
+              "web",
+              "phone",
+              "api"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "priority": {
+            "default": "normal",
+            "enum": [
+              "urgent",
+              "high",
+              "normal",
+              "low"
+            ],
+            "title": "Priority",
+            "type": "string"
+          },
+          "requester": {
+            "$ref": "#/components/schemas/RequesterIn"
+          },
+          "subject": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Subject",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "subject",
+          "requester",
+          "body"
+        ],
+        "title": "TicketCreateIn",
         "type": "object"
       },
       "TicketOut": {
@@ -556,6 +864,58 @@
         "title": "TicketOut",
         "type": "object"
       },
+      "TicketUpdateIn": {
+        "additionalProperties": false,
+        "description": "Edit a ticket's plain properties. Absent means \"leave alone\"; status and assignee stay\non their own endpoints, each with its own audit action and event.",
+        "properties": {
+          "priority": {
+            "anyOf": [
+              {
+                "enum": [
+                  "urgent",
+                  "high",
+                  "normal",
+                  "low"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags"
+          }
+        },
+        "title": "TicketUpdateIn",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -656,6 +1016,130 @@
         "tags": [
           "support"
         ]
+      },
+      "post": {
+        "operationId": "create_agent_api_v1_support_agents_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add an agent to the desk",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/api/v1/support/agents/{ref}": {
+      "delete": {
+        "operationId": "deactivate_agent_api_v1_support_agents__ref__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "title": "Ref",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deactivate an agent",
+        "tags": [
+          "support"
+        ]
+      },
+      "patch": {
+        "operationId": "update_agent_api_v1_support_agents__ref__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "title": "Ref",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit an agent",
+        "tags": [
+          "support"
+        ]
       }
     },
     "/api/v1/support/info": {
@@ -747,6 +1231,45 @@
           }
         },
         "summary": "The SLA policy governing the queue",
+        "tags": [
+          "support"
+        ]
+      },
+      "put": {
+        "operationId": "set_sla_policy_api_v1_support_sla_policy_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SlaPolicyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlaPolicyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set the SLA policy governing the queue",
         "tags": [
           "support"
         ]
@@ -884,6 +1407,45 @@
         "tags": [
           "support"
         ]
+      },
+      "post": {
+        "operationId": "create_ticket_api_v1_support_tickets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TicketCreateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open a ticket",
+        "tags": [
+          "support"
+        ]
       }
     },
     "/api/v1/support/tickets/{number}": {
@@ -923,6 +1485,56 @@
           }
         },
         "summary": "One ticket, with its thread",
+        "tags": [
+          "support"
+        ]
+      },
+      "patch": {
+        "operationId": "update_ticket_api_v1_support_tickets__number__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TicketUpdateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a ticket's priority, subject or tags",
         "tags": [
           "support"
         ]
@@ -1027,6 +1639,58 @@
           }
         },
         "summary": "Append a message to a ticket's thread",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/api/v1/support/tickets/{number}/status": {
+      "post": {
+        "operationId": "change_ticket_status_api_v1_support_tickets__number__status_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Move a ticket through the lifecycle",
         "tags": [
           "support"
         ]

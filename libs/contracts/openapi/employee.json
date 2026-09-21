@@ -330,6 +330,18 @@
       "EmployeePatch": {
         "description": "Partial update. Absent means \"leave alone\"; the lifecycle status is not editable here \u2014\nit moves only through the transition endpoint and its state machine.",
         "properties": {
+          "date_of_exit": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Exit"
+          },
           "date_of_joining": {
             "anyOf": [
               {

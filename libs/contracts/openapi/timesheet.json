@@ -134,14 +134,58 @@
         "title": "TimesheetEntryIn",
         "type": "object"
       },
+      "TimesheetEntryOut": {
+        "description": "One recorded slot of work, as stored \u2014 the round-trip shape a week's edit resends so a\nre-PUT does not silently drop another day's project attribution\n(`services/timesheet/app/services.py` replaces every entry on record).",
+        "properties": {
+          "billable_hours": {
+            "title": "Billable Hours",
+            "type": "number"
+          },
+          "date": {
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "entered_hours": {
+            "title": "Entered Hours",
+            "type": "number"
+          },
+          "project_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Ref"
+          }
+        },
+        "required": [
+          "date",
+          "project_ref",
+          "entered_hours",
+          "billable_hours"
+        ],
+        "title": "TimesheetEntryOut",
+        "type": "object"
+      },
       "TimesheetRowOut": {
-        "description": "A person's timesheet for one week: seven daily cells and an approval state. Mirrors the\nSPA's `TimesheetRow`; `person_id` is the person's stable `ref` (`p01`).",
+        "description": "A person's timesheet for one week: seven daily cells and an approval state. Mirrors the\nSPA's `TimesheetRow`; `person_id` is the person's stable `ref` (`p01`). `entries` is the\nper-slot detail the cells are summed from \u2014 the grid's compact view loses it, so an edit\nthat only touches one day needs it to resend the rest unchanged.",
         "properties": {
           "cells": {
             "items": {
               "$ref": "#/components/schemas/TimesheetCellOut"
             },
             "title": "Cells",
+            "type": "array"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/TimesheetEntryOut"
+            },
+            "title": "Entries",
             "type": "array"
           },
           "person_id": {
@@ -167,9 +211,42 @@
           "person_id",
           "week_start",
           "status",
-          "cells"
+          "cells",
+          "entries"
         ],
         "title": "TimesheetRowOut",
+        "type": "object"
+      },
+      "TimesheetStatusIn": {
+        "description": "Submit or approve one person's week. Only `status` moves \u2014 the entries are untouched,\nunlike a PUT which replaces the whole week.",
+        "properties": {
+          "person_ref": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Person Ref",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "submitted",
+              "approved"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "week_start": {
+            "format": "date",
+            "title": "Week Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "person_ref",
+          "week_start",
+          "status"
+        ],
+        "title": "TimesheetStatusIn",
         "type": "object"
       },
       "TimesheetSummaryOut": {
@@ -484,6 +561,47 @@
           }
         },
         "summary": "What this service is",
+        "tags": [
+          "timesheets"
+        ]
+      }
+    },
+    "/api/v1/timesheets/status": {
+      "post": {
+        "operationId": "set_status_api_v1_timesheets_status_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TimesheetStatusIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimesheetRowOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit or approve one person's week",
         "tags": [
           "timesheets"
         ]
