@@ -1,4 +1,4 @@
-import type { TextareaHTMLAttributes } from "react";
+import type { Ref, TextareaHTMLAttributes } from "react";
 
 import { fieldSkin } from "../lib/field";
 import { FormField } from "./FormField";
@@ -20,6 +20,8 @@ interface TextAreaProps extends NativeTextArea {
    */
   counterFrom?: number;
   containerClassName?: string;
+  /** The textarea itself — for moving focus to the field a server error landed on. */
+  ref?: Ref<HTMLTextAreaElement>;
 }
 
 /**
@@ -39,6 +41,7 @@ export function TextArea({
   rows = 4,
   maxLength,
   value,
+  ref,
   ...props
 }: TextAreaProps) {
   const length = typeof value === "string" ? value.length : 0;
@@ -69,6 +72,7 @@ export function TextArea({
     >
       {({ id, describedBy, invalid }) => (
         <textarea
+          ref={ref}
           id={id}
           rows={rows}
           value={value}

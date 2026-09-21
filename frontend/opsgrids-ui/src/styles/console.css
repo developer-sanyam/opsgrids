@@ -168,10 +168,34 @@ body {
   animation-delay: calc(var(--i, 0) * 60ms);
 }
 
+/* The working indicator inside a loading button. Orientation, not decoration: it is the only
+   thing on screen saying a request is still in flight. */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin {
+  animation: spin 0.7s linear infinite;
+}
+
+/* The toast layer, one step above Dialog's z-50 — feedback has to survive the dialog that
+   produced it closing, and be readable while one is open. */
+.toast-layer {
+  z-index: 60;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .rise,
   .cascade > * {
     animation: none;
+  }
+  /* Not `animation: none`: a still spinner says "stuck" rather than "working", and the state it
+     carries has no other visual. Slowed to a drift instead, which reads as progress without
+     being motion anyone has to sit through. */
+  .spin {
+    animation-duration: 2.4s;
   }
   *,
   *::before,

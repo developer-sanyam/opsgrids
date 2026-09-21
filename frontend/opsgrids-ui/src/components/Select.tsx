@@ -1,4 +1,4 @@
-import type { SelectHTMLAttributes } from "react";
+import type { Ref, SelectHTMLAttributes } from "react";
 
 import { ChevronDown } from "../icons";
 import { fieldSkin } from "../lib/field";
@@ -23,6 +23,8 @@ interface SelectProps extends NativeSelect {
   /** The unselected first entry. Omit it where a value is always chosen. */
   placeholder?: string;
   containerClassName?: string;
+  /** The select itself — for moving focus to the field a server error landed on. */
+  ref?: Ref<HTMLSelectElement>;
 }
 
 /**
@@ -40,6 +42,7 @@ export function Select({
   placeholder,
   containerClassName,
   className,
+  ref,
   ...props
 }: SelectProps) {
   return (
@@ -52,6 +55,7 @@ export function Select({
       {({ id, describedBy, invalid }) => (
         <div className="relative">
           <select
+            ref={ref}
             id={id}
             aria-describedby={describedBy}
             aria-invalid={invalid || undefined}

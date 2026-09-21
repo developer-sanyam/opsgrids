@@ -19,6 +19,13 @@ export interface ProblemJson {
   detail?: string;
   instance?: string;
   request_id?: string;
+  /**
+   * The platform's one extension member: field-level detail on a validation failure, and on any
+   * hand-raised problem that names a field. Declared here because it is a platform contract
+   * (`platform_core.errors`) rather than one API's private extension — read it through
+   * `fieldErrors` / `fieldErrorMap`, which drop anything that is not the documented shape.
+   */
+  errors?: readonly { field: string; code: string; message: string }[];
 }
 
 /** A failed request, carrying the HTTP status and the parsed problem document when there is one. */

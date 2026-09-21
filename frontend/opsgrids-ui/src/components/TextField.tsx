@@ -1,4 +1,4 @@
-import type { InputHTMLAttributes } from "react";
+import type { InputHTMLAttributes, Ref } from "react";
 
 import { fieldSkin } from "../lib/field";
 import { FormField } from "./FormField";
@@ -14,6 +14,12 @@ interface TextFieldProps extends NativeInput {
   error?: string;
   optional?: boolean;
   containerClassName?: string;
+  /**
+   * The input itself — for moving focus to the field a server error landed on, and for a form
+   * dialog's `initialFocusRef`. Without it a screen has to reach its own control by
+   * `querySelector`, which is a position in the DOM standing in for an identity.
+   */
+  ref?: Ref<HTMLInputElement>;
 }
 
 /**
@@ -28,6 +34,7 @@ export function TextField({
   containerClassName,
   className,
   type = "text",
+  ref,
   ...props
 }: TextFieldProps) {
   return (
@@ -40,6 +47,7 @@ export function TextField({
     >
       {({ id, describedBy, invalid }) => (
         <input
+          ref={ref}
           id={id}
           type={type}
           aria-describedby={describedBy}
