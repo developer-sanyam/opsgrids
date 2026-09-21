@@ -18,10 +18,21 @@ Nine products are defined in the marketing catalogue
 **All nine are `status: 'soon'`; none is `available` or `beta`.** Behind them, 23 services carry
 real schemas, routes and row-level security, and nine product SPAs are built.
 
-The gap that matters: **every product SPA renders from fixtures, not from the API.** Each app has
-a typed client with the live gateway paths already wired, defaulting to `USE_FIXTURES` and falling
-back to `fixtures.ts`. Going live is a flag flip per app (`VITE_USE_FIXTURES=false`) — but until
-that flip is made and proven, no product is end-to-end.
+**The SPAs are wired to the live gateway.** Each app calls `apiRequest` from `@opsgrids/client`
+against the same-origin `/api/v1` prefix with a bearer token. Fixtures are a **development**
+convenience guarded by `import.meta.env.DEV`, which compiles to `false` in production — so a
+production build is always live, and a stray env var cannot ship fixture mode.
+
+Two polarities are in use, and they disagree:
+
+- **Fixtures opt-in** (`VITE_USE_FIXTURES === "true"`) — finance, hrms, itsm, marketing,
+  operations, projects, support. Live by default in dev.
+- **Fixtures opt-out** (`VITE_USE_FIXTURES !== "false"`) — **crm, pulseboard**. Fixtures by
+  default in dev, which is the odd one out and worth aligning.
+
+Four are deployed and answering: `marketing`, `finance`, `support` and `projects`
+`.opsgrids.com` all return **401** on their API prefixes — the gateway routes, the services are
+reachable, and auth is enforced.
 
 ---
 
@@ -75,8 +86,8 @@ A forgotten `WHERE organization_id = …` returns nothing rather than another te
 ## Products
 
 The previous version of this file said "**None of them exist.**" That is no longer true. Each
-product below has a schema, routes and RLS behind it, and a built SPA in front of it rendering
-from fixtures.
+product below has a schema, routes and RLS behind it, and a built SPA in front of it calling
+those routes through the gateway.
 
 ### HRMS — People
 
@@ -223,12 +234,14 @@ The previous version of this file said "zero handlers registered". Seven service
 
 | Surface | State | Notes |
 |---|---|---|
-| Nine product SPAs | **Partial** | Built and navigable; **all render from `fixtures.ts`** |
-| Typed API clients with live paths | Built | `USE_FIXTURES` guards the switch; dev-only by construction, so fixture mode cannot ship to production |
+| Nine product SPAs | Built | Navigable, and calling the live gateway in any production build |
+| Typed API clients | Built | `apiRequest` from `@opsgrids/client` → same-origin `/api/v1`, bearer token from the session |
+| Fixture fallback | Built | Dev-only by construction (`import.meta.env.DEV`), so fixture mode cannot ship to production |
+| Consistent fixture polarity | **Partial** | `crm` and `pulseboard` default to fixtures in dev; the other seven default to live |
+| Deployed and answering | Built | `marketing`, `finance`, `support`, `projects` — all 401 on their API prefixes, so gateway, services and auth are live |
 | Marketing website | Built | Index, product pages, pricing and sitemap all generated from one catalogue file |
 | Shared UI library (`opsgrids-ui`) | Built | |
 | Admin / internal consoles | Partial | `opsgrids-internal` exists; `atmora-*` directories are pre-rename leftovers |
-| **Any SPA talking to a live gateway** | **Absent** | Zero HTTP calls in any product SPA today |
 
 ## Observability
 
@@ -247,7 +260,9 @@ nothing, and the process looks healthy while the outbox grows without bound.
 ## The honest summary
 
 - **Backends are real** — 23 services with schemas, routes, RLS and audit.
-- **Frontends are real but unplugged** — nine SPAs, all on fixtures, zero live calls.
+- **Frontends are real and plugged in** — nine SPAs calling the gateway via `@opsgrids/client`;
+  four are deployed and answering 401. Only `crm` and `pulseboard` still default to fixtures
+  in dev, which is an inconsistency rather than a gap.
 - **Money is the deepest part** — catalogue, subscriptions, invoices, credit, metering, Razorpay,
   and a GST/e-invoice/e-way/TDS stack in `finance`.
 - **The named gaps are leave, payroll, storefront, automation rules, and the eight scaffolds**
