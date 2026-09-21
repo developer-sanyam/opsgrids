@@ -170,3 +170,88 @@ class TestCrossTenantOverHttp:
         assert listed.status_code == 200
         assert listed.json()["items"] == []
         assert "PRJ-104" not in listed.text
+
+    async def test_org_b_cannot_edit_or_delete_org_as_project(self, client, org_id, data) -> None:
+        """The RLS-backed 404 on `GET` must hold for the new `PATCH`/`DELETE` routes too — a
+        caller who cannot see a row by its tenant filter must not be able to touch it by
+        naming it directly, even with a fully-privileged permission grant."""
+        other_org = uuid.uuid4()
+        principal = principal_for(
+            other_org,
+            ["projects.portfolio.project.write:ORG"],
+            subject_ref=uuid.uuid4(),
+        )
+        app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            patched = await client.patch(
+                "/api/v1/projects-workspace/projects/PRJ-104", json={"health": "delayed"}
+            )
+            deleted = await client.delete("/api/v1/projects-workspace/projects/PRJ-104")
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+
+        assert patched.status_code == 404
+        assert deleted.status_code == 404
+
+        reader = principal_for(org_id, ["projects.portfolio.project.read:ORG"])
+        app.dependency_overrides[get_principal] = lambda: reader
+        try:
+            still_there = await client.get("/api/v1/projects-workspace/projects/PRJ-104")
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+        assert still_there.status_code == 200
+        assert still_there.json()["health"] == "on_track"  # the cross-org PATCH did not apply
+
+    async def test_org_b_cannot_edit_or_delete_org_as_task(self, client, org_id, data) -> None:
+        other_org = uuid.uuid4()
+        principal = principal_for(
+            other_org, ["projects.board.task.write:ORG"], subject_ref=uuid.uuid4()
+        )
+        app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            patched = await client.patch(
+                f"/api/v1/projects-workspace/tasks/{data['task_a_id']}", json={"stage": "done"}
+            )
+            deleted = await client.delete(f"/api/v1/projects-workspace/tasks/{data['task_a_id']}")
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+
+        assert patched.status_code == 404
+        assert deleted.status_code == 404
+
+    async def test_org_b_cannot_edit_or_delete_org_as_milestone(self, client, org_id, data) -> None:
+        other_org = uuid.uuid4()
+        principal = principal_for(
+            other_org, ["projects.delivery.milestone.write:ORG"], subject_ref=uuid.uuid4()
+        )
+        app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            patched = await client.patch(
+                f"/api/v1/projects-workspace/milestones/{data['milestone_a_id']}",
+                json={"status": "completed"},
+            )
+            deleted = await client.delete(
+                f"/api/v1/projects-workspace/milestones/{data['milestone_a_id']}"
+            )
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+
+        assert patched.status_code == 404
+        assert deleted.status_code == 404
+
+    async def test_org_b_cannot_edit_or_delete_org_as_member(self, client, org_id, data) -> None:
+        other_org = uuid.uuid4()
+        principal = principal_for(
+            other_org, ["projects.workspace.member.write:ORG"], subject_ref=uuid.uuid4()
+        )
+        app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            patched = await client.patch(
+                "/api/v1/projects-workspace/members/p-01", json={"role": "hijacked"}
+            )
+            deleted = await client.delete("/api/v1/projects-workspace/members/p-01")
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+
+        assert patched.status_code == 404
+        assert deleted.status_code == 404

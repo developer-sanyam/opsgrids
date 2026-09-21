@@ -13,10 +13,11 @@ member's `ref` (`p-01`). Money (`budget_minor` / `spent_minor`) is integer minor
 
 from __future__ import annotations
 
+import uuid
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # ------------------------------------------------------------------ vocabularies (match the SPA)
 
@@ -42,6 +43,37 @@ class Person(BaseModel):
     id: str
     name: str
     role: str
+
+
+class MemberOut(BaseModel):
+    """The full members-list row (unlike the embedded `Person`, which is only ever a
+    projection carried on a project/milestone/task). `id` is the stable `ref` (`p-01`) — the
+    same value the SPA's owner/assignee pickers submit as `owner_ref` / `assignee_ref`.
+    `directory_id` is the linked account-directory id, when this member has a platform login."""
+
+    id: str
+    name: str
+    role: str
+    directory_id: str | None
+
+
+class MemberIn(BaseModel):
+    """Add a delivery-org member. `ref` (`p-01`) is the stable handle every `owner_ref` /
+    `assignee_ref` on the wire carries — the same pattern as a project's `code`."""
+
+    ref: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=200)
+    role: str = Field(default="", max_length=120)
+    directory_id: uuid.UUID | None = None
+
+
+class MemberUpdate(BaseModel):
+    """Edit a member. Absent means "leave alone"; `ref` is immutable — it is the API identity
+    every owner/assignee picker submits."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    role: str | None = Field(default=None, max_length=120)
+    directory_id: uuid.UUID | None = None
 
 
 # ------------------------------------------------------------------ projects
@@ -90,6 +122,39 @@ class ProjectIn(BaseModel):
     summary: str = Field(default="", max_length=2000)
 
 
+class ProjectUpdate(BaseModel):
+    """Edit a project. Absent means "leave alone"; an explicit `null` on `owner_ref` clears the
+    owner. `code` is immutable — it is the URL key and travels in every already-published
+    event. `open_tasks` is not here: it is a stored headline figure, not user-editable."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=300)
+    client: str | None = Field(default=None, max_length=200)
+    owner_ref: str | None = Field(default=None, max_length=40)
+    phase: ProjectPhase | None = None
+    health: ProjectHealth | None = None
+    progress_pct: int | None = Field(default=None, ge=0, le=100)
+    start_date: date | None = None
+    target_date: date | None = None
+    budget_minor: int | None = Field(default=None, ge=0)
+    spent_minor: int | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    team_size: int | None = Field(default=None, ge=0)
+    summary: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def _dates_in_order(self) -> ProjectUpdate:
+        """Only enforceable when both ends travel in the same PATCH — a single-field date edit
+        is checked against the stored counterpart's semantics by the service layer instead,
+        which has the existing row to compare against."""
+        if (
+            self.start_date is not None
+            and self.target_date is not None
+            and self.target_date < self.start_date
+        ):
+            raise ValueError("target_date must be on or after start_date")
+        return self
+
+
 # ------------------------------------------------------------------ milestones
 
 
@@ -103,7 +168,9 @@ class MilestoneOut(BaseModel):
     project_name: str
     title: str
     owner: Person
-    due_date: date
+    #: Nullable, as the column is: an undated milestone is legitimate, and typing this as
+    #: required made every list containing one answer 500.
+    due_date: date | None
     status: MilestoneStatus
     progress_pct: int
 
@@ -117,6 +184,17 @@ class MilestoneIn(BaseModel):
     due_date: date
     status: MilestoneStatus = "on_track"
     progress_pct: int = Field(default=0, ge=0, le=100)
+
+
+class MilestoneUpdate(BaseModel):
+    """Edit a milestone. Absent means "leave alone"; an explicit `null` on `owner_ref` clears
+    the owner. Not `project_code` — a milestone never changes project through this route."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=300)
+    owner_ref: str | None = Field(default=None, max_length=40)
+    due_date: date | None = None
+    status: MilestoneStatus | None = None
+    progress_pct: int | None = Field(default=None, ge=0, le=100)
 
 
 # ------------------------------------------------------------------ tasks
@@ -146,6 +224,19 @@ class TaskIn(BaseModel):
     priority: TaskPriority = "medium"
     due_date: date | None = None
     points: int = Field(default=0, ge=0)
+
+
+class TaskUpdate(BaseModel):
+    """Move or edit a board card — this is what persists a Kanban drag. Absent means "leave
+    alone"; an explicit `null` on `assignee_ref` or `due_date` clears it. Not `project_code` —
+    a card never changes project through this route."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=300)
+    assignee_ref: str | None = Field(default=None, max_length=40)
+    stage: TaskStage | None = None
+    priority: TaskPriority | None = None
+    due_date: date | None = None
+    points: int | None = Field(default=None, ge=0)
 
 
 # ------------------------------------------------------------------ board

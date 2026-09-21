@@ -98,12 +98,29 @@ async def data(session: AsyncSession, org_id: uuid.UUID) -> dict:
     """A small portfolio seeded through the real write paths."""
     write = ctx_for(org_id, "projects.portfolio.project.write", Scope.ORG)
 
+    # Each member's `directory_id` stands in for the account-directory id a real login would
+    # carry as the JWT `sref` claim — a different id space from `member.id` (`services.py`'s
+    # `_owner_directory_id`). Generated here rather than left `None` so a task-write OWN test
+    # has a caller whose `subject_ref` genuinely resolves through the link.
+    directory_a = uuid.uuid4()
+    directory_b = uuid.uuid4()
+
     async with session.begin():
         member_a = await services.create_member(
-            session, write, ref="p-01", name="Aarav Sharma", role="Delivery Lead"
+            session,
+            write,
+            ref="p-01",
+            name="Aarav Sharma",
+            role="Delivery Lead",
+            directory_id=directory_a,
         )
         member_b = await services.create_member(
-            session, write, ref="p-02", name="Lena Nowak", role="Product Manager"
+            session,
+            write,
+            ref="p-02",
+            name="Lena Nowak",
+            role="Product Manager",
+            directory_id=directory_b,
         )
 
         project_a = await services.create_project(
@@ -143,16 +160,17 @@ async def data(session: AsyncSession, org_id: uuid.UUID) -> dict:
             open_tasks=41,
         )
 
-        await services.create_milestone(
+        milestone_a = await services.create_milestone(
             session,
             write,
             project_id=project_a.id,
             title="Payment gateway integration",
             owner_id=member_a.id,
+            due_date=date(2026, 8, 15),
             status="on_track",
             progress_pct=48,
         )
-        await services.create_task(
+        task_a = await services.create_task(
             session,
             write,
             project_id=project_a.id,
@@ -162,7 +180,7 @@ async def data(session: AsyncSession, org_id: uuid.UUID) -> dict:
             priority="low",
             points=5,
         )
-        await services.create_task(
+        task_b = await services.create_task(
             session,
             write,
             project_id=project_b.id,
@@ -178,9 +196,25 @@ async def data(session: AsyncSession, org_id: uuid.UUID) -> dict:
         "member_b": member_b,
         "project_a": project_a,
         "project_b": project_b,
-        # OWN scope matches the owner's member id against the caller's subject_ref.
+        "milestone_a": milestone_a,
+        "task_a": task_a,
+        "task_b": task_b,
+        # Plain strings for building request URLs and JSON bodies: a request that gets refused
+        # (403/404) rolls back the shared test session, which expires every ORM instance —
+        # re-touching `.id` on one after that outside the SQLAlchemy greenlet context raises
+        # `MissingGreenlet`. These are captured once, before any HTTP round trip can expire them.
+        "milestone_a_id": str(milestone_a.id),
+        "task_a_id": str(task_a.id),
+        "task_b_id": str(task_b.id),
+        # `Project.owner_id` / `Milestone.owner_id` OWN checks compare directly against
+        # `members.id` (matching the pre-existing detail route, `routes.py`'s `read_project`).
         "subject_a": member_a.id,
         "subject_b": member_b.id,
+        # `Task.assignee_id` OWN checks resolve through the assignee's `directory_id` instead
+        # (`services.py`'s `_owner_directory_id`) — these are what a task-write OWN caller's
+        # `subject_ref` must equal.
+        "directory_a": directory_a,
+        "directory_b": directory_b,
     }
 
 
