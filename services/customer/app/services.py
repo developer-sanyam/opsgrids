@@ -358,6 +358,7 @@ async def create_contact(
     *derived* from it, overriding `phone`, so the pair can never disagree. Callers that pass
     neither get the previous behaviour exactly, which is why no existing caller changes.
     """
+    await _assert_owner_assignable(session, ctx, owner_id)
     if await selectors.get_contact_by_email(session, ctx.organization_id, email):
         raise ConflictProblem(f"A contact with email {email!r} already exists")
     company = await selectors.get_company(session, ctx.organization_id, company_id)

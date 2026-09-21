@@ -105,12 +105,20 @@ async def list_deals(
 async def create_deal(
     payload: DealIn, session: SessionDep, ctx: DealWrite, request: Request
 ) -> DealOut:
+    """`owner_id` defaults to the calling rep. Naming a different one is an ORG-scoped
+    act: `assert_can_touch` re-applies the caller's scope to the named owner exactly as
+    the detail routes re-apply it to a named row, so an OWN-scoped rep cannot hand a new
+    deal to a colleague any more than they could edit that colleague's existing one."""
+    owner_id = payload.owner_id if payload.owner_id is not None else ctx.subject_ref
+    if owner_id is None:
+        raise ValidationProblem("No owner could be determined for this deal")
+    ctx.assert_can_touch(owner_id=owner_id)
     deal = await services.create_deal(
         session,
         ctx,
         name=payload.name,
         company_id=payload.company_id,
-        owner_id=payload.owner_id,
+        owner_id=owner_id,
         value_minor=payload.value_minor,
         close_date=payload.close_date,
         currency=payload.currency,
@@ -191,7 +199,9 @@ async def log_activity(
     `ctx.subject_ref` regardless of what the payload says. Only an ORG-scoped caller may
     attribute the entry to a different rep, and only if they name one. When `deal_id` is
     given, the object-level check re-applies the caller's scope to that deal — logging
-    against a deal you cannot touch is refused exactly like reading or moving it would be.
+    against a deal you cannot touch is refused exactly like reading or moving it would be
+    — and the entry's `company_id` is taken from the deal, overriding anything the body
+    named: an entry cannot claim two accounts.
     """
     if ctx.scope is Scope.OWN:
         owner_id = ctx.subject_ref
@@ -200,11 +210,14 @@ async def log_activity(
     if owner_id is None:
         raise ValidationProblem("No owner could be determined for this activity")
 
+    #: The company is the deal's, not the body's — an entry cannot name two accounts.
+    company_id = payload.company_id
     if payload.deal_id is not None:
         deal = await selectors.get_deal(session, ctx.organization_id, payload.deal_id)
         if deal is None:
             raise NotFoundProblem("That deal is not part of this organization")
         ctx.assert_can_touch(owner_id=deal.owner_id)
+        company_id = deal.company_id
 
     activity = await services.log_activity(
         session,
@@ -214,7 +227,7 @@ async def log_activity(
         owner_id=owner_id,
         body=payload.body,
         deal_id=payload.deal_id,
-        company_id=payload.company_id,
+        company_id=company_id,
         contact_id=payload.contact_id,
         direction=payload.direction,
         occurred_at=payload.occurred_at,

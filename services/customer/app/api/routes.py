@@ -41,7 +41,7 @@ from app.schemas import (
     OwnerOut,
     ServiceInfo,
 )
-from platform_core.auth import ScopeContext, require, require_product
+from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.db import get_tenant_session
 from platform_core.errors import NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
@@ -62,7 +62,9 @@ Entitled = Depends(require_product("crm"))
 CompanyRead = Annotated[ScopeContext, Depends(require("crm.book.company.read"))]
 CompanyWrite = Annotated[ScopeContext, Depends(require("crm.book.company.write"))]
 CompanyDelete = Annotated[ScopeContext, Depends(require("crm.book.company.delete"))]
-OwnerWrite = Annotated[ScopeContext, Depends(require("crm.book.owner.write"))]
+#: Reference data for the whole organization — there is no rep who owns the list of reps —
+#: so the floor is ORG; an OWN grant is refused outright rather than silently widened.
+OwnerWrite = Annotated[ScopeContext, Depends(require("crm.book.owner.write", minimum=Scope.ORG))]
 ContactRead = Annotated[ScopeContext, Depends(require("crm.book.contact.read"))]
 ContactWrite = Annotated[ScopeContext, Depends(require("crm.book.contact.write"))]
 ContactDelete = Annotated[ScopeContext, Depends(require("crm.book.contact.delete"))]

@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import type { Owner } from "@/api/types";
+import { useCan } from "@opsgrids/client";
 import { Button, InlineAlert, Select } from "@opsgrids/ui";
 import { OwnerFormDialog } from "./OwnerFormDialog";
 
@@ -23,6 +24,19 @@ interface OwnerPickerProps {
  */
 export function OwnerPicker({ owners, value, onChange, error, onOwnerCreated, disabled }: OwnerPickerProps) {
   const [addingOwner, setAddingOwner] = useState(false);
+  // Adding a rep is an organization-wide act: the service refuses anything narrower, so a rep
+  // who may only work their own book is told who can do it rather than offered a button that
+  // can only be refused.
+  const canAddOwner = useCan("crm.book.owner.write", "ORG");
+
+  if (owners.length === 0 && !canAddOwner) {
+    return (
+      <InlineAlert tone="info" live="off" title="No team members yet">
+        Every record needs an owner, and this organization has none yet. Ask an administrator to add
+        the team on the Team page.
+      </InlineAlert>
+    );
+  }
 
   if (owners.length === 0) {
     return (
@@ -57,13 +71,15 @@ export function OwnerPicker({ owners, value, onChange, error, onOwnerCreated, di
         {...(error !== undefined ? { error } : {})}
         {...(disabled !== undefined ? { disabled } : {})}
       />
-      <button
-        type="button"
-        onClick={() => setAddingOwner(true)}
-        className="w-fit text-xs font-semibold text-accent hover:text-accent-strong transition-colors"
-      >
-        + Add a new team member
-      </button>
+      {canAddOwner ? (
+        <button
+          type="button"
+          onClick={() => setAddingOwner(true)}
+          className="w-fit text-xs font-semibold text-accent hover:text-accent-strong transition-colors"
+        >
+          + Add a new team member
+        </button>
+      ) : null}
       {addingOwner ? (
         <OwnerFormDialog
           onClose={() => setAddingOwner(false)}

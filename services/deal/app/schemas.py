@@ -37,13 +37,19 @@ class ServiceInfo(BaseModel):
 class DealIn(BaseModel):
     """Open an opportunity. `company_id` / `primary_contact_id` / `owner_id` are plain
     UUIDs into customer-service's schema — deal-service cannot verify they resolve there
-    (no cross-schema FK, no cross-schema query), so none of the three is checked here."""
+    (no cross-schema FK, no cross-schema query), so none of the three is checked here.
+
+    `owner_id` is optional: an omitted one defaults to the calling rep, matching how
+    activities attribute themselves. Naming a different rep is an ORG-scoped act — the
+    route re-applies the caller's scope exactly as it does on a detail route — and a
+    caller with no rep identity who also names no owner has nobody to attribute the deal
+    to, which is a 422, not a row owned by nothing."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=200)
     company_id: uuid.UUID
-    owner_id: uuid.UUID
+    owner_id: uuid.UUID | None = None
     value_minor: int = Field(ge=0)
     close_date: date
     currency: str = Field(default="INR", min_length=3, max_length=3)

@@ -48,7 +48,7 @@ export function TeamPage() {
         title="Team Members"
         description="Everyone a company, contact or deal can be owned by."
         actions={
-          <Can permission="crm.book.owner.write" scope="OWN">
+          <Can permission="crm.book.owner.write" scope="ORG">
             <Button leadingIcon={<UserPlusIcon className="size-4" />} onClick={() => setCreating(true)}>
               Add team member
             </Button>
@@ -83,7 +83,7 @@ export function TeamPage() {
                 title="No team members yet"
                 description="A production org starts with none — add the first rep so companies, contacts and deals have someone to belong to."
                 action={
-                  <Can permission="crm.book.owner.write" scope="OWN">
+                  <Can permission="crm.book.owner.write" scope="ORG">
                     <Button onClick={() => setCreating(true)}>Add team member</Button>
                   </Can>
                 }
