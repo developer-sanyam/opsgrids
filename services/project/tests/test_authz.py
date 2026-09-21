@@ -232,7 +232,9 @@ class TestEndpointAuthorization:
             listed = await client.get("/api/v1/projects/people")
 
         assert response.status_code == 201
-        assert response.json() == {
+        body = response.json()
+        assert uuid.UUID(body.pop("uuid"))
+        assert body == {
             "id": "p03",
             "name": "Iris Fernandes",
             "role": "QA Lead",
@@ -255,7 +257,9 @@ class TestEndpointAuthorization:
                 json={"ref": "p07", "name": "Devika Nair"},
             )
         assert response.status_code == 201
-        assert response.json() == {
+        body = response.json()
+        assert uuid.UUID(body.pop("uuid"))
+        assert body == {
             "id": "p07",
             "name": "Devika Nair",
             "role": "",

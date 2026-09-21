@@ -227,7 +227,12 @@ class TestMemberWrites:
                 MEMBERS, json={"ref": "p-03", "name": "Ravi Menon", "role": "QA Lead"}
             )
         assert response.status_code == 201
-        assert response.json() == {"id": "p-03", "name": "Ravi Menon", "role": "QA Lead"}
+        assert response.json() == {
+            "id": "p-03",
+            "name": "Ravi Menon",
+            "role": "QA Lead",
+            "directory_id": None,
+        }
 
         stored = await selectors.get_member_by_ref(session, org_id, "p-03")
         assert stored is not None
@@ -908,7 +913,7 @@ class TestMemberMutations:
 
     async def test_a_member_role_has_no_member_write_by_default(self) -> None:
         """The catalogue guard, restated as a wire-level fact: `PROJECTS_MEMBER` never picks
-        `workspace.member.write`, so the Team screen's write controls are admin/manager-only."""
+        `team.member.write`, so the Team screen's write controls are admin/manager-only."""
         from app.catalogue import PROJECTS_ROLE_TEMPLATES
 
         member = next(t for t in PROJECTS_ROLE_TEMPLATES if t.code == "PROJECTS_MEMBER")
