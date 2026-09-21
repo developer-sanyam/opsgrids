@@ -184,6 +184,79 @@ export interface ProviderTemplateOut {
   updated_at: string;
 }
 
+/* --------------------------------------- contacts --------------------------------------- */
+
+/** `POST /engage/contacts`. */
+export interface ContactIn {
+  email: string;
+  name?: string;
+  attributes?: Record<string, unknown>;
+}
+
+/** `PATCH /engage/contacts/{contact_id}`. An absent field is left alone. */
+export interface ContactPatch {
+  email?: string;
+  name?: string;
+  attributes?: Record<string, unknown>;
+}
+
+/** A contact as the service returns it. `email` is always the mask — `email_enc` has no field
+ *  here at all, and no route on this service ever opens it. */
+export interface ContactOut {
+  id: string;
+  email: string;
+  name: string;
+  attributes: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One pasted row, parsed client-side. Deliberately loose, same as the service's own
+ *  `ContactImportRow` — a bad row is reported back as `invalid` rather than failing the other
+ *  999, so shape checks happen server-side, per row. */
+export interface ContactImportRow {
+  email: string;
+  name?: string;
+  attributes?: Record<string, unknown>;
+}
+
+/** The most rows one `POST /engage/contacts/import` call may carry — `CONTACT_IMPORT_MAX`. */
+export const CONTACT_IMPORT_MAX = 1000;
+
+export interface ContactImportResult {
+  index: number;
+  status: "created" | "updated" | "invalid";
+  id: string | null;
+  error: string | null;
+}
+
+export interface ContactImportOut {
+  created: number;
+  updated: number;
+  invalid: number;
+  results: ContactImportResult[];
+}
+
+/* ------------------------------------- suppressions -------------------------------------- */
+
+/** Why an address may not be mailed. Only `manual` is written or lifted by a person through the
+ *  API; the others are reported by the recipient or their mailbox provider and are never sent by
+ *  this app. */
+export type SuppressionReason = "unsubscribed" | "bounced" | "complained" | "manual";
+
+/** `POST /engage/suppressions`. The reason is not a field: a person adding one through the API
+ *  is by definition `manual`, so there is nothing here to claim otherwise with. */
+export interface SuppressionIn {
+  email: string;
+}
+
+export interface SuppressionOut {
+  id: string;
+  email: string;
+  reason: SuppressionReason;
+  created_at: string;
+}
+
 /**
  * `platform_core.pagination.Page` — the envelope every list route on this service returns. All
  * five fields are present on the wire; `pages` is `0` for an empty result rather than `1`.
