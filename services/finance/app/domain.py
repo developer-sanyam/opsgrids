@@ -49,13 +49,6 @@ INVOICE_STATUSES: frozenset[str] = frozenset({"draft", "sent", "paid", "overdue"
 DOCUMENT_TYPES: frozenset[str] = frozenset({"invoice", "credit_note"})
 PAYMENT_METHODS: frozenset[str] = frozenset({"bank_transfer", "upi", "card", "cheque", "cash"})
 
-#: The demo clock. Invoice statuses are frozen against this at seed time, and the Overview's
-#: date-derived rollups (aging, "revenue this period") anchor to it, so the live screens match
-#: the approved fixtures regardless of the wall-clock day the seed or the request runs.
-REFERENCE_DATE: date = date(2026, 8, 24)
-PERIOD_MONTH: str = "2026-08"
-PERIOD_LABEL: str = "August 2026"
-
 #: How a supply is classified for GST. Drives both the tax split and whether the document is
 #: reportable to the Invoice Registration Portal at all.
 #:
@@ -1918,6 +1911,37 @@ def derive_invoice_status(
     if paid_minor >= total_minor:
         return "paid"
     return "overdue" if due_date < today else "sent"
+
+
+def effective_invoice_status(
+    *,
+    document_type: str,
+    stored_status: str,
+    due_date: date,
+    total_minor: int,
+    paid_minor: int,
+    today: date,
+) -> str:
+    """What a read reports for an invoice's status — derived fresh, every time, from the frozen
+    facts and the real date, never from a status computed once and left to go stale.
+
+    `draft` and `void` are create-time overrides and win outright: nothing about them can be
+    re-derived from amounts or dates. `paid` is a projection `record_payment` writes onto the row
+    in the same transaction as the allocation that settles it, so once stored it also wins —
+    there is no path back from `paid` to `overdue`. Everything else, including a `sent` or a
+    legacy `overdue` stored before this derivation existed, is recomputed here: `overdue` is
+    never a fact frozen at create, it is `due_date < today` read fresh against the clock this
+    call was given.
+    """
+    override = stored_status if stored_status in ("draft", "void", "paid") else None
+    return derive_invoice_status(
+        document_type=document_type,
+        status_override=override,
+        due_date=due_date,
+        total_minor=total_minor,
+        paid_minor=paid_minor,
+        today=today,
+    )
 
 
 # --------------------------------------------------------------------- representative figures

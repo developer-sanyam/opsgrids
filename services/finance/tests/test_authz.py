@@ -342,3 +342,212 @@ class TestTheInternalFilingApi:
         """It must not appear to be public API, because the gateway does not route it."""
         paths = app.openapi()["paths"]
         assert not [p for p in paths if p.startswith("/internal/")]
+
+
+#: A registration is required before an invoice or a purchase can be raised — see the tests'
+#: own setup, which grants the writer every read/write it needs and registers first.
+_REGISTRATION = {"gstin": "27AABCA9012D1Z5", "legal_name": "OpsGrids Industries Private Limited"}
+
+
+class TestTheCustomerWrites:
+    """`finance.billing.customer.write` — the only billing permission that is *not* dangerous:
+    a customer is a directory record, not a document."""
+
+    CREATE_BODY: ClassVar[dict[str, str]] = {
+        "name": "Authz Test Co",
+        "contact_name": "",
+        "email": "",
+        "city": "",
+        "state": "",
+    }
+
+    async def test_a_reader_cannot_create_a_customer(self, client, org_id) -> None:
+        principal = principal_for(org_id, perms=[f"{p}:ORG" for p in FINANCE_READS])
+        with as_principal(principal):
+            res = await client.post("/api/v1/finance/customers", json=self.CREATE_BODY)
+        assert res.status_code == 403
+
+    async def test_an_own_grant_is_below_the_org_floor(self, client, org_id) -> None:
+        principal = principal_for(org_id, perms=["finance.billing.customer.write:OWN"])
+        with as_principal(principal):
+            res = await client.post("/api/v1/finance/customers", json=self.CREATE_BODY)
+        assert res.status_code == 403
+
+    async def test_the_write_grant_creates_one(self, client, org_id) -> None:
+        principal = principal_for(org_id, perms=["finance.billing.customer.write:ORG"])
+        with as_principal(principal):
+            res = await client.post("/api/v1/finance/customers", json=self.CREATE_BODY)
+        assert res.status_code == 201
+
+    async def test_patch_and_delete_need_the_same_grant(self, client, org_id) -> None:
+        admin = principal_for(org_id, perms=["finance.billing.customer.write:ORG"])
+        with as_principal(admin):
+            created = await client.post("/api/v1/finance/customers", json=self.CREATE_BODY)
+        customer_id = created.json()["id"]
+
+        reader = principal_for(org_id, perms=[f"{p}:ORG" for p in FINANCE_READS])
+        with as_principal(reader):
+            patch_res = await client.patch(
+                f"/api/v1/finance/customers/{customer_id}", json={"city": "Pune"}
+            )
+            delete_res = await client.delete(f"/api/v1/finance/customers/{customer_id}")
+        assert patch_res.status_code == 403
+        assert delete_res.status_code == 403
+
+    async def test_an_unentitled_organization_is_402(self, client, org_id) -> None:
+        principal = principal_for(
+            org_id, perms=["finance.billing.customer.write:ORG"], entitlements=[]
+        )
+        with as_principal(principal):
+            res = await client.post("/api/v1/finance/customers", json=self.CREATE_BODY)
+        assert res.status_code == 402
+
+
+class TestTheInvoiceIssue:
+    """Dangerous: a B2B/export/SEZ document stages a real IRP filing request on the outbox in
+    the same transaction as the write."""
+
+    BODY: ClassVar[dict] = {
+        "customer_id": None,  # filled in per test, once a customer exists
+        "issued_date": "2026-01-10",
+        "due_date": "2026-01-25",
+        "tax_rate_pct": 18,
+        "lines": [{"description": "Widgets", "quantity": 1, "unit_price_minor": 1000}],
+    }
+
+    async def _customer_id(self, client, org_id) -> str:
+        admin = principal_for(org_id, perms=["finance.billing.customer.write:ORG"])
+        with as_principal(admin):
+            res = await client.post(
+                "/api/v1/finance/customers",
+                json={
+                    "name": "Issuer Co",
+                    "contact_name": "",
+                    "email": "",
+                    "city": "",
+                    "state": "",
+                },
+            )
+        return res.json()["id"]
+
+    async def test_a_reader_cannot_issue(self, client, org_id) -> None:
+        customer_id = await self._customer_id(client, org_id)
+        principal = principal_for(org_id, perms=[f"{p}:ORG" for p in FINANCE_READS])
+        with as_principal(principal):
+            res = await client.post(
+                "/api/v1/finance/invoices", json={**self.BODY, "customer_id": customer_id}
+            )
+        assert res.status_code == 403
+
+    async def test_an_own_grant_is_below_the_org_floor(self, client, org_id) -> None:
+        customer_id = await self._customer_id(client, org_id)
+        principal = principal_for(org_id, perms=["finance.billing.invoice.issue:OWN"])
+        with as_principal(principal):
+            res = await client.post(
+                "/api/v1/finance/invoices", json={**self.BODY, "customer_id": customer_id}
+            )
+        assert res.status_code == 403
+
+    async def test_the_write_grant_issues_one(self, client, org_id) -> None:
+        customer_id = await self._customer_id(client, org_id)
+        admin = principal_for(org_id, perms=["finance.compliance.registration.write:ORG"])
+        with as_principal(admin):
+            await client.put("/api/v1/finance/gst/registration", json=_REGISTRATION)
+        principal = principal_for(org_id, perms=["finance.billing.invoice.issue:ORG"])
+        with as_principal(principal):
+            res = await client.post(
+                "/api/v1/finance/invoices", json={**self.BODY, "customer_id": customer_id}
+            )
+        assert res.status_code == 201
+
+    async def test_an_unentitled_organization_is_402(self, client, org_id) -> None:
+        customer_id = await self._customer_id(client, org_id)
+        principal = principal_for(
+            org_id, perms=["finance.billing.invoice.issue:ORG"], entitlements=[]
+        )
+        with as_principal(principal):
+            res = await client.post(
+                "/api/v1/finance/invoices", json={**self.BODY, "customer_id": customer_id}
+            )
+        assert res.status_code == 402
+
+
+class TestTheRecordPayment:
+    async def test_a_reader_cannot_record_a_payment(self, client, org_id) -> None:
+        principal = principal_for(org_id, perms=[f"{p}:ORG" for p in FINANCE_READS])
+        with as_principal(principal):
+            res = await client.post(
+                "/api/v1/finance/payments",
+                json={
+                    "reference": "PMT-AUTHZ-1",
+                    "customer_id": str(uuid.uuid4()),
+                    "received_date": "2026-01-10",
+                    "method": "upi",
+                    "allocations": [{"invoice_id": str(uuid.uuid4()), "amount_minor": 100}],
+                },
+            )
+        assert res.status_code == 403
+
+    async def test_an_own_grant_is_below_the_org_floor(self, client, org_id) -> None:
+        principal = principal_for(org_id, perms=["finance.billing.payment.record:OWN"])
+        with as_principal(principal):
+            res = await client.post(
+                "/api/v1/finance/payments",
+                json={
+                    "reference": "PMT-AUTHZ-2",
+                    "customer_id": str(uuid.uuid4()),
+                    "received_date": "2026-01-10",
+                    "method": "upi",
+                    "allocations": [{"invoice_id": str(uuid.uuid4()), "amount_minor": 100}],
+                },
+            )
+        assert res.status_code == 403
+
+    async def test_the_write_grant_reaches_the_customer_lookup(self, client, org_id) -> None:
+        """Granted, so the refusal is now about the payload — a 404 for a customer that names
+        nothing — rather than about the caller. Never a 403."""
+        principal = principal_for(org_id, perms=["finance.billing.payment.record:ORG"])
+        with as_principal(principal):
+            res = await client.post(
+                "/api/v1/finance/payments",
+                json={
+                    "reference": "PMT-AUTHZ-3",
+                    "customer_id": str(uuid.uuid4()),
+                    "received_date": "2026-01-10",
+                    "method": "upi",
+                    "allocations": [{"invoice_id": str(uuid.uuid4()), "amount_minor": 100}],
+                },
+            )
+        assert res.status_code == 404
+
+
+class TestThePurchaseWrite:
+    async def test_a_reader_cannot_record_a_purchase(self, client, org_id) -> None:
+        principal = principal_for(org_id, perms=["finance.billing.purchase.read:ORG"])
+        with as_principal(principal):
+            res = await client.post(
+                "/api/v1/finance/purchases",
+                json={
+                    "supplier_gstin": "27AAECO9012H1ZG",
+                    "number": "SUP-1",
+                    "document_date": "2026-01-05",
+                    "taxable_minor": 1000,
+                    "tax_rate_pct": 18,
+                },
+            )
+        assert res.status_code == 403
+
+    async def test_an_own_grant_is_below_the_org_floor(self, client, org_id) -> None:
+        principal = principal_for(org_id, perms=["finance.billing.purchase.write:OWN"])
+        with as_principal(principal):
+            res = await client.post(
+                "/api/v1/finance/purchases",
+                json={
+                    "supplier_gstin": "27AAECO9012H1ZG",
+                    "number": "SUP-1",
+                    "document_date": "2026-01-05",
+                    "taxable_minor": 1000,
+                    "tax_rate_pct": 18,
+                },
+            )
+        assert res.status_code == 403

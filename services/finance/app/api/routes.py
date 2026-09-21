@@ -28,7 +28,10 @@ from app import scope, selectors, services
 from app.config import settings
 from app.models import SCHEMA
 from app.schemas import (
+    CustomerCreate,
+    CustomerOut,
     CustomerSummary,
+    CustomerUpdate,
     EInvoiceFilingOut,
     EwayBillOut,
     EwayBillWithInvoice,
@@ -43,10 +46,15 @@ from app.schemas import (
     ImsDecisionOut,
     ImsDocumentDetail,
     ImsDocumentOut,
+    InvoiceCreate,
+    InvoiceIssueIn,
     InvoiceOut,
     LedgerReport,
     OverviewSummary,
+    PaymentCreate,
     PaymentOut,
+    PurchaseDocumentCreate,
+    PurchaseDocumentOut,
     ReturnDiffOut,
     ServiceInfo,
     WithholdingRateOut,
@@ -75,11 +83,28 @@ Entitled = Depends(require_product("finance"))
 InvoiceRead = Annotated[
     ScopeContext, Depends(require("finance.billing.invoice.read", minimum=Scope.ORG))
 ]
+#: Issuing a document is dangerous: a B2B/export/SEZ document stages a real IRP filing request on
+#: the outbox in the same transaction as the write.
+InvoiceIssue = Annotated[
+    ScopeContext, Depends(require("finance.billing.invoice.issue", minimum=Scope.ORG))
+]
 PaymentRead = Annotated[
     ScopeContext, Depends(require("finance.billing.payment.read", minimum=Scope.ORG))
 ]
+PaymentRecord = Annotated[
+    ScopeContext, Depends(require("finance.billing.payment.record", minimum=Scope.ORG))
+]
 CustomerRead = Annotated[
     ScopeContext, Depends(require("finance.billing.customer.read", minimum=Scope.ORG))
+]
+CustomerWrite = Annotated[
+    ScopeContext, Depends(require("finance.billing.customer.write", minimum=Scope.ORG))
+]
+PurchaseRead = Annotated[
+    ScopeContext, Depends(require("finance.billing.purchase.read", minimum=Scope.ORG))
+]
+PurchaseWrite = Annotated[
+    ScopeContext, Depends(require("finance.billing.purchase.write", minimum=Scope.ORG))
 ]
 SummaryRead = Annotated[
     ScopeContext, Depends(require("finance.reports.summary.read", minimum=Scope.ORG))
@@ -145,11 +170,12 @@ async def list_invoices(
     params: PageQuery,
     q: Annotated[str | None, Query(description="Invoice number or customer name")] = None,
     status: Annotated[str | None, Query(description="Lifecycle status filter")] = None,
+    customer_id: Annotated[uuid.UUID | None, Query(description="One customer's documents")] = None,
     sort: Annotated[
         str, Query(description="issued_desc|issued_asc|amount_desc|amount_asc|due_asc")
     ] = "issued_desc",
 ) -> Page[InvoiceOut]:
-    stmt = selectors.invoices_stmt(ctx, q=q, status=status, sort=sort)
+    stmt = selectors.invoices_stmt(ctx, q=q, status=status, customer_id=customer_id, sort=sort)
     rows, total = await paginate(session, stmt, params)
     items = await selectors.invoices_with_filings(session, ctx.organization_id, rows)
     return Page.build(items, total=total, params=params)
@@ -165,6 +191,50 @@ async def read_invoice(invoice_id: uuid.UUID, session: SessionDep, ctx: InvoiceR
     invoice = await selectors.get_invoice(session, ctx.organization_id, invoice_id)
     if invoice is None:
         raise NotFoundProblem("That invoice is not part of this organization")
+    items = await selectors.invoices_with_filings(session, ctx.organization_id, [invoice])
+    return items[0]
+
+
+@router.post(
+    "/finance/invoices",
+    response_model=InvoiceOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Issue an invoice, or a credit note against one",
+    dependencies=[Entitled],
+)
+async def issue_invoice(
+    payload: InvoiceIssueIn, session: SessionDep, ctx: InvoiceIssue, request: Request
+) -> InvoiceOut:
+    """Finalize a new document. There is no edit, delete, void or draft -> issued transition —
+    the only legitimate corrections are a credit note (this same route, `document_type` =
+    `credit_note` and `corrects_invoice_id` set) and, for an e-invoiced document, an IRN
+    cancellation inside its 24-hour window.
+
+    The number is never taken from the caller: the server allocates the next one in this
+    organization's own series (`services.allocate_invoice_number`), so a duplicate is
+    structurally impossible rather than merely checked for. The lifecycle status is always
+    derived, never forced — `InvoiceIssueIn` carries no `status` field at all.
+    """
+    number = await services.allocate_invoice_number(
+        session, ctx, document_type=payload.document_type, on=payload.issued_date
+    )
+    create = InvoiceCreate(
+        number=number,
+        customer_id=payload.customer_id,
+        issued_date=payload.issued_date,
+        due_date=payload.due_date,
+        tax_rate_pct=payload.tax_rate_pct,
+        lines=payload.lines,
+        document_type=payload.document_type,
+        status=None,
+        currency=payload.currency,
+        notes=payload.notes,
+        corrects_invoice_id=payload.corrects_invoice_id,
+        supply_type=payload.supply_type,
+        place_of_supply=payload.place_of_supply,
+        reverse_charge=payload.reverse_charge,
+    )
+    invoice = await services.create_invoice(session, ctx, create, request=request)
     items = await selectors.invoices_with_filings(session, ctx.organization_id, [invoice])
     return items[0]
 
@@ -591,6 +661,26 @@ async def list_payments(
     return Page.build(items, total=total, params=params)
 
 
+@router.post(
+    "/finance/payments",
+    response_model=PaymentOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record a payment received and allocate it to invoices",
+    dependencies=[Entitled],
+)
+async def record_payment(
+    payload: PaymentCreate, session: SessionDep, ctx: PaymentRecord, request: Request
+) -> PaymentOut:
+    """Append-only: there is no edit, delete or "unapply" for a payment or an allocation.
+
+    Settling an invoice in full moves its status to `paid` in the same transaction as this
+    write — see `services.record_payment` for the rules an allocation is checked against
+    (open, correct customer, no double allocation, never over the outstanding balance).
+    """
+    payment = await services.record_payment(session, ctx, payload, request=request)
+    return await selectors.payment_out_for(session, ctx.organization_id, payment)
+
+
 # --------------------------------------------------------------------- customers
 
 
@@ -612,6 +702,111 @@ async def list_customers(
     summaries = await selectors.list_customer_summaries(session, ctx, q=q, sort=sort)
     window = summaries[params.offset : params.offset + params.size]
     return Page.build(window, total=len(summaries), params=params)
+
+
+@router.get(
+    "/finance/customers/{customer_id}",
+    response_model=CustomerOut,
+    summary="One customer",
+    dependencies=[Entitled],
+)
+async def read_customer(
+    customer_id: uuid.UUID, session: SessionDep, ctx: CustomerRead
+) -> CustomerOut:
+    customer = await selectors.get_customer(session, ctx.organization_id, customer_id)
+    if customer is None:
+        raise NotFoundProblem("That customer is not part of this organization")
+    return CustomerOut.model_validate(customer)
+
+
+@router.post(
+    "/finance/customers",
+    response_model=CustomerOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a customer",
+    dependencies=[Entitled],
+)
+async def create_customer(
+    payload: CustomerCreate, session: SessionDep, ctx: CustomerWrite, request: Request
+) -> CustomerOut:
+    customer = await services.create_customer(session, ctx, payload, request=request)
+    return CustomerOut.model_validate(customer)
+
+
+@router.patch(
+    "/finance/customers/{customer_id}",
+    response_model=CustomerOut,
+    summary="Edit a customer",
+    dependencies=[Entitled],
+)
+async def update_customer(
+    customer_id: uuid.UUID,
+    payload: CustomerUpdate,
+    session: SessionDep,
+    ctx: CustomerWrite,
+    request: Request,
+) -> CustomerOut:
+    """The only mutable billing entity: invoices snapshot `buyer_gstin` and never rewrite what
+    they were raised with, so editing a customer's directory record cannot rewrite history."""
+    customer = await selectors.get_customer(session, ctx.organization_id, customer_id)
+    if customer is None:
+        raise NotFoundProblem("That customer is not part of this organization")
+    updated = await services.update_customer(session, ctx, customer, payload, request=request)
+    return CustomerOut.model_validate(updated)
+
+
+@router.delete(
+    "/finance/customers/{customer_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Archive a customer",
+    dependencies=[Entitled],
+)
+async def archive_customer(
+    customer_id: uuid.UUID, session: SessionDep, ctx: CustomerWrite, request: Request
+) -> None:
+    """Soft delete. Refused with 409 while any invoice or payment still names this customer —
+    see `services.archive_customer`."""
+    customer = await selectors.get_customer(session, ctx.organization_id, customer_id)
+    if customer is None:
+        raise NotFoundProblem("That customer is not part of this organization")
+    await services.archive_customer(session, ctx, customer, request=request)
+
+
+# --------------------------------------------------------------------- purchases
+
+
+@router.get(
+    "/finance/purchases",
+    response_model=Page[PurchaseDocumentOut],
+    summary="Purchase documents recorded against this organization",
+    dependencies=[Entitled],
+)
+async def list_purchases(
+    session: SessionDep,
+    ctx: PurchaseRead,
+    params: PageQuery,
+    q: Annotated[str | None, Query(description="Supplier name, GSTIN or document number")] = None,
+) -> Page[PurchaseDocumentOut]:
+    stmt = selectors.purchase_documents_stmt(ctx, q=q)
+    rows, total = await paginate(session, stmt, params)
+    items = [selectors.to_purchase_out(row) for row in rows]
+    return Page.build(items, total=total, params=params)
+
+
+@router.post(
+    "/finance/purchases",
+    response_model=PurchaseDocumentOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record what a supplier billed this organization",
+    dependencies=[Entitled],
+)
+async def record_purchase(
+    payload: PurchaseDocumentCreate, session: SessionDep, ctx: PurchaseWrite, request: Request
+) -> PurchaseDocumentOut:
+    """No update or delete path (`models.py:451-452`): a supplier's own correction is recorded as
+    their credit or debit note, a new document, never an edit to this one."""
+    purchase = await services.record_purchase_document(session, ctx, payload, request=request)
+    return selectors.to_purchase_out(purchase)
 
 
 # --------------------------------------------------------------------- reports

@@ -7,6 +7,8 @@ foot the way `derive.ts` computes them, so flipping the SPA off fixtures is a cl
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
+
 import pytest
 
 from app import domain, selectors
@@ -171,29 +173,51 @@ class TestCustomers:
 
 class TestOverview:
     async def test_overview_shape_and_invariants(self, client, book) -> None:
+        """No injected clock: the endpoint anchors to the real date, not a frozen one, so
+        `period_label` is whatever month the suite happens to run in and `revenue` for it is
+        honestly whatever the seeded (2026, static) book issued in that real month — usually
+        zero, since the demo book's dates do not track the calendar. The KPIs that do not depend
+        on "this period" — receivables, overdue, aging, attention — still foot."""
         res = await client.get("/api/v1/finance/overview")
         assert res.status_code == 200
         body = res.json()
-        assert body["period_label"] == "August 2026"
+        assert body["period_label"] == datetime.now(UTC).date().strftime("%B %Y")
 
         kpis = {k["key"]: k for k in body["kpis"]}
         assert set(kpis) == {"revenue", "receivables", "overdue", "cash"}
-        # The cash balance is a booked constant; the others are derived and positive.
+        # The cash balance is a booked constant, flagged as representative on the wire.
         assert kpis["cash"]["value_minor"] == domain.CASH_BALANCE_MINOR
-        assert kpis["revenue"]["value_minor"] > 0
+        assert kpis["cash"]["sample"] is True
+        assert kpis["revenue"]["sample"] is False
+        assert kpis["revenue"]["value_minor"] >= 0
         assert kpis["overdue"]["value_minor"] > 0
+        assert all(k["trend_sample"] is True for k in kpis.values())
 
         # AR aging sums back to the outstanding-receivables KPI — the internal invariant.
         assert len(body["aging"]) == 5
         assert sum(b["amount_minor"] for b in body["aging"]) == kpis["receivables"]["value_minor"]
 
         assert len(body["cashflow"]) == 6
+        assert body["cashflow_sample"] is True
 
         # Attention: overdue invoices only, largest outstanding first.
         attention = body["attention"]
         assert attention and all(inv["status"] == "overdue" for inv in attention)
         outstanding = [inv["total_minor"] - inv["amount_paid_minor"] for inv in attention]
         assert outstanding == sorted(outstanding, reverse=True)
+
+    async def test_overview_with_an_injected_clock_matches_the_seeded_month(
+        self, session, org_id, book
+    ) -> None:
+        """With the clock pinned to the demo book's own era, `revenue` is real and positive —
+        proving the figure is genuinely derived from this tenant's invoices, not a constant, and
+        that the read-time derivation works correctly when "today" falls inside the seeded data.
+        """
+        ctx = admin_ctx(org_id)
+        summary = await selectors.get_overview(session, ctx, today=date(2026, 8, 24))
+        assert summary.period_label == "August 2026"
+        kpis = {k.key: k for k in summary.kpis}
+        assert kpis["revenue"].value_minor > 0
 
 
 class TestLedger:
@@ -205,3 +229,6 @@ class TestLedger:
         assert len(body["accounts"]) == len(domain.LEDGER_ACCOUNTS)
         codes = {a["code"] for a in body["accounts"]}
         assert "4000" in codes and "5000" in codes
+        # There is no ledger table behind this report — always flagged, never served as fact.
+        assert body["sample"] is True
+        assert body["as_of"] == datetime.now(UTC).date().isoformat()

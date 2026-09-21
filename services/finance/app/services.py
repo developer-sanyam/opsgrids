@@ -27,10 +27,11 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -58,6 +59,7 @@ from app.models import (
     ImsReconciliation,
     Invoice,
     InvoiceLine,
+    InvoiceNumberSeries,
     InvoiceWithholding,
     OutboxEvent,
     Payment,
@@ -68,6 +70,7 @@ from app.schemas import (
     CancelEwayIn,
     CancelFilingIn,
     CustomerCreate,
+    CustomerUpdate,
     FileInvoiceIn,
     FileReturnIn,
     GenerateEwayIn,
@@ -94,7 +97,10 @@ from platform_core.events import publish_event
 # Event names. `finance.*` because these are the product's own, not the platform's; the second
 # segment is the module, matching the permission grammar (ADR-0000 §5).
 EVT_CUSTOMER_CREATED = "finance.billing.customer.created"
+EVT_CUSTOMER_UPDATED = "finance.billing.customer.updated"
+EVT_CUSTOMER_ARCHIVED = "finance.billing.customer.archived"
 EVT_INVOICE_ISSUED = "finance.billing.invoice.issued"
+EVT_INVOICE_PAID = "finance.billing.invoice.paid"
 EVT_PAYMENT_RECEIVED = "finance.billing.payment.received"
 #: The compliance events. `filed` is the one the auto-filing consumer both produces the trigger
 #: for and confirms against — it carries the IRN, so a consumer never has to read back to learn
@@ -203,6 +209,25 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _today(today: date | None) -> date:
+    """The real date this write reasons against, unless a test injected one.
+
+    Kept as a tiny function rather than inlined `today or _now().date()` everywhere so every
+    call site reads the same way and a later per-organization timezone is one place to change.
+    """
+    return today if today is not None else _now().date()
+
+
+def _check_withholding_exclusion(deducts_tds_194q: bool, tcs_applicable: bool) -> None:
+    """194Q and 206C(1H) are mutually exclusive by statute (`models.py:111-116`) — a buyer is
+    never liable to deduct income tax on a supply and also have TCS collected from them on it."""
+    if deducts_tds_194q and tcs_applicable:
+        raise BusinessRuleProblem(
+            "A customer cannot both deduct TDS under 194Q and be charged TCS under 206C(1H) — "
+            "the two are mutually exclusive by statute"
+        )
+
+
 # --------------------------------------------------------------------- customers
 
 
@@ -216,6 +241,7 @@ async def create_customer(
     """Add a billed party. A GSTIN, if given, is parsed and checksum-verified before it is
     stored — this service holds no unverified GSTIN anywhere."""
     gstin = _checked_gstin(payload.gstin, whose="The customer's")
+    _check_withholding_exclusion(payload.deducts_tds_194q, payload.tcs_applicable)
     payload = payload.model_copy(update={"gstin": gstin})
     customer = Customer(
         organization_id=ctx.organization_id,
@@ -263,6 +289,140 @@ async def create_customer(
     return customer
 
 
+async def update_customer(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    customer: Customer,
+    payload: CustomerUpdate,
+    *,
+    request: Request | None = None,
+) -> Customer:
+    """Edit a billed party. Only what was sent is applied; a GSTIN, if sent, is re-verified.
+
+    The only mutable billing entity by design (`finance.md`): invoices snapshot `buyer_gstin` and
+    `place_of_supply` at finalize, so editing a customer never rewrites an already-issued
+    document — the withholding flags in particular affect **future** invoices only.
+    """
+    changes = payload.model_dump(exclude_unset=True)
+    if not changes:
+        return customer
+
+    before = {
+        "name": customer.name,
+        "contact_name": customer.contact_name,
+        "email": customer.email,
+        "gstin": customer.gstin,
+        "city": customer.city,
+        "state": customer.state,
+        "is_tds_deductor": customer.is_tds_deductor,
+        "deducts_tds_194q": customer.deducts_tds_194q,
+        "tcs_applicable": customer.tcs_applicable,
+    }
+
+    if "gstin" in changes:
+        changes["gstin"] = _checked_gstin(changes["gstin"], whose="The customer's")
+
+    deducts_194q = changes.get("deducts_tds_194q", customer.deducts_tds_194q)
+    tcs = changes.get("tcs_applicable", customer.tcs_applicable)
+    _check_withholding_exclusion(deducts_194q, tcs)
+
+    for field, value in changes.items():
+        setattr(customer, field, value)
+    customer.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    after = {
+        "name": customer.name,
+        "contact_name": customer.contact_name,
+        "email": customer.email,
+        "gstin": customer.gstin,
+        "city": customer.city,
+        "state": customer.state,
+        "is_tds_deductor": customer.is_tds_deductor,
+        "deducts_tds_194q": customer.deducts_tds_194q,
+        "tcs_applicable": customer.tcs_applicable,
+    }
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="customer.updated",
+        entity="customer",
+        entity_id=customer.id,
+        before=before,
+        after=after,
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_CUSTOMER_UPDATED,
+        aggregate_type="customer",
+        aggregate_id=customer.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "customer_id": str(customer.id),
+            "before": before,
+            "after": after,
+        },
+        actor=_actor(ctx),
+    )
+    return customer
+
+
+async def archive_customer(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    customer: Customer,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Soft-delete a customer. Refused with 409 while any invoice or payment names them.
+
+    Invoices are append-only and can never be reassigned to another customer, so a customer with
+    billing history can never be safely detached from it — archiving them would leave that
+    history pointing at a party the directory no longer lists. The refusal is unconditional
+    (any invoice or payment, not only an unpaid one): a *paid* invoice is still evidence naming
+    this customer, and the receivable book's own history is exactly what an auditor asks the
+    directory to still explain.
+    """
+    if await selectors.customer_has_references(session, ctx.organization_id, customer.id):
+        raise ConflictProblem(
+            "This customer cannot be archived: at least one invoice or payment still names them"
+        )
+    customer.deleted_at = _now()
+    customer.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="customer.archived",
+        entity="customer",
+        entity_id=customer.id,
+        before={"deleted_at": None},
+        after={"deleted_at": customer.deleted_at.isoformat()},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_CUSTOMER_ARCHIVED,
+        aggregate_type="customer",
+        aggregate_id=customer.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "customer_id": str(customer.id),
+        },
+        actor=_actor(ctx),
+    )
+
+
 # --------------------------------------------------------------------- invoices
 
 
@@ -272,6 +432,7 @@ async def create_invoice(
     payload: InvoiceCreate,
     *,
     request: Request | None = None,
+    today: date | None = None,
 ) -> Invoice:
     """Finalize an invoice or credit note. Totals foot exactly; the document is frozen after.
 
@@ -284,6 +445,11 @@ async def create_invoice(
       declare the line-level figures and the portal recomputes them;
     * both **GSTINs are snapshotted**, so the document keeps naming the numbers it was raised
       under even after a party re-registers.
+
+    A credit note must name what it corrects, correct an `invoice` (never another credit note)
+    belonging to the **same customer**, and not exceed what remains correctable on it — the sum
+    of every credit note already issued against that invoice, plus this one, capped at the
+    original total. An ordinary invoice must total more than zero; a credit note, less.
     """
     if payload.document_type not in domain.DOCUMENT_TYPES:
         raise BusinessRuleProblem(f"Unknown document type {payload.document_type!r}")
@@ -291,15 +457,33 @@ async def create_invoice(
         raise BusinessRuleProblem(f"Unknown invoice status {payload.status!r}")
     if payload.supply_type is not None and payload.supply_type not in domain.SUPPLY_TYPES:
         raise BusinessRuleProblem(f"Unknown supply type {payload.supply_type!r}")
+    if payload.due_date < payload.issued_date:
+        raise BusinessRuleProblem("The due date cannot be before the issued date")
     if await selectors.number_exists(session, ctx.organization_id, payload.number):
         raise ConflictProblem(f"An invoice numbered {payload.number!r} already exists")
     customer = await selectors.get_customer(session, ctx.organization_id, payload.customer_id)
     if customer is None:
         raise NotFoundProblem("That customer is not part of this organization")
-    if payload.corrects_invoice_id is not None and not await selectors.invoice_exists(
-        session, ctx.organization_id, payload.corrects_invoice_id
-    ):
-        raise NotFoundProblem("The invoice this credit note corrects was not found")
+
+    corrected: Invoice | None = None
+    if payload.document_type == "credit_note":
+        if payload.corrects_invoice_id is None:
+            raise BusinessRuleProblem("A credit note must state which invoice it corrects")
+        corrected = await selectors.get_invoice(
+            session, ctx.organization_id, payload.corrects_invoice_id
+        )
+        if corrected is None:
+            raise NotFoundProblem("The invoice this credit note corrects was not found")
+        if corrected.document_type != "invoice":
+            raise BusinessRuleProblem(
+                "A credit note may only correct an invoice, not another credit note"
+            )
+        if corrected.customer_id != payload.customer_id:
+            raise BusinessRuleProblem(
+                "A credit note must correct an invoice belonging to the same customer"
+            )
+    elif payload.corrects_invoice_id is not None:
+        raise BusinessRuleProblem("Only a credit note may state what it corrects")
 
     registration = await selectors.get_gst_registration(session, ctx.organization_id)
     seller_gstin = registration.gstin if registration else None
@@ -363,13 +547,29 @@ async def create_invoice(
     tax = tax_split.total_minor
     total = subtotal + tax
 
+    if payload.document_type == "credit_note":
+        if total >= 0:
+            raise BusinessRuleProblem("A credit note must total less than zero")
+        assert corrected is not None  # narrowed above: credit_note always resolves `corrected`
+        already_credited = await selectors.credited_total_for_invoice(
+            session, ctx.organization_id, corrected.id
+        )
+        remaining = corrected.total_minor - already_credited
+        if -total > remaining:
+            raise BusinessRuleProblem(
+                f"This credit note ({-total} minor units) exceeds what remains correctable on "
+                f"{corrected.number} ({remaining} minor units already uncredited)"
+            )
+    elif total <= 0:
+        raise BusinessRuleProblem("An invoice must total more than zero")
+
     status = payload.status or domain.derive_invoice_status(
         document_type=payload.document_type,
         status_override=None,
         due_date=payload.due_date,
         total_minor=total,
         paid_minor=0,
-        today=domain.REFERENCE_DATE,
+        today=_today(today),
     )
 
     invoice = Invoice(
@@ -465,6 +665,59 @@ async def create_invoice(
     return invoice
 
 
+#: `invoice` -> `INV`, `credit_note` -> `CN`. Two independent series per organization per
+#: financial year, so a credit note never contends with an invoice for the next number.
+_NUMBER_PREFIXES: dict[str, str] = {"invoice": "INV", "credit_note": "CN"}
+
+
+async def allocate_invoice_number(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    document_type: str,
+    on: date,
+) -> str:
+    """Mint the next number in this organization's own series — race-safe, server-owned.
+
+    The principal `POST /finance/invoices` route never accepts a client-supplied number (that
+    field stays on `InvoiceCreate`, the internal contract the demo seed drives with exact
+    historical numbers). A real caller gets this instead: one row per
+    (organization, series, financial year), incremented with a single atomic
+    `INSERT ... ON CONFLICT DO UPDATE ... RETURNING` rather than a read-then-write — two requests
+    racing for the same organization serialize on that row's own lock rather than on an advisory
+    lock this function would otherwise have to remember to take and release.
+    """
+    series = _NUMBER_PREFIXES.get(document_type)
+    if series is None:
+        raise BusinessRuleProblem(f"Unknown document type {document_type!r}")
+    financial_year = domain.financial_year(on)
+    stmt = (
+        pg_insert(InvoiceNumberSeries)
+        .values(
+            organization_id=ctx.organization_id,
+            created_by=str(ctx.principal.sub),
+            series=document_type,
+            financial_year=financial_year,
+            next_seq=2,
+        )
+        .on_conflict_do_update(
+            index_elements=[
+                InvoiceNumberSeries.organization_id,
+                InvoiceNumberSeries.series,
+                InvoiceNumberSeries.financial_year,
+            ],
+            set_={
+                "next_seq": InvoiceNumberSeries.next_seq + 1,
+                "updated_by": str(ctx.principal.sub),
+            },
+        )
+        .returning(InvoiceNumberSeries.next_seq)
+    )
+    next_after = (await session.execute(stmt)).scalar_one()
+    seq = int(next_after) - 1
+    return f"{series}-{financial_year}-{seq:05d}"
+
+
 def _place_of_supply(payload: InvoiceCreate, customer: Customer, seller_state: str) -> str | None:
     """Where the supply is taxed, in order of authority.
 
@@ -501,20 +754,70 @@ async def record_payment(
     payload: PaymentCreate,
     *,
     request: Request | None = None,
+    today: date | None = None,
 ) -> Payment:
-    """Record a payment received, split across one or more invoices — an append-only fact."""
+    """Record a payment received, split across one or more invoices — an append-only fact.
+
+    Every allocation is checked against the invoice it names, not just the payload's own
+    arithmetic: the invoice must be an `invoice` (never a credit note), open (`sent`/`overdue`),
+    belong to the *paying* customer, appear at most once in this payment, and take no more than
+    what is still outstanding on it — its total less every allocation already recorded against it,
+    batched in one query rather than one per allocation.
+
+    `invoices.status` is moved to `paid` here, in this same transaction, whenever an invoice's
+    allocations reach its total — a projection of the payment history kept as a column for the
+    same reason `ims_documents.status` is (`services.record_ims_decision`): the queue's access
+    path needs it indexed, not derived by a lateral join on every list page. Nothing else ever
+    writes it back down from `paid`.
+    """
     if payload.method not in domain.PAYMENT_METHODS:
         raise BusinessRuleProblem(f"Unknown payment method {payload.method!r}")
+    resolved_today = _today(today)
+    if payload.received_date > resolved_today:
+        raise BusinessRuleProblem("A payment's received date cannot be in the future")
     if await selectors.reference_exists(session, ctx.organization_id, payload.reference):
         raise ConflictProblem(f"A payment referenced {payload.reference!r} already exists")
     if await selectors.get_customer(session, ctx.organization_id, payload.customer_id) is None:
         raise NotFoundProblem("That customer is not part of this organization")
 
+    invoice_ids = [alloc.invoice_id for alloc in payload.allocations]
+    if len(set(invoice_ids)) != len(invoice_ids):
+        raise BusinessRuleProblem("An invoice may not be allocated twice in the same payment")
+
+    invoices = await selectors.get_invoices(session, ctx.organization_id, invoice_ids)
+    already_paid = await selectors.paid_by_invoice(session, ctx.organization_id, invoice_ids)
+
     allocations: list[PaymentAllocation] = []
     amount = 0
+    # (invoice, its paid-so-far figure *after* this payment) — resolved after every allocation
+    # validates, so a rejection on line three of five leaves nothing half-applied.
+    settled: list[tuple[Invoice, int]] = []
+    running_paid: dict[uuid.UUID, int] = dict(already_paid)
     for alloc in payload.allocations:
-        if not await selectors.invoice_exists(session, ctx.organization_id, alloc.invoice_id):
+        if alloc.amount_minor <= 0:
+            raise BusinessRuleProblem("An allocation must be a positive amount")
+        invoice = invoices.get(alloc.invoice_id)
+        if invoice is None:
             raise NotFoundProblem("An allocated invoice is not part of this organization")
+        if invoice.document_type != "invoice":
+            raise BusinessRuleProblem(
+                f"{invoice.number} is a credit note; a payment may only be allocated to an invoice"
+            )
+        if invoice.customer_id != payload.customer_id:
+            raise BusinessRuleProblem(
+                f"{invoice.number} does not belong to the customer this payment names"
+            )
+        if invoice.status not in ("sent", "overdue"):
+            raise BusinessRuleProblem(
+                f"{invoice.number} is not open for payment (status {invoice.status!r})"
+            )
+        outstanding = invoice.total_minor - running_paid.get(invoice.id, 0)
+        if alloc.amount_minor > outstanding:
+            raise BusinessRuleProblem(
+                f"{invoice.number} has only {outstanding} minor units outstanding; "
+                f"{alloc.amount_minor} was allocated"
+            )
+        running_paid[invoice.id] = running_paid.get(invoice.id, 0) + alloc.amount_minor
         amount += alloc.amount_minor
         allocations.append(
             PaymentAllocation(
@@ -524,6 +827,7 @@ async def record_payment(
                 amount_minor=alloc.amount_minor,
             )
         )
+        settled.append((invoice, running_paid[invoice.id]))
 
     payment = Payment(
         organization_id=ctx.organization_id,
@@ -537,6 +841,41 @@ async def record_payment(
         allocations=allocations,
     )
     session.add(payment)
+    await session.flush()
+
+    for invoice, new_paid in settled:
+        if new_paid >= invoice.total_minor and invoice.status != "paid":
+            before_status = invoice.status
+            invoice.status = "paid"
+            invoice.updated_by = str(ctx.principal.sub)
+            record_audit(
+                session,
+                AuditLog,
+                organization_id=ctx.organization_id,
+                actor_id=ctx.principal.sub,
+                action="invoice.paid",
+                entity="invoice",
+                entity_id=invoice.id,
+                before={"status": before_status},
+                after={"status": "paid", "amount_paid_minor": new_paid},
+                request=request,
+            )
+            publish_event(
+                session,
+                OutboxEvent,
+                organization_id=ctx.organization_id,
+                event_type=EVT_INVOICE_PAID,
+                aggregate_type="invoice",
+                aggregate_id=invoice.id,
+                payload={
+                    "organization_id": str(ctx.organization_id),
+                    "invoice_id": str(invoice.id),
+                    "number": invoice.number,
+                    "payment_id": str(payment.id),
+                    "amount_paid_minor": new_paid,
+                },
+                actor=_actor(ctx),
+            )
     await session.flush()
 
     record_audit(

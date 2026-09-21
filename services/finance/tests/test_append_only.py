@@ -82,9 +82,12 @@ class TestCorrectionsAreNewRows:
         assert {line.id for line in refreshed.lines} == original_line_ids
         assert refreshed.total_minor == original_total
 
-    async def test_the_invoice_surface_is_read_only(self) -> None:
-        """No write verb is published for invoices — the only way to change the book is a new
-        document. Checked against the OpenAPI contract the SPA is generated from.
+    async def test_the_invoice_surface_has_no_edit_delete_or_void(self) -> None:
+        """`POST /finance/invoices` **issues** a new document — an invoice or a credit note — and
+        is the one legitimate write. There is still no PUT, PATCH or DELETE anywhere under
+        `/finance/invoices`: nothing edits, deletes or voids a document once it is finalized: a
+        correction is always a new row. Checked against the OpenAPI contract the SPA is generated
+        from.
 
         The filing history hangs off an invoice path, so it is covered by the same sweep: a
         recorded attempt is not editable through the public API either, and the internal route
@@ -95,7 +98,12 @@ class TestCorrectionsAreNewRows:
         assert invoice_paths, "expected the invoice routes to be published"
         assert any(p.endswith("/filings") for p in invoice_paths)
         verbs = {verb for ops in invoice_paths.values() for verb in ops if verb != "parameters"}
-        assert verbs == {"get"}
+        assert verbs == {"get", "post"}
+        # And specifically: the collection path is the only one that accepts POST, and it is the
+        # only verb besides GET anywhere under this prefix.
+        posted = {p for p, ops in invoice_paths.items() if "post" in ops}
+        assert len(posted) == 1
+        assert next(iter(posted)).endswith("/finance/invoices")
 
 
 def _customer():

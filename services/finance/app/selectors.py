@@ -22,7 +22,7 @@ import uuid
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, case, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -98,12 +98,72 @@ _INVOICE_SORTS: dict[str, tuple[Any, ...]] = {
 }
 
 
+def _today(today: date | None) -> date:
+    """The real date a read reasons against, unless a test injected one. UTC: there is no
+    per-organization timezone on this model today (`Organization` lives in another schema and
+    carries none either), so the platform clock is the only honest default."""
+    return today if today is not None else datetime.now(UTC).date()
+
+
+def _invoice_facts(inv: Invoice, paid_minor: int, today: date) -> domain.InvoiceFacts:
+    """`domain.InvoiceFacts` built with the **derived** status, not the stored column — every
+    rollup (customer summaries, the overview) reasons from this rather than `inv.status`
+    directly, so `overdue` reads the same everywhere a read reasons about it."""
+    status = domain.effective_invoice_status(
+        document_type=inv.document_type,
+        stored_status=inv.status,
+        due_date=inv.due_date,
+        total_minor=inv.total_minor,
+        paid_minor=paid_minor,
+        today=today,
+    )
+    return domain.InvoiceFacts(
+        document_type=inv.document_type,
+        status=status,
+        issued_date=inv.issued_date,
+        due_date=inv.due_date,
+        total_minor=inv.total_minor,
+        amount_paid_minor=paid_minor,
+    )
+
+
+def effective_status_expr(today: date) -> Any:
+    """`domain.effective_invoice_status`, as a SQL expression, so `status=` filters — and
+    paginates — at the database rather than after the fact in Python.
+
+    Mirrors that function exactly: `draft`/`void`/a stored `paid` win outright (the last is the
+    projection `record_payment` writes in the same transaction as the allocation that settles an
+    invoice); a credit note is always `sent`; everything else is derived fresh from the paid-so-
+    far figure and `today`, so a legacy `overdue` frozen before this derivation existed is
+    recomputed exactly like a `sent` row would be.
+    """
+    paid_subq = (
+        select(func.coalesce(func.sum(PaymentAllocation.amount_minor), 0))
+        .where(
+            PaymentAllocation.organization_id == Invoice.organization_id,
+            PaymentAllocation.invoice_id == Invoice.id,
+            PaymentAllocation.deleted_at.is_(None),
+        )
+        .correlate(Invoice)
+        .scalar_subquery()
+    )
+    return case(
+        (Invoice.document_type == "credit_note", literal("sent")),
+        (Invoice.status.in_(("draft", "void", "paid")), Invoice.status),
+        (paid_subq >= Invoice.total_minor, literal("paid")),
+        (Invoice.due_date < today, literal("overdue")),
+        else_=literal("sent"),
+    )
+
+
 def invoices_stmt(
     ctx: ScopeContext,
     *,
     q: str | None = None,
     status: str | None = None,
+    customer_id: uuid.UUID | None = None,
     sort: str = "issued_desc",
+    today: date | None = None,
 ) -> Select[Any]:
     """Scope-filtered, searchable, sortable invoice list. `ctx.apply` is the enforcement point."""
     stmt = (
@@ -128,8 +188,10 @@ def invoices_stmt(
                 Invoice.customer_id.in_(matching_customers),
             )
         )
+    if customer_id is not None:
+        stmt = stmt.where(Invoice.customer_id == customer_id)
     if status:
-        stmt = stmt.where(Invoice.status == status)
+        stmt = stmt.where(effective_status_expr(_today(today)) == status)
 
     return stmt.order_by(*_INVOICE_SORTS.get(sort, _INVOICE_SORTS["issued_desc"]))
 
@@ -213,8 +275,22 @@ def to_invoice_out(
     attempts: int = 0,
     *,
     at: datetime | None = None,
+    today: date | None = None,
 ) -> InvoiceOut:
-    """Serialise one invoice with its derived paid-so-far figure and filing position attached."""
+    """Serialise one invoice with its derived paid-so-far figure and filing position attached.
+
+    `status` is never the stored column verbatim — it is `domain.effective_invoice_status`,
+    recomputed against `today` on every read, which is what lets an invoice cross into `overdue`
+    with no write ever having touched its row.
+    """
+    status = domain.effective_invoice_status(
+        document_type=invoice.document_type,
+        stored_status=invoice.status,
+        due_date=invoice.due_date,
+        total_minor=invoice.total_minor,
+        paid_minor=paid_minor,
+        today=_today(today),
+    )
     return InvoiceOut(
         id=invoice.id,
         number=invoice.number,
@@ -222,7 +298,7 @@ def to_invoice_out(
         customer_id=invoice.customer_id,
         issued_date=invoice.issued_date,
         due_date=invoice.due_date,
-        status=invoice.status,
+        status=status,
         currency=invoice.currency,
         lines=[InvoiceLineOut.model_validate(line) for line in invoice.lines],
         subtotal_minor=invoice.subtotal_minor,
@@ -282,6 +358,38 @@ async def invoice_exists(session: AsyncSession, org_id: uuid.UUID, invoice_id: u
     return (await session.execute(stmt)).scalar_one_or_none() is not None
 
 
+async def get_invoices(
+    session: AsyncSession, org_id: uuid.UUID, invoice_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, Invoice]:
+    """Org-scoped batch fetch by id — the multi-invoice analogue of `get_invoice`, so a payment
+    that allocates across several documents costs one query rather than one per allocation."""
+    if not invoice_ids:
+        return {}
+    stmt = select(Invoice).where(
+        Invoice.id.in_(invoice_ids),
+        Invoice.organization_id == org_id,
+        Invoice.deleted_at.is_(None),
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return {row.id: row for row in rows}
+
+
+async def credited_total_for_invoice(
+    session: AsyncSession, org_id: uuid.UUID, invoice_id: uuid.UUID
+) -> int:
+    """What has already been credited against one invoice, as a positive minor-unit figure —
+    the sum of the (negative) totals of every credit note that names it as `corrects_invoice_id`.
+    """
+    stmt = select(func.coalesce(func.sum(Invoice.total_minor), 0)).where(
+        Invoice.organization_id == org_id,
+        Invoice.corrects_invoice_id == invoice_id,
+        Invoice.document_type == "credit_note",
+        Invoice.deleted_at.is_(None),
+    )
+    total = (await session.execute(stmt)).scalar_one()
+    return -int(total)
+
+
 async def number_exists(session: AsyncSession, org_id: uuid.UUID, number: str) -> bool:
     stmt = select(Invoice.id).where(Invoice.organization_id == org_id, Invoice.number == number)
     return (await session.execute(stmt)).scalar_one_or_none() is not None
@@ -292,6 +400,23 @@ async def reference_exists(session: AsyncSession, org_id: uuid.UUID, reference: 
         Payment.organization_id == org_id, Payment.reference == reference
     )
     return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
+async def customer_has_references(
+    session: AsyncSession, org_id: uuid.UUID, customer_id: uuid.UUID
+) -> bool:
+    """Whether any invoice or payment — settled or not, live or soft-deleted — still names this
+    customer. Archiving is refused unconditionally while this is true (`services.archive_customer`
+    explains why): append-only documents can never be reassigned to another customer."""
+    invoice_stmt = select(Invoice.id).where(
+        Invoice.organization_id == org_id, Invoice.customer_id == customer_id
+    )
+    if (await session.execute(invoice_stmt)).first() is not None:
+        return True
+    payment_stmt = select(Payment.id).where(
+        Payment.organization_id == org_id, Payment.customer_id == customer_id
+    )
+    return (await session.execute(payment_stmt)).first() is not None
 
 
 async def all_invoices(session: AsyncSession, org_id: uuid.UUID) -> list[Invoice]:
@@ -371,7 +496,11 @@ async def latest_filings(
 
 
 async def invoices_with_filings(
-    session: AsyncSession, org_id: uuid.UUID, invoices: list[Invoice]
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    invoices: list[Invoice],
+    *,
+    today: date | None = None,
 ) -> list[InvoiceOut]:
     """Serialise a page of invoices with their paid-so-far figures and filing positions.
 
@@ -381,7 +510,13 @@ async def invoices_with_filings(
     paid = await paid_by_invoice(session, org_id, ids)
     latest, counts = await latest_filings(session, org_id, ids)
     return [
-        to_invoice_out(inv, paid.get(inv.id, 0), latest.get(inv.id), counts.get(inv.id, 0))
+        to_invoice_out(
+            inv,
+            paid.get(inv.id, 0),
+            latest.get(inv.id),
+            counts.get(inv.id, 0),
+            today=today,
+        )
         for inv in invoices
     ]
 
@@ -446,6 +581,31 @@ def to_gst_registration_out(registration: GstRegistration) -> GstRegistrationOut
 
 
 # --------------------------------------------------------------------- purchases
+
+
+def purchase_documents_stmt(
+    ctx: ScopeContext,
+    *,
+    q: str | None = None,
+) -> Select[Any]:
+    """Scope-filtered, searchable purchase-document list. `ctx.apply` is the enforcement point —
+    mirrors `invoices_stmt`'s shape rather than `all_purchase_documents`, which is unscoped by
+    design (the reconciler's own whole-book read, never a route's)."""
+    stmt = select(PurchaseDocument).where(
+        PurchaseDocument.organization_id == ctx.organization_id,
+        PurchaseDocument.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=PurchaseDocument.id)
+    if q:
+        needle = f"%{q.lower()}%"
+        stmt = stmt.where(
+            or_(
+                func.lower(PurchaseDocument.supplier_name).like(needle),
+                func.lower(PurchaseDocument.supplier_gstin).like(needle),
+                func.lower(PurchaseDocument.number).like(needle),
+            )
+        )
+    return stmt.order_by(PurchaseDocument.document_date.desc(), PurchaseDocument.number.desc())
 
 
 async def all_purchase_documents(
@@ -827,28 +987,38 @@ async def list_payments(
 
     invoice_ids = {alloc.invoice_id for p in rows for alloc in p.allocations}
     numbers = await _invoice_numbers(session, ctx.organization_id, invoice_ids)
-
-    items = [
-        PaymentOut(
-            id=p.id,
-            reference=p.reference,
-            customer_id=p.customer_id,
-            received_date=p.received_date,
-            method=p.method,
-            amount_minor=p.amount_minor,
-            allocations=[
-                PaymentAllocationOut(
-                    invoice_id=alloc.invoice_id,
-                    invoice_number=numbers.get(alloc.invoice_id, ""),
-                    amount_minor=alloc.amount_minor,
-                )
-                for alloc in p.allocations
-            ],
-            note=p.note,
-        )
-        for p in rows
-    ]
+    items = [to_payment_out(p, numbers) for p in rows]
     return items, int(total)
+
+
+def to_payment_out(payment: Payment, invoice_numbers: dict[uuid.UUID, str]) -> PaymentOut:
+    """Serialise one payment with its allocations resolved to invoice numbers. Shared between the
+    list page and the single-payment response `POST /finance/payments` returns."""
+    return PaymentOut(
+        id=payment.id,
+        reference=payment.reference,
+        customer_id=payment.customer_id,
+        received_date=payment.received_date,
+        method=payment.method,
+        amount_minor=payment.amount_minor,
+        allocations=[
+            PaymentAllocationOut(
+                invoice_id=alloc.invoice_id,
+                invoice_number=invoice_numbers.get(alloc.invoice_id, ""),
+                amount_minor=alloc.amount_minor,
+            )
+            for alloc in payment.allocations
+        ],
+        note=payment.note,
+    )
+
+
+async def payment_out_for(session: AsyncSession, org_id: uuid.UUID, payment: Payment) -> PaymentOut:
+    """Serialise a single freshly-recorded payment — one round trip for the invoice numbers its
+    allocations point at."""
+    invoice_ids = {alloc.invoice_id for alloc in payment.allocations}
+    numbers = await _invoice_numbers(session, org_id, invoice_ids)
+    return to_payment_out(payment, numbers)
 
 
 async def _invoice_numbers(
@@ -872,6 +1042,7 @@ async def list_customer_summaries(
     *,
     q: str | None = None,
     sort: str = "receivables_desc",
+    today: date | None = None,
 ) -> list[CustomerSummary]:
     """Each customer rolled up into a receivable position — the customers ledger.
 
@@ -899,20 +1070,11 @@ async def list_customer_summaries(
         if inv.document_type == "invoice":
             by_customer.setdefault(inv.customer_id, []).append(inv)
 
+    resolved_today = _today(today)
     summaries: list[CustomerSummary] = []
     for customer in customers:
         rows = by_customer.get(customer.id, [])
-        facts = [
-            domain.InvoiceFacts(
-                document_type=inv.document_type,
-                status=inv.status,
-                issued_date=inv.issued_date,
-                due_date=inv.due_date,
-                total_minor=inv.total_minor,
-                amount_paid_minor=paid.get(inv.id, 0),
-            )
-            for inv in rows
-        ]
+        facts = [_invoice_facts(inv, paid.get(inv.id, 0), resolved_today) for inv in rows]
         receivables = domain.total_outstanding(facts)
         overdue = domain.total_overdue(facts)
         last = max((inv.issued_date for inv in rows), default=None)
@@ -939,29 +1101,32 @@ async def list_customer_summaries(
 # --------------------------------------------------------------------- overview & ledger
 
 
-async def get_overview(session: AsyncSession, ctx: ScopeContext) -> OverviewSummary:
-    """The whole Overview payload: derived KPIs + representative trends, AR aging, attention."""
+async def get_overview(
+    session: AsyncSession, ctx: ScopeContext, *, today: date | None = None
+) -> OverviewSummary:
+    """The whole Overview payload: derived KPIs + representative trends, AR aging, attention.
+
+    Anchored to the real date (UTC — see `_today`), not the demo constant: "this period" is the
+    calendar month `today` falls in, aging bands are days-overdue against `today`, and nothing
+    here is frozen at write time. `revenue`/`receivables`/`overdue` and `aging` are computed from
+    this tenant's own invoices and payments; `cash` and every KPI's trend line are representative
+    figures with no general ledger behind them yet and are flagged `sample`/`trend_sample` on the
+    wire rather than served as though they were real.
+    """
     org_id = ctx.organization_id
+    resolved_today = _today(today)
+    period_month = resolved_today.strftime("%Y-%m")
+    period_label = resolved_today.strftime("%B %Y")
+
     invoices = await all_invoices(session, org_id)
     paid = await paid_by_invoice(session, org_id, [inv.id for inv in invoices])
+    facts = [_invoice_facts(inv, paid.get(inv.id, 0), resolved_today) for inv in invoices]
 
-    facts = [
-        domain.InvoiceFacts(
-            document_type=inv.document_type,
-            status=inv.status,
-            issued_date=inv.issued_date,
-            due_date=inv.due_date,
-            total_minor=inv.total_minor,
-            amount_paid_minor=paid.get(inv.id, 0),
-        )
-        for inv in invoices
-    ]
-
-    revenue = domain.net_revenue_for_month(facts, domain.PERIOD_MONTH)
+    revenue = domain.net_revenue_for_month(facts, period_month)
     receivables = domain.total_outstanding(facts)
     overdue = domain.total_overdue(facts)
 
-    def kpi(key: str, label: str, value: int, caption: str) -> OverviewKpi:
+    def kpi(key: str, label: str, value: int, caption: str, *, sample: bool = False) -> OverviewKpi:
         trend = domain.KPI_TRENDS[key]
         return OverviewKpi(
             key=key,
@@ -970,18 +1135,28 @@ async def get_overview(session: AsyncSession, ctx: ScopeContext) -> OverviewSumm
             deltaPct=trend.delta_pct,
             series=list(trend.series),
             caption=caption,
+            sample=sample,
+            # Every KPI's trend line is representative today — there is no history table behind
+            # any of them — regardless of whether the headline `value_minor` is real.
+            trend_sample=True,
         )
 
     kpis = [
         kpi("revenue", "Revenue this period", revenue, "Net of credit notes"),
         kpi("receivables", "Outstanding receivables", receivables, "Across all open invoices"),
         kpi("overdue", "Overdue", overdue, "Past the due date"),
-        kpi("cash", "Cash balance", domain.CASH_BALANCE_MINOR, "Bank + cash on hand"),
+        kpi(
+            "cash",
+            "Cash balance",
+            domain.CASH_BALANCE_MINOR,
+            "Bank + cash on hand",
+            sample=True,
+        ),
     ]
 
     aging = [
         AgingBucket(key=b.key, label=b.label, amount_minor=b.amount_minor, count=b.count)
-        for b in domain.aging_buckets(facts, domain.REFERENCE_DATE)
+        for b in domain.aging_buckets(facts, resolved_today)
     ]
 
     # The "needs attention" queue: open + overdue invoices, largest outstanding first.
@@ -992,25 +1167,24 @@ async def get_overview(session: AsyncSession, ctx: ScopeContext) -> OverviewSumm
             if domain.is_open_invoice(f) and f.status == "overdue"
         ),
         key=lambda inv: domain.outstanding_minor(
-            domain.InvoiceFacts(
-                inv.document_type,
-                inv.status,
-                inv.issued_date,
-                inv.due_date,
-                inv.total_minor,
-                paid.get(inv.id, 0),
-            )
+            _invoice_facts(inv, paid.get(inv.id, 0), resolved_today)
         ),
         reverse=True,
     )
     latest, counts = await latest_filings(session, org_id, [inv.id for inv in attention_rows])
     attention = [
-        to_invoice_out(inv, paid.get(inv.id, 0), latest.get(inv.id), counts.get(inv.id, 0))
+        to_invoice_out(
+            inv,
+            paid.get(inv.id, 0),
+            latest.get(inv.id),
+            counts.get(inv.id, 0),
+            today=resolved_today,
+        )
         for inv in attention_rows
     ]
 
     return OverviewSummary(
-        period_label=domain.PERIOD_LABEL,
+        period_label=period_label,
         kpis=kpis,
         cashflow=[
             CashflowPoint(
@@ -1020,14 +1194,17 @@ async def get_overview(session: AsyncSession, ctx: ScopeContext) -> OverviewSumm
         ],
         aging=aging,
         attention=attention,
+        cashflow_sample=True,
     )
 
 
-def get_ledger() -> LedgerReport:
-    """The trial-balance report. Representative booked figures (see `app.domain`) pending a GL."""
+def get_ledger(*, today: date | None = None) -> LedgerReport:
+    """The trial-balance report. Representative booked figures (see `app.domain`) pending a GL —
+    `sample=True` on every response; there is no ledger table behind this yet."""
     return LedgerReport(
         period_label=domain.LEDGER_PERIOD_LABEL,
-        as_of=domain.REFERENCE_DATE,
+        as_of=_today(today),
+        sample=True,
         accounts=[
             LedgerAccount(
                 code=row.code,

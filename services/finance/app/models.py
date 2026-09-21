@@ -312,6 +312,37 @@ class PaymentAllocation(Base, TenantBase):
     )
 
 
+class InvoiceNumberSeries(Base, TenantBase):
+    """The server's own invoice-numbering counter — one row per
+    (organization, series, financial year).
+
+    `services.allocate_invoice_number` is the only writer, and it never reads this row before
+    writing it: the allocation is a single atomic `INSERT ... ON CONFLICT DO UPDATE ...
+    RETURNING`, so two requests racing for the same organization serialize on Postgres's own row
+    lock rather than on a read-then-write this table would otherwise invite. Mutable by design —
+    this is a counter, not evidence — so it carries no append-only trigger.
+    """
+
+    __tablename__ = "invoice_number_series"
+
+    #: `invoice` | `credit_note`. Two independent counters so a credit note never contends with
+    #: an invoice for the next number in the sequence.
+    series: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: India's financial year, April to March (`domain.financial_year`), e.g. `2026-27`.
+    financial_year: Mapped[str] = mapped_column(String(7), nullable=False)
+    #: The next sequence number this series will hand out.
+    next_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "series",
+            "financial_year",
+            name="uq_invoice_number_series_org_series_fy",
+        ),
+    )
+
+
 class TaxRate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """A GST rate band, versioned by `effective_from` — **global platform vocabulary**.
 

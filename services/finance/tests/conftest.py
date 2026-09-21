@@ -52,6 +52,7 @@ TENANT_TABLES = (
     "customers",
     "invoices",
     "invoice_lines",
+    "invoice_number_series",
     "einvoice_filings",
     "eway_bills",
     "gst_registrations",
