@@ -24,8 +24,12 @@
           "port": {
             "anyOf": [
               {
-                "maximum": 65535.0,
-                "minimum": 1.0,
+                "enum": [
+                  25,
+                  465,
+                  587,
+                  2525
+                ],
                 "type": "integer"
               },
               {

@@ -313,8 +313,8 @@
             "type": "string"
           },
           "email": {
+            "format": "email",
             "maxLength": 254,
-            "minLength": 1,
             "title": "Email",
             "type": "string"
           },
@@ -388,7 +388,7 @@
       },
       "EnquiryLineIn": {
         "additionalProperties": false,
-        "description": "One line of the buyer's list, echoed back rather than joined at read time \u2014 a product\nreferenced here may since have been edited or deleted, and the enquiry is a record of what\nwas asked for, not a live view of the catalogue.",
+        "description": "One line of the buyer's list. `product_id` is validated against *this* published store's\nactive catalogue and `name` is taken from the product there, never from this body \u2014 kept\naccepting `name` here only because the buyer bundle's form still sends it, and it is ignored\nserver-side (`services.create_enquiry_for_store`). The enquiry is still a record of what was\nasked for at the time, not a live view: it stores the catalogue name as of the enquiry, so a\nlater rename does not rewrite history.",
         "properties": {
           "name": {
             "maxLength": 200,
@@ -402,6 +402,7 @@
             "type": "string"
           },
           "quantity": {
+            "maximum": 1000000.0,
             "minimum": 1.0,
             "title": "Quantity",
             "type": "integer"

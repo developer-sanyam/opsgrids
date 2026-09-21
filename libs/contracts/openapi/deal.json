@@ -225,7 +225,7 @@
       },
       "DealIn": {
         "additionalProperties": false,
-        "description": "Open an opportunity. `company_id` / `primary_contact_id` / `owner_id` are plain\nUUIDs into customer-service's schema \u2014 deal-service cannot verify they resolve there\n(no cross-schema FK, no cross-schema query), so none of the three is checked here.",
+        "description": "Open an opportunity. `company_id` / `primary_contact_id` / `owner_id` are plain\nUUIDs into customer-service's schema \u2014 deal-service cannot verify they resolve there\n(no cross-schema FK, no cross-schema query), so none of the three is checked here.\n\n`owner_id` is optional: an omitted one defaults to the calling rep, matching how\nactivities attribute themselves. Naming a different rep is an ORG-scoped act \u2014 the\nroute re-applies the caller's scope exactly as it does on a detail route \u2014 and a\ncaller with no rep identity who also names no owner has nobody to attribute the deal\nto, which is a 422, not a row owned by nothing.",
         "properties": {
           "close_date": {
             "format": "date",
@@ -251,9 +251,16 @@
             "type": "string"
           },
           "owner_id": {
-            "format": "uuid",
-            "title": "Owner Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
           },
           "primary_contact_id": {
             "anyOf": [
@@ -308,7 +315,6 @@
         "required": [
           "name",
           "company_id",
-          "owner_id",
           "value_minor",
           "close_date"
         ],
@@ -416,7 +422,7 @@
       },
       "DealPatch": {
         "additionalProperties": false,
-        "description": "Partial update of the plain deal fields. Deliberately **no `stage`** \u2014 a stage\nmove only ever goes through `POST /deals/{id}/stage`, so the transition rule and its\nevent can never be bypassed by a patch.",
+        "description": "Partial update of the plain deal fields. Deliberately **no `stage`** \u2014 a stage\nmove only ever goes through `POST /deals/{id}/stage`, so the transition rule and its\nevent can never be bypassed by a patch. Reassigning `owner_id` is scope-checked in\n`app.services.update_deal` exactly like naming one on create \u2014 an OWN-scoped caller\nmay only set it to themselves.",
         "properties": {
           "close_date": {
             "anyOf": [
@@ -987,6 +993,7 @@
         ]
       },
       "post": {
+        "description": "`owner_id` defaults to the calling rep. Naming a different one is an ORG-scoped\nact: `assert_can_touch` re-applies the caller's scope to the named owner exactly as\nthe detail routes re-apply it to a named row, so an OWN-scoped rep cannot hand a new\ndeal to a colleague any more than they could edit that colleague's existing one.",
         "operationId": "create_deal_api_v1_deals_post",
         "requestBody": {
           "content": {
@@ -1149,7 +1156,7 @@
         ]
       },
       "post": {
-        "description": "Append one entry to the timeline.\n\nAn OWN-scoped caller can only ever log against themselves: `owner_id` is forced to\n`ctx.subject_ref` regardless of what the payload says. Only an ORG-scoped caller may\nattribute the entry to a different rep, and only if they name one. When `deal_id` is\ngiven, the object-level check re-applies the caller's scope to that deal \u2014 logging\nagainst a deal you cannot touch is refused exactly like reading or moving it would be.",
+        "description": "Append one entry to the timeline.\n\nAn OWN-scoped caller can only ever log against themselves: `owner_id` is forced to\n`ctx.subject_ref` regardless of what the payload says. Only an ORG-scoped caller may\nattribute the entry to a different rep, and only if they name one. When `deal_id` is\ngiven, the object-level check re-applies the caller's scope to that deal \u2014 logging\nagainst a deal you cannot touch is refused exactly like reading or moving it would be\n\u2014 and the entry's `company_id` is taken from the deal, overriding anything the body\nnamed: an entry cannot claim two accounts.",
         "operationId": "log_activity_api_v1_deals_activities_post",
         "requestBody": {
           "content": {

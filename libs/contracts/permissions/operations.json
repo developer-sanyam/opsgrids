@@ -67,7 +67,7 @@
     {
       "action": "write",
       "default_scope": "OWN",
-      "description": "Raise, edit and delete draft purchase orders; receive, close and cancel them",
+      "description": "Raise, edit and delete draft purchase orders; receive an approved one; close it; cancel a draft (cancelling an approved one also needs approve)",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "procurement",

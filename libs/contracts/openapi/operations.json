@@ -2810,7 +2810,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Receive a purchase order (marks it received, fills received quantities and posts stock)",
+        "summary": "Receive an approved purchase order (marks it received, fills received quantities and posts stock)",
         "tags": [
           "operations"
         ]
