@@ -96,6 +96,24 @@ export async function connectProvider(input: ConnectionIn): Promise<ConnectionOu
   return apiRequest<ConnectionOut>("/engage/connection", { method: "POST", body: input });
 }
 
+/**
+ * Replace the organization's email connection — `PUT /engage/connection`.
+ *
+ * PUT rather than POST, for the reverse of `connectProvider`'s reason: this replaces the one
+ * connection a caller already knows exists. Same `ConnectionIn` body as connecting — the service
+ * takes exactly the same four fields to replace a connection as it does to create one.
+ *
+ * The write resets every sender in the organization to unusable in the same transaction: a
+ * `verified_at` is proof a test message reached the provider that was in place when it was
+ * stamped, and that proof does not survive the provider changing under it. Nothing here decides
+ * that or hides it from the caller — the screen that calls this tells the customer before it
+ * fires, in the consequence's own words.
+ */
+export async function replaceProvider(input: ConnectionIn): Promise<ConnectionOut> {
+  if (USE_FIXTURES) refuseWithoutService("Replacing the email connection");
+  return apiRequest<ConnectionOut>("/engage/connection", { method: "PUT", body: input });
+}
+
 /* --------------------------------- domains -------------------------------- */
 
 /**
