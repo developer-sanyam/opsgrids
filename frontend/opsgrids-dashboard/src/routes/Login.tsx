@@ -2,11 +2,10 @@ import { useId, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, Navigate, useLocation } from "react-router-dom";
 
-import { ApiError, authApi, useAuth } from "@opsgrids/client";
-import type { LoginResult, OrganizationChoice } from "@opsgrids/client";
+import { ApiError, problemMessage, useAuth } from "@opsgrids/client";
+import type { LoginStep, OrganizationChoice } from "@opsgrids/client";
 import { EyeIcon, EyeOffIcon } from "@opsgrids/ui";
 
-import { completeSessionAndReload, mfaVerify, selectOrgWithToken } from "@/api/auth";
 import { AuthCard, Button, Field, InlineError, inputClass } from "@/ui";
 
 /** Never leak which half was wrong — one message covers a bad email, bad password, or a 4xx. */
@@ -16,16 +15,21 @@ interface LocationState {
   from?: string;
 }
 
+/** What this screen renders. Distinct from `LoginStep`: it also carries the org list to show. */
+type Step = { kind: "password" } | { kind: "mfa" } | { kind: "org_selection"; organizations: OrganizationChoice[] };
+
 /**
- * The sign-in screen. Signed in **directly through `authApi`**, not `useAuth().login()`: the
- * MFA branch needs the raw `pre_auth_token` the result carries, and the shared context throws
- * it away once it decides the step — see `src/api/auth.ts` for why, and for the exact change
- * that belongs in `@opsgrids/client` instead of this workaround. Every completed sign-in ends
- * in a full reload so `AuthProvider`'s own boot effect picks the stored token up through the
- * one path that already does that correctly.
+ * The sign-in screen, entirely through `useAuth()`. `login()` and `verifyMfa()` both resolve to a
+ * `LoginStep` — `complete`, `mfa_required`, or `org_selection` (a single organization auto-selects,
+ * so that step only ever appears with a real choice to make) — and the provider is the one holding
+ * the pre-auth token behind the last two; this component never sees it, whichever call minted it.
+ *
+ * A completed sign-in needs nothing further here: `status` flips to `authenticated` inside the
+ * provider the moment any of `login` / `verifyMfa` / `selectOrg` finishes, so the redirect below
+ * fires on the next render — no reload, nothing to hydrate by hand.
  */
 export function LoginPage() {
-  const { status } = useAuth();
+  const { status, login, verifyMfa, selectOrg } = useAuth();
   const location = useLocation();
 
   const emailId = useId();
@@ -35,37 +39,19 @@ export function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [code, setCode] = useState("");
+  const [step, setStep] = useState<Step>({ kind: "password" });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [orgs, setOrgs] = useState<{ token: string; organizations: OrganizationChoice[] } | null>(null);
-  const [mfaToken, setMfaToken] = useState<string | null>(null);
-  const [code, setCode] = useState("");
 
   const destination = (location.state as LocationState | null)?.from ?? "/";
 
   if (status === "authenticated") return <Navigate to={destination} replace />;
 
-  function handleResult(result: LoginResult) {
-    if (result.status === "complete") {
-      completeSessionAndReload(result.access_token, destination);
-      return;
-    }
-    if (result.status === "org_selection_required") {
-      if (result.organizations.length === 1) {
-        const only = result.organizations[0];
-        if (only) {
-          void handlePickOrg(result.pre_auth_token, only.organization_id);
-          return;
-        }
-      }
-      setOrgs({ token: result.pre_auth_token, organizations: result.organizations });
-      setMfaToken(null);
-      setSubmitting(false);
-      return;
-    }
-    // mfa_required
-    setMfaToken(result.pre_auth_token);
-    setOrgs(null);
+  /** Land on the step a `login`/`verifyMfa` call answered with. `complete` needs nothing here. */
+  function afterStep(next: LoginStep) {
+    if (next.kind === "mfa_required") setStep({ kind: "mfa" });
+    else if (next.kind === "org_selection") setStep({ kind: "org_selection", organizations: next.organizations });
     setSubmitting(false);
   }
 
@@ -75,14 +61,12 @@ export function LoginPage() {
     setError(null);
     setSubmitting(true);
     try {
-      const result = await authApi.login(email.trim(), password);
-      handleResult(result);
+      afterStep(await login(email.trim(), password));
     } catch (err) {
       if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
         setError(CREDENTIAL_ERROR);
       } else {
-        const detail = err instanceof Error ? err.message : "Something went wrong.";
-        setError(`Couldn't sign in. ${detail}`);
+        setError(`Couldn't sign in. ${problemMessage(err)}`);
       }
       setSubmitting(false);
     }
@@ -90,48 +74,50 @@ export function LoginPage() {
 
   async function handleVerifyMfa(event: FormEvent) {
     event.preventDefault();
-    if (submitting || !mfaToken) return;
+    if (submitting) return;
     setError(null);
     setSubmitting(true);
     try {
-      const result = await mfaVerify(mfaToken, code.trim());
-      handleResult(result);
+      afterStep(await verifyMfa(code.trim()));
     } catch (err) {
-      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
-        setError("That code is incorrect or has expired.");
-      } else {
-        const detail = err instanceof Error ? err.message : "Something went wrong.";
-        setError(`Couldn't verify that code. ${detail}`);
-      }
+      // The server's own sentence ("That code is not valid") — the pending sign-in survives a
+      // wrong code, so the field stays and the next attempt goes through the same call.
+      setError(problemMessage(err));
       setSubmitting(false);
     }
   }
 
-  async function handlePickOrg(token: string, organizationId: string) {
+  async function handlePickOrg(organizationId: string) {
+    if (submitting) return;
     setError(null);
     setSubmitting(true);
     try {
-      const result = await selectOrgWithToken(token, organizationId);
-      handleResult(result);
+      await selectOrg(organizationId);
+      // `status` flips to authenticated inside `selectOrg`; the redirect above takes it from here.
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "Something went wrong.";
-      setError(`Couldn't finish signing in. ${detail}`);
+      setError(`Couldn't finish signing in. ${problemMessage(err)}`);
       setSubmitting(false);
     }
   }
 
-  if (orgs) {
+  function backToPassword() {
+    setStep({ kind: "password" });
+    setCode("");
+    setError(null);
+  }
+
+  if (step.kind === "org_selection") {
     return (
       <AuthCard title="Choose a workspace">
         <div className="flex flex-col gap-4">
           {error ? <InlineError>{error}</InlineError> : null}
           <ul className="flex list-none flex-col gap-2 p-0">
-            {orgs.organizations.map((org) => (
+            {step.organizations.map((org) => (
               <li key={org.organization_id}>
                 <button
                   type="button"
                   disabled={submitting}
-                  onClick={() => void handlePickOrg(orgs.token, org.organization_id)}
+                  onClick={() => void handlePickOrg(org.organization_id)}
                   className="w-full rounded-tile border border-line bg-surface px-4 py-3 text-left text-sm font-semibold text-ink transition-colors hover:bg-ground disabled:cursor-not-allowed disabled:text-faint"
                 >
                   {org.name}
@@ -144,7 +130,7 @@ export function LoginPage() {
     );
   }
 
-  if (mfaToken) {
+  if (step.kind === "mfa") {
     return (
       <AuthCard title="Enter your code" intro="From your authenticator app, or one of your recovery codes.">
         <form onSubmit={handleVerifyMfa} className="flex flex-col gap-4" noValidate>
@@ -162,9 +148,16 @@ export function LoginPage() {
               className={inputClass}
             />
           </Field>
-          <Button type="submit" disabled={submitting}>
+          <Button type="submit" loading={submitting}>
             {submitting ? "Verifying…" : "Verify"}
           </Button>
+          <button
+            type="button"
+            onClick={backToPassword}
+            className="self-start text-xs font-semibold text-muted underline-offset-2 hover:text-ink hover:underline"
+          >
+            Back to sign in
+          </button>
         </form>
       </AuthCard>
     );
@@ -223,7 +216,7 @@ export function LoginPage() {
           </div>
         </Field>
 
-        <Button type="submit" disabled={submitting}>
+        <Button type="submit" loading={submitting}>
           {submitting ? "Signing in…" : "Sign in"}
         </Button>
 

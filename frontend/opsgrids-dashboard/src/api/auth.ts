@@ -1,43 +1,19 @@
 /**
- * Auth-service calls the shared `@opsgrids/client` auth API does not expose yet
- * (`mfaVerify`, `switchOrg`, password change, MFA enrolment). Boundary note: this belongs in
- * `@opsgrids/client/auth/api.ts` next to `login`/`selectOrg` so every app gets it — this app may
- * not touch `opsgrids-client`, so it is built here instead, against the same `apiRequest`
- * `@opsgrids/client` itself uses. See the report for the exact change to make there.
+ * Auth-service calls the shared `@opsgrids/client` auth API does not expose: password change,
+ * MFA enrolment, and switching organisation from an already-signed-in session. Sign-in itself —
+ * including the second factor and the org-selection hop — goes through `useAuth()` in
+ * `src/routes/Login.tsx`; nothing here is a stand-in for that any more.
  */
 import { apiRequest, setAccessToken } from "@opsgrids/client";
 import type { LoginResult } from "@opsgrids/client";
 
-/** `POST /auth/mfa/verify` — public (pre-auth token), completes or asks for an organisation. */
-export function mfaVerify(preAuthToken: string, code: string): Promise<LoginResult> {
-  return apiRequest<LoginResult>("/auth/mfa/verify", {
-    method: "POST",
-    body: { pre_auth_token: preAuthToken, code },
-    auth: false,
-    signalUnauthorized: false,
-  });
-}
-
 /**
- * `POST /auth/select-org`, called directly (not through `useAuth().selectOrg`) because the
- * pre-auth token here is the one `mfaVerify` minted, not the one the auth context is holding
- * from the original `login()` call.
- */
-export function selectOrgWithToken(preAuthToken: string, organizationId: string): Promise<LoginResult> {
-  return apiRequest<LoginResult>("/auth/select-org", {
-    method: "POST",
-    body: { pre_auth_token: preAuthToken, organization_id: organizationId },
-    auth: false,
-    signalUnauthorized: false,
-  });
-}
-
-/**
- * Apply a completed sign-in outside the auth context (the MFA branch cannot reach
- * `AuthProvider`'s private `complete()`), then hand off to a full reload so `AuthProvider`'s own
- * boot effect picks the freshly stored token up and loads the user through the one path that
- * does that. The token itself is already safe to keep: `setAccessToken` mirrors it to
- * `sessionStorage`, the same store a same-tab reload already relies on.
+ * Apply a completed sign-in outside the auth context — `switchOrganization` below is a bearer
+ * call from an already-authenticated screen, which `AuthProvider`'s own `complete()` is not built
+ * for — then hand off to a full reload so the provider's boot effect picks the freshly stored
+ * token up and reloads the user and their grants for the newly chosen organisation. The token
+ * itself is already safe to keep: `setAccessToken` mirrors it to `sessionStorage`, the same store
+ * a same-tab reload already relies on.
  */
 export function completeSessionAndReload(accessToken: string, destination: string): void {
   setAccessToken(accessToken);

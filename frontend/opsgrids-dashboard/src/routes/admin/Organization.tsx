@@ -7,7 +7,6 @@ import { getOrganization, updateOrganization } from "@/api";
 import type { Organization, OrganizationPatch } from "@/api/types";
 import { COUNTRIES, LOCALES, MONTHS, TIMEZONES } from "@/lib/geo";
 import { formatDate } from "@/lib/money";
-import { optionalProp } from "@/lib/props";
 import { PageHeader } from "@/ui";
 
 const WRITE_PERMISSION = "core.org.organization.write";
@@ -130,7 +129,7 @@ function OrganizationForm({
             value={name}
             onChange={(e) => setName(e.target.value)}
             disabled={!canWrite}
-            {...optionalProp("error", nameError ?? save.fieldErrors.name)}
+            error={nameError ?? save.fieldErrors.name}
           />
           <TextField
             label="Legal name"
@@ -138,7 +137,7 @@ function OrganizationForm({
             value={legalName}
             onChange={(e) => setLegalName(e.target.value)}
             disabled={!canWrite}
-            {...optionalProp("error", save.fieldErrors.legal_name)}
+            error={save.fieldErrors.legal_name}
           />
           <TextField label="Handle" value={organization.slug} disabled helper="Cannot be changed." />
           <TextField label="Currency" value={organization.currency} disabled helper="Cannot be changed." />
@@ -154,7 +153,7 @@ function OrganizationForm({
             value={industry}
             onChange={(e) => setIndustry(e.target.value)}
             disabled={!canWrite}
-            {...optionalProp("error", save.fieldErrors.industry)}
+            error={save.fieldErrors.industry}
           />
           <TextField
             label="Primary contact email"
@@ -163,7 +162,7 @@ function OrganizationForm({
             value={contactEmail}
             onChange={(e) => setContactEmail(e.target.value)}
             disabled={!canWrite}
-            {...optionalProp("error", save.fieldErrors.primary_contact_email)}
+            error={save.fieldErrors.primary_contact_email}
           />
         </div>
       </Card>
@@ -185,7 +184,7 @@ function OrganizationForm({
             value={stateCode}
             onChange={(e) => setStateCode(e.target.value)}
             disabled={!canWrite}
-            {...optionalProp("error", save.fieldErrors.state_code)}
+            error={save.fieldErrors.state_code}
           />
           <Select
             label="Timezone"

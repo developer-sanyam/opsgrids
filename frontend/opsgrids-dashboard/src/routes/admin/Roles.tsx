@@ -21,7 +21,6 @@ import type { Column } from "@opsgrids/ui";
 
 import { createRole, deleteRole, listPermissions, listRoles, updateRole } from "@/api";
 import type { Grant, Permission, Role, RoleWrite, Scope } from "@/api/types";
-import { optionalProp } from "@/lib/props";
 import { PageHeader } from "@/ui";
 
 const WRITE_PERMISSION = "core.identity.role.write";
@@ -300,7 +299,7 @@ function RoleForm({
             label="Name"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            {...optionalProp("error", nameError ?? save.fieldErrors.name)}
+            error={nameError ?? save.fieldErrors.name}
           />
           <TextField
             label="Code"
@@ -308,7 +307,7 @@ function RoleForm({
             onChange={(e) => setCode(e.target.value.toUpperCase().replace(/\s+/g, "_"))}
             helper={role ? "Cannot be changed." : "Cannot be changed once created."}
             disabled={role !== null}
-            {...optionalProp("error", codeError ?? save.fieldErrors.code)}
+            error={codeError ?? save.fieldErrors.code}
           />
           <TextArea label="Description" optional value={description} onChange={(e) => setDescription(e.target.value)} />
         </>
@@ -345,6 +344,7 @@ function RoleForm({
                       {checked ? (
                         <Select
                           label={`Scope for ${perm.code}`}
+                          hideLabel
                           containerClassName="w-32 shrink-0"
                           options={scopeOptions(perm.max_scope)}
                           value={scope}

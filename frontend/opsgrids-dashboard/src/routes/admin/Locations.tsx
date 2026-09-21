@@ -21,7 +21,6 @@ import type { Column } from "@opsgrids/ui";
 import { createLocation, listLocations, updateLocation } from "@/api";
 import type { Location, LocationCreate, LocationPatch } from "@/api/types";
 import { COUNTRIES, TIMEZONES } from "@/lib/geo";
-import { optionalProp } from "@/lib/props";
 import { PageHeader } from "@/ui";
 
 const WRITE_PERMISSION = "core.org.location.write";
@@ -197,7 +196,7 @@ function LocationForm({
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
-        {...optionalProp("error", nameError ?? save.fieldErrors.name)}
+        error={nameError ?? save.fieldErrors.name}
       />
       {location ? (
         <TextField label="Code" value={location.code} disabled helper="Cannot be changed." />
@@ -207,7 +206,7 @@ function LocationForm({
           value={code}
           onChange={(e) => setCode(e.target.value)}
           helper="Cannot be changed once created."
-          {...optionalProp("error", codeError ?? save.fieldErrors.code)}
+          error={codeError ?? save.fieldErrors.code}
         />
       )}
       <Select label="Timezone" options={TIMEZONES} value={timezone} onChange={(e) => setTimezone(e.target.value)} />

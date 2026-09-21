@@ -20,7 +20,6 @@ import type { TagTone } from "@opsgrids/ui";
 import { cancelSubscription, changeSubscriptionPlan, listPlans, listProducts, listSubscriptions } from "@/api";
 import type { Plan, PlanVersion, Product, Subscription } from "@/api/types";
 import { daysUntil, formatDate, formatMoney, intervalLabel } from "@/lib/money";
-import { optionalProp } from "@/lib/props";
 import { PageHeader } from "@/ui";
 import { shortProductName } from "../lib/productName";
 
@@ -287,7 +286,7 @@ function ChangePlanDialog({
             options={options}
             value={selected}
             onChange={(e) => setSelected(e.target.value)}
-            {...optionalProp("error", pickError)}
+            error={pickError}
           />
         )
       ) : null}

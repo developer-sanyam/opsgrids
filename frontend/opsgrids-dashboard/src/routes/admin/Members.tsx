@@ -4,6 +4,7 @@ import { problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client"
 import {
   Button,
   Card,
+  CheckboxGroup,
   Combobox,
   ConfirmDialog,
   DataTable,
@@ -40,7 +41,6 @@ import {
 import type { Invitation, InvitationCreate, InvitationCreated, Location, Member, MemberPatch, OrgUnit, Role } from "@/api/types";
 import { formatDate } from "@/lib/money";
 import { flattenOrgUnits } from "@/lib/orgUnits";
-import { optionalProp } from "@/lib/props";
 import { PageHeader } from "@/ui";
 
 const WRITE_PERMISSION = "core.identity.membership.write";
@@ -455,14 +455,14 @@ function MemberForm({
         optional
         value={displayName}
         onChange={(e) => setDisplayName(e.target.value)}
-        {...optionalProp("error", save.fieldErrors.display_name)}
+        error={save.fieldErrors.display_name}
       />
       <TextField
         label="Job title"
         optional
         value={jobTitle}
         onChange={(e) => setJobTitle(e.target.value)}
-        {...optionalProp("error", save.fieldErrors.job_title)}
+        error={save.fieldErrors.job_title}
       />
       <Select
         label="Department"
@@ -470,7 +470,7 @@ function MemberForm({
         options={flattenOrgUnits(units).map(({ unit, depth }) => ({ value: unit.id, label: `${"— ".repeat(depth)}${unit.name}` }))}
         value={orgUnitId}
         onChange={(e) => setOrgUnitId(e.target.value)}
-        {...optionalProp("error", save.fieldErrors.org_unit_id)}
+        error={save.fieldErrors.org_unit_id}
       />
       <Combobox
         label="Manager"
@@ -481,37 +481,25 @@ function MemberForm({
           if (signal.aborted) return [];
           return page.items.filter((m) => m.id !== member.id).map((m) => ({ id: m.id, label: m.display_name ?? m.full_name, sublabel: m.email }));
         }}
-        {...optionalProp("error", save.fieldErrors.manager_membership_id)}
+        error={save.fieldErrors.manager_membership_id}
       />
-      <fieldset className="flex flex-col gap-1.5 border-0 p-0 m-0">
-        <legend className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-faint">Locations</legend>
-        <div className="flex flex-col gap-2">
-          {locations.length === 0 ? (
-            <p className="text-sm text-muted">No locations exist yet.</p>
-          ) : (
-            locations.map((loc) => (
-              <label key={loc.code} className="flex items-center gap-2 text-sm text-ink">
-                <input
-                  type="checkbox"
-                  checked={locationCodes.includes(loc.code)}
-                  onChange={(e) =>
-                    setLocationCodes((prev) => (e.target.checked ? [...prev, loc.code] : prev.filter((c) => c !== loc.code)))
-                  }
-                  className="size-4 accent-accent"
-                />
-                {loc.name}
-              </label>
-            ))
-          )}
-        </div>
-      </fieldset>
+      {locations.length === 0 ? (
+        <p className="text-sm text-muted">No locations exist yet.</p>
+      ) : (
+        <CheckboxGroup
+          label="Locations"
+          options={locations.map((loc) => ({ value: loc.code, label: loc.name }))}
+          value={locationCodes}
+          onChange={setLocationCodes}
+        />
+      )}
       <TextField
         label="Started on"
         type="date"
         optional
         value={startedOn}
         onChange={(e) => setStartedOn(e.target.value)}
-        {...optionalProp("error", save.fieldErrors.started_on)}
+        error={save.fieldErrors.started_on}
       />
     </FormDialog>
   );
@@ -549,30 +537,22 @@ function RoleAssignDialog({
       pending={save.pending}
       {...(save.error ? { error: problemMessage(save.error) } : {})}
     >
-      <div className="flex max-h-72 flex-col gap-2 overflow-y-auto">
-        {roles.length === 0 ? (
-          <p className="text-sm text-muted">No roles exist yet.</p>
-        ) : (
-          roles.map((role) => (
-            <label key={role.code} className="flex items-start gap-2 rounded-tile border border-line p-3 text-sm">
-              <input
-                type="checkbox"
-                checked={selected.includes(role.code)}
-                onChange={(e) =>
-                  setSelected((prev) => (e.target.checked ? [...prev, role.code] : prev.filter((c) => c !== role.code)))
-                }
-                className="mt-0.5 size-4 accent-accent"
-              />
-              <span className="flex flex-col">
-                <span className="font-semibold text-ink">
-                  {role.name} {role.is_system ? <Tag tone="neutral">System</Tag> : null}
-                </span>
-                {role.description ? <span className="text-xs text-muted">{role.description}</span> : null}
-              </span>
-            </label>
-          ))
-        )}
-      </div>
+      {roles.length === 0 ? (
+        <p className="text-sm text-muted">No roles exist yet.</p>
+      ) : (
+        <div className="max-h-72 overflow-y-auto">
+          <CheckboxGroup
+            label="Roles"
+            options={roles.map((role) => ({
+              value: role.code,
+              label: role.is_system ? `${role.name} (System)` : role.name,
+              description: role.description ?? undefined,
+            }))}
+            value={selected}
+            onChange={setSelected}
+          />
+        </div>
+      )}
     </FormDialog>
   );
 }
@@ -661,28 +641,17 @@ function InviteDialog({ roles, onClose, onSaved }: { roles: Role[]; onClose: () 
         type="email"
         value={email}
         onChange={(e) => setEmail(e.target.value)}
-        {...optionalProp("error", emailError ?? save.fieldErrors.email)}
+        error={emailError ?? save.fieldErrors.email}
       />
-      <fieldset className="flex flex-col gap-1.5 border-0 p-0 m-0">
-        <legend className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-faint">
-          Roles (leave empty for the default role)
-        </legend>
-        <div className="flex max-h-48 flex-col gap-2 overflow-y-auto">
-          {roles.map((role) => (
-            <label key={role.code} className="flex items-center gap-2 text-sm text-ink">
-              <input
-                type="checkbox"
-                checked={roleCodes.includes(role.code)}
-                onChange={(e) =>
-                  setRoleCodes((prev) => (e.target.checked ? [...prev, role.code] : prev.filter((c) => c !== role.code)))
-                }
-                className="size-4 accent-accent"
-              />
-              {role.name}
-            </label>
-          ))}
-        </div>
-      </fieldset>
+      <div className="max-h-48 overflow-y-auto">
+        <CheckboxGroup
+          label="Roles"
+          helper="Leave empty for the default role."
+          options={roles.map((role) => ({ value: role.code, label: role.name }))}
+          value={roleCodes}
+          onChange={setRoleCodes}
+        />
+      </div>
       <TextField
         label="Expires in (days)"
         type="number"
@@ -690,7 +659,7 @@ function InviteDialog({ roles, onClose, onSaved }: { roles: Role[]; onClose: () 
         max={90}
         value={expiresInDays}
         onChange={(e) => setExpiresInDays(e.target.value)}
-        {...optionalProp("error", save.fieldErrors.expires_in_days)}
+        error={save.fieldErrors.expires_in_days}
       />
     </FormDialog>
   );

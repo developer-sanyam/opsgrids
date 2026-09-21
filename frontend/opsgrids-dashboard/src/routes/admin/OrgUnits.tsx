@@ -21,7 +21,6 @@ import type { ComboboxOption } from "@opsgrids/ui";
 import { createOrgUnit, getMember, listMembers, listOrgUnits, moveOrgUnit, updateOrgUnit } from "@/api";
 import type { OrgUnit, OrgUnitCreate, OrgUnitPatch } from "@/api/types";
 import { descendantIds, flattenOrgUnits } from "@/lib/orgUnits";
-import { optionalProp } from "@/lib/props";
 import { PageHeader } from "@/ui";
 
 const WRITE_PERMISSION = "core.org.unit.write";
@@ -214,14 +213,14 @@ function CreateOrgUnitDialog({
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
-        {...optionalProp("error", nameError ?? save.fieldErrors.name)}
+        error={nameError ?? save.fieldErrors.name}
       />
       <TextField
         label="Code"
         value={code}
         onChange={(e) => setCode(e.target.value)}
         helper="Cannot be changed once created."
-        {...optionalProp("error", codeError ?? save.fieldErrors.code)}
+        error={codeError ?? save.fieldErrors.code}
       />
       <Select label="Kind" options={KINDS} value={kind} onChange={(e) => setKind(e.target.value)} />
       <Select
@@ -293,7 +292,7 @@ function EditOrgUnitDialog({
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
-        {...optionalProp("error", save.fieldErrors.name)}
+        error={save.fieldErrors.name}
       />
       <TextField label="Code" value={unit.code} disabled helper="Cannot be changed." />
       <Select
@@ -301,7 +300,7 @@ function EditOrgUnitDialog({
         options={KINDS}
         value={kind}
         onChange={(e) => setKind(e.target.value)}
-        {...optionalProp("error", save.fieldErrors.kind)}
+        error={save.fieldErrors.kind}
       />
       <Combobox
         label="Head of department"

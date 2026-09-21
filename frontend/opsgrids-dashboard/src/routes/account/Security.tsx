@@ -11,7 +11,6 @@ import {
   switchOrganization,
 } from "@/api/auth";
 import type { MfaEnrolStart } from "@/api/auth";
-import { optionalProp } from "@/lib/props";
 import { PageHeader } from "@/ui";
 
 /** Change password, set up two-factor, and — when there is more than one — switch organisation. */
@@ -72,7 +71,7 @@ function PasswordSection() {
           autoComplete="current-password"
           value={current}
           onChange={(e) => setCurrent(e.target.value)}
-          {...optionalProp("error", save.fieldErrors.current_password)}
+          error={save.fieldErrors.current_password}
         />
         <TextField
           label="New password"
@@ -81,7 +80,7 @@ function PasswordSection() {
           value={next}
           onChange={(e) => setNext(e.target.value)}
           helper="At least 8 characters."
-          {...optionalProp("error", save.fieldErrors.new_password)}
+          error={save.fieldErrors.new_password}
         />
         <TextField
           label="Confirm new password"
@@ -89,7 +88,7 @@ function PasswordSection() {
           autoComplete="new-password"
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
-          {...optionalProp("error", confirmError)}
+          error={confirmError}
         />
         {save.error && Object.keys(save.fieldErrors).length === 0 ? (
           <InlineAlert tone="danger" title={problemMessage(save.error)} />
@@ -167,7 +166,7 @@ function MfaSection({ enabled }: { enabled: boolean }) {
             value={code}
             onChange={(e) => setCode(e.target.value)}
             inputMode="numeric"
-            {...optionalProp("error", confirm.fieldErrors.code)}
+            error={confirm.fieldErrors.code}
           />
           {confirm.error && Object.keys(confirm.fieldErrors).length === 0 ? (
             <InlineAlert tone="danger" title={problemMessage(confirm.error)} />
