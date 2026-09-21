@@ -767,7 +767,11 @@ async def test_creating_a_connection_seals_the_secret(session, ctx) -> None:
     from app import services
 
     conn = await services.create_connection(
-        session, ctx, kind="google", username="info@company.com", secret="app-password"
+        session,
+        ctx,
+        kind="google",
+        username="info@company.com",
+        secret="app-password",  # pragma: allowlist secret
     )
     assert conn.secret_enc is not None
     assert b"app-password" not in conn.secret_enc

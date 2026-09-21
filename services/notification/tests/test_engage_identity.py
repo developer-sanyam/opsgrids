@@ -192,7 +192,7 @@ async def test_creating_a_connection_seals_the_secret(session, org_id) -> None:
             _ctx(org_id, "engage.setup.connection.write"),
             kind="google",
             username="info@company.com",
-            secret="app-password",
+            secret="app-password",  # pragma: allowlist secret
         )
 
     assert conn.secret_enc is not None
@@ -207,7 +207,7 @@ async def test_a_connection_derives_its_transport_from_its_kind(session, org_id)
             _ctx(org_id, "engage.setup.connection.write"),
             kind="google",
             username="info@company.com",
-            secret="x",
+            secret="x",  # pragma: allowlist secret
         )
 
     assert (conn.host, conn.port, conn.use_tls) == ("smtp.gmail.com", 587, True)
@@ -220,13 +220,22 @@ async def test_a_second_connection_is_refused(session, org_id) -> None:
     ctx = _ctx(org_id, "engage.setup.connection.write")
     async with session.begin():
         await services.create_connection(
-            session, ctx, kind="google", username="a@b.com", secret="x"
+            session,
+            ctx,
+            kind="google",
+            username="a@b.com",
+            secret="x",  # pragma: allowlist secret
         )
 
     with pytest.raises(BusinessRuleProblem):
         async with session.begin():
             await services.create_connection(
-                session, ctx, kind="smtp", username="c@d.com", secret="y", host="mail.d.com"
+                session,
+                ctx,
+                kind="smtp",
+                username="c@d.com",
+                secret="y",  # pragma: allowlist secret
+                host="mail.d.com",
             )
 
 
@@ -239,7 +248,7 @@ async def test_connecting_audits_and_stages_an_event_without_the_secret(session,
             _ctx(org_id, "engage.setup.connection.write"),
             kind="google",
             username="info@company.com",
-            secret="app-password",
+            secret="app-password",  # pragma: allowlist secret
         )
 
     audit = (await session.execute(select(models.AuditLog))).scalars().all()
@@ -402,7 +411,7 @@ async def usable_sender(session, org_id, verified_domain) -> models.Sender:
             _ctx(org_id, "engage.setup.connection.write"),
             kind="google",
             username="info@company.com",
-            secret="app-password",
+            secret="app-password",  # pragma: allowlist secret
         )
         sender = await services.create_sender(
             session,
@@ -577,7 +586,15 @@ READ_ROUTES = [CONNECTION, DOMAINS, SENDERS]
 #: caller holding only that read must be refused each one — which is the whole reason the
 #: catalogue splits read from write per resource instead of gating the product as a whole.
 WRITE_ROUTES = [
-    (CONNECTION, C_READ, {"kind": "google", "username": "info@company.com", "secret": "x"}),
+    (
+        CONNECTION,
+        C_READ,
+        {
+            "kind": "google",
+            "username": "info@company.com",
+            "secret": "x",  # pragma: allowlist secret
+        },
+    ),
     (DOMAINS, D_READ, {"domain": "company.com"}),
     (f"{DOMAINS}/{ABSENT}/verify", D_READ, None),
     (SENDERS, S_READ, {"domain_id": str(ABSENT), "name": "Sales", "address": "sales@company.com"}),
@@ -640,7 +657,11 @@ async def test_connecting_a_provider_never_returns_the_secret(client, org_id) ->
     with as_principal(engage_caller(org_id, [f"{C_WRITE}:ORG"])):
         response = await client.post(
             CONNECTION,
-            json={"kind": "google", "username": "info@company.com", "secret": "app-password"},
+            json={
+                "kind": "google",
+                "username": "info@company.com",
+                "secret": "app-password",  # pragma: allowlist secret
+            },
         )
 
     assert response.status_code == 201
@@ -653,7 +674,11 @@ async def test_reading_the_connection_returns_that_same_shape(client, org_id) ->
     with as_principal(engage_caller(org_id, [f"{C_WRITE}:ORG"])):
         await client.post(
             CONNECTION,
-            json={"kind": "google", "username": "info@company.com", "secret": "app-password"},
+            json={
+                "kind": "google",
+                "username": "info@company.com",
+                "secret": "app-password",  # pragma: allowlist secret
+            },
         )
     with as_principal(engage_caller(org_id, [f"{C_READ}:ORG"])):
         response = await client.get(CONNECTION)
