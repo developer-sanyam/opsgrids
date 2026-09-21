@@ -26,6 +26,7 @@ const PRODUCT_HOSTS: Record<string, string> = {
   finance: "https://finance.opsgrids.com/",
   itsm: "https://it.opsgrids.com/",
   storefront: "https://store.opsgrids.com/",
+  engage: "https://engage.opsgrids.com/",
 };
 
 /** The one price a card shows: the first published version's flat price, if there is one. */
