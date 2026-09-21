@@ -19,14 +19,16 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
 from app.config import settings
 from app.models import SCHEMA, Agent, SlaPolicy, Ticket, TicketMessage
 from app.schemas import (
+    AgentIn,
     AgentOut,
+    AgentPatch,
     AssignIn,
     BreakdownSliceOut,
     MessageOut,
@@ -34,9 +36,13 @@ from app.schemas import (
     ReplyIn,
     Requester,
     ServiceInfo,
+    SlaPolicyIn,
     SlaPolicyOut,
     SlaTargetOut,
+    StatusIn,
+    TicketCreateIn,
     TicketOut,
+    TicketUpdateIn,
     VolumePointOut,
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
@@ -63,6 +69,14 @@ TicketRead = Annotated[
 ]
 TicketWrite = Annotated[
     ScopeContext, Depends(require("support.desk.ticket.write", minimum=Scope.ORG))
+]
+#: Agent and SLA-policy administration are narrower than the desk's day-to-day write: only
+#: SUPPORT_ADMIN holds these (`catalogue.py`), not every agent who can reply and assign.
+AgentWrite = Annotated[
+    ScopeContext, Depends(require("support.desk.agent.write", minimum=Scope.ORG))
+]
+SlaPolicyWrite = Annotated[
+    ScopeContext, Depends(require("support.desk.sla_policy.write", minimum=Scope.ORG))
 ]
 
 
@@ -174,6 +188,21 @@ async def list_tickets(
     return Page.build(items, total=total, params=params)
 
 
+@router.post(
+    "/support/tickets",
+    response_model=TicketOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Open a ticket",
+    dependencies=[Entitled],
+)
+async def create_ticket(
+    payload: TicketCreateIn, session: SessionDep, ctx: TicketWrite, request: Request
+) -> TicketOut:
+    ticket = await services.create_ticket_from(session, ctx, payload, request=request)
+    messages = await selectors.get_messages(session, ctx.organization_id, ticket.id)
+    return _ticket_out(ticket, messages)
+
+
 @router.get(
     "/support/agents",
     response_model=list[AgentOut],
@@ -185,6 +214,53 @@ async def list_agents(session: SessionDep, ctx: TicketRead) -> list[AgentOut]:
     return [_agent_out(a) for a in agents]
 
 
+@router.post(
+    "/support/agents",
+    response_model=AgentOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add an agent to the desk",
+    dependencies=[Entitled],
+)
+async def create_agent(
+    payload: AgentIn, session: SessionDep, ctx: AgentWrite, request: Request
+) -> AgentOut:
+    agent = await services.create_agent(session, ctx, payload, request=request)
+    return _agent_out(agent)
+
+
+@router.patch(
+    "/support/agents/{ref}",
+    response_model=AgentOut,
+    summary="Edit an agent",
+    dependencies=[Entitled],
+)
+async def update_agent(
+    ref: str, payload: AgentPatch, session: SessionDep, ctx: AgentWrite, request: Request
+) -> AgentOut:
+    agent = await selectors.get_agent(session, ctx.organization_id, ref)
+    if agent is None:
+        raise NotFoundProblem("That agent is not part of this organization")
+    agent = await services.update_agent(session, ctx, agent, payload, request=request)
+    return _agent_out(agent)
+
+
+@router.delete(
+    "/support/agents/{ref}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Deactivate an agent",
+    dependencies=[Entitled],
+)
+async def deactivate_agent(
+    ref: str, session: SessionDep, ctx: AgentWrite, request: Request
+) -> Response:
+    agent = await selectors.get_agent(session, ctx.organization_id, ref)
+    if agent is None:
+        raise NotFoundProblem("That agent is not part of this organization")
+    await services.deactivate_agent(session, ctx, agent, request=request)
+    await session.flush()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get(
     "/support/sla-policy",
     response_model=SlaPolicyOut,
@@ -192,9 +268,26 @@ async def list_agents(session: SessionDep, ctx: TicketRead) -> list[AgentOut]:
     dependencies=[Entitled],
 )
 async def get_sla_policy(session: SessionDep, ctx: TicketRead) -> SlaPolicyOut:
+    # Deliberately still a 404, not a synthesized set of defaults: there is exactly one policy
+    # per organization (`uq_sla_policies_org`), and inventing target minutes nobody configured
+    # would read as a real SLA commitment. A new organization gets an honest "unset", and the
+    # product's empty state (not this endpoint) is where "no policy yet — set one up" belongs.
     policy = await selectors.get_sla_policy(session, ctx.organization_id)
     if policy is None:
         raise NotFoundProblem("No SLA policy is configured for this organization")
+    return _policy_out(policy)
+
+
+@router.put(
+    "/support/sla-policy",
+    response_model=SlaPolicyOut,
+    summary="Set the SLA policy governing the queue",
+    dependencies=[Entitled],
+)
+async def set_sla_policy(
+    payload: SlaPolicyIn, session: SessionDep, ctx: SlaPolicyWrite, request: Request
+) -> SlaPolicyOut:
+    policy = await services.set_sla_policy(session, ctx, payload, request=request)
     return _policy_out(policy)
 
 
@@ -245,6 +338,50 @@ async def read_ticket(number: str, session: SessionDep, ctx: TicketRead) -> Tick
     return _ticket_out(ticket, messages)
 
 
+@router.patch(
+    "/support/tickets/{number}",
+    response_model=TicketOut,
+    summary="Edit a ticket's priority, subject or tags",
+    dependencies=[Entitled],
+)
+async def update_ticket(
+    number: str,
+    payload: TicketUpdateIn,
+    session: SessionDep,
+    ctx: TicketWrite,
+    request: Request,
+) -> TicketOut:
+    ticket = await selectors.get_ticket(session, ctx.organization_id, number)
+    if ticket is None:
+        raise NotFoundProblem("That ticket is not part of this organization")
+    await services.update_ticket(session, ctx, ticket, payload, request=request)
+    await session.refresh(ticket)
+    messages = await selectors.get_messages(session, ctx.organization_id, ticket.id)
+    return _ticket_out(ticket, messages)
+
+
+@router.post(
+    "/support/tickets/{number}/status",
+    response_model=TicketOut,
+    summary="Move a ticket through the lifecycle",
+    dependencies=[Entitled],
+)
+async def change_ticket_status(
+    number: str,
+    payload: StatusIn,
+    session: SessionDep,
+    ctx: TicketWrite,
+    request: Request,
+) -> TicketOut:
+    ticket = await selectors.get_ticket(session, ctx.organization_id, number)
+    if ticket is None:
+        raise NotFoundProblem("That ticket is not part of this organization")
+    await services.change_status(session, ctx, ticket, payload.status, request=request)
+    await session.refresh(ticket)
+    messages = await selectors.get_messages(session, ctx.organization_id, ticket.id)
+    return _ticket_out(ticket, messages)
+
+
 @router.post(
     "/support/tickets/{number}/reply",
     response_model=TicketOut,
@@ -267,7 +404,9 @@ async def reply_ticket(
         ctx,
         ticket,
         body=payload.body,
-        author_type=payload.author_type,
+        # Fixed to `agent`, never taken from the client — see `ReplyIn`. This endpoint is the
+        # desk's own reply path, so the caller writing it *is* the agent.
+        author_type="agent",
         author_name=payload.author_name,
         internal=payload.internal,
         request=request,

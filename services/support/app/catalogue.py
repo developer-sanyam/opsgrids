@@ -110,7 +110,23 @@ SUPPORT = PermissionCatalogue(
             "desk",
             "ticket",
             "write",
-            "Reply to tickets and assign them",
+            "Reply to tickets, assign them, change their status, and create or edit them",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "desk",
+            "agent",
+            "write",
+            "Add, edit and deactivate the agents who work the queue",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "desk",
+            "sla_policy",
+            "write",
+            "Set the SLA policy governing the queue",
             "ORG",
             "ORG",
         ),
@@ -124,13 +140,15 @@ SUPPORT_ROLE_TEMPLATES: list[RoleTemplate] = [
         name="Support administrator",
         product=PRODUCT,
         description=(
-            "Runs the support desk: reads the whole queue and every thread, replies and assigns. "
-            "Built from the support catalogue alone — running the desk is not the same job as "
-            "owning the account."
+            "Runs the support desk: reads the whole queue and every thread, replies and assigns, "
+            "and is the only role that manages agents and the SLA policy. Built from the support "
+            "catalogue alone — running the desk is not the same job as owning the account."
         ),
         grants=SUPPORT.pick(
             ("support.desk.ticket.read", "ORG"),
             ("support.desk.ticket.write", "ORG"),
+            ("support.desk.agent.write", "ORG"),
+            ("support.desk.sla_policy.write", "ORG"),
         ),
     ),
     RoleTemplate(

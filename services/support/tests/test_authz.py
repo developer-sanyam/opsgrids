@@ -33,6 +33,23 @@ def as_principal(principal: Principal) -> Iterator[None]:
 
 READ = "support.desk.ticket.read"
 WRITE = "support.desk.ticket.write"
+AGENT_WRITE = "support.desk.agent.write"
+SLA_POLICY_WRITE = "support.desk.sla_policy.write"
+
+_NEW_TICKET_BODY = {
+    "subject": "Printer on fire",
+    "requester": {"name": "A Requester", "email": "req@example.com", "company": "Acme"},
+    "body": "Please send help.",
+}
+_SLA_POLICY_BODY = {
+    "name": "Standard",
+    "targets": [
+        {"priority": "urgent", "first_response_min": 15, "resolution_min": 240},
+        {"priority": "high", "first_response_min": 30, "resolution_min": 480},
+        {"priority": "normal", "first_response_min": 60, "resolution_min": 1440},
+        {"priority": "low", "first_response_min": 120, "resolution_min": 2880},
+    ],
+}
 
 # Every principal route, as (method, path). Reads need read:ORG; writes need write:ORG.
 READ_ROUTES = [
@@ -45,11 +62,27 @@ READ_ROUTES = [
 WRITE_ROUTES = [
     ("POST", "/api/v1/support/tickets/TK-0001/reply", {"body": "hi", "author_name": "A"}),
     ("POST", "/api/v1/support/tickets/TK-0001/assign", {"assignee_id": "ag-01"}),
+    ("PATCH", "/api/v1/support/tickets/TK-0001", {"priority": "high"}),
+    ("POST", "/api/v1/support/tickets/TK-0001/status", {"status": "open"}),
+    ("POST", "/api/v1/support/tickets", _NEW_TICKET_BODY),
+]
+
+# `support.desk.agent.write` and `support.desk.sla_policy.write` are narrower than the desk's
+# ordinary write permission — SUPPORT_ADMIN only, not every SUPPORT_AGENT (`catalogue.py`).
+AGENT_WRITE_ROUTES = [
+    ("POST", "/api/v1/support/agents", {"name": "New Agent", "email": "new@example.com"}),
+    ("PATCH", "/api/v1/support/agents/ag-01", {"online": True}),
+    ("DELETE", "/api/v1/support/agents/ag-01", None),
+]
+SLA_POLICY_WRITE_ROUTES = [
+    ("PUT", "/api/v1/support/sla-policy", _SLA_POLICY_BODY),
 ]
 
 
 def _full(org_id: uuid.UUID) -> Principal:
-    return principal_for(org_id, [f"{READ}:ORG", f"{WRITE}:ORG"])
+    return principal_for(
+        org_id, [f"{READ}:ORG", f"{WRITE}:ORG", f"{AGENT_WRITE}:ORG", f"{SLA_POLICY_WRITE}:ORG"]
+    )
 
 
 class TestReadAuthz:
@@ -93,6 +126,47 @@ class TestWriteAuthz:
         self, client, org_id, queue, method, path, body
     ) -> None:
         principal = principal_for(org_id, [f"{WRITE}:OWN"])
+        with as_principal(principal):
+            res = await client.request(method, path, json=body)
+        assert res.status_code == 403
+
+
+class TestAgentAndSlaPolicyWriteAuthz:
+    """`support.desk.agent.write` and `support.desk.sla_policy.write` are SUPPORT_ADMIN-only —
+    holding the desk's ordinary `ticket.write` is not enough to manage agents or the policy."""
+
+    @pytest.mark.parametrize(("method", "path", "body"), AGENT_WRITE_ROUTES)
+    async def test_ticket_write_cannot_manage_agents(
+        self, client, org_id, queue, method, path, body
+    ) -> None:
+        principal = principal_for(org_id, [f"{READ}:ORG", f"{WRITE}:ORG"])
+        with as_principal(principal):
+            res = await client.request(method, path, json=body)
+        assert res.status_code == 403
+
+    @pytest.mark.parametrize(("method", "path", "body"), AGENT_WRITE_ROUTES)
+    async def test_below_org_scope_cannot_manage_agents(
+        self, client, org_id, queue, method, path, body
+    ) -> None:
+        principal = principal_for(org_id, [f"{AGENT_WRITE}:OWN"])
+        with as_principal(principal):
+            res = await client.request(method, path, json=body)
+        assert res.status_code == 403
+
+    @pytest.mark.parametrize(("method", "path", "body"), SLA_POLICY_WRITE_ROUTES)
+    async def test_ticket_write_cannot_set_sla_policy(
+        self, client, org_id, queue, method, path, body
+    ) -> None:
+        principal = principal_for(org_id, [f"{READ}:ORG", f"{WRITE}:ORG"])
+        with as_principal(principal):
+            res = await client.request(method, path, json=body)
+        assert res.status_code == 403
+
+    @pytest.mark.parametrize(("method", "path", "body"), SLA_POLICY_WRITE_ROUTES)
+    async def test_below_org_scope_cannot_set_sla_policy(
+        self, client, org_id, queue, method, path, body
+    ) -> None:
+        principal = principal_for(org_id, [f"{SLA_POLICY_WRITE}:OWN"])
         with as_principal(principal):
             res = await client.request(method, path, json=body)
         assert res.status_code == 403
@@ -173,6 +247,212 @@ class TestWritePath:
                 "/api/v1/support/tickets/TK-0002/assign", json={"assignee_id": "ag-ghost"}
             )
         assert res.status_code == 404
+
+    async def test_reply_author_type_is_always_agent_never_client_supplied(
+        self, client, org_id, queue
+    ) -> None:
+        """`ReplyIn` has no `author_type` field — a caller cannot post as `customer` or
+        `system` through this endpoint, and sending one is an unknown field (422), not a value
+        the server might have honoured."""
+        with as_principal(_full(org_id)):
+            rejected = await client.post(
+                "/api/v1/support/tickets/TK-0001/reply",
+                json={"body": "hi", "author_name": "Daniel Okafor", "author_type": "customer"},
+            )
+            accepted = await client.post(
+                "/api/v1/support/tickets/TK-0001/reply",
+                json={"body": "hi again", "author_name": "Daniel Okafor"},
+            )
+        assert rejected.status_code == 422
+        assert accepted.status_code == 201
+        assert accepted.json()["messages"][-1]["author_type"] == "agent"
+
+
+class TestStatusTransitions:
+    async def test_legal_move_updates_status(self, client, org_id, queue) -> None:
+        with as_principal(_full(org_id)):
+            res = await client.post(
+                "/api/v1/support/tickets/TK-0002/status", json={"status": "pending"}
+            )
+        assert res.status_code == 200
+        assert res.json()["status"] == "pending"
+
+    async def test_illegal_move_is_a_conflict(self, client, org_id, queue) -> None:
+        """TK-0003 is `solved`; `solved` may only reopen to `open` (`domain.py`)."""
+        with as_principal(_full(org_id)):
+            res = await client.post(
+                "/api/v1/support/tickets/TK-0003/status", json={"status": "pending"}
+            )
+        assert res.status_code == 409
+        assert "cannot move" in res.json()["detail"]
+
+    async def test_solving_clears_sla_due(self, client, org_id, queue) -> None:
+        """TK-0001 carries a real `sla_due` (`conftest.seed_queue`); solving it must null that
+        out — the clock has nothing left to measure."""
+        with as_principal(_full(org_id)):
+            before = await client.get("/api/v1/support/tickets/TK-0001")
+            res = await client.post(
+                "/api/v1/support/tickets/TK-0001/status", json={"status": "solved"}
+            )
+        assert before.json()["sla_due"] is not None
+        assert res.status_code == 200
+        assert res.json()["status"] == "solved"
+        assert res.json()["sla_due"] is None
+
+    async def test_free_form_status_value_is_rejected(self, client, org_id, queue) -> None:
+        with as_principal(_full(org_id)):
+            res = await client.post(
+                "/api/v1/support/tickets/TK-0002/status", json={"status": "archived"}
+            )
+        assert res.status_code == 422
+
+    async def test_unknown_ticket_is_not_found(self, client, org_id, queue) -> None:
+        with as_principal(_full(org_id)):
+            res = await client.post(
+                "/api/v1/support/tickets/TK-9999/status", json={"status": "open"}
+            )
+        assert res.status_code == 404
+
+
+class TestCreateTicket:
+    async def test_first_ticket_in_an_empty_org_gets_a_number(self, client, org_id) -> None:
+        """An empty organization — no seeded queue — still opens a ticket, numbered from 1."""
+        with as_principal(_full(org_id)):
+            res = await client.post("/api/v1/support/tickets", json=_NEW_TICKET_BODY)
+        assert res.status_code == 201
+        body = res.json()
+        assert body["id"] == "TK-0001"
+        assert body["status"] == "new"
+        assert body["sla_due"] is None  # no SLA policy configured for this organization
+        assert len(body["messages"]) == 1
+        assert body["messages"][0]["author_type"] == "customer"
+        assert body["messages"][0]["author_name"] == "A Requester"
+
+    async def test_server_owns_number_and_status(self, client, org_id, queue) -> None:
+        payload = {**_NEW_TICKET_BODY, "number": "TK-9999", "status": "solved"}
+        with as_principal(_full(org_id)):
+            res = await client.post("/api/v1/support/tickets", json=payload)
+        assert res.status_code == 422  # extra=forbid: number/status are not client fields
+
+    async def test_assigning_an_unknown_agent_on_create_is_not_found(
+        self, client, org_id, queue
+    ) -> None:
+        payload = {**_NEW_TICKET_BODY, "assignee_id": "ag-ghost"}
+        with as_principal(_full(org_id)):
+            res = await client.post("/api/v1/support/tickets", json=payload)
+        assert res.status_code == 404
+
+    async def test_sla_due_is_stamped_from_the_policy(self, client, org_id, queue) -> None:
+        with as_principal(_full(org_id)):
+            await client.put("/api/v1/support/sla-policy", json=_SLA_POLICY_BODY)
+            res = await client.post(
+                "/api/v1/support/tickets", json={**_NEW_TICKET_BODY, "priority": "urgent"}
+            )
+        assert res.status_code == 201
+        assert res.json()["sla_due"] is not None
+
+
+class TestUpdateTicket:
+    async def test_priority_change_is_visible_after_reload(self, client, org_id, queue) -> None:
+        with as_principal(_full(org_id)):
+            res = await client.patch("/api/v1/support/tickets/TK-0002", json={"priority": "low"})
+            reloaded = await client.get("/api/v1/support/tickets/TK-0002")
+        assert res.status_code == 200
+        assert res.json()["priority"] == "low"
+        assert reloaded.json()["priority"] == "low"
+
+    async def test_empty_patch_is_rejected(self, client, org_id, queue) -> None:
+        with as_principal(_full(org_id)):
+            res = await client.patch("/api/v1/support/tickets/TK-0002", json={})
+        assert res.status_code == 422
+
+    async def test_status_and_assignee_are_not_patchable_here(self, client, org_id, queue) -> None:
+        with as_principal(_full(org_id)):
+            res = await client.patch("/api/v1/support/tickets/TK-0002", json={"status": "solved"})
+        assert res.status_code == 422  # extra=forbid
+
+
+class TestAgentManagement:
+    async def test_add_agent_appears_in_the_roster(self, client, org_id, queue) -> None:
+        with as_principal(_full(org_id)):
+            res = await client.post(
+                "/api/v1/support/agents",
+                json={"name": "New Agent", "email": "new-agent@example.com"},
+            )
+            listed = await client.get("/api/v1/support/agents")
+        assert res.status_code == 201
+        created = res.json()
+        assert created["id"] == "ag-03"
+        assert created["role"] == "agent"
+        assert created["online"] is False
+        assert any(a["id"] == "ag-03" for a in listed.json())
+
+    async def test_update_agent_patches_only_sent_fields(self, client, org_id, queue) -> None:
+        with as_principal(_full(org_id)):
+            res = await client.patch("/api/v1/support/agents/ag-01", json={"online": False})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["online"] is False
+        assert body["name"] == "Priya Nair"  # untouched
+
+    async def test_update_unknown_agent_is_not_found(self, client, org_id, queue) -> None:
+        with as_principal(_full(org_id)):
+            res = await client.patch("/api/v1/support/agents/ag-ghost", json={"online": True})
+        assert res.status_code == 404
+
+    async def test_deactivating_an_agent_unassigns_their_tickets(
+        self, client, org_id, queue
+    ) -> None:
+        """TK-0001 is assigned to ag-02 (`conftest.seed_queue`); deactivating ag-02 must leave
+        it unassigned rather than pointing at a ghost agent."""
+        with as_principal(_full(org_id)):
+            res = await client.delete("/api/v1/support/agents/ag-02")
+            ticket = await client.get("/api/v1/support/tickets/TK-0001")
+            agents = await client.get("/api/v1/support/agents")
+        assert res.status_code == 204
+        assert ticket.json()["assignee_id"] is None
+        assert all(a["id"] != "ag-02" for a in agents.json())
+
+    async def test_retrying_a_deactivate_is_a_clean_not_found(self, client, org_id, queue) -> None:
+        """`selectors.get_agent` filters `deleted_at is None`, so a retried DELETE finds
+        nothing to act on — a 404, not a 500 or a second audit row. `deactivate_agent` itself
+        stays idempotent for any caller that reaches it with an already-deleted row."""
+        with as_principal(_full(org_id)):
+            first = await client.delete("/api/v1/support/agents/ag-01")
+            second = await client.delete("/api/v1/support/agents/ag-01")
+        assert first.status_code == 204
+        assert second.status_code == 404
+
+
+class TestSlaPolicy:
+    async def test_missing_policy_is_not_found(self, client, org_id, queue) -> None:
+        with as_principal(_full(org_id)):
+            res = await client.get("/api/v1/support/sla-policy")
+        assert res.status_code == 404
+
+    async def test_set_then_read_the_policy(self, client, org_id, queue) -> None:
+        with as_principal(_full(org_id)):
+            put = await client.put("/api/v1/support/sla-policy", json=_SLA_POLICY_BODY)
+            got = await client.get("/api/v1/support/sla-policy")
+        assert put.status_code == 200
+        assert got.status_code == 200
+        assert len(got.json()["targets"]) == 4
+
+    async def test_a_second_put_replaces_rather_than_duplicates(
+        self, client, org_id, queue
+    ) -> None:
+        with as_principal(_full(org_id)):
+            await client.put("/api/v1/support/sla-policy", json=_SLA_POLICY_BODY)
+            renamed = {**_SLA_POLICY_BODY, "name": "Renamed"}
+            await client.put("/api/v1/support/sla-policy", json=renamed)
+            got = await client.get("/api/v1/support/sla-policy")
+        assert got.json()["name"] == "Renamed"
+
+    async def test_missing_a_priority_row_is_rejected(self, client, org_id, queue) -> None:
+        incomplete = {**_SLA_POLICY_BODY, "targets": _SLA_POLICY_BODY["targets"][:3]}
+        with as_principal(_full(org_id)):
+            res = await client.put("/api/v1/support/sla-policy", json=incomplete)
+        assert res.status_code == 422
 
 
 class TestAppendOnlyThread:
