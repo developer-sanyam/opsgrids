@@ -1,5 +1,6 @@
 import { Button, EmptyState, InlineAlert, LayersIcon, TextField } from "@opsgrids/ui";
 
+import type { Category } from "@/api/types";
 import type { SectionDef, SectionInstance, SettingValue } from "@/theme/schema";
 
 import { COLUMNS, MAX_H, MIN_H, MIN_W } from "./grid";
@@ -18,6 +19,9 @@ interface SettingsInspectorProps {
   section: SectionInstance | undefined;
   /** `undefined` for a type this build does not know — a placeholder, never a crash. */
   def: SectionDef | undefined;
+  /** The merchant's own categories, so a `product-source` control offers what their catalogue
+   *  actually carries rather than a fixed demo vocabulary. */
+  categories: Category[];
   canEdit: boolean;
   onSettingChange: (key: string, value: SettingValue) => void;
   onMove: (x: number, y: number) => void;
@@ -30,6 +34,7 @@ interface SettingsInspectorProps {
 export function SettingsInspector({
   section,
   def,
+  categories,
   canEdit,
   onSettingChange,
   onMove,
@@ -123,7 +128,13 @@ export function SettingsInspector({
       )}
 
       {def ? (
-        <SettingsForm section={section} def={def} canEdit={canEdit} onChange={onSettingChange} />
+        <SettingsForm
+          section={section}
+          def={def}
+          canEdit={canEdit}
+          onChange={onSettingChange}
+          categories={categories}
+        />
       ) : (
         <UnknownSettings section={section} />
       )}
@@ -161,11 +172,13 @@ function SettingsForm({
   def,
   canEdit,
   onChange,
+  categories,
 }: {
   section: SectionInstance;
   def: SectionDef;
   canEdit: boolean;
   onChange: (key: string, value: SettingValue) => void;
+  categories: Category[];
 }) {
   if (def.fields.length === 0) {
     return (
@@ -206,6 +219,7 @@ function SettingsForm({
               : field.default
           }
           onChange={(value) => onChange(field.key, value)}
+          categories={categories}
         />
       ))}
     </div>

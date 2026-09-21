@@ -70,6 +70,7 @@ export const depot: Theme = {
         note: "Slab pricing applies above 10× MOQ. Freight at actuals. Rates hold to the end of the month.",
       }),
       sec("dpt-enquiry", "enquiry-form", { x: 8, y: 14, w: 4, h: 13 }, {
+        storeSlug: "depot",
         heading: "Send your line list",
         body: "Paste the list and the quantities. We price it and come back the same working day.",
         submitLabel: "Get it priced",

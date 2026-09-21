@@ -98,10 +98,18 @@ const CONTEXT_FIELDS = {
   timezone: true,
   canonical_host: true,
   is_canonical: true,
+  theme: true,
   checked_at: true,
 } satisfies Record<keyof StoreContextOut, true>;
 
-/** Every field is required. The two nullable ones are required *and* nullable, not optional. */
+/**
+ * Every field but `theme` is required. `theme` carries a Python-level default (`= None`) on
+ * `StoreContextOut.theme`, so the published schema's own `required` list omits it even though
+ * FastAPI's default response serialization always sends the key — `null` when no theme is
+ * adopted, the document otherwise. The TS interface keeps it a required (non-optional) member for
+ * that reason: every response genuinely carries the key, so a consumer should never need `?.` to
+ * reach it.
+ */
 const CONTEXT_REQUIRED = {
   store: true,
   name: true,
@@ -112,7 +120,7 @@ const CONTEXT_REQUIRED = {
   canonical_host: true,
   is_canonical: true,
   checked_at: true,
-} satisfies Record<RequiredKeys<StoreContextOut>, true>;
+} satisfies Record<Exclude<RequiredKeys<StoreContextOut>, "theme">, true>;
 
 const REQUEST_FIELDS = { host: true } satisfies Record<keyof PublicStoreContextIn, true>;
 const REQUEST_REQUIRED = { host: true } satisfies Record<RequiredKeys<PublicStoreContextIn>, true>;
@@ -128,7 +136,13 @@ describe("StoreContextOut, against the published schema", () => {
     expect(keys(CONTEXT_FIELDS)).toEqual(propertyNames("StoreContextOut"));
   });
 
-  it("makes every field required, because every key is always on the wire", () => {
+  it("makes every field but theme required — every key but that one has no Python-side default", () => {
+    /*
+     * `theme` is the one exception: `StoreContextOut.theme` defaults to `None` in
+     * `schemas.py`, so the schema's own `required` list omits it even though FastAPI's response
+     * serialization sends the key on every response regardless (`null` with no theme adopted).
+     * The interface keeps it non-optional for that reason — see the comment on `CONTEXT_REQUIRED`.
+     */
     expect(keys(CONTEXT_REQUIRED)).toEqual(requiredNames("StoreContextOut"));
   });
 

@@ -18,18 +18,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import type { ServiceabilityOut } from "@/api/client";
+import type { ServiceabilityOut } from "@/api/publicClient";
 import { postalCodeStorageKey } from "@/lib/serviceability";
 import { defaultSettings } from "../sections";
 import type { SettingValue, StoreMode } from "../schema";
 import { DeliveryCheck } from "./DeliveryCheck";
 
-vi.mock("@/api/client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/api/client")>();
+vi.mock("@/api/publicClient", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/publicClient")>();
   return { ...actual, checkServiceability: vi.fn() };
 });
 
-const { checkServiceability } = await import("@/api/client");
+const { checkServiceability } = await import("@/api/publicClient");
 const asked = vi.mocked(checkServiceability);
 
 const PHONE_WIDTH = 390;

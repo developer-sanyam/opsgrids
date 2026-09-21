@@ -1,13 +1,11 @@
 /**
  * The wire contracts this app reads.
  *
- * There is no storefront service on this branch — nothing on the gateway serves any of this yet —
- * so these types are the shape the catalogue and store endpoints are *specified* to return, and
- * `client.ts` serves them from fixtures. They are written as the real contract rather than as a
- * convenient local shape, so standing the service up is a flag flip and not a rewrite.
+ * `services/storefront` is real and routed. In dev, `client.ts` serves these shapes from
+ * fixtures by default (`VITE_USE_FIXTURES`); a production build always reads them off the
+ * gateway, at `/storefront/products`, `/storefront/categories` and `/storefront/theme`.
  */
 
-import type { CategoryKey } from "@/theme/sources";
 import type { StoreDoc } from "@/theme/schema";
 
 export interface Page<T> {
@@ -46,7 +44,9 @@ export interface Product {
   code: string;
   name: string;
   brand: string;
-  category: CategoryKey;
+  /** The category's `key` — a merchant-typed string (`^[a-z0-9][a-z0-9-]*$`), not a compile-time
+   *  vocabulary. See `@/theme/sources`'s header comment. */
+  category: string;
   /** The one line of specification a buyer scans for. */
   spec: string;
   /** The selling unit: "per 100 pcs", "per metre", "per 50kg bag". */
@@ -54,7 +54,9 @@ export interface Product {
   /** A band: equal min and max means a single published price. */
   price_min_minor: number;
   price_max_minor: number;
-  currency: "INR";
+  /** ISO-4217. The fixture catalogue is always `"INR"`; a merchant's own store can be any
+   *  3-letter code (`StoreOut.currency`), so this is a plain string rather than a literal. */
+  currency: string;
   /** Whether the published price includes GST. Labelling, not arithmetic. */
   gst_inclusive: boolean;
   /** Minimum order quantity, in `moq_unit`. */
@@ -107,9 +109,9 @@ export interface Product {
 }
 
 export interface Category {
-  key: CategoryKey;
+  key: string;
   label: string;
-  blurb: string;
+  blurb: string | null;
   /** Lines carried in this category — the count the tiles show. */
   line_count: number;
   /** Bundled sample art under `/img/…`, or `null` to fall back to the generated `ImagePlate`. */

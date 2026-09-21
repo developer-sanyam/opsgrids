@@ -21,6 +21,7 @@ import {
 } from "@opsgrids/client";
 
 import { USE_FIXTURES } from "@/api/client";
+import { getStoreIdentity } from "@/settings/api";
 import { FIXTURE_DEMAND, FIXTURE_POSTAL_CODES, FIXTURE_STORE, FIXTURE_ZONES } from "./fixtures";
 import { parseImportCsv, parsePostalCodeText } from "./postalCodes";
 import type { PostalCodeMap, PostalCodeOwner } from "./postalCodes";
@@ -110,10 +111,19 @@ function withCounts(zone: ZoneOut): ZoneOut {
  * Read here for three facts this module cannot invent — the ISO currency every minor amount is
  * denominated in, the timezone a `DATE_OFFSET` cutoff is a wall clock in, and whether the store is
  * published at all (an unpublished store answers 404 to every buyer, §4).
+ *
+ * **Delegates to `@/settings/api`'s `getStoreIdentity`**, the one place this app reads or writes
+ * the identity row, so a save made on `/settings` is the same store this screen sees — no second
+ * fixture copy to drift out of step. A missing store (a fresh organization) is a 404 here: the
+ * delivery admin has nothing to configure until `/settings` creates one, which is what
+ * `DeliveryProblem` tells the merchant.
  */
 export async function getStoreSettings(): Promise<StoreOut> {
-  if (USE_FIXTURES) return settle(FIXTURE_STORE, 120);
-  return apiRequest<StoreOut>("/storefront/store");
+  const store = await getStoreIdentity();
+  if (store === null) {
+    throw new ApiError(404, "This organization has no storefront yet. Create the store first.", null);
+  }
+  return store;
 }
 
 /* ---------------------------------- zones ------------------------------------ */
@@ -255,14 +265,18 @@ export async function saveZonePostalCodes(
   if (USE_FIXTURES) {
     const parsed = parsePostalCodeText(postalCodes);
     const codes = [...new Set(parsed.codes.map((code) => code.value))];
-    // A code moving in leaves its old zone — the unique-per-organization rule (ADR-0010 §2).
+    // A code that belongs to another zone is refused, naming that zone — never silently moved.
+    // The UI blocks this before it ever calls here (gap 7); this refusal is what a direct call
+    // still gets, matching the live service (services.py:694-719).
     for (const code of codes) {
       const owner = fixtureOwnerOf(code);
       if (owner !== null && owner !== zoneId) {
-        fixtureCodes = {
-          ...fixtureCodes,
-          [owner]: (fixtureCodes[owner] ?? []).filter((held) => held !== code),
-        };
+        const ownerZone = fixtureZones.find((candidate) => candidate.id === owner);
+        throw new ApiError(
+          409,
+          `${code} already belongs to ${ownerZone?.name ?? "another zone"}. Remove it there first.`,
+          null,
+        );
       }
     }
     fixtureCodes = { ...fixtureCodes, [zoneId]: codes };

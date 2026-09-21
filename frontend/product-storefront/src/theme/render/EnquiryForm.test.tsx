@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import * as client from "@/api/client";
+import * as client from "@/api/publicClient";
 import { CATEGORY_LIST, PRODUCTS } from "@/api/fixtures";
 import { defaultSettings } from "../sections";
 import { EnquiryForm } from "./EnquiryForm";
@@ -15,7 +15,7 @@ import { EnquiryForm } from "./EnquiryForm";
 function renderForm() {
   return render(
     <EnquiryForm
-      settings={defaultSettings("enquiry-form")}
+      settings={{ ...defaultSettings("enquiry-form"), storeSlug: "sunrise" }}
       products={PRODUCTS}
       categories={CATEGORY_LIST}
       stacked={false}

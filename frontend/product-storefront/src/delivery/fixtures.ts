@@ -19,10 +19,14 @@ import type { DemandRowOut, StoreOut, ZoneOut } from "./types";
 export const FIXTURE_STORE: StoreOut = {
   id: "store-fixture-0001",
   slug: "greenleaf",
+  name: "Greenleaf Trading Co.",
+  tagline: "Reliable stock, quoted fast",
+  logo_text: "GTC",
   status: "published",
   currency: "INR",
   timezone: "Asia/Kolkata",
   custom_domain: null,
+  custom_domain_status: null,
   created_at: "2026-09-01T00:00:00Z",
   updated_at: "2026-09-18T00:00:00Z",
 };

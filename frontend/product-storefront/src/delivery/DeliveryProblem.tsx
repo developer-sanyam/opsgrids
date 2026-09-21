@@ -1,3 +1,5 @@
+import { Link } from "react-router-dom";
+
 import { ApiError } from "@opsgrids/client";
 
 import { ErrorState } from "@opsgrids/ui";
@@ -49,8 +51,16 @@ export function DeliveryProblem({
       return (
         <ErrorState
           tone="neutral"
-          title="There is no storefront here yet"
-          message="Delivery zones belong to a store. Adopt a theme first and this screen has something to configure."
+          title="This organization has no store yet"
+          message="Delivery zones belong to a store. Create yours on the Settings screen and this screen has something to configure."
+          action={
+            <Link
+              to="/settings"
+              className="rounded-full border border-line bg-surface px-4 h-9 inline-flex items-center text-sm font-semibold text-ink transition-colors hover:bg-ground"
+            >
+              Go to Settings
+            </Link>
+          }
           {...(reference !== undefined ? { reference } : {})}
         />
       );

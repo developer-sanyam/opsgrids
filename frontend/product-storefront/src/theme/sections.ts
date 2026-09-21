@@ -17,7 +17,6 @@ import type { SectionDef, SettingField, SettingValue } from "./schema";
 import { CMS_SECTION_DEFS } from "./sections.cms";
 import { DELIVERY_SECTION_DEFS } from "./sections.delivery";
 import { RETAIL_SECTION_DEFS } from "./sections.retail";
-import { PRODUCT_SOURCE_OPTIONS } from "./sources";
 
 const ALIGN_OPTIONS = [
   { value: "left", label: "Left" },
@@ -151,13 +150,18 @@ function cardOptionFields(): SettingField[] {
   ];
 }
 
-/** A `product-source` control, used by every commerce section. */
+/**
+ * A `product-source` control, used by every commerce section.
+ *
+ * **Deliberately no `options` here.** `SettingControl` builds the vocabulary at render time from
+ * the fixed collections plus the merchant's own categories (`@/api/types` `Category[]`), so a
+ * source picker always offers what the catalogue actually carries rather than a fixed demo list.
+ */
 function sourceField(help: string): SettingField {
   return {
     key: "source",
     label: "Products from",
     type: "product-source",
-    options: PRODUCT_SOURCE_OPTIONS,
     default: "all",
     help,
   };
@@ -497,6 +501,13 @@ const CORE_SECTION_DEFS: SectionDef[] = [
     group: "commerce",
     defaultLayout: { w: 6, h: 12 },
     fields: [
+      {
+        key: "storeSlug",
+        label: "Store handle",
+        type: "text",
+        default: "",
+        help: "Your store's published handle — the name in your storefront address. The enquiry names it when it sends. Leave it empty and the form refuses to send.",
+      },
       { key: "heading", label: "Heading", type: "text", default: "Ask for a quote" },
       {
         key: "body",

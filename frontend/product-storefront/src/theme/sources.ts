@@ -1,10 +1,18 @@
 /**
- * The vocabulary a `product-source` setting may hold.
+ * The vocabulary a `product-source` setting may hold, and the fixture catalogue's own category
+ * keys.
  *
- * It lives in the theme layer, not the catalogue, on purpose: the editor renders these options
- * from a `SectionDef` with no catalogue loaded, and a section saved against a category must keep
- * meaning when the catalogue behind it changes. The catalogue conforms to these keys; a source
- * that matches nothing renders the section's own empty state rather than disappearing.
+ * **A merchant's real category is `storefront.categories.key` — a merchant-typed string
+ * (`CategoryKeyField` in `services/storefront/app/schemas.py`, pattern `^[a-z0-9][a-z0-9-]*$`),
+ * not a member of a compile-time union.** `Product.category` and `Category.key` in
+ * `@/api/types` are therefore typed `string`: a merchant's catalogue is not bounded by what this
+ * build's ten demo categories happen to name, and a source that matches nothing renders the
+ * section's own empty state rather than failing to compile. `TRADE_CATEGORIES` /
+ * `RETAIL_CATEGORIES` below stay a closed vocabulary for exactly one reason now — they are what
+ * `api/fixtures.ts`'s sample catalogue is written against — and the editor's product-source
+ * picker no longer reads them: `SettingControl` builds that list from the merchant's own fetched
+ * categories (`@/catalogue/api`'s `listCategories`), with `BASE_PRODUCT_SOURCE_OPTIONS` below
+ * supplying the three collections every catalogue has regardless of its categories.
  */
 
 /** The trade vocabulary: what the six B2B themes sell. */
@@ -44,22 +52,24 @@ export const RETAIL_CATEGORIES = [
 
 export const CATEGORIES = [...TRADE_CATEGORIES, ...RETAIL_CATEGORIES] as const;
 
-export type CategoryKey = (typeof CATEGORIES)[number]["key"];
-
-/** Keys a `trade` catalogue carries. */
+/** Keys a `trade` fixture catalogue carries. */
 export type TradeCategoryKey = (typeof TRADE_CATEGORIES)[number]["key"];
 
-/** Keys a `retail` catalogue carries. */
+/** Keys a `retail` fixture catalogue carries. */
 export type RetailCategoryKey = (typeof RETAIL_CATEGORIES)[number]["key"];
 
-/** Every option a `product-source` control offers, in the order the palette shows them. */
-export const PRODUCT_SOURCE_OPTIONS: { value: string; label: string }[] = [
+/**
+ * The three collections every catalogue has, whatever categories a merchant has created. A
+ * `product-source` control's real category options are appended at render time from the
+ * merchant's own catalogue — see this module's header comment.
+ */
+export const BASE_PRODUCT_SOURCE_OPTIONS: { value: string; label: string }[] = [
   { value: "all", label: "Whole catalogue" },
   { value: "featured", label: "Featured items" },
   { value: "in-stock", label: "In stock now" },
-  ...CATEGORIES.map((c) => ({ value: `category:${c.key}`, label: c.label })),
 ];
 
+/** The fixture catalogue's own label for one of its compile-time keys. */
 export function categoryLabel(key: string): string {
   return CATEGORIES.find((c) => c.key === key)?.label ?? key;
 }

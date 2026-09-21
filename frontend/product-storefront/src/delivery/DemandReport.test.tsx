@@ -21,10 +21,14 @@ import type { StoreOut } from "./types";
 const PUBLISHED: StoreOut = {
   id: "store-test",
   slug: "greenleaf",
+  name: "Greenleaf",
+  tagline: null,
+  logo_text: null,
   status: "published",
   currency: "INR",
   timezone: "Asia/Kolkata",
   custom_domain: null,
+  custom_domain_status: null,
   created_at: "2026-09-01T00:00:00Z",
   updated_at: "2026-09-18T00:00:00Z",
 };

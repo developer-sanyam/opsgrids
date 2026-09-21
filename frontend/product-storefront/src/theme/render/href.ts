@@ -11,7 +11,15 @@
 /** The console's framed preview, and the default for anything that does not say otherwise. */
 export const DEFAULT_STORE_BASE = "/store";
 
-/** A store page's route, as a URL inside this app. `"/"` is the store home. */
+/**
+ * A store page's route, as a URL inside this app. `"/"` is the store home.
+ *
+ * `base = ""` is the buyer bundle's own case — the store is served at its host's root, with no
+ * console prefix at all — and home has to resolve to `"/"`, never to `""`: an empty `href` (and
+ * an empty `<Link to>`) resolves *relative to the current path*, so a buyer on `/catalogue`
+ * clicking a home link built that way would stay on `/catalogue`.
+ */
 export function storeHref(route: string, base: string = DEFAULT_STORE_BASE): string {
-  return route === "/" ? base : `${base}${route}`;
+  if (route === "/") return base === "" ? "/" : base;
+  return `${base}${route}`;
 }

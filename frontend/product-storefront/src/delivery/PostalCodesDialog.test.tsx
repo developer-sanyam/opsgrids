@@ -77,15 +77,21 @@ describe("PostalCodesDialog", () => {
     expect(box.value).toBe("400050\n400051");
   });
 
-  it("names the zone a code would be taken from, before anything is written", async () => {
+  it("names the zone a code already belongs to, and blocks the save rather than promising a move", async () => {
     const save = vi.spyOn(api, "saveZonePostalCodes");
     const { user, box } = await openDialog();
 
     await user.clear(box);
     await user.type(box, "400050\n400072\n400090");
 
-    expect(await screen.findByText("Moving out of another zone")).toBeTruthy();
+    expect(await screen.findByText("Blocking this save — already in another zone")).toBeTruthy();
     expect(screen.getByText("Mumbai — suburbs")).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Remove the conflicts first" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "Remove the conflicts first" }));
     expect(save).not.toHaveBeenCalled();
   });
 
@@ -111,13 +117,15 @@ describe("PostalCodesDialog", () => {
     const save = vi.spyOn(api, "saveZonePostalCodes").mockResolvedValue({
       zone_id: "z-central",
       zone_code: "MUM-CENTRAL",
-      postal_codes: ["400050", "400072", "400090"],
+      postal_codes: ["400050", "400091", "400090"],
       total: 3,
     });
     const { user, box } = await openDialog();
 
     await user.clear(box);
-    await user.type(box, "400050\n400072\n400090");
+    // Neither 400091 nor 400090 is in `MAP`, so this paste is a plain addition with no cross-zone
+    // conflict to block on.
+    await user.type(box, "400050\n400091\n400090");
     await user.click(screen.getByRole("button", { name: "Save these postal codes" }));
 
     await waitFor(() => screen.getByText("Saved"));

@@ -150,6 +150,7 @@ export const quarry: Theme = {
         note: "Ex-terminal. Site delivery quoted per kilometre band.",
       }),
       sec("qry-prd-enquiry", "enquiry-form", { x: 7, y: 15, w: 5, h: 12 }, {
+        storeSlug: "quarry",
         heading: "Book against a pour",
         body: "Tell us the date and the quantity and we will confirm the slot.",
         submitLabel: "Request the slot",

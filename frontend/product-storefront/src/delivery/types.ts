@@ -36,23 +36,12 @@ export interface Page<T> {
 /**
  * `StoreOut` — the store's identity row (ADR-0010 §1).
  *
- * **Contract collision worth escalating:** `src/api/client.ts`'s `getStore()` calls this same
- * `/storefront/store` and expects the theme document (`StoreDoc`) back. The published schema says
- * the path returns this. One of the two has to move, and it is not this one — this matches what
- * the service actually serves.
+ * **Canonical declaration lives in `@/settings/types`** — the settings screen, the theme document
+ * and this module all read the same identity row, so there is exactly one `StoreOut` shape in this
+ * app rather than a narrower copy per module. Re-exported here so every existing `./types` import
+ * in this folder keeps working unchanged.
  */
-export interface StoreOut {
-  id: string;
-  slug: string;
-  status: "draft" | "published" | "suspended";
-  /** ISO-4217. Every minor-unit amount in this module is denominated in it. */
-  currency: string;
-  /** IANA. A `DATE_OFFSET` cutoff is a wall clock in this zone, never the browser's. */
-  timezone: string;
-  custom_domain: string | null;
-  created_at: string;
-  updated_at: string;
-}
+export type { StoreOut } from "@/settings/types";
 
 /**
  * `ZoneOut` — a zone is a name, a mode, and the behaviour applied to every postal code in it

@@ -33,6 +33,7 @@ const CONTEXT: StoreContextOut = {
   timezone: "Asia/Kolkata",
   canonical_host: "merchant.com",
   is_canonical: true,
+  theme: null,
   checked_at: "2026-09-19T11:14:22Z",
 };
 
