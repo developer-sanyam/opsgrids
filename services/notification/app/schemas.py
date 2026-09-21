@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -403,3 +403,89 @@ class TestSendIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     to_address: str = Field(min_length=3, max_length=254)
+
+
+# --------------------------------------------------------------------- engage audience
+
+#: Why an address may not be mailed. Only `manual` is written or lifted by a person through the
+#: API; the others are reported by the recipient or their mailbox provider.
+SuppressionReason = Literal["unsubscribed", "bounced", "complained", "manual"]
+
+#: The most rows one import call may carry. Big enough for a spreadsheet paste, small enough that
+#: one request is one bounded transaction rather than a job.
+CONTACT_IMPORT_MAX = 1000
+
+
+class ContactIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(min_length=3, max_length=254)
+    name: str = Field(default="", max_length=200)
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContactPatch(BaseModel):
+    """Partial update. An absent field is left alone; the address may be changed, and is held to
+    the same uniqueness as on create."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: str | None = Field(default=None, min_length=3, max_length=254)
+    name: str | None = Field(default=None, max_length=200)
+    attributes: dict[str, Any] | None = None
+
+
+class ContactOut(BaseModel):
+    id: str
+    #: Masked. The address is sealed at rest and no read route opens it.
+    email: str
+    name: str
+    attributes: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class ContactImportRow(BaseModel):
+    """One row of a bulk import. Deliberately loose: a bad row is reported back as `invalid`
+    rather than failing the other 999, so shape checks happen in the writer, per row."""
+
+    email: str = ""
+    name: str = ""
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+ContactImportIn = Annotated[list[ContactImportRow], Field(max_length=CONTACT_IMPORT_MAX)]
+
+
+class ContactImportResult(BaseModel):
+    index: int
+    status: Literal["created", "updated", "invalid"]
+    id: str | None = None
+    error: str | None = None
+
+
+class ContactImportOut(BaseModel):
+    created: int
+    updated: int
+    invalid: int
+    results: list[ContactImportResult]
+
+
+class SuppressionIn(BaseModel):
+    """A manual suppression. The reason is not a field: a person adding one through the API is
+    by definition `manual`, and letting them claim `complained` would forge a provider fact."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(min_length=3, max_length=254)
+
+
+class SuppressionOut(BaseModel):
+    id: str
+    email: str
+    reason: SuppressionReason
+    created_at: datetime
+
+
+class UnsubscribeOut(BaseModel):
+    unsubscribed: bool

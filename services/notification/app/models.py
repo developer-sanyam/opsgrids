@@ -34,6 +34,7 @@ from typing import Any
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -516,6 +517,65 @@ class Sender(Base, TenantBase):
     def usable(self) -> bool:
         """Whether a campaign may send as this sender."""
         return self.verified_at is not None
+
+
+class Contact(Base, TenantBase):
+    """Someone an organization's campaigns may reach — Engage's audience.
+
+    The address is PII, so it is stored the way the platform stores PII (`platform_core.pii`):
+    `email_enc` holds it sealed, `email_masked` is the only form an ordinary read returns, and
+    `email_index` is the keyed blind index that makes "is this address already a contact"
+    one indexed equality instead of a decrypt of every row. Uniqueness is on the index, so it is
+    uniqueness of the normalised (trimmed, lower-cased) address without the database ever holding
+    the address in the clear.
+
+    Deleted for real rather than soft-deleted: removing someone from an audience is exactly the
+    request whose honest answer is "the address is gone", and a tombstone holding the sealed
+    address would also hold the unique slot a later re-import needs.
+    """
+
+    __tablename__ = "contacts"
+
+    email_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    email_masked: Mapped[str] = mapped_column(String(254), nullable=False)
+    email_index: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    attributes: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "email_index", name="uq_contact_org_email"),
+        Index("ix_contacts_org_name", "organization_id", "name"),
+    )
+
+
+class Suppression(Base, TenantBase):
+    """An address Engage must not send to, and why.
+
+    Keyed by the same blind index as `Contact.email_index`, which is what lets
+    `selectors.sendable_contacts` exclude suppressed contacts with a join on equality rather
+    than a decrypt. It is deliberately not a column on `contacts`: an unsubscribe outlives the
+    contact row — delete a contact, re-import them next month, and they must still be
+    suppressed.
+
+    Only `manual` rows may be lifted through the API. The other reasons are facts reported by
+    the recipient or their mailbox provider, and un-suppressing a complaint is how a sending
+    domain loses its reputation.
+    """
+
+    __tablename__ = "suppressions"
+
+    email_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    email_masked: Mapped[str] = mapped_column(String(254), nullable=False)
+    email_index: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "email_index", name="uq_suppression_org_email"),
+        CheckConstraint(
+            "reason IN ('unsubscribed', 'bounced', 'complained', 'manual')",
+            name="reason",
+        ),
+    )
 
 
 class OutboxEvent(Base, OutboxMixin):
