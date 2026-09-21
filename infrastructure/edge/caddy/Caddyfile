@@ -77,8 +77,15 @@
 	# Caddy preserves the incoming Host header on reverse_proxy by default, and sets
 	# X-Forwarded-Host, X-Forwarded-For and X-Forwarded-Proto on its own — which is what the
 	# gateway's public branch needs, so nothing is added here.
+	#
+	# A deploy that recreates the gateway leaves a few seconds where the dial fails. Caddy
+	# retries a failed *dial* — never a request the gateway received — so holding the request
+	# for up to 20s turns that window into a slow answer instead of a 502, for POSTs too.
 	handle /api/* {
-		reverse_proxy app-gateway:8000
+		reverse_proxy app-gateway:8000 {
+			lb_try_duration 20s
+			lb_try_interval 250ms
+		}
 	}
 }
 
