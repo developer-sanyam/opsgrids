@@ -320,23 +320,11 @@ https://store.opsgrids.com {
 }
 
 # ---------------------------------------------------------------------------- OpsGrids Engage
-# Published by `make edge-web APP=engage`. Same shape as Inventory above.
-https://engage.opsgrids.com {
-	import edge
-
-	handle {
-		root * /srv/web/engage/current
-		try_files {path} /index.html
-		file_server
-
-		header /assets/* Cache-Control "public, max-age=31536000, immutable"
-		header /index.html Cache-Control "no-cache"
-	}
-
-	handle_errors {
-		respond "OpsGrids Engage is not published on this box yet." {err.status_code}
-	}
-}
+# Deliberately not served yet. The bundle publishes to /srv/web/engage/current already, but a
+# site block here would fail preflight: it refuses any name the box's TLS_PLATFORM_HOSTS does
+# not list, because a served name with no certificate is worse than an unserved one. That
+# variable lives in the box's own .env (RUNBOOK §2), so the block goes in once the name is
+# added there — one line, then this comment becomes the site.
 
 # ---------------------------------------------------------------------------- every store
 #
