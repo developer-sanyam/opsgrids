@@ -3,12 +3,14 @@ import { Link } from "react-router-dom";
 import type { StatusSlice } from "@/api/types";
 import { ArrowRightIcon } from "@opsgrids/ui";
 
-/** Status colours line up with the PO status pills: draft grey, approved blue, received green, closed cyan. */
+/** Status colours line up with the PO status pills: draft grey, approved blue, received green,
+ *  closed cyan, cancelled danger. */
 const STATUS_COLOR: Record<string, string> = {
   draft: "var(--color-faint)",
   approved: "var(--color-info)",
   received: "var(--color-present)",
   closed: "var(--color-cyan)",
+  cancelled: "var(--color-danger)",
 };
 
 /** A small live fact for the mini-table below the donut. */

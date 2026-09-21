@@ -1,13 +1,32 @@
-import { useCallback, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
-import { getPurchaseOrder } from "@/api/client";
-import { TODAY } from "@/api/fixtures";
-import type { PoLineItem, PoStatus, PurchaseOrderOut } from "@/api/types";
-import { CATEGORY_LABEL, isLate, PO_STATUS_LABEL } from "@/data/derive";
-import { useAsync } from "@opsgrids/client";
+import {
+  approvePurchaseOrder,
+  cancelPurchaseOrder,
+  closePurchaseOrder,
+  deletePurchaseOrder,
+  getPurchaseOrder,
+  listInventory,
+  receivePurchaseOrder,
+} from "@/api/client";
+import type { PoLineItem, PurchaseOrderOut } from "@/api/types";
+import { CATEGORY_LABEL, isLate } from "@/data/derive";
+import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import { daysBetween, formatDate, formatMoney, formatMoneyPrecise, relativeDue } from "@/lib/format";
-import { Avatar, Button, Card, ErrorState, PoStatusPill, SectionHeader, Skeleton } from "@/ui";
+import { today } from "@/lib/now";
+import {
+  Avatar,
+  Button,
+  Card,
+  ConfirmDialog,
+  ErrorState,
+  InlineAlert,
+  PoStatusPill,
+  SectionHeader,
+  Skeleton,
+  TextArea,
+} from "@/ui";
 import {
   ArrowRightIcon,
   BuildingIcon,
@@ -15,6 +34,7 @@ import {
   ClockIcon,
   MapPinIcon,
   TruckIcon,
+  useToast,
 } from "@opsgrids/ui";
 
 function lineTotal(line: PoLineItem): number {
@@ -22,9 +42,9 @@ function lineTotal(line: PoLineItem): number {
 }
 
 /** The delivery banner: on-time / late for an open order, or the received date once fulfilled. */
-function DeliveryStatus({ po, received }: { po: PurchaseOrderOut; received: boolean }) {
-  if (received || po.status === "received" || po.status === "closed") {
-    const when = po.received_date ?? TODAY;
+function DeliveryStatus({ po }: { po: PurchaseOrderOut }) {
+  if (po.status === "received" || po.status === "closed") {
+    const when = po.received_date ?? today();
     return (
       <div className="flex items-center gap-3 rounded-tile bg-present-soft px-4 py-3 text-present">
         <CheckCircleIcon className="size-5 shrink-0" />
@@ -35,8 +55,16 @@ function DeliveryStatus({ po, received }: { po: PurchaseOrderOut; received: bool
       </div>
     );
   }
-  const late = isLate(po, TODAY);
-  const overdue = Math.abs(daysBetween(po.expected_date, TODAY));
+  if (po.status === "cancelled") {
+    return (
+      <div className="flex items-center gap-3 rounded-tile bg-danger-soft px-4 py-3 text-danger">
+        <TruckIcon className="size-5 shrink-0" />
+        <span className="text-sm font-bold">Cancelled — nothing will be delivered</span>
+      </div>
+    );
+  }
+  const late = isLate(po, today());
+  const overdue = Math.abs(daysBetween(po.expected_date, today()));
   return (
     <div
       className={
@@ -50,7 +78,7 @@ function DeliveryStatus({ po, received }: { po: PurchaseOrderOut; received: bool
           {late ? `${overdue} day${overdue === 1 ? "" : "s"} overdue` : "In transit"}
         </span>
         <span className="text-xs opacity-80 tnum">
-          {relativeDue(po.expected_date, TODAY)} · expected {formatDate(po.expected_date)}
+          {relativeDue(po.expected_date, today())} · expected {formatDate(po.expected_date)}
         </span>
       </div>
     </div>
@@ -60,17 +88,74 @@ function DeliveryStatus({ po, received }: { po: PurchaseOrderOut; received: bool
 export function PurchaseOrderDetailPage() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
-  const loader = useCallback(() => getPurchaseOrder(id), [id]);
+  const toast = useToast();
+  const canApprove = useCan("operations.procurement.purchase_order.approve", "ORG");
+
+  const [deleting, setDeleting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelReasonError, setCancelReasonError] = useState<string | undefined>(undefined);
+
+  const loader = () => getPurchaseOrder(id);
   const state = useAsync(loader, [id]);
-
-  // Local "receive" affordance — fixtures have no backend, so receiving marks the order locally.
-  const [received, setReceived] = useState(false);
-
   const po = state.status === "success" ? state.data : null;
-  const total = useMemo(
-    () => (po ? po.line_items.reduce((s, l) => s + lineTotal(l), 0) : 0),
-    [po],
-  );
+
+  // Every SKU the received (or closed) order's lines carry, checked against the org's live
+  // inventory: a line with no matching item posted no stock when it was received (a
+  // service/logistics line, not an error). The server says which at the moment of receiving
+  // (the toast above); it does not keep saying so on later reads, so the standing note below
+  // is rebuilt from what the client can see.
+  const shouldCheckStock = po !== null && (po.status === "received" || po.status === "closed");
+  const inventoryLoader = () =>
+    shouldCheckStock ? listInventory({ size: 200 }) : Promise.resolve({ items: [], total: 0, page: 1, size: 0, pages: 0 });
+  const inventoryState = useAsync(inventoryLoader, [shouldCheckStock, po?.id]);
+  const unmatchedSkus = useMemo(() => {
+    if (!po || inventoryState.status !== "success" || !shouldCheckStock) return [];
+    const known = new Set(inventoryState.data.items.map((i) => i.sku));
+    return po.line_items.filter((l) => l.received_qty > 0 && !known.has(l.sku)).map((l) => l.sku);
+  }, [po, inventoryState, shouldCheckStock]);
+
+  const approve = useMutation(() => approvePurchaseOrder(id), {
+    onSuccess: (saved) => {
+      toast.success(`${saved.po_number} approved.`);
+      state.reload();
+    },
+  });
+  const receive = useMutation(() => receivePurchaseOrder(id), {
+    onSuccess: (saved) => {
+      // The server's own answer, at the moment it matters: which lines added no stock.
+      const skipped = saved.unmatched_skus;
+      if (skipped.length === 0) {
+        toast.success(`${saved.po_number} marked received. Stock has been posted for every line.`);
+      } else {
+        toast.info(`${saved.po_number} marked received.`, {
+          description: `No stock was posted for ${skipped.join(", ")}: no inventory item has that SKU.`,
+          duration: null,
+        });
+      }
+      state.reload();
+    },
+  });
+  const close = useMutation(() => closePurchaseOrder(id), {
+    onSuccess: (saved) => {
+      toast.success(`${saved.po_number} closed.`);
+      state.reload();
+    },
+  });
+  const cancel = useMutation(() => cancelPurchaseOrder(id, { reason: cancelReason.trim() }), {
+    onSuccess: (saved) => {
+      setCancelling(false);
+      setCancelReason("");
+      toast.success(`${saved.po_number} cancelled.`);
+      state.reload();
+    },
+  });
+  const remove = useMutation(() => deletePurchaseOrder(id), {
+    onSuccess: () => {
+      toast.success(`${po?.po_number ?? "Purchase order"} deleted.`);
+      navigate("/purchase-orders");
+    },
+  });
 
   if (state.status === "loading") {
     return (
@@ -92,18 +177,26 @@ export function PurchaseOrderDetailPage() {
           <ErrorState
             message={
               state.status === "error"
-                ? state.error.message
+                ? problemMessage(state.error)
                 : "That purchase order could not be found."
             }
-            onRetry={() => navigate("/purchase-orders")}
+            {...(state.status === "error" ? { onRetry: state.reload } : {})}
           />
         </Card>
       </div>
     );
   }
 
-  const effectiveStatus: PoStatus = received ? "received" : po.status;
-  const canReceive = po.status === "draft" || po.status === "approved";
+  const total = po.line_items.reduce((s, l) => s + lineTotal(l), 0);
+
+  function submitCancel() {
+    setCancelReasonError(undefined);
+    if (cancelReason.trim().length < 1) {
+      setCancelReasonError("Say why this order is being cancelled.");
+      return;
+    }
+    void cancel.mutate(undefined);
+  }
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -112,39 +205,69 @@ export function PurchaseOrderDetailPage() {
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex flex-col gap-1.5">
           <span className="text-sm font-medium text-muted">
-            {CATEGORY_LABEL[po.category]} · raised by {po.raised_by}
+            {CATEGORY_LABEL[po.category]} · raised by {po.raised_by || "—"}
           </span>
           <div className="flex items-center gap-3">
             <h1 className="display text-3xl sm:text-[2.1rem] font-extrabold leading-tight tnum">
               {po.po_number}
             </h1>
-            <PoStatusPill status={effectiveStatus} />
+            <PoStatusPill status={po.status} />
           </div>
         </div>
-        {canReceive && !received ? (
-          <Button
-            leadingIcon={<CheckCircleIcon className="size-4" />}
-            onClick={() => setReceived(true)}
-          >
-            Mark as received
-          </Button>
-        ) : (
-          <span className="inline-flex items-center gap-2 rounded-full bg-present-soft px-4 h-11 text-sm font-semibold text-present">
-            <CheckCircleIcon className="size-4" />
-            {PO_STATUS_LABEL[effectiveStatus]}
-          </span>
-        )}
+
+        <div className="flex flex-wrap items-center gap-2">
+          {po.status === "draft" ? (
+            <Can permission="operations.procurement.purchase_order.write" scope="OWN">
+              <Button variant="outline" onClick={() => navigate(`/purchase-orders/${id}/edit`)}>
+                Edit
+              </Button>
+              <Button variant="outline" onClick={() => setDeleting(true)}>
+                Delete
+              </Button>
+            </Can>
+          ) : null}
+          {po.status === "draft" && canApprove ? (
+            <Button
+              variant="outline"
+              loading={approve.pending}
+              onClick={() => void approve.mutate(undefined)}
+            >
+              Approve
+            </Button>
+          ) : null}
+          {po.status === "draft" || po.status === "approved" ? (
+            <Can permission="operations.procurement.purchase_order.write" scope="OWN">
+              <Button
+                leadingIcon={<CheckCircleIcon className="size-4" />}
+                loading={receive.pending}
+                onClick={() => void receive.mutate(undefined)}
+              >
+                Mark as received
+              </Button>
+              <Button variant="outline" onClick={() => setCancelling(true)}>
+                Cancel order
+              </Button>
+            </Can>
+          ) : null}
+          {po.status === "received" ? (
+            <Can permission="operations.procurement.purchase_order.write" scope="OWN">
+              <Button loading={close.pending} onClick={() => void close.mutate(undefined)}>
+                Close order
+              </Button>
+            </Can>
+          ) : null}
+        </div>
       </header>
 
-      {received ? (
-        <p
-          role="status"
-          aria-live="polite"
-          className="rounded-tile bg-present-soft px-4 py-3 text-sm font-medium text-present"
-        >
-          All line items marked received. In the live product this posts a goods-receipt note and
-          updates stock on hand.
-        </p>
+      {approve.error ? <InlineAlert tone="danger" title={problemMessage(approve.error)} /> : null}
+      {receive.error ? <InlineAlert tone="danger" title={problemMessage(receive.error)} /> : null}
+      {close.error ? <InlineAlert tone="danger" title={problemMessage(close.error)} /> : null}
+
+      {(po.status === "received" || po.status === "closed") && unmatchedSkus.length > 0 ? (
+        <InlineAlert tone="warning" title="Some lines posted no stock">
+          {unmatchedSkus.join(", ")} — no inventory item matches this SKU, so it was treated as a
+          service or logistics line.
+        </InlineAlert>
       ) : null}
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-3 items-start">
@@ -164,9 +287,6 @@ export function PurchaseOrderDetailPage() {
                   <th scope="col" className="py-3 px-3 text-right text-xs font-semibold uppercase tracking-wide text-faint whitespace-nowrap">
                     Qty
                   </th>
-                  <th scope="col" className="py-3 px-3 text-right text-xs font-semibold uppercase tracking-wide text-faint whitespace-nowrap hidden sm:table-cell">
-                    Unit price
-                  </th>
                   <th scope="col" className="py-3 px-3 text-right text-xs font-semibold uppercase tracking-wide text-faint whitespace-nowrap">
                     Line total
                   </th>
@@ -177,29 +297,28 @@ export function PurchaseOrderDetailPage() {
                   <tr key={line.id} className="border-b border-line/70 last:border-0">
                     <td className="py-3.5 px-3">
                       <div className="flex flex-col leading-tight">
-                        <span className="font-semibold text-ink">{line.description}</span>
-                        <span className="text-xs text-faint tnum">{line.sku}</span>
+                        <span className="font-semibold text-ink">{line.description || line.sku}</span>
+                        <span className="text-xs text-faint tnum">
+                          {line.sku} · {formatMoneyPrecise(line.unit_price_minor, po.currency)} each
+                        </span>
                       </div>
                     </td>
                     <td className="py-3.5 px-3 text-right tnum text-ink-soft whitespace-nowrap">
                       {line.quantity} {line.uom}
                     </td>
-                    <td className="py-3.5 px-3 text-right tnum text-muted whitespace-nowrap hidden sm:table-cell">
-                      {formatMoneyPrecise(line.unit_price_minor)}
-                    </td>
                     <td className="py-3.5 px-3 text-right tnum font-semibold text-ink whitespace-nowrap">
-                      {formatMoney(lineTotal(line))}
+                      {formatMoney(lineTotal(line), po.currency)}
                     </td>
                   </tr>
                 ))}
               </tbody>
               <tfoot>
                 <tr className="border-t-2 border-line">
-                  <td className="py-4 px-3 text-sm font-bold text-ink" colSpan={3}>
+                  <td className="py-4 px-3 text-sm font-bold text-ink" colSpan={2}>
                     Total
                   </td>
                   <td className="py-4 px-3 text-right">
-                    <span className="display text-xl font-extrabold tnum">{formatMoney(total)}</span>
+                    <span className="display text-xl font-extrabold tnum">{formatMoney(total, po.currency)}</span>
                   </td>
                 </tr>
               </tfoot>
@@ -211,7 +330,7 @@ export function PurchaseOrderDetailPage() {
         <div className="flex flex-col gap-5">
           <Card className="p-6 flex flex-col gap-4">
             <SectionHeader title="Delivery" />
-            <DeliveryStatus po={po} received={received} />
+            <DeliveryStatus po={po} />
             <dl className="flex flex-col gap-2.5 text-sm">
               <div className="flex items-center justify-between gap-3">
                 <dt className="text-muted">Warehouse</dt>
@@ -257,6 +376,47 @@ export function PurchaseOrderDetailPage() {
           ) : null}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={deleting}
+        onClose={() => {
+          setDeleting(false);
+          remove.reset();
+        }}
+        onConfirm={() => void remove.mutate(undefined)}
+        title="Delete this draft?"
+        body={`${po.po_number} is removed permanently. This can't be undone.`}
+        confirmLabel="Delete"
+        pendingLabel="Deleting…"
+        pending={remove.pending}
+        {...(remove.error ? { error: problemMessage(remove.error) } : {})}
+      />
+
+      <ConfirmDialog
+        open={cancelling}
+        onClose={() => {
+          setCancelling(false);
+          setCancelReason("");
+          setCancelReasonError(undefined);
+          cancel.reset();
+        }}
+        onConfirm={submitCancel}
+        title="Cancel this purchase order?"
+        body={`${po.po_number} moves to cancelled and no longer counts as open spend. This can't be undone.`}
+        confirmLabel="Cancel order"
+        pendingLabel="Cancelling…"
+        tone="danger"
+        pending={cancel.pending}
+        {...(cancel.error ? { error: problemMessage(cancel.error) } : {})}
+      >
+        <TextArea
+          label="Reason"
+          value={cancelReason}
+          onChange={(e) => setCancelReason(e.target.value)}
+          maxLength={500}
+          {...((cancelReasonError) !== undefined ? { error: cancelReasonError } : {})}
+        />
+      </ConfirmDialog>
     </div>
   );
 }

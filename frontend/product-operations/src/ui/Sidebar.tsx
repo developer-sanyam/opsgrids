@@ -2,20 +2,19 @@ import { useAuth } from "@opsgrids/client";
 import {
   ClipboardListIcon,
   FactoryIcon,
-  FileTextIcon,
   HomeIcon,
   LayersIcon,
-  LifeBuoyIcon,
-  PlugIcon,
-  SettingsIcon,
   Sidebar as SidebarShell,
-  TruckIcon,
-  UserPlusIcon,
   WarehouseIcon,
 } from "@opsgrids/ui";
-import type { NavEntry, NavGroup } from "@opsgrids/ui";
+import type { NavGroup } from "@opsgrids/ui";
 import { LogoMark } from "./LogoMark";
 
+// Every entry here has a real screen behind it — a nav item whose screen has no backend does not
+// belong in the primary nav (frontend/CLAUDE.md: zero placeholder or dead code). "Receiving" was
+// folded into the purchase order detail page's own "Mark as received" action; Reports,
+// Integrations, Team and Settings have no backend yet and were removed rather than left as
+// ComingSoon placeholders.
 const GROUPS: NavGroup[] = [
   {
     title: "Main Menu",
@@ -24,28 +23,9 @@ const GROUPS: NavGroup[] = [
       { to: "/purchase-orders", label: "Purchase Orders", icon: ClipboardListIcon },
       { to: "/inventory", label: "Inventory", icon: LayersIcon },
       { to: "/suppliers", label: "Suppliers", icon: FactoryIcon },
-    ],
-  },
-  {
-    title: "Operations",
-    items: [
-      { to: "/receiving", label: "Receiving", icon: TruckIcon },
       { to: "/warehouses", label: "Warehouses", icon: WarehouseIcon },
-      { to: "/reports", label: "Reports", icon: FileTextIcon },
     ],
   },
-  {
-    title: "Workspace",
-    items: [
-      { to: "/integrations", label: "Integrations", icon: PlugIcon },
-      { to: "/team", label: "Team Members", icon: UserPlusIcon },
-    ],
-  },
-];
-
-const PINNED: NavEntry[] = [
-  { to: "/settings", label: "Settings", icon: SettingsIcon },
-  { to: "/help", label: "Help & Getting Started", icon: LifeBuoyIcon },
 ];
 
 /**
@@ -64,7 +44,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <SidebarShell
       groups={GROUPS}
-      pinned={PINNED}
+      pinned={[]}
       account={{
         name,
         email: user?.email ?? "",

@@ -1,17 +1,20 @@
 /**
  * Wire types for the Operations product — procurement, inventory and suppliers.
  *
- * These mirror the shapes the Operations service will return once its backend graduates past a
- * skeleton (`services/operations/app/schemas.py`). Money is carried as **integer minor units**
- * (paise) with an ISO `currency`, per the platform money rule — the UI never sees a float.
- * `supplier_id` / `department`-style references are plain string ids; names are denormalised onto
- * the read models so a list renders without a cross-service join.
+ * These mirror `services/operations/app/schemas.py` exactly: field names, nesting and enums.
+ * Money is carried as **integer minor units** (paise) with an ISO `currency`, per the platform
+ * money rule — the UI never sees a float. `supplier_id` / warehouse references are plain string
+ * ids or names; names are denormalised onto the read models so a list renders without a
+ * cross-service join.
  */
 
-/** Small envelope every list endpoint returns. */
+/** The envelope every list endpoint returns (`platform_core.pagination.Page`). */
 export interface Page<T> {
   items: T[];
   total: number;
+  page: number;
+  size: number;
+  pages: number;
 }
 
 /* ------------------------------- suppliers ------------------------------- */
@@ -46,9 +49,37 @@ export interface SupplierOut {
   since: string;
 }
 
+/** `POST /suppliers`. `spend_minor`, `open_pos` and `on_time_pct` are system-maintained and
+ *  never sent. */
+export interface SupplierIn {
+  code: string;
+  name: string;
+  category: Category;
+  status?: SupplierStatus;
+  lead_time_days?: number;
+  currency?: string;
+  contact_name?: string;
+  contact_email?: string;
+  location?: string;
+  since?: string;
+}
+
+/** `PATCH /suppliers/{id}`. No `code`/`currency` — join key and accumulated unit. Status change
+ *  (`active`/`on_hold`/`pending`) goes through this. */
+export interface SupplierPatch {
+  name?: string;
+  category?: Category;
+  status?: SupplierStatus;
+  lead_time_days?: number;
+  contact_name?: string;
+  contact_email?: string;
+  location?: string;
+  since?: string;
+}
+
 /* ---------------------------- purchase orders ---------------------------- */
 
-export type PoStatus = "draft" | "approved" | "received" | "closed";
+export type PoStatus = "draft" | "approved" | "received" | "closed" | "cancelled";
 
 /** One line on a purchase order. `unit_price_minor` is per-unit minor units of the PO currency. */
 export interface PoLineItem {
@@ -79,6 +110,48 @@ export interface PurchaseOrderOut {
   notes: string | null;
 }
 
+/** One line on `PurchaseOrderIn`/`PurchaseOrderPatch.lines`. `sku` is free text — a line with no
+ *  matching inventory item is a service/logistics line, not an error. */
+export interface PoLineIn {
+  sku: string;
+  description?: string;
+  quantity: number;
+  uom?: string;
+  unit_price_minor?: number;
+}
+
+/** `POST /purchase-orders`. `status`, `number`, `received_date` and `received_qty` are
+ *  server-owned and never sent. */
+export interface PurchaseOrderIn {
+  supplier_id: string;
+  warehouse: string;
+  expected_date: string;
+  currency?: string;
+  notes?: string;
+  raised_by?: string;
+  lines: PoLineIn[];
+}
+
+/** `PATCH /purchase-orders/{id}`, draft only. `lines`, when present, is a full replacement. */
+export interface PurchaseOrderPatch {
+  supplier_id?: string;
+  warehouse?: string;
+  expected_date?: string;
+  currency?: string;
+  notes?: string;
+  lines?: PoLineIn[];
+}
+
+/** `POST /purchase-orders/{id}/receive`. Optional body — an empty POST receives as of today. */
+export interface ReceiveIn {
+  received_date?: string;
+}
+
+/** `POST /purchase-orders/{id}/cancel`. */
+export interface CancelIn {
+  reason: string;
+}
+
 /* ------------------------------- inventory ------------------------------- */
 
 /** Mirrors `InventoryItemOut`. Stock value = `on_hand * unit_value_minor`. */
@@ -94,6 +167,81 @@ export interface InventoryItemOut {
   unit_value_minor: number;
   currency: string;
   updated_at: string;
+}
+
+/** `POST /inventory`. `on_hand` is never accepted — `opening_on_hand` becomes the item's first
+ *  `opening` movement instead. `warehouse` must name an existing warehouse. */
+export interface InventoryItemIn {
+  sku: string;
+  name: string;
+  category: Category;
+  warehouse: string;
+  uom: string;
+  reorder_point?: number;
+  unit_value_minor?: number;
+  currency?: string;
+  opening_on_hand?: number;
+}
+
+/** `PATCH /inventory/{id}`. `sku`, `currency` and — above all — `on_hand` are never accepted:
+ *  `on_hand` may only move through `/adjustments`. */
+export interface InventoryItemPatch {
+  name?: string;
+  category?: Category;
+  warehouse?: string;
+  uom?: string;
+  reorder_point?: number;
+  unit_value_minor?: number;
+}
+
+export type StockMovementKind = "opening" | "receipt" | "adjustment" | "count";
+export type StockMovementReason = "damaged" | "lost" | "found" | "consumed" | "returned" | "other";
+
+/** `POST /inventory/{id}/adjustments`. Exactly one of `quantity_delta` or `counted_on_hand`. */
+export interface StockAdjustmentIn {
+  quantity_delta?: number;
+  counted_on_hand?: number;
+  reason?: StockMovementReason;
+  note?: string;
+  occurred_on?: string;
+}
+
+/** One row of an item's movement history. Append-only, newest first. */
+export interface StockMovementOut {
+  id: string;
+  kind: StockMovementKind;
+  reason: StockMovementReason | null;
+  quantity_delta: number;
+  on_hand_after: number;
+  reference_type: "purchase_order" | null;
+  reference_id: string | null;
+  note: string;
+  occurred_on: string;
+  created_at: string;
+  created_by: string | null;
+}
+
+/* ------------------------------- warehouses ------------------------------ */
+
+/** A stocking location. Reference data behind the warehouse names POs and inventory carry. */
+export interface WarehouseOut {
+  id: string;
+  code: string;
+  name: string;
+  location: string;
+}
+
+/** `POST /warehouses`. `code` is immutable once created. */
+export interface WarehouseIn {
+  code: string;
+  name: string;
+  location?: string;
+}
+
+/** `PATCH /warehouses/{id}`. `code` never appears — it is immutable. */
+export interface WarehousePatch {
+  name?: string;
+  location?: string;
 }
 
 /* --------------------------- dashboard rollups --------------------------- */

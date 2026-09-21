@@ -1,31 +1,19 @@
-import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { Card } from "@/ui";
 
-interface ComingSoonPageProps {
-  icon?: ReactNode;
-  title: string;
-  description: string;
-}
-
-/** A tasteful placeholder for surfaces not built yet (Receiving, Warehouses, Reports) and 404. */
-export function ComingSoonPage({ icon, title, description }: ComingSoonPageProps) {
+/** A real 404 — reached only by navigating to a path nothing in the app links to. */
+export function NotFoundPage() {
   return (
     <div className="rise flex justify-center pt-8">
       <Card className="w-full max-w-lg p-10 text-center flex flex-col items-center gap-5">
-        {icon ? (
-          <span className="grid size-16 place-items-center rounded-full bg-accent-soft text-accent-ink">
-            {icon}
-          </span>
-        ) : null}
         <div className="flex flex-col gap-2">
           <span className="text-sm font-semibold uppercase tracking-wide text-muted">
-            Coming soon
+            Not found
           </span>
-          <h1 className="display text-3xl font-extrabold">{title}</h1>
+          <h1 className="display text-3xl font-extrabold">That page doesn't exist</h1>
           <p className="text-sm text-muted leading-relaxed max-w-sm mx-auto">
-            {description}
+            The page you were looking for isn't here. Head back to the overview.
           </p>
         </div>
         <Link
