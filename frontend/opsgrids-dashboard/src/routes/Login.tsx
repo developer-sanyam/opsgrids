@@ -1,11 +1,12 @@
 import { useId, useState } from "react";
 import type { FormEvent } from "react";
-import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, useLocation } from "react-router-dom";
 
-import { ApiError, useAuth } from "@opsgrids/client";
-import type { OrganizationChoice } from "@opsgrids/client";
+import { ApiError, authApi, useAuth } from "@opsgrids/client";
+import type { LoginResult, OrganizationChoice } from "@opsgrids/client";
 import { EyeIcon, EyeOffIcon } from "@opsgrids/ui";
 
+import { completeSessionAndReload, mfaVerify, selectOrgWithToken } from "@/api/auth";
 import { AuthCard, Button, Field, InlineError, inputClass } from "@/ui";
 
 /** Never leak which half was wrong — one message covers a bad email, bad password, or a 4xx. */
@@ -15,25 +16,58 @@ interface LocationState {
   from?: string;
 }
 
-/** The sign-in screen: one card, two labelled fields, one primary action, one inline error. */
+/**
+ * The sign-in screen. Signed in **directly through `authApi`**, not `useAuth().login()`: the
+ * MFA branch needs the raw `pre_auth_token` the result carries, and the shared context throws
+ * it away once it decides the step — see `src/api/auth.ts` for why, and for the exact change
+ * that belongs in `@opsgrids/client` instead of this workaround. Every completed sign-in ends
+ * in a full reload so `AuthProvider`'s own boot effect picks the stored token up through the
+ * one path that already does that correctly.
+ */
 export function LoginPage() {
-  const { status, login, selectOrg } = useAuth();
-  const navigate = useNavigate();
+  const { status } = useAuth();
   const location = useLocation();
 
   const emailId = useId();
   const passwordId = useId();
+  const codeId = useId();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [orgs, setOrgs] = useState<OrganizationChoice[] | null>(null);
+  const [orgs, setOrgs] = useState<{ token: string; organizations: OrganizationChoice[] } | null>(null);
+  const [mfaToken, setMfaToken] = useState<string | null>(null);
+  const [code, setCode] = useState("");
 
   const destination = (location.state as LocationState | null)?.from ?? "/";
 
   if (status === "authenticated") return <Navigate to={destination} replace />;
+
+  function handleResult(result: LoginResult) {
+    if (result.status === "complete") {
+      completeSessionAndReload(result.access_token, destination);
+      return;
+    }
+    if (result.status === "org_selection_required") {
+      if (result.organizations.length === 1) {
+        const only = result.organizations[0];
+        if (only) {
+          void handlePickOrg(result.pre_auth_token, only.organization_id);
+          return;
+        }
+      }
+      setOrgs({ token: result.pre_auth_token, organizations: result.organizations });
+      setMfaToken(null);
+      setSubmitting(false);
+      return;
+    }
+    // mfa_required
+    setMfaToken(result.pre_auth_token);
+    setOrgs(null);
+    setSubmitting(false);
+  }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -41,14 +75,8 @@ export function LoginPage() {
     setError(null);
     setSubmitting(true);
     try {
-      const step = await login(email.trim(), password);
-      if (step.kind === "complete") {
-        navigate(destination, { replace: true });
-      } else if (step.kind === "org_selection") {
-        setOrgs(step.organizations);
-      } else {
-        setError("This account needs a second factor, which isn't supported here yet.");
-      }
+      const result = await authApi.login(email.trim(), password);
+      handleResult(result);
     } catch (err) {
       if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
         setError(CREDENTIAL_ERROR);
@@ -56,17 +84,35 @@ export function LoginPage() {
         const detail = err instanceof Error ? err.message : "Something went wrong.";
         setError(`Couldn't sign in. ${detail}`);
       }
-    } finally {
       setSubmitting(false);
     }
   }
 
-  async function handlePickOrg(organizationId: string) {
+  async function handleVerifyMfa(event: FormEvent) {
+    event.preventDefault();
+    if (submitting || !mfaToken) return;
     setError(null);
     setSubmitting(true);
     try {
-      await selectOrg(organizationId);
-      navigate(destination, { replace: true });
+      const result = await mfaVerify(mfaToken, code.trim());
+      handleResult(result);
+    } catch (err) {
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+        setError("That code is incorrect or has expired.");
+      } else {
+        const detail = err instanceof Error ? err.message : "Something went wrong.";
+        setError(`Couldn't verify that code. ${detail}`);
+      }
+      setSubmitting(false);
+    }
+  }
+
+  async function handlePickOrg(token: string, organizationId: string) {
+    setError(null);
+    setSubmitting(true);
+    try {
+      const result = await selectOrgWithToken(token, organizationId);
+      handleResult(result);
     } catch (err) {
       const detail = err instanceof Error ? err.message : "Something went wrong.";
       setError(`Couldn't finish signing in. ${detail}`);
@@ -80,12 +126,12 @@ export function LoginPage() {
         <div className="flex flex-col gap-4">
           {error ? <InlineError>{error}</InlineError> : null}
           <ul className="flex list-none flex-col gap-2 p-0">
-            {orgs.map((org) => (
+            {orgs.organizations.map((org) => (
               <li key={org.organization_id}>
                 <button
                   type="button"
                   disabled={submitting}
-                  onClick={() => void handlePickOrg(org.organization_id)}
+                  onClick={() => void handlePickOrg(orgs.token, org.organization_id)}
                   className="w-full rounded-tile border border-line bg-surface px-4 py-3 text-left text-sm font-semibold text-ink transition-colors hover:bg-ground disabled:cursor-not-allowed disabled:text-faint"
                 >
                   {org.name}
@@ -94,6 +140,32 @@ export function LoginPage() {
             ))}
           </ul>
         </div>
+      </AuthCard>
+    );
+  }
+
+  if (mfaToken) {
+    return (
+      <AuthCard title="Enter your code" intro="From your authenticator app, or one of your recovery codes.">
+        <form onSubmit={handleVerifyMfa} className="flex flex-col gap-4" noValidate>
+          {error ? <InlineError>{error}</InlineError> : null}
+          <Field id={codeId} label="Code">
+            <input
+              id={codeId}
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              required
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="123456"
+              className={inputClass}
+            />
+          </Field>
+          <Button type="submit" disabled={submitting}>
+            {submitting ? "Verifying…" : "Verify"}
+          </Button>
+        </form>
       </AuthCard>
     );
   }
