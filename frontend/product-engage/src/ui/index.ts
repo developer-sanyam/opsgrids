@@ -26,3 +26,4 @@ export type { RadioOption, SelectOption, TagTone } from "@opsgrids/ui";
 export { Sidebar } from "./Sidebar";
 export { LogoMark } from "./LogoMark";
 export { ConnectionStatusTag, DomainStatusTag, SenderStatusTag } from "./StatusTags";
+export { EngageNotActive, LoadFailure } from "./LoadFailure";

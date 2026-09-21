@@ -12,8 +12,8 @@ import {
   Button,
   Card,
   EmptyState,
-  ErrorState,
   InlineAlert,
+  LoadFailure,
   PageHeader,
   SenderStatusTag,
   Skeleton,
@@ -146,9 +146,7 @@ function Senders() {
       ) : null}
 
       {state.status === "error" ? (
-        <Card className="p-6">
-          <ErrorState message={state.error.message} title="Couldn't load your senders" />
-        </Card>
+        <LoadFailure error={state.error} title="Couldn't load your senders" />
       ) : null}
 
       {state.status === "success" && verified.length === 0 ? (
