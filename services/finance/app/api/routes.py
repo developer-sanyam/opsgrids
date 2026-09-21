@@ -766,7 +766,11 @@ async def archive_customer(
 ) -> None:
     """Soft delete. Refused with 409 while any invoice or payment still names this customer —
     see `services.archive_customer`."""
-    customer = await selectors.get_customer(session, ctx.organization_id, customer_id)
+    # Locked before the reference-check, so it serializes against a concurrent invoice or
+    # payment for the same customer instead of racing it: see `selectors.get_customer`.
+    customer = await selectors.get_customer(
+        session, ctx.organization_id, customer_id, for_update=True
+    )
     if customer is None:
         raise NotFoundProblem("That customer is not part of this organization")
     await services.archive_customer(session, ctx, customer, request=request)

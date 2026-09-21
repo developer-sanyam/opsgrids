@@ -321,10 +321,15 @@ def to_invoice_out(
 
 
 async def get_invoice(
-    session: AsyncSession, org_id: uuid.UUID, invoice_id: uuid.UUID
+    session: AsyncSession, org_id: uuid.UUID, invoice_id: uuid.UUID, *, for_update: bool = False
 ) -> Invoice | None:
     """Org-scoped fetch by id, with lines. Returns None on a tenant mismatch or a soft-deleted
-    row — confirming an id exists in *some* organization is itself a disclosure."""
+    row — confirming an id exists in *some* organization is itself a disclosure.
+
+    `for_update=True` row-locks it — the credit-note path takes this before reading how much has
+    already been credited against it (`credited_total_for_invoice`), so a second credit note
+    racing the same invoice serializes on the lock instead of both reading the same figure and
+    both passing the cap."""
     stmt = (
         select(Invoice)
         .where(
@@ -334,18 +339,28 @@ async def get_invoice(
         )
         .options(selectinload(Invoice.lines))
     )
+    if for_update:
+        stmt = stmt.with_for_update()
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
 async def get_customer(
-    session: AsyncSession, org_id: uuid.UUID, customer_id: uuid.UUID
+    session: AsyncSession, org_id: uuid.UUID, customer_id: uuid.UUID, *, for_update: bool = False
 ) -> Customer | None:
-    """Org-scoped customer fetch. None on a tenant mismatch or a soft-deleted row."""
+    """Org-scoped customer fetch. None on a tenant mismatch or a soft-deleted row.
+
+    `for_update=True` row-locks it — `archive_customer` takes this before checking
+    `customer_has_references`, and `create_invoice`/`record_payment` take it before naming the
+    customer on a new document, so an archive racing a new invoice or payment for the same
+    customer serializes on the row instead of the reference-check and the insert each running
+    against a version of the world the other has already invalidated."""
     stmt = select(Customer).where(
         Customer.id == customer_id,
         Customer.organization_id == org_id,
         Customer.deleted_at.is_(None),
     )
+    if for_update:
+        stmt = stmt.with_for_update()
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -359,17 +374,35 @@ async def invoice_exists(session: AsyncSession, org_id: uuid.UUID, invoice_id: u
 
 
 async def get_invoices(
-    session: AsyncSession, org_id: uuid.UUID, invoice_ids: list[uuid.UUID]
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    invoice_ids: list[uuid.UUID],
+    *,
+    for_update: bool = False,
 ) -> dict[uuid.UUID, Invoice]:
     """Org-scoped batch fetch by id — the multi-invoice analogue of `get_invoice`, so a payment
-    that allocates across several documents costs one query rather than one per allocation."""
+    that allocates across several documents costs one query rather than one per allocation.
+
+    `for_update=True` row-locks every matching invoice, in a deterministic order (`ORDER BY id`),
+    before `record_payment` reads how much is already applied to each (`paid_by_invoice`) and
+    checks it against what this payment would add. Without the lock two concurrent payments
+    allocating the same invoice each read the same "already applied" figure, each pass the
+    outstanding-amount check, and the invoice is paid past its total. Locking in id order — not
+    payload order — means a payment allocating invoices A and B can never deadlock against one
+    allocating the same two in the other order."""
     if not invoice_ids:
         return {}
-    stmt = select(Invoice).where(
-        Invoice.id.in_(invoice_ids),
-        Invoice.organization_id == org_id,
-        Invoice.deleted_at.is_(None),
+    stmt = (
+        select(Invoice)
+        .where(
+            Invoice.id.in_(invoice_ids),
+            Invoice.organization_id == org_id,
+            Invoice.deleted_at.is_(None),
+        )
+        .order_by(Invoice.id)
     )
+    if for_update:
+        stmt = stmt.with_for_update()
     rows = (await session.execute(stmt)).scalars().all()
     return {row.id: row for row in rows}
 

@@ -461,7 +461,9 @@ async def create_invoice(
         raise BusinessRuleProblem("The due date cannot be before the issued date")
     if await selectors.number_exists(session, ctx.organization_id, payload.number):
         raise ConflictProblem(f"An invoice numbered {payload.number!r} already exists")
-    customer = await selectors.get_customer(session, ctx.organization_id, payload.customer_id)
+    customer = await selectors.get_customer(
+        session, ctx.organization_id, payload.customer_id, for_update=True
+    )
     if customer is None:
         raise NotFoundProblem("That customer is not part of this organization")
 
@@ -469,8 +471,9 @@ async def create_invoice(
     if payload.document_type == "credit_note":
         if payload.corrects_invoice_id is None:
             raise BusinessRuleProblem("A credit note must state which invoice it corrects")
+        # Locked before `already_credited` is read below: see `get_invoice`.
         corrected = await selectors.get_invoice(
-            session, ctx.organization_id, payload.corrects_invoice_id
+            session, ctx.organization_id, payload.corrects_invoice_id, for_update=True
         )
         if corrected is None:
             raise NotFoundProblem("The invoice this credit note corrects was not found")
@@ -777,14 +780,20 @@ async def record_payment(
         raise BusinessRuleProblem("A payment's received date cannot be in the future")
     if await selectors.reference_exists(session, ctx.organization_id, payload.reference):
         raise ConflictProblem(f"A payment referenced {payload.reference!r} already exists")
-    if await selectors.get_customer(session, ctx.organization_id, payload.customer_id) is None:
+    customer = await selectors.get_customer(
+        session, ctx.organization_id, payload.customer_id, for_update=True
+    )
+    if customer is None:
         raise NotFoundProblem("That customer is not part of this organization")
 
     invoice_ids = [alloc.invoice_id for alloc in payload.allocations]
     if len(set(invoice_ids)) != len(invoice_ids):
         raise BusinessRuleProblem("An invoice may not be allocated twice in the same payment")
 
-    invoices = await selectors.get_invoices(session, ctx.organization_id, invoice_ids)
+    # Row-locked, in id order, before the already-applied figure is read: see `get_invoices`.
+    invoices = await selectors.get_invoices(
+        session, ctx.organization_id, invoice_ids, for_update=True
+    )
     already_paid = await selectors.paid_by_invoice(session, ctx.organization_id, invoice_ids)
 
     allocations: list[PaymentAllocation] = []
