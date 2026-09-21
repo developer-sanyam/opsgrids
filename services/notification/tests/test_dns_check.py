@@ -274,6 +274,8 @@ class TestIsGlobalAddress:
             "::ffff:127.0.0.1",  # IPv4-mapped loopback
             "::ffff:10.0.0.1",  # IPv4-mapped RFC 1918
             "::ffff:169.254.1.1",  # IPv4-mapped link-local
+            "2002:0a00:0001::1",  # 6to4 carrying 10.0.0.1
+            "2002:7f00:0001::1",  # 6to4 carrying 127.0.0.1
             "not-an-address",
         ],
     )

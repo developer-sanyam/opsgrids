@@ -191,13 +191,25 @@ def is_global_address(address: str) -> bool:
     for a private or link-local use", not "an ordinary unicast host anyone can dial" — so both
     are excluded explicitly. Loopback, RFC 1918, link-local (`169.254.0.0/16` and `fe80::/10`),
     carrier-grade NAT (`100.64.0.0/10`), unique-local (`fc00::/7`) and the unspecified address
-    are already `is_global is False`, including through an IPv4-mapped IPv6 wrapper, which
-    `ipaddress` unwraps on its own.
+    are already `is_global is False`.
+
+    An IPv6 address that merely carries an IPv4 one — IPv4-mapped (`::ffff:a.b.c.d`), 6to4,
+    Teredo — is judged by the IPv4 address inside it, unwrapped here rather than left to
+    `ipaddress`: whether the standard library looks through the wrapper has changed between
+    Python releases, and a guard whose answer depends on the interpreter's patch level is not
+    a guard.
     """
     try:
-        parsed = ipaddress.ip_address(address)
+        parsed: ipaddress.IPv4Address | ipaddress.IPv6Address = ipaddress.ip_address(address)
     except ValueError:
         return False
+    if isinstance(parsed, ipaddress.IPv6Address):
+        if parsed.ipv4_mapped is not None:
+            parsed = parsed.ipv4_mapped
+        else:
+            embedded = [parsed.sixtofour, *(parsed.teredo or ())]
+            if any(inner is not None and not is_global_address(str(inner)) for inner in embedded):
+                return False
     if parsed.is_multicast or parsed.is_reserved or parsed.is_unspecified:
         return False
     return parsed.is_global
