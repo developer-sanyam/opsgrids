@@ -319,6 +319,25 @@ https://store.opsgrids.com {
 	}
 }
 
+# ---------------------------------------------------------------------------- OpsGrids Engage
+# Published by `make edge-web APP=engage`. Same shape as Inventory above.
+https://engage.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/engage/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids Engage is not published on this box yet." {err.status_code}
+	}
+}
+
 # ---------------------------------------------------------------------------- every store
 #
 # A catch-all rather than a list of hostnames. `*.stores.opsgrids.com` is deliberately *not* a
