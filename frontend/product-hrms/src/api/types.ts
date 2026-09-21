@@ -1,19 +1,33 @@
 /**
  * Wire types for the HRMS product.
  *
- * `EmployeeOut` and its enums mirror `services/employee/app/schemas.py` field-for-field, so a
- * generated client can drop in later without the UI changing. The attendance and approval shapes
- * below mirror `services/attendance/app/schemas.py` and `services/approval/app/schemas.py`
- * field-for-field too — those two services are live as of this slice (ADR-0006 §11, the
- * approval-engine screens spec). Only the daily punch roster (`AttendanceRecord`, below) stays
- * representative: the punch-level detail (check-in/out, source, hours) that widget renders has no
- * live equivalent in `AttendanceOut` yet (see `api/client.ts`), so it is generated, deterministic
- * sample data, labelled as such wherever it renders.
+ * `EmployeeOut` and its enums mirror `services/employee/app/schemas.py` field-for-field.
+ * `AttendanceOut`, `ShiftOut`, `GeofenceOut` and the approval shapes mirror
+ * `services/attendance/app/schemas.py` and `services/approval/app/schemas.py` field-for-field —
+ * every one of these services is live. `AttendanceRecord` below is **not** a wire type: it is the
+ * client-side join of one `AttendanceOut` row with the employee it belongs to, produced by
+ * `listAttendanceRoster` in `api/client.ts` so the roster table has a name to render without every
+ * row carrying its own employee fetch.
  */
 
 export type EmploymentType = "full_time" | "part_time" | "contract" | "intern";
 export type WorkMode = "office" | "field" | "remote" | "hybrid";
 export type EmployeeStatus = "probation" | "active" | "on_notice" | "exited";
+/** The non-terminal targets `POST /employees/{id}/transition` accepts — `probation` is an entry
+ *  state nothing transitions *to*. */
+export type EmployeeTransitionTarget = "active" | "on_notice" | "exited";
+
+/** The sensitive fields the unmask endpoint may be asked to reveal. `bank_ifsc` is absent on
+ *  purpose — it is not sensitive and is already returned whole on the masked view. */
+export type SensitiveField =
+  | "date_of_birth"
+  | "personal_email"
+  | "personal_phone"
+  | "pan"
+  | "aadhaar"
+  | "uan"
+  | "esi"
+  | "bank_account";
 
 /** Masked PII — the default read shape. Never plaintext, never ciphertext. */
 export interface EmployeePiiMasked {
@@ -26,6 +40,20 @@ export interface EmployeePiiMasked {
   esi: string | null;
   bank_account: string | null;
   bank_ifsc: string | null;
+}
+
+/** Sensitive PII supplied as plaintext, sealed on write. Every field optional: on create it is
+ *  what is known; on patch, present means "seal this new value", absent means "leave it alone". */
+export interface EmployeePiiIn {
+  date_of_birth?: string | null;
+  personal_email?: string | null;
+  personal_phone?: string | null;
+  pan?: string | null;
+  aadhaar?: string | null;
+  uan?: string | null;
+  esi?: string | null;
+  bank_account?: string | null;
+  bank_ifsc?: string | null;
 }
 
 /** Mirrors `EmployeeOut`. `department_id` is a UUID; names are resolved client-side. */
@@ -42,19 +70,75 @@ export interface EmployeeOut {
   work_mode: WorkMode;
   date_of_joining: string | null;
   reporting_manager_id: string | null;
+  /** A second, informational reporting line — stored, never routed on. */
+  dotted_line_manager_id: string | null;
   status: EmployeeStatus;
   date_of_exit: string | null;
   created_at: string;
+  /** Bumped by the database whenever a hierarchy field changes. Read-only. */
+  hierarchy_version: number;
   pii: EmployeePiiMasked | null;
 }
 
-/** Small envelope a few list endpoints return. */
-export interface Page<T> {
-  items: T[];
-  total: number;
+/** `POST /employees` — `EmployeeIn`. `status` is never accepted: a new record always starts on
+ *  probation. `membership_id` must never be sent — account owns that link (ADR-0008 §3). */
+export interface EmployeeIn {
+  employee_no: string;
+  full_name: string;
+  designation?: string | null;
+  job_title?: string | null;
+  department_id?: string | null;
+  location_code?: string | null;
+  employment_type?: EmploymentType;
+  work_mode?: WorkMode;
+  date_of_joining?: string | null;
+  reporting_manager_id?: string | null;
+  dotted_line_manager_id?: string | null;
+  pii?: EmployeePiiIn;
 }
 
-/** `platform_core.pagination.Page` — every approval and attendance list carries these. */
+/** `PATCH /employees/{id}` — `EmployeePatch`. Absent means "leave alone"; an explicit `null`
+ *  clears the field. No `status` — the lifecycle moves only through `/transition`. */
+export interface EmployeePatch {
+  full_name?: string;
+  designation?: string | null;
+  job_title?: string | null;
+  department_id?: string | null;
+  location_code?: string | null;
+  employment_type?: EmploymentType;
+  work_mode?: WorkMode;
+  date_of_joining?: string | null;
+  /** Accepted only when the employee's current status is `exited`, and only on/after
+   *  `date_of_joining` — otherwise a business-rule 422. */
+  date_of_exit?: string | null;
+  reporting_manager_id?: string | null;
+  dotted_line_manager_id?: string | null;
+  pii?: EmployeePiiIn;
+}
+
+export interface EmployeeTransitionIn {
+  to: EmployeeTransitionTarget;
+  reason?: string | null;
+}
+
+export interface PiiUnmaskIn {
+  fields: SensitiveField[];
+}
+
+/** The only response that ever carries plaintext PII — never cached, rendered transiently. */
+export interface EmployeePiiUnmasked {
+  date_of_birth?: string | null;
+  personal_email?: string | null;
+  personal_phone?: string | null;
+  pan?: string | null;
+  aadhaar?: string | null;
+  uan?: string | null;
+  esi?: string | null;
+  bank_account?: string | null;
+}
+
+/** `platform_core.pagination.Page` — every employee, attendance, shift, geofence and approval
+ *  list carries these. */
 export interface Paged<T> {
   items: T[];
   total: number;
@@ -65,7 +149,7 @@ export interface Paged<T> {
 
 /* ------------------------------------------------------------------ locations, organization */
 
-/** Mirrors account-service `LocationOut` — the zone-lookup source (screens spec §2.1). */
+/** Mirrors account-service `LocationOut` — the zone-lookup source. */
 export interface LocationOut {
   id: string;
   name: string;
@@ -84,16 +168,13 @@ export interface OrganizationOut {
 
 /* ------------------------------------------------------------------ attendance */
 
-/**
- * The service's four statuses (`services/attendance/app/schemas.py`
- * `AttendanceStatusName`) — fixed here rather than the SPA's earlier, wrong
- * `present | late | absent` vocabulary.
- */
+/** The service's four statuses (`AttendanceStatusName`). */
 export type AttendanceStatus = "present" | "half_day" | "absent" | "regularized";
 export type RegularizationStatus = "pending" | "approved" | "rejected" | "failed";
 
-/** Punch sources the sample punch roster renders. Not part of the live attendance contract. */
-export type PunchSource = "web" | "mobile" | "biometric" | "field";
+/** The wire punch source (`attendance.schemas.Source`). `"field"` is a `WorkMode`, never a
+ *  source — filter field punches on `work_mode`, not on this. */
+export type PunchSource = "web" | "mobile" | "biometric";
 
 /** Mirrors `RegularizationRequestOut` exactly — the latest correction request on a record. */
 export interface RegularizationRequestOut {
@@ -101,39 +182,18 @@ export interface RegularizationRequestOut {
   attendance_id: string;
   employee_id: string;
   requested_status: AttendanceStatus;
-  /** The requester's own words, stored on attendance's own row — the source, not a copy (§4.C,
-   *  §9.1 C3). Rendered on the requester's own row only; on other rows it is a density decision,
-   *  not an access one — the request detail is one activation away. */
   reason: string;
   status: RegularizationStatus;
   approval_request_id: string | null;
-  /** Set once `core.approval.request.opened` has been applied to this row. Null while nothing is
-   *  known yet beyond "pending" — the true "has routing happened at all" signal, independent of
-   *  `approval_request_id`, which a `.decided` event can also set first on replay. */
   approval_opened_at: string | null;
-  /** The routed approver's employee id from `.opened`, or null. */
   approver_employee_id: string | null;
-  /** The routed approver's display name from `.opened`, stored verbatim. Null in every case
-   *  `approver_employee_id` is null (routing not yet known, or the step opened unassigned) *and*
-   *  whenever approval published the event without the key at all — the client never invents a
-   *  name it wasn't given. */
   approver_name: string | null;
   decided_at: string | null;
-  /** The decider's comment from `.decided`, verbatim, or null if none was given or no decision
-   *  has landed yet. */
   decision_comment: string | null;
-  /** The decider's display name from `.decided`, stored verbatim. Null when the decider is not in
-   *  approval's hierarchy copy (legitimate for an org-level decider) or the key was absent from
-   *  the payload — never a reason to hide the row either way. */
   decided_by_name: string | null;
   failure_reason: string | null;
   created_at: string;
-  /** `null` until `.opened` has landed (nothing known about routing yet); `true`/`false` after,
-   *  mirroring `approver_employee_id === null` at that point — a step can open with no approver
-   *  at all. Computed by the route at read time, not a stored column. */
   approver_unassigned: boolean | null;
-  /** The punch's own location, or `null` when the punch carried none (falls back to
-   *  labelled organization time — the same rule approval's responses follow). */
   location_code: string | null;
 }
 
@@ -142,28 +202,130 @@ export interface RegularizationRequestIn {
   reason: string;
 }
 
-/** A single day's attendance for one employee — the punch roster's row shape.
- *  Representative data (§ above); the `id` is not a real attendance record id. */
+/** Mirrors `AttendanceOut` field-for-field — one attendance record, exactly as the wire returns
+ *  it. `check_in_at`/`check_out_at` are instants; nothing here is a display string yet. */
+export interface AttendanceOut {
+  id: string;
+  employee_id: string;
+  work_date: string;
+  check_in_at: string;
+  check_out_at: string | null;
+  source: PunchSource;
+  location_code: string | null;
+  shift_id: string | null;
+  work_mode: WorkMode;
+  status: AttendanceStatus;
+  check_in_lat: string | null;
+  check_in_lng: string | null;
+  check_out_lat: string | null;
+  check_out_lng: string | null;
+  notes: string | null;
+  created_at: string;
+  regularization: RegularizationRequestOut | null;
+  allowed_transitions: AttendanceStatus[];
+}
+
+export interface CheckInIn {
+  work_mode?: WorkMode;
+  source?: PunchSource;
+  location_code?: string | null;
+  shift_id?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  notes?: string | null;
+}
+
+export interface CheckOutIn {
+  lat?: number | null;
+  lng?: number | null;
+}
+
+/** `POST /attendance/{id}/regularize` — the HR direct correction. */
+export interface RegularizeIn {
+  to: AttendanceStatus;
+  reason: string;
+}
+
+/** One day's attendance for one employee, joined client-side with the employee it belongs to —
+ *  the punch roster's row shape. Produced by `listAttendanceRoster` (`api/client.ts`); never
+ *  itself an endpoint response. `full_name` reads "Employee record unavailable" when the id in
+ *  the attendance row doesn't resolve against the employee directory, rather than a blank. */
 export interface AttendanceRecord {
   id: string;
   employee_id: string;
   employee_no: string;
   full_name: string;
   department_id: string | null;
-  /** The employee's functional group; carries the department name where `department_id` is null. */
   job_title: string | null;
   work_date: string;
   check_in: string | null;
   check_out: string | null;
   worked_minutes: number | null;
   source: PunchSource;
+  work_mode: WorkMode;
   status: AttendanceStatus;
-  /** The record's own punch location — governs how its instants render (ADR-0000). */
   location_code: string | null;
-  /** The latest correction request against this record, or `null` if none has ever been raised. */
   regularization: RegularizationRequestOut | null;
-  /** What the server's own state machine permits from this record's current status. */
   allowed_transitions: AttendanceStatus[];
+}
+
+/* ------------------------------------------------------------------ shifts & geofences */
+
+export interface ShiftOut {
+  id: string;
+  code: string;
+  name: string;
+  start_time: string;
+  end_time: string;
+  grace_minutes: number;
+  is_night: boolean;
+  created_at: string;
+}
+
+export interface ShiftIn {
+  code: string;
+  name: string;
+  start_time: string;
+  end_time: string;
+  grace_minutes?: number;
+  is_night?: boolean;
+}
+
+/** `code` is immutable — "a rename is a new shift" (`services/attendance/app/schemas.py`). */
+export interface ShiftPatch {
+  name?: string;
+  start_time?: string;
+  end_time?: string;
+  grace_minutes?: number;
+  is_night?: boolean;
+}
+
+/** `center_lat`/`center_lng` travel as strings on the wire (`Decimal`) — sent and read as
+ *  strings throughout the app so a coordinate never loses precision through a float round-trip. */
+export interface GeofenceOut {
+  id: string;
+  location_code: string;
+  name: string;
+  center_lat: string;
+  center_lng: string;
+  radius_m: number;
+  created_at: string;
+}
+
+export interface GeofenceIn {
+  location_code: string;
+  name: string;
+  center_lat: string;
+  center_lng: string;
+  radius_m: number;
+}
+
+/** `location_code` is immutable — the punch match key. */
+export interface GeofencePatch {
+  name?: string;
+  center_lat?: string;
+  center_lng?: string;
+  radius_m?: number;
 }
 
 /* ------------------------------------------------------------------ approval */
@@ -200,15 +362,6 @@ export interface InboxItemOut {
   requester_location_code: string | null;
   inbox_reason: InboxReason;
   from_name: string | null;
-  /**
-   * The deadline of the step this row matched through — the server's own value, never recomputed
-   * or defaulted here (§2.11: "the client never computes a due time"). `null` is a modelled state,
-   * not missing data: an unassigned step has no approver to hold a deadline
-   * (`ck_approval_steps_unassigned_has_no_due`), a request type with escalation switched off never
-   * gets one, and a step opened before the SLA clock was armed keeps `null` forever. On an
-   * `escalated_to_me` / `escalated_away` row this is the *successor* step's deadline — the one in
-   * front of the reader now — never the closed predecessor's.
-   */
   due_at: string | null;
 }
 
@@ -245,7 +398,6 @@ export interface StepOut {
   acting_for_name: string | null;
   opened_at: string;
   closed_at: string | null;
-  /** This step's own deadline, or `null` where there is none (§2.11). Never computed client-side. */
   due_at: string | null;
 }
 
@@ -399,28 +551,10 @@ export interface WorkforceSlice {
   pct: number;
 }
 
-/** A point on the headcount-trend chart (sample series). */
+/** A point on the headcount-trend chart (sample series — see `HeadcountTrend`'s own `SampleChip`). */
 export interface TrendPoint {
   label: string;
   value: number;
 }
 
 export type TrendRange = "monthly" | "quarterly" | "yearly";
-
-/** One entry in the Recent Activity timeline (sample). */
-export interface ActivityItem {
-  id: string;
-  actor: string;
-  action: string;
-  target: string;
-  when: string;
-  tone: "accent" | "positive" | "info" | "late";
-}
-
-/** One row in Tasks Today (sample). */
-export interface TaskItem {
-  id: string;
-  title: string;
-  due: string;
-  done: boolean;
-}

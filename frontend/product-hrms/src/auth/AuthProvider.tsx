@@ -40,10 +40,18 @@ const FIXTURE_USER: MeOut = {
  * not a bug.
  */
 const FIXTURE_GRANTS = [
-  "core.approval.request.read:OWN",
+  "core.approval.request.read:ORG",
   "core.approval.request.decide:OWN",
   "core.approval.delegation.write:ORG",
   "core.approval.policy.write:ORG",
+  "hrms.people.employee.read:ORG",
+  "hrms.people.employee.write:ORG",
+  "hrms.people.employee.read_sensitive:OWN",
+  "hrms.time.attendance.read:ORG",
+  "hrms.time.attendance.write:ORG",
+  "hrms.time.attendance.request:OWN",
+  "hrms.time.shift.read:ORG",
+  "hrms.time.shift.write:ORG",
 ];
 
 /** The session, wired to this product's fixture identity. The logic lives in `@opsgrids/client`. */

@@ -14,9 +14,17 @@ import { EmployeeDetailPage } from "./EmployeeDetail";
 
 const getEmployee = vi.fn();
 const getChain = vi.fn();
+const listEmployeeReports = vi.fn();
+const unmaskEmployeePii = vi.fn();
 
 vi.mock("@/api/client", () => ({
   getEmployee: (...args: unknown[]) => getEmployee(...args),
+  listEmployeeReports: (...args: unknown[]) => listEmployeeReports(...args),
+  unmaskEmployeePii: (...args: unknown[]) => unmaskEmployeePii(...args),
+}));
+
+vi.mock("@/api/orgUnits", () => ({
+  getOrgUnitNameById: () => Promise.resolve(new Map()),
 }));
 
 vi.mock("@/api/approvals", () => ({
@@ -36,6 +44,8 @@ const EMPLOYEE: EmployeeOut = {
   work_mode: "office",
   date_of_joining: "2022-01-01",
   reporting_manager_id: null,
+  dotted_line_manager_id: null,
+  hierarchy_version: 1,
   status: "active",
   date_of_exit: null,
   created_at: "2022-01-01T00:00:00Z",
@@ -87,7 +97,10 @@ describe("EmployeeDetail — approval chain collapse (§4.F)", () => {
   beforeEach(() => {
     getEmployee.mockReset();
     getChain.mockReset();
+    listEmployeeReports.mockReset();
+    unmaskEmployeePii.mockReset();
     getEmployee.mockResolvedValue(EMPLOYEE);
+    listEmployeeReports.mockResolvedValue([]);
   });
 
   it("collapses a chain beyond 8 rungs to the first 3 and last 2, with the HR fallback visible", async () => {

@@ -142,7 +142,7 @@ export function LoginPage() {
                 <header className="mb-6 flex flex-col gap-1.5">
                   <h1 className="display text-2xl font-extrabold">Sign in to OpsGrids HR</h1>
                   <p className="text-sm text-muted">
-                    Your people, attendance and payroll — in one calm place.
+                    Your people and attendance — in one calm place.
                   </p>
                 </header>
 

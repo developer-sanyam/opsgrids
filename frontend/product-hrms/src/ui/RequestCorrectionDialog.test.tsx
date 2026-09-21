@@ -34,6 +34,7 @@ const RECORD: AttendanceRecord = {
   check_out: null,
   worked_minutes: null,
   source: "web",
+  work_mode: "office",
   status: "absent",
   location_code: "Bengaluru",
   regularization: null,

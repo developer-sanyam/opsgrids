@@ -54,6 +54,8 @@ const SNEHA: EmployeeOut = {
   work_mode: "office",
   date_of_joining: "2020-10-05",
   reporting_manager_id: null,
+  dotted_line_manager_id: null,
+  hierarchy_version: 1,
   status: "active",
   date_of_exit: null,
   created_at: "2020-10-05T09:00:00Z",

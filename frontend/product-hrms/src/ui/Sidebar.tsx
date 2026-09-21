@@ -1,16 +1,12 @@
 import { useAuth, usePermission } from "@opsgrids/client";
 import {
-  BellIcon,
   BuildingIcon,
   CalendarCheckIcon,
-  ClipboardCheckIcon,
   ClipboardListIcon,
-  FileTextIcon,
+  ClockIcon,
   HomeIcon,
   InboxIcon,
-  LifeBuoyIcon,
   MapPinIcon,
-  PlugIcon,
   ReplyIcon,
   SettingsIcon,
   Sidebar as SidebarShell,
@@ -26,38 +22,18 @@ const MAIN_MENU: NavGroup = {
   items: [
     { to: "/", label: "Dashboard", icon: HomeIcon, end: true },
     { to: "/attendance", label: "Attendance", icon: CalendarCheckIcon },
-    { to: "/notifications", label: "Notifications", icon: BellIcon, badge: "12" },
-    { to: "/tasks", label: "Tasks", icon: ClipboardCheckIcon, count: "5" },
   ],
 };
-
-const RECORDS: NavGroup = {
-  title: "Records",
-  items: [
-    { to: "/employees", label: "Employees", icon: UsersIcon },
-    { to: "/departments", label: "Departments", icon: BuildingIcon },
-    { to: "/locations", label: "Locations", icon: MapPinIcon },
-    { to: "/reports", label: "Reports", icon: FileTextIcon },
-  ],
-};
-
-const WORKSPACE: NavGroup = {
-  title: "Workspace",
-  items: [
-    { to: "/integrations", label: "Integrations", icon: PlugIcon },
-    { to: "/team", label: "Team Members", icon: UserPlusIcon },
-  ],
-};
-
-const PINNED: NavEntry[] = [
-  { to: "/settings", label: "Settings", icon: SettingsIcon },
-  { to: "/help", label: "Help & Getting Started", icon: LifeBuoyIcon },
-];
 
 /**
  * This product's navigation. The shell — account switcher, ⌘K search, active pill, workspace card
  * and theme toggle — is `@opsgrids/ui`'s `Sidebar`. Everything below is the part that is genuinely
  * this product's: its groups, its mark and its wording.
+ *
+ * Every entry here opens a screen backed by a live endpoint, or an honest link-out to the app
+ * that owns the real one (Departments, Locations, Team Members — `opsgrids-admin`). Notifications,
+ * Tasks, Reports, Integrations, Settings and Help had no backend and no link-out target, so they
+ * are gone from here and from the router (audit gap 9).
  */
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { user, logout } = useAuth();
@@ -75,6 +51,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   // in this group the server cannot gate by filtering, so it is hidden client-side instead. The
   // route itself stays reachable by URL either way (§4.G's read-only "No permission" rendering).
   const canConfigureApprovals = usePermission("core.approval.policy.write", "ORG");
+  const canReadShifts = usePermission("hrms.time.shift.read", "OWN");
   const approvals: NavGroup = {
     title: "Approvals",
     items: [
@@ -86,12 +63,28 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         : []),
     ],
   };
-  const groups: NavGroup[] = [MAIN_MENU, approvals, RECORDS, WORKSPACE];
+
+  const records: NavGroup = {
+    title: "Records",
+    items: [
+      { to: "/employees", label: "Employees", icon: UsersIcon },
+      ...(canReadShifts ? ([{ to: "/shifts", label: "Shifts & geo-fences", icon: ClockIcon }] as NavEntry[]) : []),
+      { to: "/departments", label: "Departments", icon: BuildingIcon },
+      { to: "/locations", label: "Locations", icon: MapPinIcon },
+    ],
+  };
+
+  const workspace: NavGroup = {
+    title: "Workspace",
+    items: [{ to: "/team", label: "Team Members", icon: UserPlusIcon }],
+  };
+
+  const groups: NavGroup[] = [MAIN_MENU, approvals, records, workspace];
 
   return (
     <SidebarShell
       groups={groups}
-      pinned={PINNED}
+      pinned={[]}
       account={{
         name,
         email: user?.email ?? "",

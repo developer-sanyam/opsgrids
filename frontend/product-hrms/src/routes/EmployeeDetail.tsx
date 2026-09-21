@@ -1,27 +1,39 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { ApiError } from "@opsgrids/client";
+import { ApiError, problemMessage, useCan } from "@opsgrids/client";
 import {
   ArrowLeftIcon,
+  Avatar,
   BuildingUserIcon,
+  Button,
   Card,
   ErrorState,
+  EyeIcon,
   InlineAlert,
   MapPinIcon,
   PageHeader,
   SectionHeader,
   Skeleton,
   UsersIcon,
+  useToast,
 } from "@opsgrids/ui";
 
-import { getEmployee } from "@/api/client";
+import { getEmployee, listEmployeeReports, unmaskEmployeePii } from "@/api/client";
 import { getChain } from "@/api/approvals";
-import type { ApprovalChainOut, ChainRungOut, EmployeeOut } from "@/api/types";
-import { departmentLabel } from "@/data/departments";
+import { getOrgUnitNameById } from "@/api/orgUnits";
+import type {
+  ApprovalChainOut,
+  ChainRungOut,
+  EmployeeOut,
+  SensitiveField,
+} from "@/api/types";
+import { resolveDepartment } from "@/data/departments";
 import { employmentLabel } from "@/lib/format";
+import { EmployeeForm } from "@/ui/EmployeeForm";
 import { EmployeeStatusPill } from "@/ui";
 import { PersonRefBlock } from "@/ui/PersonRef";
+import { TransitionDialog } from "@/ui/TransitionDialog";
 
 /** §4.F, "Loaded, large": beyond this many rungs the chain collapses to the first 3 and last 2. */
 const CHAIN_COLLAPSE_THRESHOLD = 8;
@@ -96,8 +108,6 @@ function ApprovalChainSection({ employeeId, firstName }: { employeeId: string; f
     load();
   }, [load]);
 
-  // A fresh employee's chain starts collapsed again — `expanded` describes the chain currently
-  // loaded, not a standing preference.
   useEffect(() => {
     setExpanded(false);
   }, [employeeId]);
@@ -106,13 +116,12 @@ function ApprovalChainSection({ employeeId, firstName }: { employeeId: string; f
   const shouldCollapse = rungs.length > CHAIN_COLLAPSE_THRESHOLD && !expanded;
   const firstRevealedLevel = shouldCollapse ? undefined : rungs[CHAIN_VISIBLE_HEAD]?.level;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (expanded && firstRevealedLevel !== undefined) {
       chainContainerRef.current
         ?.querySelector<HTMLElement>(`[data-rung-level="${firstRevealedLevel}"]`)
         ?.focus();
     }
-    // Fires only on the transition into `expanded` — see the guard above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded]);
 
@@ -157,10 +166,6 @@ function ApprovalChainSection({ employeeId, firstName }: { employeeId: string; f
                       <ChainRung key={rung.level} rung={rung} />
                     ))}
                   </ol>
-                  {/* §4.F: "Loaded, large" — beyond 8 rungs the chain collapses to the first 3
-                   *  and last 2, behind a control naming how many levels are hidden. The HR
-                   *  fallback is never collapsed: it is always the chain's own last rung, so it
-                   *  is always inside this trailing slice. */}
                   <button
                     type="button"
                     aria-expanded={false}
@@ -211,11 +216,183 @@ function ApprovalChainSection({ employeeId, firstName }: { employeeId: string; f
   );
 }
 
-export function EmployeeDetailPage() {
-  const { employeeId } = useParams<{ employeeId: string }>();
-  const [state, setState] = useState<EmployeeState>({ kind: "loading" });
+const SENSITIVE_FIELDS: { key: SensitiveField; label: string }[] = [
+  { key: "date_of_birth", label: "Date of birth" },
+  { key: "personal_email", label: "Personal email" },
+  { key: "personal_phone", label: "Personal phone" },
+  { key: "pan", label: "PAN" },
+  { key: "aadhaar", label: "Aadhaar" },
+  { key: "uan", label: "UAN" },
+  { key: "esi", label: "ESI" },
+  { key: "bank_account", label: "Bank account" },
+];
+
+/** The masked PII block, with a per-field "Reveal" that unmasks transiently — never cached, never
+ *  survives navigating away. `hrms.people.employee.read_sensitive` gates the button; a 403 says a
+ *  second factor is needed rather than "no access", because the grant alone is not enough — the
+ *  token also needs an `amr` step-up no login flow issues yet (see the report). */
+function PiiSection({ employee }: { employee: EmployeeOut }) {
+  const canReadSensitive = useCan("hrms.people.employee.read_sensitive", "OWN");
+  const [revealed, setRevealed] = useState<Partial<Record<SensitiveField, string>>>({});
+  const [stepUpNeeded, setStepUpNeeded] = useState(false);
+  const [pending, setPending] = useState<SensitiveField | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Never cached across a different employee's record.
+  useEffect(() => {
+    setRevealed({});
+    setStepUpNeeded(false);
+    setError(null);
+  }, [employee.id]);
+
+  async function reveal(field: SensitiveField) {
+    setPending(field);
+    setError(null);
+    try {
+      const result = await unmaskEmployeePii(employee.id, { fields: [field] });
+      setRevealed((prev) => ({ ...prev, [field]: result[field] ?? "—" }));
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 403) {
+        setStepUpNeeded(true);
+      } else {
+        setError(problemMessage(err));
+      }
+    } finally {
+      setPending(null);
+    }
+  }
+
+  if (!employee.pii) return null;
+
+  return (
+    <Card className="p-6">
+      <SectionHeader title="Sensitive details" subtitle="Masked by default." />
+      <div className="mt-4 flex flex-col gap-3">
+        {stepUpNeeded ? (
+          <InlineAlert tone="warning" title="A second factor is required to reveal this.">
+            Sign in again with a one-time code, then try again.
+          </InlineAlert>
+        ) : null}
+        {error ? <InlineAlert tone="danger" title={error} /> : null}
+        <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {SENSITIVE_FIELDS.map(({ key, label }) => {
+            const masked = employee.pii?.[key] ?? null;
+            if (masked === null) return null;
+            const value = revealed[key];
+            return (
+              <div key={key} className="flex items-center justify-between gap-3 rounded-tile bg-ground/60 px-3 py-2.5">
+                <div className="flex flex-col">
+                  <dt className="text-xs font-semibold uppercase tracking-wide text-faint">{label}</dt>
+                  <dd className="tnum text-sm text-ink">{value ?? masked}</dd>
+                </div>
+                {canReadSensitive && value === undefined ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    leadingIcon={<EyeIcon className="size-4" />}
+                    loading={pending === key}
+                    onClick={() => void reveal(key)}
+                  >
+                    Reveal
+                  </Button>
+                ) : null}
+              </div>
+            );
+          })}
+          {employee.pii.bank_ifsc ? (
+            <div className="flex flex-col rounded-tile bg-ground/60 px-3 py-2.5">
+              <dt className="text-xs font-semibold uppercase tracking-wide text-faint">Bank IFSC</dt>
+              <dd className="tnum text-sm text-ink">{employee.pii.bank_ifsc}</dd>
+            </div>
+          ) : null}
+        </dl>
+      </div>
+    </Card>
+  );
+}
+
+function ReportsSection({ employeeId }: { employeeId: string }) {
+  const [reports, setReports] = useState<EmployeeOut[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    setReports(null);
+    setError(null);
+    listEmployeeReports(employeeId)
+      .then(setReports)
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : "Something went wrong"));
+  }, [employeeId]);
+
+  return (
+    <Card className="p-6">
+      <SectionHeader title="Direct reports" />
+      <div className="mt-4">
+        {error ? <ErrorState message={error} /> : null}
+        {reports === null && !error ? (
+          <div className="flex flex-col gap-2">
+            {Array.from({ length: 2 }).map((_, i) => <Skeleton key={i} className="h-10 w-full rounded-tile" />)}
+          </div>
+        ) : null}
+        {reports !== null && reports.length === 0 ? (
+          <p className="text-sm text-muted">No one reports to this employee.</p>
+        ) : null}
+        {reports !== null && reports.length > 0 ? (
+          <ul className="flex flex-col gap-2">
+            {reports.map((r) => (
+              <li key={r.id}>
+                <Link
+                  to={`/employees/${r.id}`}
+                  className="flex items-center gap-3 rounded-tile px-2 py-2 hover:bg-ground/60"
+                >
+                  <Avatar name={r.full_name} size="sm" />
+                  <span className="flex flex-col leading-tight">
+                    <span className="font-semibold text-ink text-sm">{r.full_name}</span>
+                    <span className="text-xs text-muted tnum">{r.employee_no}</span>
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+    </Card>
+  );
+}
+
+function ManagerRef({ managerId }: { managerId: string }) {
+  const [name, setName] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    getEmployee(managerId)
+      .then((m) => {
+        if (active) setName(m.full_name);
+      })
+      .catch(() => {
+        if (active) setName("Employee record unavailable");
+      });
+    return () => {
+      active = false;
+    };
+  }, [managerId]);
+  return (
+    <Link to={`/employees/${managerId}`} className="text-ink hover:text-accent hover:underline">
+      {name ?? "…"}
+    </Link>
+  );
+}
+
+const TRANSITIONABLE = new Set<EmployeeOut["status"]>(["probation", "active", "on_notice"]);
+
+export function EmployeeDetailPage() {
+  const { employeeId } = useParams<{ employeeId: string }>();
+  const toast = useToast();
+  const [state, setState] = useState<EmployeeState>({ kind: "loading" });
+  const [orgUnitMap, setOrgUnitMap] = useState<ReadonlyMap<string, string>>(new Map());
+  const [editing, setEditing] = useState(false);
+  const [transitioning, setTransitioning] = useState(false);
+  const canWrite = useCan("hrms.people.employee.write", "ORG");
+
+  const load = useCallback(() => {
     if (!employeeId) return;
     setState({ kind: "loading" });
     getEmployee(employeeId)
@@ -231,6 +408,14 @@ export function EmployeeDetailPage() {
         });
       });
   }, [employeeId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useEffect(() => {
+    getOrgUnitNameById().then(setOrgUnitMap);
+  }, []);
 
   if (state.kind === "loading") {
     return (
@@ -253,7 +438,7 @@ export function EmployeeDetailPage() {
   }
 
   if (state.kind === "error") {
-    return <ErrorState message={state.message} />;
+    return <ErrorState message={state.message} onRetry={load} />;
   }
 
   const { employee } = state;
@@ -272,7 +457,21 @@ export function EmployeeDetailPage() {
       <PageHeader
         {...(employee.designation ? { eyebrow: employee.designation } : {})}
         title={employee.full_name}
-        actions={<EmployeeStatusPill status={employee.status} />}
+        actions={
+          <div className="flex items-center gap-2">
+            <EmployeeStatusPill status={employee.status} />
+            {canWrite ? (
+              <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+                Edit
+              </Button>
+            ) : null}
+            {canWrite && TRANSITIONABLE.has(employee.status) ? (
+              <Button variant="dark" size="sm" onClick={() => setTransitioning(true)}>
+                Change status
+              </Button>
+            ) : null}
+          </div>
+        }
       />
 
       <Card className="p-6">
@@ -289,7 +488,7 @@ export function EmployeeDetailPage() {
             </span>
             <span className="inline-flex items-center gap-1.5 text-ink">
               <UsersIcon className="size-4 text-faint" />
-              {departmentLabel(employee)}
+              {resolveDepartment(employee, orgUnitMap)}
             </span>
           </div>
           <div className="flex flex-col gap-1">
@@ -309,10 +508,71 @@ export function EmployeeDetailPage() {
               {employmentLabel(employee.employment_type)} · {employee.work_mode}
             </span>
           </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-semibold uppercase tracking-wide text-faint">
+              Date of joining
+            </span>
+            <span className="tnum text-ink">{employee.date_of_joining ?? "—"}</span>
+          </div>
+          {employee.status === "exited" ? (
+            <div className="flex flex-col gap-1">
+              <span className="text-xs font-semibold uppercase tracking-wide text-faint">
+                Date of exit
+              </span>
+              <span className="tnum text-ink">{employee.date_of_exit ?? "—"}</span>
+            </div>
+          ) : null}
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-semibold uppercase tracking-wide text-faint">
+              Reporting manager
+            </span>
+            <span className="text-ink">
+              {employee.reporting_manager_id ? (
+                <ManagerRef managerId={employee.reporting_manager_id} />
+              ) : (
+                "—"
+              )}
+            </span>
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-semibold uppercase tracking-wide text-faint">
+              Dotted-line manager
+            </span>
+            <span className="text-ink">
+              {employee.dotted_line_manager_id ? (
+                <ManagerRef managerId={employee.dotted_line_manager_id} />
+              ) : (
+                "—"
+              )}
+            </span>
+          </div>
         </div>
       </Card>
 
+      <PiiSection employee={employee} />
+      <ReportsSection employeeId={employee.id} />
       <ApprovalChainSection employeeId={employee.id} firstName={firstName} />
+
+      {editing ? (
+        <EmployeeForm
+          employee={employee}
+          onClose={() => setEditing(false)}
+          onSaved={(saved) => {
+            toast.success(`${saved.full_name} saved.`);
+            setState({ kind: "ready", employee: saved });
+          }}
+        />
+      ) : null}
+      {transitioning ? (
+        <TransitionDialog
+          employee={employee}
+          onClose={() => setTransitioning(false)}
+          onSaved={(saved) => {
+            toast.success(`${saved.full_name} is now ${saved.status.replace("_", " ")}.`);
+            setState({ kind: "ready", employee: saved });
+          }}
+        />
+      ) : null}
     </div>
   );
 }

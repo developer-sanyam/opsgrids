@@ -1,14 +1,14 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 
 import type { EmployeeOut } from "@/api/types";
-import { departmentLabel } from "@/data/departments";
+import { resolveDepartment } from "@/data/departments";
 import {
   Avatar,
   DownloadIcon,
   EmptyState,
   FilterIcon,
   MapPinIcon,
-  MoreHorizontalIcon,
   SearchIcon,
   SortIcon,
   UsersIcon,
@@ -16,14 +16,15 @@ import {
 } from "@opsgrids/ui";
 import { EmployeeStatusPill } from "./StatusPill";
 
-/** Build a CSV of the given rows and hand it to the browser as a download. */
-function exportCsv(rows: EmployeeOut[]): void {
+/** Build a CSV of the given rows and hand it to the browser as a download. Stays free of PII
+ *  columns — the audit's "must not be built" list forbids a bulk PII export. */
+function exportCsv(rows: EmployeeOut[], orgUnitMap: ReadonlyMap<string, string>): void {
   const header = ["Employee No", "Name", "Designation", "Department", "Status", "Location"];
   const body = rows.map((e) => [
     e.employee_no,
     e.full_name,
     e.designation ?? "",
-    departmentLabel(e),
+    resolveDepartment(e, orgUnitMap),
     e.status,
     e.location_code ?? "",
   ]);
@@ -72,7 +73,13 @@ function ToolbarButton({
  * violet selected state, and a status pill per person. Every toolbar control does real work —
  * filter narrows to active staff, sort flips name order, export downloads the current rows.
  */
-export function EmployeesPanel({ employees }: { employees: EmployeeOut[] }) {
+export function EmployeesPanel({
+  employees,
+  orgUnitMap,
+}: {
+  employees: EmployeeOut[];
+  orgUnitMap: ReadonlyMap<string, string>;
+}) {
   const [query, setQuery] = useState("");
   const [activeOnly, setActiveOnly] = useState(false);
   const [asc, setAsc] = useState(true);
@@ -145,7 +152,7 @@ export function EmployeesPanel({ employees }: { employees: EmployeeOut[] }) {
           <ToolbarButton
             icon={<DownloadIcon className="size-4" />}
             label="Export"
-            onClick={() => exportCsv(exportRows)}
+            onClick={() => exportCsv(exportRows, orgUnitMap)}
           />
         </div>
       </div>
@@ -217,7 +224,7 @@ export function EmployeesPanel({ employees }: { employees: EmployeeOut[] }) {
                         <div className="flex min-w-0 flex-col leading-tight">
                           <span className="truncate font-semibold text-ink">{emp.full_name}</span>
                           <span className="truncate text-xs text-muted">
-                            {departmentLabel(emp)}
+                            {resolveDepartment(emp, orgUnitMap)}
                           </span>
                         </div>
                       </div>
@@ -226,7 +233,7 @@ export function EmployeesPanel({ employees }: { employees: EmployeeOut[] }) {
                       {emp.designation ?? "—"}
                     </td>
                     <td className="hidden py-3 pr-3 align-middle text-muted lg:table-cell">
-                      {departmentLabel(emp)}
+                      {resolveDepartment(emp, orgUnitMap)}
                     </td>
                     <td className="py-3 pr-3 align-middle">
                       <EmployeeStatusPill status={emp.status} />
@@ -238,13 +245,12 @@ export function EmployeesPanel({ employees }: { employees: EmployeeOut[] }) {
                       </span>
                     </td>
                     <td className="py-3 pr-1 text-right align-middle">
-                      <button
-                        type="button"
-                        aria-label={`More options for ${emp.full_name}`}
-                        className="grid size-8 place-items-center rounded-full text-faint hover:bg-ground hover:text-ink transition-colors"
+                      <Link
+                        to={`/employees/${emp.id}`}
+                        className="rounded-full px-3 py-1.5 text-sm font-semibold text-accent-ink hover:bg-accent-soft transition-colors"
                       >
-                        <MoreHorizontalIcon className="size-4" />
-                      </button>
+                        View
+                      </Link>
                     </td>
                   </tr>
                 );

@@ -12,14 +12,25 @@ import type {
   AttendanceStatus,
   DelegateCandidateOut,
   DelegationOut,
+  EmployeeIn,
   EmployeeOut,
+  EmployeePatch,
+  EmployeePiiUnmasked,
+  EmployeeTransitionIn,
   EmploymentType,
+  GeofenceIn,
+  GeofenceOut,
+  GeofencePatch,
   InboxItemOut,
   LocationOut,
   OrganizationOut,
+  PiiUnmaskIn,
   PolicyOut,
   RequestDetailOut,
   RequestListItemOut,
+  ShiftIn,
+  ShiftOut,
+  ShiftPatch,
   StepOut,
   WorkMode,
   PunchSource,
@@ -93,9 +104,11 @@ export const EMPLOYEES: EmployeeOut[] = SEEDS.map((s, i) => ({
   date_of_joining: s.joined,
   // First member of each department reports to no one; the rest to that head.
   reporting_manager_id: null,
+  dotted_line_manager_id: null,
   status: s.status,
   date_of_exit: null,
   created_at: `${s.joined}T09:00:00Z`,
+  hierarchy_version: 1,
   pii: null,
 }));
 
@@ -211,8 +224,10 @@ function attendanceFor(emp: EmployeeOut, index: number): AttendanceRecord {
   else if (bucket === 1 || bucket === 6) status = "half_day";
   else status = "present";
 
+  // §types.ts: `source` is the wire's `web | mobile | biometric` — a field punch is a `work_mode`,
+  // never a source. The fixture still varies it, on the employee's own work mode.
   const source: PunchSource =
-    emp.work_mode === "field" ? "field" : emp.work_mode === "remote" ? "mobile" : "web";
+    emp.work_mode === "remote" ? "mobile" : emp.work_mode === "field" ? "mobile" : "web";
 
   const base: AttendanceRecord = {
     id: `att-${emp.id}`,
@@ -226,6 +241,7 @@ function attendanceFor(emp: EmployeeOut, index: number): AttendanceRecord {
     check_out: null,
     worked_minutes: null,
     source,
+    work_mode: emp.work_mode,
     status,
     location_code: emp.location_code,
     regularization: null,
@@ -983,6 +999,32 @@ for (const item of FIXTURE_MY_REQUESTS) {
   FIXTURE_DETAIL_BY_ID[item.id] = myRequestDetail(item);
 }
 
+/** Org-wide view (`GET /approvals/requests` without `requester=me`) — every request known to the
+ *  fixture set, including other people's, newest first. Demonstrates gap 10's "All requests" tab
+ *  for a caller holding `core.approval.request.read:ORG`. */
+export const FIXTURE_ORG_REQUESTS: RequestListItemOut[] = Object.values(FIXTURE_DETAIL_BY_ID)
+  .map((d): RequestListItemOut => ({
+    id: d.id,
+    request_type: d.request_type,
+    source_ref: d.source_ref,
+    summary: d.summary,
+    status: d.status,
+    opened_at: d.opened_at,
+    requester_employee_id: d.requester_employee_id,
+    requester_name: d.requester_name,
+    requester_employee_no: d.requester_employee_no,
+    requester_location_code: d.requester_location_code,
+    approver_employee_id: d.approver_employee_id,
+    approver_name: d.approver_name,
+    decided_by_employee_id: d.decided_by_employee_id,
+    decided_by_name: d.decided_by_name,
+    decided_at: d.decided_at,
+    comment: d.comment,
+    application_state: d.application_state,
+    application_failure_reason: d.application_failure_reason,
+  }))
+  .sort((a, b) => new Date(b.opened_at).getTime() - new Date(a.opened_at).getTime());
+
 export const FIXTURE_CHAIN: ApprovalChainOut = {
   employee_id: ANANYA.id,
   location_code: ANANYA.location_code,
@@ -1377,4 +1419,258 @@ export function __updateFixturePolicy(
 /** Test-only: restores the fixture policy store to its default between test cases. */
 export function __resetFixturePoliciesForTests(): void {
   policyStore = FIXTURE_POLICY_DEFAULTS.map((p) => ({ ...p }));
+}
+
+/* --------------------------- employee writes (fixture mode) --------------------------- */
+
+/** The mutable, in-session copy of the seeded directory — mirrors `delegationStore`'s own
+ *  "representative but internally consistent" contract so a fixture-mode create/edit/transition
+ *  persists for the rest of the session. */
+let employeeStore: EmployeeOut[] = EMPLOYEES.map((e) => ({ ...e }));
+
+export function __listFixtureEmployees(): EmployeeOut[] {
+  return employeeStore.map((e) => ({ ...e }));
+}
+
+export function __getFixtureEmployee(id: string): EmployeeOut | undefined {
+  return employeeStore.find((e) => e.id === id);
+}
+
+let employeeSeq = 1000;
+
+export function __createFixtureEmployee(body: EmployeeIn): EmployeeOut {
+  if (employeeStore.some((e) => e.employee_no === body.employee_no)) {
+    throw problemErrorFor(409, `An employee with the number '${body.employee_no}' already exists`, [
+      { field: "employee_no", code: "duplicate", message: "This employee number is already in use." },
+    ]);
+  }
+  employeeSeq += 1;
+  const created: EmployeeOut = {
+    id: uuid(9000 + employeeSeq),
+    membership_id: null,
+    employee_no: body.employee_no,
+    full_name: body.full_name,
+    designation: body.designation ?? null,
+    job_title: body.job_title ?? null,
+    department_id: body.department_id ?? null,
+    location_code: body.location_code ?? null,
+    employment_type: body.employment_type ?? "full_time",
+    work_mode: body.work_mode ?? "office",
+    date_of_joining: body.date_of_joining ?? null,
+    reporting_manager_id: body.reporting_manager_id ?? null,
+    dotted_line_manager_id: body.dotted_line_manager_id ?? null,
+    status: "probation",
+    date_of_exit: null,
+    created_at: new Date().toISOString(),
+    hierarchy_version: 1,
+    pii: body.pii
+      ? {
+          date_of_birth: body.pii.date_of_birth ? "••••-••-••" : null,
+          personal_email: body.pii.personal_email ? "••••@••••" : null,
+          personal_phone: body.pii.personal_phone ? "•••• ••••" : null,
+          pan: body.pii.pan ? "••••••••••" : null,
+          aadhaar: body.pii.aadhaar ? "•••• •••• ••••" : null,
+          uan: body.pii.uan ? "•••••••••••" : null,
+          esi: body.pii.esi ? "•••••••••••••••••" : null,
+          bank_account: body.pii.bank_account ? "•••••••••••••" : null,
+          bank_ifsc: body.pii.bank_ifsc ?? null,
+        }
+      : null,
+  };
+  employeeStore = [...employeeStore, created];
+  return created;
+}
+
+export function __updateFixtureEmployee(id: string, patch: EmployeePatch): EmployeeOut {
+  const existing = employeeStore.find((e) => e.id === id);
+  if (!existing) throw problemErrorFor(404, "That employee isn't available any more");
+  const updated: EmployeeOut = {
+    ...existing,
+    ...("full_name" in patch ? { full_name: patch.full_name as string } : {}),
+    ...("designation" in patch ? { designation: patch.designation ?? null } : {}),
+    ...("job_title" in patch ? { job_title: patch.job_title ?? null } : {}),
+    ...("department_id" in patch ? { department_id: patch.department_id ?? null } : {}),
+    ...("location_code" in patch ? { location_code: patch.location_code ?? null } : {}),
+    ...("employment_type" in patch ? { employment_type: patch.employment_type as EmploymentType } : {}),
+    ...("work_mode" in patch ? { work_mode: patch.work_mode as WorkMode } : {}),
+    ...("date_of_joining" in patch ? { date_of_joining: patch.date_of_joining ?? null } : {}),
+    ...("date_of_exit" in patch ? { date_of_exit: patch.date_of_exit ?? null } : {}),
+    ...("reporting_manager_id" in patch ? { reporting_manager_id: patch.reporting_manager_id ?? null } : {}),
+    ...("dotted_line_manager_id" in patch
+      ? { dotted_line_manager_id: patch.dotted_line_manager_id ?? null }
+      : {}),
+    hierarchy_version: existing.hierarchy_version + 1,
+  };
+  employeeStore = employeeStore.map((e) => (e.id === id ? updated : e));
+  return updated;
+}
+
+const TRANSITIONS: Record<EmployeeOut["status"], EmployeeOut["status"][]> = {
+  probation: ["active", "exited"],
+  active: ["on_notice", "exited"],
+  on_notice: ["active", "exited"],
+  exited: [],
+};
+
+export function __transitionFixtureEmployee(id: string, body: EmployeeTransitionIn): EmployeeOut {
+  const existing = employeeStore.find((e) => e.id === id);
+  if (!existing) throw problemErrorFor(404, "That employee isn't available any more");
+  if (!TRANSITIONS[existing.status].includes(body.to)) {
+    throw problemErrorFor(422, `An employee cannot move from '${existing.status}' to '${body.to}'`);
+  }
+  const updated: EmployeeOut = {
+    ...existing,
+    status: body.to,
+    date_of_exit: body.to === "exited" ? (existing.date_of_exit ?? new Date().toISOString().slice(0, 10)) : existing.date_of_exit,
+  };
+  employeeStore = employeeStore.map((e) => (e.id === id ? updated : e));
+  return updated;
+}
+
+/** Fixture-mode unmask: illustrative only, and clearly so — never the shape a live unmask returns
+ *  (that needs `amr: otp`, which fixture mode has no session to carry). */
+export function __unmaskFixturePii(id: string, body: PiiUnmaskIn): EmployeePiiUnmasked {
+  const existing = employeeStore.find((e) => e.id === id);
+  if (!existing?.pii) throw problemErrorFor(404, "No sensitive details are on file for this employee");
+  const out: EmployeePiiUnmasked = {};
+  for (const field of body.fields) {
+    if (field === "date_of_birth") out.date_of_birth = "1990-01-01";
+    if (field === "personal_email") out.personal_email = "demo.personal@example.com";
+    if (field === "personal_phone") out.personal_phone = "+91 90000 00000";
+    if (field === "pan") out.pan = "ABCDE1234F";
+    if (field === "aadhaar") out.aadhaar = "1234 5678 9012";
+    if (field === "uan") out.uan = "100123456789";
+    if (field === "esi") out.esi = "10012345670000123";
+    if (field === "bank_account") out.bank_account = "000123456789012";
+  }
+  return out;
+}
+
+export function __listFixtureReports(managerId: string): EmployeeOut[] {
+  return employeeStore.filter((e) => e.reporting_manager_id === managerId);
+}
+
+/** Test-only: restores the fixture employee directory between test cases. */
+export function __resetFixtureEmployeesForTests(): void {
+  employeeStore = EMPLOYEES.map((e) => ({ ...e }));
+}
+
+/* --------------------------- shifts & geofences (fixture mode) --------------------------- */
+
+export const FIXTURE_SHIFTS: ShiftOut[] = [
+  {
+    id: uuid(8001),
+    code: "GEN",
+    name: "General shift",
+    start_time: "09:30:00",
+    end_time: "18:30:00",
+    grace_minutes: 10,
+    is_night: false,
+    created_at: "2024-01-01T00:00:00Z",
+  },
+  {
+    id: uuid(8002),
+    code: "NIGHT",
+    name: "Night shift",
+    start_time: "21:00:00",
+    end_time: "06:00:00",
+    grace_minutes: 15,
+    is_night: true,
+    created_at: "2024-01-01T00:00:00Z",
+  },
+];
+
+let shiftStore: ShiftOut[] = FIXTURE_SHIFTS.map((s) => ({ ...s }));
+let shiftSeq = 9000;
+
+export function __listFixtureShifts(): ShiftOut[] {
+  return shiftStore.map((s) => ({ ...s }));
+}
+
+export function __createFixtureShift(body: ShiftIn): ShiftOut {
+  if (shiftStore.some((s) => s.code === body.code)) {
+    throw problemErrorFor(409, `A shift with the code '${body.code}' already exists`, [
+      { field: "code", code: "duplicate", message: "This code is already in use." },
+    ]);
+  }
+  shiftSeq += 1;
+  const created: ShiftOut = {
+    id: uuid(shiftSeq),
+    code: body.code,
+    name: body.name,
+    start_time: body.start_time,
+    end_time: body.end_time,
+    grace_minutes: body.grace_minutes ?? 0,
+    is_night: body.is_night ?? false,
+    created_at: new Date().toISOString(),
+  };
+  shiftStore = [...shiftStore, created];
+  return created;
+}
+
+export function __updateFixtureShift(id: string, patch: ShiftPatch): ShiftOut {
+  const existing = shiftStore.find((s) => s.id === id);
+  if (!existing) throw problemErrorFor(404, "That shift isn't part of this organization");
+  const updated: ShiftOut = { ...existing, ...patch };
+  shiftStore = shiftStore.map((s) => (s.id === id ? updated : s));
+  return updated;
+}
+
+export function __deleteFixtureShift(id: string): void {
+  const existing = shiftStore.find((s) => s.id === id);
+  if (!existing) throw problemErrorFor(404, "That shift isn't part of this organization");
+  shiftStore = shiftStore.filter((s) => s.id !== id);
+}
+
+export function __resetFixtureShiftsForTests(): void {
+  shiftStore = FIXTURE_SHIFTS.map((s) => ({ ...s }));
+}
+
+export const FIXTURE_GEOFENCES: GeofenceOut[] = [
+  {
+    id: uuid(8501),
+    location_code: "Bengaluru",
+    name: "Bengaluru campus",
+    center_lat: "12.9716",
+    center_lng: "77.5946",
+    radius_m: 300,
+    created_at: "2024-01-01T00:00:00Z",
+  },
+];
+
+let geofenceStore: GeofenceOut[] = FIXTURE_GEOFENCES.map((g) => ({ ...g }));
+let geofenceSeq = 9500;
+
+export function __listFixtureGeofences(): GeofenceOut[] {
+  return geofenceStore.map((g) => ({ ...g }));
+}
+
+export function __createFixtureGeofence(body: GeofenceIn): GeofenceOut {
+  if (geofenceStore.some((g) => g.location_code === body.location_code)) {
+    throw problemErrorFor(409, `A geo-fence for '${body.location_code}' already exists`, [
+      { field: "location_code", code: "duplicate", message: "This location already has a geo-fence." },
+    ]);
+  }
+  geofenceSeq += 1;
+  const created: GeofenceOut = { id: uuid(geofenceSeq), created_at: new Date().toISOString(), ...body };
+  geofenceStore = [...geofenceStore, created];
+  return created;
+}
+
+export function __updateFixtureGeofence(id: string, patch: GeofencePatch): GeofenceOut {
+  const existing = geofenceStore.find((g) => g.id === id);
+  if (!existing) throw problemErrorFor(404, "That geo-fence isn't part of this organization");
+  const updated: GeofenceOut = { ...existing, ...patch };
+  geofenceStore = geofenceStore.map((g) => (g.id === id ? updated : g));
+  return updated;
+}
+
+export function __deleteFixtureGeofence(id: string): void {
+  const existing = geofenceStore.find((g) => g.id === id);
+  if (!existing) throw problemErrorFor(404, "That geo-fence isn't part of this organization");
+  geofenceStore = geofenceStore.filter((g) => g.id !== id);
+}
+
+export function __resetFixtureGeofencesForTests(): void {
+  geofenceStore = FIXTURE_GEOFENCES.map((g) => ({ ...g }));
 }

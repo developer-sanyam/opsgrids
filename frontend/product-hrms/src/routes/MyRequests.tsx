@@ -18,7 +18,9 @@ import {
 } from "@opsgrids/ui";
 import type { Column } from "@opsgrids/ui";
 
-import { listMyRequests } from "@/api/approvals";
+import { usePermission } from "@opsgrids/client";
+
+import { listMyRequests, listRequests } from "@/api/approvals";
 import type { RequestListItemOut } from "@/api/types";
 import { myRequestStatusCopy, summaryLine } from "@/lib/approvalCopy";
 import { useZoneLookup } from "@/lib/zone";
@@ -27,13 +29,21 @@ import { PersonRefInline } from "@/ui/PersonRef";
 const PAGE_SIZE = 25;
 
 type Filter = "all" | "pending" | "approved" | "rejected";
+/** "mine" is `GET /approvals/requests?requester=me`; "all" (gap 10) is the same endpoint without
+ *  it — only offered to a caller holding `core.approval.request.read` at ORG. */
+type Scope = "mine" | "all";
 
 type LoadState = { status: "loading" } | { status: "error"; error: Error } | { status: "success" };
 
 function MyRequestsList() {
   const navigate = useNavigate();
   const zoneLookup = useZoneLookup();
+  // HR_ADMIN does not carry `core.approval.request.read:ORG` by default — it comes from
+  // ORG_OWNER, ORG_ADMIN or APPROVAL_ADMIN (gap 10). The tab is gated on the real grant, not on
+  // any assumption about HR seeing every request.
+  const canReadOrg = usePermission("core.approval.request.read", "ORG");
 
+  const [scope, setScope] = useState<Scope>("mine");
   const [items, setItems] = useState<RequestListItemOut[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -41,25 +51,31 @@ function MyRequestsList() {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [filter, setFilter] = useState<Filter>("all");
 
-  const load = useCallback(async (pageToLoad: number, append: boolean) => {
-    if (append) setLoadingMore(true);
-    else setState({ status: "loading" });
-    try {
-      const result = await listMyRequests({ page: pageToLoad, size: PAGE_SIZE });
-      setItems((prev) => (append ? [...prev, ...result.items] : result.items));
-      setTotal(result.total);
-      setPage(pageToLoad);
-      setState({ status: "success" });
-    } catch (err) {
-      setState({ status: "error", error: err instanceof Error ? err : new Error(String(err)) });
-    } finally {
-      setLoadingMore(false);
-    }
-  }, []);
+  const load = useCallback(
+    async (pageToLoad: number, append: boolean, forScope: Scope) => {
+      if (append) setLoadingMore(true);
+      else setState({ status: "loading" });
+      try {
+        const loader = forScope === "mine" ? listMyRequests : listRequests;
+        const result = await loader({ page: pageToLoad, size: PAGE_SIZE });
+        setItems((prev) => (append ? [...prev, ...result.items] : result.items));
+        setTotal(result.total);
+        setPage(pageToLoad);
+        setState({ status: "success" });
+      } catch (err) {
+        setState({ status: "error", error: err instanceof Error ? err : new Error(String(err)) });
+      } finally {
+        setLoadingMore(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
-    void load(1, false);
-  }, [load]);
+    void load(1, false, scope);
+    // Switching tabs starts a fresh page, not an append.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope]);
 
   const filtered = items.filter((item) => filter === "all" || item.status === filter);
   const hasActiveFilter = filter !== "all";
@@ -121,9 +137,37 @@ function MyRequestsList() {
 
   return (
     <div className="rise flex flex-col gap-6">
-      <PageHeader eyebrow="Raised by you" title="My requests" />
+      <PageHeader
+        eyebrow={scope === "mine" ? "Raised by you" : "Every request"}
+        title={scope === "mine" ? "My requests" : "All requests"}
+      />
 
       <Card className="p-4 sm:p-5 flex flex-col gap-4">
+        {canReadOrg ? (
+          <div role="tablist" aria-label="Requests to show" className="flex items-center gap-1 rounded-full bg-ground p-1 w-fit">
+            {(
+              [
+                { value: "mine", label: "My requests" },
+                { value: "all", label: "All requests" },
+              ] as { value: Scope; label: string }[]
+            ).map((t) => (
+              <button
+                key={t.value}
+                type="button"
+                role="tab"
+                aria-selected={scope === t.value}
+                onClick={() => setScope(t.value)}
+                className={
+                  scope === t.value
+                    ? "rounded-full bg-surface px-3 h-8 text-xs font-semibold text-ink shadow-card"
+                    : "rounded-full px-3 h-8 text-xs font-semibold text-muted hover:text-ink"
+                }
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
           {(
             [
@@ -152,7 +196,7 @@ function MyRequestsList() {
 
       {state.status === "error" ? (
         <Card className="p-6">
-          <ErrorState message={state.error.message} onRetry={() => void load(1, false)} />
+          <ErrorState message={state.error.message} onRetry={() => void load(1, false, scope)} />
         </Card>
       ) : null}
 
@@ -163,19 +207,31 @@ function MyRequestsList() {
             columns={columns}
             rows={filtered}
             rowKey={(r) => r.id}
-            onRowClick={(r) => navigate(`/approvals/requests/${r.id}`, { state: { from: "mine" } })}
+            onRowClick={(r) =>
+              navigate(`/approvals/requests/${r.id}`, {
+                state: scope === "mine" ? { from: "mine" } : undefined,
+              })
+            }
             emptyState={
               items.length === 0 ? (
-                <EmptyState
-                  icon={<ClipboardListIcon className="size-6" />}
-                  title="You haven't raised any requests"
-                  description="If an attendance record is wrong, open Attendance and ask for a correction."
-                  action={
-                    <Button variant="dark" onClick={() => navigate("/attendance")}>
-                      Go to attendance
-                    </Button>
-                  }
-                />
+                scope === "mine" ? (
+                  <EmptyState
+                    icon={<ClipboardListIcon className="size-6" />}
+                    title="You haven't raised any requests"
+                    description="If an attendance record is wrong, open Attendance and ask for a correction."
+                    action={
+                      <Button variant="dark" onClick={() => navigate("/attendance")}>
+                        Go to attendance
+                      </Button>
+                    }
+                  />
+                ) : (
+                  <EmptyState
+                    icon={<ClipboardListIcon className="size-6" />}
+                    title="No requests yet"
+                    description="Nothing has been raised across the organization."
+                  />
+                )
               ) : (
                 <EmptyState
                   title="No requests with this status"
@@ -205,7 +261,7 @@ function MyRequestsList() {
                 total={total}
                 noun="requests"
                 loading={loadingMore}
-                onLoadMore={() => void load(page + 1, true)}
+                onLoadMore={() => void load(page + 1, true, scope)}
               />
             )
           ) : null}

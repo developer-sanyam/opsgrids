@@ -1,19 +1,17 @@
 import { useCallback, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
-import { getAllEmployees, listAttendance } from "@/api/client";
+import { getAllEmployees, listAttendanceRoster } from "@/api/client";
 import { getOrgUnitNameById } from "@/api/orgUnits";
 import type { EmployeeOut } from "@/api/types";
-import { useAuth } from "@opsgrids/client";
+import { Can, useAsync, useAuth } from "@opsgrids/client";
 import {
   activeCount,
   distinctDepartmentCount,
   headcountByDepartment,
   workforceMix,
 } from "@/data/derive";
-import { RECENT_ACTIVITY, SAMPLE_ATTENDANCE, TASKS_TODAY } from "@/data/samples";
-import { useAsync } from "@opsgrids/client";
 import {
   Button,
   Card,
@@ -22,27 +20,17 @@ import {
   HeadcountByDepartment,
   HeadcountTrend,
   KpiCard,
-  RecentActivity,
-  SampleChip,
   SectionHeader,
   Skeleton,
-  TasksToday,
   WorkforceMix,
 } from "@/ui";
 import type { KpiTone, MiniStat } from "@/ui";
-import {
-  BellIcon,
-  CalendarCheckIcon,
-  CalendarIcon,
-  CheckSquareIcon,
-  LeafIcon,
-  PlusIcon,
-  SearchIcon,
-  UsersIcon,
-} from "@opsgrids/ui";
-import { SAMPLE_DATA } from "@/ui/sampleCopy";
+import { CalendarCheckIcon, CalendarIcon, CheckSquareIcon, PlusIcon, SearchIcon, UsersIcon } from "@opsgrids/ui";
 
-const TODAY = "2026-08-24";
+/** The real clock — never a frozen fixture date. */
+function todayISO(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
 /** A stable empty reference so the derived-data memos don't churn while loading. */
 const EMPTY_EMPLOYEES: EmployeeOut[] = [];
@@ -50,19 +38,13 @@ const EMPTY_EMPLOYEES: EmployeeOut[] = [];
 /** A stable empty org-unit map, used while the tree loads or when the org has none to read. */
 const EMPTY_ORG_UNITS: ReadonlyMap<string, string> = new Map();
 
-type Period = "weekly" | "monthly" | "quarterly";
-
-const PERIOD_RANGE: Record<Period, string> = {
-  weekly: "18 Aug – 24 Aug 2026",
-  monthly: "01 Aug – 24 Aug 2026",
-  quarterly: "Jul – Sep 2026",
-};
-
-/** The Dashboard's top bar: breadcrumb + title, then the search / date / period / add controls. */
+/** The Dashboard's top bar: breadcrumb + title, then the search / date / add controls. Every
+ *  control here does real work — the old period select changed nothing and is gone, along with
+ *  the notification bell's permanently-on unread dot (no notifications backend exists). */
 function DashboardHeader({ orgName }: { orgName: string }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
-  const [period, setPeriod] = useState<Period>("monthly");
+  const today = useMemo(() => new Date(), []);
 
   return (
     <header className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
@@ -99,40 +81,22 @@ function DashboardHeader({ orgName }: { orgName: string }) {
           />
         </form>
 
-        <Link
-          to="/notifications"
-          aria-label="Notifications"
-          className="relative grid size-11 shrink-0 place-items-center rounded-full bg-surface text-ink-soft shadow-card hover:bg-ground transition-colors"
-        >
-          <BellIcon className="size-5" />
-          <span className="absolute right-2.5 top-2.5 size-2 rounded-full bg-accent ring-2 ring-surface" aria-hidden />
-        </Link>
-
         <span className="hidden h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold text-ink-soft shadow-card sm:inline-flex">
           <CalendarIcon className="size-4 text-muted" />
-          <span className="tnum">{PERIOD_RANGE[period]}</span>
+          <span className="tnum">
+            {today.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+          </span>
         </span>
 
-        <label className="inline-flex h-11 items-center rounded-full bg-surface px-2 shadow-card">
-          <span className="sr-only">Reporting period</span>
-          <select
-            value={period}
-            onChange={(e) => setPeriod(e.target.value as Period)}
-            className="h-full cursor-pointer rounded-full bg-transparent px-2 text-sm font-semibold text-ink focus:outline-none"
+        <Can permission="hrms.people.employee.write" scope="ORG">
+          <Button
+            size="md"
+            leadingIcon={<PlusIcon className="size-4" />}
+            onClick={() => navigate("/employees")}
           >
-            <option value="weekly">Weekly</option>
-            <option value="monthly">Monthly</option>
-            <option value="quarterly">Quarterly</option>
-          </select>
-        </label>
-
-        <Button
-          size="md"
-          leadingIcon={<PlusIcon className="size-4" />}
-          onClick={() => navigate("/employees")}
-        >
-          Add Employee
-        </Button>
+            Add Employee
+          </Button>
+        </Can>
       </div>
     </header>
   );
@@ -142,17 +106,14 @@ interface KpiConfig {
   key: string;
   label: string;
   value: string;
-  deltaPct: number;
-  series: number[];
   icon: React.ReactNode;
   tone: KpiTone;
-  sample: boolean;
 }
 
 function buildKpis(
   employees: EmployeeOut[],
   total: number,
-  attendance: { rate: string; onLeave: number } | null,
+  attendance: { rate: string; absent: number } | null,
 ): KpiConfig[] {
   const active = activeCount(employees);
   return [
@@ -160,41 +121,29 @@ function buildKpis(
       key: "total",
       label: "Total Employees",
       value: String(total),
-      deltaPct: 4.2,
-      series: [18, 19, 20, 21, 21, 23, total],
       icon: <UsersIcon className="size-5" />,
       tone: "accent",
-      sample: false,
     },
     {
       key: "active",
       label: "Active",
       value: String(active),
-      deltaPct: 2.9,
-      series: [15, 16, 17, 18, 18, 19, active],
       icon: <CheckSquareIcon className="size-5" />,
       tone: "positive",
-      sample: false,
     },
     {
       key: "attendance",
-      label: "Attendance Rate",
-      value: attendance ? attendance.rate : `${SAMPLE_ATTENDANCE.ratePct}%`,
-      deltaPct: SAMPLE_ATTENDANCE.rateDelta,
-      series: [90, 92, 91, 93, 94, 93, 94],
+      label: "Attendance Rate Today",
+      value: attendance ? attendance.rate : "—",
       icon: <CalendarCheckIcon className="size-5" />,
       tone: "info",
-      sample: true,
     },
     {
-      key: "on_leave",
-      label: "On Leave",
-      value: attendance ? String(attendance.onLeave) : "—",
-      deltaPct: SAMPLE_ATTENDANCE.onLeaveDelta,
-      series: [4, 3, 5, 3, 4, 3, attendance?.onLeave ?? 3],
-      icon: <LeafIcon className="size-5" />,
+      key: "absent",
+      label: "Absent Today",
+      value: attendance ? String(attendance.absent) : "—",
+      icon: <UsersIcon className="size-5" />,
       tone: "cyan",
-      sample: true,
     },
   ];
 }
@@ -202,7 +151,8 @@ function buildKpis(
 export function DashboardPage() {
   const { user } = useAuth();
   const employees = useAsync(getAllEmployees, []);
-  const attendance = useAsync(useCallback(() => listAttendance(TODAY), []), []);
+  const today = useMemo(() => todayISO(), []);
+  const attendance = useAsync(useCallback(() => listAttendanceRoster(today, { size: 200 }), [today]), [today]);
   // Department names come from the org-unit tree. It is permission-gated and often empty, and its
   // loader already degrades any failure to an empty map — so a 403 here is never a dashboard error,
   // just names that fall back to each employee's job_title.
@@ -217,11 +167,11 @@ export function DashboardPage() {
 
   const attendanceSummary = useMemo(() => {
     if (attendance.status !== "success") return null;
-    const records = attendance.data;
-    const present = records.filter((r) => r.status !== "absent").length;
-    const onLeave = records.filter((r) => r.status === "absent").length;
+    const records = attendance.data.items;
+    const present = records.filter((r) => r.status === "present" || r.status === "half_day").length;
+    const absent = records.filter((r) => r.status === "absent").length;
     const rate = records.length === 0 ? 0 : (present / records.length) * 100;
-    return { rate: `${rate.toFixed(1)}%`, onLeave };
+    return { rate: `${rate.toFixed(1)}%`, absent };
   }, [attendance]);
 
   const items = useMemo(
@@ -279,15 +229,7 @@ export function DashboardPage() {
         {employees.status === "success"
           ? kpis.map((kpi, i) => (
               <div key={kpi.key} style={{ "--i": i } as CSSProperties}>
-                <KpiCard
-                  label={kpi.label}
-                  value={kpi.value}
-                  deltaPct={kpi.deltaPct}
-                  series={kpi.series}
-                  icon={kpi.icon}
-                  tone={kpi.tone}
-                  sample={kpi.sample ? SAMPLE_DATA : false}
-                />
+                <KpiCard label={kpi.label} value={kpi.value} icon={kpi.icon} tone={kpi.tone} />
               </div>
             ))
           : null}
@@ -327,9 +269,9 @@ export function DashboardPage() {
         </Card>
       </section>
 
-      {/* Row 3 — employees table · activity + tasks */}
-      <section aria-label="Team detail" className="grid grid-cols-1 gap-5 xl:grid-cols-3 items-start">
-        <Card className="flex flex-col gap-4 p-6 xl:col-span-2">
+      {/* Row 3 — employees table */}
+      <section aria-label="Team detail" className="grid grid-cols-1 gap-5">
+        <Card className="flex flex-col gap-4 p-6">
           <SectionHeader
             title="Employees"
             subtitle={
@@ -346,33 +288,10 @@ export function DashboardPage() {
           {employees.status === "error" ? (
             <ErrorState message={employees.error.message} />
           ) : null}
-          {employees.status === "success" ? <EmployeesPanel employees={items} /> : null}
+          {employees.status === "success" ? (
+            <EmployeesPanel employees={items} orgUnitMap={orgUnitMap} />
+          ) : null}
         </Card>
-
-        <div className="flex flex-col gap-5">
-          <Card className="flex flex-col gap-5 p-6">
-            <SectionHeader
-              title="Recent Activity"
-              action={
-                <div className="flex items-center gap-2">
-                  <SampleChip {...SAMPLE_DATA} />
-                  <Link
-                    to="/reports"
-                    className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
-                  >
-                    View all
-                  </Link>
-                </div>
-              }
-            />
-            <RecentActivity items={RECENT_ACTIVITY} />
-          </Card>
-
-          <Card className="flex flex-col gap-4 p-6">
-            <SectionHeader title="Tasks Today" action={<SampleChip {...SAMPLE_DATA} />} />
-            <TasksToday tasks={TASKS_TODAY} />
-          </Card>
-        </div>
       </section>
     </div>
   );

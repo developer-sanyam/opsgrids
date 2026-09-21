@@ -3,18 +3,7 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
 import { configureSession } from "@opsgrids/client";
-import {
-  BellIcon,
-  BuildingIcon,
-  ClipboardCheckIcon,
-  FileTextIcon,
-  LifeBuoyIcon,
-  MapPinIcon,
-  PlugIcon,
-  SettingsIcon,
-  ThemeProvider,
-  UserPlusIcon,
-} from "@opsgrids/ui";
+import { BuildingIcon, MapPinIcon, ThemeProvider, UserPlusIcon } from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
@@ -23,13 +12,15 @@ import { DashboardPage } from "./routes/Dashboard";
 import { EmployeesPage } from "./routes/Employees";
 import { EmployeeDetailPage } from "./routes/EmployeeDetail";
 import { AttendancePage } from "./routes/Attendance";
+import { ShiftsPage } from "./routes/Shifts";
 import { ApprovalsPage } from "./routes/Approvals";
 import { RequestDetailPage } from "./routes/RequestDetail";
 import { MyRequestsPage } from "./routes/MyRequests";
 import { DelegationsPage } from "./routes/Delegations";
 import { ApprovalSettingsPage } from "./routes/ApprovalSettings";
 import { LoginPage } from "./routes/Login";
-import { ComingSoonPage } from "./routes/ComingSoon";
+import { LinkOutPage } from "./routes/LinkOut";
+import { NotFoundPage } from "./routes/NotFound";
 
 const router = createBrowserRouter([
   {
@@ -53,110 +44,57 @@ const router = createBrowserRouter([
           { path: "employees", element: <EmployeesPage /> },
           { path: "employees/:employeeId", element: <EmployeeDetailPage /> },
           { path: "attendance", element: <AttendancePage /> },
+          { path: "shifts", element: <ShiftsPage /> },
           { path: "approvals", element: <ApprovalsPage /> },
           { path: "approvals/mine", element: <MyRequestsPage /> },
           { path: "approvals/requests/:requestId", element: <RequestDetailPage /> },
           { path: "approvals/delegations", element: <DelegationsPage /> },
           { path: "approvals/settings", element: <ApprovalSettingsPage /> },
-          {
-            path: "notifications",
-            element: (
-              <ComingSoonPage
-                icon={<BellIcon className="size-6" />}
-                title="Notifications"
-                description="Alerts for approvals, joiners and attendance exceptions land here in the next slice."
-              />
-            ),
-          },
-          {
-            path: "tasks",
-            element: (
-              <ComingSoonPage
-                icon={<ClipboardCheckIcon className="size-6" />}
-                title="Tasks"
-                description="Your people-ops to-dos, assignable and trackable. Today's list already previews on the dashboard."
-              />
-            ),
-          },
+          // Departments, Locations and Team Members are administered in the admin console
+          // (`opsgrids-admin`) — these are honest link-outs, not a rebuild of that CRUD inside
+          // this app (`frontend/CLAUDE.md`: no forking). Every other placeholder the audit found
+          // (Notifications, Tasks, Reports, Integrations, Settings, Help) had no backend and no
+          // link-out target, so it is gone from both the nav and the router.
           {
             path: "departments",
             element: (
-              <ComingSoonPage
+              <LinkOutPage
                 icon={<BuildingIcon className="size-6" />}
+                eyebrow="Records"
                 title="Departments"
-                description="Org units, headcount and team leads. The dashboard already breaks headcount down by department."
+                description="Org units, headcount and team leads are administered in the OpsGrids admin console. The dashboard here still breaks headcount down by department."
+                href="https://app.opsgrids.com/admin/org-units"
+                linkLabel="Open in admin console"
               />
             ),
           },
           {
             path: "locations",
             element: (
-              <ComingSoonPage
+              <LinkOutPage
                 icon={<MapPinIcon className="size-6" />}
+                eyebrow="Records"
                 title="Locations"
-                description="Sites, regions and who works where. Attendance already tags field, remote and office punches."
-              />
-            ),
-          },
-          {
-            path: "reports",
-            element: (
-              <ComingSoonPage
-                icon={<FileTextIcon className="size-6" />}
-                title="Reports"
-                description="Exportable headcount, attendance and workforce reports are on the roadmap."
-              />
-            ),
-          },
-          {
-            path: "integrations",
-            element: (
-              <ComingSoonPage
-                icon={<PlugIcon className="size-6" />}
-                title="Integrations"
-                description="Payroll, identity and calendar connectors will plug in here."
+                description="Sites, regions and geo-fences are administered in the OpsGrids admin console. Attendance and shifts here already reference their location codes."
+                href="https://app.opsgrids.com/admin/locations"
+                linkLabel="Open in admin console"
               />
             ),
           },
           {
             path: "team",
             element: (
-              <ComingSoonPage
+              <LinkOutPage
                 icon={<UserPlusIcon className="size-6" />}
+                eyebrow="Workspace"
                 title="Team Members"
-                description="Invite and manage the people who administer this HR workspace."
+                description="Invite and manage the people who administer this HR workspace from the OpsGrids admin console."
+                href="https://app.opsgrids.com/admin/members"
+                linkLabel="Open in admin console"
               />
             ),
           },
-          {
-            path: "settings",
-            element: (
-              <ComingSoonPage
-                icon={<SettingsIcon className="size-6" />}
-                title="Settings"
-                description="Workspace preferences, roles and policies will live here."
-              />
-            ),
-          },
-          {
-            path: "help",
-            element: (
-              <ComingSoonPage
-                icon={<LifeBuoyIcon className="size-6" />}
-                title="Help & Getting Started"
-                description="Guides and support for setting up your HR workspace are on the way."
-              />
-            ),
-          },
-          {
-            path: "*",
-            element: (
-              <ComingSoonPage
-                title="Not found"
-                description="That page doesn't exist. Head back to the dashboard."
-              />
-            ),
-          },
+          { path: "*", element: <NotFoundPage /> },
         ],
       },
     ],
