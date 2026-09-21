@@ -1,3 +1,4 @@
+import { useDirectory } from "@/data/directoryContext";
 import { ownerById } from "@/data/lookups";
 import { Avatar, cn } from "@opsgrids/ui";
 
@@ -10,7 +11,8 @@ interface OwnerBadgeProps {
 
 /** A deal/company/contact owner: an initials avatar and, unless compact, their name. */
 export function OwnerBadge({ ownerId, compact = false, className }: OwnerBadgeProps) {
-  const owner = ownerById(ownerId);
+  const { owners } = useDirectory();
+  const owner = ownerById(owners, ownerId);
   const name = owner?.full_name ?? "Unassigned";
   if (compact) {
     return <Avatar name={name} size="sm" {...(className ? { className } : {})} />;

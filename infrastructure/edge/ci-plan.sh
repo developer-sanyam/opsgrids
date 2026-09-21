@@ -7,7 +7,7 @@
 # changed are rebuilt and published. A shared front-end package changing means every app.
 #
 # Usage: ci-plan.sh <mode> [services] [apps]
-#   mode      "diff"  compare HEAD with HEAD~1 (a squash-merged PR is exactly one commit)
+#   mode      "diff"  compare HEAD with $BASE, the ref the box last served healthily
 #             "all"   deploy everything (manual runs and deploy/* branches)
 #   services  manual override: "true" | "false"            (mode=all only)
 #   apps      manual override: "all" | "none" | "a,b,c"    (mode=all only)
@@ -55,9 +55,19 @@ if [ "$mode" = "all" ]; then
 		;;
 	esac
 else
-	changed=$(git diff --name-only HEAD~1 HEAD)
+	# What the box does not have yet — not what the last commit changed. BASE is the ref the box
+	# recorded as its last good deploy. Diffing HEAD~1 instead loses changes whenever a commit
+	# never deployed: CI cancels a superseded run on main, a deploy fails, several commits are
+	# pushed at once. With no usable base (a new box, a rewritten history) deploy everything.
+	base="${BASE:-}"
+	if [ -z "$base" ] || ! git merge-base --is-ancestor "$base" HEAD 2>/dev/null; then
+		echo "plan: no usable base ref ('${base:-none}'): deploying everything" >&2
+		exec "$0" all true all
+	fi
+	changed=$(git diff --name-only "$base" HEAD)
 	# Services: anything that is not a front end, a document, a test journey or the pipeline.
-	if echo "$changed" | grep -qvE '^(frontend/|docs/|e2e/|\.github/|\.claude/|[^/]*\.md$)'; then
+	# (An empty diff is one empty line, which matches nothing and would read as "changed".)
+	if [ -n "$changed" ] && echo "$changed" | grep -qvE '^(frontend/|docs/|e2e/|\.github/|\.claude/)|\.md$'; then
 		services=true
 	fi
 	# Apps: a shared package or the lockfile rebuilds them all; otherwise each app's own dir.

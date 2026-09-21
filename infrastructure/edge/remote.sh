@@ -73,9 +73,46 @@ assert_host() {
 	echo "assert-host: ok — $(hostname) is $actual"
 }
 
+# The ref this box last served healthily, if it is one this clone still knows. Everything that
+# asks "what changed?" asks it against this, not against the previous commit: what matters is
+# what the box does not have yet, and a deploy that failed half way leaves that further back
+# than HEAD~1.
+good_ref() {
+	local prev
+	prev=$(cat "$STATE_DIR/last-good-ref" 2>/dev/null || true)
+	[ -n "$prev" ] && git -C ../.. rev-parse -q --verify "$prev^{commit}" >/dev/null 2>&1 && echo "$prev"
+	return 0
+}
+
 build() {
 	log "building images (running containers are untouched until 'up')"
-	"${COMPOSE[@]}" build --pull
+	# FORCE_PULL=1 re-resolves the base image tags. Not the default: those tags move about
+	# weekly, a moved tag invalidates the shared venv layer under all ~25 images, and a full
+	# rebuild on two cores is twenty-five minutes at a moment nobody chose.
+	local pull=() prev svc to_build=()
+	[ "${FORCE_PULL:-0}" = "1" ] && pull=(--pull)
+	prev=$(good_ref)
+	# Anything every image is made from changed, or there is no baseline: build them all.
+	if [ -z "$prev" ] || [ "${FORCE_PULL:-0}" = "1" ] ||
+		! git -C ../.. diff --quiet "$prev" HEAD -- libs pyproject.toml uv.lock .dockerignore; then
+		"${COMPOSE[@]}" build ${pull[@]+"${pull[@]}"}
+		return
+	fi
+	# Otherwise only the services whose own directory changed, or whose image is not here yet
+	# (a profile that was just switched on).
+	for svc in $(configured_services); do
+		[ -f "../../services/$svc/Dockerfile" ] || continue
+		if ! git -C ../.. diff --quiet "$prev" HEAD -- "services/$svc" ||
+			! docker image inspect "opsgrids-edge/$svc" >/dev/null 2>&1; then
+			to_build+=("$svc")
+		fi
+	done
+	if [ ${#to_build[@]} -eq 0 ]; then
+		echo "no service changed since $prev: nothing to build"
+		return
+	fi
+	echo "changed since $prev: ${to_build[*]}"
+	COMPOSE_PARALLEL_LIMIT=2 "${COMPOSE[@]}" build "${to_build[@]}"
 }
 
 validate() {
@@ -87,8 +124,13 @@ validate() {
 
 migrate() {
 	log "migrations (before the new version serves)"
-	local running
+	local running prev migrated
 	running=" $(configured_services | tr '\n' ' ') "
+	prev=$(good_ref)
+	# Schemas alembic has already stamped. A service whose profile was just switched on has
+	# unchanged migrations and no tables, so "unchanged since the good ref" alone is not enough.
+	migrated=" $("${COMPOSE[@]}" exec -T postgres psql -U opsgrids -d opsgrids -Atc \
+		"select table_schema from information_schema.tables where table_name = 'alembic_version'" 2>/dev/null | tr '\n' ' ') "
 	for svc in "${SERVICES_WITH_SCHEMA[@]}"; do
 		case "$running" in
 		*" $svc "*) ;;
@@ -97,11 +139,26 @@ migrate() {
 			continue
 			;;
 		esac
+		# Each run below is a fresh interpreter importing the service's models and alembic —
+		# ~180 MB on top of a full box, two dozen times in a row. That was the swap storm in
+		# every deploy, and on a typical deploy none of them had anything to apply.
+		if [ -n "$prev" ] && [ "${FORCE_MIGRATE:-0}" != "1" ]; then
+			case "$migrated" in
+			*" $svc "*)
+				if git -C ../.. diff --quiet "$prev" HEAD -- "services/$svc/migrations" "services/$svc/alembic.ini"; then
+					echo "--- $svc: migrations unchanged since $prev, skipped"
+					continue
+				fi
+				;;
+			esac
+		fi
 		echo "--- $svc"
 		# Each image carries its own alembic.ini and migrations/, and env.py connects as the
 		# admin role. No foreign key crosses a schema, so the order between services does not
 		# matter; they are run one at a time because this box has four vCPU and is serving.
-		"${COMPOSE[@]}" run --rm -T "$svc" alembic upgrade head
+		# --no-deps: preflight has proved Postgres is up, and compose must not take a changed
+		# service definition as a reason to touch postgres/redis/rabbitmq mid-migration.
+		"${COMPOSE[@]}" run --rm --no-deps -T "$svc" alembic upgrade head
 	done
 }
 
@@ -118,18 +175,34 @@ up() {
 	# graceful: the new config is validated, then swapped in with no dropped connection, so
 	# unlike the recreate above this step costs no downtime.
 	log "reloading Caddy with the Caddyfile from this ref (graceful, no downtime)"
-	"${COMPOSE[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+	# If this deploy recreated Caddy itself, it may not accept an exec for a moment; one failed
+	# exec must not abort the deploy before `health` and `record_ref` run.
+	local try
+	for try in 1 2 3 4 5; do
+		"${COMPOSE[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile && return 0
+		sleep 2
+	done
+	echo "caddy reload did not succeed after 5 tries" >&2
+	return 1
 }
 
 health() {
 	log "health"
-	local deadline=$((SECONDS + 120))
-	local unhealthy
+	# start_period 90 s + three retries at 60 s is 270 s of legitimately "starting" per container,
+	# and containers start four at a time. 120 s reported a healthy box as a failed deploy, which
+	# skipped record_ref — so the *next* rollback went one ref too far back.
+	local deadline=$((SECONDS + ${HEALTH_TIMEOUT:-600}))
+	local unhealthy expected missing
+	# `ps` lists only what exists, so a service that exited and stayed exited — or never
+	# started — has no row to fail on. Compare against what this box is configured to run.
+	expected=$("${COMPOSE[@]}" config --services | sort)
 	while [ $SECONDS -lt $deadline ]; do
-		unhealthy=$("${COMPOSE[@]}" ps --format '{{.Service}} {{.State}} {{.Health}}' |
+		unhealthy=$("${COMPOSE[@]}" ps --all --format '{{.Service}} {{.State}} {{.Health}}' |
 			awk '$2 != "running" || ($3 != "" && $3 != "healthy" && $3 != "<nil>") {print $1"("$2"/"$3")"}' |
 			tr '\n' ' ')
-		if [ -z "$unhealthy" ]; then
+		missing=$(comm -23 <(echo "$expected") <("${COMPOSE[@]}" ps --format '{{.Service}}' | sort -u) | tr '\n' ' ')
+		[ -z "$missing" ] || unhealthy="$unhealthy missing:$missing"
+		if [ -z "${unhealthy// /}" ]; then
 			"${COMPOSE[@]}" ps
 			echo "health: every container is up"
 			return 0
@@ -137,9 +210,17 @@ health() {
 		sleep 5
 	done
 	"${COMPOSE[@]}" ps
-	echo "health: still not settled after 120s: $unhealthy" >&2
-	echo "  The deploy is NOT rolled back automatically. Decide from RUNBOOK.md," >&2
-	echo "  'a deploy went bad' — the usual answer is: make edge-rollback." >&2
+	echo "health: still not settled after ${HEALTH_TIMEOUT:-600}s: $unhealthy" >&2
+	local name
+	for name in $unhealthy; do
+		name=${name%%(*}
+		case "$name" in missing:* | "") continue ;; esac
+		echo "--- last lines of $name" >&2
+		"${COMPOSE[@]}" logs --tail 20 "$name" >&2 || true
+	done
+	echo "  The deploy is NOT rolled back automatically. Read the lines above first: a rollback" >&2
+	echo "  recreates every container on a box that is already struggling. RUNBOOK.md," >&2
+	echo "  'roll back a bad deploy'." >&2
 	return 1
 }
 
@@ -188,6 +269,7 @@ deploy)
 	record_ref
 	;;
 previous-ref) previous_ref ;;
+last-good-ref) good_ref ;;
 backup) ./backup.sh ;;
 status)
 	"${COMPOSE[@]}" ps

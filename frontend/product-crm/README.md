@@ -18,14 +18,29 @@ pnpm --filter @opsgrids/product-crm lint
 Dev serves on **:4340** (`--strictPort`), clear of the marketing site on 4300 and the HRMS product
 on 4310. In dev, Vite proxies `/api/*` to the gateway on **:8100** (`server.proxy` in
 `vite.config.ts`), so the browser makes only same-origin calls and CORS never enters the picture.
+Point the app at a live stack and sign in with real credentials — the app is **live by default**.
 
-## Fixtures-first
+## Data
 
-The CRM service is a skeleton on this branch, so the app is **fixtures-first**: it renders the whole
-experience from `src/api/fixtures.ts` with no gateway and no login (`USE_FIXTURES` defaults to
-`true`). The typed client in `src/api/client.ts` already wires the live gateway paths
-(`/api/v1/deals`, `/companies`, `/contacts`, `/activities`), so going live later is a single flag
-flip: set `VITE_USE_FIXTURES=false`.
+`src/api/client.ts` calls the real backend for this product: `services/customer`
+(`/api/v1/customers`, `/api/v1/contacts`) and `services/deal` (`/api/v1/deals`,
+`/api/v1/deals/activities`) — both mounted by the gateway with no `crm` product segment. A
+"company" in this product is a `customer` row in the customer service; `src/api/mappers.ts` is the
+one explicit, typed seam where that mapping happens (`src/api/wire.ts` carries the gateway's own
+shapes). The rep directory is `GET /customers/owners`, not a standalone `/owners` endpoint — there
+isn't one, and neither is there a standalone `/activities` endpoint; the timeline lives with the
+pipeline at `/deals/activities`. `src/data/DirectoryProvider.tsx` loads the owner / company /
+contact directory once per session and every screen that resolves a `*_id` to a display name reads
+it through `useDirectory()`.
+
+```ts
+// src/api/client.ts
+export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES === "true";
+```
+
+Set `VITE_USE_FIXTURES=true` to render the whole app from `src/api/fixtures.ts` with no gateway and
+no login — offline design work only; it is compiled out of a production build (`import.meta.env.DEV`
+is always `false` there), so a stray env var can never ship fabricated data.
 
 Money is stored and passed everywhere as an integer count of **minor units** (paise) plus an ISO
 currency — `src/lib/format.ts` is the only place it becomes a human string.
@@ -49,5 +64,7 @@ currency — `src/lib/format.ts` is the only place it becomes a human string.
 ## Structure
 
 Mirrors `product-hrms`: `src/ui/*` (shared component set), `src/auth/*` (AuthProvider / RequireAuth
-/ login, token in memory + sessionStorage only), `src/api/*` (typed client with a fixtures layer),
-`src/data/*` (pure rollups, stage metadata and id resolution) and `src/routes/*` (the screens).
+/ login, token in memory + sessionStorage only), `src/api/*` (typed client, the gateway's wire
+shapes in `wire.ts`, the mappers in `mappers.ts`, and a fixtures layer), `src/data/*` (pure rollups,
+stage metadata, id-resolution helpers and the `DirectoryProvider` that feeds them) and
+`src/routes/*` (the screens).

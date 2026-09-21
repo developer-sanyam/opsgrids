@@ -135,6 +135,27 @@ else
 	ok "payment provider keys present"
 fi
 
+# Every hostname the Caddyfile serves needs a certificate, and the issuance gate
+# (storefront's tls-authorize) admits a platform name only if TLS_PLATFORM_HOSTS lists it. A
+# site added to the Caddyfile and not to the box's .env serves a TLS error, not a page.
+for site in $(sed -n 's#^https://\([a-z0-9.-]*\) {$#\1#p' caddy/Caddyfile); do
+	case ",${TLS_PLATFORM_HOSTS:-}," in
+	*",$site,"*) ;;
+	*) bad "the Caddyfile serves $site but TLS_PLATFORM_HOSTS does not list it: no certificate will be issued" ;;
+	esac
+done
+
+# A prefix in the route table whose upstream is not among this box's services is a hung
+# connection and a 504 for whoever calls it. Product routes are covered by the catalogue check
+# below; this catches the ones with no product key (approvals runs only with the hrms profile).
+running_services=" $(docker compose -f compose.prod.yml --env-file .env config --services 2>/dev/null | tr '\n' ' ') "
+for upstream in $(grep -o '"upstream": *"http://[a-z-]*' routes.prod.json | sed 's#.*http://##' | sort -u); do
+	case "$running_services" in
+	*" $upstream "*) ;;
+	*) echo "  warn  routes.prod.json sends traffic to '$upstream', which this box's profiles do not run (callers get 504)" >&2 ;;
+	esac
+done
+
 # The catalogue says which products are sold; COMPOSE_PROFILES says which product services
 # run. They must agree (ADR-0013 §5): an `available` product with no service behind it is a
 # 504 the customer finds. Only checkable once Postgres exists — on the first deploy it does
@@ -148,8 +169,12 @@ profile_for() {
 	esac
 }
 if docker compose -f compose.prod.yml --env-file .env ps --status running postgres 2>/dev/null | grep -q postgres; then
+	catalogue_rc=0
 	available=$(docker compose -f compose.prod.yml --env-file .env exec -T postgres \
-		psql -U opsgrids -d opsgrids -Atc "select key from product.products where status = 'available' and not is_platform" 2>/dev/null || true)
+		psql -U opsgrids -d opsgrids -Atc "select key from product.products where status = 'available' and not is_platform" 2>/dev/null) || catalogue_rc=$?
+	# An empty answer and a failed question look the same to the loop below, and a green line
+	# for a check that never ran is worse than no check.
+	[ "$catalogue_rc" -eq 0 ] || bad "could not read the product catalogue (psql exit $catalogue_rc): the catalogue/profile agreement is unverified"
 	enabled=",${COMPOSE_PROFILES:-},"
 	sold_unserved=""
 	for key in $available; do

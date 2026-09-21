@@ -1,7 +1,9 @@
 /**
- * The delivery team roster. The PulseBoard service stores a `person_id` (a UUID) on every task,
- * project and timesheet; names and roles are resolved here until a people endpoint exists. Kept
- * as reference data so the whole app can render one consistent team.
+ * The delivery team roster fixture. Only used in fixture mode (`client.ts`'s `getPeople`) and to
+ * build the fixture timesheets in `fixtures.ts` — the live roster comes from the project
+ * service's `/projects/people` and is resolved by whichever screen needs a name, against the
+ * people it actually fetched (see `KanbanBoard`, `StandupList`, `ProjectsPage`), never from this
+ * static list.
  */
 import type { Person } from "@/api/types";
 
@@ -19,14 +21,3 @@ export const PEOPLE: Person[] = [
   { id: "p11", name: "Rohan Kapoor", role: "Data Engineer", location: "Bengaluru", capacity_hours: 40 },
   { id: "p12", name: "Isabella Costa", role: "Delivery Coordinator", location: "Lisbon", capacity_hours: 30 },
 ];
-
-const BY_ID = new Map(PEOPLE.map((p) => [p.id, p]));
-
-export function personName(id: string | null): string {
-  if (id === null) return "Unassigned";
-  return BY_ID.get(id)?.name ?? "Unknown";
-}
-
-export function person(id: string): Person | undefined {
-  return BY_ID.get(id);
-}

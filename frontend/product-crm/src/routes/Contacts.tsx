@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 
 import { listContacts } from "@/api/client";
 import type { Contact, ContactStatus } from "@/api/types";
+import { useDirectory } from "@/data/directoryContext";
 import { companyName, ownerName } from "@/data/lookups";
 import { ArrowRightIcon, ChevronDown, MailIcon, PhoneIcon, UsersIcon, cn } from "@opsgrids/ui";
 import { formatDate, formatRelative } from "@/lib/format";
@@ -33,6 +34,7 @@ const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
 const NO_CONTACTS: Contact[] = [];
 
 function ContactDetail({ contact }: { contact: Contact }) {
+  const { companies } = useDirectory();
   return (
     <div className="grid grid-cols-1 gap-4 rounded-tile bg-ground/50 p-4 sm:grid-cols-2">
       <div className="flex flex-col gap-2 text-sm">
@@ -56,7 +58,7 @@ function ContactDetail({ contact }: { contact: Contact }) {
           to={`/companies/${contact.company_id}`}
           className="inline-flex items-center gap-1.5 font-semibold text-accent hover:text-accent-strong transition-colors"
         >
-          View {companyName(contact.company_id)}
+          View {companyName(companies, contact.company_id)}
           <ArrowRightIcon className="size-4" />
         </Link>
       </div>
@@ -69,6 +71,7 @@ export function ContactsPage() {
   const [status, setStatus] = useState<StatusFilter>("all");
   const [sort, setSort] = useState<Sort>("name");
   const [expanded, setExpanded] = useState<string | null>(null);
+  const { owners, companies } = useDirectory();
 
   const loader = useCallback(() => listContacts({ search, status }), [search, status]);
   const contacts = useAsync(loader, [search, status]);
@@ -194,7 +197,7 @@ export function ContactsPage() {
                               to={`/companies/${contact.company_id}`}
                               className="font-medium text-ink-soft hover:text-accent transition-colors"
                             >
-                              {companyName(contact.company_id)}
+                              {companyName(companies, contact.company_id)}
                             </Link>
                           </td>
                           <td className="py-3 pr-3 align-middle">
@@ -202,9 +205,9 @@ export function ContactsPage() {
                           </td>
                           <td className="hidden py-3 pr-3 align-middle sm:table-cell">
                             <span className="inline-flex items-center gap-2 min-w-0">
-                              <Avatar name={ownerName(contact.owner_id)} size="sm" />
+                              <Avatar name={ownerName(owners, contact.owner_id)} size="sm" />
                               <span className="truncate text-ink-soft">
-                                {ownerName(contact.owner_id)}
+                                {ownerName(owners, contact.owner_id)}
                               </span>
                             </span>
                           </td>

@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 
 import { getAllDeals, getCompany, listActivities } from "@/api/client";
 import type { Deal } from "@/api/types";
+import { useDirectory } from "@/data/directoryContext";
 import { contactsForCompany, ownerById } from "@/data/lookups";
 import { isOpen } from "@/data/stages";
 import { formatDate, formatMoney, formatMoneyCompact } from "@/lib/format";
@@ -60,6 +61,7 @@ export function CompanyDetailPage() {
   const company = useAsync(useCallback(() => getCompany(id), [id]), [id]);
   const deals = useAsync(getAllDeals, []);
   const activities = useAsync(useCallback(() => listActivities({ companyId: id }), [id]), [id]);
+  const { owners, contacts } = useDirectory();
 
   const companyDeals = useMemo(
     () => (deals.status === "success" ? deals.data.items.filter((d) => d.company_id === id) : []),
@@ -69,7 +71,7 @@ export function CompanyDetailPage() {
     () => companyDeals.filter((d) => isOpen(d.stage)).reduce((s, d) => s + d.value_minor, 0),
     [companyDeals],
   );
-  const contacts = useMemo(() => contactsForCompany(id), [id]);
+  const companyContacts = useMemo(() => contactsForCompany(contacts, id), [contacts, id]);
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -96,7 +98,7 @@ export function CompanyDetailPage() {
       {company.status === "success"
         ? (() => {
             const c = company.data;
-            const owner = ownerById(c.owner_id);
+            const owner = ownerById(owners, c.owner_id);
             return (
               <>
                 <Card className="flex flex-col gap-4 p-6">
@@ -201,9 +203,9 @@ export function CompanyDetailPage() {
                     </Card>
 
                     <Card className="flex flex-col gap-4 p-6">
-                      <SectionHeader title="Contacts" subtitle={`${contacts.length} people`} />
+                      <SectionHeader title="Contacts" subtitle={`${companyContacts.length} people`} />
                       <div className="flex flex-col gap-2">
-                        {contacts.map((contact) => (
+                        {companyContacts.map((contact) => (
                           <div
                             key={contact.id}
                             className="flex items-center gap-3 rounded-tile bg-ground/60 px-3 py-2.5"

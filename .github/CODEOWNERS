@@ -23,6 +23,8 @@
 # What resolves a URL prefix to an upstream, and which product gates it.
 /services/app-gateway/routes.json    @developer-sanyam
 /services/admin-gateway/routes.json  @developer-sanyam
+# The table the production gateway actually loads, and everything else that is production.
+/infrastructure/edge/                @developer-sanyam
 
 # CI, the quality gate, the layering contract, the workspace itself.
 /.github/                       @developer-sanyam

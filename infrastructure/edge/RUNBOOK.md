@@ -579,6 +579,16 @@ Named here so nobody discovers them during an incident:
   the record of why. What is still true: services *not* deployed here (employee, customer,
   approval, …) publish nothing and consume nothing, and a product behind a disabled compose
   profile is exactly as absent as before.
+- **One relay, not one per service (2026-09-21).** With every product on, 24 relay processes
+  cost ~800 MB of a 3.8 GB box, and the swapping that caused was the box's real CPU problem. The
+  `edge-relay` container runs `python -m platform_core.edge_relay`, which drains every schema
+  named in `EDGE_RELAY_SCHEMAS` (the compose default lists them all) as `opsgrids_outbox`. When
+  events stop flowing — a trial that never activates, roles that never arrive — look here
+  first: `make edge-logs SERVICE=edge-relay`. `edge_relay.schema.failed` names a schema whose
+  relay died and is being restarted on its own; `edge_relay.schema.missing_table` is a product
+  whose profile is off and is harmless. Outbox depth per schema is still the truth:
+  `select count(*) from <schema>.outbox where published_at is null`. Every service keeps its
+  own `bin/relay`; going back to one container per service is a compose edit, not a rewrite.
 - *(historical)* **No RabbitMQ, no relay and no consumers — and this breaks product activation.** An earlier
   version of this paragraph said slice 1 publishes no event that anything consumes. That was
   wrong. `product.activate()` publishes `core.product.activated`, and the **only** thing that

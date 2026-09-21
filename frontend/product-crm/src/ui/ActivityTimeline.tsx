@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { Activity, ActivityType } from "@/api/types";
+import { useDirectory } from "@/data/directoryContext";
 import { companyName, contactName, ownerName } from "@/data/lookups";
 import { CalendarIcon, CheckSquareIcon, MailIcon, NoteIcon, PhoneIcon, cn } from "@opsgrids/ui";
 import { formatRelative } from "@/lib/format";
@@ -35,6 +36,7 @@ export function ActivityTimeline({
   showCompany = true,
   showContact = true,
 }: ActivityTimelineProps) {
+  const { owners, companies, contacts } = useDirectory();
   return (
     <ol className="flex flex-col">
       {activities.map((activity, i) => {
@@ -71,9 +73,9 @@ export function ActivityTimeline({
                 <p className="text-sm leading-snug text-muted">{activity.body}</p>
               ) : null}
               <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-faint">
-                <span className="font-medium text-muted">{ownerName(activity.owner_id)}</span>
+                <span className="font-medium text-muted">{ownerName(owners, activity.owner_id)}</span>
                 {showContact && activity.contact_id ? (
-                  <span>· with {contactName(activity.contact_id)}</span>
+                  <span>· with {contactName(contacts, activity.contact_id)}</span>
                 ) : null}
                 {showCompany && activity.company_id ? (
                   <>
@@ -82,7 +84,7 @@ export function ActivityTimeline({
                       to={`/companies/${activity.company_id}`}
                       className="font-medium text-accent hover:text-accent-strong transition-colors"
                     >
-                      {companyName(activity.company_id)}
+                      {companyName(companies, activity.company_id)}
                     </Link>
                   </>
                 ) : null}
