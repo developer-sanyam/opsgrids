@@ -182,6 +182,108 @@ NOTIFICATION_ROLE_TEMPLATES: list[RoleTemplate] = [
 ]
 
 
+# --------------------------------------------------------------------- engage catalogue
+#
+# Engage is a second product surface on this service. `notification` stays the platform's
+# transactional plumbing — rules, templates, the message API every product sends through.
+# `engage` is what a customer buys: their own sending identity, their audience and their
+# campaigns. One service, two catalogues, because a product is an entitlement and a vocabulary,
+# not a process; the gateway gates `/api/v1/engage` on the `engage` entitlement while the
+# existing notification routes stay platform plumbing nobody is billed for.
+#
+# Everything here tops out at ORG for the same reason the notification catalogue does: a sending
+# domain and a sender belong to the organization, not to whoever happened to add them.
+
+ENGAGE_PRODUCT = "engage"
+
+ENGAGE = PermissionCatalogue(
+    ENGAGE_PRODUCT,
+    [
+        # The connection holds a credential that can send mail as the customer's own domain,
+        # so writing it is the most dangerous thing in this slice. It is its own resource
+        # rather than folded into a broader "settings" permission for that reason alone.
+        PermissionSpec(
+            "setup",
+            "connection",
+            "read",
+            "See how the organization sends email",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "setup",
+            "connection",
+            "write",
+            "Connect or disconnect the email provider",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        PermissionSpec(
+            "setup",
+            "domain",
+            "read",
+            "See sending domains and their DNS state",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "setup",
+            "domain",
+            "write",
+            "Add a sending domain and verify its DNS",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "setup",
+            "sender",
+            "read",
+            "See the senders mail can go out as",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "setup",
+            "sender",
+            "write",
+            "Add and edit senders, and run the test send that makes one usable",
+            "ORG",
+            "ORG",
+        ),
+    ],
+)
+
+
+ENGAGE_ROLE_TEMPLATES: list[RoleTemplate] = [
+    RoleTemplate(
+        code="ENGAGE_ADMIN",
+        name="Engage administrator",
+        product=ENGAGE_PRODUCT,
+        description=(
+            "Owns how the organization sends: the provider connection, its domains and its "
+            "senders. Built from the Engage catalogue alone."
+        ),
+        grants=ENGAGE.all("ORG"),
+    ),
+    RoleTemplate(
+        code="ENGAGE_VIEWER",
+        name="Engage viewer",
+        product=ENGAGE_PRODUCT,
+        description=(
+            "Every person with an Engage seat. Reads the sending setup without being able to "
+            "change it — a new seat should not be able to repoint the organization's mail."
+        ),
+        is_default=True,
+        grants=ENGAGE.pick(
+            ("engage.setup.connection.read", "ORG"),
+            ("engage.setup.domain.read", "ORG"),
+            ("engage.setup.sender.read", "ORG"),
+        ),
+    ),
+]
+
+
 # --------------------------------------------------------------------- the guard
 
 
@@ -202,6 +304,7 @@ def validate(templates: list[RoleTemplate]) -> None:
 
 
 validate(NOTIFICATION_ROLE_TEMPLATES)
+validate(ENGAGE_ROLE_TEMPLATES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,4 +321,12 @@ class ProductRegistration:
 
 NOTIFICATION_REGISTRATION = ProductRegistration(
     product=PRODUCT, catalogue=NOTIFICATION, role_templates=NOTIFICATION_ROLE_TEMPLATES
+)
+
+#: The second registration this module exposes. `tools/export_permissions.py` reads every
+#: module-level name ending in `_REGISTRATION`, so declaring it is the whole of "ship engage's
+#: manifest" — one service contributing two products is a shape the exporter already merges by
+#: product, the mirror of `hrms`, where two services contribute one.
+ENGAGE_REGISTRATION = ProductRegistration(
+    product=ENGAGE_PRODUCT, catalogue=ENGAGE, role_templates=ENGAGE_ROLE_TEMPLATES
 )

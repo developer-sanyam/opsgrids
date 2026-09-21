@@ -78,8 +78,8 @@ MilestoneRead = Annotated[ScopeContext, Depends(require("projects.delivery.miles
 MilestoneWrite = Annotated[ScopeContext, Depends(require("projects.delivery.milestone.write"))]
 TaskRead = Annotated[ScopeContext, Depends(require("projects.board.task.read"))]
 TaskWrite = Annotated[ScopeContext, Depends(require("projects.board.task.write"))]
-MemberRead = Annotated[ScopeContext, Depends(require("projects.workspace.member.read"))]
-MemberWrite = Annotated[ScopeContext, Depends(require("projects.workspace.member.write"))]
+MemberRead = Annotated[ScopeContext, Depends(require("projects.team.member.read"))]
+MemberWrite = Annotated[ScopeContext, Depends(require("projects.team.member.write"))]
 
 
 @router.get("/projects-workspace/info", response_model=ServiceInfo, summary="What this service is")

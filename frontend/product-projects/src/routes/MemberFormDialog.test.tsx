@@ -94,7 +94,7 @@ describe("MemberFormDialog", () => {
     const problem = {
       status: 403,
       title: "Forbidden",
-      detail: "You don't hold projects.workspace.member.write for this organization.",
+      detail: "You don't hold projects.team.member.write for this organization.",
     };
     vi.spyOn(client, "createMember").mockRejectedValue(new ApiError(403, "Forbidden", problem));
     const { user } = openCreate();
@@ -104,7 +104,7 @@ describe("MemberFormDialog", () => {
     await user.click(screen.getByRole("button", { name: "Add member" }));
 
     expect(
-      await screen.findByText("You don't hold projects.workspace.member.write for this organization."),
+      await screen.findByText("You don't hold projects.team.member.write for this organization."),
     ).toBeTruthy();
   });
 

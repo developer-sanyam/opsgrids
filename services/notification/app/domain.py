@@ -679,3 +679,128 @@ def should_retry(attempts: int, *, max_attempts: int) -> bool:
 def next_attempt_no(previous: int) -> int:
     """Attempts are numbered from one, monotonically, per message."""
     return previous + 1
+
+
+# --------------------------------------------------------------------- engage sending identity
+#
+# An organisation brings its own provider and sends under its own reputation — one tenant's spam
+# complaints must not become everyone's deliverability problem. The wizard therefore asks *how*
+# they would like to send, never for a port, and the three functions below are everything that
+# choice implies: the transport it means, the DNS an organisation must publish to send as its own
+# domain, and whether that DNS is good enough to start.
+
+
+@dataclass(frozen=True, slots=True)
+class TransportSettings:
+    """What a connection kind means in SMTP terms.
+
+    The customer chooses "Google Workspace", not a port. Everything below that choice is derived
+    here so the wizard never has to ask, and so a provider changing its submission host is one
+    edit in one place.
+    """
+
+    host: str
+    port: int
+    use_tls: bool
+    daily_cap: int
+
+
+#: Caps are the provider's published external-recipient limits, not ours. They exist so a campaign
+#: can be refused before it burns a mailbox rather than after — a suspended Workspace account is a
+#: worse outcome than a rejected campaign.
+_KINDS: Final[dict[str, TransportSettings]] = {
+    "google": TransportSettings("smtp.gmail.com", 587, True, 2_000),
+    "microsoft": TransportSettings("smtp.office365.com", 587, True, 10_000),
+}
+
+
+def transport_for(kind: str, username: str) -> TransportSettings:
+    """Derive transport settings from the connection kind the customer chose.
+
+    `username` is taken and not read: every kind's submission endpoint is a property of the
+    provider, not of the account holding it. It stays in the signature because the caller derives
+    transport and credentials in one step, and the first kind whose host *is* per-account — a
+    hosted tenant on its own submission subdomain — would otherwise move every call site.
+    """
+    if kind in _KINDS:
+        return _KINDS[kind]
+    if kind == "smtp":
+        # The one kind whose endpoint we cannot know. Port and TLS are still ours to insist on,
+        # so the wizard asks for a host and the caller fills it into this shape.
+        return TransportSettings("", 587, True, 2_000)
+    if kind == "platform":
+        # Modelled, not reachable: platform-managed sending needs an MTA the platform does not
+        # run yet. The cap is what that MTA would be built to, recorded so the gap is visible
+        # rather than discovered by a campaign that silently sends nothing.
+        return TransportSettings("", 587, True, 50_000)
+    raise ValueError(f"Unknown connection kind {kind!r}")
+
+
+def dns_records_for(
+    domain_name: str, dkim_selector: str, tracking_host: str
+) -> list[dict[str, Any]]:
+    """The record set an organization must publish to send as `domain_name`.
+
+    DMARC is `required=False` deliberately. It is the right thing to publish and the setup screen
+    recommends it, but a domain that has not got there yet still sends — refusing would block a
+    customer on a policy decision their security team may still be making.
+    """
+    return [
+        {
+            "kind": "spf",
+            "type": "TXT",
+            "host": domain_name,
+            "value": "v=spf1 include:_spf.opsgrids.com ~all",
+            "required": True,
+            "verified": False,
+        },
+        {
+            "kind": "dkim",
+            "type": "TXT",
+            "host": f"{dkim_selector}._domainkey.{domain_name}",
+            # Empty because this module is pure and cannot mint a keypair. The writer that
+            # creates the domain generates the key and fills this in; a plausible-looking
+            # placeholder here would be a record that can never verify.
+            "value": "",
+            "required": True,
+            "verified": False,
+        },
+        {
+            "kind": "dmarc",
+            "type": "TXT",
+            "host": f"_dmarc.{domain_name}",
+            "value": "v=DMARC1; p=none; rua=mailto:dmarc@opsgrids.com",
+            "required": False,
+            "verified": False,
+        },
+        {
+            "kind": "return_path",
+            "type": "CNAME",
+            "host": f"bounce.{domain_name}",
+            "value": "bounce.opsgrids.com",
+            "required": True,
+            "verified": False,
+        },
+        {
+            "kind": "tracking",
+            "type": "CNAME",
+            "host": tracking_host,
+            "value": "track.opsgrids.com",
+            "required": True,
+            "verified": False,
+        },
+    ]
+
+
+def fold_domain_status(records: list[dict[str, Any]]) -> str:
+    """`verified` when every required record passes; otherwise `pending`.
+
+    The `required` list is checked for emptiness before `all()`, not out of caution about an
+    impossible input: a domain row exists from the moment a customer types the name, before its
+    records have been generated, and `all()` over nothing is True — which would mark a domain
+    that has proven nothing as ready to send.
+    """
+    required = [r for r in records if r.get("required")]
+    if required and all(r.get("verified") for r in required):
+        return "verified"
+    return "pending"

@@ -242,7 +242,7 @@ class TestCrossTenantOverHttp:
     async def test_org_b_cannot_edit_or_delete_org_as_member(self, client, org_id, data) -> None:
         other_org = uuid.uuid4()
         principal = principal_for(
-            other_org, ["projects.workspace.member.write:ORG"], subject_ref=uuid.uuid4()
+            other_org, ["projects.team.member.write:ORG"], subject_ref=uuid.uuid4()
         )
         app.dependency_overrides[get_principal] = lambda: principal
         try:

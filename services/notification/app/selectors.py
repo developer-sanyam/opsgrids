@@ -18,11 +18,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     Delivery,
+    EmailConnection,
+    EmailDomain,
     Message,
     Preference,
     ProviderAccount,
     ProviderTemplate,
     Rule,
+    Sender,
     Template,
 )
 from platform_core.auth import ScopeContext
@@ -263,5 +266,106 @@ async def account_for_phone_number(
     stmt = select(ProviderAccount).where(
         ProviderAccount.phone_number_id == phone_number_id,
         ProviderAccount.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+# --------------------------------------------------------------------- engage sending identity
+
+
+def connection_stmt(ctx: ScopeContext) -> Select[Any]:
+    """The organization's email connection, as a statement a route can page or count.
+
+    A statement rather than a row even though there is only ever one: the read route returns a
+    list-or-nothing shape, and a selector that returned the row would put the "is there one?"
+    branch in the router instead of here.
+    """
+    stmt = select(EmailConnection).where(
+        EmailConnection.organization_id == ctx.organization_id,
+        EmailConnection.deleted_at.is_(None),
+    )
+    return ctx.apply(stmt, owner_col=EmailConnection.created_by)
+
+
+async def get_connection(session: AsyncSession, org_id: uuid.UUID) -> EmailConnection | None:
+    """The one connection an organization sends through, or None.
+
+    Org-scoped like every read here. The writer uses it to refuse a second connection, and the
+    test send uses it to find the credential — neither may see another tenant's.
+    """
+    stmt = select(EmailConnection).where(
+        EmailConnection.organization_id == org_id,
+        EmailConnection.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def domains_stmt(ctx: ScopeContext, *, status: str | None = None) -> Select[Any]:
+    """Scope-filtered sending-domain list, oldest first — a setup list is read in the order it
+    was built, not newest-first like a log."""
+    stmt = select(EmailDomain).where(
+        EmailDomain.organization_id == ctx.organization_id,
+        EmailDomain.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=EmailDomain.created_by)
+    if status:
+        stmt = stmt.where(EmailDomain.status == status)
+    return stmt.order_by(EmailDomain.created_at.asc())
+
+
+async def get_domain(
+    session: AsyncSession, org_id: uuid.UUID, domain_id: uuid.UUID
+) -> EmailDomain | None:
+    stmt = select(EmailDomain).where(
+        EmailDomain.id == domain_id,
+        EmailDomain.organization_id == org_id,
+        EmailDomain.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_domain_by_name(
+    session: AsyncSession, org_id: uuid.UUID, name: str
+) -> EmailDomain | None:
+    """Org-scoped fetch by name. None on a tenant mismatch: whether some other organization has
+    claimed a domain is not this caller's business, and answering would say so."""
+    stmt = select(EmailDomain).where(
+        EmailDomain.domain == name,
+        EmailDomain.organization_id == org_id,
+        EmailDomain.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def senders_stmt(ctx: ScopeContext, *, domain_id: uuid.UUID | None = None) -> Select[Any]:
+    """Scope-filtered sender list."""
+    stmt = select(Sender).where(
+        Sender.organization_id == ctx.organization_id,
+        Sender.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=Sender.created_by)
+    if domain_id:
+        stmt = stmt.where(Sender.domain_id == domain_id)
+    return stmt.order_by(Sender.name.asc())
+
+
+async def get_sender(
+    session: AsyncSession, org_id: uuid.UUID, sender_id: uuid.UUID
+) -> Sender | None:
+    stmt = select(Sender).where(
+        Sender.id == sender_id,
+        Sender.organization_id == org_id,
+        Sender.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_sender_by_address(
+    session: AsyncSession, org_id: uuid.UUID, address: str
+) -> Sender | None:
+    stmt = select(Sender).where(
+        Sender.address == address,
+        Sender.organization_id == org_id,
+        Sender.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()

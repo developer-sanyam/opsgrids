@@ -21,7 +21,7 @@ import type { Column } from "@/ui";
 import { UsersIcon, useToast } from "@opsgrids/ui";
 import { MemberFormDialog } from "./MemberFormDialog";
 
-const WRITE = "projects.workspace.member.write";
+const WRITE = "projects.team.member.write";
 
 export function TeamPage() {
   const toast = useToast();

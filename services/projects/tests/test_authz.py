@@ -207,6 +207,139 @@ class TestEndpointAuthorization:
         assert len(body["burndown_sprint"]) == 7
 
 
+# --------------------------------------------------------------------- the roster write surface
+
+MEMBERS = "/api/v1/projects-workspace/members"
+
+
+class TestMemberWrites:
+    """POST /members — the roster row every `Person` on the wire is addressed by.
+
+    Staffing the team is its own permission: a caller who may create projects and move board
+    cards still cannot invent people, because the guard is by permission name rather than by
+    "is a writer of something".
+    """
+
+    async def test_a_writer_may_add_a_member(self, client, session, org_id, data) -> None:
+        principal = principal_for(org_id, ["projects.team.member.write:ORG"])
+        with as_principal(principal):
+            response = await client.post(
+                MEMBERS, json={"ref": "p-03", "name": "Ravi Menon", "role": "QA Lead"}
+            )
+        assert response.status_code == 201
+        assert response.json() == {"id": "p-03", "name": "Ravi Menon", "role": "QA Lead"}
+
+        stored = await selectors.get_member_by_ref(session, org_id, "p-03")
+        assert stored is not None
+        assert stored.organization_id == org_id
+        assert stored.name == "Ravi Menon"
+
+    async def test_a_new_member_can_own_a_project_straight_away(
+        self, client, session, org_id, data
+    ) -> None:
+        """The point of the endpoint: the `ref` it returns is usable as an `owner_ref`."""
+        principal = principal_for(
+            org_id, ["projects.team.member.write:ORG", "projects.portfolio.project.write:ORG"]
+        )
+        with as_principal(principal):
+            created = await client.post(
+                MEMBERS, json={"ref": "p-04", "name": "Ines Duarte", "role": "Delivery Lead"}
+            )
+            project = await client.post(
+                "/api/v1/projects-workspace/projects",
+                json={
+                    "code": "PRJ-801",
+                    "name": "Meridian Rollout",
+                    "owner_ref": created.json()["id"],
+                    "start_date": "2026-10-01",
+                    "target_date": "2027-02-01",
+                },
+            )
+        assert created.status_code == 201
+        assert project.status_code == 201
+        assert project.json()["owner"] == {
+            "id": "p-04",
+            "name": "Ines Duarte",
+            "role": "Delivery Lead",
+        }
+
+    async def test_unauthenticated_cannot_add_a_member(self, client, session, org_id, data) -> None:
+        response = await client.post(MEMBERS, json={"ref": "p-90", "name": "Nobody"})
+        assert response.status_code == 401
+        assert await selectors.get_member_by_ref(session, org_id, "p-90") is None
+
+    async def test_a_project_writer_cannot_add_a_member(
+        self, client, session, org_id, data
+    ) -> None:
+        """Holding every other projects write is not staffing: the roster guard is by name."""
+        principal = principal_for(
+            org_id,
+            [
+                "projects.portfolio.project.write:ORG",
+                "projects.delivery.milestone.write:ORG",
+                "projects.board.task.write:ORG",
+                "projects.portfolio.project.read:ORG",
+            ],
+            subject_ref=data["subject_a"],
+        )
+        with as_principal(principal):
+            response = await client.post(
+                MEMBERS, json={"ref": "p-91", "name": "Smuggled In", "role": "Ghost"}
+            )
+        assert response.status_code == 403
+        assert response.headers["content-type"].startswith("application/problem+json")
+        assert await selectors.get_member_by_ref(session, org_id, "p-91") is None
+
+    async def test_without_the_product_entitlement_is_payment_required(
+        self, client, org_id, data
+    ) -> None:
+        principal = principal_for(org_id, ["projects.team.member.write:ORG"], entitlements=[])
+        with as_principal(principal):
+            response = await client.post(MEMBERS, json={"ref": "p-92", "name": "Unentitled"})
+        assert response.status_code == 402
+
+    async def test_a_blank_ref_is_refused_by_validation(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["projects.team.member.write:ORG"])
+        with as_principal(principal):
+            response = await client.post(MEMBERS, json={"ref": "", "name": "No handle"})
+        assert response.status_code == 422
+
+    async def test_a_member_with_no_name_is_refused_by_validation(
+        self, client, org_id, data
+    ) -> None:
+        principal = principal_for(org_id, ["projects.team.member.write:ORG"])
+        with as_principal(principal):
+            response = await client.post(MEMBERS, json={"ref": "p-93"})
+        assert response.status_code == 422
+
+    async def test_the_payload_cannot_choose_its_tenant(
+        self, client, session, org_id, data
+    ) -> None:
+        """`organization_id` is not part of the contract — a smuggled one is ignored, and the
+        row lands in the caller's organization."""
+        other_org = uuid.uuid4()
+        principal = principal_for(org_id, ["projects.team.member.write:ORG"])
+        with as_principal(principal):
+            response = await client.post(
+                MEMBERS,
+                json={"ref": "p-05", "name": "Tenant Test", "organization_id": str(other_org)},
+            )
+        assert response.status_code == 201
+        stored = await selectors.get_member_by_ref(session, org_id, "p-05")
+        assert stored is not None
+        assert stored.organization_id == org_id
+
+    async def test_a_ref_already_taken_is_a_conflict(self, client, org_id, data) -> None:
+        """`p-01` is seeded by the `data` fixture — the handle is unique per organization."""
+        principal = principal_for(org_id, ["projects.team.member.write:ORG"])
+        with as_principal(principal):
+            response = await client.post(
+                MEMBERS, json={"ref": "p-01", "name": "Second Aarav", "role": "Delivery Lead"}
+            )
+        assert response.status_code == 409
+        assert response.headers["content-type"].startswith("application/problem+json")
+
+
 # --------------------------------------------------------------------- validation
 
 
@@ -295,10 +428,10 @@ class TestValidation:
                 )
 
     async def test_a_soft_deleted_member_ref_still_conflicts(self, session, org_id, data) -> None:
-        write = ctx_for(org_id, "projects.workspace.member.write", Scope.ORG)
+        write = ctx_for(org_id, "projects.team.member.write", Scope.ORG)
         async with session.begin():
             await services.delete_member(session, write, data["member_a"])
-        ctx = ctx_for(org_id, "projects.workspace.member.write", Scope.ORG)
+        ctx = ctx_for(org_id, "projects.team.member.write", Scope.ORG)
         with pytest.raises(ConflictProblem, match="already exists"):
             async with session.begin():
                 await services.create_member(session, ctx, ref="p-01", name="reused")
@@ -744,7 +877,7 @@ class TestMilestoneMutations:
 
 class TestMemberMutations:
     async def test_a_writer_can_add_a_member(self, client, org_id, data) -> None:
-        principal = principal_for(org_id, ["projects.workspace.member.write:ORG"])
+        principal = principal_for(org_id, ["projects.team.member.write:ORG"])
         with as_principal(principal):
             response = await client.post(
                 "/api/v1/projects-workspace/members",
@@ -757,7 +890,7 @@ class TestMemberMutations:
         assert body["directory_id"] is None
 
     async def test_a_duplicate_ref_is_refused(self, client, org_id, data) -> None:
-        principal = principal_for(org_id, ["projects.workspace.member.write:ORG"])
+        principal = principal_for(org_id, ["projects.team.member.write:ORG"])
         with as_principal(principal):
             response = await client.post(
                 "/api/v1/projects-workspace/members",
@@ -766,7 +899,7 @@ class TestMemberMutations:
         assert response.status_code == 409
 
     async def test_a_reader_cannot_add_a_member(self, client, org_id, data) -> None:
-        principal = principal_for(org_id, ["projects.workspace.member.read:ORG"])
+        principal = principal_for(org_id, ["projects.team.member.read:ORG"])
         with as_principal(principal):
             response = await client.post(
                 "/api/v1/projects-workspace/members", json={"ref": "p-06", "name": "Refused"}
@@ -779,11 +912,11 @@ class TestMemberMutations:
         from app.catalogue import PROJECTS_ROLE_TEMPLATES
 
         member = next(t for t in PROJECTS_ROLE_TEMPLATES if t.code == "PROJECTS_MEMBER")
-        assert "projects.workspace.member.write" not in {g.code for g in member.grants}
-        assert "projects.workspace.member.read" in {g.code for g in member.grants}
+        assert "projects.team.member.write" not in {g.code for g in member.grants}
+        assert "projects.team.member.read" in {g.code for g in member.grants}
 
     async def test_a_writer_can_edit_a_member(self, client, org_id, data) -> None:
-        principal = principal_for(org_id, ["projects.workspace.member.write:ORG"])
+        principal = principal_for(org_id, ["projects.team.member.write:ORG"])
         with as_principal(principal):
             response = await client.patch(
                 "/api/v1/projects-workspace/members/p-01", json={"role": "Principal Engineer"}
@@ -794,7 +927,7 @@ class TestMemberMutations:
 
     async def test_ref_cannot_be_changed_through_patch(self, client, org_id, data) -> None:
         """`ref` is not even a field on `MemberUpdate`."""
-        principal = principal_for(org_id, ["projects.workspace.member.write:ORG"])
+        principal = principal_for(org_id, ["projects.team.member.write:ORG"])
         with as_principal(principal):
             response = await client.patch(
                 "/api/v1/projects-workspace/members/p-01", json={"ref": "p-99"}
@@ -803,7 +936,7 @@ class TestMemberMutations:
         assert response.json()["id"] == "p-01"
 
     async def test_editing_an_unknown_member_is_not_found(self, client, org_id, data) -> None:
-        principal = principal_for(org_id, ["projects.workspace.member.write:ORG"])
+        principal = principal_for(org_id, ["projects.team.member.write:ORG"])
         with as_principal(principal):
             response = await client.patch(
                 "/api/v1/projects-workspace/members/p-99", json={"role": "x"}
@@ -811,7 +944,7 @@ class TestMemberMutations:
         assert response.status_code == 404
 
     async def test_a_reader_cannot_edit_a_member(self, client, org_id, data) -> None:
-        principal = principal_for(org_id, ["projects.workspace.member.read:ORG"])
+        principal = principal_for(org_id, ["projects.team.member.read:ORG"])
         with as_principal(principal):
             response = await client.patch(
                 "/api/v1/projects-workspace/members/p-01", json={"role": "x"}
@@ -824,8 +957,8 @@ class TestMemberMutations:
         principal = principal_for(
             org_id,
             [
-                "projects.workspace.member.write:ORG",
-                "projects.workspace.member.read:ORG",
+                "projects.team.member.write:ORG",
+                "projects.team.member.read:ORG",
                 "projects.portfolio.project.read:ORG",
                 "projects.board.task.read:ORG",
             ],
@@ -847,7 +980,7 @@ class TestMemberMutations:
     async def test_deleting_an_already_deleted_member_is_not_found(
         self, client, org_id, data
     ) -> None:
-        principal = principal_for(org_id, ["projects.workspace.member.write:ORG"])
+        principal = principal_for(org_id, ["projects.team.member.write:ORG"])
         with as_principal(principal):
             first = await client.delete("/api/v1/projects-workspace/members/p-02")
             second = await client.delete("/api/v1/projects-workspace/members/p-02")
@@ -855,13 +988,13 @@ class TestMemberMutations:
         assert second.status_code == 404
 
     async def test_a_reader_cannot_delete_a_member(self, client, org_id, data) -> None:
-        principal = principal_for(org_id, ["projects.workspace.member.read:ORG"])
+        principal = principal_for(org_id, ["projects.team.member.read:ORG"])
         with as_principal(principal):
             response = await client.delete("/api/v1/projects-workspace/members/p-02")
         assert response.status_code == 403
 
     async def test_search_matches_name_or_ref(self, client, org_id, data) -> None:
-        principal = principal_for(org_id, ["projects.workspace.member.read:ORG"])
+        principal = principal_for(org_id, ["projects.team.member.read:ORG"])
         with as_principal(principal):
             response = await client.get("/api/v1/projects-workspace/members", params={"q": "lena"})
         assert {m["id"] for m in response.json()["items"]} == {"p-02"}

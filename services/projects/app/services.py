@@ -51,9 +51,9 @@ EVT_MILESTONE_DELETED = "projects.delivery.milestone.deleted"
 EVT_TASK_CREATED = "projects.board.task.created"
 EVT_TASK_UPDATED = "projects.board.task.updated"
 EVT_TASK_DELETED = "projects.board.task.deleted"
-EVT_MEMBER_CREATED = "projects.workspace.member.created"
-EVT_MEMBER_UPDATED = "projects.workspace.member.updated"
-EVT_MEMBER_DELETED = "projects.workspace.member.deleted"
+EVT_MEMBER_CREATED = "projects.team.member.created"
+EVT_MEMBER_UPDATED = "projects.team.member.updated"
+EVT_MEMBER_DELETED = "projects.team.member.deleted"
 
 
 def _actor(ctx: ScopeContext) -> dict[str, Any]:

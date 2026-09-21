@@ -79,6 +79,12 @@ RequestWrite = Annotated[ScopeContext, Depends(require("itsm.service.request.wri
 RequestWriteOrg = Annotated[
     ScopeContext, Depends(require("itsm.service.request.write", minimum=Scope.ORG))
 ]
+#: Catalog administration. The catalog is the organization's reference data, not anyone's own
+#: row, so it has its own ORG-only code rather than riding on the request write a requester
+#: also holds.
+CatalogWrite = Annotated[
+    ScopeContext, Depends(require("itsm.service.catalog.write", minimum=Scope.ORG))
+]
 AssetRead = Annotated[ScopeContext, Depends(require("itsm.cmdb.asset.read"))]
 AssetWrite = Annotated[ScopeContext, Depends(require("itsm.cmdb.asset.write"))]
 #: Deleting CMDB infrastructure is an ORG action; editing one's own asset stays on `AssetWrite`.
@@ -413,7 +419,7 @@ async def list_catalog(
     dependencies=[Entitled],
 )
 async def create_catalog_item(
-    payload: CatalogItemIn, session: SessionDep, ctx: RequestWriteOrg, request: Request
+    payload: CatalogItemIn, session: SessionDep, ctx: CatalogWrite, request: Request
 ) -> CatalogItemOut:
     item = await services.create_catalog_item(
         session,
@@ -438,7 +444,7 @@ async def update_catalog_item(
     code: str,
     payload: CatalogItemUpdate,
     session: SessionDep,
-    ctx: RequestWriteOrg,
+    ctx: CatalogWrite,
     request: Request,
 ) -> CatalogItemOut:
     item = await selectors.get_catalog_item(session, ctx.organization_id, code)
@@ -455,7 +461,7 @@ async def update_catalog_item(
     dependencies=[Entitled],
 )
 async def delete_catalog_item(
-    code: str, session: SessionDep, ctx: RequestWriteOrg, request: Request
+    code: str, session: SessionDep, ctx: CatalogWrite, request: Request
 ) -> Response:
     item = await selectors.get_catalog_item(session, ctx.organization_id, code)
     if item is None:

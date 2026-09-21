@@ -42,8 +42,8 @@ const FIXTURE_GRANTS = [
   "projects.delivery.milestone.write:ORG",
   "projects.portfolio.project.read:ORG",
   "projects.portfolio.project.write:ORG",
-  "projects.workspace.member.read:ORG",
-  "projects.workspace.member.write:ORG",
+  "projects.team.member.read:ORG",
+  "projects.team.member.write:ORG",
 ];
 
 /** The session, wired to this product's fixture identity, with the permission provider mounted

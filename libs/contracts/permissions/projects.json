@@ -61,7 +61,7 @@
       "description": "See delivery-org members",
       "is_dangerous": false,
       "max_scope": "ORG",
-      "module": "workspace",
+      "module": "team",
       "resource": "member"
     },
     {
@@ -70,7 +70,7 @@
       "description": "Add and edit delivery-org members",
       "is_dangerous": false,
       "max_scope": "ORG",
-      "module": "workspace",
+      "module": "team",
       "resource": "member"
     }
   ],
@@ -106,11 +106,11 @@
           "scope": "ORG"
         },
         {
-          "code": "projects.workspace.member.read",
+          "code": "projects.team.member.read",
           "scope": "ORG"
         },
         {
-          "code": "projects.workspace.member.write",
+          "code": "projects.team.member.write",
           "scope": "ORG"
         }
       ],
@@ -148,11 +148,11 @@
           "scope": "ORG"
         },
         {
-          "code": "projects.workspace.member.read",
+          "code": "projects.team.member.read",
           "scope": "ORG"
         },
         {
-          "code": "projects.workspace.member.write",
+          "code": "projects.team.member.write",
           "scope": "ORG"
         }
       ],
@@ -182,7 +182,7 @@
           "scope": "ORG"
         },
         {
-          "code": "projects.workspace.member.read",
+          "code": "projects.team.member.read",
           "scope": "ORG"
         }
       ],

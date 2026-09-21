@@ -56,6 +56,7 @@
     { "prefix": "/api/v1/webhooks/razorpay", "upstream": "http://payment:8000" },
 
     { "prefix": "/api/v1/notifications", "upstream": "http://notification:8000", "product": "notification" },
+    { "prefix": "/api/v1/engage", "upstream": "http://notification:8000", "product": "engage" },
     { "prefix": "/api/v1/webhooks/whatsapp", "upstream": "http://notification:8000" },
 
     { "prefix": "/api/v1/approvals", "upstream": "http://approval:8000" },

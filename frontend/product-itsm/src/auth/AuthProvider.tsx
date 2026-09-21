@@ -42,6 +42,7 @@ const FIXTURE_GRANTS = [
   "itsm.service.incident.write:ORG",
   "itsm.service.request.read:ORG",
   "itsm.service.request.write:ORG",
+  "itsm.service.catalog.write:ORG",
 ];
 
 /** The session, wired to this product's fixture identity. The logic lives in `@opsgrids/client`. */

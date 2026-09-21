@@ -40,6 +40,8 @@ import { CatalogItemFormDialog } from "@/forms/CatalogItemFormDialog";
 import { RaiseRequestDialog } from "@/forms/RaiseRequestDialog";
 
 const CAN_RAISE = "itsm.service.request.write";
+/** Administering the catalog is its own ORG-only permission, not the one a requester holds. */
+const CAN_ADMIN_CATALOG = "itsm.service.catalog.write";
 
 type IconType = ComponentType<SVGProps<SVGSVGElement>>;
 
@@ -140,7 +142,7 @@ export function RequestsPage() {
   const [catalogDeleting, setCatalogDeleting] = useState<CatalogItem | null>(null);
 
   const canRaise = useCan(CAN_RAISE, "OWN");
-  const canAdminCatalog = useCan(CAN_RAISE, "ORG");
+  const canAdminCatalog = useCan(CAN_ADMIN_CATALOG, "ORG");
 
   const catalogState = useAsync(useCallback(() => listCatalog(), []), []);
   const requestsLoader = useCallback(
@@ -246,7 +248,7 @@ export function RequestsPage() {
           title="Service catalog"
           subtitle="Request types staff can raise — including the joiners, movers and leavers flows"
           action={
-            <Can permission={CAN_RAISE} scope="ORG">
+            <Can permission={CAN_ADMIN_CATALOG} scope="ORG">
               <Button
                 size="sm"
                 variant="outline"

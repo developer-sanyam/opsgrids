@@ -110,8 +110,8 @@ PROJECTS = PermissionCatalogue(
         PermissionSpec("board", "task", "write", "Create and move board cards", "OWN"),
         # Members — the people every owner/assignee picker needs. No OWN reading: "the people"
         # is inherently an org-wide resource, not something a caller owns a slice of.
-        PermissionSpec("workspace", "member", "read", "See delivery-org members", "ORG"),
-        PermissionSpec("workspace", "member", "write", "Add and edit delivery-org members", "ORG"),
+        PermissionSpec("team", "member", "read", "See delivery-org members", "ORG"),
+        PermissionSpec("team", "member", "write", "Add and edit delivery-org members", "ORG"),
     ],
 )
 
@@ -143,8 +143,8 @@ PROJECTS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("projects.delivery.milestone.write", "ORG"),
             ("projects.board.task.read", "ORG"),
             ("projects.board.task.write", "ORG"),
-            ("projects.workspace.member.read", "ORG"),
-            ("projects.workspace.member.write", "ORG"),
+            ("projects.team.member.read", "ORG"),
+            ("projects.team.member.write", "ORG"),
         ),
     ),
     RoleTemplate(
@@ -161,7 +161,7 @@ PROJECTS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("projects.delivery.milestone.read", "ORG"),
             ("projects.board.task.read", "ORG"),
             ("projects.board.task.write", "OWN"),
-            ("projects.workspace.member.read", "ORG"),
+            ("projects.team.member.read", "ORG"),
         ),
     ),
 ]
