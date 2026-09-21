@@ -14,11 +14,11 @@ staleness clock the Overview reads.
 Stage moves go through `move_stage`, which enforces `domain.can_transition`: open deals
 move freely and close either way; a closed deal is a record and moves nowhere.
 
-The CRM SPA is read-only in this slice — its client has no create or update calls — so
-these writers are not yet exposed as public routes. They exist to finalise the domain
-rules and to drive the demo seed through the real, RLS-bound path (the finance-service
-precedent), so every seeded row lands with an audit row and an outbox event exactly as the
-live product will produce them.
+These writers drive both the public write routes (`app/api/routes.py`) and the demo seed,
+which goes through the same real, RLS-bound path (the finance-service precedent), so
+every seeded row lands with an audit row and an outbox event exactly as the live product
+produces them. Delete is soft: `deleted_at` is set, never removed — deleting a deal must
+never cascade into its (append-only) activities.
 """
 
 from __future__ import annotations
@@ -32,13 +32,17 @@ from starlette.requests import Request
 
 from app import domain, selectors
 from app.models import Activity, AuditLog, Deal, OutboxEvent
+from app.schemas import DealPatch
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem
 from platform_core.events import publish_event
+from platform_core.models import utcnow
 
 # Event names. `crm.*` because these are the product's own, not the platform's.
 EVT_DEAL_CREATED = "crm.pipeline.deal.created"
+EVT_DEAL_UPDATED = "crm.pipeline.deal.updated"
+EVT_DEAL_DELETED = "crm.pipeline.deal.deleted"
 EVT_DEAL_STAGE_CHANGED = "crm.pipeline.deal.stage_changed"
 EVT_ACTIVITY_LOGGED = "crm.pipeline.activity.logged"
 
@@ -147,6 +151,105 @@ async def create_deal(
         actor=_actor(ctx),
     )
     return deal
+
+
+async def update_deal(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    deal: Deal,
+    payload: DealPatch,
+    *,
+    request: Request | None = None,
+) -> Deal:
+    """Patch the plain deal fields. Deliberately never `stage` — `DealPatch` has no such
+    field, so the transition rule in `move_stage` cannot be bypassed by a patch.
+    `company_id` / `primary_contact_id` / `owner_id` are cross-schema plain UUIDs and are
+    not verified here for the same reason `create_deal` does not verify them."""
+    changes = payload.model_dump(exclude_unset=True)
+
+    if "name" in changes and changes["name"] != deal.name:
+        existing = await selectors.get_deal_by_name(session, ctx.organization_id, changes["name"])
+        if existing is not None and existing.id != deal.id:
+            raise ConflictProblem(f"A deal named {changes['name']!r} already exists")
+
+    if "value_minor" in changes and changes["value_minor"] < 0:
+        raise ConflictProblem("A deal's value cannot be negative")
+
+    if "currency" in changes:
+        changes["currency"] = changes["currency"].upper()
+
+    before = {field: getattr(deal, field) for field in changes}
+    for field, value in changes.items():
+        setattr(deal, field, value)
+    deal.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="deal.updated",
+        entity="deal",
+        entity_id=deal.id,
+        before=before,
+        after=changes,
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_DEAL_UPDATED,
+        aggregate_type="deal",
+        aggregate_id=deal.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "deal_id": str(deal.id),
+            "changed": sorted(changes),
+        },
+        actor=_actor(ctx),
+    )
+    return deal
+
+
+async def delete_deal(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    deal: Deal,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Soft-delete a deal. Never a SQL DELETE: `activities.deal_id` is a real FK
+    `ON DELETE CASCADE`, and a hard delete would cascade into the append-only timeline and
+    hit its trigger. A soft delete leaves the activities exactly where they are."""
+    before_deleted_at = deal.deleted_at
+    deal.deleted_at = utcnow()
+    deal.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="deal.deleted",
+        entity="deal",
+        entity_id=deal.id,
+        before={"deleted_at": before_deleted_at},
+        after={"deleted_at": deal.deleted_at},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_DEAL_DELETED,
+        aggregate_type="deal",
+        aggregate_id=deal.id,
+        payload={"organization_id": str(ctx.organization_id), "deal_id": str(deal.id)},
+        actor=_actor(ctx),
+    )
 
 
 async def move_stage(

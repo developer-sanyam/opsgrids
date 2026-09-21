@@ -36,10 +36,13 @@ def deals_stmt(
     q: str | None = None,
     stage: str | None = None,
     owner_id: uuid.UUID | None = None,
+    company_id: uuid.UUID | None = None,
 ) -> Select[Any]:
     """Scope-filtered deal list. `ctx.apply` is the enforcement point. The search matches
     the deal name — the field the SPA filters on; `owner_id` narrows to one rep's deals
-    the way the board's owner dropdown does (a *filter* within scope, never a widening)."""
+    the way the board's owner dropdown does, and `company_id` to one account's deals (both
+    *filters* within scope, never a widening) — the index `ix_deals_org_company` backs the
+    latter, so a company's deals card stops fetching the whole board client-side."""
     stmt = select(Deal).where(
         Deal.organization_id == ctx.organization_id,
         Deal.deleted_at.is_(None),
@@ -52,6 +55,8 @@ def deals_stmt(
         stmt = stmt.where(Deal.stage == stage)
     if owner_id is not None:
         stmt = stmt.where(Deal.owner_id == owner_id)
+    if company_id is not None:
+        stmt = stmt.where(Deal.company_id == company_id)
 
     # Biggest first, then newest — the order the board sorts its columns in.
     return stmt.order_by(Deal.value_minor.desc(), Deal.created_at.desc())

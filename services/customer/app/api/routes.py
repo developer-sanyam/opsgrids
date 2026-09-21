@@ -22,17 +22,22 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import scope, selectors, services
 from app.config import settings
 from app.models import SCHEMA
 from app.schemas import (
+    CompanyIn,
     CompanyOut,
+    CompanyPatch,
+    ContactIn,
     ContactOut,
+    ContactPatch,
     ContactPhoneIn,
     ContactPhoneRevealed,
+    OwnerIn,
     OwnerOut,
     ServiceInfo,
 )
@@ -55,8 +60,12 @@ SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
 Entitled = Depends(require_product("crm"))
 
 CompanyRead = Annotated[ScopeContext, Depends(require("crm.book.company.read"))]
+CompanyWrite = Annotated[ScopeContext, Depends(require("crm.book.company.write"))]
+CompanyDelete = Annotated[ScopeContext, Depends(require("crm.book.company.delete"))]
+OwnerWrite = Annotated[ScopeContext, Depends(require("crm.book.owner.write"))]
 ContactRead = Annotated[ScopeContext, Depends(require("crm.book.contact.read"))]
 ContactWrite = Annotated[ScopeContext, Depends(require("crm.book.contact.write"))]
+ContactDelete = Annotated[ScopeContext, Depends(require("crm.book.contact.delete"))]
 #: Revealing a real phone number. The dangerous permission **and** a second factor, the
 #: same pairing employee-service requires to unmask an employee's personal details — an
 #: ordinary CRM session must not be a route to a customer's phone book.
@@ -95,6 +104,34 @@ async def list_companies(
     return Page.build([selectors.company_out(c) for c in rows], total=total, params=params)
 
 
+@router.post(
+    "/customers",
+    response_model=CompanyOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a company to the account book",
+    dependencies=[Entitled],
+)
+async def create_company(
+    payload: CompanyIn, session: SessionDep, ctx: CompanyWrite, request: Request
+) -> CompanyOut:
+    company = await services.create_company(
+        session,
+        ctx,
+        name=payload.name,
+        owner_id=payload.owner_id,
+        domain=payload.domain,
+        industry=payload.industry,
+        size_band=payload.size_band,
+        city=payload.city,
+        country=payload.country,
+        status=payload.status,
+        annual_revenue_minor=payload.annual_revenue_minor,
+        currency=payload.currency,
+        request=request,
+    )
+    return selectors.company_out(company)
+
+
 @router.get(
     "/customers/owners",
     response_model=list[OwnerOut],
@@ -109,6 +146,22 @@ async def list_owners(session: SessionDep, ctx: CompanyRead) -> list[OwnerOut]:
     return [selectors.owner_out(o) for o in reps]
 
 
+@router.post(
+    "/customers/owners",
+    response_model=OwnerOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a rep to the directory",
+    dependencies=[Entitled],
+)
+async def create_owner(payload: OwnerIn, session: SessionDep, ctx: OwnerWrite) -> OwnerOut:
+    """The prerequisite for everything else: a production org starts with zero owners,
+    and every company / contact / deal create needs an `owner_id` that resolves to one."""
+    owner = await services.create_owner(
+        session, ctx, full_name=payload.full_name, email=payload.email, role=payload.role
+    )
+    return selectors.owner_out(owner)
+
+
 @router.get(
     "/customers/{company_id}",
     response_model=CompanyOut,
@@ -121,6 +174,44 @@ async def read_company(company_id: uuid.UUID, session: SessionDep, ctx: CompanyR
         raise NotFoundProblem("That company is not part of this organization")
     ctx.assert_can_touch(owner_id=company.owner_id)
     return selectors.company_out(company)
+
+
+@router.patch(
+    "/customers/{company_id}",
+    response_model=CompanyOut,
+    summary="Update a company",
+    dependencies=[Entitled],
+)
+async def update_company(
+    company_id: uuid.UUID,
+    payload: CompanyPatch,
+    session: SessionDep,
+    ctx: CompanyWrite,
+    request: Request,
+) -> CompanyOut:
+    company = await selectors.get_company(session, ctx.organization_id, company_id)
+    if company is None:
+        raise NotFoundProblem("That company is not part of this organization")
+    ctx.assert_can_touch(owner_id=company.owner_id)
+    updated = await services.update_company(session, ctx, company, payload, request=request)
+    return selectors.company_out(updated)
+
+
+@router.delete(
+    "/customers/{company_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a company",
+    dependencies=[Entitled],
+)
+async def delete_company(
+    company_id: uuid.UUID, session: SessionDep, ctx: CompanyDelete, request: Request
+) -> Response:
+    company = await selectors.get_company(session, ctx.organization_id, company_id)
+    if company is None:
+        raise NotFoundProblem("That company is not part of this organization")
+    ctx.assert_can_touch(owner_id=company.owner_id)
+    await services.delete_company(session, ctx, company, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ------------------------------------------------------------------ contacts
@@ -138,10 +229,38 @@ async def list_contacts(
     params: PageQuery,
     q: Annotated[str | None, Query(description="Name, title or email")] = None,
     contact_status: Annotated[str | None, Query(alias="status")] = None,
+    company_id: Annotated[
+        uuid.UUID | None, Query(description="One account's contacts only")
+    ] = None,
 ) -> Page[ContactOut]:
-    stmt = selectors.contacts_stmt(ctx, q=q, status=contact_status)
+    stmt = selectors.contacts_stmt(ctx, q=q, status=contact_status, company_id=company_id)
     rows, total = await paginate(session, stmt, params)
     return Page.build([selectors.contact_out(c) for c in rows], total=total, params=params)
+
+
+@router.post(
+    "/contacts",
+    response_model=ContactOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a contact to an account",
+    dependencies=[Entitled],
+)
+async def create_contact(
+    payload: ContactIn, session: SessionDep, ctx: ContactWrite, request: Request
+) -> ContactOut:
+    contact = await services.create_contact(
+        session,
+        ctx,
+        full_name=payload.full_name,
+        email=payload.email,
+        company_id=payload.company_id,
+        owner_id=payload.owner_id,
+        title=payload.title,
+        status=payload.status,
+        raw_phone=payload.raw_phone,
+        request=request,
+    )
+    return selectors.contact_out(contact)
 
 
 @router.get(
@@ -156,6 +275,44 @@ async def read_contact(contact_id: uuid.UUID, session: SessionDep, ctx: ContactR
         raise NotFoundProblem("That contact is not part of this organization")
     ctx.assert_can_touch(owner_id=contact.owner_id)
     return selectors.contact_out(contact)
+
+
+@router.patch(
+    "/contacts/{contact_id}",
+    response_model=ContactOut,
+    summary="Update a contact",
+    dependencies=[Entitled],
+)
+async def update_contact(
+    contact_id: uuid.UUID,
+    payload: ContactPatch,
+    session: SessionDep,
+    ctx: ContactWrite,
+    request: Request,
+) -> ContactOut:
+    contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+    if contact is None:
+        raise NotFoundProblem("That contact is not part of this organization")
+    ctx.assert_can_touch(owner_id=contact.owner_id)
+    updated = await services.update_contact(session, ctx, contact, payload, request=request)
+    return selectors.contact_out(updated)
+
+
+@router.delete(
+    "/contacts/{contact_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a contact",
+    dependencies=[Entitled],
+)
+async def delete_contact(
+    contact_id: uuid.UUID, session: SessionDep, ctx: ContactDelete, request: Request
+) -> Response:
+    contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+    if contact is None:
+        raise NotFoundProblem("That contact is not part of this organization")
+    ctx.assert_can_touch(owner_id=contact.owner_id)
+    await services.delete_contact(session, ctx, contact, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.put(

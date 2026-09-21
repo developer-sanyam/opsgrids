@@ -110,8 +110,21 @@ CRM_BOOK = PermissionCatalogue(
         # company.read, the way ITSM's catalog rides on request.read.
         PermissionSpec("book", "company", "read", "See companies and the rep directory", "OWN"),
         PermissionSpec("book", "company", "write", "Create and update companies", "OWN"),
+        # Deleting a company (soft). Dangerous: it is the one write here that removes
+        # something from the book rather than adding or changing it.
+        PermissionSpec(
+            "book", "company", "delete", "Delete a company", "OWN", "ORG", is_dangerous=True
+        ),
         PermissionSpec("book", "contact", "read", "See contacts", "OWN"),
         PermissionSpec("book", "contact", "write", "Create and update contacts", "OWN"),
+        PermissionSpec(
+            "book", "contact", "delete", "Delete a contact", "OWN", "ORG", is_dangerous=True
+        ),
+        # The rep directory's own write. A production org starts with zero owners, and
+        # every other create in this product needs an `owner_id` that resolves to one, so
+        # this is the prerequisite permission. ORG-only: adding a rep to the directory is
+        # an administrative act, not something an individual rep's OWN scope covers.
+        PermissionSpec("book", "owner", "write", "Add a rep to the directory", "ORG", "ORG"),
         # Reading a contact's real phone number, as opposed to the masked hint every other
         # read returns. Classified dangerous and stepped up at the route (`amr={"otp"}`),
         # exactly as employee-service treats `read_sensitive`: the ordinary CRM permission

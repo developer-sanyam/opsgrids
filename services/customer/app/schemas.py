@@ -13,10 +13,11 @@ float. A contact's `phone` is the masked display form the service stores (see
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 # ------------------------------------------------------------------ vocabularies (match the SPA)
 
@@ -32,6 +33,17 @@ class ServiceInfo(BaseModel):
 # ------------------------------------------------------------------ owners
 
 
+class OwnerIn(BaseModel):
+    """Add a rep to the directory. A production org starts with zero owners, and every
+    company / contact / deal create needs an `owner_id`, so this is the first write."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str = Field(min_length=1, max_length=160)
+    email: EmailStr = Field(max_length=254)
+    role: str = Field(default="", max_length=120)
+
+
 class OwnerOut(BaseModel):
     """Mirrors the SPA's `Owner`. The `id` is what every `owner_id` in the product carries,
     including deal-service's — the SPA resolves display names from this list client-side."""
@@ -43,6 +55,43 @@ class OwnerOut(BaseModel):
 
 
 # ------------------------------------------------------------------ companies
+
+
+class CompanyIn(BaseModel):
+    """Create an account. `owner_id` must resolve to a rep in this organization's
+    directory (`GET /customers/owners`). `annual_revenue_minor` is integer minor units of
+    `currency`; no float is accepted on this path."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    owner_id: uuid.UUID
+    domain: str = Field(default="", max_length=120)
+    industry: str = Field(default="", max_length=80)
+    size_band: str = Field(default="", max_length=20)
+    city: str = Field(default="", max_length=120)
+    country: str = Field(default="", max_length=120)
+    status: CompanyStatus = "prospect"
+    annual_revenue_minor: int = Field(default=0, ge=0)
+    currency: str = Field(default="INR", min_length=3, max_length=3)
+
+
+class CompanyPatch(BaseModel):
+    """Partial update. Absent means "leave alone"; every field is the same shape as
+    `CompanyIn`, just optional."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    owner_id: uuid.UUID | None = None
+    domain: str | None = Field(default=None, max_length=120)
+    industry: str | None = Field(default=None, max_length=80)
+    size_band: str | None = Field(default=None, max_length=20)
+    city: str | None = Field(default=None, max_length=120)
+    country: str | None = Field(default=None, max_length=120)
+    status: CompanyStatus | None = None
+    annual_revenue_minor: int | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
 
 
 class CompanyOut(BaseModel):
@@ -64,6 +113,40 @@ class CompanyOut(BaseModel):
 
 
 # ------------------------------------------------------------------ contacts
+
+
+class ContactIn(BaseModel):
+    """Add a person to an account. Deliberately **no `phone` field** — the mask is a
+    server-derived projection and must never be writable. Give a real number, if there is
+    one, through `raw_phone`; it is sealed and the mask derived from it (see
+    `services.create_contact`). `extra="forbid"` so a caller can never smuggle `phone` in."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str = Field(min_length=1, max_length=160)
+    email: EmailStr = Field(max_length=254)
+    company_id: uuid.UUID
+    owner_id: uuid.UUID
+    title: str = Field(default="", max_length=160)
+    status: ContactStatus = "lead"
+    #: E.164, with the country code. Optional — many contacts are added with no number yet.
+    raw_phone: str | None = Field(default=None, min_length=4, max_length=40)
+
+
+class ContactPatch(BaseModel):
+    """Partial update of the plain contact fields. Deliberately **no `phone`, no
+    `raw_phone`** — the number stays on its own dedicated route
+    (`PUT /contacts/{id}/phone`), so a masked value can never be written back over a
+    sealed one and a PATCH can never smuggle a raw number in unaudited."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str | None = Field(default=None, min_length=1, max_length=160)
+    title: str | None = Field(default=None, max_length=160)
+    email: EmailStr | None = Field(default=None, max_length=254)
+    company_id: uuid.UUID | None = None
+    owner_id: uuid.UUID | None = None
+    status: ContactStatus | None = None
 
 
 class ContactOut(BaseModel):

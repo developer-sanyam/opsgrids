@@ -22,16 +22,25 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import domain, scope, selectors
+from app import domain, scope, selectors, services
 from app.config import settings
 from app.models import SCHEMA
-from app.schemas import ActivityOut, DealOut, ServiceInfo, SummaryOut
-from platform_core.auth import ScopeContext, require, require_product
+from app.schemas import (
+    ActivityIn,
+    ActivityOut,
+    DealIn,
+    DealOut,
+    DealPatch,
+    ServiceInfo,
+    StageMoveIn,
+    SummaryOut,
+)
+from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.db import get_tenant_session
-from platform_core.errors import NotFoundProblem
+from platform_core.errors import NotFoundProblem, ValidationProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
 # Registering the CRM scope resolver at import of the api module ties it to the product it
@@ -48,7 +57,10 @@ SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
 Entitled = Depends(require_product("crm"))
 
 DealRead = Annotated[ScopeContext, Depends(require("crm.pipeline.deal.read"))]
+DealWrite = Annotated[ScopeContext, Depends(require("crm.pipeline.deal.write"))]
+DealDelete = Annotated[ScopeContext, Depends(require("crm.pipeline.deal.delete"))]
 ActivityRead = Annotated[ScopeContext, Depends(require("crm.pipeline.activity.read"))]
+ActivityWrite = Annotated[ScopeContext, Depends(require("crm.pipeline.activity.write"))]
 
 
 @router.get("/deal/info", response_model=ServiceInfo, summary="What this service is")
@@ -60,7 +72,7 @@ async def info() -> ServiceInfo:
 
 # NOTE: static paths (`/deals/summary`, `/deals/activities`) are declared before the
 # dynamic detail route; Starlette matches in declaration order, so neither ever falls
-# into `{deal_id}`.
+# into `{deal_id}`. `POST /deals/activities` lives beside its `GET` for the same reason.
 
 
 @router.get(
@@ -76,10 +88,39 @@ async def list_deals(
     q: Annotated[str | None, Query(description="Deal name")] = None,
     stage: Annotated[str | None, Query()] = None,
     owner_id: Annotated[uuid.UUID | None, Query()] = None,
+    company_id: Annotated[uuid.UUID | None, Query(description="One account's deals only")] = None,
 ) -> Page[DealOut]:
-    stmt = selectors.deals_stmt(ctx, q=q, stage=stage, owner_id=owner_id)
+    stmt = selectors.deals_stmt(ctx, q=q, stage=stage, owner_id=owner_id, company_id=company_id)
     rows, total = await paginate(session, stmt, params)
     return Page.build([selectors.deal_out(d) for d in rows], total=total, params=params)
+
+
+@router.post(
+    "/deals",
+    response_model=DealOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Open a deal",
+    dependencies=[Entitled],
+)
+async def create_deal(
+    payload: DealIn, session: SessionDep, ctx: DealWrite, request: Request
+) -> DealOut:
+    deal = await services.create_deal(
+        session,
+        ctx,
+        name=payload.name,
+        company_id=payload.company_id,
+        owner_id=payload.owner_id,
+        value_minor=payload.value_minor,
+        close_date=payload.close_date,
+        currency=payload.currency,
+        stage=payload.stage,
+        probability=payload.probability,
+        primary_contact_id=payload.primary_contact_id,
+        source=payload.source,
+        request=request,
+    )
+    return selectors.deal_out(deal)
 
 
 @router.get(
@@ -134,6 +175,54 @@ async def list_activities(
     return Page.build([selectors.activity_out(a) for a in rows], total=total, params=params)
 
 
+@router.post(
+    "/deals/activities",
+    response_model=ActivityOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Log a call, email, meeting, note or task",
+    dependencies=[Entitled],
+)
+async def log_activity(
+    payload: ActivityIn, session: SessionDep, ctx: ActivityWrite, request: Request
+) -> ActivityOut:
+    """Append one entry to the timeline.
+
+    An OWN-scoped caller can only ever log against themselves: `owner_id` is forced to
+    `ctx.subject_ref` regardless of what the payload says. Only an ORG-scoped caller may
+    attribute the entry to a different rep, and only if they name one. When `deal_id` is
+    given, the object-level check re-applies the caller's scope to that deal — logging
+    against a deal you cannot touch is refused exactly like reading or moving it would be.
+    """
+    if ctx.scope is Scope.OWN:
+        owner_id = ctx.subject_ref
+    else:
+        owner_id = payload.owner_id if payload.owner_id is not None else ctx.subject_ref
+    if owner_id is None:
+        raise ValidationProblem("No owner could be determined for this activity")
+
+    if payload.deal_id is not None:
+        deal = await selectors.get_deal(session, ctx.organization_id, payload.deal_id)
+        if deal is None:
+            raise NotFoundProblem("That deal is not part of this organization")
+        ctx.assert_can_touch(owner_id=deal.owner_id)
+
+    activity = await services.log_activity(
+        session,
+        ctx,
+        activity_type=payload.type,
+        subject=payload.subject,
+        owner_id=owner_id,
+        body=payload.body,
+        deal_id=payload.deal_id,
+        company_id=payload.company_id,
+        contact_id=payload.contact_id,
+        direction=payload.direction,
+        occurred_at=payload.occurred_at,
+        request=request,
+    )
+    return selectors.activity_out(activity)
+
+
 @router.get(
     "/deals/{deal_id}",
     response_model=DealOut,
@@ -146,3 +235,69 @@ async def read_deal(deal_id: uuid.UUID, session: SessionDep, ctx: DealRead) -> D
         raise NotFoundProblem("That deal is not part of this organization")
     ctx.assert_can_touch(owner_id=deal.owner_id)
     return selectors.deal_out(deal)
+
+
+@router.patch(
+    "/deals/{deal_id}",
+    response_model=DealOut,
+    summary="Update a deal",
+    dependencies=[Entitled],
+)
+async def update_deal(
+    deal_id: uuid.UUID,
+    payload: DealPatch,
+    session: SessionDep,
+    ctx: DealWrite,
+    request: Request,
+) -> DealOut:
+    deal = await selectors.get_deal(session, ctx.organization_id, deal_id)
+    if deal is None:
+        raise NotFoundProblem("That deal is not part of this organization")
+    ctx.assert_can_touch(owner_id=deal.owner_id)
+    updated = await services.update_deal(session, ctx, deal, payload, request=request)
+    return selectors.deal_out(updated)
+
+
+@router.delete(
+    "/deals/{deal_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a deal",
+    dependencies=[Entitled],
+)
+async def delete_deal(
+    deal_id: uuid.UUID, session: SessionDep, ctx: DealDelete, request: Request
+) -> Response:
+    deal = await selectors.get_deal(session, ctx.organization_id, deal_id)
+    if deal is None:
+        raise NotFoundProblem("That deal is not part of this organization")
+    ctx.assert_can_touch(owner_id=deal.owner_id)
+    await services.delete_deal(session, ctx, deal, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/deals/{deal_id}/stage",
+    response_model=DealOut,
+    summary="Move a deal through the pipeline",
+    dependencies=[Entitled],
+)
+async def move_deal_stage(
+    deal_id: uuid.UUID,
+    payload: StageMoveIn,
+    session: SessionDep,
+    ctx: DealWrite,
+    request: Request,
+) -> DealOut:
+    deal = await selectors.get_deal(session, ctx.organization_id, deal_id)
+    if deal is None:
+        raise NotFoundProblem("That deal is not part of this organization")
+    ctx.assert_can_touch(owner_id=deal.owner_id)
+    updated = await services.move_stage(
+        session,
+        ctx,
+        deal,
+        new_stage=payload.stage,
+        probability=payload.probability,
+        request=request,
+    )
+    return selectors.deal_out(updated)

@@ -41,6 +41,17 @@ async def owners(session: AsyncSession, org_id: uuid.UUID) -> list[Owner]:
     return list((await session.execute(stmt)).scalars().all())
 
 
+async def get_owner(session: AsyncSession, org_id: uuid.UUID, owner_id: uuid.UUID) -> Owner | None:
+    """Org-scoped fetch by id — used to verify a create/update's `owner_id` resolves to a
+    real rep before it is written onto a company, contact or deal."""
+    stmt = select(Owner).where(
+        Owner.id == owner_id,
+        Owner.organization_id == org_id,
+        Owner.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def get_owner_by_email(session: AsyncSession, org_id: uuid.UUID, email: str) -> Owner | None:
     stmt = select(Owner).where(
         Owner.email == email,
@@ -95,6 +106,23 @@ async def get_company(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def count_contacts_for_company(
+    session: AsyncSession, org_id: uuid.UUID, company_id: uuid.UUID
+) -> int:
+    """How many live contacts a company still has — the check that refuses its delete
+    rather than cascading onto them."""
+    stmt = (
+        select(func.count())
+        .select_from(Contact)
+        .where(
+            Contact.organization_id == org_id,
+            Contact.company_id == company_id,
+            Contact.deleted_at.is_(None),
+        )
+    )
+    return (await session.execute(stmt)).scalar_one()
+
+
 async def get_company_by_name(
     session: AsyncSession, org_id: uuid.UUID, name: str
 ) -> Company | None:
@@ -114,15 +142,20 @@ def contacts_stmt(
     *,
     q: str | None = None,
     status: str | None = None,
+    company_id: uuid.UUID | None = None,
 ) -> Select[Any]:
     """Scope-filtered contact list. The search matches name, title and email — the same
-    three fields the SPA filters on."""
+    three fields the SPA filters on. `company_id` narrows to one account's contacts (a
+    filter within scope, never a widening) — the index `ix_contacts_org_company` backs it,
+    so a company's contact card stops fetching the whole book client-side."""
     stmt = select(Contact).where(
         Contact.organization_id == ctx.organization_id,
         Contact.deleted_at.is_(None),
     )
     stmt = ctx.apply(stmt, owner_col=Contact.owner_id)
 
+    if company_id is not None:
+        stmt = stmt.where(Contact.company_id == company_id)
     if q:
         needle = f"%{q.lower()}%"
         stmt = stmt.where(
