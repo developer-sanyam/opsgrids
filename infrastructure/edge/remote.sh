@@ -224,6 +224,39 @@ health() {
 	return 1
 }
 
+# New permission codes reach a brand-new organization the moment it activates a product, and an
+# organization that ALREADY activated it never — until this runs (ADR-0007). It is a fleet write:
+# every organization's roles are widened (union only, nothing removed) and its permission
+# version bumped, which makes every signed-in member refresh their token. So it is never part of
+# `deploy`; it is a step somebody decides to take, and the dry run is always printed first.
+#
+# Runs in a throwaway container from the account worker's definition, because that is the one
+# that already has the account code, the permission manifests mounted and Redis in reach.
+reconcile_permissions() {
+	local products="$1" mode="${2:-}"
+	[ -n "$products" ] || { echo "usage: remote.sh reconcile-permissions <product[,product…]> [--apply]" >&2; exit 64; }
+	local product
+	for product in $(echo "$products" | tr ',' ' '); do
+		case "$product" in *[!a-z_]*) echo "refusing product key '$product'" >&2; exit 64 ;; esac
+		log "reconcile permissions: $product (dry run)"
+		_reconcile_run "$product" --dry-run
+		if [ "$mode" = "--apply" ]; then
+			log "reconcile permissions: $product (applying)"
+			_reconcile_run "$product"
+		fi
+	done
+	[ "$mode" = "--apply" ] || echo "dry run only — nothing was written. Re-run with --apply to write it."
+}
+
+_reconcile_run() {
+	local product="$1"
+	shift
+	"${COMPOSE[@]}" run --rm --no-deps -T \
+		-e PYTHONPATH=/app \
+		-v "$(cd ../.. && pwd)/tools:/opt/tools:ro" \
+		account-worker python /opt/tools/reconcile_permissions.py "$product" --all "$@"
+}
+
 record_ref() {
 	local sha
 	sha=$(git -C ../.. rev-parse HEAD)
@@ -270,6 +303,7 @@ deploy)
 	;;
 previous-ref) previous_ref ;;
 last-good-ref) good_ref ;;
+reconcile-permissions) reconcile_permissions "${2:-}" "${3:-}" ;;
 backup) ./backup.sh ;;
 status)
 	"${COMPOSE[@]}" ps

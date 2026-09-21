@@ -386,6 +386,11 @@ edge-rollback: edge-guard ## Redeploy the previous good ref: make edge-rollback 
 	 echo "rolling back to $$ref"; \
 	 EDGE_REPO=$(EDGE_REPO) infrastructure/edge/ssh-deploy.sh $(HOST) $(CONFIRM) "$$ref" deploy
 
+.PHONY: edge-reconcile
+edge-reconcile: edge-guard ## Widen existing orgs' roles with new permission codes: HOST=… CONFIRM=… PRODUCTS=crm,finance [APPLY=1]
+	@test -n "$(PRODUCTS)" || (echo "PRODUCTS= is required: a comma-separated list of product keys" && exit 1)
+	@$(EDGE_SSH) reconcile-permissions $(PRODUCTS) $(if $(APPLY),--apply,)
+
 .PHONY: edge-preflight
 edge-preflight: edge-guard ## Check the box is deployable without changing anything: HOST=… CONFIRM=…
 	@$(EDGE_SSH) preflight
