@@ -1,17 +1,79 @@
 /**
- * Realistic fixture data, shaped exactly like the real API responses so the whole UI renders
- * without a live backend. Swapped out by the `USE_FIXTURES` flag in `client.ts`.
+ * Realistic fixture data, shaped exactly like the real API responses so the whole UI — including
+ * every write — renders and behaves without a live backend. Swapped in by the `USE_FIXTURES` flag
+ * in `client.ts`, dev-only.
  *
  * Money is minor units (paise). `lakh()` converts a figure in lakh of rupees to paise so the
  * seeds below stay readable: 1 lakh = ₹1,00,000 = 10,000,000 paise.
+ *
+ * The write functions below mirror the backend's own rules (`services/marketing/app/services.py`,
+ * `app/domain.py`) closely enough that a screen built against fixtures behaves the same as it will
+ * live: a duplicate audience name 409s, a campaign needs a real audience in the same "org", a
+ * status move outside `CAMPAIGN_TRANSITIONS` 409s, and an audience still targeted by a campaign
+ * refuses to delete.
  */
 
-import type { Audience, Campaign, Channel, RevenueSpendPoint } from "./types";
+import { ApiError } from "@opsgrids/client";
+
+import { channelPerformance, overviewTotals } from "@/data/derive";
+import type {
+  Audience,
+  AudienceIn,
+  AudiencePatch,
+  Campaign,
+  CampaignIn,
+  CampaignPatch,
+  CampaignStatus,
+  Channel,
+  ChannelPerformance,
+  OverviewSummary,
+  Page,
+  RevenueSpendPoint,
+} from "./types";
 
 const CURRENCY = "INR";
 
+/** The date the fixture seed was written against — every "today" fixture-mode reads. */
+export const FIXTURE_TODAY = "2026-08-15";
+
 /** Lakh of rupees → paise (minor units). */
 const lakh = (n: number): number => Math.round(n * 10_000_000);
+
+function notFound(message: string): ApiError {
+  return new ApiError(404, message, { status: 404, title: "Not found", detail: message });
+}
+
+function conflict(message: string): ApiError {
+  return new ApiError(409, message, { status: 409, title: "Conflict", detail: message });
+}
+
+function businessRule(field: string, message: string): ApiError {
+  return new ApiError(422, message, {
+    status: 422,
+    title: "Business rule violation",
+    detail: message,
+    errors: [{ field, code: "value_error", message }],
+  });
+}
+
+function fixtureId(prefix: string): string {
+  return `${prefix}-${crypto.randomUUID()}`;
+}
+
+function paginate<T>(items: T[], page: number, size: number): Page<T> {
+  const total = items.length;
+  const pages = total === 0 ? 0 : Math.ceil(total / size);
+  const start = (page - 1) * size;
+  return { items: items.slice(start, start + size), total, page, size, pages };
+}
+
+/** The lifecycle graph — a byte-for-byte mirror of `app.domain.CAMPAIGN_TRANSITIONS`. */
+const CAMPAIGN_TRANSITIONS: Record<CampaignStatus, ReadonlySet<CampaignStatus>> = {
+  draft: new Set(["live"]),
+  live: new Set(["paused", "ended"]),
+  paused: new Set(["live", "ended"]),
+  ended: new Set(),
+};
 
 /* ------------------------------- audiences ------------------------------- */
 
@@ -69,6 +131,77 @@ const AUDIENCE_SEEDS: AudienceSeed[] = [
 ];
 
 export const AUDIENCES: Audience[] = AUDIENCE_SEEDS.map((a) => ({ ...a }));
+
+export interface ListAudiencesParams {
+  q?: string;
+  page?: number;
+  size?: number;
+}
+
+function matchesAudienceQuery(a: Audience, q: string): boolean {
+  if (q === "") return true;
+  return a.name.toLowerCase().includes(q) || a.criteria.toLowerCase().includes(q);
+}
+
+export function listAudiencesFixture(params: ListAudiencesParams = {}): Page<Audience> {
+  const page = params.page ?? 1;
+  const size = params.size ?? 25;
+  const q = (params.q ?? "").trim().toLowerCase();
+  const sorted = AUDIENCES.filter((a) => matchesAudienceQuery(a, q)).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+  return paginate(sorted, page, size);
+}
+
+function findAudienceByName(name: string, excludeId?: string): Audience | undefined {
+  return AUDIENCES.find(
+    (a) => a.id !== excludeId && a.name.toLowerCase() === name.toLowerCase(),
+  );
+}
+
+export function createAudienceFixture(input: AudienceIn): Audience {
+  if (findAudienceByName(input.name)) {
+    throw conflict(`An audience named '${input.name}' already exists`);
+  }
+  const audience: Audience = {
+    id: fixtureId("aud"),
+    name: input.name,
+    size: input.size,
+    criteria: input.criteria ?? "",
+    created_at: input.created_at,
+  };
+  AUDIENCES.unshift(audience);
+  return audience;
+}
+
+export function updateAudienceFixture(id: string, patch: AudiencePatch): Audience {
+  const index = AUDIENCES.findIndex((a) => a.id === id);
+  const current = index === -1 ? undefined : AUDIENCES[index];
+  if (!current) throw notFound("That audience is not part of this organization");
+  if (patch.name !== undefined && patch.name !== current.name && findAudienceByName(patch.name, id)) {
+    throw conflict(`An audience named '${patch.name}' already exists`);
+  }
+  const updated: Audience = {
+    ...current,
+    ...(patch.name !== undefined ? { name: patch.name } : {}),
+    ...(patch.size !== undefined ? { size: patch.size } : {}),
+    ...(patch.criteria !== undefined ? { criteria: patch.criteria } : {}),
+    ...(patch.created_at !== undefined ? { created_at: patch.created_at } : {}),
+  };
+  AUDIENCES[index] = updated;
+  return updated;
+}
+
+export function deleteAudienceFixture(id: string): void {
+  const index = AUDIENCES.findIndex((a) => a.id === id);
+  const current = index === -1 ? undefined : AUDIENCES[index];
+  if (!current) throw notFound("That audience is not part of this organization");
+  const inUse = CAMPAIGNS.filter((c) => c.audience_id === id).length;
+  if (inUse > 0) {
+    throw conflict(`Used by ${inUse} campaign${inUse === 1 ? "" : "s"} — retarget or delete them first`);
+  }
+  AUDIENCES.splice(index, 1);
+}
 
 /* ------------------------------- campaigns ------------------------------- */
 
@@ -351,6 +484,118 @@ export const CAMPAIGNS: Campaign[] = CAMPAIGN_SEEDS.map((s) => ({
   owner: s.owner,
 }));
 
+export interface ListCampaignsParams {
+  q?: string;
+  channel?: Channel | "all";
+  status?: CampaignStatus | "all";
+  audience_id?: string;
+  page?: number;
+  size?: number;
+}
+
+function matchesCampaignFilters(c: Campaign, params: ListCampaignsParams): boolean {
+  const q = (params.q ?? "").trim().toLowerCase();
+  const matchesQuery =
+    q === "" ||
+    c.name.toLowerCase().includes(q) ||
+    c.goal.toLowerCase().includes(q) ||
+    c.owner.toLowerCase().includes(q);
+  const matchesChannel = !params.channel || params.channel === "all" || c.channel === params.channel;
+  const matchesStatus = !params.status || params.status === "all" || c.status === params.status;
+  const matchesAudience = !params.audience_id || c.audience_id === params.audience_id;
+  return matchesQuery && matchesChannel && matchesStatus && matchesAudience;
+}
+
+export function listCampaignsFixture(params: ListCampaignsParams = {}): Page<Campaign> {
+  const page = params.page ?? 1;
+  const size = params.size ?? 25;
+  const sorted = CAMPAIGNS.filter((c) => matchesCampaignFilters(c, params)).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+  return paginate(sorted, page, size);
+}
+
+export function getCampaignFixture(id: string): Campaign {
+  const found = CAMPAIGNS.find((c) => c.id === id);
+  if (!found) throw notFound("That campaign is not part of this organization");
+  return found;
+}
+
+export function createCampaignFixture(input: CampaignIn): Campaign {
+  const audience = AUDIENCES.find((a) => a.id === input.audience_id);
+  if (!audience) throw notFound("That audience is not part of this organization");
+  if (input.end_date && input.end_date < input.start_date) {
+    throw businessRule("end_date", "end_date must be on or after start_date");
+  }
+  const campaign: Campaign = {
+    id: fixtureId("cmp"),
+    name: input.name,
+    channel: input.channel,
+    status: input.status ?? "draft",
+    currency: (input.currency ?? "INR").toUpperCase(),
+    budget_minor: input.budget_minor ?? 0,
+    spent_minor: input.spent_minor ?? 0,
+    revenue_minor: input.revenue_minor ?? 0,
+    pipeline_minor: input.pipeline_minor ?? 0,
+    leads: input.leads ?? 0,
+    conversions: input.conversions ?? 0,
+    goal: input.goal ?? "",
+    audience_id: input.audience_id,
+    start_date: input.start_date,
+    end_date: input.end_date ?? null,
+    owner: input.owner ?? "",
+  };
+  CAMPAIGNS.unshift(campaign);
+  return campaign;
+}
+
+export function updateCampaignFixture(id: string, patch: CampaignPatch): Campaign {
+  const index = CAMPAIGNS.findIndex((c) => c.id === id);
+  const current = index === -1 ? undefined : CAMPAIGNS[index];
+  if (!current) throw notFound("That campaign is not part of this organization");
+
+  if (patch.audience_id !== undefined && !AUDIENCES.some((a) => a.id === patch.audience_id)) {
+    throw notFound("That audience is not part of this organization");
+  }
+  if (patch.status !== undefined && patch.status !== current.status) {
+    const allowed = CAMPAIGN_TRANSITIONS[current.status];
+    if (!allowed.has(patch.status)) {
+      throw conflict(`A campaign cannot move from '${current.status}' to '${patch.status}'`);
+    }
+  }
+  const mergedStart = patch.start_date ?? current.start_date;
+  const mergedEnd = patch.end_date !== undefined ? patch.end_date : current.end_date;
+  if (mergedEnd !== null && mergedEnd !== undefined && mergedEnd < mergedStart) {
+    throw businessRule("end_date", "end_date must be on or after start_date");
+  }
+
+  const updated: Campaign = {
+    ...current,
+    ...(patch.name !== undefined ? { name: patch.name } : {}),
+    ...(patch.channel !== undefined ? { channel: patch.channel } : {}),
+    ...(patch.status !== undefined ? { status: patch.status } : {}),
+    ...(patch.budget_minor !== undefined ? { budget_minor: patch.budget_minor } : {}),
+    ...(patch.spent_minor !== undefined ? { spent_minor: patch.spent_minor } : {}),
+    ...(patch.revenue_minor !== undefined ? { revenue_minor: patch.revenue_minor } : {}),
+    ...(patch.pipeline_minor !== undefined ? { pipeline_minor: patch.pipeline_minor } : {}),
+    ...(patch.leads !== undefined ? { leads: patch.leads } : {}),
+    ...(patch.conversions !== undefined ? { conversions: patch.conversions } : {}),
+    ...(patch.goal !== undefined ? { goal: patch.goal } : {}),
+    ...(patch.audience_id !== undefined ? { audience_id: patch.audience_id } : {}),
+    ...(patch.start_date !== undefined ? { start_date: patch.start_date } : {}),
+    ...(patch.end_date !== undefined ? { end_date: patch.end_date } : {}),
+    ...(patch.owner !== undefined ? { owner: patch.owner } : {}),
+  };
+  CAMPAIGNS[index] = updated;
+  return updated;
+}
+
+export function deleteCampaignFixture(id: string): void {
+  const index = CAMPAIGNS.findIndex((c) => c.id === id);
+  if (index === -1) throw notFound("That campaign is not part of this organization");
+  CAMPAIGNS.splice(index, 1);
+}
+
 /* ------------------------ revenue vs spend, monthly ----------------------- */
 
 interface SeriesSeed {
@@ -380,7 +625,8 @@ export const REVENUE_SPEND_SERIES: RevenueSpendPoint[] = SERIES_SEED.map((p) => 
 
 /**
  * A representative weekly performance series for a single campaign detail screen, expressed as a
- * fraction of that campaign's totals so it scales to any campaign. Eight flight-weeks.
+ * fraction of that campaign's totals so it scales to any campaign. Eight flight-weeks — the exact
+ * shape `app.domain.CAMPAIGN_WEEK_SHAPE` uses live.
  */
 export const CAMPAIGN_WEEK_SHAPE: { label: string; revenue: number; spend: number }[] = [
   { label: "W1", revenue: 0.04, spend: 0.09 },
@@ -392,3 +638,26 @@ export const CAMPAIGN_WEEK_SHAPE: { label: string; revenue: number; spend: numbe
   { label: "W7", revenue: 0.16, spend: 0.14 },
   { label: "W8", revenue: 0.16, spend: 0.13 },
 ];
+
+/* ------------------------------ rollups ----------------------------------- */
+
+export function channelsFixture(): ChannelPerformance[] {
+  return channelPerformance(CAMPAIGNS);
+}
+
+export function overviewFixture(): OverviewSummary {
+  const totals = overviewTotals(CAMPAIGNS);
+  const currency = CAMPAIGNS[0]?.currency ?? "INR";
+  return {
+    currency,
+    revenue_minor: totals.revenueMinor,
+    spend_minor: totals.spendMinor,
+    pipeline_minor: totals.pipelineMinor,
+    leads: totals.leads,
+    conversions: totals.conversions,
+    roas: totals.roas,
+    cpl_minor: totals.cplMinor,
+    revenue_vs_spend: REVENUE_SPEND_SERIES,
+    channels: channelPerformance(CAMPAIGNS),
+  };
+}

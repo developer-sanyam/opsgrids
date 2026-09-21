@@ -110,7 +110,7 @@ export function needsAttention(campaigns: readonly Campaign[]): AttentionItem[] 
     let reason: string | null = null;
     if (r < 2) {
       reason = `ROAS ${r.toFixed(1)}× — below the 2× floor`;
-    } else if (spendPace >= 0.9 && r < 2.5) {
+    } else if (campaign.budget_minor > 0 && spendPace >= 0.9 && r < 2.5) {
       reason = `${Math.round(spendPace * 100)}% of budget spent at ${r.toFixed(1)}× ROAS`;
     }
     if (reason) items.push({ campaign, campaignRoas: r, reason });

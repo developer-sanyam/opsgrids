@@ -1,12 +1,12 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import type { CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { getCampaigns, getRevenueSpendSeries, TRENDS_ARE_SAMPLE } from "@/api/client";
+import { getCampaigns, getOverview } from "@/api/client";
 import type { Campaign } from "@/api/types";
 import { useAuth } from "@opsgrids/client";
-import { channelPerformance, needsAttention, overviewTotals } from "@/data/derive";
-import { useAsync } from "@opsgrids/client";
+import { needsAttention } from "@/data/derive";
+import { problemMessage, useAsync } from "@opsgrids/client";
 import {
   AlertTriangleIcon,
   FunnelIcon,
@@ -14,13 +14,13 @@ import {
   PlusIcon,
   TargetIcon,
   TrendingUpIcon,
-  cn,
 } from "@opsgrids/ui";
 import { formatMoney, formatMoneyCompact, formatRoas } from "@/lib/format";
 import {
   Button,
   Card,
   ChannelBreakdown,
+  EmptyState,
   ErrorState,
   KpiCard,
   NeedsAttention,
@@ -29,90 +29,31 @@ import {
   Skeleton,
 } from "@/ui";
 import type { KpiTone } from "@/ui";
-import { SAMPLE_TREND } from "@/ui/sampleCopy";
 
-const CURRENCY = "INR";
-
-/** A stable empty reference so the derived-data memos don't churn while loading. */
+/** A stable empty reference so the derived-data memo doesn't churn while loading. */
 const NO_CAMPAIGNS: Campaign[] = [];
 
-type Period = "month" | "quarter" | "year";
-
-const PERIODS: { value: Period; label: string; caption: string }[] = [
-  { value: "month", label: "Month", caption: "vs last month" },
-  { value: "quarter", label: "Quarter", caption: "vs last quarter" },
-  { value: "year", label: "Year", caption: "vs last year" },
-];
+/**
+ * Live/paused campaigns worth reviewing for "Needs attention" are pulled in two bounded, status-
+ * filtered pages rather than one 200-row cap over every status — a status filter the server
+ * already supports. This still bounds each status to a generous but finite working set; an org
+ * running more concurrent live-or-paused campaigns than that sees only the largest slice. The KPI
+ * headlines above never share this limit — they come from the server's own rollup.
+ */
+const ATTENTION_PAGE_SIZE = 100;
 
 interface KpiConfig {
   key: string;
   label: string;
   value: string;
-  deltaPct: number;
-  goodWhen: "up" | "down";
-  series: number[];
   icon: React.ReactNode;
   tone: KpiTone;
 }
 
-function buildKpis(campaigns: Campaign[]): KpiConfig[] {
-  const t = overviewTotals(campaigns);
-  return [
-    {
-      key: "revenue",
-      label: "Revenue attributed",
-      value: formatMoneyCompact(t.revenueMinor, CURRENCY),
-      deltaPct: 18.4,
-      goodWhen: "up",
-      series: [612, 640, 668, 690, 712, 760, 800, 828],
-      icon: <TrendingUpIcon className="size-5" />,
-      tone: "accent",
-    },
-    {
-      key: "pipeline",
-      label: "Pipeline generated",
-      value: formatMoneyCompact(t.pipelineMinor, CURRENCY),
-      deltaPct: 11.2,
-      goodWhen: "up",
-      series: [1500, 1560, 1600, 1650, 1700, 1760, 1790, 1802],
-      icon: <FunnelIcon className="size-5" />,
-      tone: "info",
-    },
-    {
-      key: "cpl",
-      label: "Cost per lead",
-      value: t.cplMinor === null ? "—" : formatMoney(t.cplMinor, CURRENCY),
-      deltaPct: -7.9,
-      goodWhen: "down",
-      series: [4200, 4100, 3950, 3880, 3800, 3720, 3680, 3649],
-      icon: <TargetIcon className="size-5" />,
-      tone: "cyan",
-    },
-    {
-      key: "roas",
-      label: "ROAS",
-      value: formatRoas(t.roas),
-      deltaPct: 6.5,
-      goodWhen: "up",
-      series: [390, 400, 410, 415, 420, 430, 438, 442],
-      icon: <GaugeIcon className="size-5" />,
-      tone: "positive",
-    },
-  ];
-}
-
-function OverviewHeader({
-  orgName,
-  period,
-  onPeriod,
-}: {
-  orgName: string;
-  period: Period;
-  onPeriod: (p: Period) => void;
-}) {
+function OverviewHeader({ orgName }: { orgName: string }) {
   const navigate = useNavigate();
   return (
-    <header className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+    <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
       <div className="flex flex-col gap-1">
         <nav aria-label="Breadcrumb" className="text-sm font-medium text-muted">
           Workspace <span className="text-faint">/</span>{" "}
@@ -120,68 +61,88 @@ function OverviewHeader({
         </nav>
         <h1 className="display text-3xl font-extrabold leading-tight sm:text-[2.1rem]">Overview</h1>
       </div>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <div
-          role="tablist"
-          aria-label="Reporting period"
-          className="flex items-center rounded-full bg-surface p-0.5 shadow-card"
-        >
-          {PERIODS.map((p) => (
-            <button
-              key={p.value}
-              type="button"
-              role="tab"
-              aria-selected={period === p.value}
-              onClick={() => onPeriod(p.value)}
-              className={cn(
-                "rounded-full px-4 h-9 text-sm font-semibold transition-colors",
-                period === p.value ? "bg-accent text-white" : "text-muted hover:text-ink",
-              )}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-        <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => navigate("/campaigns")}>
-          New campaign
-        </Button>
-      </div>
+      <Button
+        leadingIcon={<PlusIcon className="size-4" />}
+        onClick={() => navigate("/campaigns?new=1")}
+      >
+        New campaign
+      </Button>
     </header>
   );
 }
 
 export function OverviewPage() {
   const { user } = useAuth();
-  const [period, setPeriod] = useState<Period>("quarter");
-  const campaigns = useAsync(getCampaigns, []);
-  const series = useAsync(getRevenueSpendSeries, []);
+  const overview = useAsync(getOverview, []);
+  const attention = useAsync(
+    useCallback(
+      () =>
+        Promise.all([
+          getCampaigns({ status: "live", size: ATTENTION_PAGE_SIZE }),
+          getCampaigns({ status: "paused", size: ATTENTION_PAGE_SIZE }),
+        ]).then(([live, paused]) => [...live.items, ...paused.items]),
+      [],
+    ),
+    [],
+  );
 
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
     user?.organizations[0]?.name ??
     "OpsGrids";
 
-  const items = useMemo(
-    () => (campaigns.status === "success" ? campaigns.data.items : NO_CAMPAIGNS),
-    [campaigns],
+  const attentionItems = useMemo(
+    () => needsAttention(attention.status === "success" ? attention.data : NO_CAMPAIGNS),
+    [attention],
   );
 
-  const kpis = useMemo(() => buildKpis(items), [items]);
-  const channels = useMemo(() => channelPerformance(items), [items]);
-  const attention = useMemo(() => needsAttention(items), [items]);
-  const caption = PERIODS.find((p) => p.value === period)?.caption ?? "";
+  const kpis: KpiConfig[] | null =
+    overview.status === "success"
+      ? [
+          {
+            key: "revenue",
+            label: "Revenue attributed",
+            value: formatMoneyCompact(overview.data.revenue_minor, overview.data.currency),
+            icon: <TrendingUpIcon className="size-5" />,
+            tone: "accent",
+          },
+          {
+            key: "pipeline",
+            label: "Pipeline generated",
+            value: formatMoneyCompact(overview.data.pipeline_minor, overview.data.currency),
+            icon: <FunnelIcon className="size-5" />,
+            tone: "info",
+          },
+          {
+            key: "cpl",
+            label: "Cost per lead",
+            value:
+              overview.data.cpl_minor === null
+                ? "No leads yet"
+                : formatMoney(overview.data.cpl_minor, overview.data.currency),
+            icon: <TargetIcon className="size-5" />,
+            tone: "cyan",
+          },
+          {
+            key: "roas",
+            label: "ROAS",
+            value: overview.data.spend_minor === 0 ? "No spend yet" : formatRoas(overview.data.roas),
+            icon: <GaugeIcon className="size-5" />,
+            tone: "positive",
+          },
+        ]
+      : null;
 
   return (
     <div className="rise flex flex-col gap-5">
-      <OverviewHeader orgName={orgName} period={period} onPeriod={setPeriod} />
+      <OverviewHeader orgName={orgName} />
 
       {/* Row 1 — KPI cards */}
       <section
         aria-label="Key metrics"
         className="cascade grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4"
       >
-        {campaigns.status === "loading"
+        {overview.status === "loading"
           ? Array.from({ length: 4 }).map((_, i) => (
               <Card key={i} className="flex flex-col gap-4 p-5" style={{ "--i": i } as CSSProperties}>
                 <div className="flex justify-between">
@@ -193,25 +154,19 @@ export function OverviewPage() {
               </Card>
             ))
           : null}
-        {campaigns.status === "error" ? (
+        {overview.status === "error" ? (
           <Card className="p-5 sm:col-span-2 xl:col-span-4">
-            <ErrorState message={campaigns.error.message} />
+            <ErrorState
+              title="Couldn't load the overview"
+              message={problemMessage(overview.error)}
+              onRetry={overview.reload}
+            />
           </Card>
         ) : null}
-        {campaigns.status === "success"
+        {kpis
           ? kpis.map((kpi, i) => (
               <div key={kpi.key} style={{ "--i": i } as CSSProperties}>
-                <KpiCard
-                  label={kpi.label}
-                  value={kpi.value}
-                  deltaPct={kpi.deltaPct}
-                  goodWhen={kpi.goodWhen}
-                  series={kpi.series}
-                  icon={kpi.icon}
-                  tone={kpi.tone}
-                  caption={caption}
-                  sample={TRENDS_ARE_SAMPLE ? SAMPLE_TREND : false}
-                />
+                <KpiCard label={kpi.label} value={kpi.value} icon={kpi.icon} tone={kpi.tone} />
               </div>
             ))
           : null}
@@ -224,10 +179,18 @@ export function OverviewPage() {
             title="Revenue vs spend"
             subtitle="Attributed revenue against marketing spend, monthly"
           />
-          {series.status === "success" ? (
-            <RevenueSpendChart series={series.data} currency={CURRENCY} />
-          ) : series.status === "error" ? (
-            <ErrorState message={series.error.message} />
+          {overview.status === "success" ? (
+            overview.data.revenue_vs_spend.length > 0 ? (
+              <RevenueSpendChart series={overview.data.revenue_vs_spend} currency={overview.data.currency} />
+            ) : (
+              <EmptyState
+                icon={<TrendingUpIcon className="size-6" />}
+                title="No attribution data yet"
+                description="This chart fills in once revenue and spend are being recorded against a campaign — there is nothing fabricated here to show in the meantime."
+              />
+            )
+          ) : overview.status === "error" ? (
+            <ErrorState message={problemMessage(overview.error)} onRetry={overview.reload} />
           ) : (
             <Skeleton className="h-60 w-full rounded-tile" />
           )}
@@ -235,10 +198,17 @@ export function OverviewPage() {
 
         <Card className="flex flex-col gap-5 p-6 xl:col-span-1">
           <SectionHeader title="By channel" subtitle="Where revenue comes from" />
-          {campaigns.status === "success" && channels.length > 0 ? (
-            <ChannelBreakdown data={channels} currency={CURRENCY} />
-          ) : campaigns.status === "error" ? (
-            <ErrorState message={campaigns.error.message} />
+          {overview.status === "success" ? (
+            overview.data.channels.length > 0 ? (
+              <ChannelBreakdown data={overview.data.channels} currency={overview.data.currency} />
+            ) : (
+              <EmptyState
+                title="No campaigns yet"
+                description="Create a campaign to see spend and revenue broken down by channel."
+              />
+            )
+          ) : overview.status === "error" ? (
+            <ErrorState message={problemMessage(overview.error)} onRetry={overview.reload} />
           ) : (
             <Skeleton className="h-60 w-full rounded-tile" />
           )}
@@ -252,24 +222,24 @@ export function OverviewPage() {
             title="Needs attention"
             subtitle="Live campaigns spending below the 2× ROAS floor"
             action={
-              campaigns.status === "success" && attention.length > 0 ? (
+              attention.status === "success" && attentionItems.length > 0 ? (
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-negative-soft px-3 py-1 text-xs font-bold text-negative">
                   <AlertTriangleIcon className="size-3.5" />
-                  {attention.length} to review
+                  {attentionItems.length} to review
                 </span>
               ) : undefined
             }
           />
-          {campaigns.status === "loading" ? (
+          {attention.status === "loading" ? (
             <div className="flex flex-col gap-2">
               {Array.from({ length: 2 }).map((_, i) => (
                 <Skeleton key={i} className="h-16 w-full rounded-tile" />
               ))}
             </div>
-          ) : campaigns.status === "error" ? (
-            <ErrorState message={campaigns.error.message} />
+          ) : attention.status === "error" ? (
+            <ErrorState message={problemMessage(attention.error)} onRetry={attention.reload} />
           ) : (
-            <NeedsAttention items={attention} />
+            <NeedsAttention items={attentionItems} />
           )}
         </Card>
       </section>
