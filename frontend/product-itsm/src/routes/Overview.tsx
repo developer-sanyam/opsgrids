@@ -2,66 +2,34 @@ import { useCallback, useMemo, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { getAllAssets, getAllIncidents, getAllRequests, TRENDS_ARE_SAMPLE } from "@/api/client";
-import type { Asset, Incident, ServiceRequest } from "@/api/types";
-import { useAuth } from "@opsgrids/client";
-import {
-  assetsUnderManagement,
-  breakdownByCategory,
-  breakdownByPriority,
-  needsAttention,
-  openIncidentCount,
-  requestsAwaitingApproval,
-  slaCompliancePct,
-} from "@/data/derive";
-import { KPI_SAMPLE } from "@/data/samples";
-import { useAsync } from "@opsgrids/client";
+import { getOverview, listIncidents } from "@/api/client";
+import type { Incident, Overview } from "@/api/types";
+import { useAsync, useAuth } from "@opsgrids/client";
+import { needsAttention } from "@/data/derive";
+import { todayLabel } from "@/lib/format";
 import {
   Button,
   Card,
   CategoryDonut,
   ErrorState,
-  IncidentVolumeChart,
   KpiCard,
   NeedsAttention,
   PriorityBreakdown,
   SectionHeader,
   Skeleton,
 } from "@/ui";
-import type { KpiTone } from "@/ui";
+import { IncidentVolumeChart } from "@/ui/IncidentVolumeChart";
 import {
   AlertTriangleIcon,
-  BellIcon,
   BoxIcon,
   CalendarIcon,
-  CheckCircleIcon,
   PlusIcon,
   SearchIcon,
   ShieldCheckIcon,
   TicketIcon,
 } from "@opsgrids/ui";
-import { SAMPLE_TREND } from "@/ui/sampleCopy";
 
-interface OverviewData {
-  incidents: Incident[];
-  requests: ServiceRequest[];
-  assets: Asset[];
-}
-
-const WARRANTY_WINDOW_DAYS = 60;
-const NOW_MS = Date.parse("2026-08-24T18:00:00Z");
-
-/** Assets whose warranty / support expires within the next 60 days (and hasn't already lapsed). */
-function warrantyExpiringSoon(assets: readonly Asset[]): number {
-  const horizon = NOW_MS + WARRANTY_WINDOW_DAYS * 86_400_000;
-  return assets.filter((a) => {
-    if (a.status === "retired" || a.warranty_expires_at === null) return false;
-    const exp = Date.parse(`${a.warranty_expires_at}T00:00:00Z`);
-    return exp >= NOW_MS && exp <= horizon;
-  }).length;
-}
-
-/** The Overview's top bar: breadcrumb + title, then search, notifications and the primary action. */
+/** The Overview's top bar: breadcrumb + title, then search, the date and the primary action. */
 function OverviewHeader({ orgName }: { orgName: string }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
@@ -85,7 +53,7 @@ function OverviewHeader({ orgName }: { orgName: string }) {
             const q = query.trim();
             navigate(q ? `/incidents?q=${encodeURIComponent(q)}` : "/incidents");
           }}
-          className="hidden h-11 min-w-0 items-center gap-2 rounded-full bg-surface px-4 shadow-card focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2 md:flex md:w-60"
+          className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-full bg-surface px-4 shadow-card focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2 sm:w-60 sm:flex-none"
         >
           <SearchIcon className="size-[18px] shrink-0 text-faint" />
           <label htmlFor="overview-search" className="sr-only">
@@ -101,24 +69,15 @@ function OverviewHeader({ orgName }: { orgName: string }) {
           />
         </form>
 
-        <Link
-          to="/notifications"
-          aria-label="Notifications"
-          className="relative grid size-11 shrink-0 place-items-center rounded-full bg-surface text-ink-soft shadow-card hover:bg-ground transition-colors"
-        >
-          <BellIcon className="size-5" />
-          <span className="absolute right-2.5 top-2.5 size-2 rounded-full bg-accent ring-2 ring-surface" aria-hidden />
-        </Link>
-
         <span className="hidden h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold text-ink-soft shadow-card sm:inline-flex">
           <CalendarIcon className="size-4 text-muted" />
-          <span className="tnum">Mon, 24 Aug 2026</span>
+          <span className="tnum">{todayLabel()}</span>
         </span>
 
         <Button
           size="md"
           leadingIcon={<PlusIcon className="size-4" />}
-          onClick={() => navigate("/incidents")}
+          onClick={() => navigate("/incidents?new=1")}
         >
           New incident
         </Button>
@@ -127,68 +86,8 @@ function OverviewHeader({ orgName }: { orgName: string }) {
   );
 }
 
-interface KpiConfig {
-  key: string;
-  label: string;
-  value: string;
-  deltaPct: number;
-  series: number[];
-  icon: ReactNode;
-  tone: KpiTone;
-  goodWhen: "up" | "down";
-  sample: boolean;
-}
-
-function buildKpis(data: OverviewData): KpiConfig[] {
-  return [
-    {
-      key: "open",
-      label: "Open incidents",
-      value: String(openIncidentCount(data.incidents)),
-      deltaPct: KPI_SAMPLE.openIncidents.delta,
-      series: KPI_SAMPLE.openIncidents.series,
-      icon: <AlertTriangleIcon className="size-5" />,
-      tone: "danger",
-      goodWhen: "down",
-      sample: true,
-    },
-    {
-      key: "sla",
-      label: "SLA compliance",
-      value: `${slaCompliancePct(data.incidents)}%`,
-      deltaPct: KPI_SAMPLE.slaCompliance.delta,
-      series: KPI_SAMPLE.slaCompliance.series,
-      icon: <ShieldCheckIcon className="size-5" />,
-      tone: "positive",
-      goodWhen: "up",
-      sample: true,
-    },
-    {
-      key: "approval",
-      label: "Requests awaiting approval",
-      value: String(requestsAwaitingApproval(data.requests)),
-      deltaPct: KPI_SAMPLE.awaitingApproval.delta,
-      series: KPI_SAMPLE.awaitingApproval.series,
-      icon: <TicketIcon className="size-5" />,
-      tone: "info",
-      goodWhen: "down",
-      sample: true,
-    },
-    {
-      key: "assets",
-      label: "Assets under management",
-      value: String(assetsUnderManagement(data.assets)),
-      deltaPct: KPI_SAMPLE.assetsManaged.delta,
-      series: KPI_SAMPLE.assetsManaged.series,
-      icon: <BoxIcon className="size-5" />,
-      tone: "cyan",
-      goodWhen: "up",
-      sample: true,
-    },
-  ];
-}
-
-/** One row in the compact "desk snapshot" panel. */
+/** One row in the compact "desk snapshot" panel — everything here is exact, from the overview
+ *  rollup, never recomputed from a capped page. */
 function SnapshotRow({
   icon,
   label,
@@ -211,38 +110,28 @@ function SnapshotRow({
 
 export function OverviewPage() {
   const { user } = useAuth();
-  const load = useCallback(
-    () =>
-      Promise.all([getAllIncidents(), getAllRequests(), getAllAssets()]).then(
-        ([incidents, requests, assets]): OverviewData => ({ incidents, requests, assets }),
-      ),
+  const overviewState = useAsync<Overview>(useCallback(() => getOverview(), []), []);
+  // A bounded, priority-sorted slice powers the "needs attention" preview — a curated queue with
+  // a "View all" link beside it, not a count, so it does not need every row in the org.
+  const attentionState = useAsync<Incident[]>(
+    useCallback(async () => (await listIncidents({ sort: "priority", size: 50 })).items, []),
     [],
   );
-  const state = useAsync(load, []);
 
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
     user?.organizations[0]?.name ??
     "OpsGrids";
 
-  const kpis = useMemo(
-    () => (state.status === "success" ? buildKpis(state.data) : []),
-    [state],
-  );
-  const priority = useMemo(
-    () => (state.status === "success" ? breakdownByPriority(state.data.incidents) : []),
-    [state],
-  );
-  const category = useMemo(
-    () => (state.status === "success" ? breakdownByCategory(state.data.incidents) : []),
-    [state],
-  );
   const attention = useMemo(
-    () => (state.status === "success" ? needsAttention(state.data.incidents) : []),
-    [state],
+    () => (attentionState.status === "success" ? needsAttention(attentionState.data) : []),
+    [attentionState],
   );
 
-  const openTotal = state.status === "success" ? openIncidentCount(state.data.incidents) : 0;
+  const p1Count =
+    overviewState.status === "success"
+      ? (overviewState.data.by_priority.find((b) => b.key === "P1")?.count ?? 0)
+      : 0;
 
   return (
     <div className="rise flex flex-col gap-5">
@@ -253,7 +142,7 @@ export function OverviewPage() {
         aria-label="Key metrics"
         className="cascade grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4"
       >
-        {state.status === "loading"
+        {overviewState.status === "loading"
           ? Array.from({ length: 4 }).map((_, i) => (
               <Card key={i} className="flex flex-col gap-4 p-5" style={{ "--i": i } as CSSProperties}>
                 <div className="flex justify-between">
@@ -265,37 +154,69 @@ export function OverviewPage() {
               </Card>
             ))
           : null}
-        {state.status === "error" ? (
+        {overviewState.status === "error" ? (
           <Card className="p-5 sm:col-span-2 xl:col-span-4">
-            <ErrorState message={state.error.message} />
+            <ErrorState
+              message={overviewState.error.message}
+              onRetry={overviewState.reload}
+            />
           </Card>
         ) : null}
-        {state.status === "success"
-          ? kpis.map((kpi, i) => (
-              <div key={kpi.key} style={{ "--i": i } as CSSProperties}>
-                <KpiCard
-                  label={kpi.label}
-                  value={kpi.value}
-                  deltaPct={kpi.deltaPct}
-                  series={kpi.series}
-                  icon={kpi.icon}
-                  tone={kpi.tone}
-                  goodWhen={kpi.goodWhen}
-                  sample={kpi.sample ? SAMPLE_TREND : false}
-                />
-              </div>
-            ))
+        {overviewState.status === "success"
+          ? (() => {
+              const o = overviewState.data;
+              return (
+                <>
+                  <div style={{ "--i": 0 } as CSSProperties}>
+                    <KpiCard
+                      label="Open incidents"
+                      value={String(o.open_incidents)}
+                      icon={<AlertTriangleIcon className="size-5" />}
+                      tone="danger"
+                      goodWhen="down"
+                    />
+                  </div>
+                  <div style={{ "--i": 1 } as CSSProperties}>
+                    <KpiCard
+                      label="SLA compliance"
+                      value={`${o.sla_compliance_pct}%`}
+                      icon={<ShieldCheckIcon className="size-5" />}
+                      tone="positive"
+                      goodWhen="up"
+                    />
+                  </div>
+                  <div style={{ "--i": 2 } as CSSProperties}>
+                    <KpiCard
+                      label="Requests awaiting approval"
+                      value={String(o.requests_awaiting_approval)}
+                      icon={<TicketIcon className="size-5" />}
+                      tone="info"
+                      goodWhen="down"
+                    />
+                  </div>
+                  <div style={{ "--i": 3 } as CSSProperties}>
+                    <KpiCard
+                      label="Assets under management"
+                      value={String(o.assets_under_management)}
+                      icon={<BoxIcon className="size-5" />}
+                      tone="cyan"
+                      goodWhen="up"
+                    />
+                  </div>
+                </>
+              );
+            })()
           : null}
       </section>
 
       {/* Row 2 — volume trend · priority bars · category donut */}
       <section aria-label="Incident analytics" className="grid grid-cols-1 gap-5 xl:grid-cols-4">
         <Card className="flex flex-col gap-4 p-6 xl:col-span-2">
-          <SectionHeader title="Incident volume" subtitle="Opened vs resolved over time" />
-          {state.status === "success" ? (
-            <IncidentVolumeChart sample={TRENDS_ARE_SAMPLE} />
-          ) : state.status === "error" ? (
-            <ErrorState message={state.error.message} />
+          <SectionHeader title="Incident volume" subtitle="Opened vs resolved, last 6 weeks" />
+          {overviewState.status === "success" ? (
+            <IncidentVolumeChart data={overviewState.data.volume} />
+          ) : overviewState.status === "error" ? (
+            <ErrorState message={overviewState.error.message} onRetry={overviewState.reload} />
           ) : (
             <Skeleton className="h-56 w-full rounded-tile" />
           )}
@@ -303,10 +224,12 @@ export function OverviewPage() {
 
         <Card className="flex flex-col gap-5 p-6 xl:col-span-1">
           <SectionHeader title="Open by priority" subtitle="Where the load sits" />
-          {state.status === "success" && priority.length > 0 ? (
-            <PriorityBreakdown data={priority} total={openTotal} />
-          ) : state.status === "error" ? (
-            <ErrorState message={state.error.message} />
+          {overviewState.status === "success" && overviewState.data.by_priority.length > 0 ? (
+            <PriorityBreakdown data={overviewState.data.by_priority} total={overviewState.data.open_incidents} />
+          ) : overviewState.status === "error" ? (
+            <ErrorState message={overviewState.error.message} onRetry={overviewState.reload} />
+          ) : overviewState.status === "success" ? (
+            <p className="text-sm text-muted">No open incidents right now.</p>
           ) : (
             <Skeleton className="h-56 w-full rounded-tile" />
           )}
@@ -314,10 +237,12 @@ export function OverviewPage() {
 
         <Card className="flex flex-col gap-5 p-6 xl:col-span-1">
           <SectionHeader title="Open by category" subtitle="What's breaking" />
-          {state.status === "success" && category.length > 0 ? (
-            <CategoryDonut data={category} total={openTotal} />
-          ) : state.status === "error" ? (
-            <ErrorState message={state.error.message} />
+          {overviewState.status === "success" && overviewState.data.by_category.length > 0 ? (
+            <CategoryDonut data={overviewState.data.by_category} total={overviewState.data.open_incidents} />
+          ) : overviewState.status === "error" ? (
+            <ErrorState message={overviewState.error.message} onRetry={overviewState.reload} />
+          ) : overviewState.status === "success" ? (
+            <p className="text-sm text-muted">No open incidents right now.</p>
           ) : (
             <Skeleton className="h-56 w-full rounded-tile" />
           )}
@@ -339,65 +264,47 @@ export function OverviewPage() {
               </Link>
             }
           />
-          {state.status === "loading" ? (
+          {attentionState.status === "loading" ? (
             <div className="flex flex-col gap-3 py-2">
               {Array.from({ length: 4 }).map((_, i) => (
                 <Skeleton key={i} className="h-16 w-full rounded-tile" />
               ))}
             </div>
           ) : null}
-          {state.status === "error" ? <ErrorState message={state.error.message} /> : null}
-          {state.status === "success" ? <NeedsAttention incidents={attention} /> : null}
+          {attentionState.status === "error" ? (
+            <ErrorState message={attentionState.error.message} onRetry={attentionState.reload} />
+          ) : null}
+          {attentionState.status === "success" ? <NeedsAttention incidents={attention} /> : null}
         </Card>
 
         <Card className="flex flex-col gap-5 p-6">
           <SectionHeader title="Desk snapshot" subtitle="Right now" />
-          {state.status === "success" ? (
+          {overviewState.status === "success" ? (
             <ul className="flex flex-col gap-4">
               <SnapshotRow
                 icon={<AlertTriangleIcon className="size-5" />}
                 label="Open P1 incidents"
-                value={String(
-                  state.data.incidents.filter(
-                    (i) => i.priority === "P1" && i.status !== "resolved" && i.status !== "closed",
-                  ).length,
-                )}
+                value={String(p1Count)}
                 tone="bg-danger-soft text-danger"
               />
               <SnapshotRow
                 icon={<ShieldCheckIcon className="size-5" />}
-                label="SLAs breached"
-                value={String(state.data.incidents.filter((i) => i.sla_state === "breached").length)}
+                label="SLA compliance"
+                value={`${overviewState.data.sla_compliance_pct}%`}
                 tone="bg-late-soft text-late"
               />
               <SnapshotRow
                 icon={<TicketIcon className="size-5" />}
                 label="Requests awaiting approval"
-                value={String(requestsAwaitingApproval(state.data.requests))}
+                value={String(overviewState.data.requests_awaiting_approval)}
                 tone="bg-info-soft text-info"
               />
-              <SnapshotRow
-                icon={<BoxIcon className="size-5" />}
-                label="Warranties expiring ≤ 60d"
-                value={String(warrantyExpiringSoon(state.data.assets))}
-                tone="bg-accent-soft text-accent-ink"
-              />
-              <SnapshotRow
-                icon={<CheckCircleIcon className="size-5" />}
-                label="Resolved / closed today"
-                value={String(
-                  state.data.incidents.filter(
-                    (i) =>
-                      (i.status === "resolved" || i.status === "closed") &&
-                      i.updated_at.startsWith("2026-08-24"),
-                  ).length,
-                )}
-                tone="bg-present-soft text-present"
-              />
             </ul>
+          ) : overviewState.status === "error" ? (
+            <ErrorState message={overviewState.error.message} onRetry={overviewState.reload} />
           ) : (
             <div className="flex flex-col gap-4">
-              {Array.from({ length: 5 }).map((_, i) => (
+              {Array.from({ length: 3 }).map((_, i) => (
                 <Skeleton key={i} className="h-9 w-full rounded-tile" />
               ))}
             </div>

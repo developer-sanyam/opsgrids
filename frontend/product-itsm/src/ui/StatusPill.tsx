@@ -98,6 +98,7 @@ const REQUEST_TONE: Record<RequestStatus, string> = {
   approval: "bg-late-soft text-late",
   in_progress: "bg-info-soft text-info",
   fulfilled: "bg-present-soft text-present",
+  rejected: "bg-danger-soft text-danger",
 };
 
 export function RequestStatusPill({ status }: { status: RequestStatus }) {

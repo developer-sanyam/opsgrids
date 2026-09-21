@@ -1,15 +1,6 @@
 import { useId, useMemo, useState } from "react";
 
-import type { TrendPoint, TrendRange } from "@/api/types";
-import { INCIDENT_VOLUME, VOLUME_DELTA } from "@/data/samples";
-import { DeltaPill, SampleChip, cn } from "@opsgrids/ui";
-import { SAMPLE_DATA } from "./sampleCopy";
-
-const RANGES: { value: TrendRange; label: string }[] = [
-  { value: "weekly", label: "Weekly" },
-  { value: "monthly", label: "Monthly" },
-  { value: "quarterly", label: "Quarterly" },
-];
+import type { TrendPoint } from "@/api/types";
 
 const W = 640;
 const H = 200;
@@ -39,8 +30,8 @@ function toLine(values: number[], min: number, span: number, step: number): Line
 
 function geometry(series: TrendPoint[]): Geo {
   const all = series.flatMap((s) => [s.opened, s.resolved]);
-  const max = Math.max(...all);
-  const min = Math.min(...all);
+  const max = Math.max(...all, 0);
+  const min = Math.min(...all, 0);
   const span = max - min || 1;
   const step = W / (series.length - 1 || 1);
   return {
@@ -51,28 +42,26 @@ function geometry(series: TrendPoint[]): Geo {
 }
 
 interface IncidentVolumeChartProps {
-  sample: boolean;
+  /** Six trailing weekly buckets from `GET /itsm/overview` — real counts, not a sample. */
+  data: TrendPoint[];
 }
 
 /**
- * Incident volume over time: two overlaid series — opened (violet, filled) and resolved (cyan
- * line) — with a range toggle and a hover tooltip. The history is representative until the
- * reporting service ships, so it is chipped when running live.
+ * Incident volume over time: two overlaid series — opened (accent, filled) and resolved (cyan
+ * line) — with a hover tooltip. The backend buckets weekly only, so there is no range toggle to
+ * mislead with a period it cannot actually compute.
  */
-export function IncidentVolumeChart({ sample }: IncidentVolumeChartProps) {
-  const [range, setRange] = useState<TrendRange>("weekly");
+export function IncidentVolumeChart({ data }: IncidentVolumeChartProps) {
   const [hover, setHover] = useState<number | null>(null);
   const openedGradient = useId();
 
-  const series = INCIDENT_VOLUME[range];
-  const geo = useMemo(() => geometry(series), [series]);
-  const delta = VOLUME_DELTA[range];
+  const geo = useMemo(() => geometry(data), [data]);
+  const totalOpened = data.reduce((sum, p) => sum + p.opened, 0);
 
-  const totalOpened = series.reduce((sum, p) => sum + p.opened, 0);
   const active =
     hover !== null
       ? (() => {
-          const p = series[hover];
+          const p = data[hover];
           const x = geo.xs[hover];
           const openedY = geo.opened.points[hover]?.y;
           const resolvedY = geo.resolved.points[hover]?.y;
@@ -87,42 +76,8 @@ export function IncidentVolumeChart({ sample }: IncidentVolumeChartProps) {
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex flex-col gap-1.5">
-          <div className="flex items-center gap-2.5">
-            <span className="display text-3xl font-extrabold tnum leading-none">
-              {totalOpened}
-            </span>
-            <DeltaPill value={delta} goodWhen="down" />
-          </div>
-          <span className="text-sm text-muted">incidents opened this period · vs last</span>
-        </div>
-        <div className="flex items-center gap-2">
-          {sample ? <SampleChip {...SAMPLE_DATA} /> : null}
-          <div
-            role="tablist"
-            aria-label="Trend range"
-            className="flex items-center rounded-full bg-ground p-0.5"
-          >
-            {RANGES.map((r) => (
-              <button
-                key={r.value}
-                type="button"
-                role="tab"
-                aria-selected={range === r.value}
-                onClick={() => {
-                  setRange(r.value);
-                  setHover(null);
-                }}
-                className={cn(
-                  "rounded-full px-3 h-8 text-xs font-semibold transition-colors",
-                  range === r.value
-                    ? "bg-surface text-ink shadow-card"
-                    : "text-muted hover:text-ink",
-                )}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
+          <span className="display text-3xl font-extrabold tnum leading-none">{totalOpened}</span>
+          <span className="text-sm text-muted">incidents opened across the last 6 weeks</span>
         </div>
       </div>
 
@@ -144,12 +99,12 @@ export function IncidentVolumeChart({ sample }: IncidentVolumeChartProps) {
           className="w-full h-44 overflow-visible"
           preserveAspectRatio="none"
           role="img"
-          aria-label={`Incident volume, ${range}`}
+          aria-label="Incident volume, weekly"
           onPointerMove={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
             const frac = (e.clientX - rect.left) / rect.width;
-            const idx = Math.round(frac * (series.length - 1));
-            setHover(Math.min(Math.max(idx, 0), series.length - 1));
+            const idx = Math.round(frac * (data.length - 1));
+            setHover(Math.min(Math.max(idx, 0), data.length - 1));
           }}
           onPointerLeave={() => setHover(null)}
         >
@@ -207,15 +162,14 @@ export function IncidentVolumeChart({ sample }: IncidentVolumeChartProps) {
         ) : null}
 
         <div className="mt-2 flex justify-between px-0.5 text-[0.7rem] font-medium text-faint">
-          {series.map((p) => (
+          {data.map((p) => (
             <span key={p.label} className="tnum">
               {p.label}
             </span>
           ))}
         </div>
         <figcaption className="sr-only">
-          Incident volume {range}:{" "}
-          {series.map((p) => `${p.label} ${p.opened} opened ${p.resolved} resolved`).join(", ")}.
+          Incident volume, weekly: {data.map((p) => `${p.label} ${p.opened} opened ${p.resolved} resolved`).join(", ")}.
         </figcaption>
       </figure>
     </div>

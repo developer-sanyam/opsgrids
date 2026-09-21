@@ -1,10 +1,12 @@
 import { useCallback, useMemo, useState } from "react";
 import type { ComponentType, SVGProps } from "react";
+import { useNavigate } from "react-router-dom";
 
-import { listCatalog, listRequests } from "@/api/client";
+import { deleteCatalogItem, listCatalog, listRequests } from "@/api/client";
 import type { CatalogCategory, CatalogItem, RequestStatus, ServiceRequest } from "@/api/types";
 import { catalogCategoryLabel, relativeTime } from "@/lib/format";
-import { useAsync } from "@opsgrids/client";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
   Avatar,
   Card,
@@ -12,6 +14,7 @@ import {
   EmptyState,
   ErrorState,
   PageHeader,
+  Pagination,
   Pill,
   RequestStatusPill,
   SearchInput,
@@ -20,14 +23,23 @@ import {
 } from "@/ui";
 import type { Column } from "@/ui";
 import {
+  Button,
   ClockIcon,
+  ConfirmDialog,
   GridIcon,
   KeyIcon,
   LaptopIcon,
   LogOutIcon,
+  PlusIcon,
+  RowActions,
   TicketIcon,
   UserPlusIcon,
+  useToast,
 } from "@opsgrids/ui";
+import { CatalogItemFormDialog } from "@/forms/CatalogItemFormDialog";
+import { RaiseRequestDialog } from "@/forms/RaiseRequestDialog";
+
+const CAN_RAISE = "itsm.service.request.write";
 
 type IconType = ComponentType<SVGProps<SVGSVGElement>>;
 
@@ -54,12 +66,27 @@ const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
   { value: "approval", label: "Awaiting approval" },
   { value: "in_progress", label: "In progress" },
   { value: "fulfilled", label: "Fulfilled" },
+  { value: "rejected", label: "Rejected" },
 ];
 
 const NO_REQUESTS: ServiceRequest[] = [];
 const NO_CATALOG: CatalogItem[] = [];
 
-function CatalogCard({ item }: { item: CatalogItem }) {
+function CatalogCard({
+  item,
+  canRaise,
+  canAdmin,
+  onRaise,
+  onEdit,
+  onDelete,
+}: {
+  item: CatalogItem;
+  canRaise: boolean;
+  canAdmin: boolean;
+  onRaise: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   const Icon = CATEGORY_ICON[item.category];
   return (
     <Card className="flex flex-col gap-3 p-5">
@@ -73,6 +100,15 @@ function CatalogCard({ item }: { item: CatalogItem }) {
           <span className="font-bold text-ink text-balance">{item.name}</span>
           <span className="text-xs text-muted">{catalogCategoryLabel(item.category)}</span>
         </div>
+        {canAdmin ? (
+          <RowActions
+            label={item.name}
+            actions={[
+              { label: "Edit", onSelect: onEdit },
+              { label: "Retire", tone: "danger", onSelect: onDelete },
+            ]}
+          />
+        ) : null}
       </div>
       <p className="text-sm text-muted leading-relaxed">{item.description}</p>
       <div className="mt-auto flex items-center gap-2 border-t border-line pt-3 text-xs">
@@ -80,21 +116,48 @@ function CatalogCard({ item }: { item: CatalogItem }) {
           <ClockIcon className="size-4 text-faint" />
           SLA {item.sla_days}d
         </span>
-        <span className="ml-auto tnum text-muted">{item.requests_30d} in last 30d</span>
+        {canRaise ? (
+          <Button size="sm" variant="outline" className="ml-auto" onClick={onRaise}>
+            Raise request
+          </Button>
+        ) : null}
       </div>
     </Card>
   );
 }
 
 export function RequestsPage() {
+  const navigate = useNavigate();
+  const toast = useToast();
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [status, setStatus] = useState<StatusFilter>("all");
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(25);
+  const [raising, setRaising] = useState<CatalogItem | null>(null);
+  const [catalogCreating, setCatalogCreating] = useState(false);
+  const [catalogEditing, setCatalogEditing] = useState<CatalogItem | null>(null);
+  const [catalogDeleting, setCatalogDeleting] = useState<CatalogItem | null>(null);
+
+  const canRaise = useCan(CAN_RAISE, "OWN");
+  const canAdminCatalog = useCan(CAN_RAISE, "ORG");
 
   const catalogState = useAsync(useCallback(() => listCatalog(), []), []);
-  const requestsLoader = useCallback(() => listRequests({ search, status }), [search, status]);
-  const requestsState = useAsync(requestsLoader, [search, status]);
+  const requestsLoader = useCallback(
+    () => listRequests({ search: debouncedSearch, status, page, size }),
+    [debouncedSearch, status, page, size],
+  );
+  const requestsState = useAsync(requestsLoader, [debouncedSearch, status, page, size]);
 
-  const catalog = catalogState.status === "success" ? catalogState.data : NO_CATALOG;
+  const retireCatalogItem = useMutation((item: CatalogItem) => deleteCatalogItem(item.id), {
+    onSuccess: (_result, item) => {
+      setCatalogDeleting(null);
+      toast.success(`${item.name} retired from the catalog.`);
+      catalogState.reload();
+    },
+  });
+
+  const catalog = catalogState.status === "success" ? catalogState.data.items : NO_CATALOG;
   const requests = useMemo(
     () => (requestsState.status === "success" ? requestsState.data.items : NO_REQUESTS),
     [requestsState],
@@ -159,6 +222,8 @@ export function RequestsPage() {
     [],
   );
 
+  const hasFilters = search.trim() !== "" || status !== "all";
+
   return (
     <div className="rise flex flex-col gap-6">
       <PageHeader
@@ -167,7 +232,9 @@ export function RequestsPage() {
         actions={
           <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
             <TicketIcon className="size-4 text-muted" />
-            <span className="tnum">{requests.length}</span>
+            <span className="tnum">
+              {requestsState.status === "success" ? requestsState.data.total : "—"}
+            </span>
             <span className="text-muted font-medium">requests</span>
           </span>
         }
@@ -178,6 +245,18 @@ export function RequestsPage() {
         <SectionHeader
           title="Service catalog"
           subtitle="Request types staff can raise — including the joiners, movers and leavers flows"
+          action={
+            <Can permission={CAN_RAISE} scope="ORG">
+              <Button
+                size="sm"
+                variant="outline"
+                leadingIcon={<PlusIcon className="size-4" />}
+                onClick={() => setCatalogCreating(true)}
+              >
+                Add item
+              </Button>
+            </Can>
+          }
         />
         {catalogState.status === "loading" ? (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -194,13 +273,41 @@ export function RequestsPage() {
         ) : null}
         {catalogState.status === "error" ? (
           <Card className="p-6">
-            <ErrorState message={catalogState.error.message} />
+            <ErrorState message={problemMessage(catalogState.error)} onRetry={catalogState.reload} />
           </Card>
         ) : null}
-        {catalogState.status === "success" ? (
+        {catalogState.status === "success" && catalog.length === 0 ? (
+          <Card className="p-6">
+            <EmptyState
+              icon={<GridIcon className="size-6" />}
+              title="Nothing is available to request yet"
+              description={
+                canAdminCatalog
+                  ? "Add the first catalog item so people have something to raise a request against."
+                  : "Ask an administrator to add items to the service catalog."
+              }
+              action={
+                canAdminCatalog ? (
+                  <Button size="sm" onClick={() => setCatalogCreating(true)}>
+                    Add the first item
+                  </Button>
+                ) : null
+              }
+            />
+          </Card>
+        ) : null}
+        {catalogState.status === "success" && catalog.length > 0 ? (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {catalog.map((item) => (
-              <CatalogCard key={item.id} item={item} />
+              <CatalogCard
+                key={item.id}
+                item={item}
+                canRaise={canRaise}
+                canAdmin={canAdminCatalog}
+                onRaise={() => setRaising(item)}
+                onEdit={() => setCatalogEditing(item)}
+                onDelete={() => setCatalogDeleting(item)}
+              />
             ))}
           </div>
         ) : null}
@@ -214,14 +321,24 @@ export function RequestsPage() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
             <SearchInput
               label="Search requests"
-              placeholder="Search by ID, requester, subject or type…"
+              placeholder="Search by ID, requester or subject…"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(1);
+              }}
               containerClassName="lg:max-w-sm"
             />
             <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
               {STATUS_FILTERS.map((f) => (
-                <Pill key={f.value} active={status === f.value} onClick={() => setStatus(f.value)}>
+                <Pill
+                  key={f.value}
+                  active={status === f.value}
+                  onClick={() => {
+                    setStatus(f.value);
+                    setPage(1);
+                  }}
+                >
                   {f.label}
                 </Pill>
               ))}
@@ -238,25 +355,100 @@ export function RequestsPage() {
             </div>
           ) : null}
           {requestsState.status === "error" ? (
-            <ErrorState message={requestsState.error.message} />
+            <ErrorState
+              title="Couldn't load requests"
+              message={problemMessage(requestsState.error)}
+              onRetry={requestsState.reload}
+            />
           ) : null}
           {requestsState.status === "success" ? (
-            <DataTable
-              columns={columns}
-              rows={requests}
-              rowKey={(r) => r.id}
-              caption="Service requests"
-              emptyState={
-                <EmptyState
-                  icon={<TicketIcon className="size-6" />}
-                  title="No matching requests"
-                  description="Nothing matches these filters. Try a different status or clear the search."
-                />
-              }
-            />
+            <>
+              <DataTable
+                columns={columns}
+                rows={requests}
+                rowKey={(r) => r.id}
+                caption="Service requests"
+                onRowClick={(r) => navigate(`/requests/${r.id}`)}
+                emptyState={
+                  <EmptyState
+                    icon={<TicketIcon className="size-6" />}
+                    title={hasFilters ? "No matching requests" : "No requests yet"}
+                    description={
+                      hasFilters
+                        ? "Nothing matches these filters. Try a different status or clear the search."
+                        : "Raise the first request from the catalog above."
+                    }
+                  />
+                }
+              />
+              <Pagination
+                page={requestsState.data.page}
+                pages={requestsState.data.pages}
+                total={requestsState.data.total}
+                size={requestsState.data.size}
+                noun="requests"
+                onPageChange={setPage}
+                onSizeChange={(n) => {
+                  setSize(n);
+                  setPage(1);
+                }}
+              />
+            </>
           ) : null}
         </Card>
       </section>
+
+      {raising ? (
+        <RaiseRequestDialog
+          catalog={catalog}
+          preselected={raising}
+          onClose={() => setRaising(null)}
+          onCreated={(request) => {
+            setRaising(null);
+            toast.success(`${request.id} raised — awaiting approval.`);
+            requestsState.reload();
+          }}
+        />
+      ) : null}
+
+      {catalogCreating ? (
+        <CatalogItemFormDialog
+          item={null}
+          onClose={() => setCatalogCreating(false)}
+          onSaved={(item) => {
+            setCatalogCreating(false);
+            toast.success(`${item.name} added to the catalog.`);
+            catalogState.reload();
+          }}
+        />
+      ) : null}
+
+      {catalogEditing ? (
+        <CatalogItemFormDialog
+          item={catalogEditing}
+          onClose={() => setCatalogEditing(null)}
+          onSaved={(item) => {
+            setCatalogEditing(null);
+            toast.success(`${item.name} saved.`);
+            catalogState.reload();
+          }}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={catalogDeleting !== null}
+        onClose={() => {
+          setCatalogDeleting(null);
+          retireCatalogItem.reset();
+        }}
+        onConfirm={() => catalogDeleting && void retireCatalogItem.mutate(catalogDeleting)}
+        title="Retire this catalog item?"
+        body={`${catalogDeleting?.name} is removed from the catalog. Existing requests against it keep rendering.`}
+        confirmLabel="Retire"
+        pendingLabel="Retiring…"
+        pending={retireCatalogItem.pending}
+        error={retireCatalogItem.error ? problemMessage(retireCatalogItem.error) : undefined}
+      />
     </div>
   );
 }
