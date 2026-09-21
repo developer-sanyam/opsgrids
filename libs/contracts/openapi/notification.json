@@ -711,6 +711,42 @@
         "title": "Page[TemplateOut]",
         "type": "object"
       },
+      "Page_WhatsAppConnectionOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WhatsAppConnectionOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[WhatsAppConnectionOut]",
+        "type": "object"
+      },
       "PreferenceIn": {
         "additionalProperties": false,
         "description": "Record or lift a refusal. `category` of `*` covers the whole channel.",
@@ -1729,6 +1765,76 @@
         ],
         "title": "ValidationError",
         "type": "object"
+      },
+      "WhatsAppConnectionIn": {
+        "additionalProperties": false,
+        "description": "Connect the organization's WhatsApp Cloud API account.\n\n`access_token` is write-only, sealed on the way in the same way an email connection's\nsecret is \u2014 it has no counterpart on the way out, not masked, not truncated.",
+        "properties": {
+          "access_token": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Access Token",
+            "type": "string"
+          },
+          "display_number": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Display Number",
+            "type": "string"
+          },
+          "phone_number_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Phone Number Id",
+            "type": "string"
+          },
+          "waba_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Waba Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "waba_id",
+          "phone_number_id",
+          "access_token"
+        ],
+        "title": "WhatsAppConnectionIn",
+        "type": "object"
+      },
+      "WhatsAppConnectionOut": {
+        "description": "How this organization sends WhatsApp, minus the one value that must never leave the\nprocess. No field here is derived from the access token \u2014 no mask, no length, no hint.",
+        "properties": {
+          "display_number": {
+            "title": "Display Number",
+            "type": "string"
+          },
+          "phone_number_id": {
+            "title": "Phone Number Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "connected",
+              "disconnected"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "waba_id": {
+            "title": "Waba Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "waba_id",
+          "phone_number_id",
+          "display_number",
+          "status"
+        ],
+        "title": "WhatsAppConnectionOut",
+        "type": "object"
       }
     }
   },
@@ -2194,6 +2300,142 @@
           }
         },
         "summary": "Send a test message and, if it arrives, make the sender usable",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/whatsapp/connection": {
+      "get": {
+        "description": "A page of at most one, same shape as `read_connection` and for the same reason: the\nsetup screen already handles an empty page, so \"not connected yet\" needs no special case.",
+        "operationId": "read_whatsapp_connection_api_v1_engage_whatsapp_connection_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_WhatsAppConnectionOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "How this organization sends WhatsApp",
+        "tags": [
+          "engage"
+        ]
+      },
+      "post": {
+        "description": "POST rather than PUT, for the reason `connect_provider` is: one organization gets one\nWhatsApp account and a second POST is refused rather than silently accepted.",
+        "operationId": "connect_whatsapp_api_v1_engage_whatsapp_connection_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WhatsAppConnectionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhatsAppConnectionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Connect the organization's WhatsApp Business account",
+        "tags": [
+          "engage"
+        ]
+      },
+      "put": {
+        "operationId": "replace_whatsapp_api_v1_engage_whatsapp_connection_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WhatsAppConnectionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhatsAppConnectionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replace the organization's WhatsApp Business account",
         "tags": [
           "engage"
         ]

@@ -96,6 +96,8 @@ def test_engage_catalogue_declares_setup_permissions() -> None:
         "engage.setup.domain.write",
         "engage.setup.sender.read",
         "engage.setup.sender.write",
+        "engage.setup.whatsapp.read",
+        "engage.setup.whatsapp.write",
     }
 
 

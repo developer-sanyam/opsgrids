@@ -54,6 +54,24 @@
       "max_scope": "ORG",
       "module": "setup",
       "resource": "sender"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See how the organization sends WhatsApp messages",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "setup",
+      "resource": "whatsapp"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Connect or replace the organization's WhatsApp Business account",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "setup",
+      "resource": "whatsapp"
     }
   ],
   "product": "engage",
@@ -86,6 +104,14 @@
         {
           "code": "engage.setup.sender.write",
           "scope": "ORG"
+        },
+        {
+          "code": "engage.setup.whatsapp.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.setup.whatsapp.write",
+          "scope": "ORG"
         }
       ],
       "is_admin": true,
@@ -107,6 +133,10 @@
         },
         {
           "code": "engage.setup.sender.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.setup.whatsapp.read",
           "scope": "ORG"
         }
       ],

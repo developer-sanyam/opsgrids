@@ -15,7 +15,7 @@
 
 import { apiRequest } from "@opsgrids/client";
 
-import { CONNECTION, DOMAINS, SENDERS } from "./fixtures";
+import { CONNECTION, DOMAINS, SENDERS, WHATSAPP_CONNECTION, WHATSAPP_TEMPLATES } from "./fixtures";
 import type {
   ConnectionIn,
   ConnectionOut,
@@ -23,9 +23,13 @@ import type {
   DomainOut,
   DomainStatus,
   Page,
+  ProviderTemplateIn,
+  ProviderTemplateOut,
   SenderIn,
   SenderOut,
   TestSendIn,
+  WhatsAppConnectionIn,
+  WhatsAppConnectionOut,
 } from "./types";
 
 /** Default source. Live unless `VITE_USE_FIXTURES=true` pins the app to fixtures.
@@ -199,6 +203,88 @@ export async function sendTestMessage(senderId: string, input: TestSendIn): Prom
   if (USE_FIXTURES) refuseWithoutService("Sending a test message");
   return apiRequest<SenderOut>(`/engage/senders/${encodeURIComponent(senderId)}/test`, {
     method: "POST",
+    body: input,
+  });
+}
+
+/* ----------------------------- whatsapp connection ----------------------------- */
+
+/**
+ * How this organization sends WhatsApp — `GET /engage/whatsapp/connection`.
+ *
+ * A page of at most one, the same shape `getConnection` uses and for the same reason: "is there
+ * one yet?" stays in the selector, and the unconnected case is an empty page this screen already
+ * handles rather than a null it has to special-case.
+ */
+export async function getWhatsAppConnection(): Promise<Page<WhatsAppConnectionOut>> {
+  if (USE_FIXTURES) return settle(fixturePage([WHATSAPP_CONNECTION]));
+  return apiRequest<Page<WhatsAppConnectionOut>>("/engage/whatsapp/connection");
+}
+
+/**
+ * Connect the organization's WhatsApp Business account — `POST /engage/whatsapp/connection`.
+ *
+ * One account per organization; a second POST is refused. `input.access_token` leaves the
+ * browser here and is never read back — `WhatsAppConnectionOut` has no field for it.
+ */
+export async function connectWhatsApp(
+  input: WhatsAppConnectionIn,
+): Promise<WhatsAppConnectionOut> {
+  if (USE_FIXTURES) refuseWithoutService("Connecting a WhatsApp account");
+  return apiRequest<WhatsAppConnectionOut>("/engage/whatsapp/connection", {
+    method: "POST",
+    body: input,
+  });
+}
+
+/**
+ * Replace the organization's WhatsApp Business account — `PUT /engage/whatsapp/connection`.
+ *
+ * Same body as connecting, for the reason `replaceProvider` gives: replacing takes exactly what
+ * creating does.
+ */
+export async function replaceWhatsApp(
+  input: WhatsAppConnectionIn,
+): Promise<WhatsAppConnectionOut> {
+  if (USE_FIXTURES) refuseWithoutService("Replacing the WhatsApp account");
+  return apiRequest<WhatsAppConnectionOut>("/engage/whatsapp/connection", {
+    method: "PUT",
+    body: input,
+  });
+}
+
+/* ------------------------------- provider templates ------------------------------ */
+
+/**
+ * WhatsApp templates and their real approval status — `GET /notifications/provider-templates`.
+ *
+ * **Mounted under `/api/v1/notifications`, not `/api/v1/engage`** — the gateway gates this
+ * prefix on the `notification` product entitlement (`services/app-gateway/routes.json`), not
+ * `engage`, because `ProviderTemplate` is a `notification`-catalogue resource the engage router
+ * only reads. An organization that has bought Engage but not the transactional-notification
+ * product will see this call answer `402` even though Engage itself is active — a real product-
+ * boundary gap, not a bug in this screen. `TemplatesPage` names that plainly rather than
+ * reusing `EngageNotActive`'s wording, which would say the wrong product is missing.
+ */
+export async function listWhatsAppTemplates(): Promise<Page<ProviderTemplateOut>> {
+  if (USE_FIXTURES) return settle(fixturePage(WHATSAPP_TEMPLATES));
+  const query = new URLSearchParams({ channel: "whatsapp", size: String(FULL_PAGE) });
+  return apiRequest<Page<ProviderTemplateOut>>(`/notifications/provider-templates?${query.toString()}`);
+}
+
+/**
+ * Register or update a WhatsApp template — `PUT /notifications/provider-templates`.
+ *
+ * This submits what the organization intends to send; it does not and cannot approve it. The
+ * service defaults `status` to `draft`, and only a sync with Meta ever moves it to `pending`,
+ * `approved` or `rejected` — nothing this app sends can set it, and nothing here claims to.
+ */
+export async function submitWhatsAppTemplate(
+  input: ProviderTemplateIn,
+): Promise<ProviderTemplateOut> {
+  if (USE_FIXTURES) refuseWithoutService("Submitting a template");
+  return apiRequest<ProviderTemplateOut>("/notifications/provider-templates", {
+    method: "PUT",
     body: input,
   });
 }
