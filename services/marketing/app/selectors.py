@@ -100,6 +100,16 @@ def audiences_stmt(ctx: ScopeContext, *, q: str | None = None) -> Select[Any]:
     return stmt.order_by(Audience.name)
 
 
+async def count_campaigns_for_audience(
+    session: AsyncSession, ctx: ScopeContext, audience_id: uuid.UUID
+) -> int:
+    """How many non-deleted campaigns still target this audience — what `delete_audience` must
+    refuse against. Goes through `campaigns_stmt` rather than a bare count, so the check narrows
+    to the same in-scope rows every other campaign read does."""
+    stmt = select(func.count()).select_from(campaigns_stmt(ctx, audience_id=audience_id).subquery())
+    return (await session.execute(stmt)).scalar_one()
+
+
 async def get_audience(
     session: AsyncSession, org_id: uuid.UUID, audience_id: uuid.UUID
 ) -> Audience | None:

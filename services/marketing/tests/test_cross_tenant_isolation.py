@@ -199,3 +199,49 @@ class TestCrossTenantOverHttp:
         body = listed.json()
         assert body["items"] == []
         assert str(target) not in listed.text
+
+    async def test_org_b_cannot_patch_or_delete_org_a_campaigns(
+        self, client, org_id, seeded
+    ) -> None:
+        target = seeded["campaigns"][0].id
+        other_org = uuid.uuid4()
+        principal = principal_for(other_org, [f"{READ}:ORG", f"{WRITE}:ORG"])
+        app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            patched = await client.patch(
+                f"/api/v1/marketing/campaigns/{target}", json={"name": "Stolen"}
+            )
+            deleted = await client.delete(f"/api/v1/marketing/campaigns/{target}")
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+
+        assert patched.status_code == 404
+        assert deleted.status_code == 404
+
+        # The row itself is untouched — still visible to its real organization.
+        principal = principal_for(org_id, [f"{READ}:ORG"])
+        app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            check = await client.get(f"/api/v1/marketing/campaigns/{target}")
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+        assert check.status_code == 200
+        assert check.json()["name"] != "Stolen"
+
+    async def test_org_b_cannot_patch_or_delete_org_a_audiences(
+        self, client, org_id, seeded
+    ) -> None:
+        target = seeded["audiences"][1].id  # not found for the other org regardless of use
+        other_org = uuid.uuid4()
+        principal = principal_for(other_org, [f"{READ}:ORG", f"{WRITE}:ORG"])
+        app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            patched = await client.patch(
+                f"/api/v1/marketing/audiences/{target}", json={"name": "Stolen"}
+            )
+            deleted = await client.delete(f"/api/v1/marketing/audiences/{target}")
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+
+        assert patched.status_code == 404
+        assert deleted.status_code == 404
