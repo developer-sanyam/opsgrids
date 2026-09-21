@@ -136,7 +136,9 @@ ENGAGE = Catalogue(
         PermissionSpec(
             "setup", "domain", "write", "Add a sending domain and verify its DNS", "ORG", "ORG"
         ),
-        PermissionSpec("setup", "sender", "read", "See the senders mail can go out as", "ORG", "ORG"),
+        PermissionSpec(
+            "setup", "sender", "read", "See the senders mail can go out as", "ORG", "ORG"
+        ),
         PermissionSpec("setup", "sender", "write", "Add and edit senders", "ORG", "ORG"),
     ],
 )
@@ -630,8 +632,14 @@ class FakeResolver:
 @pytest.mark.asyncio
 async def test_a_published_txt_record_verifies() -> None:
     records = [
-        {"kind": "spf", "type": "TXT", "host": "company.com",
-         "value": "v=spf1 include:_spf.opsgrids.com ~all", "required": True, "verified": False}
+        {
+            "kind": "spf",
+            "type": "TXT",
+            "host": "company.com",
+            "value": "v=spf1 include:_spf.opsgrids.com ~all",
+            "required": True,
+            "verified": False,
+        }
     ]
     resolver = FakeResolver({("company.com", "TXT"): ["v=spf1 include:_spf.opsgrids.com ~all"]})
     out = await dns_check.check_records(records, resolver=resolver)
@@ -641,8 +649,14 @@ async def test_a_published_txt_record_verifies() -> None:
 @pytest.mark.asyncio
 async def test_a_missing_record_does_not_verify() -> None:
     records = [
-        {"kind": "spf", "type": "TXT", "host": "company.com",
-         "value": "v=spf1 include:_spf.opsgrids.com ~all", "required": True, "verified": False}
+        {
+            "kind": "spf",
+            "type": "TXT",
+            "host": "company.com",
+            "value": "v=spf1 include:_spf.opsgrids.com ~all",
+            "required": True,
+            "verified": False,
+        }
     ]
     out = await dns_check.check_records(records, resolver=FakeResolver({}))
     assert out[0]["verified"] is False
@@ -651,8 +665,14 @@ async def test_a_missing_record_does_not_verify() -> None:
 @pytest.mark.asyncio
 async def test_check_does_not_mutate_its_input() -> None:
     records = [
-        {"kind": "spf", "type": "TXT", "host": "company.com", "value": "x",
-         "required": True, "verified": False}
+        {
+            "kind": "spf",
+            "type": "TXT",
+            "host": "company.com",
+            "value": "x",
+            "required": True,
+            "verified": False,
+        }
     ]
     await dns_check.check_records(records, resolver=FakeResolver({("company.com", "TXT"): ["x"]}))
     assert records[0]["verified"] is False
@@ -770,9 +790,7 @@ async def test_a_second_connection_is_refused(session, ctx) -> None:
 
     await services.create_connection(session, ctx, kind="google", username="a@b.com", secret="x")
     with pytest.raises(BusinessRuleProblem):
-        await services.create_connection(
-            session, ctx, kind="smtp", username="c@d.com", secret="y"
-        )
+        await services.create_connection(session, ctx, kind="smtp", username="c@d.com", secret="y")
 
 
 @pytest.mark.asyncio
@@ -794,7 +812,10 @@ async def test_a_sender_address_must_belong_to_its_domain(session, ctx, verified
 
     with pytest.raises(BusinessRuleProblem):
         await services.create_sender(
-            session, ctx, domain_id=verified_domain.id, name="Sales",
+            session,
+            ctx,
+            domain_id=verified_domain.id,
+            name="Sales",
             address="sales@someone-elses-domain.com",
         )
 ```

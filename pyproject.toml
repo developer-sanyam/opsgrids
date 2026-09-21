@@ -37,6 +37,11 @@ dependencies = [
     # — the two disagree on real names (`ß`, final sigma), and a hostname that encodes
     # differently from the one the browser sent resolves to nothing.
     "idna>=3.10",
+    # notification-service verifies a sending domain by asking DNS what it actually publishes
+    # (`app/dns_check.py`). The stdlib resolves names to addresses and nothing else — there is no
+    # way to read a TXT or CNAME record without a resolver library, and the answer to "has the
+    # customer pasted our DKIM record into their registrar yet?" is a TXT lookup or a guess.
+    "dnspython>=2.7",
 ]
 
 [dependency-groups]
