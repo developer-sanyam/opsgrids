@@ -1,11 +1,13 @@
 /**
  * Typed CRM API client for OpsGrids Revenue.
  *
- * **Fixtures by default.** The CRM service is a skeleton on this branch, so the whole app renders
- * from `fixtures.ts` with no gateway and no login. Set `VITE_USE_FIXTURES=false` once the service
- * ships and every call switches to the gateway at the same-origin `/api/v1` prefix (Vite proxies
- * it to `http://localhost:8100` in dev) with the bearer token from the session — the live paths
- * are wired here already, so going live is a flag flip.
+ * Live by default: every function calls the gateway at the same-origin `/api/v1/customers`
+ * and `/api/v1/deals` prefixes (Vite proxies them to their respective services in dev) with
+ * the bearer token from the session. Companies, contacts and owners live in the customer
+ * service; deals and activities live in the deal service — activities route to `/deals/activities`
+ * rather than the standalone `activity` service, which is still an unbuilt scaffold with no
+ * table of its own. Set `VITE_USE_FIXTURES=true` to render the whole app from `fixtures.ts`
+ * with no login — handy for offline design work.
  */
 
 import { apiRequest } from "@opsgrids/client";
@@ -23,11 +25,11 @@ import type {
   Page,
 } from "./types";
 
-/** Default source. Fixtures unless `VITE_USE_FIXTURES=false` pins the app to the live gateway.
+/** Default source. Live unless `VITE_USE_FIXTURES=true` pins the app to fixtures.
  *  Dev builds only: `import.meta.env.DEV` compiles to `false` in production, so a stray
  *  CI/production env var can never ship fixture mode — an app rendering fabricated data
  *  with the "Sample data" markers suppressed. */
-export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES !== "false";
+export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES === "true";
 
 /** True when the app is talking to the real gateway. */
 export const LIVE = !USE_FIXTURES;
@@ -106,7 +108,7 @@ export async function listCompanies(params: ListCompaniesParams = {}): Promise<P
   const query = new URLSearchParams({ size: String(FULL_PAGE) });
   if (params.search?.trim()) query.set("q", params.search.trim());
   if (params.status && params.status !== "all") query.set("status", params.status);
-  return apiRequest<Page<Company>>(`/companies?${query.toString()}`);
+  return apiRequest<Page<Company>>(`/customers?${query.toString()}`);
 }
 
 export async function getCompany(id: string): Promise<Company> {
@@ -115,7 +117,7 @@ export async function getCompany(id: string): Promise<Company> {
     if (!company) throw new Error("That company could not be found.");
     return settle(company);
   }
-  return apiRequest<Company>(`/companies/${id}`);
+  return apiRequest<Company>(`/customers/${id}`);
 }
 
 /* -------------------------------- contacts ------------------------------- */
@@ -178,7 +180,10 @@ export async function listActivities(params: ListActivitiesParams = {}): Promise
   if (params.contactId) query.set("contact_id", params.contactId);
   if (params.companyId) query.set("company_id", params.companyId);
   if (params.type && params.type !== "all") query.set("type", params.type);
-  const page = await apiRequest<Page<Activity>>(`/activities?${query.toString()}`);
+  // The standalone `activity` service is still an unbuilt scaffold with no table of its own —
+  // the deal service already owns the activities table, so this targets the real data at
+  // `/deals/activities` rather than the empty `/activities` route.
+  const page = await apiRequest<Page<Activity>>(`/deals/activities?${query.toString()}`);
   return filter(page.items);
 }
 
@@ -186,5 +191,5 @@ export async function listActivities(params: ListActivitiesParams = {}): Promise
 
 export async function getOwners(): Promise<Owner[]> {
   if (USE_FIXTURES) return settle(OWNERS);
-  return apiRequest<Owner[]>(`/owners`);
+  return apiRequest<Owner[]>(`/customers/owners`);
 }
