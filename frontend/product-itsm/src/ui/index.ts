@@ -14,6 +14,7 @@ export {
   ErrorState,
   KpiCard,
   PageHeader,
+  Pagination,
   Pill,
   SampleChip,
   SearchInput,

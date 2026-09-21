@@ -17,6 +17,7 @@ import {
   FIXTURE_DETAIL_BY_ID,
   FIXTURE_INBOX,
   FIXTURE_MY_REQUESTS,
+  FIXTURE_ORG_REQUESTS,
   __createFixtureDelegation,
   __listFixturePolicies,
   __listFixtureDelegations,
@@ -84,6 +85,18 @@ export async function listMyRequests(params: PageParams = {}): Promise<Paged<Req
   return apiRequest<Paged<RequestListItemOut>>(
     `/approvals/requests?${pageQuery(params)}&requester=me`,
   );
+}
+
+/**
+ * `GET /approvals/requests` **without** `requester=me` — every request the caller's own read
+ * scope reaches (gap 10). Only meaningful for a caller holding `core.approval.request.read` at
+ * ORG (or above); HR_ADMIN does not carry it by default (`services/approval/app/catalogue.py`) —
+ * it comes from ORG_OWNER, ORG_ADMIN or APPROVAL_ADMIN. Gate the screen on that grant, not on
+ * HR_ADMIN's other permissions.
+ */
+export async function listRequests(params: PageParams = {}): Promise<Paged<RequestListItemOut>> {
+  if (USE_FIXTURES) return settle(paginate(FIXTURE_ORG_REQUESTS, params));
+  return apiRequest<Paged<RequestListItemOut>>(`/approvals/requests?${pageQuery(params)}`);
 }
 
 /** `GET /approvals/requests/{id}` — readable by the requester, anyone on a step (any outcome),

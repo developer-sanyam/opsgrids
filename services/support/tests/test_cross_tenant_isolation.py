@@ -14,9 +14,11 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import func, select
 
-from app import selectors
+from app import selectors, services
 from app.models import Ticket
+from platform_core.auth import Scope
 from tests.conftest import seed_queue
+from tests.helpers import ctx_for
 
 pytestmark = pytest.mark.integration
 
@@ -128,3 +130,56 @@ async def test_two_orgs_seed_independently(session, admin_session, org_id) -> No
     mine = await selectors.get_ticket(session, org_id, "TK-0001")
     assert mine is not None
     assert mine.organization_id == org_id
+
+
+class TestNewWriteIsolation:
+    """The new write paths (`change_status`, `update_ticket`, agent CRUD) all resolve their
+    target through the same org-scoped selector `read_ticket`/`assign_ticket` already relied
+    on, so a foreign organization's number reads as not-found rather than a row to act on —
+    proven once, structurally, here rather than once per new route."""
+
+    async def test_status_change_target_not_found_across_tenants(
+        self, session, admin_session, org_id
+    ) -> None:
+        other_org = uuid.uuid4()
+        await _seed_other_org(admin_session, other_org)
+        assert await selectors.get_ticket(session, org_id, "TK-9001") is None
+
+    async def test_deactivating_an_agent_never_touches_another_tenants_tickets(
+        self, session, admin_session, org_id, queue
+    ) -> None:
+        """`deactivate_agent`'s bulk unassign is scoped by `organization_id` alongside the
+        agent's `ref` — a same-ref agent in a different organization (refs are only unique
+        *within* an org) must not have its tickets touched."""
+        other_org = uuid.uuid4()
+        async with admin_session.begin():
+            admin_session.add(
+                Ticket(
+                    organization_id=other_org,
+                    number="TK-9101",
+                    subject="Another tenant's ticket, same assignee ref",
+                    requester_name="Someone Else",
+                    requester_email="else@other.example",
+                    requester_company="Other Corp",
+                    requester_kind="customer",
+                    priority="normal",
+                    status="open",
+                    channel="email",
+                    assignee_ref="ag-02",
+                    tags=[],
+                    sla_breached=False,
+                    created_at=datetime(2026, 8, 24, 9, 0, tzinfo=UTC),
+                    updated_at=datetime(2026, 8, 24, 9, 0, tzinfo=UTC),
+                )
+            )
+
+        write = ctx_for(org_id, "support.desk.agent.write", Scope.ORG)
+        async with session.begin():
+            agent = await selectors.get_agent(session, org_id, "ag-02")
+            assert agent is not None
+            await services.deactivate_agent(session, write, agent)
+
+        async with admin_session.begin():
+            stmt = select(Ticket).where(Ticket.organization_id == other_org)
+            other_ticket = (await admin_session.execute(stmt)).scalar_one()
+        assert other_ticket.assignee_ref == "ag-02"  # untouched by the other tenant's delete

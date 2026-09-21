@@ -3,8 +3,8 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { cn } from "../lib/cn";
 
 interface PillProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  active?: boolean;
-  leadingIcon?: ReactNode;
+  active?: boolean | undefined;
+  leadingIcon?: ReactNode | undefined;
 }
 
 /**

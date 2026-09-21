@@ -1,17 +1,20 @@
-import { useCallback, useMemo } from "react";
+import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
-import { getSupplier, listPurchaseOrders } from "@/api/client";
+import { deleteSupplier, getSupplier, listPurchaseOrders, updateSupplier } from "@/api/client";
 import type { PurchaseOrderOut } from "@/api/types";
 import { CATEGORY_LABEL, poTotalMinor } from "@/data/derive";
-import { useAsync } from "@opsgrids/client";
+import { Can, problemMessage, useAsync, useMutation } from "@opsgrids/client";
 import { formatDate, formatMoney, formatMoneyCompact } from "@/lib/format";
 import {
   Avatar,
+  Button,
   Card,
+  ConfirmDialog,
   DataTable,
   EmptyState,
   ErrorState,
+  InlineAlert,
   PageHeader,
   PoStatusPill,
   SectionHeader,
@@ -27,7 +30,9 @@ import {
   MailIcon,
   MapPinIcon,
   TruckIcon,
+  useToast,
 } from "@opsgrids/ui";
+import { SupplierFormDialog } from "@/forms/SupplierFormDialog";
 
 interface StatTileProps {
   icon: React.ReactNode;
@@ -52,17 +57,36 @@ function StatTile({ icon, label, value }: StatTileProps) {
 export function SupplierDetailPage() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
-  const supplierLoader = useCallback(() => getSupplier(id), [id]);
+  const toast = useToast();
+  const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const supplierLoader = () => getSupplier(id);
   const supplierState = useAsync(supplierLoader, [id]);
-  const posState = useAsync(listPurchaseOrders, []);
+  const posLoader = () => listPurchaseOrders({ supplier_id: id, size: 50, sort: "created" });
+  const posState = useAsync(posLoader, [id]);
 
   const supplier = supplierState.status === "success" ? supplierState.data : null;
-  const supplierPos: PurchaseOrderOut[] = useMemo(() => {
-    if (posState.status !== "success" || !supplier) return [];
-    return posState.data.items
-      .filter((po) => po.supplier_id === supplier.id)
-      .sort((a, b) => b.created_date.localeCompare(a.created_date));
-  }, [posState, supplier]);
+  const supplierPos: PurchaseOrderOut[] = posState.status === "success" ? posState.data.items : [];
+
+  const setHold = useMutation(() => updateSupplier(id, { status: "on_hold" }), {
+    onSuccess: () => {
+      toast.success(`${supplier?.name ?? "Supplier"} put on hold.`);
+      supplierState.reload();
+    },
+  });
+  const reactivate = useMutation(() => updateSupplier(id, { status: "active" }), {
+    onSuccess: () => {
+      toast.success(`${supplier?.name ?? "Supplier"} reactivated.`);
+      supplierState.reload();
+    },
+  });
+  const remove = useMutation(() => deleteSupplier(id), {
+    onSuccess: () => {
+      toast.success(`${supplier?.name ?? "Supplier"} deleted.`);
+      navigate("/suppliers");
+    },
+  });
 
   if (supplierState.status === "loading") {
     return (
@@ -84,10 +108,10 @@ export function SupplierDetailPage() {
           <ErrorState
             message={
               supplierState.status === "error"
-                ? supplierState.error.message
+                ? problemMessage(supplierState.error)
                 : "That supplier could not be found."
             }
-            onRetry={() => navigate("/suppliers")}
+            {...(supplierState.status === "error" ? { onRetry: supplierState.reload } : {})}
           />
         </Card>
       </div>
@@ -137,7 +161,41 @@ export function SupplierDetailPage() {
             <SupplierStatusPill status={supplier.status} />
           </span>
         }
+        actions={
+          <Can permission="operations.procurement.supplier.write" scope="ORG">
+            <div className="flex flex-wrap items-center gap-2">
+              {supplier.status === "on_hold" ? (
+                <Button
+                  variant="outline"
+                  loading={reactivate.pending}
+                  onClick={() => void reactivate.mutate(undefined)}
+                >
+                  Reactivate
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  loading={setHold.pending}
+                  onClick={() => void setHold.mutate(undefined)}
+                >
+                  Put on hold
+                </Button>
+              )}
+              <Button variant="outline" onClick={() => setEditing(true)}>
+                Edit
+              </Button>
+              <Button variant="danger" onClick={() => setDeleting(true)}>
+                Delete
+              </Button>
+            </div>
+          </Can>
+        }
       />
+
+      {setHold.error ? <InlineAlert tone="danger" title={problemMessage(setHold.error)} /> : null}
+      {reactivate.error ? (
+        <InlineAlert tone="danger" title={problemMessage(reactivate.error)} />
+      ) : null}
 
       {/* Stat tiles */}
       <section aria-label="Supplier metrics" className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -169,7 +227,11 @@ export function SupplierDetailPage() {
           <div className="px-3 pt-2 pb-3">
             <SectionHeader
               title="Purchase Orders"
-              subtitle={`${supplierPos.length} orders with this supplier`}
+              {...(posState.status === "success"
+                ? {
+                    subtitle: `${posState.data.total} order${posState.data.total === 1 ? "" : "s"} with this supplier`,
+                  }
+                : {})}
             />
           </div>
           {posState.status === "loading" ? (
@@ -179,7 +241,7 @@ export function SupplierDetailPage() {
               ))}
             </div>
           ) : posState.status === "error" ? (
-            <ErrorState message={posState.error.message} />
+            <ErrorState message={problemMessage(posState.error)} onRetry={posState.reload} />
           ) : (
             <DataTable
               columns={columns}
@@ -202,26 +264,32 @@ export function SupplierDetailPage() {
         <Card className="p-6 flex flex-col gap-4">
           <SectionHeader title="Contact" />
           <div className="flex items-center gap-3">
-            <Avatar name={supplier.contact_name} size="md" />
+            <Avatar name={supplier.contact_name || supplier.name} size="md" />
             <div className="flex min-w-0 flex-col leading-tight">
-              <span className="truncate font-bold text-ink">{supplier.contact_name}</span>
+              <span className="truncate font-bold text-ink">
+                {supplier.contact_name || "No contact on file"}
+              </span>
               <span className="truncate text-xs text-muted">Account manager</span>
             </div>
           </div>
           <dl className="flex flex-col gap-2.5 text-sm">
-            <div className="flex items-center gap-2">
-              <MailIcon className="size-4 shrink-0 text-faint" />
-              <a
-                href={`mailto:${supplier.contact_email}`}
-                className="truncate text-accent hover:text-accent-strong transition-colors"
-              >
-                {supplier.contact_email}
-              </a>
-            </div>
-            <div className="flex items-center gap-2">
-              <MapPinIcon className="size-4 shrink-0 text-faint" />
-              <span className="text-ink-soft">{supplier.location}</span>
-            </div>
+            {supplier.contact_email ? (
+              <div className="flex items-center gap-2">
+                <MailIcon className="size-4 shrink-0 text-faint" />
+                <a
+                  href={`mailto:${supplier.contact_email}`}
+                  className="truncate text-accent hover:text-accent-strong transition-colors"
+                >
+                  {supplier.contact_email}
+                </a>
+              </div>
+            ) : null}
+            {supplier.location ? (
+              <div className="flex items-center gap-2">
+                <MapPinIcon className="size-4 shrink-0 text-faint" />
+                <span className="text-ink-soft">{supplier.location}</span>
+              </div>
+            ) : null}
             <div className="flex items-center justify-between gap-2 border-t border-line pt-2.5">
               <dt className="text-muted">Supplier since</dt>
               <dd className="tnum font-semibold text-ink">{formatDate(supplier.since)}</dd>
@@ -229,6 +297,33 @@ export function SupplierDetailPage() {
           </dl>
         </Card>
       </div>
+
+      {editing ? (
+        <SupplierFormDialog
+          supplier={supplier}
+          onClose={() => setEditing(false)}
+          onSaved={(saved) => {
+            setEditing(false);
+            toast.success(`${saved.name} saved.`);
+            supplierState.reload();
+          }}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={deleting}
+        onClose={() => {
+          setDeleting(false);
+          remove.reset();
+        }}
+        onConfirm={() => void remove.mutate(undefined)}
+        title="Delete this supplier?"
+        body={`${supplier.name} is removed from the supplier directory. This can't be undone.`}
+        confirmLabel="Delete"
+        pendingLabel="Deleting…"
+        pending={remove.pending}
+        {...(remove.error ? { error: problemMessage(remove.error) } : {})}
+      />
     </div>
   );
 }

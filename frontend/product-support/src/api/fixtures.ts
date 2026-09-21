@@ -2,11 +2,30 @@
  * Realistic fixture data, shaped exactly like the real API responses so the whole UI renders
  * without a live login. Swapped out by the `USE_FIXTURES` flag in `client.ts`.
  *
- * Everything is written around a fixed "now" of 2026-08-24T14:30Z (see `lib/sla.ts`) so SLA
- * countdowns, "needs attention" and the volume chart render the same on every load.
+ * Everything is written around a fixed "now" of 2026-08-24T14:30Z (`FIXTURE_NOW`, read by
+ * `lib/clock.ts`) so SLA countdowns and "needs attention" render the same on every load. The
+ * mutation helpers below (`__…`) simulate the write endpoints in-memory, mirroring
+ * `services/support/app/services.py` closely enough that a screen built and tested against
+ * fixtures behaves the same way against the real gateway.
  */
 
-import type { Agent, SlaPolicy, Ticket } from "./types";
+import { ApiError } from "@opsgrids/client";
+
+import { canTransition } from "@/lib/ticketLifecycle";
+import type {
+  Agent,
+  AgentIn,
+  AgentPatch,
+  Message,
+  SlaPolicy,
+  SlaPolicyIn,
+  Ticket,
+  TicketCreateIn,
+  TicketUpdateIn,
+} from "./types";
+
+/** The fixed "current time" the fixtures are written around. */
+export const FIXTURE_NOW = new Date("2026-08-24T14:30:00Z");
 
 export const AGENTS: Agent[] = [
   { id: "ag-01", name: "Priya Nair", email: "priya.nair@opsgrids.example.com", role: "team_lead", team: "Tier 1", open_load: 7, avg_first_response_min: 18, csat_pct: 96, solved_7d: 41, online: true },
@@ -427,7 +446,7 @@ export const TICKETS: Ticket[] = [
   },
 ];
 
-export const SLA_POLICY: SlaPolicy = {
+export let SLA_POLICY: SlaPolicy | null = {
   name: "Standard Support SLA",
   business_hours: "Mon–Fri, 08:00–20:00 IST",
   coverage: "Urgent tickets are covered 24×7; all other priorities follow business hours.",
@@ -438,3 +457,192 @@ export const SLA_POLICY: SlaPolicy = {
     { priority: "low", first_response_min: 480, resolution_min: 2880 },
   ],
 };
+
+/* --------------------------------------------------------------------- mutation helpers
+ * Each mirrors one write in `services/support/app/services.py` closely enough that a screen
+ * behaves identically against fixtures and against the real gateway: same 404s, same 409 on an
+ * illegal status move, same server-allocated ids. Synchronous — `client.ts` wraps every call in
+ * `settle()` so fixture mode still exercises the loading state.
+ */
+
+function notFound(message: string): never {
+  throw new ApiError(404, message, { title: "Not Found", status: 404, detail: message });
+}
+
+export function __getFixtureTicket(number: string): Ticket {
+  const ticket = TICKETS.find((t) => t.id === number);
+  if (!ticket) notFound("That ticket is not part of this organization");
+  return ticket;
+}
+
+function __getFixtureAgent(ref: string): Agent | undefined {
+  return AGENTS.find((a) => a.id === ref);
+}
+
+export function __replyToFixtureTicket(
+  number: string,
+  body: string,
+  authorName: string,
+  internal: boolean,
+): Ticket {
+  const ticket = __getFixtureTicket(number);
+  const at = FIXTURE_NOW.toISOString();
+  const message: Message = {
+    id: `m${ticket.messages.length + 1}`,
+    author_type: "agent",
+    author_name: authorName,
+    at,
+    body,
+    ...(internal ? { internal: true } : {}),
+  };
+  ticket.messages = [...ticket.messages, message];
+  if (!internal && ticket.first_response_at === null) ticket.first_response_at = at;
+  if (!internal && ticket.status === "new") {
+    ticket.status = "open";
+  } else if (ticket.status === "solved") {
+    ticket.status = "open";
+  }
+  ticket.updated_at = at;
+  return { ...ticket };
+}
+
+export function __assignFixtureTicket(number: string, assigneeId: string | null): Ticket {
+  const ticket = __getFixtureTicket(number);
+  if (assigneeId !== null && !__getFixtureAgent(assigneeId)) {
+    notFound("That agent is not part of this organization");
+  }
+  ticket.assignee_id = assigneeId;
+  ticket.updated_at = FIXTURE_NOW.toISOString();
+  return { ...ticket };
+}
+
+export function __changeFixtureTicketStatus(number: string, target: Ticket["status"]): Ticket {
+  const ticket = __getFixtureTicket(number);
+  if (!canTransition(ticket.status, target)) {
+    throw new ApiError(409, `A ticket cannot move from '${ticket.status}' to '${target}'`, {
+      title: "Conflict",
+      status: 409,
+      detail: `A ticket cannot move from '${ticket.status}' to '${target}'`,
+    });
+  }
+  ticket.status = target;
+  if (target === "solved") ticket.sla_due = null;
+  ticket.updated_at = FIXTURE_NOW.toISOString();
+  return { ...ticket };
+}
+
+export function __updateFixtureTicket(number: string, payload: TicketUpdateIn): Ticket {
+  const ticket = __getFixtureTicket(number);
+  if (payload.priority !== undefined) ticket.priority = payload.priority;
+  if (payload.subject !== undefined) ticket.subject = payload.subject;
+  if (payload.tags !== undefined) ticket.tags = payload.tags;
+  ticket.updated_at = FIXTURE_NOW.toISOString();
+  return { ...ticket };
+}
+
+function nextFixtureTicketNumber(): string {
+  const max = TICKETS.reduce((top, t) => {
+    const n = Number(t.id.replace("TK-", ""));
+    return Number.isFinite(n) && n > top ? n : top;
+  }, 0);
+  return `TK-${String(max + 1).padStart(4, "0")}`;
+}
+
+export function __createFixtureTicket(payload: TicketCreateIn): Ticket {
+  if (payload.assignee_id != null && !__getFixtureAgent(payload.assignee_id)) {
+    notFound("That agent is not part of this organization");
+  }
+  const at = FIXTURE_NOW.toISOString();
+  const priority = payload.priority ?? "normal";
+  const target = SLA_POLICY?.targets.find((t) => t.priority === priority) ?? null;
+  const slaDue = target
+    ? new Date(FIXTURE_NOW.getTime() + target.first_response_min * 60000).toISOString()
+    : null;
+  const ticket: Ticket = {
+    id: nextFixtureTicketNumber(),
+    subject: payload.subject,
+    requester: {
+      name: payload.requester.name,
+      email: payload.requester.email,
+      company: payload.requester.company,
+      kind: payload.requester.kind ?? "customer",
+    },
+    priority,
+    status: "new",
+    channel: payload.channel ?? "web",
+    assignee_id: payload.assignee_id ?? null,
+    tags: payload.tags ?? [],
+    created_at: at,
+    updated_at: at,
+    first_response_at: null,
+    sla_due: slaDue,
+    sla_breached: false,
+    satisfaction: null,
+    messages: [
+      {
+        id: "m1",
+        author_type: "customer",
+        author_name: payload.requester.name,
+        at,
+        body: payload.body,
+      },
+    ],
+  };
+  TICKETS.unshift(ticket);
+  return { ...ticket };
+}
+
+function nextFixtureAgentRef(): string {
+  const max = AGENTS.reduce((top, a) => {
+    const n = Number(a.id.replace("ag-", ""));
+    return Number.isFinite(n) && n > top ? n : top;
+  }, 0);
+  return `ag-${String(max + 1).padStart(2, "0")}`;
+}
+
+export function __createFixtureAgent(payload: AgentIn): Agent {
+  const agent: Agent = {
+    id: nextFixtureAgentRef(),
+    name: payload.name,
+    email: payload.email,
+    role: payload.role ?? "agent",
+    team: payload.team ?? "Tier 1",
+    open_load: 0,
+    avg_first_response_min: 0,
+    csat_pct: 0,
+    solved_7d: 0,
+    online: payload.online ?? false,
+  };
+  AGENTS.push(agent);
+  return { ...agent };
+}
+
+export function __updateFixtureAgent(ref: string, payload: AgentPatch): Agent {
+  const agent = __getFixtureAgent(ref);
+  if (!agent) notFound("That agent is not part of this organization");
+  if (payload.name !== undefined) agent.name = payload.name;
+  if (payload.email !== undefined) agent.email = payload.email;
+  if (payload.role !== undefined) agent.role = payload.role;
+  if (payload.team !== undefined) agent.team = payload.team;
+  if (payload.online !== undefined) agent.online = payload.online;
+  return { ...agent };
+}
+
+export function __deleteFixtureAgent(ref: string): void {
+  const index = AGENTS.findIndex((a) => a.id === ref);
+  if (index === -1) notFound("That agent is not part of this organization");
+  AGENTS.splice(index, 1);
+  for (const ticket of TICKETS) {
+    if (ticket.assignee_id === ref) ticket.assignee_id = null;
+  }
+}
+
+export function __setFixtureSlaPolicy(payload: SlaPolicyIn): SlaPolicy {
+  SLA_POLICY = {
+    name: payload.name,
+    business_hours: payload.business_hours ?? "",
+    coverage: payload.coverage ?? "",
+    targets: payload.targets.map((t) => ({ ...t })),
+  };
+  return { ...SLA_POLICY };
+}

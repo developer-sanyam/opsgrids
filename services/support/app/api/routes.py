@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
@@ -28,6 +28,7 @@ from app.models import SCHEMA, Agent, SlaPolicy, Ticket, TicketMessage
 from app.schemas import (
     AgentIn,
     AgentOut,
+    AgentPatch,
     AssignIn,
     BreakdownSliceOut,
     MessageOut,
@@ -38,8 +39,10 @@ from app.schemas import (
     SlaPolicyIn,
     SlaPolicyOut,
     SlaTargetOut,
-    TicketIn,
+    StatusIn,
+    TicketCreateIn,
     TicketOut,
+    TicketUpdateIn,
     VolumePointOut,
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
@@ -67,20 +70,14 @@ TicketRead = Annotated[
 TicketWrite = Annotated[
     ScopeContext, Depends(require("support.desk.ticket.write", minimum=Scope.ORG))
 ]
-
-#: The desk's reference data is administration, not queue work: everyone who works the queue
-#: replies and assigns, but the roster and the SLA targets the desk is measured against are their
-#: own permissions (see `catalogue.py`). Reading them stays under `support.desk.ticket.read`.
+#: Agent and SLA-policy administration are narrower than the desk's day-to-day write: only
+#: SUPPORT_ADMIN holds these (`catalogue.py`), not every agent who can reply and assign.
 AgentWrite = Annotated[
     ScopeContext, Depends(require("support.desk.agent.write", minimum=Scope.ORG))
 ]
 SlaPolicyWrite = Annotated[
     ScopeContext, Depends(require("support.desk.sla_policy.write", minimum=Scope.ORG))
 ]
-
-#: An agent's public ref, bounded to the column it lands in, so an over-long one is a 422 here
-#: rather than a database error underneath.
-AgentRef = Annotated[str, Path(min_length=1, max_length=40, description="The agent's public ref")]
 
 
 # --------------------------------------------------------------------- assemblers
@@ -199,31 +196,9 @@ async def list_tickets(
     dependencies=[Entitled],
 )
 async def create_ticket(
-    payload: TicketIn, session: SessionDep, ctx: TicketWrite, request: Request
+    payload: TicketCreateIn, session: SessionDep, ctx: TicketWrite, request: Request
 ) -> TicketOut:
-    """Open a ticket with its opening thread, and stage `support.desk.ticket.created`.
-
-    The ticket starts `new` and unassigned: the lifecycle owns the first and the assignment
-    route — which refuses an agent outside the organization — owns the second (see `TicketIn`).
-    The opening messages are stamped with the ticket's own creation time: they are its first
-    thread, not a backfilled history.
-    """
-    now = datetime.now(UTC)
-    ticket = await services.create_ticket(
-        session,
-        ctx,
-        number=payload.number,
-        subject=payload.subject,
-        requester=payload.requester.model_dump(),
-        priority=payload.priority,
-        status=domain.TicketStatus.NEW.value,
-        channel=payload.channel,
-        assignee_ref=None,
-        tags=list(payload.tags),
-        created_at=now,
-        messages=[{**m.model_dump(), "at": now} for m in payload.messages],
-        request=request,
-    )
+    ticket = await services.create_ticket_from(session, ctx, payload, request=request)
     messages = await selectors.get_messages(session, ctx.organization_id, ticket.id)
     return _ticket_out(ticket, messages)
 
@@ -239,35 +214,51 @@ async def list_agents(session: SessionDep, ctx: TicketRead) -> list[AgentOut]:
     return [_agent_out(a) for a in agents]
 
 
-@router.put(
-    "/support/agents/{ref}",
+@router.post(
+    "/support/agents",
     response_model=AgentOut,
-    summary="Create or update an agent",
+    status_code=status.HTTP_201_CREATED,
+    summary="Add an agent to the desk",
     dependencies=[Entitled],
 )
-async def put_agent(
-    ref: AgentRef, payload: AgentIn, session: SessionDep, ctx: AgentWrite
+async def create_agent(
+    payload: AgentIn, session: SessionDep, ctx: AgentWrite, request: Request
 ) -> AgentOut:
-    """Idempotent on `ref` — the same PUT twice leaves one agent, updated. That is why this is a
-    PUT on the ref rather than a POST to a collection.
-
-    Reference data, so nothing is staged on the outbox: nothing downstream reacts to the roster.
-    """
-    agent = await services.upsert_agent(
-        session,
-        ctx,
-        ref=ref,
-        name=payload.name,
-        email=payload.email,
-        role=payload.role,
-        team=payload.team,
-        open_load=payload.open_load,
-        avg_first_response_min=payload.avg_first_response_min,
-        csat_pct=payload.csat_pct,
-        solved_7d=payload.solved_7d,
-        online=payload.online,
-    )
+    agent = await services.create_agent(session, ctx, payload, request=request)
     return _agent_out(agent)
+
+
+@router.patch(
+    "/support/agents/{ref}",
+    response_model=AgentOut,
+    summary="Edit an agent",
+    dependencies=[Entitled],
+)
+async def update_agent(
+    ref: str, payload: AgentPatch, session: SessionDep, ctx: AgentWrite, request: Request
+) -> AgentOut:
+    agent = await selectors.get_agent(session, ctx.organization_id, ref)
+    if agent is None:
+        raise NotFoundProblem("That agent is not part of this organization")
+    agent = await services.update_agent(session, ctx, agent, payload, request=request)
+    return _agent_out(agent)
+
+
+@router.delete(
+    "/support/agents/{ref}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Deactivate an agent",
+    dependencies=[Entitled],
+)
+async def deactivate_agent(
+    ref: str, session: SessionDep, ctx: AgentWrite, request: Request
+) -> Response:
+    agent = await selectors.get_agent(session, ctx.organization_id, ref)
+    if agent is None:
+        raise NotFoundProblem("That agent is not part of this organization")
+    await services.deactivate_agent(session, ctx, agent, request=request)
+    await session.flush()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(
@@ -277,6 +268,10 @@ async def put_agent(
     dependencies=[Entitled],
 )
 async def get_sla_policy(session: SessionDep, ctx: TicketRead) -> SlaPolicyOut:
+    # Deliberately still a 404, not a synthesized set of defaults: there is exactly one policy
+    # per organization (`uq_sla_policies_org`), and inventing target minutes nobody configured
+    # would read as a real SLA commitment. A new organization gets an honest "unset", and the
+    # product's empty state (not this endpoint) is where "no policy yet — set one up" belongs.
     policy = await selectors.get_sla_policy(session, ctx.organization_id)
     if policy is None:
         raise NotFoundProblem("No SLA policy is configured for this organization")
@@ -289,24 +284,10 @@ async def get_sla_policy(session: SessionDep, ctx: TicketRead) -> SlaPolicyOut:
     summary="Set the SLA policy governing the queue",
     dependencies=[Entitled],
 )
-async def put_sla_policy(
-    payload: SlaPolicyIn, session: SessionDep, ctx: SlaPolicyWrite
+async def set_sla_policy(
+    payload: SlaPolicyIn, session: SessionDep, ctx: SlaPolicyWrite, request: Request
 ) -> SlaPolicyOut:
-    """Create or replace the organization's one policy. Idempotent, and a whole replacement:
-    `targets` lands as sent.
-
-    Moving a target does not re-clock the tickets already in flight — `sla_due` and
-    `sla_breached` are stored state, stamped as each ticket moved, not a colour recomputed from
-    whatever the policy says today.
-    """
-    policy = await services.upsert_sla_policy(
-        session,
-        ctx,
-        name=payload.name,
-        business_hours=payload.business_hours,
-        coverage=payload.coverage,
-        targets=[t.model_dump() for t in payload.targets],
-    )
+    policy = await services.set_sla_policy(session, ctx, payload, request=request)
     return _policy_out(policy)
 
 
@@ -357,6 +338,50 @@ async def read_ticket(number: str, session: SessionDep, ctx: TicketRead) -> Tick
     return _ticket_out(ticket, messages)
 
 
+@router.patch(
+    "/support/tickets/{number}",
+    response_model=TicketOut,
+    summary="Edit a ticket's priority, subject or tags",
+    dependencies=[Entitled],
+)
+async def update_ticket(
+    number: str,
+    payload: TicketUpdateIn,
+    session: SessionDep,
+    ctx: TicketWrite,
+    request: Request,
+) -> TicketOut:
+    ticket = await selectors.get_ticket(session, ctx.organization_id, number)
+    if ticket is None:
+        raise NotFoundProblem("That ticket is not part of this organization")
+    await services.update_ticket(session, ctx, ticket, payload, request=request)
+    await session.refresh(ticket)
+    messages = await selectors.get_messages(session, ctx.organization_id, ticket.id)
+    return _ticket_out(ticket, messages)
+
+
+@router.post(
+    "/support/tickets/{number}/status",
+    response_model=TicketOut,
+    summary="Move a ticket through the lifecycle",
+    dependencies=[Entitled],
+)
+async def change_ticket_status(
+    number: str,
+    payload: StatusIn,
+    session: SessionDep,
+    ctx: TicketWrite,
+    request: Request,
+) -> TicketOut:
+    ticket = await selectors.get_ticket(session, ctx.organization_id, number)
+    if ticket is None:
+        raise NotFoundProblem("That ticket is not part of this organization")
+    await services.change_status(session, ctx, ticket, payload.status, request=request)
+    await session.refresh(ticket)
+    messages = await selectors.get_messages(session, ctx.organization_id, ticket.id)
+    return _ticket_out(ticket, messages)
+
+
 @router.post(
     "/support/tickets/{number}/reply",
     response_model=TicketOut,
@@ -379,7 +404,9 @@ async def reply_ticket(
         ctx,
         ticket,
         body=payload.body,
-        author_type=payload.author_type,
+        # Fixed to `agent`, never taken from the client — see `ReplyIn`. This endpoint is the
+        # desk's own reply path, so the caller writing it *is* the agent.
+        author_type="agent",
         author_name=payload.author_name,
         internal=payload.internal,
         request=request,

@@ -21,12 +21,17 @@ from app.catalogue import (
 )
 
 
-def test_the_four_permissions_are_exactly_what_the_adr_names() -> None:
+def test_the_permissions_are_exactly_what_the_adrs_and_gaps_name() -> None:
     assert STOREFRONT.codes() == [
         "storefront.store.settings.read",
         "storefront.store.settings.write",
         "storefront.delivery.zone.read",
         "storefront.delivery.zone.write",
+        "storefront.catalogue.product.read",
+        "storefront.catalogue.product.write",
+        "storefront.sales.enquiry.read",
+        "storefront.sales.enquiry.write",
+        "storefront.sales.enquiry.unmask",
     ]
 
 
@@ -34,7 +39,7 @@ def test_there_is_no_fifth_permission_for_the_demand_report() -> None:
     """Folded into `zone.read` (ADR-0010 §9). Nobody has asked for a read-the-demand-but-not-the-
     zones role, and a fifth permission is a fifth thing to deliver. The trade, plainly: anyone
     who can see the zones can see which postal codes were turned away."""
-    assert len(STOREFRONT.specs) == 4
+    assert len(STOREFRONT.specs) == 9
 
 
 @pytest.mark.parametrize("spec", STOREFRONT.specs, ids=lambda s: s.code("storefront"))

@@ -117,6 +117,7 @@ export const carton: Theme = {
         columns: 4,
       }),
       sec("crt-cat-enquiry", "enquiry-form", { x: 0, y: 25, w: 6, h: 12 }, {
+        storeSlug: "carton",
         heading: "Ask for a sample",
         body: "Tell us the product you pack and we will send two sizes to test.",
         submitLabel: "Request samples",
@@ -156,6 +157,7 @@ export const carton: Theme = {
         image: "/img/plate-carton.svg",
       }),
       sec("crt-prd-enquiry", "enquiry-form", { x: 7, y: 7, w: 5, h: 12 }, {
+        storeSlug: "carton",
         heading: "Order or ask",
         body: "Quantities, print, or a size we do not list — all three go in the same box below.",
       }),

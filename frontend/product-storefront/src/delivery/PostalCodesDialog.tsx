@@ -78,6 +78,10 @@ export function PostalCodesDialog({
   const plan: SavePlan | null = map !== null ? planZoneSave(value, zone.id, map) : null;
   const saving = phase.step === "saving";
   const noop = plan === null || planIsNoop(plan);
+  // The server refuses a postal code that already belongs to another zone (services.py's
+  // per-organization uniqueness rule) — it does not move it. Blocking here, before the request,
+  // is what stops the merchant discovering that as a 409 after they clicked Save.
+  const blockedByConflict = plan !== null && plan.moves.length > 0;
 
   async function onFile(file: File) {
     setFailure(null);
@@ -104,7 +108,7 @@ export function PostalCodesDialog({
   }
 
   async function save() {
-    if (saving || plan === null) return;
+    if (saving || plan === null || blockedByConflict) return;
     setPhase({ step: "saving" });
     setFailure(null);
     try {
@@ -140,8 +144,14 @@ export function PostalCodesDialog({
             <Button variant="ghost" onClick={onClose} disabled={saving}>
               Cancel
             </Button>
-            <Button onClick={() => void save()} disabled={saving || noop}>
-              {saving ? "Saving…" : noop ? "Nothing to save" : "Save these postal codes"}
+            <Button onClick={() => void save()} disabled={saving || noop || blockedByConflict}>
+              {saving
+                ? "Saving…"
+                : blockedByConflict
+                  ? "Remove the conflicts first"
+                  : noop
+                    ? "Nothing to save"
+                    : "Save these postal codes"}
             </Button>
           </>
         ) : null
@@ -169,6 +179,13 @@ export function PostalCodesDialog({
           {failure !== null ? (
             <InlineAlert tone="danger" title="That didn't save">
               {failure}
+            </InlineAlert>
+          ) : null}
+
+          {blockedByConflict ? (
+            <InlineAlert tone="warning" title="Some of these codes belong to another zone">
+              A postal code belongs to exactly one zone. The server refuses to move one for you —
+              remove the codes listed below from their current zone first, then save here.
             </InlineAlert>
           ) : null}
 
@@ -248,10 +265,7 @@ function SaveReport({ result, requested }: { result: ZonePostalCodesOut; request
       </InlineAlert>
       <div className="flex flex-col gap-1 text-sm text-ink-soft">
         <p className="font-semibold text-ink">What this save asked for</p>
-        <p>
-          {requested.added.length} new, {requested.moves.length} moved in from another zone,{" "}
-          {requested.removed.length} dropped.
-        </p>
+        <p>{requested.added.length} new, {requested.removed.length} dropped.</p>
         {requested.rejected.length > 0 ? (
           <p>{requested.rejected.length} were not sent — they are not six-digit PIN codes.</p>
         ) : null}

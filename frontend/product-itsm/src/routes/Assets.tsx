@@ -4,8 +4,9 @@ import { useNavigate } from "react-router-dom";
 
 import { listAssets } from "@/api/client";
 import type { Asset, AssetStatus, AssetType } from "@/api/types";
-import { assetTypeLabel, formatDate } from "@/lib/format";
-import { useAsync } from "@opsgrids/client";
+import { assetTypeLabel, daysUntil, formatDate } from "@/lib/format";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { Can, problemMessage, useAsync, useCan } from "@opsgrids/client";
 import {
   AssetStatusPill,
   Card,
@@ -13,6 +14,7 @@ import {
   EmptyState,
   ErrorState,
   PageHeader,
+  Pagination,
   Pill,
   SearchInput,
   Skeleton,
@@ -20,13 +22,19 @@ import {
 import type { Column } from "@/ui";
 import {
   BoxIcon,
+  Button,
   KeyIcon,
   LaptopIcon,
   MonitorIcon,
   NetworkIcon,
   PhoneIcon,
+  PlusIcon,
   ServerIcon,
+  useToast,
 } from "@opsgrids/ui";
+import { AssetFormDialog } from "@/forms/AssetFormDialog";
+
+const CAN_WRITE = "itsm.cmdb.asset.write";
 
 type IconType = ComponentType<SVGProps<SVGSVGElement>>;
 
@@ -62,33 +70,41 @@ const TYPE_OPTIONS: { value: AssetType | "all"; label: string }[] = [
 ];
 
 const NO_ASSETS: Asset[] = [];
-const NOW_MS = Date.parse("2026-08-24T18:00:00Z");
 const WARRANTY_WINDOW_DAYS = 60;
 
-/** A small flag on the warranty cell: expired, or expiring within 60 days. */
+/** A small flag on the warranty cell: expired, or expiring within 60 days — against the real
+ *  clock, never a frozen one. */
 function warrantyFlag(iso: string | null): { label: string; tone: string } | null {
   if (iso === null) return null;
-  const exp = Date.parse(`${iso}T00:00:00Z`);
-  if (exp < NOW_MS) return { label: "Expired", tone: "bg-danger-soft text-danger" };
-  if (exp <= NOW_MS + WARRANTY_WINDOW_DAYS * 86_400_000) {
-    return { label: "Soon", tone: "bg-late-soft text-late" };
-  }
+  const remaining = daysUntil(iso);
+  if (remaining < 0) return { label: "Expired", tone: "bg-danger-soft text-danger" };
+  if (remaining <= WARRANTY_WINDOW_DAYS) return { label: "Soon", tone: "bg-late-soft text-late" };
   return null;
 }
 
 export function AssetsPage() {
   const navigate = useNavigate();
+  const toast = useToast();
+  const canWrite = useCan(CAN_WRITE, "OWN");
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [type, setType] = useState<AssetType | "all">("all");
   const [status, setStatus] = useState<StatusFilter>("all");
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(25);
+  const [creating, setCreating] = useState(false);
 
-  const loader = useCallback(() => listAssets({ search, type, status }), [search, type, status]);
-  const state = useAsync(loader, [search, type, status]);
+  const loader = useCallback(
+    () => listAssets({ search: debouncedSearch, type, status, page, size }),
+    [debouncedSearch, type, status, page, size],
+  );
+  const state = useAsync(loader, [debouncedSearch, type, status, page, size]);
 
   const items = useMemo(
     () => (state.status === "success" ? state.data.items : NO_ASSETS),
     [state],
   );
+  const hasFilters = debouncedSearch.trim() !== "" || type !== "all" || status !== "all";
 
   const columns: Column<Asset>[] = useMemo(
     () => [
@@ -145,9 +161,7 @@ export function AssetsPage() {
           return (
             <span className="inline-flex items-center justify-end gap-2 whitespace-nowrap">
               {flag ? (
-                <span
-                  className={`rounded-full px-2 py-0.5 text-[0.7rem] font-bold ${flag.tone}`}
-                >
+                <span className={`rounded-full px-2 py-0.5 text-[0.7rem] font-bold ${flag.tone}`}>
                   {flag.label}
                 </span>
               ) : null}
@@ -166,11 +180,18 @@ export function AssetsPage() {
         eyebrow="Assets & config"
         title="Assets (CMDB)"
         actions={
-          <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
-            <BoxIcon className="size-4 text-muted" />
-            <span className="tnum">{items.length}</span>
-            <span className="text-muted font-medium">assets</span>
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
+              <BoxIcon className="size-4 text-muted" />
+              <span className="tnum">{state.status === "success" ? state.data.total : "—"}</span>
+              <span className="text-muted font-medium">total</span>
+            </span>
+            <Can permission={CAN_WRITE} scope="OWN">
+              <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
+                Add asset
+              </Button>
+            </Can>
+          </div>
         }
       />
 
@@ -180,14 +201,20 @@ export function AssetsPage() {
             label="Search assets"
             placeholder="Search by tag, name, owner or serial…"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
             containerClassName="lg:max-w-sm"
           />
-          <label className="inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-ground px-3 text-sm font-semibold text-ink-soft">
+          <label className="inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-ground px-3 text-sm font-semibold text-ink-soft focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2">
             <span className="sr-only">Filter by type</span>
             <select
               value={type}
-              onChange={(e) => setType(e.target.value as AssetType | "all")}
+              onChange={(e) => {
+                setType(e.target.value as AssetType | "all");
+                setPage(1);
+              }}
               className="h-full cursor-pointer bg-transparent pr-1 text-sm font-semibold text-ink focus:outline-none"
             >
               {TYPE_OPTIONS.map((t) => (
@@ -199,7 +226,14 @@ export function AssetsPage() {
           </label>
           <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1 lg:ml-auto">
             {STATUS_FILTERS.map((f) => (
-              <Pill key={f.value} active={status === f.value} onClick={() => setStatus(f.value)}>
+              <Pill
+                key={f.value}
+                active={status === f.value}
+                onClick={() => {
+                  setStatus(f.value);
+                  setPage(1);
+                }}
+              >
                 {f.label}
               </Pill>
             ))}
@@ -215,24 +249,67 @@ export function AssetsPage() {
             ))}
           </div>
         ) : null}
-        {state.status === "error" ? <ErrorState message={state.error.message} /> : null}
-        {state.status === "success" ? (
-          <DataTable
-            columns={columns}
-            rows={items}
-            rowKey={(a) => a.tag}
-            caption="Assets"
-            onRowClick={(a) => navigate(`/assets/${a.tag}`)}
-            emptyState={
-              <EmptyState
-                icon={<BoxIcon className="size-6" />}
-                title="No matching assets"
-                description="Nothing matches these filters. Try a different type, status, or clear the search."
-              />
-            }
+        {state.status === "error" ? (
+          <ErrorState
+            title="Couldn't load assets"
+            message={problemMessage(state.error)}
+            onRetry={state.reload}
           />
         ) : null}
+        {state.status === "success" ? (
+          <>
+            <DataTable
+              columns={columns}
+              rows={items}
+              rowKey={(a) => a.tag}
+              caption="Assets"
+              onRowClick={(a) => navigate(`/assets/${a.tag}`)}
+              emptyState={
+                <EmptyState
+                  icon={<BoxIcon className="size-6" />}
+                  title={hasFilters ? "No matching assets" : "No assets yet"}
+                  description={
+                    hasFilters
+                      ? "Nothing matches these filters. Try a different type, status, or clear the search."
+                      : "Add the first asset to start tracking it."
+                  }
+                  action={
+                    canWrite && !hasFilters ? (
+                      <Button size="sm" onClick={() => setCreating(true)}>
+                        Add asset
+                      </Button>
+                    ) : null
+                  }
+                />
+              }
+            />
+            <Pagination
+              page={state.data.page}
+              pages={state.data.pages}
+              total={state.data.total}
+              size={state.data.size}
+              noun="assets"
+              onPageChange={setPage}
+              onSizeChange={(n) => {
+                setSize(n);
+                setPage(1);
+              }}
+            />
+          </>
+        ) : null}
       </Card>
+
+      {creating ? (
+        <AssetFormDialog
+          asset={null}
+          onClose={() => setCreating(false)}
+          onSaved={(asset) => {
+            setCreating(false);
+            toast.success(`${asset.tag} added.`);
+            state.reload();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

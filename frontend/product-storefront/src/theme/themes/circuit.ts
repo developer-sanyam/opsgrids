@@ -82,6 +82,7 @@ export const circuit: Theme = {
         a3: "Yes, for programmes over ₹5 lakh. We allocate against the schedule and release per panel.",
       }),
       sec("cir-enquiry", "enquiry-form", { x: 7, y: 33, w: 5, h: 12 }, {
+        storeSlug: "circuit",
         heading: "Send a bill of materials",
         body: "Paste it, list it, or describe the panel. Priced within four working hours.",
         submitLabel: "Send the BOM",

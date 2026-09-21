@@ -6,7 +6,7 @@ that crosses a schema boundary. Links **within** this schema (`purchase_orders.s
 `purchase_order_lines.purchase_order_id`) are real foreign keys, because only cross-schema
 foreign keys are banned.
 
-Five tables, one schema:
+Six tables, one schema:
 
 * **suppliers** — the vendors the org buys from. `spend_minor` (lifetime committed spend) and
   `open_pos` are denormalised read-model rollups so a supplier row renders without a join;
@@ -14,14 +14,20 @@ Five tables, one schema:
 * **warehouses** — the stocking locations. Reference data within the organization; still
   `organization_id` + RLS because one tenant's sites are not another's.
 * **purchase_orders** — a PO with an ITIL-style lifecycle (draft → approved → received →
-  closed). `supplier_name`, `category` and `warehouse` are denormalised for the list view; the
+  closed, plus a `cancelled` terminal state reachable from draft or approved).
+  `supplier_name`, `category` and `warehouse` are denormalised for the list view; the
   PO **total is derived from its lines and never stored** (ADR-0000 §8 — money is exact, and a
   stored total is one more thing to drift out of sync).
 * **purchase_order_lines** — one item on a PO. `unit_price_minor` is per-unit minor units;
   `amount_minor` is `quantity * unit_price_minor`, stored so the lines **foot to the PO total**
   and the arithmetic is checkable in the database, not just in the UI.
-* **inventory_items** — stock on hand at a warehouse. Low-stock is *derived* (`on_hand <=
-  reorder_point`), never a stored flag, so it can never contradict the counts.
+* **inventory_items** — stock on hand at a warehouse. `on_hand` is a **cached balance**, changed
+  only by inserting a `stock_movements` row in the same transaction — never a bare column write.
+  Low-stock is *derived* (`on_hand <= reorder_point`), never a stored flag, so it can never
+  contradict the counts.
+* **stock_movements** — the append-only ledger `on_hand` is the running sum of. `UPDATE`/`DELETE`
+  are revoked from the app role (like `audit_logs`); a wrong movement is corrected by an
+  opposite one, never rewritten.
 
 The human identifiers the SPA speaks in — a supplier `code` (`SUP-MER`), a PO `number`
 (`PO-2026-0148`), an inventory `sku` — are stored as their own unique-per-org columns; the
@@ -33,12 +39,14 @@ touches an amount.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     Date,
+    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -46,6 +54,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -53,7 +63,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from platform_core.audit import AuditLogMixin
 from platform_core.events import OutboxMixin, ProcessedEventMixin
 from platform_core.models import Base as _Base
-from platform_core.models import TenantBase
+from platform_core.models import OrgScopedMixin, TenantBase, UUIDPrimaryKeyMixin
 
 SCHEMA = "operations"
 
@@ -106,7 +116,16 @@ class Supplier(Base, TenantBase):
         # Every index leads with `organization_id`: under row-level security the policy qual is
         # ANDed into every query, so an index that did not lead with the tenant column would
         # scan the whole platform's rows and discard almost all of them (ADR-0002).
-        UniqueConstraint("organization_id", "code", name="uq_suppliers_org_code"),
+        # Partial — `WHERE deleted_at IS NULL` — so a soft-deleted supplier's code can be
+        # reused rather than blocking re-creation with an IntegrityError (house precedent:
+        # `services/account/app/models.py:250`).
+        Index(
+            "uq_suppliers_org_code",
+            "organization_id",
+            "code",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         Index("ix_suppliers_org_status", "organization_id", "status"),
         Index("ix_suppliers_org_category", "organization_id", "category"),
     )
@@ -122,7 +141,14 @@ class Warehouse(Base, TenantBase):
     location: Mapped[str] = mapped_column(String(160), nullable=False, default="")
 
     __table_args__ = (
-        UniqueConstraint("organization_id", "code", name="uq_warehouses_org_code"),
+        # Partial — a soft-deleted warehouse's code can be reused.
+        Index(
+            "uq_warehouses_org_code",
+            "organization_id",
+            "code",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         Index("ix_warehouses_org_name", "organization_id", "name"),
     )
 
@@ -153,7 +179,8 @@ class PurchaseOrder(Base, TenantBase):
     supplier_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     #: Denormalised from the supplier: raw_materials | packaging | components | mro | ...
     category: Mapped[str] = mapped_column(String(20), nullable=False)
-    #: draft | approved | received | closed.
+    #: draft | approved | received | closed | cancelled. `String(20)`, no CHECK — the vocabulary
+    #: lives in `app.domain.PO_TRANSITIONS`, enforced by the write path, not the column.
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
     #: Destination warehouse — a denormalised name string, matching the wire.
@@ -245,9 +272,70 @@ class InventoryItem(Base, TenantBase):
     stocked_at: Mapped[date | None] = mapped_column(Date)
 
     __table_args__ = (
-        UniqueConstraint("organization_id", "sku", name="uq_inventory_items_org_sku"),
+        # Partial — a soft-deleted item's SKU can be reused (a purchase-order line joins on it).
+        Index(
+            "uq_inventory_items_org_sku",
+            "organization_id",
+            "sku",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         Index("ix_inventory_items_org_warehouse", "organization_id", "warehouse"),
         Index("ix_inventory_items_org_category", "organization_id", "category"),
+    )
+
+
+class StockMovement(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One append-only fact about an inventory item's balance changing.
+
+    `inventory_items.on_hand` is a cached running balance; this table is the only thing
+    allowed to change it, and only by inserting a row here in the same transaction (never a
+    bare column write). `on_hand_after` is the resulting balance, so the item's current
+    `on_hand` must always equal the most recent movement's `on_hand_after`, and the sum of
+    every movement's `quantity_delta` for an item must always equal its `on_hand`.
+
+    No `TenantBase`: this table carries no `updated_at`/`deleted_at` — a movement is never
+    edited or removed once written (`UPDATE`/`DELETE` are revoked from the app role in the
+    migration and re-revoked in `migrations/env.py` after every grant re-application). A wrong
+    adjustment is corrected by an opposite movement, not a rewrite.
+    """
+
+    __tablename__ = "stock_movements"
+
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: opening | receipt | adjustment | count.
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: damaged | lost | found | consumed | returned | other. Required when `kind == "adjustment"`.
+    reason: Mapped[str | None] = mapped_column(String(30))
+    quantity_delta: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: The resulting balance — `on_hand` after this movement is applied.
+    on_hand_after: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: "purchase_order" when a receipt posts against one. A plain UUID, never a cross-entity FK.
+    reference_type: Mapped[str | None] = mapped_column(String(30))
+    reference_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    occurred_on: Mapped[date] = mapped_column(Date, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint("on_hand_after >= 0", name="on_hand_after_non_negative"),
+        CheckConstraint(
+            "quantity_delta <> 0 OR kind = 'count'",
+            name="quantity_delta_nonzero",
+        ),
+        Index(
+            "ix_stock_movements_org_item_created",
+            "organization_id",
+            "inventory_item_id",
+            text("created_at DESC"),
+        ),
     )
 
 

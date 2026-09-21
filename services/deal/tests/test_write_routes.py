@@ -299,7 +299,7 @@ class TestMoveStage:
         assert response.status_code == 404
 
 
-# --------------------------------------------------------------------- POST /deals/{id}/activities
+# --------------------------------------------------------------------- POST /deals/activities
 
 
 class TestLogActivity:
@@ -309,8 +309,9 @@ class TestLogActivity:
         )
         with as_principal(principal):
             response = await client.post(
-                f"/api/v1/deals/{data['deal_a_id']}/activities",
+                "/api/v1/deals/activities",
                 json={
+                    "deal_id": str(data["deal_a_id"]),
                     "type": "call",
                     "subject": "Pricing follow-up",
                     "body": "Agreed to a 30-vehicle pilot.",
@@ -349,8 +350,8 @@ class TestLogActivity:
         )
         with as_principal(principal):
             response = await client.post(
-                f"/api/v1/deals/{data['deal_a_id']}/activities",
-                json={"type": "note", "subject": "Snuck in"},
+                "/api/v1/deals/activities",
+                json={"deal_id": str(data["deal_a_id"]), "type": "note", "subject": "Snuck in"},
             )
         assert response.status_code == 403
         assert response.headers["content-type"].startswith("application/problem+json")
@@ -367,8 +368,12 @@ class TestLogActivity:
         )
         with as_principal(principal):
             response = await client.post(
-                f"/api/v1/deals/{data['deal_b_id']}/activities",
-                json={"type": "note", "subject": "Not my deal"},
+                "/api/v1/deals/activities",
+                json={
+                    "deal_id": str(data["deal_b_id"]),
+                    "type": "note",
+                    "subject": "Not my deal",
+                },
             )
         assert response.status_code == 403
 
@@ -391,12 +396,14 @@ class TestLogActivity:
         principal = principal_for(
             org_id, ["crm.pipeline.activity.write:ORG"], subject_ref=data["subject_a"]
         )
-        payload: dict = {"type": "note", "subject": "Malformed"}
+        payload: dict = {
+            "deal_id": str(data["deal_a_id"]),
+            "type": "note",
+            "subject": "Malformed",
+        }
         payload[field] = value
         with as_principal(principal):
-            response = await client.post(
-                f"/api/v1/deals/{data['deal_a_id']}/activities", json=payload
-            )
+            response = await client.post("/api/v1/deals/activities", json=payload)
         assert response.status_code == 422, f"{field}={value!r}"
 
         async with session.begin():
@@ -411,7 +418,7 @@ class TestLogActivity:
         )
         with as_principal(principal):
             response = await client.post(
-                f"/api/v1/deals/{uuid.uuid4()}/activities",
-                json={"type": "note", "subject": "Ghost"},
+                "/api/v1/deals/activities",
+                json={"deal_id": str(uuid.uuid4()), "type": "note", "subject": "Ghost"},
             )
         assert response.status_code == 404

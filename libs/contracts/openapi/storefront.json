@@ -1,6 +1,254 @@
 {
   "components": {
     "schemas": {
+      "CategoryCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "blurb": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blurb"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "is_active": {
+            "default": true,
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "key": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[a-z0-9][a-z0-9-]*$",
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "sort_order": {
+            "default": 0,
+            "title": "Sort Order",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "label"
+        ],
+        "title": "CategoryCreate",
+        "type": "object"
+      },
+      "CategoryOut": {
+        "properties": {
+          "blurb": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blurb"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "line_count": {
+            "default": 0,
+            "title": "Line Count",
+            "type": "integer"
+          },
+          "sort_order": {
+            "title": "Sort Order",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "label",
+          "blurb",
+          "image_url",
+          "sort_order",
+          "is_active",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "CategoryOut",
+        "type": "object"
+      },
+      "CategoryPatch": {
+        "additionalProperties": false,
+        "description": "Absent leaves a field alone; explicit `null` clears the nullable ones. `key` is\nimmutable once created \u2014 it is what a product's `category_id` resolves through, and a\nrename would silently repoint every product to a category a client thinks is different.",
+        "properties": {
+          "blurb": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blurb"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "sort_order": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sort Order"
+          }
+        },
+        "title": "CategoryPatch",
+        "type": "object"
+      },
+      "CategoryPublicOut": {
+        "description": "`CategoryOut` minus what a stranger has no business seeing \u2014 `is_active` is implicit\n(every row here already is one) and `id`/`sort_order` stay merchant-only detail.",
+        "properties": {
+          "blurb": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blurb"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "line_count": {
+            "default": 0,
+            "title": "Line Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "blurb",
+          "image_url"
+        ],
+        "title": "CategoryPublicOut",
+        "type": "object"
+      },
       "DeliveryCheckIn": {
         "additionalProperties": false,
         "description": "The merchant's tester. No `store` \u2014 the tenant comes from the token, not from a slug.",
@@ -52,6 +300,289 @@
           "checks"
         ],
         "title": "DemandRowOut",
+        "type": "object"
+      },
+      "EnquiryCreate": {
+        "additionalProperties": false,
+        "description": "The public body. `store` names the tenant the same way every other public endpoint's\nbody does; `email` and `phone` are sealed rather than stored, `phone` optional because the\nfront end's own form only requires an email (`EnquiryForm.tsx`).",
+        "properties": {
+          "company": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Company",
+            "type": "string"
+          },
+          "email": {
+            "format": "email",
+            "maxLength": 254,
+            "title": "Email",
+            "type": "string"
+          },
+          "gstin": {
+            "anyOf": [
+              {
+                "maxLength": 15,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gstin"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/EnquiryLineIn"
+            },
+            "maxItems": 200,
+            "title": "Lines",
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "quantity": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Quantity",
+            "type": "string"
+          },
+          "requirement": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Requirement",
+            "type": "string"
+          },
+          "store": {
+            "maxLength": 63,
+            "minLength": 2,
+            "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
+            "title": "Store",
+            "type": "string"
+          }
+        },
+        "required": [
+          "store",
+          "name",
+          "company",
+          "email",
+          "requirement"
+        ],
+        "title": "EnquiryCreate",
+        "type": "object"
+      },
+      "EnquiryLineIn": {
+        "additionalProperties": false,
+        "description": "One line of the buyer's list. `product_id` is validated against *this* published store's\nactive catalogue and `name` is taken from the product there, never from this body \u2014 kept\naccepting `name` here only because the buyer bundle's form still sends it, and it is ignored\nserver-side (`services.create_enquiry_for_store`). The enquiry is still a record of what was\nasked for at the time, not a live view: it stores the catalogue name as of the enquiry, so a\nlater rename does not rewrite history.",
+        "properties": {
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "product_id": {
+            "format": "uuid",
+            "title": "Product Id",
+            "type": "string"
+          },
+          "quantity": {
+            "maximum": 1000000.0,
+            "minimum": 1.0,
+            "title": "Quantity",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "product_id",
+          "name",
+          "quantity"
+        ],
+        "title": "EnquiryLineIn",
+        "type": "object"
+      },
+      "EnquiryOut": {
+        "description": "The merchant's ordinary read. Contact fields are **masked by default** \u2014 `email_masked`\nand `phone_masked` are the same `\u2022\u2022\u2022`-bulleted hint `platform_core.pii.mask` produces for\n`services/customer`'s contacts. Unmasking is `POST /storefront/enquiries/{id}:reveal`.",
+        "properties": {
+          "company": {
+            "title": "Company",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "email_masked": {
+            "title": "Email Masked",
+            "type": "string"
+          },
+          "gstin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gstin"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "phone_masked": {
+            "title": "Phone Masked",
+            "type": "string"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "string"
+          },
+          "requirement": {
+            "title": "Requirement",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "new",
+              "contacted",
+              "won",
+              "lost"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "company",
+          "email_masked",
+          "phone_masked",
+          "gstin",
+          "requirement",
+          "quantity",
+          "lines",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "EnquiryOut",
+        "type": "object"
+      },
+      "EnquiryPatch": {
+        "additionalProperties": false,
+        "description": "Only `status` ever changes \u2014 the enquiry's content is append-only. `domain.\nassert_enquiry_transition` is the state machine; an illegal move is a 409.",
+        "properties": {
+          "status": {
+            "enum": [
+              "new",
+              "contacted",
+              "won",
+              "lost"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "EnquiryPatch",
+        "type": "object"
+      },
+      "EnquiryReceiptOut": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "received_at": {
+            "format": "date-time",
+            "title": "Received At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "received_at"
+        ],
+        "title": "EnquiryReceiptOut",
+        "type": "object"
+      },
+      "EnquiryRevealed": {
+        "description": "The audited, stepped-up read. `None` for a field means nothing was ever sealed for it \u2014\n`phone` is optional on create \u2014 not that the caller lacked permission to see it.",
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "phone"
+        ],
+        "title": "EnquiryRevealed",
         "type": "object"
       },
       "FeesOut": {
@@ -266,6 +797,42 @@
         "title": "MerchantServiceabilityOut",
         "type": "object"
       },
+      "Page_CategoryOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CategoryOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[CategoryOut]",
+        "type": "object"
+      },
       "Page_DemandRowOut_": {
         "properties": {
           "items": {
@@ -302,6 +869,114 @@
         "title": "Page[DemandRowOut]",
         "type": "object"
       },
+      "Page_EnquiryOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EnquiryOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[EnquiryOut]",
+        "type": "object"
+      },
+      "Page_ProductOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProductOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ProductOut]",
+        "type": "object"
+      },
+      "Page_ProductPublicOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProductPublicOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ProductPublicOut]",
+        "type": "object"
+      },
       "Page_ZoneOut_": {
         "properties": {
           "items": {
@@ -336,6 +1011,821 @@
           "pages"
         ],
         "title": "Page[ZoneOut]",
+        "type": "object"
+      },
+      "ProductCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "brand": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Brand",
+            "type": "string"
+          },
+          "category_id": {
+            "format": "uuid",
+            "title": "Category Id",
+            "type": "string"
+          },
+          "code": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "delivery_eta_minutes": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Eta Minutes"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "featured": {
+            "default": false,
+            "title": "Featured",
+            "type": "boolean"
+          },
+          "gst_inclusive": {
+            "default": true,
+            "title": "Gst Inclusive",
+            "type": "boolean"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "in_stock": {
+            "default": true,
+            "title": "In Stock",
+            "type": "boolean"
+          },
+          "is_active": {
+            "default": true,
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "lead_time_days": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Lead Time Days",
+            "type": "integer"
+          },
+          "moq": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Moq",
+            "type": "integer"
+          },
+          "moq_unit": {
+            "default": "",
+            "maxLength": 24,
+            "title": "Moq Unit",
+            "type": "string"
+          },
+          "mrp_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mrp Minor"
+          },
+          "name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "price_max_minor": {
+            "minimum": 0.0,
+            "title": "Price Max Minor",
+            "type": "integer"
+          },
+          "price_min_minor": {
+            "minimum": 0.0,
+            "title": "Price Min Minor",
+            "type": "integer"
+          },
+          "spec": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Spec",
+            "type": "string"
+          },
+          "status": {
+            "default": "draft",
+            "enum": [
+              "draft",
+              "active",
+              "archived"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "unit": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Unit",
+            "type": "string"
+          },
+          "variants": {
+            "items": {
+              "$ref": "#/components/schemas/ProductVariantIn"
+            },
+            "title": "Variants",
+            "type": "array"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "category_id",
+          "price_min_minor",
+          "price_max_minor"
+        ],
+        "title": "ProductCreate",
+        "type": "object"
+      },
+      "ProductOut": {
+        "properties": {
+          "brand": {
+            "title": "Brand",
+            "type": "string"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "category_id": {
+            "format": "uuid",
+            "title": "Category Id",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "delivery_eta_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Eta Minutes"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "featured": {
+            "title": "Featured",
+            "type": "boolean"
+          },
+          "gst_inclusive": {
+            "title": "Gst Inclusive",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "in_stock": {
+            "title": "In Stock",
+            "type": "boolean"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "lead_time_days": {
+            "title": "Lead Time Days",
+            "type": "integer"
+          },
+          "moq": {
+            "title": "Moq",
+            "type": "integer"
+          },
+          "moq_unit": {
+            "title": "Moq Unit",
+            "type": "string"
+          },
+          "mrp_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mrp Minor"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "price_max_minor": {
+            "title": "Price Max Minor",
+            "type": "integer"
+          },
+          "price_min_minor": {
+            "title": "Price Min Minor",
+            "type": "integer"
+          },
+          "spec": {
+            "title": "Spec",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "active",
+              "archived"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "variants": {
+            "items": {
+              "$ref": "#/components/schemas/ProductVariantOut"
+            },
+            "title": "Variants",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "brand",
+          "category_id",
+          "category",
+          "spec",
+          "unit",
+          "description",
+          "price_min_minor",
+          "price_max_minor",
+          "mrp_minor",
+          "currency",
+          "gst_inclusive",
+          "moq",
+          "moq_unit",
+          "in_stock",
+          "lead_time_days",
+          "delivery_eta_minutes",
+          "featured",
+          "image_url",
+          "status",
+          "is_active",
+          "variants",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ProductOut",
+        "type": "object"
+      },
+      "ProductPatch": {
+        "additionalProperties": false,
+        "description": "Absent leaves a field alone. `code` is immutable \u2014 it is what a buyer quotes on a PO\nand what CSV-style re-imports would key on; send a new product instead of renaming one.",
+        "properties": {
+          "brand": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brand"
+          },
+          "category_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category Id"
+          },
+          "delivery_eta_minutes": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Eta Minutes"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "featured": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Featured"
+          },
+          "gst_inclusive": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gst Inclusive"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "in_stock": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Stock"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "lead_time_days": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lead Time Days"
+          },
+          "moq": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moq"
+          },
+          "moq_unit": {
+            "anyOf": [
+              {
+                "maxLength": 24,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moq Unit"
+          },
+          "mrp_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mrp Minor"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "price_max_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Max Minor"
+          },
+          "price_min_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Min Minor"
+          },
+          "spec": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spec"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "draft",
+                  "active",
+                  "archived"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "variants": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ProductVariantIn"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variants"
+          }
+        },
+        "title": "ProductPatch",
+        "type": "object"
+      },
+      "ProductPublicOut": {
+        "description": "Field-for-field `types.ts` `Product`, built from the same row `ProductOut` is \u2014 this is\nthe shape gap 3's merchant screen and gap 4's buyer screen share.",
+        "properties": {
+          "brand": {
+            "title": "Brand",
+            "type": "string"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "delivery_eta_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Eta Minutes"
+          },
+          "featured": {
+            "title": "Featured",
+            "type": "boolean"
+          },
+          "gst_inclusive": {
+            "title": "Gst Inclusive",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "in_stock": {
+            "title": "In Stock",
+            "type": "boolean"
+          },
+          "lead_time_days": {
+            "title": "Lead Time Days",
+            "type": "integer"
+          },
+          "moq": {
+            "title": "Moq",
+            "type": "integer"
+          },
+          "moq_unit": {
+            "title": "Moq Unit",
+            "type": "string"
+          },
+          "mrp_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mrp Minor"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "price_max_minor": {
+            "title": "Price Max Minor",
+            "type": "integer"
+          },
+          "price_min_minor": {
+            "title": "Price Min Minor",
+            "type": "integer"
+          },
+          "spec": {
+            "title": "Spec",
+            "type": "string"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          },
+          "variants": {
+            "items": {
+              "$ref": "#/components/schemas/ProductVariantOut"
+            },
+            "title": "Variants",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "brand",
+          "category",
+          "spec",
+          "unit",
+          "price_min_minor",
+          "price_max_minor",
+          "currency",
+          "gst_inclusive",
+          "moq",
+          "moq_unit",
+          "in_stock",
+          "lead_time_days",
+          "featured",
+          "image_url",
+          "mrp_minor",
+          "delivery_eta_minutes",
+          "variants"
+        ],
+        "title": "ProductPublicOut",
+        "type": "object"
+      },
+      "ProductVariantIn": {
+        "additionalProperties": false,
+        "description": "One pack size. Variants are replaced wholesale with the product \u2014 there is no\nindependent variant id a client holds across two requests, so nested writes stay atomic\nwith the price-sync invariant `services.py` enforces.",
+        "properties": {
+          "in_stock": {
+            "default": true,
+            "title": "In Stock",
+            "type": "boolean"
+          },
+          "label": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "mrp_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mrp Minor"
+          },
+          "price_max_minor": {
+            "minimum": 0.0,
+            "title": "Price Max Minor",
+            "type": "integer"
+          },
+          "price_min_minor": {
+            "minimum": 0.0,
+            "title": "Price Min Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "label",
+          "price_min_minor",
+          "price_max_minor"
+        ],
+        "title": "ProductVariantIn",
+        "type": "object"
+      },
+      "ProductVariantOut": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "in_stock": {
+            "title": "In Stock",
+            "type": "boolean"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "mrp_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mrp Minor"
+          },
+          "price_max_minor": {
+            "title": "Price Max Minor",
+            "type": "integer"
+          },
+          "price_min_minor": {
+            "title": "Price Min Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "price_min_minor",
+          "price_max_minor",
+          "mrp_minor",
+          "in_stock"
+        ],
+        "title": "ProductVariantOut",
         "type": "object"
       },
       "PromiseOut": {
@@ -379,6 +1869,58 @@
         "title": "PromiseOut",
         "type": "object"
       },
+      "PublicCatalogueIn": {
+        "additionalProperties": false,
+        "description": "The buyer bundle's one catalogue call \u2014 store in the body, same reason as every other\npublic endpoint here (`GatewayPolicy.public_paths` is exact-match, ADR-0010 \u00a74).",
+        "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "pattern": "^[a-z0-9][a-z0-9-]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "store": {
+            "maxLength": 63,
+            "minLength": 2,
+            "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
+            "title": "Store",
+            "type": "string"
+          }
+        },
+        "required": [
+          "store"
+        ],
+        "title": "PublicCatalogueIn",
+        "type": "object"
+      },
+      "PublicCatalogueOut": {
+        "properties": {
+          "categories": {
+            "items": {
+              "$ref": "#/components/schemas/CategoryPublicOut"
+            },
+            "title": "Categories",
+            "type": "array"
+          },
+          "products": {
+            "$ref": "#/components/schemas/Page_ProductPublicOut_"
+          }
+        },
+        "required": [
+          "categories",
+          "products"
+        ],
+        "title": "PublicCatalogueOut",
+        "type": "object"
+      },
       "PublicServiceabilityIn": {
         "additionalProperties": false,
         "description": "The anonymous request body.\n\n**The store slug travels in the body, not in the path, and that is a standing constraint on\nthe whole future buyer API** \u2014 not a quirk of this route. `GatewayPolicy.public_paths` is an\nexact-path frozenset (`full_path in policy.public_paths`), and `full_path` is built from the\ncatch-all `{path:path}` and excludes the query string. So a public path with a variable in\nit \u2014 `/public/store/{slug}` \u2014 is not expressible at all, and every anonymous storefront\nendpoint must carry its variables in the query string or the body (ADR-0010 \u00a74).",
@@ -419,6 +1961,44 @@
           "host"
         ],
         "title": "PublicStoreContextIn",
+        "type": "object"
+      },
+      "PublicThemeOut": {
+        "description": "The theme document, minus `version` and the timestamps \u2014 a buyer has no concurrent\nwrite to race and no reason to see when a merchant last saved.",
+        "properties": {
+          "mode": {
+            "enum": [
+              "trade",
+              "retail"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "pages": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "theme_key": {
+            "title": "Theme Key",
+            "type": "string"
+          },
+          "tokens": {
+            "additionalProperties": true,
+            "title": "Tokens",
+            "type": "object"
+          }
+        },
+        "required": [
+          "theme_key",
+          "mode",
+          "tokens",
+          "pages"
+        ],
+        "title": "PublicThemeOut",
         "type": "object"
       },
       "ServiceInfo": {
@@ -571,6 +2151,16 @@
               }
             ],
             "title": "Tagline"
+          },
+          "theme": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublicThemeOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "timezone": {
             "title": "Timezone",
@@ -781,6 +2371,108 @@
           "name"
         ],
         "title": "StorePut",
+        "type": "object"
+      },
+      "ThemeDocOut": {
+        "description": "The document the editor loads and saves. No `brand` \u2014 that left for `StoreOut` in\nADR-0011 \u00a72; the renderer reads name/tagline/logo_text off the store, not off this.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "trade",
+              "retail"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "pages": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "theme_key": {
+            "title": "Theme Key",
+            "type": "string"
+          },
+          "tokens": {
+            "additionalProperties": true,
+            "title": "Tokens",
+            "type": "object"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "theme_key",
+          "mode",
+          "tokens",
+          "pages",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ThemeDocOut",
+        "type": "object"
+      },
+      "ThemeDocPut": {
+        "additionalProperties": false,
+        "description": "Upsert \u2014 **this is adopt**, per ADR-0011 \u00a73: the front end forks a theme client-side and\nPUTs the result, so no separate `/adopt` route exists.\n\n`version` is required on an update and ignored on create (there is nothing to conflict\nwith yet); a caller creating for the first time sends `1`.",
+        "properties": {
+          "mode": {
+            "enum": [
+              "trade",
+              "retail"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "pages": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "theme_key": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Theme Key",
+            "type": "string"
+          },
+          "tokens": {
+            "additionalProperties": true,
+            "title": "Tokens",
+            "type": "object"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "theme_key",
+          "mode",
+          "tokens",
+          "pages",
+          "version"
+        ],
+        "title": "ThemeDocPut",
         "type": "object"
       },
       "TlsAuthorizeOut": {
@@ -1341,6 +3033,216 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/storefront/categories": {
+      "get": {
+        "operationId": "list_categories_api_v1_storefront_categories_get",
+        "parameters": [
+          {
+            "description": "Key or label",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Key or label",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "is_active",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Is Active"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CategoryOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Catalogue categories",
+        "tags": [
+          "storefront"
+        ]
+      },
+      "post": {
+        "operationId": "create_category_api_v1_storefront_categories_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CategoryCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategoryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a category",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/categories/{category_id}": {
+      "delete": {
+        "description": "`storefront.catalogue.product.write`, floored at ORG. Soft delete, **refused while a live\nproduct still carries this category** \u2014 the same rule `DELETE /delivery/zones/{id}` applies\nto a zone with postal codes still mapped.",
+        "operationId": "delete_category_api_v1_storefront_categories__category_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "category_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Category Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "The category still has live products in it \u2014 named count"
+          }
+        },
+        "summary": "Delete a category",
+        "tags": [
+          "storefront"
+        ]
+      },
+      "patch": {
+        "operationId": "patch_category_api_v1_storefront_categories__category_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "category_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Category Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CategoryPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategoryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a category",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
     "/api/v1/storefront/delivery/check": {
       "post": {
         "description": "`storefront.delivery.zone.read`, floored at ORG.\n\n**The same selector, the same answer shape, plus the matched zone.** It is the second\nconcrete caller that justifies the chokepoint, and it is the only way a merchant verifies\nthat a 19,000-row import did what they meant: a mis-mapped postal code returns a confident\nwrong answer and nothing else in the system notices.\n\nNo demand row is written. This is the merchant testing their own map, not a buyer asking \u2014\ncounting it would poison the one signal the report exists to give.",
@@ -1846,6 +3748,264 @@
         ]
       }
     },
+    "/api/v1/storefront/enquiries": {
+      "get": {
+        "description": "`storefront.sales.enquiry.read`, floored at ORG. Contact fields are masked \u2014 see\n`POST /storefront/enquiries/{id}:reveal` for the audited, stepped-up read.",
+        "operationId": "list_enquiries_api_v1_storefront_enquiries_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "new",
+                    "contacted",
+                    "won",
+                    "lost"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "description": "Inclusive, created_at >=",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive, created_at >=",
+              "title": "Since"
+            }
+          },
+          {
+            "description": "Name or company",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Name or company",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_EnquiryOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enquiries received from buyers",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/enquiries/{enquiry_id}": {
+      "get": {
+        "operationId": "get_enquiry_api_v1_storefront_enquiries__enquiry_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "enquiry_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Enquiry Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnquiryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One enquiry",
+        "tags": [
+          "storefront"
+        ]
+      },
+      "patch": {
+        "description": "`storefront.sales.enquiry.write`, floored at ORG. Only `status` ever changes \u2014 the\nenquiry's content is append-only.",
+        "operationId": "patch_enquiry_api_v1_storefront_enquiries__enquiry_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "enquiry_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Enquiry Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnquiryPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnquiryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "Illegal transition. Path is new -> contacted -> won or lost"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change an enquiry's status",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/enquiries/{enquiry_id}:reveal": {
+      "post": {
+        "description": "`storefront.sales.enquiry.unmask`, floored at ORG, requires an OTP step-up. A POST rather\nthan a GET: this has a side effect \u2014 an `entity.sensitive_read` audit row \u2014 and must never\nbe cached, pre-fetched or replayed from browser history.",
+        "operationId": "reveal_enquiry_api_v1_storefront_enquiries__enquiry_id__reveal_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "enquiry_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Enquiry Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnquiryRevealed"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reveal an enquiry's real email and phone (audited)",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
     "/api/v1/storefront/info": {
       "get": {
         "operationId": "info_api_v1_storefront_info_get",
@@ -1904,6 +4064,437 @@
         "summary": "May the edge obtain a certificate for this hostname?",
         "tags": [
           "storefront (internal)"
+        ]
+      }
+    },
+    "/api/v1/storefront/products": {
+      "get": {
+        "operationId": "list_products_api_v1_storefront_products_get",
+        "parameters": [
+          {
+            "description": "Code, name or brand",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Code, name or brand",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Category Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "draft",
+                    "active",
+                    "archived"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "in_stock",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "In Stock"
+            }
+          },
+          {
+            "in": "query",
+            "name": "featured",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Featured"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "-updated_at",
+              "enum": [
+                "name",
+                "-name",
+                "code",
+                "-code",
+                "price_min_minor",
+                "-price_min_minor",
+                "updated_at",
+                "-updated_at"
+              ],
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ProductOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Catalogue products",
+        "tags": [
+          "storefront"
+        ]
+      },
+      "post": {
+        "operationId": "create_product_api_v1_storefront_products_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "`errors[0].code` is `mrp_below_price`, `price_band_invalid` or `category_not_found`"
+          }
+        },
+        "summary": "Create a product",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/products/{product_id}": {
+      "delete": {
+        "operationId": "delete_product_api_v1_storefront_products__product_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "product_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Product Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a product",
+        "tags": [
+          "storefront"
+        ]
+      },
+      "get": {
+        "operationId": "get_product_api_v1_storefront_products__product_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "product_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Product Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One product",
+        "tags": [
+          "storefront"
+        ]
+      },
+      "patch": {
+        "operationId": "patch_product_api_v1_storefront_products__product_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "product_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Product Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a product \u2014 including archive/unarchive via `status`",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/public/catalogue": {
+      "post": {
+        "description": "**No token, no account, no session.** The buyer bundle's catalogue read (gap 4).\n\nSame three-step shape as `store_context`: resolve the slug on the bypass reader, refuse\nanything that is not a published store with the identical 404, then run every read\ntenant-bound through `session_scope` \u2014 never on the bypass role past the lookup. **Only\n`active`, non-deleted, `is_active` rows are ever returned**; a merchant's draft or archived\nline is invisible here regardless of what the buyer asks for.",
+        "operationId": "public_catalogue_api_v1_storefront_public_catalogue_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicCatalogueIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicCatalogueOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No published store with that slug"
+          },
+          "422": {
+            "description": "That is not a store slug"
+          },
+          "429": {
+            "description": "Rate limited by the gateway"
+          }
+        },
+        "summary": "A published store's active categories and products",
+        "tags": [
+          "storefront (public)"
+        ]
+      }
+    },
+    "/api/v1/storefront/public/enquiry": {
+      "post": {
+        "description": "**No token, no account, no session.** The buyer's line list, sent as an enquiry (gap 6) \u2014\nthis product's order-like flow; there is no cart and no checkout to submit instead.\n\nContact fields are sealed before they are ever written (`services.create_enquiry_for_store`)\nand an outbox event is staged in the same transaction, so a merchant's notification can\nnever fire for an enquiry that failed to commit.",
+        "operationId": "public_enquiry_api_v1_storefront_public_enquiry_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnquiryCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnquiryReceiptOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No published store with that slug"
+          },
+          "422": {
+            "description": "A required field is missing or malformed"
+          },
+          "429": {
+            "description": "Rate limited by the gateway"
+          }
+        },
+        "summary": "Send an enquiry to a published store",
+        "tags": [
+          "storefront (public)"
         ]
       }
     },
@@ -2104,6 +4695,77 @@
           }
         },
         "summary": "Unpublish the store \u2014 take it back to draft",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/theme": {
+      "delete": {
+        "description": "`storefront.store.settings.write`, floored at ORG. \"Remove this store\" in Gallery \u2014 soft\ndelete; a later `PUT` adopts fresh, starting again at `version=1`.",
+        "operationId": "delete_theme_api_v1_storefront_theme_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Remove the store's theme document",
+        "tags": [
+          "storefront"
+        ]
+      },
+      "get": {
+        "description": "`storefront.store.settings.read`, floored at ORG. Reused rather than a new code \u2014 ADR-0011\n\u00a73's own note: anyone who can publish the store can edit its theme.\n\n**404 with a clear detail is the \"no theme adopted\" state** \u2014 the front end maps this to\n\"pick a theme\" rather than treating it as an error.",
+        "operationId": "read_theme_api_v1_storefront_theme_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThemeDocOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The store's theme document \u2014 tokens, pages, sections",
+        "tags": [
+          "storefront"
+        ]
+      },
+      "put": {
+        "description": "`storefront.store.settings.write`, floored at ORG. **This is adopt** \u2014 the front end\nforks a theme client-side and PUTs the result; there is no separate `/adopt` route.",
+        "operationId": "put_theme_api_v1_storefront_theme_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThemeDocPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThemeDocOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "`errors[0].code` is `theme_version_conflict` \u2014 reload and retry"
+          },
+          "422": {
+            "description": "The envelope is invalid or too large \u2014 see `errors[0].code`"
+          }
+        },
+        "summary": "Adopt a theme, or save an edit to the one already adopted",
         "tags": [
           "storefront"
         ]

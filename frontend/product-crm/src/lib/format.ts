@@ -4,8 +4,22 @@
  * human string, so the rest of the app never divides by 100 by hand.
  */
 
-/** The app's fixed "now" — fixtures are dated around it so relative times read sensibly offline. */
-export const NOW_ISO = "2026-08-24T18:30:00Z";
+import { USE_FIXTURES } from "@/api/client";
+
+/** Fixtures are dated around this fixed instant so relative times read sensibly offline — never
+ *  reached live, where `nowIso()` returns the real clock instead. */
+const FIXTURE_NOW_ISO = "2026-08-24T18:30:00Z";
+
+/**
+ * The app's current instant. The one place "now" is read from, so a frozen fixture clock never
+ * leaks onto live data: fixture mode gets the fixed instant fixtures were dated around, a real
+ * build gets `Date.now()`. Call it at the point you need "now", not once at module load — a
+ * `const` computed on import stays stuck at the moment the tab was opened for as long as the
+ * session lives.
+ */
+export function nowIso(): string {
+  return USE_FIXTURES ? FIXTURE_NOW_ISO : new Date().toISOString();
+}
 
 const CURRENCY_SYMBOL: Record<string, string> = {
   INR: "₹",
@@ -90,7 +104,7 @@ export function formatDateTime(iso: string | null): string {
  * A relative timestamp against `now` (default the app's fixed NOW): "just now", "3 hr ago",
  * "Yesterday", "5 days ago", then an absolute date past a week.
  */
-export function formatRelative(iso: string | null, now: string = NOW_ISO): string {
+export function formatRelative(iso: string | null, now: string = nowIso()): string {
   if (!iso) return "—";
   const then = Date.parse(iso);
   const ref = Date.parse(now);

@@ -18,6 +18,12 @@ import uuid
 import pytest
 
 from tests.helpers import (
+    ALL_PERMISSIONS,
+    CATALOGUE_READ,
+    CATALOGUE_WRITE,
+    ENQUIRY_READ,
+    ENQUIRY_UNMASK,
+    ENQUIRY_WRITE,
     STORE_READ,
     STORE_WRITE,
     ZONE_READ,
@@ -31,6 +37,9 @@ from tests.helpers import (
 pytestmark = pytest.mark.integration
 
 ZONE_ID = uuid.uuid4()
+CATEGORY_ID = uuid.uuid4()
+PRODUCT_ID = uuid.uuid4()
+ENQUIRY_ID = uuid.uuid4()
 
 #: `(method, path, the permission the route requires)`. One row per authenticated route — a new
 #: route with no row here is a route with no negative-authorization test, which is the omission
@@ -67,6 +76,22 @@ ROUTES: list[tuple[str, str, str]] = [
     ("POST", "/api/v1/storefront/delivery/postal-codes/import", ZONE_WRITE),
     ("POST", "/api/v1/storefront/delivery/check", ZONE_READ),
     ("GET", "/api/v1/storefront/delivery/demand", ZONE_READ),
+    ("GET", "/api/v1/storefront/theme", STORE_READ),
+    ("PUT", "/api/v1/storefront/theme", STORE_WRITE),
+    ("DELETE", "/api/v1/storefront/theme", STORE_WRITE),
+    ("GET", "/api/v1/storefront/categories", CATALOGUE_READ),
+    ("POST", "/api/v1/storefront/categories", CATALOGUE_WRITE),
+    ("PATCH", f"/api/v1/storefront/categories/{CATEGORY_ID}", CATALOGUE_WRITE),
+    ("DELETE", f"/api/v1/storefront/categories/{CATEGORY_ID}", CATALOGUE_WRITE),
+    ("GET", "/api/v1/storefront/products", CATALOGUE_READ),
+    ("GET", f"/api/v1/storefront/products/{PRODUCT_ID}", CATALOGUE_READ),
+    ("POST", "/api/v1/storefront/products", CATALOGUE_WRITE),
+    ("PATCH", f"/api/v1/storefront/products/{PRODUCT_ID}", CATALOGUE_WRITE),
+    ("DELETE", f"/api/v1/storefront/products/{PRODUCT_ID}", CATALOGUE_WRITE),
+    ("GET", "/api/v1/storefront/enquiries", ENQUIRY_READ),
+    ("GET", f"/api/v1/storefront/enquiries/{ENQUIRY_ID}", ENQUIRY_READ),
+    ("PATCH", f"/api/v1/storefront/enquiries/{ENQUIRY_ID}", ENQUIRY_WRITE),
+    ("POST", f"/api/v1/storefront/enquiries/{ENQUIRY_ID}:reveal", ENQUIRY_UNMASK),
 ]
 
 _BODIES: dict[tuple[str, str], dict] = {
@@ -81,6 +106,24 @@ _BODIES: dict[tuple[str, str], dict] = {
         "postal_codes": "400050"
     },
     ("POST", "/api/v1/storefront/delivery/check"): {"postal_code": "400050"},
+    ("PUT", "/api/v1/storefront/theme"): {
+        "theme_key": "market-fresh",
+        "mode": "retail",
+        "tokens": {},
+        "pages": [],
+        "version": 1,
+    },
+    ("POST", "/api/v1/storefront/categories"): {"key": "seasonal", "label": "Seasonal"},
+    ("PATCH", f"/api/v1/storefront/categories/{CATEGORY_ID}"): {"label": "Renamed"},
+    ("POST", "/api/v1/storefront/products"): {
+        "code": "SKU-1",
+        "name": "A Product",
+        "category_id": str(CATEGORY_ID),
+        "price_min_minor": 100,
+        "price_max_minor": 100,
+    },
+    ("PATCH", f"/api/v1/storefront/products/{PRODUCT_ID}"): {"name": "Renamed"},
+    ("PATCH", f"/api/v1/storefront/enquiries/{ENQUIRY_ID}"): {"status": "contacted"},
 }
 
 
@@ -106,13 +149,9 @@ class TestEveryRouteRefusesTheWrongCaller:
     async def test_with_every_other_permission_but_this_one_it_is_403(
         self, client, as_principal, org_id: uuid.UUID, method: str, path: str, permission: str
     ) -> None:
-        """Holding three of the four is not holding the fourth. This is the shape of the failure
-        a single `require_product` guard would hide."""
-        others = [
-            f"{code}:ORG"
-            for code in (STORE_READ, STORE_WRITE, ZONE_READ, ZONE_WRITE)
-            if code != permission
-        ]
+        """Holding every other permission is not holding this one. This is the shape of the
+        failure a single `require_product` guard would hide."""
+        others = [f"{code}:ORG" for code in ALL_PERMISSIONS if code != permission]
         with as_principal(principal_for(org_id, others)):
             response = await _call(client, method, path)
         assert response.status_code == 403

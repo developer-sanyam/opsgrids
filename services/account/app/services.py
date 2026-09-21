@@ -43,17 +43,24 @@ from app.schemas import (
     GrantIn,
     InvitationIn,
     LocationIn,
+    LocationPatch,
     MemberPatch,
     OrganizationIn,
     OrganizationPatch,
     OrgUnitIn,
+    OrgUnitPatch,
     RoleIn,
     SignupIn,
 )
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.cache import bump_permission_version
-from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
+from platform_core.errors import (
+    BusinessRuleProblem,
+    ConflictProblem,
+    ForbiddenProblem,
+    NotFoundProblem,
+)
 from platform_core.events import publish_event
 
 # Event names. `core.*` because these are the platform's own, not a product's.
@@ -62,6 +69,7 @@ EVT_ORG_UPDATED = "core.org.updated"
 EVT_UNIT_CREATED = "core.org_unit.created"
 EVT_UNIT_UPDATED = "core.org_unit.updated"
 EVT_LOCATION_CREATED = "core.location.created"
+EVT_LOCATION_UPDATED = "core.location.updated"
 EVT_USER_CREATED = "core.user.created"
 EVT_MEMBERSHIP_CREATED = "core.membership.created"
 EVT_MEMBERSHIP_UPDATED = "core.membership.updated"
@@ -372,6 +380,79 @@ async def move_org_unit(
     return unit
 
 
+async def update_org_unit(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    unit: OrgUnit,
+    payload: OrgUnitPatch,
+    *,
+    request: Request | None = None,
+) -> OrgUnit:
+    """Rename, re-lead or deactivate a department. `code` is never touched — it stays out
+    of `changes` because `OrgUnitPatch` does not carry it at all.
+    """
+    changes = payload.model_dump(exclude_unset=True)
+
+    new_head = changes.get("head_membership_id")
+    if "head_membership_id" in changes and new_head is not None:
+        head = await selectors.get_member(session, ctx.organization_id, new_head)
+        if head is None:
+            raise NotFoundProblem("That member does not exist")
+
+    if changes.get("is_active") is False and unit.is_active:
+        if await selectors.org_unit_has_active_children(session, ctx.organization_id, unit.id):
+            raise BusinessRuleProblem(
+                "This department still has active sub-departments. Move or deactivate them first."
+            )
+        if await selectors.org_unit_has_active_members(session, ctx.organization_id, unit.id):
+            raise BusinessRuleProblem(
+                "This department still has members assigned to it. Move them first."
+            )
+
+    before = {
+        "name": unit.name,
+        "kind": unit.kind,
+        "head_membership_id": str(unit.head_membership_id or ""),
+        "is_active": unit.is_active,
+    }
+    for attr, value in changes.items():
+        setattr(unit, attr, value)
+    unit.updated_by = str(ctx.principal.sub)
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="org_unit.updated",
+        entity="org_unit",
+        entity_id=unit.id,
+        before=before,
+        after={
+            "name": unit.name,
+            "kind": unit.kind,
+            "head_membership_id": str(unit.head_membership_id or ""),
+            "is_active": unit.is_active,
+        },
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_UNIT_UPDATED,
+        aggregate_type="org_unit",
+        aggregate_id=unit.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "org_unit_id": str(unit.id),
+            "is_active": unit.is_active,
+        },
+        actor=_actor(ctx),
+    )
+    return unit
+
+
 async def create_location(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -411,6 +492,62 @@ async def create_location(
             "code": location.code,
             "name": location.name,
             "timezone": location.timezone,
+        },
+        actor=_actor(ctx),
+    )
+    return location
+
+
+async def update_location(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    location: Location,
+    payload: LocationPatch,
+    *,
+    request: Request | None = None,
+) -> Location:
+    """Rename, re-site or deactivate a site. `code` stays out of `LocationPatch` entirely —
+    it is embedded in members' `location_codes` and in tokens.
+    """
+    before = {
+        "name": location.name,
+        "timezone": location.timezone,
+        "country": location.country,
+        "is_active": location.is_active,
+    }
+    changes = payload.model_dump(exclude_unset=True)
+    for attr, value in changes.items():
+        setattr(location, attr, value)
+    location.updated_by = str(ctx.principal.sub)
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="location.updated",
+        entity="location",
+        entity_id=location.id,
+        before=before,
+        after={
+            "name": location.name,
+            "timezone": location.timezone,
+            "country": location.country,
+            "is_active": location.is_active,
+        },
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_LOCATION_UPDATED,
+        aggregate_type="location",
+        aggregate_id=location.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "location_id": str(location.id),
+            "is_active": location.is_active,
         },
         actor=_actor(ctx),
     )
@@ -810,6 +947,73 @@ async def revoke_member(
     return membership
 
 
+async def _caller_grant_ceiling(session: AsyncSession, ctx: ScopeContext) -> dict[str, str]:
+    """The caller's own resolved grants, as a `{code: widest_scope}` map.
+
+    The single source every "can this caller hand out this code at this scope" check in
+    the service reads from — assigning a role (`_resolve_assignable_roles`, used by
+    `invite` and `set_member_roles`) and writing a role's own grants (`_replace_grants`,
+    used by `create_role` and `replace_role_grants`). One helper, so there is exactly one
+    definition of the ceiling rather than two that can drift apart.
+
+    Read via `selectors.resolve_grants` against the caller's **own** membership — a
+    database read of their actual role assignments, not `ctx.principal.perms`. The token's
+    perms claim is exactly what the caller presented to get here and is refreshed on the
+    gateway's cadence, not this request's; the roles a person actually holds right now is
+    the question being asked, and the database is the one place that can answer it without
+    trusting the same credential the whole check exists to look past.
+
+    No `ORG_OWNER` special case: the role is `CORE.all("ORG")` plus every activated
+    product's admin role granted on activation, so resolving the owner's real grants
+    already covers "the owner can build any role" — deriving it from a role code would be
+    a second, looser definition of the same thing.
+    """
+    if ctx.principal.membership_id is None:
+        raise ForbiddenProblem("No membership to grant permissions from")
+    caller_grants = await selectors.resolve_grants(session, ctx.principal.membership_id)
+    return dict(grant.split(":", 1) for grant in caller_grants)
+
+
+def _caller_holds(ceiling: dict[str, str], code: str, scope: str) -> bool:
+    """Whether the caller's own ceiling covers `code` at `scope` or wider."""
+    held = ceiling.get(code)
+    return held is not None and _SCOPE_RANK[held] >= _SCOPE_RANK[scope]
+
+
+async def _resolve_assignable_roles(
+    session: AsyncSession, ctx: ScopeContext, role_codes: list[str]
+) -> list[Role]:
+    """Resolve `role_codes`, refusing any the caller could not grant themselves.
+
+    Shared by `invite` and `set_member_roles` — the two places somebody hands another
+    person a role. Checking only that the role *exists* (the previous shape of both) let a
+    caller who merely holds `identity.membership.write` invite, or promote, an address they
+    control into a role that outranks them: an `ORG_ADMIN` naming `ORG_OWNER` in
+    `role_codes` was accepted with nothing else checked. Every grant the target role carries
+    now has to be something the caller already holds themselves, at that scope or wider.
+    """
+    resolved: list[Role] = []
+    for code in role_codes:
+        role = await selectors.get_role_by_code(session, ctx.organization_id, code)
+        if role is None:
+            raise NotFoundProblem(f"No role named {code!r} in this organization")
+        resolved.append(role)
+
+    if not resolved:
+        return resolved
+
+    ceiling = await _caller_grant_ceiling(session, ctx)
+    for role in resolved:
+        for grant in role.grants:
+            code = grant.permission.code
+            if not _caller_holds(ceiling, code, grant.scope):
+                raise ForbiddenProblem(
+                    f"You cannot assign {role.code!r}: it grants {code} at {grant.scope}, "
+                    "which you do not hold yourself at that scope or wider."
+                )
+    return resolved
+
+
 async def set_member_roles(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -825,12 +1029,7 @@ async def set_member_roles(
     """
     before = sorted(mr.role.code for mr in membership.roles)
 
-    resolved: list[Role] = []
-    for code in role_codes:
-        role = await selectors.get_role_by_code(session, ctx.organization_id, code)
-        if role is None:
-            raise NotFoundProblem(f"No role named {code!r} in this organization")
-        resolved.append(role)
+    resolved = await _resolve_assignable_roles(session, ctx, role_codes)
 
     await session.execute(
         delete(MembershipRole).where(MembershipRole.membership_id == membership.id)
@@ -897,7 +1096,7 @@ async def create_role(
     )
     session.add(role)
     await session.flush()
-    await _replace_grants(session, role, payload.grants)
+    await _replace_grants(session, ctx, role, payload.grants)
     await session.refresh(role, ["grants"])
 
     record_audit(
@@ -918,17 +1117,30 @@ async def replace_role_grants(
     session: AsyncSession,
     ctx: ScopeContext,
     role: Role,
-    grants: list[GrantIn],
+    payload: RoleIn,
     *,
     request: Request | None = None,
 ) -> Role:
+    """Replace a role's grants, and apply its name and description.
+
+    `payload.code` is never read: a role's code is how invitations and role lookups name
+    it, and it stays immutable for the life of the role. The route schema still requires
+    the field — the caller sends it back unchanged — but this is where "unchanged" is
+    enforced, by simply never looking at it.
+    """
     if role.is_system:
         raise BusinessRuleProblem(
             "A system role cannot be edited. Clone it and change the copy, so the "
             "platform's defaults stay recognisable."
         )
-    before = [f"{g.permission.code}:{g.scope}" for g in role.grants]
-    await _replace_grants(session, role, grants)
+    before = {
+        "name": role.name,
+        "description": role.description,
+        "grants": sorted(f"{g.permission.code}:{g.scope}" for g in role.grants),
+    }
+    role.name = payload.name
+    role.description = payload.description
+    await _replace_grants(session, ctx, role, payload.grants)
     await session.refresh(role, ["grants"])
 
     record_audit(
@@ -939,8 +1151,12 @@ async def replace_role_grants(
         action="role.grants_changed",
         entity="role",
         entity_id=role.id,
-        before={"grants": sorted(before)},
-        after={"grants": sorted(f"{g.permission_code}:{g.scope}" for g in grants)},
+        before=before,
+        after={
+            "name": role.name,
+            "description": role.description,
+            "grants": sorted(f"{g.permission_code}:{g.scope}" for g in payload.grants),
+        },
         request=request,
     )
     publish_event(
@@ -959,12 +1175,67 @@ async def replace_role_grants(
     return role
 
 
-async def _replace_grants(session: AsyncSession, role: Role, grants: list[GrantIn]) -> None:
-    """Set a role's grants, refusing anything wider than the permission allows.
+async def delete_role(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    role: Role,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Delete a custom role, refusing while it is still in use.
+
+    Not `ON DELETE CASCADE`: `membership_roles.role_id` cascades, so deleting a role a
+    membership still holds would silently strip that person's access with no audit line
+    explaining why. Checked here instead, and refused with 409 while either a membership or
+    a pending invitation still names it.
+    """
+    if role.is_system:
+        raise BusinessRuleProblem("A system role cannot be deleted.")
+    if await selectors.role_held_by_a_membership(session, ctx.organization_id, role.id):
+        raise ConflictProblem(
+            "This role is still held by at least one member. Reassign them before deleting it."
+        )
+    pending = await selectors.role_named_by_a_pending_invitation(
+        session, ctx.organization_id, role.code
+    )
+    if pending:
+        raise ConflictProblem(
+            "This role is named on a pending invitation. Revoke it, or wait for it to expire, "
+            "before deleting the role."
+        )
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="role.deleted",
+        entity="role",
+        entity_id=role.id,
+        before={"code": role.code, "name": role.name},
+        request=request,
+    )
+    await session.delete(role)
+    await _invalidate_grants(ctx.organization_id)
+
+
+async def _replace_grants(
+    session: AsyncSession, ctx: ScopeContext, role: Role, grants: list[GrantIn]
+) -> None:
+    """Set a role's grants, refusing anything wider than the permission allows, or that
+    the caller does not hold themselves.
 
     `max_scope` is the reason a role editor cannot quietly turn a self-service permission
-    into an organization-wide one.
+    into an organization-wide one. The ceiling check below is the reason a holder of
+    `role.write` alone — who can edit any non-system role, including one they already
+    hold — cannot use that edit to hand the role a permission `_resolve_assignable_roles`
+    would have refused them for the same role via `invite` or `set_member_roles`. Editing
+    a role they cannot yet fully act as is otherwise indistinguishable from assigning
+    themselves a role they cannot hold: both end with the caller's own effective grants
+    wider than before the call.
     """
+    ceiling = await _caller_grant_ceiling(session, ctx)
+
     # An explicit DELETE rather than mutating the collection: touching `role.grants` on a
     # freshly flushed object triggers a lazy load, which raises MissingGreenlet under
     # asyncio. It is also one statement instead of N.
@@ -978,6 +1249,11 @@ async def _replace_grants(session: AsyncSession, role: Role, grants: list[GrantI
             raise BusinessRuleProblem(
                 f"{permission.code} cannot be granted at {grant.scope}; "
                 f"the widest it supports is {permission.max_scope}"
+            )
+        if not _caller_holds(ceiling, permission.code, grant.scope):
+            raise ForbiddenProblem(
+                f"You cannot grant {permission.code} at {grant.scope}: you do not hold "
+                "it yourself at that scope or wider."
             )
         session.add(RolePermission(role_id=role.id, permission_id=permission.id, scope=grant.scope))
 
@@ -1007,9 +1283,7 @@ async def invite(
         if member is not None and member.status != "removed":
             raise ConflictProblem("That person is already a member of this organization")
 
-    for code in payload.role_codes:
-        if await selectors.get_role_by_code(session, ctx.organization_id, code) is None:
-            raise NotFoundProblem(f"No role named {code!r} in this organization")
+    await _resolve_assignable_roles(session, ctx, payload.role_codes)
 
     raw = secrets.token_urlsafe(32)
     invitation = Invitation(

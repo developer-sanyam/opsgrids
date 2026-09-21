@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import services
 from app.config import settings
 from app.models import Membership, Organization, OrgDomain
-from app.schemas import GrantIn, MemberPatch
+from app.schemas import GrantIn, MemberPatch, RoleIn
 from platform_core.auth import Scope, ScopeContext
 from platform_core.cache import permission_version_key
 from platform_core.internal_auth import mint_service_token
@@ -361,7 +361,11 @@ class TestPermissionVersionBump:
                 session,
                 ctx,
                 role,
-                [GrantIn(permission_code="core.identity.membership.read", scope="ORG")],
+                RoleIn(
+                    code=role.code,
+                    name=role.name,
+                    grants=[GrantIn(permission_code="core.identity.membership.read", scope="ORG")],
+                ),
             )
 
         assert int(redis.store[permission_version_key(str(org.id))]) > int(before)
@@ -463,8 +467,6 @@ class TestDomainLookup:
 
 
 def _role(code: str, permission: str, scope: str):
-    from app.schemas import RoleIn
-
     return RoleIn(
         code=code,
         name=code.title(),

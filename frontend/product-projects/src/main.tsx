@@ -3,14 +3,7 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
 import { configureSession } from "@opsgrids/client";
-import {
-  BarChartIcon,
-  LifeBuoyIcon,
-  PlugIcon,
-  SettingsIcon,
-  ThemeProvider,
-  UserPlusIcon,
-} from "@opsgrids/ui";
+import { ThemeProvider } from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
@@ -20,8 +13,9 @@ import { PortfolioPage } from "./routes/Portfolio";
 import { TimelinePage } from "./routes/Timeline";
 import { BoardPage } from "./routes/Board";
 import { MilestonesPage } from "./routes/Milestones";
+import { TeamPage } from "./routes/Team";
 import { LoginPage } from "./routes/Login";
-import { ComingSoonPage } from "./routes/ComingSoon";
+import { NotFoundPage } from "./routes/NotFound";
 
 const router = createBrowserRouter([
   {
@@ -46,65 +40,8 @@ const router = createBrowserRouter([
           { path: "board", element: <BoardPage /> },
           { path: "portfolio", element: <PortfolioPage /> },
           { path: "milestones", element: <MilestonesPage /> },
-          {
-            path: "reports",
-            element: (
-              <ComingSoonPage
-                icon={<BarChartIcon className="size-6" />}
-                title="Reports"
-                description="Exportable delivery, velocity and budget reports across the portfolio are on the roadmap."
-              />
-            ),
-          },
-          {
-            path: "integrations",
-            element: (
-              <ComingSoonPage
-                icon={<PlugIcon className="size-6" />}
-                title="Integrations"
-                description="Connectors for source control, issue trackers and calendars will plug in here."
-              />
-            ),
-          },
-          {
-            path: "team",
-            element: (
-              <ComingSoonPage
-                icon={<UserPlusIcon className="size-6" />}
-                title="Team Members"
-                description="Invite and manage the people who plan and deliver in this workspace."
-              />
-            ),
-          },
-          {
-            path: "settings",
-            element: (
-              <ComingSoonPage
-                icon={<SettingsIcon className="size-6" />}
-                title="Settings"
-                description="Workspace preferences, workflow stages and delivery policies will live here."
-              />
-            ),
-          },
-          {
-            path: "help",
-            element: (
-              <ComingSoonPage
-                icon={<LifeBuoyIcon className="size-6" />}
-                title="Help & Getting Started"
-                description="Guides and support for setting up your delivery workspace are on the way."
-              />
-            ),
-          },
-          {
-            path: "*",
-            element: (
-              <ComingSoonPage
-                title="Not found"
-                description="That page doesn't exist. Head back to the overview."
-              />
-            ),
-          },
+          { path: "team", element: <TeamPage /> },
+          { path: "*", element: <NotFoundPage /> },
         ],
       },
     ],

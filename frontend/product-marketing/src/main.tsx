@@ -1,4 +1,5 @@
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
+import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
@@ -10,18 +11,39 @@ import {
   SettingsIcon,
   SparkIcon,
   ThemeProvider,
+  Toaster,
 } from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
 import { RequireAuth } from "./auth/RequireAuth";
 import { OverviewPage } from "./routes/Overview";
-import { CampaignsPage } from "./routes/Campaigns";
-import { CampaignDetailPage } from "./routes/CampaignDetail";
-import { AudiencesPage } from "./routes/Audiences";
-import { ChannelsPage } from "./routes/Channels";
 import { LoginPage } from "./routes/Login";
 import { ComingSoonPage } from "./routes/ComingSoon";
+import { RouteFallback } from "./routes/RouteFallback";
+
+/**
+ * Everything but the landing page is a split point. Overview is where a session lands after
+ * sign-in, so it (and `Login`) stay on the critical path; the campaign table, its create/edit
+ * dialogs, the campaign detail chart and the audience cards are real weight a person who only
+ * ever checks the Overview should never download.
+ */
+const CampaignsPage = lazy(() =>
+  import("./routes/Campaigns").then((m) => ({ default: m.CampaignsPage })),
+);
+const CampaignDetailPage = lazy(() =>
+  import("./routes/CampaignDetail").then((m) => ({ default: m.CampaignDetailPage })),
+);
+const AudiencesPage = lazy(() =>
+  import("./routes/Audiences").then((m) => ({ default: m.AudiencesPage })),
+);
+const ChannelsPage = lazy(() =>
+  import("./routes/Channels").then((m) => ({ default: m.ChannelsPage })),
+);
+
+function lazyRoute(path: string, element: ReactNode) {
+  return { path, element: <Suspense fallback={<RouteFallback />}>{element}</Suspense> };
+}
 
 const router = createBrowserRouter([
   {
@@ -42,10 +64,10 @@ const router = createBrowserRouter([
         ),
         children: [
           { index: true, element: <OverviewPage /> },
-          { path: "campaigns", element: <CampaignsPage /> },
-          { path: "campaigns/:id", element: <CampaignDetailPage /> },
-          { path: "audiences", element: <AudiencesPage /> },
-          { path: "channels", element: <ChannelsPage /> },
+          lazyRoute("campaigns", <CampaignsPage />),
+          lazyRoute("campaigns/:id", <CampaignDetailPage />),
+          lazyRoute("audiences", <AudiencesPage />),
+          lazyRoute("channels", <ChannelsPage />),
           {
             path: "reports",
             element: (
@@ -100,6 +122,7 @@ const router = createBrowserRouter([
             path: "*",
             element: (
               <ComingSoonPage
+                eyebrow="404"
                 title="Not found"
                 description="That page doesn't exist. Head back to the overview."
               />
@@ -121,7 +144,9 @@ if (!rootEl) throw new Error("Root element #root not found");
 createRoot(rootEl).render(
   <StrictMode>
     <ThemeProvider storageKey="opsgrids.marketing.theme">
-      <RouterProvider router={router} />
+      <Toaster>
+        <RouterProvider router={router} />
+      </Toaster>
     </ThemeProvider>
   </StrictMode>,
 );

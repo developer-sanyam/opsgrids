@@ -8,16 +8,16 @@ interface QrCodeProps {
   /** The exact string to encode. Encoded verbatim — never trimmed, normalised or re-cased. */
   value: string;
   /** Error-correction level. Higher survives more damage and costs modules; default `"M"`. */
-  level?: QrLevel;
+  level?: QrLevel | undefined;
   /** Rendered width and height in pixels. The SVG scales, so this is a hint, not a raster size. */
-  size?: number;
+  size?: number | undefined;
   /**
    * What the code is, for anyone who cannot scan it. Required: a code with no accessible name is
    * an image of nothing to a screen reader, and this one usually carries the only copy of a legal
    * identifier on the page.
    */
   label: string;
-  className?: string;
+  className?: string | undefined;
 }
 
 /** Modules of white margin around the code. Four is the standard's minimum for a reliable read. */

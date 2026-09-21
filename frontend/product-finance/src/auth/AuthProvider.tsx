@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { AuthProvider as BaseAuthProvider } from "@opsgrids/client";
+import { AuthProvider as BaseAuthProvider, PermissionProvider } from "@opsgrids/client";
 import type { MeOut } from "@opsgrids/client";
 
 import { USE_FIXTURES } from "@/api/client";
@@ -30,11 +30,41 @@ const FIXTURE_USER: MeOut = {
   organizations: [FIXTURE_ORG],
 };
 
+/**
+ * The fixture identity's grants: a finance admin holding every write this product defines, so
+ * fixture mode demonstrates the whole CRUD surface offline. A real build passes `null` —
+ * `PermissionProvider` then fetches `GET /members/me/grants` itself.
+ */
+const FIXTURE_GRANTS = [
+  "finance.billing.invoice.read:ORG",
+  "finance.billing.invoice.issue:ORG",
+  "finance.billing.payment.read:ORG",
+  "finance.billing.payment.record:ORG",
+  "finance.billing.customer.read:ORG",
+  "finance.billing.customer.write:ORG",
+  "finance.billing.purchase.read:ORG",
+  "finance.billing.purchase.write:ORG",
+  "finance.reports.summary.read:ORG",
+  "finance.reports.ledger.read:ORG",
+  "finance.compliance.einvoice.read:ORG",
+  "finance.compliance.registration.read:ORG",
+  "finance.compliance.registration.write:ORG",
+  "finance.compliance.ims.read:ORG",
+  "finance.compliance.ims.decide:ORG",
+  "finance.compliance.returns.read:ORG",
+  "finance.compliance.returns.generate:ORG",
+  "finance.compliance.returns.file:ORG",
+  "finance.compliance.eway.read:ORG",
+  "finance.compliance.withholding.read:ORG",
+];
+
 /** The session, wired to this product's fixture identity. The logic lives in `@opsgrids/client`. */
 export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <BaseAuthProvider fixtureUser={USE_FIXTURES ? FIXTURE_USER : null}>
-      {children}
+      <PermissionProvider grants={USE_FIXTURES ? FIXTURE_GRANTS : null}>
+        {children}
+      </PermissionProvider>
     </BaseAuthProvider>
   );
 }

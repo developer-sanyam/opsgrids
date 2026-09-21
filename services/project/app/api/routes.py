@@ -24,7 +24,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
@@ -35,12 +35,15 @@ from app.schemas import (
     HealthBucket,
     PersonIn,
     PersonOut,
+    PersonPatch,
     ProjectIn,
     ProjectOut,
     ProjectSummaryOut,
+    ProjectUpdate,
     ServiceInfo,
     TaskIn,
     TaskOut,
+    TaskUpdate,
 )
 from platform_core.auth import ScopeContext, require, require_product
 from platform_core.db import get_tenant_session
@@ -117,25 +120,47 @@ async def list_people(session: SessionDep, ctx: PersonRead, params: PageQuery) -
     "/projects/people",
     response_model=PersonOut,
     status_code=status.HTTP_201_CREATED,
-    summary="Add someone to the delivery-team roster",
+    summary="Add a roster person",
     dependencies=[Entitled],
 )
-async def create_person(payload: PersonIn, session: SessionDep, ctx: PersonWrite) -> PersonOut:
-    """Create a roster person. Unlike the engagement and card writers this one takes no
-    `request`: `services.create_person` stages neither an audit row nor an event, because the
-    roster was built for the seed to call. Wiring one in is a change to the writer, not to this
-    route, and is deliberately left for the change that adds it.
-    """
-    person = await services.create_person(
-        session,
-        ctx,
-        ref=payload.ref,
-        name=payload.name,
-        role=payload.role,
-        location=payload.location,
-        capacity_hours=payload.capacity_hours,
-    )
+async def create_person(
+    payload: PersonIn, session: SessionDep, ctx: PersonWrite, request: Request
+) -> PersonOut:
+    person = await services.create_person_from(session, ctx, payload, request=request)
     return selectors.person_out(person)
+
+
+@router.patch(
+    "/projects/people/{ref}",
+    response_model=PersonOut,
+    summary="Edit a roster person",
+    dependencies=[Entitled],
+)
+async def update_person(
+    ref: str, payload: PersonPatch, session: SessionDep, ctx: PersonWrite, request: Request
+) -> PersonOut:
+    person = await selectors.get_person_by_ref(session, ctx.organization_id, ref)
+    if person is None:
+        raise NotFoundProblem("That person is not part of this organization")
+    updated = await services.update_person(session, ctx, person, payload, request=request)
+    return selectors.person_out(updated)
+
+
+@router.delete(
+    "/projects/people/{ref}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove a roster person",
+    dependencies=[Entitled],
+)
+async def delete_person(
+    ref: str, session: SessionDep, ctx: PersonWrite, request: Request
+) -> Response:
+    person = await selectors.get_person_by_ref(session, ctx.organization_id, ref)
+    if person is None:
+        raise NotFoundProblem("That person is not part of this organization")
+    await services.delete_person(session, ctx, person, request=request)
+    await session.flush()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ------------------------------------------------------------------ board / tasks
@@ -179,6 +204,38 @@ async def create_task(
     task = await services.create_task_from(session, ctx, payload, request=request)
     people = await selectors.people_by_id(session, ctx.organization_id)
     return selectors.task_out(task, people=people)
+
+
+@router.patch(
+    "/projects/tasks/{key}",
+    response_model=TaskOut,
+    summary="Move or edit a board card",
+    dependencies=[Entitled],
+)
+async def update_task(
+    key: str, payload: TaskUpdate, session: SessionDep, ctx: TaskWrite, request: Request
+) -> TaskOut:
+    task = await selectors.get_task_by_key(session, ctx.organization_id, key)
+    if task is None:
+        raise NotFoundProblem("That task is not part of this organization")
+    updated = await services.update_task(session, ctx, task, payload, request=request)
+    people = await selectors.people_by_id(session, ctx.organization_id)
+    return selectors.task_out(updated, people=people)
+
+
+@router.delete(
+    "/projects/tasks/{key}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove a board card",
+    dependencies=[Entitled],
+)
+async def delete_task(key: str, session: SessionDep, ctx: TaskWrite, request: Request) -> Response:
+    task = await selectors.get_task_by_key(session, ctx.organization_id, key)
+    if task is None:
+        raise NotFoundProblem("That task is not part of this organization")
+    await services.delete_task(session, ctx, task, request=request)
+    await session.flush()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ------------------------------------------------------------------ engagements
@@ -236,3 +293,37 @@ async def read_project(code: str, session: SessionDep, ctx: ProjectRead) -> Proj
     ctx.assert_can_touch(owner_id=project.owner_id)
     people = await selectors.people_by_id(session, ctx.organization_id)
     return selectors.project_out(project, people=people)
+
+
+@router.patch(
+    "/projects/{code}",
+    response_model=ProjectOut,
+    summary="Edit an engagement",
+    dependencies=[Entitled],
+)
+async def update_project(
+    code: str, payload: ProjectUpdate, session: SessionDep, ctx: ProjectWrite, request: Request
+) -> ProjectOut:
+    project = await selectors.get_project(session, ctx.organization_id, code)
+    if project is None:
+        raise NotFoundProblem("That project is not part of this organization")
+    updated = await services.update_project(session, ctx, project, payload, request=request)
+    people = await selectors.people_by_id(session, ctx.organization_id)
+    return selectors.project_out(updated, people=people)
+
+
+@router.delete(
+    "/projects/{code}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Archive an engagement",
+    dependencies=[Entitled],
+)
+async def delete_project(
+    code: str, session: SessionDep, ctx: ProjectWrite, request: Request
+) -> Response:
+    project = await selectors.get_project(session, ctx.organization_id, code)
+    if project is None:
+        raise NotFoundProblem("That project is not part of this organization")
+    await services.delete_project(session, ctx, project, request=request)
+    await session.flush()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

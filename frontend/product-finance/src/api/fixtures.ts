@@ -10,7 +10,12 @@ import type {
   CashflowPoint,
   EInvoiceFiling,
   EInvoiceState,
+  EwayBillWithInvoice,
   FilingStatus,
+  GstRegistration,
+  GstReturn,
+  GstReturnDetail,
+  GstReturnTransition,
   ImsAction,
   ImsDecision,
   ImsDocument,
@@ -23,7 +28,11 @@ import type {
   Payment,
   PaymentAllocation,
   PurchaseDocument,
+  ReturnDiff,
+  ReturnTotals,
   SupplyType,
+  WithholdingRate,
+  WithholdingWithInvoice,
 } from "./types";
 
 /** Today, in the fixture world. Used to age invoices into sent / overdue. */
@@ -879,6 +888,156 @@ export function recordFixtureDecision(
   SESSION_DECISIONS.set(documentId, [decision, ...(SESSION_DECISIONS.get(documentId) ?? [])]);
   return decision;
 }
+
+/* --------------------------- GST registration ------------------------------ */
+
+export const GST_REGISTRATION: GstRegistration = {
+  id: "reg-fixture-01",
+  gstin: SELLER_GSTIN,
+  state_code: SELLER_STATE_CODE,
+  state_name: "Maharashtra",
+  legal_name: "OpsGrids Demo Trading Pvt Ltd",
+  trade_name: "OpsGrids Demo",
+  registration_type: "regular",
+  is_primary: true,
+};
+
+/* --------------------------------- GST returns ------------------------------ */
+
+export const RETURNS: GstReturn[] = [
+  {
+    id: "ret-2026-07-gstr1",
+    gst_registration_id: GST_REGISTRATION.id,
+    gstin: SELLER_GSTIN,
+    state_code: SELLER_STATE_CODE,
+    period: "2026-07",
+    return_type: "gstr1",
+    status: "filed",
+    total_taxable_minor: paise(2_140_000),
+    total_cgst_minor: paise(96_000),
+    total_sgst_minor: paise(96_000),
+    total_igst_minor: paise(72_000),
+    document_count: 6,
+    line_count: 9,
+    generated_at: "2026-08-02T09:10:00Z",
+    filed_at: "2026-08-05T07:44:00Z",
+    arn: "AA270826001234A",
+  },
+  {
+    id: "ret-2026-08-gstr1",
+    gst_registration_id: GST_REGISTRATION.id,
+    gstin: SELLER_GSTIN,
+    state_code: SELLER_STATE_CODE,
+    period: "2026-08",
+    return_type: "gstr1",
+    status: "generated",
+    total_taxable_minor: paise(2_980_000),
+    total_cgst_minor: paise(118_000),
+    total_sgst_minor: paise(118_000),
+    total_igst_minor: paise(94_000),
+    document_count: 8,
+    line_count: 12,
+    generated_at: "2026-08-24T06:00:00Z",
+    filed_at: null,
+    arn: null,
+  },
+];
+
+export const RETURN_TRANSITIONS: Record<string, GstReturnTransition[]> = {
+  "ret-2026-07-gstr1": [
+    { id: "trn-01", from_status: null, to_status: "generated", arn: null, note: null, total_taxable_minor: paise(2_140_000), total_tax_minor: paise(264_000), transitioned_by: "Rahul Deshpande", transitioned_at: "2026-08-02T09:10:00Z" },
+    { id: "trn-02", from_status: "generated", to_status: "filed", arn: "AA270826001234A", note: "Filed on schedule.", total_taxable_minor: paise(2_140_000), total_tax_minor: paise(264_000), transitioned_by: "Rahul Deshpande", transitioned_at: "2026-08-05T07:44:00Z" },
+  ],
+  "ret-2026-08-gstr1": [
+    { id: "trn-03", from_status: null, to_status: "generated", arn: null, note: null, total_taxable_minor: paise(2_980_000), total_tax_minor: paise(330_000), transitioned_by: "Rahul Deshpande", transitioned_at: "2026-08-24T06:00:00Z" },
+  ],
+};
+
+const EMPTY_TOTALS: ReturnTotals = {
+  taxable_minor: 0,
+  cgst_minor: 0,
+  sgst_minor: 0,
+  igst_minor: 0,
+  tax_minor: 0,
+  total_minor: 0,
+  document_count: 0,
+  line_count: 0,
+};
+
+export function fixtureReturnDetail(id: string): GstReturnDetail | null {
+  const ret = RETURNS.find((r) => r.id === id);
+  if (!ret) return null;
+  return {
+    ret,
+    sections: { b2b: [], b2cl: [], b2cs: [], cdnr: [], cdnur: [], exp: [], hsn: [], docs: [] },
+    transitions: RETURN_TRANSITIONS[id] ?? [],
+  };
+}
+
+export function fixtureReturnDiff(id: string): ReturnDiff | null {
+  const ret = RETURNS.find((r) => r.id === id);
+  if (!ret) return null;
+  const totals: ReturnTotals = {
+    ...EMPTY_TOTALS,
+    taxable_minor: ret.total_taxable_minor,
+    cgst_minor: ret.total_cgst_minor,
+    sgst_minor: ret.total_sgst_minor,
+    igst_minor: ret.total_igst_minor,
+    tax_minor: ret.total_cgst_minor + ret.total_sgst_minor + ret.total_igst_minor,
+    total_minor: ret.total_taxable_minor + ret.total_cgst_minor + ret.total_sgst_minor + ret.total_igst_minor,
+    document_count: ret.document_count,
+    line_count: ret.line_count,
+  };
+  return {
+    ret,
+    current: totals,
+    snapshot: totals,
+    delta: EMPTY_TOTALS,
+    sections: [],
+    changed: false,
+    computed_at: NOW,
+  };
+}
+
+/* ------------------------------- e-Way bills --------------------------------- */
+
+export const EWAY_BILLS: EwayBillWithInvoice[] = [
+  {
+    bill: {
+      id: "eway-01",
+      invoice_id: "inv-INV-2026-0163",
+      status: "generated",
+      effective_status: "generated",
+      eway_bill_no: "351009876543",
+      transport_mode: "road",
+      distance_km: 420,
+      vehicle_no: "MH12AB1234",
+      transporter_id: null,
+      transport_doc_no: "LR-88214",
+      transport_doc_date: "2026-07-28",
+      over_dimensional: false,
+      consignment_value_minor: paise(4_366_000),
+      valid_from: "2026-07-28T09:20:00Z",
+      valid_until: "2026-07-30T09:20:00Z",
+      remedy: null,
+      error_code: null,
+      error: null,
+      attempted_at: "2026-07-28T09:20:00Z",
+    },
+    invoice_number: "INV-2026-0163",
+    customer_name: "Trishul Steel Works",
+  },
+];
+
+/* ------------------------------ withholding: TDS / TCS ----------------------- */
+
+export const WITHHOLDING_RATES: WithholdingRate[] = [
+  { id: "wr-01", code: "gst_tds_51", name: "GST TDS — s.51", rate_pct: 2, threshold_minor: paise(250_000), basis: "supply", jurisdiction: "IN", effective_from: "2018-10-01", effective_to: null },
+  { id: "wr-02", code: "itax_194q", name: "Income tax TDS — s.194Q", rate_pct: 0.1, threshold_minor: paise(5_000_000), basis: "aggregate", jurisdiction: "IN", effective_from: "2021-07-01", effective_to: null },
+  { id: "wr-03", code: "itax_206c_1h", name: "Income tax TCS — s.206C(1H)", rate_pct: 0.1, threshold_minor: paise(5_000_000), basis: "aggregate", jurisdiction: "IN", effective_from: "2020-10-01", effective_to: null },
+];
+
+export const WITHHOLDINGS: WithholdingWithInvoice[] = [];
 
 /** P&L / trial-balance accounts, FY-to-date. Debits and credits are booked figures. */
 export const LEDGER_ACCOUNTS: LedgerAccount[] = [

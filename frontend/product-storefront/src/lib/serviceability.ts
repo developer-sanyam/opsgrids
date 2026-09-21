@@ -31,10 +31,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { checkServiceability } from "@/api/client";
-import type { ServiceabilityOut, UnservedReason } from "@/api/client";
+import { checkServiceability } from "@/api/publicClient";
+import type { ServiceabilityOut, UnservedReason } from "@/api/publicClient";
 
-export type { ServiceabilityOut, UnservedReason } from "@/api/client";
+export type { ServiceabilityOut, UnservedReason } from "@/api/publicClient";
 
 /* ------------------------------- postal codes ------------------------------ */
 

@@ -19,21 +19,41 @@ import uuid
 from datetime import date
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import selectors
 from app.models import AuditLog, Member, Milestone, OutboxEvent, Project, Task
-from app.schemas import MilestoneIn, ProjectIn, TaskIn
+from app.schemas import (
+    MemberIn,
+    MemberUpdate,
+    MilestoneIn,
+    MilestoneUpdate,
+    ProjectIn,
+    ProjectUpdate,
+    TaskIn,
+    TaskUpdate,
+)
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
-from platform_core.errors import ConflictProblem, NotFoundProblem
+from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
 from platform_core.events import publish_event
+from platform_core.models import utcnow
 
 # Event names. `projects.*` because these are the product's own, not the platform's.
 EVT_PROJECT_CREATED = "projects.portfolio.project.created"
+EVT_PROJECT_UPDATED = "projects.portfolio.project.updated"
+EVT_PROJECT_DELETED = "projects.portfolio.project.deleted"
 EVT_MILESTONE_CREATED = "projects.delivery.milestone.created"
+EVT_MILESTONE_UPDATED = "projects.delivery.milestone.updated"
+EVT_MILESTONE_DELETED = "projects.delivery.milestone.deleted"
 EVT_TASK_CREATED = "projects.board.task.created"
+EVT_TASK_UPDATED = "projects.board.task.updated"
+EVT_TASK_DELETED = "projects.board.task.deleted"
+EVT_MEMBER_CREATED = "projects.team.member.created"
+EVT_MEMBER_UPDATED = "projects.team.member.updated"
+EVT_MEMBER_DELETED = "projects.team.member.deleted"
 
 
 def _actor(ctx: ScopeContext) -> dict[str, Any]:
@@ -55,9 +75,15 @@ async def create_member(
     name: str,
     role: str = "",
     directory_id: uuid.UUID | None = None,
+    request: Request | None = None,
 ) -> Member:
-    """Create a delivery-org member. Idempotency is the caller's job (seed checks the ref)."""
-    if await selectors.get_member_by_ref(session, ctx.organization_id, ref):
+    """Create a delivery-org member — the writer both the HTTP surface and the demo seed use.
+
+    The duplicate check matches active **and soft-deleted** rows: `uq_members_org_ref` is not
+    a partial index, so a soft-deleted member still occupies the ref and an unmatched insert
+    would fall through to the database as an unhandled `IntegrityError`.
+    """
+    if await selectors.member_ref_taken(session, ctx.organization_id, ref):
         raise ConflictProblem(f"A member with ref {ref!r} already exists")
 
     member = Member(
@@ -70,7 +96,154 @@ async def create_member(
     )
     session.add(member)
     await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="member.created",
+        entity="member",
+        entity_id=member.id,
+        after={"ref": ref, "name": name},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_MEMBER_CREATED,
+        aggregate_type="member",
+        aggregate_id=member.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "member_id": str(member.id),
+            "ref": ref,
+        },
+        actor=_actor(ctx),
+    )
     return member
+
+
+async def create_member_from(
+    session: AsyncSession, ctx: ScopeContext, payload: MemberIn, *, request: Request | None = None
+) -> Member:
+    """HTTP convenience over `create_member`."""
+    return await create_member(
+        session,
+        ctx,
+        ref=payload.ref,
+        name=payload.name,
+        role=payload.role,
+        directory_id=payload.directory_id,
+        request=request,
+    )
+
+
+async def update_member(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    member: Member,
+    payload: MemberUpdate,
+    *,
+    request: Request | None = None,
+) -> Member:
+    """Patch a member's plain fields. `ref` is immutable — it is the value every `owner_ref` /
+    `assignee_ref` on the wire carries."""
+    changes = payload.model_dump(exclude_unset=True)
+    before = {
+        "name": member.name,
+        "role": member.role,
+        "directory_id": str(member.directory_id) if member.directory_id else None,
+    }
+    for field, value in changes.items():
+        setattr(member, field, value)
+    member.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    after = {
+        "name": member.name,
+        "role": member.role,
+        "directory_id": str(member.directory_id) if member.directory_id else None,
+    }
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="member.updated",
+        entity="member",
+        entity_id=member.id,
+        before=before,
+        after=after,
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_MEMBER_UPDATED,
+        aggregate_type="member",
+        aggregate_id=member.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "member_id": str(member.id),
+            "ref": member.ref,
+        },
+        actor=_actor(ctx),
+    )
+    return member
+
+
+async def delete_member(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    member: Member,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Soft-delete a member. Hard delete is refused (`Must not be built`) — audit rows
+    reference this member's id, and `directory_id` is the intended OWN-scope link.
+
+    No cascade write is needed on the project/milestone/task rows that name this member as
+    owner/assignee: `members_by_id` already filters `deleted_at IS NULL`, so `person_of` falls
+    back to "Unassigned" for any FK that now points at a row outside that map, without the FK
+    itself ever being touched.
+    """
+    if member.deleted_at is not None:
+        return  # idempotent: a retried DELETE finds the row already gone
+
+    now = utcnow()
+    member.deleted_at = now
+    member.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="member.deleted",
+        entity="member",
+        entity_id=member.id,
+        before={"deleted_at": None},
+        after={"deleted_at": now.isoformat(), "ref": member.ref},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_MEMBER_DELETED,
+        aggregate_type="member",
+        aggregate_id=member.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "member_id": str(member.id),
+            "ref": member.ref,
+        },
+        actor=_actor(ctx),
+    )
 
 
 async def _resolve_member_id(
@@ -83,6 +256,25 @@ async def _resolve_member_id(
     if member is None:
         raise NotFoundProblem(f"No member with ref {ref!r} in this organization")
     return member.id
+
+
+async def _owner_directory_id(
+    session: AsyncSession, org_id: uuid.UUID, member_id: uuid.UUID | None
+) -> uuid.UUID | None:
+    """The account-directory id behind a `members.id`, for an object-level OWN check.
+
+    `ctx.assert_can_touch` compares its `owner_id` against `ctx.subject_ref`, which is the JWT
+    `sref` claim — the caller's account-service employee id, not a `members.id` (ADR-0008 §1).
+    A task's `assignee_id` is a `members.id`, so a raw comparison would never match and
+    `PROJECTS_MEMBER`'s `task.write:OWN` would authorise nothing. `members.directory_id` is the
+    link the model carries for exactly this: resolve the assignee, and compare through it
+    instead. `None` when there is no assignee, or the assignee has no linked login — either way
+    an OWN-scoped caller correctly fails to match rather than matching by accident.
+    """
+    if member_id is None:
+        return None
+    member = await selectors.get_member_by_id(session, org_id, member_id)
+    return member.directory_id if member else None
 
 
 # ------------------------------------------------------------------ projects
@@ -110,8 +302,11 @@ async def create_project(
     request: Request | None = None,
 ) -> Project:
     """The core project writer. Inserts the project, records the audit row and stages the
-    `created` event — all in the caller's transaction. Money is integer minor units."""
-    if await selectors.get_project(session, ctx.organization_id, code):
+    `created` event — all in the caller's transaction. Money is integer minor units.
+
+    The duplicate check matches active **and soft-deleted** rows — `uq_projects_org_code` is
+    not a partial index, so a soft-deleted project still occupies the code."""
+    if await selectors.project_code_taken(session, ctx.organization_id, code):
         raise ConflictProblem(f"A project coded {code!r} already exists")
 
     project = Project(
@@ -169,8 +364,16 @@ async def create_project(
 async def create_project_from(
     session: AsyncSession, ctx: ScopeContext, payload: ProjectIn, *, request: Request | None = None
 ) -> Project:
-    """HTTP convenience over `create_project`, resolving the owner by ref."""
+    """HTTP convenience over `create_project`, resolving the owner by ref.
+
+    Object-level scope is checked here too, not only on the route: an ORG-scoped writer may
+    create for anyone, but an OWN-scoped one — a custom role could grant `project.write:OWN` —
+    could otherwise plant a project owned by (or unowned, which `assert_can_touch` also
+    refuses) someone else, which the list-level `ctx.apply` scoping on reads would never catch
+    because it only narrows what already exists.
+    """
     owner_id = await _resolve_member_id(session, ctx, payload.owner_ref)
+    ctx.assert_can_touch(owner_id=owner_id)
     return await create_project(
         session,
         ctx,
@@ -190,6 +393,174 @@ async def create_project_from(
         open_tasks=payload.open_tasks,
         summary=payload.summary,
         request=request,
+    )
+
+
+async def update_project(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    project: Project,
+    payload: ProjectUpdate,
+    *,
+    request: Request | None = None,
+) -> Project:
+    """Patch the plain project fields. `code` is immutable — it is the URL key and travels in
+    every already-published event. Object check mirrors the detail route
+    (`ctx.assert_can_touch(owner_id=project.owner_id)`, `routes.py`'s `read_project`)."""
+    ctx.assert_can_touch(owner_id=project.owner_id)
+    changes = payload.model_dump(exclude_unset=True)
+
+    before = {
+        "name": project.name,
+        "client": project.client,
+        "owner_id": str(project.owner_id) if project.owner_id else None,
+        "phase": project.phase,
+        "health": project.health,
+        "progress_pct": project.progress_pct,
+        "start_date": project.start_date.isoformat() if project.start_date else None,
+        "target_date": project.target_date.isoformat() if project.target_date else None,
+        "budget_minor": project.budget_minor,
+        "spent_minor": project.spent_minor,
+        "currency": project.currency,
+        "team_size": project.team_size,
+        "summary": project.summary,
+    }
+
+    if "owner_ref" in changes:
+        project.owner_id = await _resolve_member_id(session, ctx, changes.pop("owner_ref"))
+    if "currency" in changes and changes["currency"] is not None:
+        changes["currency"] = changes["currency"].upper()
+    for field, value in changes.items():
+        setattr(project, field, value)
+
+    if (
+        project.start_date is not None
+        and project.target_date is not None
+        and project.target_date < project.start_date
+    ):
+        raise ValidationProblem(
+            "target_date must be on or after start_date",
+            errors=[{"field": "target_date", "message": "must be on or after start_date"}],
+        )
+
+    project.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    after = {
+        "name": project.name,
+        "client": project.client,
+        "owner_id": str(project.owner_id) if project.owner_id else None,
+        "phase": project.phase,
+        "health": project.health,
+        "progress_pct": project.progress_pct,
+        "start_date": project.start_date.isoformat() if project.start_date else None,
+        "target_date": project.target_date.isoformat() if project.target_date else None,
+        "budget_minor": project.budget_minor,
+        "spent_minor": project.spent_minor,
+        "currency": project.currency,
+        "team_size": project.team_size,
+        "summary": project.summary,
+    }
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="project.updated",
+        entity="project",
+        entity_id=project.id,
+        before=before,
+        after=after,
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_PROJECT_UPDATED,
+        aggregate_type="project",
+        aggregate_id=project.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "project_id": str(project.id),
+            "code": project.code,
+            "phase": project.phase,
+            "health": project.health,
+        },
+        actor=_actor(ctx),
+    )
+    return project
+
+
+async def delete_project(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    project: Project,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Soft-delete a project, and its milestones and board cards with it, in the same
+    transaction.
+
+    The DB-level `ON DELETE CASCADE` on `milestones.project_id` / `tasks.project_id`
+    (`models.py`) only fires on a real row removal, so a soft-deleted project with live
+    children would leave them listed with an empty `project_code` / `project_name`
+    (`selectors.milestone_out` / `task_out` fall back to `""` once the project is filtered out
+    of `projects_by_id`) — the cascade is done here instead, so they disappear together.
+    """
+    ctx.assert_can_touch(owner_id=project.owner_id)
+    if project.deleted_at is not None:
+        return  # idempotent: a retried DELETE finds the row already gone
+
+    now = utcnow()
+    project.deleted_at = now
+    project.updated_by = str(ctx.principal.sub)
+
+    await session.execute(
+        update(Milestone)
+        .where(
+            Milestone.organization_id == ctx.organization_id,
+            Milestone.project_id == project.id,
+            Milestone.deleted_at.is_(None),
+        )
+        .values(deleted_at=now, updated_by=str(ctx.principal.sub))
+    )
+    await session.execute(
+        update(Task)
+        .where(
+            Task.organization_id == ctx.organization_id,
+            Task.project_id == project.id,
+            Task.deleted_at.is_(None),
+        )
+        .values(deleted_at=now, updated_by=str(ctx.principal.sub))
+    )
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="project.deleted",
+        entity="project",
+        entity_id=project.id,
+        before={"deleted_at": None},
+        after={"deleted_at": now.isoformat(), "code": project.code},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_PROJECT_DELETED,
+        aggregate_type="project",
+        aggregate_id=project.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "project_id": str(project.id),
+            "code": project.code,
+        },
+        actor=_actor(ctx),
     )
 
 
@@ -258,11 +629,14 @@ async def create_milestone_from(
     *,
     request: Request | None = None,
 ) -> Milestone:
-    """HTTP convenience over `create_milestone`, resolving the project by code and owner by ref."""
+    """HTTP convenience over `create_milestone`, resolving the project by code and owner by ref.
+
+    Object-level scope is checked here too — see `create_project_from`."""
     project = await selectors.get_project(session, ctx.organization_id, payload.project_code)
     if project is None:
         raise NotFoundProblem(f"No project {payload.project_code!r} in this organization")
     owner_id = await _resolve_member_id(session, ctx, payload.owner_ref)
+    ctx.assert_can_touch(owner_id=owner_id)
     return await create_milestone(
         session,
         ctx,
@@ -273,6 +647,116 @@ async def create_milestone_from(
         status=payload.status,
         progress_pct=payload.progress_pct,
         request=request,
+    )
+
+
+async def update_milestone(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    milestone: Milestone,
+    payload: MilestoneUpdate,
+    *,
+    request: Request | None = None,
+) -> Milestone:
+    """Patch a milestone. Not `project_code` — a milestone never changes project through this
+    route."""
+    ctx.assert_can_touch(owner_id=milestone.owner_id)
+    changes = payload.model_dump(exclude_unset=True)
+
+    before = {
+        "title": milestone.title,
+        "owner_id": str(milestone.owner_id) if milestone.owner_id else None,
+        "due_date": milestone.due_date.isoformat() if milestone.due_date else None,
+        "status": milestone.status,
+        "progress_pct": milestone.progress_pct,
+    }
+
+    if "owner_ref" in changes:
+        milestone.owner_id = await _resolve_member_id(session, ctx, changes.pop("owner_ref"))
+    for field, value in changes.items():
+        setattr(milestone, field, value)
+    milestone.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    after = {
+        "title": milestone.title,
+        "owner_id": str(milestone.owner_id) if milestone.owner_id else None,
+        "due_date": milestone.due_date.isoformat() if milestone.due_date else None,
+        "status": milestone.status,
+        "progress_pct": milestone.progress_pct,
+    }
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="milestone.updated",
+        entity="milestone",
+        entity_id=milestone.id,
+        before=before,
+        after=after,
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_MILESTONE_UPDATED,
+        aggregate_type="milestone",
+        aggregate_id=milestone.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "milestone_id": str(milestone.id),
+            "project_id": str(milestone.project_id),
+            "status": milestone.status,
+        },
+        actor=_actor(ctx),
+    )
+    return milestone
+
+
+async def delete_milestone(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    milestone: Milestone,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Soft-delete a milestone. It has no children to cascade."""
+    ctx.assert_can_touch(owner_id=milestone.owner_id)
+    if milestone.deleted_at is not None:
+        return  # idempotent: a retried DELETE finds the row already gone
+
+    now = utcnow()
+    milestone.deleted_at = now
+    milestone.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="milestone.deleted",
+        entity="milestone",
+        entity_id=milestone.id,
+        before={"deleted_at": None},
+        after={"deleted_at": now.isoformat()},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_MILESTONE_DELETED,
+        aggregate_type="milestone",
+        aggregate_id=milestone.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "milestone_id": str(milestone.id),
+            "project_id": str(milestone.project_id),
+        },
+        actor=_actor(ctx),
     )
 
 
@@ -339,11 +823,20 @@ async def create_task(
 async def create_task_from(
     session: AsyncSession, ctx: ScopeContext, payload: TaskIn, *, request: Request | None = None
 ) -> Task:
-    """HTTP convenience over `create_task`, resolving the project by code and assignee by ref."""
+    """HTTP convenience over `create_task`, resolving the project by code and assignee by ref.
+
+    Object-level scope is checked here too: without it, an OWN-scoped `task.write` holder —
+    exactly `PROJECTS_MEMBER` — could plant a card assigned to anyone, not just themselves. The
+    check resolves through `assignee_id`'s `directory_id` the same way `update_task` does, so an
+    OWN-scoped create is forced to name the caller as assignee (or is refused if left
+    unassigned — there is no "own" reading of an unowned card).
+    """
     project = await selectors.get_project(session, ctx.organization_id, payload.project_code)
     if project is None:
         raise NotFoundProblem(f"No project {payload.project_code!r} in this organization")
     assignee_id = await _resolve_member_id(session, ctx, payload.assignee_ref)
+    owner_directory_id = await _owner_directory_id(session, ctx.organization_id, assignee_id)
+    ctx.assert_can_touch(owner_id=owner_directory_id)
     return await create_task(
         session,
         ctx,
@@ -355,4 +848,120 @@ async def create_task_from(
         due_date=payload.due_date,
         points=payload.points,
         request=request,
+    )
+
+
+async def update_task(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    task: Task,
+    payload: TaskUpdate,
+    *,
+    request: Request | None = None,
+) -> Task:
+    """Move or edit a board card — this is what persists a Kanban drag. Not `project_code` — a
+    card never changes project through this route. See `_owner_directory_id` for why the object
+    check resolves through the assignee's `directory_id` rather than comparing `assignee_id`
+    directly."""
+    owner_directory_id = await _owner_directory_id(session, ctx.organization_id, task.assignee_id)
+    ctx.assert_can_touch(owner_id=owner_directory_id)
+    changes = payload.model_dump(exclude_unset=True)
+
+    before = {
+        "title": task.title,
+        "assignee_id": str(task.assignee_id) if task.assignee_id else None,
+        "stage": task.stage,
+        "priority": task.priority,
+        "due_date": task.due_date.isoformat() if task.due_date else None,
+        "points": task.points,
+    }
+
+    if "assignee_ref" in changes:
+        task.assignee_id = await _resolve_member_id(session, ctx, changes.pop("assignee_ref"))
+    for field, value in changes.items():
+        setattr(task, field, value)
+    task.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    after = {
+        "title": task.title,
+        "assignee_id": str(task.assignee_id) if task.assignee_id else None,
+        "stage": task.stage,
+        "priority": task.priority,
+        "due_date": task.due_date.isoformat() if task.due_date else None,
+        "points": task.points,
+    }
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="task.updated",
+        entity="task",
+        entity_id=task.id,
+        before=before,
+        after=after,
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_TASK_UPDATED,
+        aggregate_type="task",
+        aggregate_id=task.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "task_id": str(task.id),
+            "project_id": str(task.project_id),
+            "stage": task.stage,
+        },
+        actor=_actor(ctx),
+    )
+    return task
+
+
+async def delete_task(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    task: Task,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Soft-delete a board card."""
+    owner_directory_id = await _owner_directory_id(session, ctx.organization_id, task.assignee_id)
+    ctx.assert_can_touch(owner_id=owner_directory_id)
+    if task.deleted_at is not None:
+        return  # idempotent: a retried DELETE finds the row already gone
+
+    now = utcnow()
+    task.deleted_at = now
+    task.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="task.deleted",
+        entity="task",
+        entity_id=task.id,
+        before={"deleted_at": None},
+        after={"deleted_at": now.isoformat()},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_TASK_DELETED,
+        aggregate_type="task",
+        aggregate_id=task.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "task_id": str(task.id),
+            "project_id": str(task.project_id),
+        },
+        actor=_actor(ctx),
     )

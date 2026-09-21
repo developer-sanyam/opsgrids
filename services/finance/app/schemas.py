@@ -70,6 +70,13 @@ class CustomerOut(BaseModel):
     gstin: str | None
     city: str
     state: str
+    # ---------------------------------------------------------------- withholding
+    # Facts about this buyer that decide whether tax is withheld on what this organization
+    # bills them. Carried here (not just on `CustomerCreate`) so an edit form can prefill them —
+    # they affect **future** invoices only; a document already finalized keeps what it assessed.
+    is_tds_deductor: bool = False
+    deducts_tds_194q: bool = False
+    tcs_applicable: bool = False
 
 
 class CustomerSummary(BaseModel):
@@ -246,6 +253,16 @@ class OverviewKpi(BaseModel):
     deltaPct: float
     series: list[float]
     caption: str
+    #: True when `value_minor` itself is representative rather than computed from this tenant's
+    #: own invoices and payments. False for `revenue`/`receivables`/`overdue` (real, derived from
+    #: the book); true only for `cash` — there is no bank feed or general ledger to derive a cash
+    #: balance from, so it is never shown as though it were this tenant's real figure.
+    sample: bool = False
+    #: True when the trend line (`deltaPct` + `series`) is representative rather than computed.
+    #: There is no history table behind any KPI's trend today, so this is true for all four —
+    #: kept separate from `sample` because a KPI's headline number can be real while its
+    #: sparkline is not.
+    trend_sample: bool = True
 
 
 class CashflowPoint(BaseModel):
@@ -270,6 +287,9 @@ class OverviewSummary(BaseModel):
     aging: list[AgingBucket]
     #: Overdue invoices, largest outstanding first — the "needs attention" list.
     attention: list[InvoiceOut]
+    #: True: the six-month cashflow chart is a representative aggregate, not derived from a real
+    #: cash ledger (there is none). The UI should render its sample chip whenever this is true.
+    cashflow_sample: bool = True
 
 
 # --------------------------------------------------------------------- ledger
@@ -287,6 +307,9 @@ class LedgerReport(BaseModel):
     period_label: str
     as_of: date
     accounts: list[LedgerAccount]
+    #: Always true today: there is no general ledger table behind this report, only the
+    #: representative accounts in `app.domain.LEDGER_ACCOUNTS`. Never served unflagged.
+    sample: bool = True
 
 
 # --------------------------------------------------------------------- write contracts
@@ -295,7 +318,10 @@ class LedgerReport(BaseModel):
 
 
 class InvoiceLineCreate(BaseModel):
-    description: str
+    model_config = ConfigDict(extra="forbid")
+
+    description: str = Field(min_length=1, max_length=300)
+    #: Possibly fractional (tonnes, cft) and negative on a credit note line.
     quantity: float
     unit_price_minor: int
     #: HSN (goods) or SAC (services) code — 4, 6 or 8 digits. Optional at the contract because a
@@ -308,7 +334,7 @@ class InvoiceLineCreate(BaseModel):
 
 
 class InvoiceCreate(BaseModel):
-    number: str
+    number: str = Field(max_length=40)
     customer_id: uuid.UUID
     issued_date: date
     due_date: date
@@ -316,9 +342,13 @@ class InvoiceCreate(BaseModel):
     tax_rate_pct: float
     lines: list[InvoiceLineCreate] = Field(min_length=1)
     document_type: DocumentType = "invoice"
-    #: Force a lifecycle state the amounts cannot imply (draft, void). Otherwise derived.
+    #: Force a lifecycle state the amounts cannot imply (draft, void). Otherwise derived. Not on
+    #: the principal route's own contract (`InvoiceIssueIn`) — only the demo seed and any future
+    #: internal caller may set this; a person raising a real document cannot force `paid`/`void`.
     status: InvoiceStatus | None = None
-    currency: str = "INR"
+    #: ISO 4217, three upper-case letters. `INR` for every document today; carried as a real
+    #: field rather than a constant because the IRP payload and a GSTR-1 both declare it.
+    currency: str = Field(default="INR", min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")
     notes: str | None = None
     corrects_invoice_id: uuid.UUID | None = None
 
@@ -331,6 +361,36 @@ class InvoiceCreate(BaseModel):
     place_of_supply: str | None = None
     #: The recipient pays the tax instead of the supplier. The document carries the rate and no
     #: tax amounts.
+    reverse_charge: bool = False
+
+
+class InvoiceIssueIn(BaseModel):
+    """The principal route's own contract for issuing an invoice or a credit note.
+
+    Deliberately **not** `InvoiceCreate`: that schema carries `number` and `status`, and a public
+    caller may set neither. The server owns the numbering series
+    (`services.allocate_invoice_number`, race-safe per organization/document-type/financial-year)
+    and the lifecycle status is always derived — there is no draft -> issued transition and no way
+    to force `paid` or `void` through this route. Unknown fields are rejected rather than silently
+    ignored.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    customer_id: uuid.UUID
+    issued_date: date
+    due_date: date
+    tax_rate_pct: float
+    lines: list[InvoiceLineCreate] = Field(min_length=1)
+    document_type: DocumentType = "invoice"
+    currency: str = Field(default="INR", min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")
+    notes: str | None = None
+    #: Required when `document_type` is `credit_note`; refused otherwise. Checked again, server
+    #: side, against the invoice it names — the same customer and organization, and no more than
+    #: what remains uncredited on it.
+    corrects_invoice_id: uuid.UUID | None = None
+    supply_type: SupplyType | None = None
+    place_of_supply: str | None = None
     reverse_charge: bool = False
 
 
@@ -386,16 +446,25 @@ class CancelFilingIn(BaseModel):
     remark: str = ""
 
 
+#: A loose shape check, not a deliverability check — this is a directory field, not a mailbox
+#: this service ever sends to. Empty passes; anything present must look like an address.
+_EMAIL_PATTERN = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+
+
 class CustomerCreate(BaseModel):
-    name: str
-    contact_name: str
-    email: str
-    gstin: str | None = None
-    city: str
-    state: str
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    contact_name: str = Field(default="", max_length=200)
+    email: str = Field(default="", max_length=200, pattern=f"({_EMAIL_PATTERN})|^$")
+    #: 15 characters (the GSTIN length) or null; the checksum itself is verified server-side.
+    gstin: str | None = Field(default=None, min_length=15, max_length=15)
+    city: str = Field(default="", max_length=120)
+    state: str = Field(default="", max_length=120)
     # Withholding facts about the buyer. All three default to false, which is what keeps
     # withholding opt-in: an organization that has not told the platform about its counterparties
-    # has no TDS or TCS figures invented for it.
+    # has no TDS or TCS figures invented for it. 194Q and 206C(1H) are mutually exclusive by
+    # statute (`models.py:111-116`); the service refuses a write that sets both.
     #: A body notified under GST s. 51 — it must deduct 2 % on supplies above the threshold.
     is_tds_deductor: bool = False
     #: A buyer liable to deduct income tax under s. 194Q. Excludes 206C(1H) by statute.
@@ -404,13 +473,37 @@ class CustomerCreate(BaseModel):
     tcs_applicable: bool = False
 
 
+class CustomerUpdate(BaseModel):
+    """PATCH: every field optional, only what is sent is applied
+    (`model_dump(exclude_unset=True)`); everything else is validated exactly as on create."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    contact_name: str | None = Field(default=None, max_length=200)
+    email: str | None = Field(default=None, max_length=200, pattern=f"({_EMAIL_PATTERN})|^$")
+    gstin: str | None = Field(default=None, min_length=15, max_length=15)
+    city: str | None = Field(default=None, max_length=120)
+    state: str | None = Field(default=None, max_length=120)
+    is_tds_deductor: bool | None = None
+    deducts_tds_194q: bool | None = None
+    tcs_applicable: bool | None = None
+
+
 class PaymentAllocationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     invoice_id: uuid.UUID
-    amount_minor: int
+    #: Must be positive and, checked server-side, no more than the invoice's own outstanding —
+    #: the service never trusts a caller's arithmetic over its own allocations.
+    amount_minor: int = Field(gt=0)
 
 
 class PaymentCreate(BaseModel):
-    reference: str
+    model_config = ConfigDict(extra="forbid")
+
+    #: Bank UTR / cheque number / gateway reference. Unique per organization (409 on a repeat).
+    reference: str = Field(min_length=1, max_length=40)
     customer_id: uuid.UUID
     received_date: date
     method: PaymentMethod
@@ -449,14 +542,16 @@ class PurchaseDocumentCreate(BaseModel):
     derives CGST/SGST/IGST from the taxable value and the rate with the same `domain.split_gst`
     an invoice uses, so the purchase book and the sales book cannot disagree about arithmetic."""
 
-    supplier_gstin: str
-    number: str
+    model_config = ConfigDict(extra="forbid")
+
+    supplier_gstin: str = Field(min_length=15, max_length=15)
+    number: str = Field(min_length=1, max_length=40)
     document_date: date
-    taxable_minor: int
+    taxable_minor: int = Field(gt=0)
     tax_rate_pct: float
-    supplier_name: str = ""
+    supplier_name: str = Field(default="", max_length=200)
     document_type: DocumentType = "invoice"
-    currency: str = "INR"
+    currency: str = Field(default="INR", min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")
     notes: str | None = None
 
 

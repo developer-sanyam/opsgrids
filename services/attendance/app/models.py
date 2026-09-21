@@ -80,8 +80,18 @@ class Shift(Base, TenantBase):
     __table_args__ = (
         # Every index leads with `organization_id`: under row-level security the policy qual is
         # ANDed into every query, so an index that did not lead with the tenant column would
-        # scan the whole platform's rows and discard almost all of them (ADR-0002).
-        UniqueConstraint("organization_id", "code", name="uq_shifts_org_code"),
+        # scan the whole platform's rows and discard almost all of them (ADR-0002). Partial on
+        # `deleted_at is null` (migration `f4c1a9b3d2e7`) so a retired code is free to be reused —
+        # "I deleted it and now cannot recreate it" is a support ticket waiting to happen. The
+        # duplicate check in `services.create_shift` already filters `deleted_at IS NULL`
+        # (`selectors.get_shift_by_code`), so it agrees with this index's condition exactly.
+        Index(
+            "uq_shifts_org_code",
+            "organization_id",
+            "code",
+            unique=True,
+            postgresql_where=text("deleted_at is null"),
+        ),
     )
 
 
@@ -108,7 +118,16 @@ class Geofence(Base, TenantBase):
     radius_m: Mapped[int] = mapped_column(Integer, nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("organization_id", "location_code", name="uq_geofences_org_location"),
+        # Partial on `deleted_at is null` (migration `f4c1a9b3d2e7`) — see `Shift`'s identical
+        # note. `services.create_geofence`'s duplicate check already filters `deleted_at IS NULL`
+        # (`selectors.get_geofence_by_location`), so it agrees with this index's condition.
+        Index(
+            "uq_geofences_org_location",
+            "organization_id",
+            "location_code",
+            unique=True,
+            postgresql_where=text("deleted_at is null"),
+        ),
     )
 
 

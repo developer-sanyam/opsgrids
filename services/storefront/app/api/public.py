@@ -1,4 +1,7 @@
-"""The anonymous buyer surface. **Two routes, and every line of both is load-bearing.**
+"""The anonymous buyer surface. **The first two routes are load-bearing down to the line**;
+`public_catalogue` and `public_enquiry` (gaps 4 and 6) reuse the same discipline: resolve the
+slug on the bypass reader, refuse anything that is not a published store with one identical
+404, then run every further read or write tenant-bound through `session_scope`.
 
 ────────────────────────────────────────────────────────────────────────────────────────────
 **This module contains no `try` and no `except`, and it must stay that way.**
@@ -50,10 +53,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import domain, selectors, services
 from app.config import settings
 from app.schemas import (
+    CategoryPublicOut,
+    EnquiryCreate,
+    EnquiryReceiptOut,
     FeesOut,
+    ProductPublicOut,
+    ProductVariantOut,
     PromiseOut,
+    PublicCatalogueIn,
+    PublicCatalogueOut,
     PublicServiceabilityIn,
     PublicStoreContextIn,
+    PublicThemeOut,
     ServiceabilityOut,
     StoreContextOut,
 )
@@ -62,6 +73,7 @@ from platform_core.db import get_directory_session
 from platform_core.errors import NotFoundProblem
 from platform_core.logging import get_logger
 from platform_core.models import utcnow
+from platform_core.pagination import Page, PageQuery
 
 log = get_logger("storefront.public")
 
@@ -248,6 +260,20 @@ async def store_context(
         custom_domain_status=store.custom_domain_status,
         suffix=cfg.platform_host_suffix,
     )
+    # ADR-0012 §11's coordination note: the theme document extends *this* payload rather than
+    # adding a second call on the first-paint path. Its own `session_scope`, tenant-bound —
+    # nothing about the buyer's request runs on the bypass reader past this point.
+    theme_doc = await services.get_theme_for_store(store)
+    theme = (
+        PublicThemeOut(
+            theme_key=theme_doc.theme_key,
+            mode=theme_doc.mode,
+            tokens=theme_doc.tokens,
+            pages=theme_doc.pages,
+        )
+        if theme_doc is not None
+        else None
+    )
     return StoreContextOut(
         store=store.slug,
         # Verbatim, all three. Output encoding is the renderer's (ADR-0011 §6).
@@ -258,5 +284,119 @@ async def store_context(
         timezone=store.timezone,
         canonical_host=canonical,
         is_canonical=host == canonical,
+        theme=theme,
         checked_at=utcnow(),
     )
+
+
+@router.post(
+    "/storefront/public/catalogue",
+    response_model=PublicCatalogueOut,
+    summary="A published store's active categories and products",
+    responses={
+        404: {"description": "No published store with that slug"},
+        422: {"description": "That is not a store slug"},
+        429: {"description": "Rate limited by the gateway"},
+    },
+)
+async def public_catalogue(
+    payload: PublicCatalogueIn,
+    directory: DirectorySession,
+    params: PageQuery,
+) -> PublicCatalogueOut:
+    """**No token, no account, no session.** The buyer bundle's catalogue read (gap 4).
+
+    Same three-step shape as `store_context`: resolve the slug on the bypass reader, refuse
+    anything that is not a published store with the identical 404, then run every read
+    tenant-bound through `session_scope` — never on the bypass role past the lookup. **Only
+    `active`, non-deleted, `is_active` rows are ever returned**; a merchant's draft or archived
+    line is invisible here regardless of what the buyer asks for.
+    """
+    store = await selectors.resolve_public_store(directory, payload.store)
+    if store is None or not store.is_published:
+        log.warning(
+            "storefront.public.catalogue_store_unresolved",
+            slug=payload.store,
+            status=store.status if store is not None else None,
+        )
+        raise NotFoundProblem("No published store with that name.")
+
+    catalogue = await services.get_public_catalogue_for_store(
+        store, params, category_key=payload.category
+    )
+    categories_out = [
+        CategoryPublicOut(
+            key=category.key,
+            label=category.label,
+            blurb=category.blurb,
+            image_url=category.image_path,
+            line_count=count,
+        )
+        for category, count in catalogue.categories
+    ]
+    products_out = [
+        ProductPublicOut(
+            id=product.id,
+            code=product.code,
+            name=product.name,
+            brand=product.brand,
+            category=catalogue.category_keys.get(product.category_id, ""),
+            spec=product.spec,
+            unit=product.unit,
+            price_min_minor=product.price_min_minor,
+            price_max_minor=product.price_max_minor,
+            currency=store.currency,
+            gst_inclusive=product.gst_inclusive,
+            moq=product.moq,
+            moq_unit=product.moq_unit,
+            in_stock=product.in_stock,
+            lead_time_days=product.lead_time_days,
+            featured=product.featured,
+            image_url=product.image_path,
+            mrp_minor=product.mrp_minor,
+            delivery_eta_minutes=product.delivery_eta_minutes,
+            variants=[
+                ProductVariantOut.model_validate(v) for v in catalogue.variants.get(product.id, [])
+            ],
+        )
+        for product in catalogue.products
+    ]
+    return PublicCatalogueOut(
+        categories=categories_out,
+        products=Page.build(products_out, total=catalogue.products_total, params=params),
+    )
+
+
+@router.post(
+    "/storefront/public/enquiry",
+    response_model=EnquiryReceiptOut,
+    status_code=201,
+    summary="Send an enquiry to a published store",
+    responses={
+        404: {"description": "No published store with that slug"},
+        422: {"description": "A required field is missing or malformed"},
+        429: {"description": "Rate limited by the gateway"},
+    },
+)
+async def public_enquiry(
+    payload: EnquiryCreate,
+    directory: DirectorySession,
+) -> EnquiryReceiptOut:
+    """**No token, no account, no session.** The buyer's line list, sent as an enquiry (gap 6) —
+    this product's order-like flow; there is no cart and no checkout to submit instead.
+
+    Contact fields are sealed before they are ever written (`services.create_enquiry_for_store`)
+    and an outbox event is staged in the same transaction, so a merchant's notification can
+    never fire for an enquiry that failed to commit.
+    """
+    store = await selectors.resolve_public_store(directory, payload.store)
+    if store is None or not store.is_published:
+        log.warning(
+            "storefront.public.enquiry_store_unresolved",
+            slug=payload.store,
+            status=store.status if store is not None else None,
+        )
+        raise NotFoundProblem("No published store with that name.")
+
+    enquiry = await services.create_enquiry_for_store(store, payload)
+    return EnquiryReceiptOut(id=enquiry.id, received_at=enquiry.created_at)

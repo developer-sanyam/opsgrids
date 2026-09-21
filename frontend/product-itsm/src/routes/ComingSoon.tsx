@@ -9,7 +9,12 @@ interface ComingSoonPageProps {
   description: string;
 }
 
-/** A tasteful placeholder for surfaces not built yet (Changes, Licenses, Reports) and 404. */
+/**
+ * The catch-all for a URL that isn't a real route. Notifications, Changes, Licenses, Reports,
+ * Integrations, Team, Settings and Help had no backend behind them and are gone from the nav and
+ * the router entirely rather than linking here — a nav item pointing at a screen with nothing
+ * behind it is a dead control, not a "coming soon" card.
+ */
 export function ComingSoonPage({ icon, title, description }: ComingSoonPageProps) {
   return (
     <div className="rise flex justify-center pt-8">

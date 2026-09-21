@@ -86,6 +86,7 @@ function Harness({
     <SettingsInspector
       section={section}
       def={def}
+      categories={[]}
       canEdit
       onSettingChange={(key, value) => {
         onSettingChange(key, value);
@@ -237,6 +238,7 @@ describe("without permission to edit", () => {
       <SettingsInspector
         section={instance(FULL)}
         def={INVENTED}
+        categories={[]}
         canEdit={false}
         onSettingChange={vi.fn()}
         onMove={vi.fn()}

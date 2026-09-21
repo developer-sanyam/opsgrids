@@ -7,9 +7,9 @@ interface SparklineProps {
    * delta pill beside it. A falling cost line is `good`.
    */
   tone: "good" | "bad";
-  className?: string;
-  width?: number;
-  height?: number;
+  className?: string | undefined;
+  width?: number | undefined;
+  height?: number | undefined;
 }
 
 /**

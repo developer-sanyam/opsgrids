@@ -8,14 +8,18 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 
-import type { AttendanceRecord } from "@/api/types";
+import type { AttendanceRecord, Paged } from "@/api/types";
 import { AttendancePage } from "./Attendance";
 
+const listAttendanceRoster = vi.fn();
 const listAttendance = vi.fn();
+const checkOut = vi.fn();
 
 vi.mock("@/api/client", () => ({
-  ATTENDANCE_IS_SAMPLE: false,
+  USE_FIXTURES: false,
+  listAttendanceRoster: (...args: unknown[]) => listAttendanceRoster(...args),
   listAttendance: (...args: unknown[]) => listAttendance(...args),
+  checkOut: (...args: unknown[]) => checkOut(...args),
 }));
 
 vi.mock("@/lib/subject", () => ({
@@ -38,16 +42,24 @@ const OWN_RECORD: AttendanceRecord = {
   check_out: null,
   worked_minutes: null,
   source: "web",
+  work_mode: "office",
   status: "absent",
   location_code: "Bengaluru",
   regularization: null,
   allowed_transitions: ["present", "half_day", "regularized"],
 };
 
+function pagedOf(items: AttendanceRecord[]): Paged<AttendanceRecord> {
+  return { items, total: items.length, page: 1, size: 25, pages: 1 };
+}
+
 describe("Attendance — Correction column narrow-width fallback", () => {
   beforeEach(() => {
+    listAttendanceRoster.mockReset();
     listAttendance.mockReset();
-    listAttendance.mockResolvedValue([OWN_RECORD]);
+    checkOut.mockReset();
+    listAttendanceRoster.mockResolvedValue(pagedOf([OWN_RECORD]));
+    listAttendance.mockResolvedValue({ items: [], total: 0, page: 1, size: 1, pages: 0 });
   });
 
   it("renders 'Request a correction' both in the (md+) Correction column and as a line under the status pill", async () => {

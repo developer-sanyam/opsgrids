@@ -25,7 +25,7 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Member, Milestone, Project, Task
-from app.schemas import MilestoneOut, Person, ProjectOut, TaskOut
+from app.schemas import MemberOut, MilestoneOut, Person, ProjectOut, TaskOut
 from platform_core.auth import ScopeContext
 
 # ------------------------------------------------------------------ members (people)
@@ -49,10 +49,46 @@ async def get_member_by_ref(session: AsyncSession, org_id: uuid.UUID, ref: str) 
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-def person_out(member: Member) -> Person:
-    """One member row on the wire. `id` is the `ref` (`p-01`), the handle every embedded
-    `Person` elsewhere in the API carries — the opaque primary key stays internal."""
-    return Person(id=member.ref, name=member.name, role=member.role)
+async def get_member_by_id(
+    session: AsyncSession, org_id: uuid.UUID, member_id: uuid.UUID
+) -> Member | None:
+    """A member by their opaque id, within one organization — used to resolve the
+    `directory_id` behind an `owner_id` / `assignee_id` for an object-level scope check."""
+    stmt = select(Member).where(
+        Member.organization_id == org_id,
+        Member.id == member_id,
+        Member.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def member_ref_taken(session: AsyncSession, org_id: uuid.UUID, ref: str) -> bool:
+    """Whether `ref` is already used in this organization, active **or soft-deleted**.
+
+    `uq_members_org_ref` is not a partial index, so a soft-deleted member still occupies the
+    value; the create-time duplicate check has to see it too or the insert falls through to the
+    database and an `IntegrityError` becomes an unhandled 500.
+    """
+    stmt = select(Member.id).where(Member.organization_id == org_id, Member.ref == ref)
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
+def members_stmt(ctx: ScopeContext, *, q: str | None = None) -> Select[Any]:
+    """The delivery-org roster, in ref order. Member reads floor at ORG in the catalogue (there
+    is no "my own membership" reading), so `ctx.apply` is still called with the member's own id
+    as the owner column for uniformity — at ORG it is a no-op, and a mis-granted narrower scope
+    narrows rather than leaks."""
+    stmt = select(Member).where(
+        Member.organization_id == ctx.organization_id,
+        Member.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=Member.id)
+    if q:
+        needle = f"%{q.lower()}%"
+        stmt = stmt.where(
+            or_(func.lower(Member.name).like(needle), func.lower(Member.ref).like(needle))
+        )
+    return stmt.order_by(Member.ref.asc())
 
 
 def person_of(members: dict[uuid.UUID, Member], member_id: uuid.UUID | None) -> Person:
@@ -60,7 +96,7 @@ def person_of(members: dict[uuid.UUID, Member], member_id: uuid.UUID | None) -> 
     member = members.get(member_id) if member_id is not None else None
     if member is None:
         return _FALLBACK_PERSON
-    return person_out(member)
+    return Person(id=member.ref, name=member.name, role=member.role)
 
 
 # ------------------------------------------------------------------ projects
@@ -83,12 +119,20 @@ def projects_stmt(
 
     if q:
         needle = f"%{q.lower()}%"
+        owner_matches = Project.owner_id.in_(
+            select(Member.id).where(
+                Member.organization_id == ctx.organization_id,
+                Member.deleted_at.is_(None),
+                func.lower(Member.name).like(needle),
+            )
+        )
         stmt = stmt.where(
             or_(
                 func.lower(Project.name).like(needle),
                 func.lower(Project.code).like(needle),
                 func.lower(Project.client).like(needle),
                 func.lower(Project.summary).like(needle),
+                owner_matches,
             )
         )
     if health:
@@ -100,6 +144,10 @@ def projects_stmt(
         return stmt.order_by(Project.progress_pct.desc(), Project.code.asc())
     if sort == "target":
         return stmt.order_by(Project.target_date.asc(), Project.code.asc())
+    if sort == "name":
+        return stmt.order_by(Project.name.asc(), Project.code.asc())
+    if sort == "health":
+        return stmt.order_by(Project.health.asc(), Project.code.asc())
     return stmt.order_by(Project.code.asc())
 
 
@@ -112,6 +160,17 @@ async def get_project(session: AsyncSession, org_id: uuid.UUID, code: str) -> Pr
         Project.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def project_code_taken(session: AsyncSession, org_id: uuid.UUID, code: str) -> bool:
+    """Whether `code` is already used in this organization, active **or soft-deleted**.
+
+    `uq_projects_org_code` is not a partial index, so a soft-deleted project still occupies the
+    code; the create-time duplicate check has to see it too or the insert falls through to the
+    database and an `IntegrityError` becomes an unhandled 500.
+    """
+    stmt = select(Project.id).where(Project.organization_id == org_id, Project.code == code)
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
 
 
 async def all_projects(session: AsyncSession, ctx: ScopeContext) -> list[Project]:
@@ -132,7 +191,9 @@ async def milestone_count_map(session: AsyncSession, org_id: uuid.UUID) -> dict[
 # ------------------------------------------------------------------ milestones
 
 
-def milestones_stmt(ctx: ScopeContext, *, status: str | None = None) -> Select[Any]:
+def milestones_stmt(
+    ctx: ScopeContext, *, status: str | None = None, project_code: str | None = None
+) -> Select[Any]:
     """Scope-filtered milestone list, soonest due first."""
     stmt = select(Milestone).where(
         Milestone.organization_id == ctx.organization_id,
@@ -141,11 +202,33 @@ def milestones_stmt(ctx: ScopeContext, *, status: str | None = None) -> Select[A
     stmt = ctx.apply(stmt, owner_col=Milestone.owner_id)
     if status:
         stmt = stmt.where(Milestone.status == status)
+    if project_code:
+        stmt = stmt.where(
+            Milestone.project_id.in_(
+                select(Project.id).where(
+                    Project.organization_id == ctx.organization_id,
+                    Project.code == project_code,
+                    Project.deleted_at.is_(None),
+                )
+            )
+        )
     return stmt.order_by(Milestone.due_date.asc())
 
 
 async def all_milestones(session: AsyncSession, ctx: ScopeContext) -> list[Milestone]:
     return list((await session.execute(milestones_stmt(ctx))).scalars().all())
+
+
+async def get_milestone(
+    session: AsyncSession, org_id: uuid.UUID, milestone_id: uuid.UUID
+) -> Milestone | None:
+    """Org-scoped fetch by opaque id — milestones have no human key, only their `id`."""
+    stmt = select(Milestone).where(
+        Milestone.id == milestone_id,
+        Milestone.organization_id == org_id,
+        Milestone.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
 
 
 async def milestones_for_project(
@@ -177,11 +260,31 @@ def tasks_stmt(
     stmt = ctx.apply(stmt, owner_col=Task.assignee_id)
     if stage:
         stmt = stmt.where(Task.stage == stage)
+    if project_code:
+        stmt = stmt.where(
+            Task.project_id.in_(
+                select(Project.id).where(
+                    Project.organization_id == ctx.organization_id,
+                    Project.code == project_code,
+                    Project.deleted_at.is_(None),
+                )
+            )
+        )
     return stmt.order_by(Task.created_at.asc())
 
 
 async def all_tasks(session: AsyncSession, ctx: ScopeContext) -> list[Task]:
     return list((await session.execute(tasks_stmt(ctx))).scalars().all())
+
+
+async def get_task(session: AsyncSession, org_id: uuid.UUID, task_id: uuid.UUID) -> Task | None:
+    """Org-scoped fetch by opaque id — tasks have no human key, only their `id`."""
+    stmt = select(Task).where(
+        Task.id == task_id,
+        Task.organization_id == org_id,
+        Task.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
 
 
 # ------------------------------------------------------------------ project lookup maps
@@ -194,6 +297,15 @@ async def projects_by_id(session: AsyncSession, org_id: uuid.UUID) -> dict[uuid.
 
 
 # ------------------------------------------------------------------ projections (ORM → wire)
+
+
+def member_out(member: Member) -> MemberOut:
+    return MemberOut(
+        id=member.ref,
+        name=member.name,
+        role=member.role,
+        directory_id=str(member.directory_id) if member.directory_id else None,
+    )
 
 
 def project_out(

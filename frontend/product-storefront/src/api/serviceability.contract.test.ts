@@ -33,7 +33,7 @@ import type {
   ServiceabilityOut,
   UnservedReason,
   ZoneMode,
-} from "./client";
+} from "./publicClient";
 
 const CONTRACT_RELATIVE = join("libs", "contracts", "openapi", "storefront.json");
 

@@ -11,6 +11,24 @@
       "resource": "customer"
     },
     {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Add, edit or archive a customer",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "billing",
+      "resource": "customer"
+    },
+    {
+      "action": "issue",
+      "default_scope": "ORG",
+      "description": "Issue an invoice or a credit note against one",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "billing",
+      "resource": "invoice"
+    },
+    {
       "action": "read",
       "default_scope": "ORG",
       "description": "See invoices and credit notes",
@@ -27,6 +45,33 @@
       "max_scope": "ORG",
       "module": "billing",
       "resource": "payment"
+    },
+    {
+      "action": "record",
+      "default_scope": "ORG",
+      "description": "Record a payment received and allocate it to invoices",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "billing",
+      "resource": "payment"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See recorded purchase documents",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "billing",
+      "resource": "purchase"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Record what a supplier billed",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "billing",
+      "resource": "purchase"
     },
     {
       "action": "read",
@@ -149,11 +194,31 @@
           "scope": "ORG"
         },
         {
+          "code": "finance.billing.customer.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.billing.invoice.issue",
+          "scope": "ORG"
+        },
+        {
           "code": "finance.billing.invoice.read",
           "scope": "ORG"
         },
         {
           "code": "finance.billing.payment.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.billing.payment.record",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.billing.purchase.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.billing.purchase.write",
           "scope": "ORG"
         },
         {

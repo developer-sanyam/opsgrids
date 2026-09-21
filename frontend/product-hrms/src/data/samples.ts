@@ -1,9 +1,11 @@
 /**
- * Representative (non-live) data for the surfaces with no service yet: the headcount-trend
- * history, the recent-activity timeline, and today's task list. Every widget that reads from
- * here renders the shared `SampleChip` so a sample number is never mistaken for a live one.
+ * The one representative (non-live) series this app still renders: the headcount-trend history.
+ * `HeadcountTrend` labels it with the shared `SampleChip` so it is never mistaken for the
+ * customer's own data. Recent Activity, Tasks Today and the sample attendance KPIs the audit
+ * flagged (gap 9) are gone — real `GET /attendance` now backs the dashboard's attendance figures,
+ * and nothing here fabricates an activity feed or a task list with no backend.
  */
-import type { ActivityItem, TaskItem, TrendPoint, TrendRange } from "@/api/types";
+import type { TrendPoint, TrendRange } from "@/api/types";
 
 /** Headcount over time — a representative growth curve per range. */
 export const HEADCOUNT_TREND: Record<TrendRange, TrendPoint[]> = {
@@ -42,53 +44,3 @@ export const TREND_DELTA: Record<TrendRange, number> = {
   quarterly: 9.1,
   yearly: 17.4,
 };
-
-/** A representative attendance rate for today, and the count out on leave. */
-export const SAMPLE_ATTENDANCE = {
-  ratePct: 94.2,
-  rateDelta: 1.3,
-  onLeaveDelta: -1.4,
-};
-
-export const RECENT_ACTIVITY: ActivityItem[] = [
-  {
-    id: "a1",
-    actor: "Priya Nair",
-    action: "approved leave for",
-    target: "Daniel Okafor",
-    when: "12 min ago",
-    tone: "positive",
-  },
-  {
-    id: "a2",
-    actor: "Tobias Berg",
-    action: "moved",
-    target: "Grace Adeyemi to Onboarding",
-    when: "1 hr ago",
-    tone: "accent",
-  },
-  {
-    id: "a3",
-    actor: "Sneha Kulkarni",
-    action: "logged an attendance correction for",
-    target: "Kabir Malhotra",
-    when: "3 hr ago",
-    tone: "info",
-  },
-  {
-    id: "a4",
-    actor: "Fatima Sheikh",
-    action: "flagged a probation review for",
-    target: "Meera Krishnan",
-    when: "Yesterday",
-    tone: "late",
-  },
-];
-
-export const TASKS_TODAY: TaskItem[] = [
-  { id: "t1", title: "Confirm offer with Lucas Almeida", due: "Due 2:00 PM", done: false },
-  { id: "t2", title: "Close August payroll inputs", due: "Due 4:30 PM", done: false },
-  { id: "t3", title: "Publish Q3 headcount plan", due: "Done", done: true },
-  { id: "t4", title: "Review 3 pending leave requests", due: "Done", done: true },
-  { id: "t5", title: "Schedule onboarding for new joiners", due: "Tomorrow", done: false },
-];

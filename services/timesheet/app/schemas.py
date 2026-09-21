@@ -39,14 +39,28 @@ class TimesheetCellOut(BaseModel):
     billable_hours: float
 
 
+class TimesheetEntryOut(BaseModel):
+    """One recorded slot of work, as stored — the round-trip shape a week's edit resends so a
+    re-PUT does not silently drop another day's project attribution
+    (`services/timesheet/app/services.py` replaces every entry on record)."""
+
+    date: date
+    project_ref: str | None
+    entered_hours: float
+    billable_hours: float
+
+
 class TimesheetRowOut(BaseModel):
     """A person's timesheet for one week: seven daily cells and an approval state. Mirrors the
-    SPA's `TimesheetRow`; `person_id` is the person's stable `ref` (`p01`)."""
+    SPA's `TimesheetRow`; `person_id` is the person's stable `ref` (`p01`). `entries` is the
+    per-slot detail the cells are summed from — the grid's compact view loses it, so an edit
+    that only touches one day needs it to resend the rest unchanged."""
 
     person_id: str
     week_start: date
     status: TimesheetStatus
     cells: list[TimesheetCellOut]
+    entries: list[TimesheetEntryOut]
 
 
 class TimesheetEntryIn(BaseModel):
@@ -70,6 +84,15 @@ class TimesheetWeekIn(BaseModel):
     status: TimesheetStatus = "draft"
     capacity_hours: float = Field(default=40, ge=0, le=168)
     entries: list[TimesheetEntryIn] = Field(default_factory=list)
+
+
+class TimesheetStatusIn(BaseModel):
+    """Submit or approve one person's week. Only `status` moves — the entries are untouched,
+    unlike a PUT which replaces the whole week."""
+
+    person_ref: str = Field(min_length=1, max_length=40)
+    week_start: date
+    status: TimesheetStatus
 
 
 # ------------------------------------------------------------------ summary rollups

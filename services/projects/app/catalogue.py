@@ -108,10 +108,10 @@ PROJECTS = PermissionCatalogue(
         # The workflow board.
         PermissionSpec("board", "task", "read", "See the workflow board", "OWN"),
         PermissionSpec("board", "task", "write", "Create and move board cards", "OWN"),
-        # The delivery-team roster. A roster has no meaningful OWN slice — nobody owns the
-        # person they are adding, and every project joins owner and assignee names from the
-        # whole team — so writing floors at ORG.
-        PermissionSpec("team", "member", "write", "Add people to the delivery team", "ORG"),
+        # Members — the people every owner/assignee picker needs. No OWN reading: "the people"
+        # is inherently an org-wide resource, not something a caller owns a slice of.
+        PermissionSpec("team", "member", "read", "See delivery-org members", "ORG"),
+        PermissionSpec("team", "member", "write", "Add and edit delivery-org members", "ORG"),
     ],
 )
 
@@ -134,7 +134,7 @@ PROJECTS_ROLE_TEMPLATES: list[RoleTemplate] = [
         product=PRODUCT,
         description=(
             "Runs projects, milestones and the board org-wide: reads and writes every portfolio "
-            "resource and staffs the delivery team, but does not administer the product."
+            "resource, but does not administer the product."
         ),
         grants=PROJECTS.pick(
             ("projects.portfolio.project.read", "ORG"),
@@ -143,7 +143,7 @@ PROJECTS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("projects.delivery.milestone.write", "ORG"),
             ("projects.board.task.read", "ORG"),
             ("projects.board.task.write", "ORG"),
-            # Staffing a project is part of running it, so the manager may add roster members.
+            ("projects.team.member.read", "ORG"),
             ("projects.team.member.write", "ORG"),
         ),
     ),
@@ -161,6 +161,7 @@ PROJECTS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("projects.delivery.milestone.read", "ORG"),
             ("projects.board.task.read", "ORG"),
             ("projects.board.task.write", "OWN"),
+            ("projects.team.member.read", "ORG"),
         ),
     ),
 ]

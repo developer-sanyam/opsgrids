@@ -1,6 +1,5 @@
 import { Link } from "react-router-dom";
 
-import { NOW } from "@/api/fixtures";
 import type { MilestoneOut } from "@/api/types";
 import { formatDateShort, relativeDue } from "@/lib/format";
 import { Avatar, CheckSquareIcon, EmptyState } from "@opsgrids/ui";
@@ -11,7 +10,7 @@ import { MilestoneStatusPill } from "./ProjectPills";
  * names the milestone and its project, its owner, and how overdue or imminent it is. An empty list
  * is a good outcome, so it says so rather than showing nothing.
  */
-export function NeedsAttention({ milestones }: { milestones: MilestoneOut[] }) {
+export function NeedsAttention({ milestones, now }: { milestones: MilestoneOut[]; now: string }) {
   if (milestones.length === 0) {
     return (
       <EmptyState
@@ -25,7 +24,7 @@ export function NeedsAttention({ milestones }: { milestones: MilestoneOut[] }) {
   return (
     <ul className="flex flex-col gap-1">
       {milestones.map((m) => {
-        const overdue = relativeDue(m.due_date, NOW);
+        const overdue = relativeDue(m.due_date, now);
         return (
           <li key={m.id}>
             <Link

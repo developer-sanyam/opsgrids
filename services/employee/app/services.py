@@ -118,6 +118,7 @@ _TRACKED_FIELDS = (
     "employment_type",
     "work_mode",
     "date_of_joining",
+    "date_of_exit",
     "reporting_manager_id",
     "dotted_line_manager_id",
 )
@@ -371,6 +372,22 @@ async def update_employee(
             await _assert_no_cycle(
                 session, ctx.organization_id, employee, new_dotted, label="dotted-line manager"
             )
+
+    if "date_of_exit" in changes:
+        # `transition_status` auto-stamps today's date on the `exited` transition and its own
+        # comment says "a correction is a later update" — this is that later update. Gated on
+        # the employee's *current* status rather than being a free-form date: correcting an exit
+        # date only makes sense once someone has actually exited, and PATCH never changes status
+        # itself (that is the transition endpoint's job alone), so `employee.status` here is
+        # unambiguously the record's status before this patch and after it.
+        if employee.status != EmploymentStatus.EXITED.value:
+            raise BusinessRuleProblem(
+                "date_of_exit can only be corrected on an employee who has exited"
+            )
+        new_exit = changes["date_of_exit"]
+        joining = changes.get("date_of_joining", employee.date_of_joining)
+        if new_exit is not None and joining is not None and new_exit < joining:
+            raise BusinessRuleProblem("date_of_exit cannot be before date_of_joining")
 
     before = {f: employee.as_dict().get(f) for f in _TRACKED_FIELDS}
     for field, value in changes.items():

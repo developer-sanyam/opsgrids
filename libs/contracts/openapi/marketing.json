@@ -2,6 +2,7 @@
   "components": {
     "schemas": {
       "AudienceIn": {
+        "additionalProperties": false,
         "description": "Create a saved audience segment.",
         "properties": {
           "created_at": {
@@ -71,8 +72,66 @@
         "title": "AudienceOut",
         "type": "object"
       },
+      "AudiencePatch": {
+        "additionalProperties": false,
+        "description": "Edit a saved audience segment. Every field optional; only what is sent is applied.\nRenaming re-checks the org-scoped uniqueness the create path enforces (`services.py`).",
+        "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "criteria": {
+            "anyOf": [
+              {
+                "maxLength": 400,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Criteria"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          }
+        },
+        "title": "AudiencePatch",
+        "type": "object"
+      },
       "CampaignIn": {
-        "description": "Create a campaign.\n\nMoney arrives as minor units, matching how it is stored and returned. `audience_id` must name\nan audience in the same organization \u2014 enforced in `services`, so naming another tenant's\naudience reads as \"not found\" rather than resolving.",
+        "additionalProperties": false,
+        "description": "Create a campaign.\n\nMoney arrives as minor units, matching how it is stored and returned. `audience_id` must name\nan audience in the same organization \u2014 enforced in `services`, so naming another tenant's\naudience reads as \"not found\" rather than resolving.\n\n`currency` accepts any 3-letter code with no ISO allow-list. The Overview and Channels\nrollups (`domain.overview_totals`, `domain.channel_performance`) sum `*_minor` across every\nin-scope campaign assuming one currency per organization (`api/routes.py#overview` reads\n`campaigns[0].currency` as *the* org currency) \u2014 a campaign created in a second currency\nwould sum into that total without conversion and silently misstate it. This is a known,\nunresolved risk (see the audit's Risks section): rejecting a second currency outright is a\nproduct decision nobody has made, since a legitimate multi-currency org would then have no\nway to record a campaign at all, so it is documented rather than enforced here. A future\nguard belongs in this validator once the product decides what a mismatch should do (refuse,\nconvert, or partition the rollups by currency).",
         "properties": {
           "audience_id": {
             "format": "uuid",
@@ -286,6 +345,193 @@
           "owner"
         ],
         "title": "CampaignOut",
+        "type": "object"
+      },
+      "CampaignPatch": {
+        "additionalProperties": false,
+        "description": "Edit a campaign. Every field optional; only what is sent is applied\n(`model_dump(exclude_unset=True)`). `currency` is deliberately not here \u2014 changing it would\nsilently re-denominate every stored minor-unit amount. `status` moves only through the\ndomain's allowed lifecycle transitions (`app.domain`); an illegal move is refused with 409,\nnot accepted and coerced. `end_date >= start_date` is checked in `services.update_campaign`\nagainst the merged (existing + patched) values, because a single-field PATCH still has to\nmake sense against the stored counterpart \u2014 it cannot be a `model_validator` here the way it\nis on `CampaignIn`.",
+        "properties": {
+          "audience_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audience Id"
+          },
+          "budget_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Minor"
+          },
+          "channel": {
+            "anyOf": [
+              {
+                "enum": [
+                  "email",
+                  "social",
+                  "search",
+                  "events"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel"
+          },
+          "conversions": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversions"
+          },
+          "end_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Date"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goal"
+          },
+          "leads": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leads"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
+          },
+          "pipeline_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pipeline Minor"
+          },
+          "revenue_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revenue Minor"
+          },
+          "spent_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spent Minor"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "draft",
+                  "live",
+                  "paused",
+                  "ended"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "title": "CampaignPatch",
         "type": "object"
       },
       "ChannelPerformance": {
@@ -747,6 +993,93 @@
         ]
       }
     },
+    "/api/v1/marketing/audiences/{audience_id}": {
+      "delete": {
+        "operationId": "delete_audience_api_v1_marketing_audiences__audience_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "audience_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Audience Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete an audience segment",
+        "tags": [
+          "marketing"
+        ]
+      },
+      "patch": {
+        "operationId": "update_audience_api_v1_marketing_audiences__audience_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "audience_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Audience Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AudiencePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AudienceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit an audience segment",
+        "tags": [
+          "marketing"
+        ]
+      }
+    },
     "/api/v1/marketing/campaigns": {
       "get": {
         "operationId": "list_campaigns_api_v1_marketing_campaigns_get",
@@ -910,6 +1243,40 @@
       }
     },
     "/api/v1/marketing/campaigns/{campaign_id}": {
+      "delete": {
+        "operationId": "delete_campaign_api_v1_marketing_campaigns__campaign_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a campaign",
+        "tags": [
+          "marketing"
+        ]
+      },
       "get": {
         "operationId": "read_campaign_api_v1_marketing_campaigns__campaign_id__get",
         "parameters": [
@@ -947,6 +1314,57 @@
           }
         },
         "summary": "One campaign",
+        "tags": [
+          "marketing"
+        ]
+      },
+      "patch": {
+        "operationId": "update_campaign_api_v1_marketing_campaigns__campaign_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a campaign, including its status",
         "tags": [
           "marketing"
         ]

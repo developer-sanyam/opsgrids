@@ -3,24 +3,11 @@
     "schemas": {
       "AgentIn": {
         "additionalProperties": false,
-        "description": "Create or replace one agent's record. The agent's public ref (`ag-01`) is the path segment,\nbecause it is the natural key the upsert is idempotent on.\n\nThe performance figures are a stored projection the desk maintains, so they are writable here\nrather than derived \u2014 see `models.Agent`.",
+        "description": "Add an agent to the desk. `ref` (`ag-04`) is server-allocated, not accepted here.",
         "properties": {
-          "avg_first_response_min": {
-            "default": 0,
-            "minimum": 0.0,
-            "title": "Avg First Response Min",
-            "type": "integer"
-          },
-          "csat_pct": {
-            "default": 0,
-            "maximum": 100.0,
-            "minimum": 0.0,
-            "title": "Csat Pct",
-            "type": "integer"
-          },
           "email": {
+            "format": "email",
             "maxLength": 254,
-            "minLength": 1,
             "title": "Email",
             "type": "string"
           },
@@ -35,12 +22,6 @@
             "title": "Online",
             "type": "boolean"
           },
-          "open_load": {
-            "default": 0,
-            "minimum": 0.0,
-            "title": "Open Load",
-            "type": "integer"
-          },
           "role": {
             "default": "agent",
             "enum": [
@@ -50,12 +31,6 @@
             ],
             "title": "Role",
             "type": "string"
-          },
-          "solved_7d": {
-            "default": 0,
-            "minimum": 0.0,
-            "title": "Solved 7D",
-            "type": "integer"
           },
           "team": {
             "default": "Tier 1",
@@ -133,6 +108,80 @@
           "online"
         ],
         "title": "AgentOut",
+        "type": "object"
+      },
+      "AgentPatch": {
+        "additionalProperties": false,
+        "description": "Edit an agent. Absent means \"leave alone\". The four metric columns\n(`open_load`, `avg_first_response_min`, `csat_pct`, `solved_7d`) are a desk projection and\nare never writable here.",
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "format": "email",
+                "maxLength": 254,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "online": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Online"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "enum": [
+                  "agent",
+                  "senior_agent",
+                  "team_lead"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "team": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team"
+          }
+        },
+        "title": "AgentPatch",
         "type": "object"
       },
       "AssignIn": {
@@ -240,44 +289,6 @@
         "title": "MessageOut",
         "type": "object"
       },
-      "OpeningMessageIn": {
-        "additionalProperties": false,
-        "description": "One message of a new ticket's opening thread.\n\nThe per-ticket code (`m1`, `m2`) and the timestamp are stamped by the server \u2014 a client that\ncould choose either could rewrite the order of a conversation that is meant to be append-only.",
-        "properties": {
-          "author_name": {
-            "maxLength": 160,
-            "minLength": 1,
-            "title": "Author Name",
-            "type": "string"
-          },
-          "author_type": {
-            "default": "customer",
-            "enum": [
-              "customer",
-              "agent",
-              "system"
-            ],
-            "title": "Author Type",
-            "type": "string"
-          },
-          "body": {
-            "minLength": 1,
-            "title": "Body",
-            "type": "string"
-          },
-          "internal": {
-            "default": false,
-            "title": "Internal",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "author_name",
-          "body"
-        ],
-        "title": "OpeningMessageIn",
-        "type": "object"
-      },
       "OverviewOut": {
         "properties": {
           "breaching_sla": {
@@ -375,22 +386,12 @@
       },
       "ReplyIn": {
         "additionalProperties": false,
-        "description": "Append one message to a ticket's thread.\n\n`author_type` defaults to `agent` \u2014 a reply from the desk is the common case; a `system`\nnote or a logged `customer` message names itself.",
+        "description": "Append one message to a ticket's thread, written by the authenticated caller.\n\n`author_type` is **not** a field here: every reply through this endpoint is the desk\nreplying, and the caller is the one holding `support.desk.ticket.write` \u2014 the server fixes\nthe type to `agent` rather than trusting the client to declare it, so nobody can use this\nendpoint to post a message that reads as if the customer or the system said it.\n`author_name` stays client-supplied: the forwarded principal carries no display name\n(`platform_core.auth.Principal` has no name claim) and no `Agent` row is linked to a\ncalling membership in this slice, so the server has nothing else to derive it from.",
         "properties": {
           "author_name": {
             "maxLength": 160,
             "minLength": 1,
             "title": "Author Name",
-            "type": "string"
-          },
-          "author_type": {
-            "default": "agent",
-            "enum": [
-              "customer",
-              "agent",
-              "system"
-            ],
-            "title": "Author Type",
             "type": "string"
           },
           "body": {
@@ -445,17 +446,16 @@
       },
       "RequesterIn": {
         "additionalProperties": false,
-        "description": "Who a ticket is being opened for.\n\nA contact snapshot denormalised onto the ticket, not a link to a customer record \u2014 the same\nshape the queue reads back as `requester`.",
+        "description": "The requester snapshot taken when a ticket opens.",
         "properties": {
           "company": {
             "maxLength": 200,
-            "minLength": 1,
             "title": "Company",
             "type": "string"
           },
           "email": {
+            "format": "email",
             "maxLength": 254,
-            "minLength": 1,
             "title": "Email",
             "type": "string"
           },
@@ -503,7 +503,7 @@
       },
       "SlaPolicyIn": {
         "additionalProperties": false,
-        "description": "Set the organization's one SLA policy.\n\nA **whole replacement**, not a patch: an organization has exactly one policy and `targets`\nreplaces the stored list outright, so the field is required rather than defaulted \u2014 a payload\nthat silently wiped the targets by omitting them is worse than one that refuses.",
+        "description": "Replace the organization's one SLA policy. `targets` must carry exactly one row per\npriority \u2014 the policy is total, not a sparse override.",
         "properties": {
           "business_hours": {
             "default": "",
@@ -513,7 +513,6 @@
           },
           "coverage": {
             "default": "",
-            "maxLength": 2000,
             "title": "Coverage",
             "type": "string"
           },
@@ -571,10 +570,9 @@
       },
       "SlaTargetIn": {
         "additionalProperties": false,
-        "description": "One priority's first-response and resolution windows, in minutes.",
         "properties": {
           "first_response_min": {
-            "minimum": 0.0,
+            "minimum": 1.0,
             "title": "First Response Min",
             "type": "integer"
           },
@@ -589,7 +587,7 @@
             "type": "string"
           },
           "resolution_min": {
-            "minimum": 0.0,
+            "minimum": 1.0,
             "title": "Resolution Min",
             "type": "integer"
           }
@@ -631,12 +629,51 @@
         "title": "SlaTargetOut",
         "type": "object"
       },
-      "TicketIn": {
+      "StatusIn": {
         "additionalProperties": false,
-        "description": "Open a ticket, with its opening thread.\n\nWhat is deliberately **not** on this payload:\n\n* `status` \u2014 a new ticket always starts `new`; it moves through the lifecycle from there.\n* `assignee_id` \u2014 assignment goes through `POST /support/tickets/{number}/assign`, which\n  refuses an agent who is not part of the organization. Accepting it here would be the one\n  way to assign a ticket to a ghost.\n* `created_at`, `updated_at`, `first_response_at`, `sla_due`, `sla_breached`, `satisfaction`\n  \u2014 lifecycle state the desk stamps as it happens, never something a caller declares.\n\n`number` *is* accepted: it is the organization's own ticket code (`TK-4001`) and nothing here\nallocates one. A repeat is a 409, not a second ticket.",
+        "description": "Move a ticket through the lifecycle. The target must be a legal next state\n(`app.domain.ALLOWED_TRANSITIONS`) \u2014 anything else is a 409, not a free-form set.",
         "properties": {
+          "status": {
+            "enum": [
+              "new",
+              "open",
+              "pending",
+              "on_hold",
+              "solved"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "StatusIn",
+        "type": "object"
+      },
+      "TicketCreateIn": {
+        "additionalProperties": false,
+        "description": "Open a ticket with its first message.\n\nServer-owned, never accepted here: `number` (allocated per organization), `status`\n(always starts `new`), `created_at`, `first_response_at`, `sla_due`, `sla_breached` and\n`satisfaction` \u2014 all stored server truth, not form fields (`Must not be built`).",
+        "properties": {
+          "assignee_id": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Id"
+          },
+          "body": {
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
           "channel": {
-            "default": "email",
+            "default": "web",
             "enum": [
               "email",
               "chat",
@@ -645,19 +682,6 @@
               "api"
             ],
             "title": "Channel",
-            "type": "string"
-          },
-          "messages": {
-            "items": {
-              "$ref": "#/components/schemas/OpeningMessageIn"
-            },
-            "title": "Messages",
-            "type": "array"
-          },
-          "number": {
-            "maxLength": 40,
-            "minLength": 1,
-            "title": "Number",
             "type": "string"
           },
           "priority": {
@@ -682,8 +706,6 @@
           },
           "tags": {
             "items": {
-              "maxLength": 60,
-              "minLength": 1,
               "type": "string"
             },
             "title": "Tags",
@@ -691,11 +713,11 @@
           }
         },
         "required": [
-          "number",
           "subject",
-          "requester"
+          "requester",
+          "body"
         ],
-        "title": "TicketIn",
+        "title": "TicketCreateIn",
         "type": "object"
       },
       "TicketOut": {
@@ -842,6 +864,58 @@
         "title": "TicketOut",
         "type": "object"
       },
+      "TicketUpdateIn": {
+        "additionalProperties": false,
+        "description": "Edit a ticket's plain properties. Absent means \"leave alone\"; status and assignee stay\non their own endpoints, each with its own audit action and event.",
+        "properties": {
+          "priority": {
+            "anyOf": [
+              {
+                "enum": [
+                  "urgent",
+                  "high",
+                  "normal",
+                  "low"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags"
+          }
+        },
+        "title": "TicketUpdateIn",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -942,22 +1016,89 @@
         "tags": [
           "support"
         ]
+      },
+      "post": {
+        "operationId": "create_agent_api_v1_support_agents_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add an agent to the desk",
+        "tags": [
+          "support"
+        ]
       }
     },
     "/api/v1/support/agents/{ref}": {
-      "put": {
-        "description": "Idempotent on `ref` \u2014 the same PUT twice leaves one agent, updated. That is why this is a\nPUT on the ref rather than a POST to a collection.\n\nReference data, so nothing is staged on the outbox: nothing downstream reacts to the roster.",
-        "operationId": "put_agent_api_v1_support_agents__ref__put",
+      "delete": {
+        "operationId": "deactivate_agent_api_v1_support_agents__ref__delete",
         "parameters": [
           {
-            "description": "The agent's public ref",
             "in": "path",
             "name": "ref",
             "required": true,
             "schema": {
-              "description": "The agent's public ref",
-              "maxLength": 40,
-              "minLength": 1,
+              "title": "Ref",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deactivate an agent",
+        "tags": [
+          "support"
+        ]
+      },
+      "patch": {
+        "operationId": "update_agent_api_v1_support_agents__ref__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ref",
+            "required": true,
+            "schema": {
               "title": "Ref",
               "type": "string"
             }
@@ -967,7 +1108,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AgentIn"
+                "$ref": "#/components/schemas/AgentPatch"
               }
             }
           },
@@ -995,7 +1136,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Create or update an agent",
+        "summary": "Edit an agent",
         "tags": [
           "support"
         ]
@@ -1095,8 +1236,7 @@
         ]
       },
       "put": {
-        "description": "Create or replace the organization's one policy. Idempotent, and a whole replacement:\n`targets` lands as sent.\n\nMoving a target does not re-clock the tickets already in flight \u2014 `sla_due` and\n`sla_breached` are stored state, stamped as each ticket moved, not a colour recomputed from\nwhatever the policy says today.",
-        "operationId": "put_sla_policy_api_v1_support_sla_policy_put",
+        "operationId": "set_sla_policy_api_v1_support_sla_policy_put",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1269,13 +1409,12 @@
         ]
       },
       "post": {
-        "description": "Open a ticket with its opening thread, and stage `support.desk.ticket.created`.\n\nThe ticket starts `new` and unassigned: the lifecycle owns the first and the assignment\nroute \u2014 which refuses an agent outside the organization \u2014 owns the second (see `TicketIn`).\nThe opening messages are stamped with the ticket's own creation time: they are its first\nthread, not a backfilled history.",
         "operationId": "create_ticket_api_v1_support_tickets_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/TicketIn"
+                "$ref": "#/components/schemas/TicketCreateIn"
               }
             }
           },
@@ -1346,6 +1485,56 @@
           }
         },
         "summary": "One ticket, with its thread",
+        "tags": [
+          "support"
+        ]
+      },
+      "patch": {
+        "operationId": "update_ticket_api_v1_support_tickets__number__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TicketUpdateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a ticket's priority, subject or tags",
         "tags": [
           "support"
         ]
@@ -1450,6 +1639,58 @@
           }
         },
         "summary": "Append a message to a ticket's thread",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/api/v1/support/tickets/{number}/status": {
+      "post": {
+        "operationId": "change_ticket_status_api_v1_support_tickets__number__status_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Move a ticket through the lifecycle",
         "tags": [
           "support"
         ]

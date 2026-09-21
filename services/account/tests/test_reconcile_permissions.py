@@ -160,6 +160,9 @@ class TestCustomerAuthoredRoleIsUntouchedAndReported:
     async def test_the_role_is_skipped_and_named_in_the_diff(
         self, session: AsyncSession, org: Organization, people: dict[str, Membership]
     ) -> None:
+        # `manager` holds `ORG_ADMIN`, which does not carry `identity.audit.read` — the
+        # role's grant has to be something the caller actually holds, now that
+        # `create_role` enforces the same ceiling `invite` and `set_member_roles` do.
         manager = people["manager"]
         async with session.begin():
             ctx = ctx_for(org.id, manager, "core.identity.role.write", Scope.ORG)
@@ -169,7 +172,7 @@ class TestCustomerAuthoredRoleIsUntouchedAndReported:
                 RoleIn(
                     code="AUDITOR",
                     name="Auditor",
-                    grants=[GrantIn(permission_code="core.identity.audit.read", scope="ORG")],
+                    grants=[GrantIn(permission_code="core.identity.role.read", scope="ORG")],
                 ),
             )
         assert role.is_system is False
@@ -200,7 +203,7 @@ class TestCustomerAuthoredRoleIsUntouchedAndReported:
         assert refreshed is not None
         assert refreshed.is_system is False
         # Untouched: still exactly what the customer built, not what the template wanted.
-        assert {g.permission.code for g in refreshed.grants} == {"core.identity.audit.read"}
+        assert {g.permission.code for g in refreshed.grants} == {"core.identity.role.read"}
 
 
 class TestReconcileIsIdempotent:

@@ -170,6 +170,54 @@ STOREFRONT = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # ---------------------------------------------------------------- catalogue (gap 3)
+        # One pair covers categories too, on ADR-0010 §9's "no fifth permission" precedent —
+        # a category is reference data for the same catalogue a product belongs to, not a
+        # separately-permissioned resource.
+        PermissionSpec(
+            "catalogue",
+            "product",
+            "read",
+            "See the product and category catalogue — products, their variants and categories",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "catalogue",
+            "product",
+            "write",
+            "Create, edit, archive and delete products, their variants, and categories",
+            "ORG",
+            "ORG",
+        ),
+        # ---------------------------------------------------------------- enquiries (gap 6)
+        PermissionSpec(
+            "sales",
+            "enquiry",
+            "read",
+            "See enquiries and their status, with buyer contact details masked",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "sales",
+            "enquiry",
+            "write",
+            "Change an enquiry's status (new, contacted, won, lost)",
+            "ORG",
+            "ORG",
+        ),
+        # `is_dangerous` stays False like the rest of this catalogue's note above; what gates
+        # this route is the ORG floor, the `amr={"otp"}` step-up `require()` demands, and the
+        # audit row `services.unmask_enquiry_contact` writes on every call.
+        PermissionSpec(
+            "sales",
+            "enquiry",
+            "unmask",
+            "Reveal an enquiry's real email and phone number (audited, requires step-up)",
+            "ORG",
+            "ORG",
+        ),
     ],
 )
 
@@ -180,9 +228,9 @@ STOREFRONT_ROLE_TEMPLATES: list[RoleTemplate] = [
         name="Storefront administrator",
         product=PRODUCT,
         description=(
-            "Runs the store: its published identity and its delivery map. Built from the "
-            "Storefront catalogue alone — publishing a store is not the same job as owning the "
-            "account."
+            "Runs the store: its published identity, its delivery map, its catalogue and its "
+            "enquiries. Built from the Storefront catalogue alone — publishing a store is not "
+            "the same job as owning the account."
         ),
         grants=STOREFRONT.all("ORG"),
     ),
@@ -192,12 +240,15 @@ STOREFRONT_ROLE_TEMPLATES: list[RoleTemplate] = [
         product=PRODUCT,
         is_default=True,
         description=(
-            "Every person with a Storefront seat. Reads the store's settings and its delivery "
-            "zones, including which postal codes were turned away, and changes neither."
+            "Every person with a Storefront seat. Reads the store's settings, its delivery "
+            "zones and its catalogue, including which postal codes were turned away, and "
+            "changes neither. Holds no enquiry permission — enquiries carry buyer PII and stay "
+            "with the admin role until a narrower reading is asked for."
         ),
         grants=STOREFRONT.pick(
             ("storefront.store.settings.read", "ORG"),
             ("storefront.delivery.zone.read", "ORG"),
+            ("storefront.catalogue.product.read", "ORG"),
         ),
     ),
 ]

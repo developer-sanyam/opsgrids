@@ -31,17 +31,23 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import io
+import json
 import re
 from dataclasses import dataclass
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import idna
 
 from app.models import (
+    ENQUIRY_STATUSES,
     LOGO_TEXT_LENGTH,
+    MAX_THEME_DOCUMENT_BYTES,
+    MAX_THEME_PAGES,
     POSTAL_CODE_LENGTH,
     STORE_NAME_LENGTH,
     TAGLINE_LENGTH,
+    THEME_MODES,
 )
 from platform_core.errors import ConflictProblem, ValidationProblem
 
@@ -801,3 +807,92 @@ def parse_import_csv(raw: str, *, country: str = DEFAULT_COUNTRY) -> ParsedImpor
     if not rows:
         raise Rejected("import_empty", "That file has a header and no rows.", field="file")
     return ParsedImport(rows=rows)
+
+
+# --------------------------------------------------------------------- the theme document
+
+
+def validate_theme_document(
+    *, theme_key: str, mode: str, tokens: dict[str, Any], pages: list[Any]
+) -> None:
+    """Bound the envelope: `theme_key` and `mode`'s *shape* is pydantic's job, size is this
+    module's (ADR-0011 §3). Nothing here reads inside a section — that is the editor's
+    business, and this service stores it opaquely.
+    """
+    if not theme_key.strip():
+        raise Rejected(
+            "theme_key_required", "A theme document needs a theme_key.", field="theme_key"
+        )
+    if mode not in THEME_MODES:
+        raise Rejected(
+            "mode_invalid", f"mode must be one of {', '.join(THEME_MODES)}.", field="mode"
+        )
+    if len(pages) > MAX_THEME_PAGES:
+        raise Rejected(
+            "theme_too_many_pages",
+            f"A store can hold at most {MAX_THEME_PAGES} pages; this document has {len(pages)}.",
+            field="pages",
+        )
+    size = len(json.dumps(tokens).encode("utf-8")) + len(json.dumps(pages).encode("utf-8"))
+    if size > MAX_THEME_DOCUMENT_BYTES:
+        raise Rejected(
+            "theme_document_too_large",
+            f"That theme document is {size} bytes; the limit is {MAX_THEME_DOCUMENT_BYTES}.",
+            field="pages",
+        )
+
+
+# --------------------------------------------------------------------- the catalogue
+
+
+def assert_price_band(price_min_minor: int, price_max_minor: int, mrp_minor: int | None) -> None:
+    """A price band cannot invert, and a printed MRP cannot sit below the band's floor.
+
+    Both are also check constraints on `products` and `product_variants` — the constraint is
+    what makes a bad row impossible for a backfill or a hand-written UPDATE, this is what turns
+    the same rule into a sentence a merchant can act on instead of an anonymous 409.
+    """
+    if price_max_minor < price_min_minor:
+        raise Rejected(
+            "price_band_invalid",
+            "The maximum price cannot be lower than the minimum price.",
+            field="price_max_minor",
+        )
+    if mrp_minor is not None and mrp_minor < price_min_minor:
+        raise Rejected(
+            "mrp_below_price",
+            "The MRP cannot be lower than the selling price — it would advertise a discount "
+            "that does not exist.",
+            field="mrp_minor",
+        )
+
+
+# --------------------------------------------------------------------- enquiries
+
+#: new → contacted → won | lost. `won` and `lost` are terminal — an enquiry's outcome, once
+#: decided, is not walked back through this route; a correction is a new enquiry, matching the
+#: append-only rule on the row itself.
+ENQUIRY_TRANSITIONS: dict[str, frozenset[str]] = {
+    "new": frozenset({"contacted"}),
+    "contacted": frozenset({"won", "lost"}),
+    "won": frozenset(),
+    "lost": frozenset(),
+}
+
+
+def assert_enquiry_transition(current: str, target: str) -> None:
+    """Refuse an illegal status move with a 409 naming both ends, per CLAUDE.md's "no
+    free-form status set". Setting the same status again is a no-op, not a refusal."""
+    if target not in ENQUIRY_STATUSES:  # pragma: no cover - schema Literal already refuses this
+        raise Rejected(
+            "status_invalid", f"{target!r} is not a known enquiry status.", field="status"
+        )
+    if current == target:
+        return
+    if target not in ENQUIRY_TRANSITIONS.get(current, frozenset()):
+        raise Conflicted(
+            "enquiry_transition_invalid",
+            f"An enquiry cannot move from {current!r} to {target!r}. The path is "
+            "new -> contacted -> won or lost.",
+            field="status",
+        )

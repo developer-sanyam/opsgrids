@@ -112,6 +112,11 @@ CRM_PIPELINE = PermissionCatalogue(
         PermissionSpec(
             "pipeline", "deal", "write", "Create deals and move them through stages", "OWN"
         ),
+        # Deleting a deal (soft). Dangerous: the one write here that removes something
+        # from the pipeline rather than adding or changing it.
+        PermissionSpec(
+            "pipeline", "deal", "delete", "Delete a deal", "OWN", "ORG", is_dangerous=True
+        ),
         # The timeline. Append-only: activity.write can only ever add an entry.
         PermissionSpec("pipeline", "activity", "read", "See the activity timeline", "OWN"),
         PermissionSpec(

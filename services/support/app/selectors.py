@@ -13,11 +13,18 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Agent, SlaPolicy, Ticket, TicketMessage
 from platform_core.auth import ScopeContext
+
+#: Severity rank for the `priority` sort — `Ticket.priority.asc()` alone sorts alphabetically
+#: (high, low, normal, urgent), which is not the queue's severity order. Unranked values sort
+#: last rather than raising, so an unexpected value never breaks the list.
+_PRIORITY_RANK = case(
+    {"urgent": 0, "high": 1, "normal": 2, "low": 3}, value=Ticket.priority, else_=4
+)
 
 #: The sort keys the queue accepts. `number` is the stable default so the live queue reads like
 #: the fixtures the product was designed against.
@@ -25,7 +32,7 @@ SORTS = {
     "number": (Ticket.number.asc(),),
     "created": (Ticket.created_at.desc(), Ticket.number.asc()),
     "updated": (Ticket.updated_at.desc(), Ticket.number.asc()),
-    "priority": (Ticket.priority.asc(), Ticket.created_at.desc()),
+    "priority": (_PRIORITY_RANK.asc(), Ticket.created_at.desc()),
 }
 
 

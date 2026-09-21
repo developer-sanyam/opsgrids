@@ -129,7 +129,7 @@
         "type": "object"
       },
       "MemberIn": {
-        "description": "Add a member to the delivery team.\n\n`ref` is the stable human handle (`p-01`) the rest of the API addresses this person by; it\nis unique within the organization, so a repeat is a conflict rather than a second row. The\norganization is never part of the payload \u2014 it comes from the tenant context.\n\n`directory_id` is the account-service id of this person's platform login, when they have\none. A plain UUID, never a cross-schema foreign key, and legitimately absent: a delivery-org\nmember need not hold a seat.",
+        "description": "Add a delivery-org member. `ref` (`p-01`) is the stable handle every `owner_ref` /\n`assignee_ref` on the wire carries \u2014 the same pattern as a project's `code`.",
         "properties": {
           "directory_id": {
             "anyOf": [
@@ -168,6 +168,86 @@
           "name"
         ],
         "title": "MemberIn",
+        "type": "object"
+      },
+      "MemberOut": {
+        "description": "The full members-list row (unlike the embedded `Person`, which is only ever a\nprojection carried on a project/milestone/task). `id` is the stable `ref` (`p-01`) \u2014 the\nsame value the SPA's owner/assignee pickers submit as `owner_ref` / `assignee_ref`.\n`directory_id` is the linked account-directory id, when this member has a platform login.",
+        "properties": {
+          "directory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Directory Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "role",
+          "directory_id"
+        ],
+        "title": "MemberOut",
+        "type": "object"
+      },
+      "MemberUpdate": {
+        "description": "Edit a member. Absent means \"leave alone\"; `ref` is immutable \u2014 it is the API identity\nevery owner/assignee picker submits.",
+        "properties": {
+          "directory_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Directory Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          }
+        },
+        "title": "MemberUpdate",
         "type": "object"
       },
       "MilestoneIn": {
@@ -234,9 +314,16 @@
         "description": "Mirrors the SPA's `MilestoneOut`. `project_id` is the owning project's opaque id;\n`project_code` / `project_name` are denormalised for the list view.",
         "properties": {
           "due_date": {
-            "format": "date",
-            "title": "Due Date",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
           },
           "id": {
             "title": "Id",
@@ -289,6 +376,81 @@
           "progress_pct"
         ],
         "title": "MilestoneOut",
+        "type": "object"
+      },
+      "MilestoneUpdate": {
+        "description": "Edit a milestone. Absent means \"leave alone\"; an explicit `null` on `owner_ref` clears\nthe owner. Not `project_code` \u2014 a milestone never changes project through this route.",
+        "properties": {
+          "due_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "owner_ref": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Ref"
+          },
+          "progress_pct": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Progress Pct"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "completed",
+                  "on_track",
+                  "due_soon",
+                  "at_risk",
+                  "slipping"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "MilestoneUpdate",
         "type": "object"
       },
       "OverviewOut": {
@@ -372,6 +534,42 @@
           "burndown_delta_release"
         ],
         "title": "OverviewOut",
+        "type": "object"
+      },
+      "Page_MemberOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MemberOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[MemberOut]",
         "type": "object"
       },
       "Page_MilestoneOut_": {
@@ -735,6 +933,183 @@
         "title": "ProjectOut",
         "type": "object"
       },
+      "ProjectUpdate": {
+        "description": "Edit a project. Absent means \"leave alone\"; an explicit `null` on `owner_ref` clears the\nowner. `code` is immutable \u2014 it is the URL key and travels in every already-published\nevent. `open_tasks` is not here: it is a stored headline figure, not user-editable.",
+        "properties": {
+          "budget_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Minor"
+          },
+          "client": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "maxLength": 3,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "health": {
+            "anyOf": [
+              {
+                "enum": [
+                  "on_track",
+                  "at_risk",
+                  "delayed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Health"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "owner_ref": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Ref"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "enum": [
+                  "discovery",
+                  "design",
+                  "build",
+                  "stabilize",
+                  "launch",
+                  "live"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase"
+          },
+          "progress_pct": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Progress Pct"
+          },
+          "spent_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spent Minor"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "target_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Date"
+          },
+          "team_size": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Size"
+          }
+        },
+        "title": "ProjectUpdate",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -899,6 +1274,96 @@
           "points"
         ],
         "title": "TaskOut",
+        "type": "object"
+      },
+      "TaskUpdate": {
+        "description": "Move or edit a board card \u2014 this is what persists a Kanban drag. Absent means \"leave\nalone\"; an explicit `null` on `assignee_ref` or `due_date` clears it. Not `project_code` \u2014\na card never changes project through this route.",
+        "properties": {
+          "assignee_ref": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Ref"
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "points": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Points"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "urgent"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "enum": [
+                  "backlog",
+                  "in_progress",
+                  "review",
+                  "done"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "TaskUpdate",
         "type": "object"
       },
       "TimelineMilestone": {
@@ -1146,25 +1611,57 @@
       }
     },
     "/api/v1/projects-workspace/members": {
-      "post": {
-        "description": "Create the roster row a project owner or task assignee is addressed by.\n\n`services.create_member` refuses a `ref` already taken in this organization (409), which is\nwhat makes the human handle safe to key on. It stages no event: a roster row is a local\ndirectory entry, not a delivery fact another service reacts to.",
-        "operationId": "create_member_api_v1_projects_workspace_members_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MemberIn"
-              }
+      "get": {
+        "operationId": "list_members_api_v1_projects_workspace_members_get",
+        "parameters": [
+          {
+            "description": "Name or ref",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Name or ref",
+              "title": "Q"
             }
           },
-          "required": true
-        },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
-          "201": {
+          "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Person"
+                  "$ref": "#/components/schemas/Page_MemberOut_"
                 }
               }
             },
@@ -1181,7 +1678,131 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Add a member to the delivery team",
+        "summary": "The delivery-org roster \u2014 every owner/assignee picker's source",
+        "tags": [
+          "projects"
+        ]
+      },
+      "post": {
+        "operationId": "create_member_api_v1_projects_workspace_members_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a delivery-org member",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects-workspace/members/{ref}": {
+      "delete": {
+        "operationId": "delete_member_api_v1_projects_workspace_members__ref__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "title": "Ref",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove a delivery-org member \u2014 their owner/assignee rows fall back to Unassigned",
+        "tags": [
+          "projects"
+        ]
+      },
+      "patch": {
+        "operationId": "update_member_api_v1_projects_workspace_members__ref__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "title": "Ref",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a delivery-org member",
         "tags": [
           "projects"
         ]
@@ -1205,6 +1826,24 @@
                 }
               ],
               "title": "Status"
+            }
+          },
+          {
+            "description": "Filter by project code",
+            "in": "query",
+            "name": "project_code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by project code",
+              "title": "Project Code"
             }
           },
           {
@@ -1298,6 +1937,134 @@
         ]
       }
     },
+    "/api/v1/projects-workspace/milestones/{milestone_id}": {
+      "delete": {
+        "operationId": "delete_milestone_api_v1_projects_workspace_milestones__milestone_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "milestone_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Milestone Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a milestone",
+        "tags": [
+          "projects"
+        ]
+      },
+      "get": {
+        "operationId": "read_milestone_api_v1_projects_workspace_milestones__milestone_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "milestone_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Milestone Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MilestoneOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One milestone",
+        "tags": [
+          "projects"
+        ]
+      },
+      "patch": {
+        "operationId": "update_milestone_api_v1_projects_workspace_milestones__milestone_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "milestone_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Milestone Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MilestoneUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MilestoneOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a milestone",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
     "/api/v1/projects-workspace/overview": {
       "get": {
         "operationId": "overview_api_v1_projects_workspace_overview_get",
@@ -1374,7 +2141,7 @@
             }
           },
           {
-            "description": "code | progress | target",
+            "description": "code | progress | target | name | health",
             "in": "query",
             "name": "sort",
             "required": false,
@@ -1387,7 +2154,7 @@
                   "type": "null"
                 }
               ],
-              "description": "code | progress | target",
+              "description": "code | progress | target | name | health",
               "title": "Sort"
             }
           },
@@ -1483,6 +2250,39 @@
       }
     },
     "/api/v1/projects-workspace/projects/{code}": {
+      "delete": {
+        "operationId": "delete_project_api_v1_projects_workspace_projects__code__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "title": "Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a project \u2014 its milestones and board cards go with it",
+        "tags": [
+          "projects"
+        ]
+      },
       "get": {
         "operationId": "read_project_api_v1_projects_workspace_projects__code__get",
         "parameters": [
@@ -1522,6 +2322,56 @@
         "tags": [
           "projects"
         ]
+      },
+      "patch": {
+        "operationId": "update_project_api_v1_projects_workspace_projects__code__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "title": "Code",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a project",
+        "tags": [
+          "projects"
+        ]
       }
     },
     "/api/v1/projects-workspace/tasks": {
@@ -1542,6 +2392,24 @@
                 }
               ],
               "title": "Stage"
+            }
+          },
+          {
+            "description": "Filter by project code",
+            "in": "query",
+            "name": "project_code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by project code",
+              "title": "Project Code"
             }
           },
           {
@@ -1630,6 +2498,93 @@
           }
         },
         "summary": "Create a board card",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects-workspace/tasks/{task_id}": {
+      "delete": {
+        "operationId": "delete_task_api_v1_projects_workspace_tasks__task_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a board card",
+        "tags": [
+          "projects"
+        ]
+      },
+      "patch": {
+        "operationId": "update_task_api_v1_projects_workspace_tasks__task_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Move or edit a board card",
         "tags": [
           "projects"
         ]

@@ -33,8 +33,10 @@ pytestmark = pytest.mark.integration
 PATH = "/api/v1/storefront/public/store-context"
 SERVICEABILITY = "/api/v1/storefront/public/serviceability"
 
-#: What ADR-0012 §11 prints. Asserted as a set, so a field added without the contract being
-#: regenerated fails here rather than in a frontend nobody has built yet.
+#: What ADR-0012 §11 prints, extended by the storefront-document ADR (ADR-0012 §11's own
+#: coordination note: extend this payload, not add a second one) with `theme`. Asserted as a
+#: set, so a field added without the contract being regenerated fails here rather than in a
+#: frontend nobody has built yet.
 BODY_FIELDS = {
     "store",
     "name",
@@ -44,6 +46,7 @@ BODY_FIELDS = {
     "timezone",
     "canonical_host",
     "is_canonical",
+    "theme",
     "checked_at",
 }
 

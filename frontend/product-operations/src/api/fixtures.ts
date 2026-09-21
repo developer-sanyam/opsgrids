@@ -14,12 +14,18 @@ import type {
   PurchaseOrderOut,
   SpendPoint,
   SpendRange,
+  StockMovementOut,
   SupplierOut,
   SupplierStatus,
+  WarehouseOut,
 } from "./types";
 
-/** The reference "today" the whole app reasons about (delivery lateness, recency). */
-export const TODAY = "2026-08-24";
+/**
+ * The reference "today" fixture mode reasons about (delivery lateness, recency) — this seed data
+ * was written against it, so it stays internally consistent. Live mode never imports this: it
+ * reads the real clock through `lib/now.ts`'s `today()`.
+ */
+export const FIXTURE_TODAY = "2026-08-24";
 
 const CURRENCY = "INR";
 
@@ -366,3 +372,49 @@ export const ON_TIME_SAMPLE = {
   rateDelta: 1.4,
   series: [88, 90, 89, 91, 93, 92, 92],
 };
+
+/* -------------------------------- warehouses ------------------------------- */
+
+const WAREHOUSE_SEEDS: { code: string; name: Warehouse; location: string }[] = [
+  { code: "WH-BHW", name: "Bhiwandi DC", location: "Bhiwandi, Maharashtra" },
+  { code: "WH-PUN", name: "Pune Plant", location: "Chakan, Pune" },
+  { code: "WH-CHN", name: "Chennai Hub", location: "Sriperumbudur, Chennai" },
+  { code: "WH-BLR", name: "Bengaluru Store", location: "Peenya, Bengaluru" },
+];
+
+const whUuid = (n: number): string => `70550000-0000-4000-8000-${n.toString().padStart(12, "0")}`;
+
+export const WAREHOUSES: WarehouseOut[] = WAREHOUSE_SEEDS.map((w, i) => ({
+  id: whUuid(i + 1),
+  code: w.code,
+  name: w.name,
+  location: w.location,
+}));
+
+/* ---------------------------- stock movements ------------------------------ */
+
+const movementUuid = (item: number, n: number): string =>
+  `80660000-0000-4000-8000-${item.toString().padStart(6, "0")}${n.toString().padStart(6, "0")}`;
+
+/** One opening movement per seeded item, so the ledger invariant (on_hand == sum of deltas)
+ *  holds in fixture mode too. Keyed by inventory item id. */
+export const MOVEMENTS: Record<string, StockMovementOut[]> = Object.fromEntries(
+  INVENTORY.map((item, i) => [
+    item.id,
+    [
+      {
+        id: movementUuid(i + 1, 1),
+        kind: "opening" as const,
+        reason: null,
+        quantity_delta: item.on_hand,
+        on_hand_after: item.on_hand,
+        reference_type: null,
+        reference_id: null,
+        note: "Opening balance",
+        occurred_on: item.updated_at,
+        created_at: `${item.updated_at}T09:00:00Z`,
+        created_by: "seed",
+      },
+    ],
+  ]),
+);

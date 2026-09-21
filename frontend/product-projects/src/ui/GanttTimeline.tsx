@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
 
-import { NOW } from "@/api/fixtures";
 import type { MilestoneOut, ProjectOut } from "@/api/types";
 import { HEALTH_LABEL, MILESTONE_STATUS_LABEL, PHASE_LABEL } from "@/data/labels";
 import { formatDate } from "@/lib/format";
@@ -40,9 +39,14 @@ const MILESTONE_COLOR: Record<MilestoneOut["status"], string> = {
   slipping: "var(--color-danger)",
 };
 
+/** A milestone known to have a due date — the only kind this timeline can place. */
+type DatedMilestone = Omit<MilestoneOut, "due_date"> & { due_date: string };
+
 interface GanttTimelineProps {
   projects: ProjectOut[];
   milestones: MilestoneOut[];
+  /** The real "today" (`lib/format.ts#today()`), never the frozen fixture constant in live mode. */
+  now: string;
 }
 
 /**
@@ -50,12 +54,12 @@ interface GanttTimelineProps {
  * with milestone diamonds pinned to their due dates and a "Today" marker. The whole grid scrolls
  * horizontally inside its own container; the project-label column stays pinned to the left.
  */
-export function GanttTimeline({ projects, milestones }: GanttTimelineProps) {
+export function GanttTimeline({ projects, milestones, now }: GanttTimelineProps) {
   const geo = useMemo(() => {
     const starts = projects.map((p) => parseUtc(p.start_date));
     const ends = projects.map((p) => parseUtc(p.target_date));
-    const domainStart = firstOfMonth(Math.min(...starts, parseUtc(NOW)));
-    const domainEnd = addMonth(Math.max(...ends, parseUtc(NOW)));
+    const domainStart = firstOfMonth(Math.min(...starts, parseUtc(now)));
+    const domainEnd = addMonth(Math.max(...ends, parseUtc(now)));
     const totalDays = Math.round((domainEnd - domainStart) / MS_PER_DAY);
     const trackW = totalDays * DAY_PX;
 
@@ -68,16 +72,20 @@ export function GanttTimeline({ projects, milestones }: GanttTimelineProps) {
       });
     }
 
-    const todayX = daysFrom(domainStart, NOW) * DAY_PX;
+    const todayX = daysFrom(domainStart, now) * DAY_PX;
 
     return { domainStart, trackW, months, todayX };
-  }, [projects]);
+  }, [projects, now]);
 
+  // An undated milestone has nothing to place on a date axis — the backend's own `/timeline`
+  // route drops the same rows (`routes.py`'s `_week_axis`/milestone loop skips a null `due_date`).
   const milestonesByProject = useMemo(() => {
-    const map = new Map<string, MilestoneOut[]>();
+    const map = new Map<string, DatedMilestone[]>();
     for (const m of milestones) {
+      if (m.due_date === null) continue;
+      const dated: DatedMilestone = { ...m, due_date: m.due_date };
       const list = map.get(m.project_code) ?? [];
-      list.push(m);
+      list.push(dated);
       map.set(m.project_code, list);
     }
     return map;

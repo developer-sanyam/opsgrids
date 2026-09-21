@@ -95,3 +95,147 @@ export interface ActivityOut {
   occurred_at: string;
   direction: ActivityDirection | null;
 }
+
+/** Mirrors `TrendPointOut`. */
+export interface TrendPointOut {
+  label: string;
+  value_minor: number;
+}
+
+/** Mirrors `StageRollupOut`. */
+export interface StageRollupOut {
+  stage: DealStage;
+  label: string;
+  count: number;
+  value_minor: number;
+  pct: number;
+}
+
+/** Mirrors `SummaryOut` — `GET /deals/summary`. */
+export interface SummaryOut {
+  pipeline_value_minor: number;
+  weighted_pipeline_minor: number;
+  open_deals: number;
+  win_rate_pct: number;
+  won_value_minor: number;
+  activities_this_week: number;
+  currency: string;
+  trend: TrendPointOut[];
+  funnel: StageRollupOut[];
+}
+
+/* ------------------------------------------------------------------------ write bodies
+ * Mirrors the `*In` / `*Patch` request schemas in `services/customer/app/schemas.py` and
+ * `services/deal/app/schemas.py`. Every one of these is `extra="forbid"` server-side, so a stray
+ * field here would be refused with a 422 rather than silently dropped — the wire type is the
+ * request body verbatim, not a superset of it.
+ */
+
+/** Mirrors `OwnerIn`. The first write a production org makes — everything else needs an owner. */
+export interface OwnerIn {
+  full_name: string;
+  email: string;
+  role?: string;
+}
+
+/** Mirrors `CompanyIn`. */
+export interface CompanyIn {
+  name: string;
+  owner_id: string;
+  domain?: string;
+  industry?: string;
+  size_band?: string;
+  city?: string;
+  country?: string;
+  status?: CompanyStatus;
+  annual_revenue_minor?: number;
+  currency?: string;
+}
+
+/** Mirrors `CompanyPatch` — every `CompanyIn` field, optional; absent means "leave alone". */
+export interface CompanyPatch {
+  name?: string;
+  owner_id?: string;
+  domain?: string;
+  industry?: string;
+  size_band?: string;
+  city?: string;
+  country?: string;
+  status?: CompanyStatus;
+  annual_revenue_minor?: number;
+  currency?: string;
+}
+
+/** Mirrors `ContactIn`. Deliberately no `phone` — see `ContactPhoneIn` below. */
+export interface ContactIn {
+  full_name: string;
+  email: string;
+  company_id: string;
+  owner_id: string;
+  title?: string;
+  status?: ContactStatus;
+  raw_phone?: string;
+}
+
+/** Mirrors `ContactPatch`. Deliberately no `phone`, no `raw_phone` — the number only ever moves
+ *  through `ContactPhoneIn` on its own route. */
+export interface ContactPatch {
+  full_name?: string;
+  title?: string;
+  email?: string;
+  company_id?: string;
+  owner_id?: string;
+  status?: ContactStatus;
+}
+
+/** Mirrors `ContactPhoneIn` — the only way a raw number reaches the service. */
+export interface ContactPhoneIn {
+  raw_phone: string;
+}
+
+/** Mirrors `DealIn`. */
+export interface DealIn {
+  name: string;
+  company_id: string;
+  owner_id: string;
+  value_minor: number;
+  close_date: string;
+  currency?: string;
+  stage?: DealStage;
+  probability?: number | null;
+  primary_contact_id?: string | null;
+  source?: string;
+}
+
+/** Mirrors `DealPatch`. Deliberately no `stage` — a stage move only ever goes through
+ *  `POST /deals/{id}/stage` (`StageMoveIn`), so the transition rule can never be bypassed. */
+export interface DealPatch {
+  name?: string;
+  company_id?: string;
+  primary_contact_id?: string | null;
+  owner_id?: string;
+  value_minor?: number;
+  currency?: string;
+  close_date?: string;
+  probability?: number | null;
+  source?: string;
+}
+
+/** Mirrors `StageMoveIn`. */
+export interface StageMoveIn {
+  stage: DealStage;
+  probability?: number | null;
+}
+
+/** Mirrors `ActivityIn`. Append-only — there is no matching patch shape. */
+export interface ActivityIn {
+  type: ActivityType;
+  subject: string;
+  body?: string | null;
+  deal_id?: string | null;
+  company_id?: string | null;
+  contact_id?: string | null;
+  direction?: ActivityDirection | null;
+  occurred_at?: string | null;
+  owner_id?: string | null;
+}

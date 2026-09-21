@@ -10,13 +10,13 @@ interface LoadMoreProps {
   /** The server's `total` — never the loaded length, which is a different number. */
   total: number;
   onLoadMore: () => void;
-  loading?: boolean;
+  loading?: boolean | undefined;
   /**
    * What is being counted, plural: "requests", "employees". Used in the closing line and the
    * announcement, so a user hears what they reached the end of.
    */
   noun: string;
-  className?: string;
+  className?: string | undefined;
 }
 
 /**

@@ -26,7 +26,7 @@ import uuid
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import scope, selectors, services
@@ -350,6 +350,22 @@ async def update_shift(
     return ShiftOut.model_validate(updated)
 
 
+@router.delete(
+    "/shifts/{shift_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Retire a shift",
+    dependencies=[Entitled],
+)
+async def delete_shift(
+    shift_id: uuid.UUID, session: SessionDep, ctx: ShiftWrite, request: Request
+) -> Response:
+    shift = await selectors.get_shift(session, ctx.organization_id, shift_id)
+    if shift is None:
+        raise NotFoundProblem("That shift is not part of this organization")
+    await services.delete_shift(session, ctx, shift, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 # --------------------------------------------------------------------- geofences
 
 
@@ -400,3 +416,19 @@ async def update_geofence(
         raise NotFoundProblem("That geo-fence is not part of this organization")
     updated = await services.update_geofence(session, ctx, fence, payload, request=request)
     return GeofenceOut.model_validate(updated)
+
+
+@router.delete(
+    "/geofences/{geofence_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Retire a geo-fence",
+    dependencies=[Entitled],
+)
+async def delete_geofence(
+    geofence_id: uuid.UUID, session: SessionDep, ctx: ShiftWrite, request: Request
+) -> Response:
+    fence = await selectors.get_geofence(session, ctx.organization_id, geofence_id)
+    if fence is None:
+        raise NotFoundProblem("That geo-fence is not part of this organization")
+    await services.delete_geofence(session, ctx, fence, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

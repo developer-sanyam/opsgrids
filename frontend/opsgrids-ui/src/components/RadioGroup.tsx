@@ -7,10 +7,10 @@ export interface RadioOption {
   value: string;
   label: string;
   /** The consequence of choosing this one, in the user's words. */
-  description?: string;
-  disabled?: boolean;
+  description?: string | undefined;
+  disabled?: boolean | undefined;
   /** A `Tag` or similar, shown beside the label. */
-  aside?: ReactNode;
+  aside?: ReactNode | undefined;
 }
 
 interface RadioGroupProps {
@@ -21,9 +21,9 @@ interface RadioGroupProps {
   value: string | null;
   onChange: (value: string) => void;
   options: RadioOption[];
-  helper?: string;
-  error?: string;
-  className?: string;
+  helper?: string | undefined;
+  error?: string | undefined;
+  className?: string | undefined;
 }
 
 /**

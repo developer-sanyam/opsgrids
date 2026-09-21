@@ -28,16 +28,16 @@ function iconFor(tone: InlineAlertTone) {
 }
 
 interface InlineAlertProps {
-  tone?: InlineAlertTone;
+  tone?: InlineAlertTone | undefined;
   /** The fact, in a sentence. This carries the meaning — the colour never does. */
   title: string;
-  children?: ReactNode;
+  children?: ReactNode | undefined;
   /** One control at most: "Show overdue", "Try again". */
-  action?: ReactNode;
+  action?: ReactNode | undefined;
   /** `problem.request_id`, rendered as `Reference: 7f3c1a2e`. */
-  reference?: string;
-  live?: InlineAlertLive;
-  className?: string;
+  reference?: string | undefined;
+  live?: InlineAlertLive | undefined;
+  className?: string | undefined;
 }
 
 /**

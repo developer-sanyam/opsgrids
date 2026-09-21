@@ -16,7 +16,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import selectors, services
+from app import domain, selectors, services
 from app.main import app
 from platform_core.auth import Principal, Scope, ScopeContext, get_principal
 from platform_core.errors import ForbiddenProblem, ValidationProblem
@@ -175,6 +175,49 @@ class TestEndpointAuthorization:
         assert row["cells"][1]["entered_hours"] == 4.5
         # A day with no entries is an explicit zero cell, not a hole in the grid.
         assert row["cells"][6]["entered_hours"] == 0.0
+        # The grid loses per-entry project attribution; `entries` is what round-trips it.
+        assert {e["date"] for e in row["entries"]} == {
+            WEEK_START.isoformat(),
+            (WEEK_START + timedelta(days=1)).isoformat(),
+        }
+        assert all(e["project_ref"] == "PB-01" for e in row["entries"])
+
+    async def test_editing_one_day_can_resend_the_others_unchanged(
+        self, client, org_id, data
+    ) -> None:
+        """Gap 9's round trip: read a week's `entries`, edit one, PUT the lot back, and the
+        untouched days' project attribution survives — the grid alone cannot do this."""
+        principal = principal_for(
+            org_id,
+            ["pulseboard.time.timesheet.write:ORG", "pulseboard.time.timesheet.read:ORG"],
+        )
+        with as_principal(principal):
+            before = await client.get(f"/api/v1/timesheets?week={WEEK_START.isoformat()}")
+        row = next(r for r in before.json()["items"] if r["person_id"] == "p02")
+        entries = row["entries"]
+        for entry in entries:
+            if entry["date"] == WEEK_START.isoformat():
+                entry["entered_hours"] = 7.5
+                entry["billable_hours"] = 7.5
+
+        with as_principal(principal):
+            response = await client.put(
+                "/api/v1/timesheets",
+                json={
+                    "person_ref": "p02",
+                    "person_id": str(data["subject_b"]),
+                    "week_start": WEEK_START.isoformat(),
+                    "status": row["status"],
+                    "entries": entries,
+                },
+            )
+        assert response.status_code == 200
+        by_date = {e["date"]: e for e in response.json()["entries"]}
+        assert by_date[WEEK_START.isoformat()]["entered_hours"] == 7.5
+        # The other day's entry (no project) survived the round trip unchanged.
+        other_day = (WEEK_START + timedelta(days=2)).isoformat()
+        assert by_date[other_day]["entered_hours"] == 1.5
+        assert by_date[other_day]["project_ref"] is None
 
     async def test_summary_rolls_up_the_week(self, client, org_id, data) -> None:
         principal = principal_for(org_id, ["pulseboard.time.timesheet.read:ORG"])
@@ -287,4 +330,168 @@ class TestValidation:
         assert audits == 1
         assert len(events) == 1
         assert events[0].event_type == "pulseboard.time.timesheet.recorded"
+
+
+# --------------------------------------------------------------------- status transitions
+
+
+class TestStatusDomain:
+    """`domain.can_transition` is the single source of truth the endpoint answers 409 from."""
+
+    def test_forward_moves_are_allowed(self) -> None:
+        assert domain.can_transition("draft", "submitted")
+        assert domain.can_transition("submitted", "approved")
+
+    def test_reopen_back_to_draft_is_allowed(self) -> None:
+        assert domain.can_transition("submitted", "draft")
+        assert domain.can_transition("approved", "draft")
+
+    def test_skipping_a_rung_is_refused(self) -> None:
+        assert not domain.can_transition("draft", "approved")
+
+    def test_the_same_state_is_not_a_transition(self) -> None:
+        assert not domain.can_transition("draft", "draft")
+
+
+class TestStatusEndpoint:
+    async def test_a_writer_can_submit_a_draft_week(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.time.timesheet.write:ORG"])
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/timesheets/status",
+                json={
+                    "person_ref": "p02",
+                    "week_start": WEEK_START.isoformat(),
+                    "status": "submitted",
+                },
+            )
+        assert response.status_code == 200
+        assert response.json()["status"] == "submitted"
+
+    async def test_an_org_writer_can_approve_someone_elses_week(self, client, org_id, data) -> None:
+        principal = principal_for(
+            org_id, ["pulseboard.time.timesheet.write:ORG"], subject_ref=data["subject_b"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/timesheets/status",
+                json={
+                    "person_ref": "p01",  # subject_a's week — subject_b is a different person
+                    "week_start": WEEK_START.isoformat(),
+                    "status": "approved",
+                },
+            )
+        assert response.status_code == 200
+        assert response.json()["status"] == "approved"
+
+    async def test_approving_your_own_week_is_refused(self, client, org_id, data) -> None:
+        """Anyone with `time.timesheet.write` on their own row can submit it, but never approve
+        it themselves — whatever scope that write was granted at (the audit's risk #3)."""
+        principal = principal_for(
+            org_id, ["pulseboard.time.timesheet.write:ORG"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/timesheets/status",
+                json={
+                    "person_ref": "p01",
+                    "week_start": WEEK_START.isoformat(),
+                    "status": "approved",
+                },
+            )
+        assert response.status_code == 403
+
+    async def test_skipping_a_rung_is_refused(self, client, org_id, data) -> None:
+        """p02's week is `draft`; draft -> approved skips `submitted`."""
+        principal = principal_for(org_id, ["pulseboard.time.timesheet.write:ORG"])
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/timesheets/status",
+                json={
+                    "person_ref": "p02",
+                    "week_start": WEEK_START.isoformat(),
+                    "status": "approved",
+                },
+            )
+        assert response.status_code == 409
+
+    async def test_status_for_an_unknown_week_is_not_found(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.time.timesheet.write:ORG"])
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/timesheets/status",
+                json={
+                    "person_ref": "p09",
+                    "week_start": WEEK_START.isoformat(),
+                    "status": "submitted",
+                },
+            )
+        assert response.status_code == 404
+
+    async def test_a_reader_cannot_change_status(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.time.timesheet.read:ORG"])
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/timesheets/status",
+                json={
+                    "person_ref": "p02",
+                    "week_start": WEEK_START.isoformat(),
+                    "status": "submitted",
+                },
+            )
+        assert response.status_code == 403
+
+    async def test_an_own_writer_cannot_change_someone_elses_status(
+        self, client, org_id, data
+    ) -> None:
+        principal = principal_for(
+            org_id, ["pulseboard.time.timesheet.write:OWN"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/timesheets/status",
+                json={
+                    "person_ref": "p02",
+                    "week_start": WEEK_START.isoformat(),
+                    "status": "submitted",
+                },
+            )
+        assert response.status_code == 403
+
+    async def test_status_change_stages_an_audit_row_and_an_event(
+        self, session, org_id, data
+    ) -> None:
+        from sqlalchemy import func, select
+
+        from app.models import AuditLog, OutboxEvent
+
+        ctx = ctx_for(
+            org_id, "pulseboard.time.timesheet.write", Scope.ORG, subject_ref=data["subject_a"]
+        )
+        async with session.begin():
+            updated = await services.set_status(session, ctx, data["sheet_b"], "submitted")
+        audits = (
+            await session.execute(
+                select(func.count())
+                .select_from(AuditLog)
+                .where(
+                    AuditLog.action == "timesheet.status_changed",
+                    AuditLog.entity_id == updated.id,
+                )
+            )
+        ).scalar_one()
+        events = (
+            (
+                await session.execute(
+                    select(OutboxEvent).where(
+                        OutboxEvent.aggregate_id == updated.id,
+                        OutboxEvent.event_type == "pulseboard.time.timesheet.status_changed",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert audits == 1
+        assert len(events) == 1
         assert events[0].published_at is None

@@ -2,9 +2,10 @@ import { useCallback, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { getAllDeals, listActivities } from "@/api/client";
+import { getAllDeals, getSummary, listActivities } from "@/api/client";
 import type { Deal } from "@/api/types";
-import { useAuth } from "@opsgrids/client";
+import { useAuth, useCan } from "@opsgrids/client";
+import { useDirectory } from "@/data/directoryContext";
 import {
   needsAttention,
   openCount,
@@ -12,8 +13,8 @@ import {
   stageFunnel,
   winRatePct,
 } from "@/data/derive";
-import { ACTIVITIES_THIS_WEEK, KPI_TRENDS } from "@/data/samples";
-import { NOW_ISO, formatMoneyCompact } from "@/lib/format";
+import { KPI_TRENDS } from "@/data/samples";
+import { formatDate, formatMoneyCompact, nowIso } from "@/lib/format";
 import { useAsync } from "@opsgrids/client";
 import {
   ActivityTimeline,
@@ -36,27 +37,26 @@ import {
   PlusIcon,
   SearchIcon,
   TargetIcon,
+  useToast,
 } from "@opsgrids/ui";
-import { SAMPLE_DATA } from "@/ui/sampleCopy";
+import { DealFormDialog } from "@/forms/DealFormDialog";
 
-const TODAY = NOW_ISO.slice(0, 10);
 const CURRENCY = "INR";
 
 const EMPTY_DEALS: Deal[] = [];
 
-type Period = "this_quarter" | "this_month" | "this_week";
-
-const PERIOD_RANGE: Record<Period, string> = {
-  this_week: "18 Aug – 24 Aug 2026",
-  this_month: "01 Aug – 24 Aug 2026",
-  this_quarter: "Jul – Sep 2026",
-};
-
-/** The Overview top bar: breadcrumb + title, then search / period / New deal. */
-function OverviewHeader({ orgName }: { orgName: string }) {
+/** The Overview top bar: breadcrumb + title, then search / today / New deal. */
+function OverviewHeader({
+  orgName,
+  onCreate,
+  canCreate,
+}: {
+  orgName: string;
+  onCreate: () => void;
+  canCreate: boolean;
+}) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
-  const [period, setPeriod] = useState<Period>("this_month");
 
   return (
     <header className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
@@ -75,7 +75,7 @@ function OverviewHeader({ orgName }: { orgName: string }) {
             const q = query.trim();
             navigate(q ? `/deals?q=${encodeURIComponent(q)}` : "/deals");
           }}
-          className="hidden h-11 min-w-0 items-center gap-2 rounded-full bg-surface px-4 shadow-card focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2 md:flex md:w-60"
+          className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-full bg-surface px-4 shadow-card focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2 sm:w-60 sm:flex-none"
         >
           <SearchIcon className="size-[18px] shrink-0 text-faint" />
           <label htmlFor="overview-search" className="sr-only">
@@ -93,25 +93,14 @@ function OverviewHeader({ orgName }: { orgName: string }) {
 
         <span className="hidden h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold text-ink-soft shadow-card sm:inline-flex">
           <CalendarIcon className="size-4 text-muted" />
-          <span className="tnum">{PERIOD_RANGE[period]}</span>
+          <span className="tnum">{formatDate(nowIso())}</span>
         </span>
 
-        <label className="inline-flex h-11 items-center rounded-full bg-surface px-2 shadow-card">
-          <span className="sr-only">Reporting period</span>
-          <select
-            value={period}
-            onChange={(e) => setPeriod(e.target.value as Period)}
-            className="h-full cursor-pointer rounded-full bg-transparent px-2 text-sm font-semibold text-ink focus:outline-none"
-          >
-            <option value="this_week">This week</option>
-            <option value="this_month">This month</option>
-            <option value="this_quarter">This quarter</option>
-          </select>
-        </label>
-
-        <Button size="md" leadingIcon={<PlusIcon className="size-4" />} onClick={() => navigate("/deals")}>
-          New deal
-        </Button>
+        {canCreate ? (
+          <Button size="md" leadingIcon={<PlusIcon className="size-4" />} onClick={onCreate}>
+            New deal
+          </Button>
+        ) : null}
       </div>
     </header>
   );
@@ -125,10 +114,9 @@ interface KpiConfig {
   series: number[];
   icon: React.ReactNode;
   tone: KpiTone;
-  sample: boolean;
 }
 
-function buildKpis(deals: Deal[]): KpiConfig[] {
+function buildKpis(deals: Deal[], activitiesThisWeek: number | null): KpiConfig[] {
   return [
     {
       key: "pipeline",
@@ -138,7 +126,6 @@ function buildKpis(deals: Deal[]): KpiConfig[] {
       series: [...KPI_TRENDS.pipeline.series],
       icon: <BanknoteIcon className="size-5" />,
       tone: "accent",
-      sample: false,
     },
     {
       key: "open",
@@ -148,7 +135,6 @@ function buildKpis(deals: Deal[]): KpiConfig[] {
       series: [...KPI_TRENDS.openDeals.series],
       icon: <HandshakeIcon className="size-5" />,
       tone: "info",
-      sample: false,
     },
     {
       key: "win",
@@ -158,25 +144,28 @@ function buildKpis(deals: Deal[]): KpiConfig[] {
       series: [...KPI_TRENDS.winRate.series],
       icon: <TargetIcon className="size-5" />,
       tone: "positive",
-      sample: false,
     },
     {
       key: "activities",
       label: "Activities this week",
-      value: String(ACTIVITIES_THIS_WEEK.count),
-      deltaPct: ACTIVITIES_THIS_WEEK.deltaPct,
+      value: activitiesThisWeek === null ? "—" : String(activitiesThisWeek),
+      deltaPct: KPI_TRENDS.activities.deltaPct,
       series: [...KPI_TRENDS.activities.series],
       icon: <ActivityIcon className="size-5" />,
       tone: "cyan",
-      sample: true,
     },
   ];
 }
 
 export function OverviewPage() {
   const { user } = useAuth();
+  const toast = useToast();
+  const directory = useDirectory();
+  const canCreateDeal = useCan("crm.pipeline.deal.write", "OWN");
+  const [creating, setCreating] = useState(false);
   const deals = useAsync(getAllDeals, []);
-  const activities = useAsync(useCallback(() => listActivities({}), []), []);
+  const activities = useAsync(useCallback(() => listActivities({ size: 6 }), []), []);
+  const summary = useAsync(getSummary, []);
 
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
@@ -188,18 +177,20 @@ export function OverviewPage() {
     [deals],
   );
 
-  const kpis = useMemo(() => buildKpis(items), [items]);
+  const activitiesThisWeek = summary.status === "success" ? summary.data.activities_this_week : null;
+  const kpis = useMemo(() => buildKpis(items, activitiesThisWeek), [items, activitiesThisWeek]);
   const funnel = useMemo(() => stageFunnel(items), [items]);
-  const attention = useMemo(() => needsAttention(items, TODAY), [items]);
+  const today = nowIso().slice(0, 10);
+  const attention = useMemo(() => needsAttention(items, today), [items, today]);
   const pipelineValue = useMemo(() => pipelineValueMinor(items), [items]);
   const recentActivities = useMemo(
-    () => (activities.status === "success" ? activities.data.slice(0, 6) : []),
+    () => (activities.status === "success" ? activities.data.items : []),
     [activities],
   );
 
   return (
     <div className="rise flex flex-col gap-5">
-      <OverviewHeader orgName={orgName} />
+      <OverviewHeader orgName={orgName} onCreate={() => setCreating(true)} canCreate={canCreateDeal} />
 
       {/* Row 1 — KPI cards */}
       <section aria-label="Key metrics" className="cascade grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -217,7 +208,7 @@ export function OverviewPage() {
           : null}
         {deals.status === "error" ? (
           <Card className="p-5 sm:col-span-2 xl:col-span-4">
-            <ErrorState message={deals.error.message} />
+            <ErrorState message={deals.error.message} onRetry={deals.reload} />
           </Card>
         ) : null}
         {deals.status === "success"
@@ -230,7 +221,10 @@ export function OverviewPage() {
                   series={kpi.series}
                   icon={kpi.icon}
                   tone={kpi.tone}
-                  sample={kpi.sample ? SAMPLE_DATA : false}
+                  sample={{
+                    label: "Sample trend",
+                    title: "The figure is live; the trend and % change beside it are representative — the pipeline analytics history service isn't wired to this org yet.",
+                  }}
                 />
               </div>
             ))
@@ -253,7 +247,7 @@ export function OverviewPage() {
           {deals.status === "success" ? (
             <PipelineFunnel rollups={funnel} currency={CURRENCY} />
           ) : deals.status === "error" ? (
-            <ErrorState message={deals.error.message} />
+            <ErrorState message={deals.error.message} onRetry={deals.reload} />
           ) : (
             <Skeleton className="h-56 w-full rounded-tile" />
           )}
@@ -282,7 +276,9 @@ export function OverviewPage() {
               ))}
             </div>
           ) : null}
-          {deals.status === "error" ? <ErrorState message={deals.error.message} /> : null}
+          {deals.status === "error" ? (
+            <ErrorState message={deals.error.message} onRetry={deals.reload} />
+          ) : null}
           {deals.status === "success" ? <NeedsAttention items={attention} /> : null}
         </Card>
 
@@ -305,12 +301,30 @@ export function OverviewPage() {
               ))}
             </div>
           ) : null}
-          {activities.status === "error" ? <ErrorState message={activities.error.message} /> : null}
+          {activities.status === "error" ? (
+            <ErrorState message={activities.error.message} onRetry={activities.reload} />
+          ) : null}
           {activities.status === "success" ? (
             <ActivityTimeline activities={recentActivities} />
           ) : null}
         </Card>
       </section>
+
+      {creating ? (
+        <DealFormDialog
+          deal={null}
+          companies={directory.companies}
+          contacts={directory.contacts}
+          owners={directory.owners}
+          onOwnerCreated={() => directory.reload()}
+          onClose={() => setCreating(false)}
+          onSaved={(deal) => {
+            setCreating(false);
+            toast.success(`${deal.name} created.`);
+            deals.reload();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

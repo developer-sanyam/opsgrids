@@ -14,7 +14,7 @@ import {
 import { readErrorMessage } from "@/lib/errors";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { formatAmount, formatMoney } from "@/lib/money";
-import { useAsync, useAuth } from "@opsgrids/client";
+import { Can, useAsync, useAuth } from "@opsgrids/client";
 import {
   Avatar,
   Button,
@@ -432,7 +432,19 @@ function DetailBody({
             subtitle="The platform suggests; you decide, and the record says so"
           />
           {justDecided !== null ? <DecisionReceipt decision={justDecided} /> : null}
-          <DecideForm document={document} onDecided={onDecided} />
+          <Can
+            permission="finance.compliance.ims.decide"
+            scope="ORG"
+            fallback={
+              <p className="text-sm text-muted">
+                You can see this queue but not decide it — deciding is a separate permission
+                (<span className="money">finance.compliance.ims.decide</span>). Ask an
+                administrator if you need it.
+              </p>
+            }
+          >
+            <DecideForm document={document} onDecided={onDecided} />
+          </Can>
         </Card>
 
         <Card className="flex flex-col gap-3 p-6">

@@ -220,6 +220,149 @@
         "title": "AssetOut",
         "type": "object"
       },
+      "AssetUpdate": {
+        "additionalProperties": false,
+        "description": "Edit a CMDB asset. `tag` cannot appear here \u2014 it is the API identity and the join key\nincidents key on by `affected_asset_tag`, so it is immutable (`Must not be built`). A status\nchange, including retiring an asset, rides this same PATCH rather than a separate endpoint.",
+        "properties": {
+          "cost_currency": {
+            "anyOf": [
+              {
+                "maxLength": 3,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Currency"
+          },
+          "cost_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Minor"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
+          },
+          "purchased_at": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purchased At"
+          },
+          "serial": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Serial"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "in_use",
+                  "in_stock",
+                  "in_repair",
+                  "retired"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "laptop",
+                  "desktop",
+                  "server",
+                  "monitor",
+                  "phone",
+                  "network",
+                  "license"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          },
+          "warranty_expires_at": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warranty Expires At"
+          }
+        },
+        "title": "AssetUpdate",
+        "type": "object"
+      },
       "Breakdown": {
         "description": "One bar in a by-priority or by-category breakdown of open incidents.",
         "properties": {
@@ -250,7 +393,8 @@
         "type": "object"
       },
       "CatalogItemIn": {
-        "description": "Add an offering to the service catalog.\n\n`requests_30d` is not accepted: the trailing-30-day rollup is counted from the requests\nthemselves, so it is the server's to state and never the client's to assert.",
+        "additionalProperties": false,
+        "description": "Add a service-catalog offering. `id` is the human `CAT-..` code, unique within the\norganization; requests key on it by string, not a foreign key, so it is immutable once set.",
         "properties": {
           "category": {
             "enum": [
@@ -263,17 +407,17 @@
             "title": "Category",
             "type": "string"
           },
-          "code": {
+          "description": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
             "maxLength": 20,
             "minLength": 1,
             "pattern": "^[A-Za-z0-9_-]+$",
-            "title": "Code",
-            "type": "string"
-          },
-          "description": {
-            "default": "",
-            "maxLength": 8000,
-            "title": "Description",
+            "title": "Id",
             "type": "string"
           },
           "name": {
@@ -284,14 +428,13 @@
           },
           "sla_days": {
             "default": 1,
-            "maximum": 365.0,
             "minimum": 1.0,
             "title": "Sla Days",
             "type": "integer"
           }
         },
         "required": [
-          "code",
+          "id",
           "name",
           "category"
         ],
@@ -342,6 +485,69 @@
           "requests_30d"
         ],
         "title": "CatalogItemOut",
+        "type": "object"
+      },
+      "CatalogItemUpdate": {
+        "additionalProperties": false,
+        "description": "Edit a catalog item. `id` (the code) is not here \u2014 it is the API identity and the\ndenormalised join key `requests.catalog_item_code` reads through, so it cannot move.",
+        "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "enum": [
+                  "onboarding",
+                  "offboarding",
+                  "access",
+                  "hardware",
+                  "software"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "sla_days": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sla Days"
+          }
+        },
+        "title": "CatalogItemUpdate",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -552,6 +758,133 @@
         "title": "IncidentOut",
         "type": "object"
       },
+      "IncidentStatusIn": {
+        "additionalProperties": false,
+        "description": "Move an incident through its lifecycle (`app.domain.INCIDENT_TRANSITIONS`). Anything not a\nlegal next state is a 409, not a free-form set. `note` becomes the resolution worklog entry\nwhen resolving, so it is required there \u2014 a \"resolved\" with no resolution text is not\nuseful \u2014 and optional (but still recorded) on every other move.",
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "status": {
+            "enum": [
+              "new",
+              "in_progress",
+              "on_hold",
+              "resolved",
+              "closed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "IncidentStatusIn",
+        "type": "object"
+      },
+      "IncidentUpdate": {
+        "additionalProperties": false,
+        "description": "Edit an incident's mutable properties. Absent means \"leave alone\"; `status` stays on its\nown endpoint (`/status`) with its own transition rules, audit action and event.\n\n`priority` and `assignee` require ORG scope in `services.update_incident` \u2014 an OWN-scoped\ncaller may edit their own ticket's summary, description, category and affected asset, but\nmust not reprioritise or reassign it (an ITSM_USER resolving or escalating their own ticket\nis exactly the privilege the audit flags). `affected_asset_tag: null` clears the link.",
+        "properties": {
+          "affected_asset_tag": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Affected Asset Tag"
+          },
+          "assignee": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "enum": [
+                  "network",
+                  "hardware",
+                  "software",
+                  "access",
+                  "email",
+                  "security"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "enum": [
+                  "P1",
+                  "P2",
+                  "P3",
+                  "P4"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          }
+        },
+        "title": "IncidentUpdate",
+        "type": "object"
+      },
       "OverviewOut": {
         "description": "The Overview dashboard's server-side rollup. The SPA can derive these from the list\nendpoints; this is the same arithmetic exposed once, so a reporting view can share it.",
         "properties": {
@@ -749,6 +1082,57 @@
         "title": "Page[ServiceRequestOut]",
         "type": "object"
       },
+      "RequestDecisionIn": {
+        "additionalProperties": false,
+        "description": "Approve or reject a request awaiting approval. `note` becomes `decision_note`; required on\na rejection (a rejection with no visible reason is not usable), optional on an approval.",
+        "properties": {
+          "decision": {
+            "enum": [
+              "approve",
+              "reject"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "title": "RequestDecisionIn",
+        "type": "object"
+      },
+      "RequestPatch": {
+        "additionalProperties": false,
+        "description": "The one field an agent may set directly on a request outside the decision/fulfil\nendpoints. `assignee: null` unassigns it.",
+        "properties": {
+          "assignee": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee"
+          }
+        },
+        "title": "RequestPatch",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -768,32 +1152,13 @@
         "type": "object"
       },
       "ServiceRequestIn": {
-        "description": "Raise a service request against a catalog item.\n\n`number` is the organization's own `REQ-2051` identity, minted the way an asset carries its\ntag \u2014 a clash is refused rather than quietly renumbered. `category` is not accepted: it is\ndenormalised from the catalog item the request names. Neither is `status` \u2014 a new request\nalways starts awaiting approval, so no payload can skip the approval step. The requester's\ndirectory id comes from the caller, which is what OWN scope later reads back.",
+        "additionalProperties": false,
+        "description": "Raise a service request against a catalog item \u2014 the entry point for the JML flows.\n`catalog_item_id` is the `CAT-..` code; an unknown one is a 404, not a 422, because it is a\nreference to another row rather than a shape the client got wrong. `status` is not accepted:\nevery new request starts `approval`, and `requester_id` is the caller, not a client field.",
         "properties": {
-          "assignee": {
-            "anyOf": [
-              {
-                "maxLength": 120,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Assignee"
-          },
-          "catalog_item_code": {
+          "catalog_item_id": {
             "maxLength": 20,
             "minLength": 1,
-            "pattern": "^[A-Za-z0-9_-]+$",
-            "title": "Catalog Item Code",
-            "type": "string"
-          },
-          "number": {
-            "maxLength": 40,
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9_-]+$",
-            "title": "Number",
+            "title": "Catalog Item Id",
             "type": "string"
           },
           "requester": {
@@ -810,16 +1175,15 @@
           }
         },
         "required": [
-          "number",
-          "catalog_item_code",
-          "requester",
-          "subject"
+          "catalog_item_id",
+          "subject",
+          "requester"
         ],
         "title": "ServiceRequestIn",
         "type": "object"
       },
       "ServiceRequestOut": {
-        "description": "Mirrors the SPA's `ServiceRequest`. `id` is the human number; `catalog_item_id` is the\ncatalog item's code, with its name denormalised so a table row renders without a lookup.",
+        "description": "Mirrors the SPA's `ServiceRequest`. `id` is the human number; `catalog_item_id` is the\ncatalog item's code, with its name denormalised so a table row renders without a lookup.\n`decision_note` is set once, by `/decision`, and is most often populated on a rejection.",
         "properties": {
           "assignee": {
             "anyOf": [
@@ -856,6 +1220,17 @@
             "title": "Created At",
             "type": "string"
           },
+          "decision_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Note"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -868,7 +1243,8 @@
             "enum": [
               "approval",
               "in_progress",
-              "fulfilled"
+              "fulfilled",
+              "rejected"
             ],
             "title": "Status",
             "type": "string"
@@ -892,6 +1268,7 @@
           "subject",
           "status",
           "assignee",
+          "decision_note",
           "created_at",
           "updated_at"
         ],
@@ -1005,7 +1382,7 @@
         "type": "object"
       },
       "WorklogIn": {
-        "description": "Append one entry to an incident's thread. There is no update or delete \u2014 by design.",
+        "description": "Append one manual note to an incident's thread. There is no update or delete \u2014 by design.\n\n`author` stays client-supplied: `platform_core.auth.Principal` carries no name claim (no\n`Agent`/directory row is linked to a calling membership in this slice either), so the server\nhas nothing else to derive a display name from \u2014 the same reasoning `support.ReplyIn` uses\nfor `author_name`. What *is* derived server-side, and never trusted from the payload, is\n`kind`: the route that accepts this schema forces it to `\"note\"` regardless of what is sent,\nbecause `status` / `assignment` / `sla` / `resolution` entries are system-written by the\nlifecycle endpoints only \u2014 a client must never be able to make the thread claim a change that\ndid not happen. The true identity of who posted stays out of band, in `created_by` /\n`AuditLog.actor_id`, which this endpoint already sets from the caller.",
         "properties": {
           "author": {
             "maxLength": 120,
@@ -1194,6 +1571,39 @@
       }
     },
     "/api/v1/itsm/assets/{tag}": {
+      "delete": {
+        "operationId": "delete_asset_api_v1_itsm_assets__tag__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tag",
+            "required": true,
+            "schema": {
+              "title": "Tag",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a CMDB asset (soft delete)",
+        "tags": [
+          "itsm"
+        ]
+      },
       "get": {
         "operationId": "read_asset_api_v1_itsm_assets__tag__get",
         "parameters": [
@@ -1230,6 +1640,56 @@
           }
         },
         "summary": "One CMDB asset, with the incidents open against it",
+        "tags": [
+          "itsm"
+        ]
+      },
+      "patch": {
+        "operationId": "update_asset_api_v1_itsm_assets__tag__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tag",
+            "required": true,
+            "schema": {
+              "title": "Tag",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssetUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a CMDB asset, including retiring it",
         "tags": [
           "itsm"
         ]
@@ -1324,7 +1784,92 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Add an offering to the service catalog",
+        "summary": "Add a service-catalog offering",
+        "tags": [
+          "itsm"
+        ]
+      }
+    },
+    "/api/v1/itsm/catalog/{code}": {
+      "delete": {
+        "operationId": "delete_catalog_item_api_v1_itsm_catalog__code__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "title": "Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retire a service-catalog offering (soft delete)",
+        "tags": [
+          "itsm"
+        ]
+      },
+      "patch": {
+        "operationId": "update_catalog_item_api_v1_itsm_catalog__code__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "title": "Code",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CatalogItemUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a service-catalog offering",
         "tags": [
           "itsm"
         ]
@@ -1494,6 +2039,39 @@
       }
     },
     "/api/v1/itsm/incidents/{number}": {
+      "delete": {
+        "operationId": "delete_incident_api_v1_itsm_incidents__number__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Withdraw an incident (soft delete)",
+        "tags": [
+          "itsm"
+        ]
+      },
       "get": {
         "operationId": "read_incident_api_v1_itsm_incidents__number__get",
         "parameters": [
@@ -1530,6 +2108,108 @@
           }
         },
         "summary": "One incident, with its worklog thread and affected asset",
+        "tags": [
+          "itsm"
+        ]
+      },
+      "patch": {
+        "operationId": "update_incident_api_v1_itsm_incidents__number__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit an incident's properties, reassign it or reprioritise it",
+        "tags": [
+          "itsm"
+        ]
+      }
+    },
+    "/api/v1/itsm/incidents/{number}/status": {
+      "post": {
+        "operationId": "change_incident_status_api_v1_itsm_incidents__number__status_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentStatusIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Move an incident through its lifecycle",
         "tags": [
           "itsm"
         ]
@@ -1752,7 +2432,226 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Raise a service request",
+        "summary": "Raise a service request against the catalog",
+        "tags": [
+          "itsm"
+        ]
+      }
+    },
+    "/api/v1/itsm/service-requests/{number}": {
+      "delete": {
+        "operationId": "delete_request_api_v1_itsm_service_requests__number__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel a service request (soft delete)",
+        "tags": [
+          "itsm"
+        ]
+      },
+      "get": {
+        "operationId": "read_request_api_v1_itsm_service_requests__number__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One service request",
+        "tags": [
+          "itsm"
+        ]
+      },
+      "patch": {
+        "operationId": "update_request_api_v1_itsm_service_requests__number__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assign (or unassign) a service request",
+        "tags": [
+          "itsm"
+        ]
+      }
+    },
+    "/api/v1/itsm/service-requests/{number}/decision": {
+      "post": {
+        "operationId": "decide_request_api_v1_itsm_service_requests__number__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestDecisionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve or reject a request awaiting approval",
+        "tags": [
+          "itsm"
+        ]
+      }
+    },
+    "/api/v1/itsm/service-requests/{number}/fulfil": {
+      "post": {
+        "operationId": "fulfil_request_api_v1_itsm_service_requests__number__fulfil_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mark an in-progress request fulfilled",
         "tags": [
           "itsm"
         ]

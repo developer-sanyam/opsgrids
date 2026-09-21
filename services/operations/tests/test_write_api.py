@@ -13,13 +13,15 @@ a write route that only proves it can write has proved the uninteresting half.
 from __future__ import annotations
 
 import contextlib
+import uuid
 from collections.abc import Iterator
+from datetime import date, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.main import app
-from app.models import InventoryItem, PurchaseOrder, PurchaseOrderLine, Supplier, Warehouse
+from app.models import InventoryItem, PurchaseOrder, Supplier, Warehouse
 from platform_core.auth import Principal, get_principal
 from tests.helpers import principal_for
 
@@ -51,15 +53,16 @@ WAREHOUSE_WRITE = "operations.inventory.warehouse.write"
 WAREHOUSE_READ = "operations.inventory.warehouse.read"
 
 
-def po_body(number: str, **overrides: object) -> dict:
-    """A well-formed purchase order against the seeded Meridian supplier."""
+def po_body(supplier_id: uuid.UUID, **overrides: object) -> dict:
+    """A well-formed purchase order against the given supplier. `number`, `supplier_code`
+    (superseded by `supplier_id`) and `created_date` are server-owned/superseded and no longer
+    accepted on the wire — the surviving `PurchaseOrderIn` assigns the number, resolves the
+    supplier only by id, and stamps `created_date` itself."""
     body: dict = {
-        "number": number,
-        "supplier_code": "SUP-MER",
+        "supplier_id": str(supplier_id),
         "warehouse": "Pune Plant",
         "raised_by": "Devansh Rao",
-        "created_date": "2026-09-01",
-        "expected_date": "2026-09-30",
+        "expected_date": (date.today() + timedelta(days=30)).isoformat(),
         "notes": "Top-up for the casting line.",
         "lines": [
             {
@@ -92,13 +95,14 @@ class TestRaisePurchaseOrder:
         writer = principal_for(org_id, [f"{PO_WRITE}:ORG"], subject_ref=data["subject_a"])
         with as_principal(writer):
             response = await client.post(
-                "/api/v1/operations/purchase-orders", json=po_body("PO-2026-0201")
+                "/api/v1/operations/purchase-orders", json=po_body(data["meridian"].id)
             )
 
         assert response.status_code == 201, response.text
         body = response.json()
-        assert body["po_number"] == "PO-2026-0201"
-        # Denormalised from the supplier the code named, not from the payload.
+        # Server-assigned, not client-supplied.
+        assert body["po_number"].startswith(f"PO-{date.today().year}-")
+        # Denormalised from the supplier the id named, not from the payload.
         assert body["supplier_name"] == "Meridian Metals"
         assert body["category"] == "raw_materials"
         assert body["status"] == "draft"
@@ -108,38 +112,23 @@ class TestRaisePurchaseOrder:
         # In the database, in this tenant — not merely echoed back.
         po = (
             await session.execute(
-                select(PurchaseOrder).where(PurchaseOrder.number == "PO-2026-0201")
+                select(PurchaseOrder).where(PurchaseOrder.id == uuid.UUID(body["id"]))
             )
         ).scalar_one()
         assert po.organization_id == org_id
         assert po.received_date is None
 
-    async def test_line_amounts_are_computed_and_a_supplied_one_is_ignored(
-        self, client, session, org_id, data
-    ) -> None:
-        """`amount_minor` is `quantity * unit_price_minor`, computed server-side. A client that
-        sends its own must not be able to make the lines stop footing to the total."""
-        body = po_body("PO-2026-0202")
+    async def test_a_supplied_line_amount_is_rejected(self, client, org_id, data) -> None:
+        """`amount_minor` is `quantity * unit_price_minor`, computed server-side and never
+        accepted on the wire (`PoLineIn` forbids it as an extra field) — a client cannot make the
+        lines stop footing to the total by asserting one of its own choosing."""
+        body = po_body(data["meridian"].id)
         body["lines"][0]["amount_minor"] = 1  # a total of its own choosing
 
         writer = principal_for(org_id, [f"{PO_WRITE}:ORG"], subject_ref=data["subject_a"])
         with as_principal(writer):
             response = await client.post("/api/v1/operations/purchase-orders", json=body)
-        assert response.status_code == 201, response.text
-
-        po_id = response.json()["id"]
-        lines = (
-            (
-                await session.execute(
-                    select(PurchaseOrderLine)
-                    .where(PurchaseOrderLine.purchase_order_id == po_id)
-                    .order_by(PurchaseOrderLine.sku)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        assert [line.amount_minor for line in lines] == [10 * 62_500_00, 4 * 71_200_00]
+        assert response.status_code == 422
 
     async def test_the_raiser_is_the_caller_not_the_payload(self, client, org_id, data) -> None:
         """`raised_by_id` is the column OWN scope narrows on, so it comes from the caller. A
@@ -147,9 +136,10 @@ class TestRaisePurchaseOrder:
         writer = principal_for(org_id, [f"{PO_WRITE}:OWN"], subject_ref=data["subject_a"])
         with as_principal(writer):
             created = await client.post(
-                "/api/v1/operations/purchase-orders", json=po_body("PO-2026-0203")
+                "/api/v1/operations/purchase-orders", json=po_body(data["meridian"].id)
             )
         assert created.status_code == 201, created.text
+        number = created.json()["po_number"]
 
         mine = principal_for(org_id, [f"{PO_READ}:OWN"], subject_ref=data["subject_a"])
         with as_principal(mine):
@@ -158,35 +148,44 @@ class TestRaisePurchaseOrder:
         with as_principal(theirs):
             other = await client.get("/api/v1/operations/purchase-orders")
 
-        assert "PO-2026-0203" in {item["po_number"] for item in own.json()["items"]}
-        assert "PO-2026-0203" not in {item["po_number"] for item in other.json()["items"]}
+        assert number in {item["po_number"] for item in own.json()["items"]}
+        assert number not in {item["po_number"] for item in other.json()["items"]}
 
-    async def test_a_reader_cannot_raise_a_purchase_order(self, client, session, org_id) -> None:
+    async def test_a_reader_cannot_raise_a_purchase_order(
+        self, client, session, org_id, data
+    ) -> None:
         """Holding purchase_order.read but not .write is refused by name."""
+        count_stmt = (
+            select(func.count())
+            .select_from(PurchaseOrder)
+            .where(PurchaseOrder.organization_id == org_id)
+        )
+        async with session.begin():
+            before = (await session.execute(count_stmt)).scalar_one()
+
         reader = principal_for(org_id, [f"{PO_READ}:ORG"])
         with as_principal(reader):
             response = await client.post(
-                "/api/v1/operations/purchase-orders", json=po_body("PO-2026-0204")
+                "/api/v1/operations/purchase-orders", json=po_body(data["meridian"].id)
             )
         assert response.status_code == 403
         assert response.headers["content-type"].startswith("application/problem+json")
-        # The refusal wrote nothing.
-        assert (
-            await session.execute(
-                select(PurchaseOrder).where(PurchaseOrder.number == "PO-2026-0204")
-            )
-        ).scalar_one_or_none() is None
 
-    async def test_unauthenticated_cannot_raise_a_purchase_order(self, client) -> None:
+        # The refusal wrote nothing.
+        async with session.begin():
+            after = (await session.execute(count_stmt)).scalar_one()
+        assert after == before
+
+    async def test_unauthenticated_cannot_raise_a_purchase_order(self, client, data) -> None:
         response = await client.post(
-            "/api/v1/operations/purchase-orders", json=po_body("PO-2026-0205")
+            "/api/v1/operations/purchase-orders", json=po_body(data["meridian"].id)
         )
         assert response.status_code == 401
 
     async def test_a_line_without_a_positive_quantity_is_refused(
         self, client, org_id, data
     ) -> None:
-        body = po_body("PO-2026-0206")
+        body = po_body(data["meridian"].id)
         body["lines"][0]["quantity"] = 0
         writer = principal_for(org_id, [f"{PO_WRITE}:ORG"], subject_ref=data["subject_a"])
         with as_principal(writer):
@@ -194,10 +193,10 @@ class TestRaisePurchaseOrder:
         assert response.status_code == 422
 
     async def test_a_po_naming_no_supplier_is_refused(self, client, org_id, data) -> None:
-        """The service takes either a supplier id or a supplier code; a body carrying neither is
-        refused at the contract, not with a 500 from the write path."""
-        body = po_body("PO-2026-0207")
-        del body["supplier_code"]
+        """The surviving contract takes a `supplier_id`; a body carrying none is refused at the
+        contract, not with a 500 from the write path."""
+        body = po_body(data["meridian"].id)
+        del body["supplier_id"]
         writer = principal_for(org_id, [f"{PO_WRITE}:ORG"], subject_ref=data["subject_a"])
         with as_principal(writer):
             response = await client.post("/api/v1/operations/purchase-orders", json=body)
@@ -205,22 +204,14 @@ class TestRaisePurchaseOrder:
 
     async def test_a_po_cannot_be_raised_already_received(self, client, org_id, data) -> None:
         """Receiving is its own endpoint — it fills the line quantities and stamps the date —
-        so `received` is not a status a client may assert at creation."""
+        so `status` is not a field a client may assert at creation."""
         writer = principal_for(org_id, [f"{PO_WRITE}:ORG"], subject_ref=data["subject_a"])
         with as_principal(writer):
             response = await client.post(
                 "/api/v1/operations/purchase-orders",
-                json=po_body("PO-2026-0208", status="received"),
+                json=po_body(data["meridian"].id, status="received"),
             )
         assert response.status_code == 422
-
-    async def test_a_duplicate_po_number_is_a_conflict(self, client, org_id, data) -> None:
-        writer = principal_for(org_id, [f"{PO_WRITE}:ORG"], subject_ref=data["subject_a"])
-        with as_principal(writer):
-            response = await client.post(
-                "/api/v1/operations/purchase-orders", json=po_body("PO-2026-0148")
-            )
-        assert response.status_code == 409
 
 
 # --------------------------------------------------------------------- suppliers
@@ -295,12 +286,11 @@ INVENTORY_BODY = {
     "name": "Corrugated carton, 5-ply",
     "category": "packaging",
     "warehouse": "Pune Plant",
-    "on_hand": 150,
+    "opening_on_hand": 150,
     "reorder_point": 400,
     "uom": "pcs",
     "unit_value_minor": 62_00,
     "currency": "INR",
-    "stocked_at": "2026-09-14",
 }
 
 
@@ -309,16 +299,33 @@ class TestCreateInventoryItem:
         self, client, session, org_id, data
     ) -> None:
         """Low-stock is derived on read (`on_hand <= reorder_point`), so an item written through
-        this route must surface in the low-stock filter without anyone storing a flag."""
+        this route must surface in the low-stock filter without anyone storing a flag.
+
+        `on_hand` itself is never accepted on the wire — the surviving contract takes
+        `opening_on_hand` and records it as the item's first `opening` stock movement, so the
+        balance this route reports back is one the ledger can account for, not a bare column
+        write."""
         writer = principal_for(org_id, [f"{ITEM_WRITE}:ORG", f"{ITEM_READ}:ORG"])
         with as_principal(writer):
             created = await client.post("/api/v1/operations/inventory", json=INVENTORY_BODY)
             low = await client.get("/api/v1/operations/inventory", params={"low_stock": "true"})
+            # The balance is explained by an append-only movement, not a bare column write.
+            movements = await client.get(
+                f"/api/v1/operations/inventory/{created.json()['id']}/movements"
+            )
 
         assert created.status_code == 201, created.text
         assert created.json()["unit_value_minor"] == 62_00
-        assert created.json()["updated_at"] == "2026-09-14"
+        assert created.json()["on_hand"] == 150
+        assert created.json()["updated_at"] == date.today().isoformat()
         assert "PKG-CRT-220" in {row["sku"] for row in low.json()["items"]}
+
+        assert movements.status_code == 200
+        rows = movements.json()["items"]
+        assert len(rows) == 1
+        assert rows[0]["kind"] == "opening"
+        assert rows[0]["quantity_delta"] == 150
+        assert rows[0]["on_hand_after"] == 150
 
         item = (
             await session.execute(select(InventoryItem).where(InventoryItem.sku == "PKG-CRT-220"))
@@ -338,7 +345,7 @@ class TestCreateInventoryItem:
         writer = principal_for(org_id, [f"{ITEM_WRITE}:ORG"])
         with as_principal(writer):
             response = await client.post(
-                "/api/v1/operations/inventory", json=INVENTORY_BODY | {"on_hand": -5}
+                "/api/v1/operations/inventory", json=INVENTORY_BODY | {"opening_on_hand": -5}
             )
         assert response.status_code == 422
 

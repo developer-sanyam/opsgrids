@@ -24,8 +24,10 @@ type LoadState =
   | { status: "error"; message: string }
   | { status: "ready"; store: StoreDoc | null; products: Product[]; categories: Category[] };
 
-/** The grant the storefront service requires to write a store document. */
-const WRITE_PERMISSION = "storefront.store.write";
+/** The grant the storefront service requires to write a store document — reused from
+ *  `storefront.store.settings.*` rather than a new code (ADR-0011 §3): anyone who can publish
+ *  the store can edit its theme. */
+const WRITE_PERMISSION = "storefront.store.settings.write";
 
 function EditorScreen() {
   const [state, setState] = useState<LoadState>({ status: "loading" });

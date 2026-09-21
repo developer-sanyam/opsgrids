@@ -14,10 +14,10 @@ Ids are opaque row UUIDs, exchanged as strings.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
-from typing import Literal
+from datetime import UTC, date, datetime
+from typing import Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ------------------------------------------------------------------ vocabularies (match the SPA)
 
@@ -32,6 +32,61 @@ class ServiceInfo(BaseModel):
 
 
 # ------------------------------------------------------------------ deals
+
+
+class DealIn(BaseModel):
+    """Open an opportunity. `company_id` / `primary_contact_id` / `owner_id` are plain
+    UUIDs into customer-service's schema — deal-service cannot verify they resolve there
+    (no cross-schema FK, no cross-schema query), so none of the three is checked here.
+
+    `owner_id` is optional: an omitted one defaults to the calling rep, matching how
+    activities attribute themselves. Naming a different rep is an ORG-scoped act — the
+    route re-applies the caller's scope exactly as it does on a detail route — and a
+    caller with no rep identity who also names no owner has nobody to attribute the deal
+    to, which is a 422, not a row owned by nothing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    company_id: uuid.UUID
+    owner_id: uuid.UUID | None = None
+    value_minor: int = Field(ge=0)
+    close_date: date
+    currency: str = Field(default="INR", min_length=3, max_length=3)
+    stage: DealStage = "lead"
+    probability: int | None = Field(default=None, ge=0, le=100)
+    primary_contact_id: uuid.UUID | None = None
+    source: str = Field(default="", max_length=60)
+
+
+class DealPatch(BaseModel):
+    """Partial update of the plain deal fields. Deliberately **no `stage`** — a stage
+    move only ever goes through `POST /deals/{id}/stage`, so the transition rule and its
+    event can never be bypassed by a patch. Reassigning `owner_id` is scope-checked in
+    `app.services.update_deal` exactly like naming one on create — an OWN-scoped caller
+    may only set it to themselves."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    company_id: uuid.UUID | None = None
+    primary_contact_id: uuid.UUID | None = None
+    owner_id: uuid.UUID | None = None
+    value_minor: int | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    close_date: date | None = None
+    probability: int | None = Field(default=None, ge=0, le=100)
+    source: str | None = Field(default=None, max_length=60)
+
+
+class StageMoveIn(BaseModel):
+    """Move a deal through the pipeline. `domain.can_transition` is the enforcement
+    point — an illegal move (out of a closed stage, or to the same stage) answers 409."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stage: DealStage
+    probability: int | None = Field(default=None, ge=0, le=100)
 
 
 class DealOut(BaseModel):
@@ -54,36 +109,62 @@ class DealOut(BaseModel):
     source: str
 
 
-class DealIn(BaseModel):
-    """Create a deal. `value_minor` is integer minor units of `currency` (ISO-4217) — no
-    float, ever. `owner_id` is optional: omitted, the deal belongs to the calling rep;
-    naming another rep is an object-level scope question the route answers. `probability`
-    omitted takes the stage's board default. `last_activity_at` is the server's staleness
-    clock and `organization_id` comes from the tenant context, so neither is accepted."""
-
-    name: str = Field(min_length=1, max_length=200)
-    company_id: uuid.UUID
-    #: Minor units of `currency`. Never negative, never a float.
-    value_minor: int = Field(ge=0)
-    close_date: date
-    currency: str = Field(default="INR", min_length=3, max_length=3)
-    stage: DealStage = "lead"
-    owner_id: uuid.UUID | None = None
-    probability: int | None = Field(default=None, ge=0, le=100)
-    primary_contact_id: uuid.UUID | None = None
-    source: str = Field(default="", max_length=60)
-
-
-class StageIn(BaseModel):
-    """Move a deal to another stage. A transition, not a field edit: which moves are legal
-    is `domain.can_transition`, enforced by the service. `probability` omitted takes the
-    new stage's default — 100 once won, 0 once lost."""
-
-    stage: DealStage
-    probability: int | None = Field(default=None, ge=0, le=100)
-
-
 # ------------------------------------------------------------------ activities
+
+
+class ActivityIn(BaseModel):
+    """Log one entry on the timeline. Append-only: there is no matching `Patch` — a wrong
+    entry is corrected by logging a new one, not by editing this one.
+
+    At least one of `deal_id` / `company_id` / `contact_id` must be given — an activity
+    naming nothing is not a timeline entry. `direction` only means something for a call or
+    an email; naming it on a meeting, note or task is refused. `occurred_at` defaults to
+    now and may backfill the past, but never the future — a touch cannot be logged before
+    it happens.
+
+    `owner_id` is deliberately absent here: an OWN-scoped caller can only ever log against
+    themselves, and the route forces it; only an ORG-scoped caller may attribute the entry
+    to someone else, which is why the field lives on the model but not on this contract —
+    see `app/api/routes.py`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: ActivityType
+    subject: str = Field(min_length=1, max_length=300)
+    body: str | None = Field(default=None, max_length=10_000)
+    deal_id: uuid.UUID | None = None
+    company_id: uuid.UUID | None = None
+    contact_id: uuid.UUID | None = None
+    direction: ActivityDirection | None = None
+    occurred_at: datetime | None = None
+    #: ORG-scoped callers may attribute the entry to a different rep; OWN-scoped callers
+    #: never may — the route always overrides this for them.
+    owner_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one_target(self) -> Self:
+        if self.deal_id is None and self.company_id is None and self.contact_id is None:
+            raise ValueError("Name at least one of deal_id, company_id or contact_id")
+        return self
+
+    @model_validator(mode="after")
+    def _direction_only_for_call_or_email(self) -> Self:
+        if self.direction is not None and self.type not in ("call", "email"):
+            raise ValueError("direction only applies to a call or an email")
+        return self
+
+    @model_validator(mode="after")
+    def _not_in_the_future(self) -> Self:
+        if self.occurred_at is not None:
+            at = (
+                self.occurred_at
+                if self.occurred_at.tzinfo
+                else self.occurred_at.replace(tzinfo=UTC)
+            )
+            if at > datetime.now(UTC):
+                raise ValueError("occurred_at cannot be in the future")
+        return self
 
 
 class ActivityOut(BaseModel):
@@ -100,25 +181,6 @@ class ActivityOut(BaseModel):
     owner_id: str
     occurred_at: datetime
     direction: ActivityDirection | None
-
-
-class ActivityIn(BaseModel):
-    """Log one touch against a deal. Append-only — there is no update or delete, by
-    design — so every field here describes what happened, not what it should become.
-
-    `type` is the wire name for the touch kind, matching `ActivityOut`. The deal comes
-    from the path and the company from that deal, so neither is accepted in the body.
-    `owner_id` omitted attributes the touch to the calling rep. `occurred_at` omitted is
-    now; it is carried explicitly so a touch logged after the fact keeps its real time.
-    """
-
-    subject: str = Field(min_length=1, max_length=300)
-    type: ActivityType = "note"
-    body: str | None = Field(default=None, max_length=8000)
-    owner_id: uuid.UUID | None = None
-    contact_id: uuid.UUID | None = None
-    direction: ActivityDirection | None = None
-    occurred_at: datetime | None = None
 
 
 # ------------------------------------------------------------------ summary rollups

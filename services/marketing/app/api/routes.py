@@ -4,15 +4,19 @@ The customer-facing routes sit under the `/api/v1/marketing` gateway prefix and 
 marketing SPA's client exactly (`frontend/product-marketing/src/api/client.ts`), so flipping the
 UI from fixtures to live data is a flag flip:
 
-    GET  /marketing/campaigns                     → Page[CampaignOut]
-    GET  /marketing/campaigns/{id}                → CampaignOut
-    GET  /marketing/campaigns/{id}/performance    → list[RevenueSpendPoint]  (weekly)
-    GET  /marketing/audiences                     → Page[AudienceOut]
-    GET  /marketing/analytics/revenue-vs-spend    → list[RevenueSpendPoint]  (monthly)
-    GET  /marketing/overview                      → OverviewSummary          (server rollup)
-    GET  /marketing/channels                      → list[ChannelPerformance] (server rollup)
-    POST /marketing/campaigns                      → CampaignOut              (write)
-    POST /marketing/audiences                      → AudienceOut              (write)
+    GET    /marketing/campaigns                     → Page[CampaignOut]
+    GET    /marketing/campaigns/{id}                → CampaignOut
+    GET    /marketing/campaigns/{id}/performance    → list[RevenueSpendPoint]  (weekly)
+    GET    /marketing/audiences                     → Page[AudienceOut]
+    GET    /marketing/analytics/revenue-vs-spend    → list[RevenueSpendPoint]  (monthly)
+    GET    /marketing/overview                      → OverviewSummary          (server rollup)
+    GET    /marketing/channels                      → list[ChannelPerformance] (server rollup)
+    POST   /marketing/campaigns                      → CampaignOut              (write)
+    PATCH  /marketing/campaigns/{id}                → CampaignOut              (write, incl. status)
+    DELETE /marketing/campaigns/{id}                → 204                      (write, soft delete)
+    POST   /marketing/audiences                      → AudienceOut              (write)
+    PATCH  /marketing/audiences/{id}                → AudienceOut              (write)
+    DELETE /marketing/audiences/{id}                → 204                      (write, soft delete)
 
 The SPA derives the Overview KPIs and the Channels table from the campaign list; `overview` and
 `channels` expose the same rollups server-side (`app.domain`) so a later wiring pass can choose
@@ -27,7 +31,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
@@ -36,8 +40,10 @@ from app.models import SCHEMA, Audience, Campaign
 from app.schemas import (
     AudienceIn,
     AudienceOut,
+    AudiencePatch,
     CampaignIn,
     CampaignOut,
+    CampaignPatch,
     ChannelPerformance,
     OverviewSummary,
     RevenueSpendPoint,
@@ -62,9 +68,13 @@ SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
 Entitled = Depends(require_product("marketing"))
 
 # --- read / write contexts ----------------------------------------------------------
-Reader = Annotated[ScopeContext, Depends(require("marketing.analytics.campaign.read"))]
-#: Writing has no self-service reading, so the floor is ORG — every seat holds the read grant, and
-#: without the floor a write route would be reachable by anyone entitled to the product.
+#: Campaigns and audiences are org-wide analytics, not anyone's own row (`app/selectors.py`'s
+#: module docstring) — there is no owner column a narrower grant could ever legitimately match,
+#: so reading and writing are both ORG-only by design, floored here rather than trusted to a row-
+#: level check that would have nothing real to compare against.
+Reader = Annotated[
+    ScopeContext, Depends(require("marketing.analytics.campaign.read", minimum=Scope.ORG))
+]
 Writer = Annotated[
     ScopeContext, Depends(require("marketing.analytics.campaign.write", minimum=Scope.ORG))
 ]
@@ -163,10 +173,46 @@ async def read_campaign(campaign_id: uuid.UUID, session: SessionDep, ctx: Reader
     campaign = await selectors.get_campaign(session, ctx.organization_id, campaign_id)
     if campaign is None:
         raise NotFoundProblem("That campaign is not part of this organization")
-    # Filtering the list and forgetting the detail is the named vulnerability. Re-apply the
-    # caller's scope to the single row they named.
-    ctx.assert_can_touch(owner_id=campaign.id)
+    # No object-level scope check here: a campaign has no owner column, so `Reader`'s ORG floor
+    # is the whole guarantee — see the comment there.
     return CampaignOut.model_validate(campaign)
+
+
+@router.patch(
+    "/marketing/campaigns/{campaign_id}",
+    response_model=CampaignOut,
+    summary="Edit a campaign, including its status",
+    dependencies=[Entitled],
+)
+async def update_campaign(
+    campaign_id: uuid.UUID,
+    payload: CampaignPatch,
+    session: SessionDep,
+    ctx: Writer,
+    request: Request,
+) -> CampaignOut:
+    campaign = await selectors.get_campaign(session, ctx.organization_id, campaign_id)
+    if campaign is None:
+        raise NotFoundProblem("That campaign is not part of this organization")
+    updated = await services.update_campaign(session, ctx, campaign, payload, request=request)
+    return CampaignOut.model_validate(updated)
+
+
+@router.delete(
+    "/marketing/campaigns/{campaign_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a campaign",
+    dependencies=[Entitled],
+)
+async def delete_campaign(
+    campaign_id: uuid.UUID, session: SessionDep, ctx: Writer, request: Request
+) -> Response:
+    campaign = await selectors.get_campaign(session, ctx.organization_id, campaign_id)
+    if campaign is None:
+        raise NotFoundProblem("That campaign is not part of this organization")
+    await services.delete_campaign(session, ctx, campaign, request=request)
+    await session.flush()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(
@@ -181,7 +227,6 @@ async def campaign_performance(
     campaign = await selectors.get_campaign(session, ctx.organization_id, campaign_id)
     if campaign is None:
         raise NotFoundProblem("That campaign is not part of this organization")
-    ctx.assert_can_touch(owner_id=campaign.id)
     weekly = domain.campaign_weekly(campaign.revenue_minor, campaign.spent_minor)
     return [
         RevenueSpendPoint(label=w.label, revenue_minor=w.revenue_minor, spend_minor=w.spend_minor)
@@ -222,6 +267,43 @@ async def create_audience(
 ) -> AudienceOut:
     audience = await services.create_audience(session, ctx, payload, request=request)
     return _audience_out(audience)
+
+
+@router.patch(
+    "/marketing/audiences/{audience_id}",
+    response_model=AudienceOut,
+    summary="Edit an audience segment",
+    dependencies=[Entitled],
+)
+async def update_audience(
+    audience_id: uuid.UUID,
+    payload: AudiencePatch,
+    session: SessionDep,
+    ctx: Writer,
+    request: Request,
+) -> AudienceOut:
+    audience = await selectors.get_audience(session, ctx.organization_id, audience_id)
+    if audience is None:
+        raise NotFoundProblem("That audience is not part of this organization")
+    updated = await services.update_audience(session, ctx, audience, payload, request=request)
+    return _audience_out(updated)
+
+
+@router.delete(
+    "/marketing/audiences/{audience_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete an audience segment",
+    dependencies=[Entitled],
+)
+async def delete_audience(
+    audience_id: uuid.UUID, session: SessionDep, ctx: Writer, request: Request
+) -> Response:
+    audience = await selectors.get_audience(session, ctx.organization_id, audience_id)
+    if audience is None:
+        raise NotFoundProblem("That audience is not part of this organization")
+    await services.delete_audience(session, ctx, audience, request=request)
+    await session.flush()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --------------------------------------------------------------------- analytics

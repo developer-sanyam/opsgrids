@@ -114,6 +114,12 @@ class EmployeePatch(BaseModel):
     employment_type: EmploymentType | None = None
     work_mode: WorkMode | None = None
     date_of_joining: date | None = None
+    #: A correction to the date the `exited` transition auto-stamped — that transition's own
+    #: comment calls this "a later update" (`app/services.py::transition_status`). The service
+    #: refuses it (`BusinessRuleProblem`) unless the employee's current status is already
+    #: `exited`, and unless it is on or after `date_of_joining`. Not settable on create, and
+    #: never a way to move status itself — that stays the transition endpoint's job alone.
+    date_of_exit: date | None = None
     reporting_manager_id: uuid.UUID | None = None
     dotted_line_manager_id: uuid.UUID | None = None
     #: Present to seal new sensitive values; only the fields set on it are touched.

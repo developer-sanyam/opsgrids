@@ -1,9 +1,12 @@
 /**
  * Realistic fixture data for the ITSM product, shaped exactly like the real API responses so the
- * whole UI renders without a live login. Swapped out by the `USE_FIXTURES` flag in `client.ts`.
+ * whole UI renders without a live login. Loaded through a dynamic `import()` from `client.ts` —
+ * never a static one — so this ~1000-line module never ships in a production build regardless of
+ * `USE_FIXTURES`.
  *
- * The demo clock is 2026-08-24T18:00Z (see `relativeTime` in `@/lib/format`). Incidents, requests
- * and assets all reference the same people and asset tags so drill-downs stay coherent.
+ * The demo clock is 2026-08-24T18:00Z, the same instant `@/lib/clock`'s `now()` pins to in
+ * fixture mode. Incidents, requests and assets all reference the same people and asset tags so
+ * drill-downs stay coherent.
  */
 
 import type {
@@ -880,6 +883,7 @@ export const REQUESTS: ServiceRequest[] = [
     subject: "Vaidehi Kulkarni (joins 01 Sep)",
     status: "approval",
     assignee: "Meera Raghavan",
+    decision_note: null,
     created_at: "2026-08-24T09:05:00Z",
     updated_at: "2026-08-24T09:05:00Z",
   },
@@ -892,6 +896,7 @@ export const REQUESTS: ServiceRequest[] = [
     subject: "Kabir Malhotra (last day 29 Aug)",
     status: "in_progress",
     assignee: "Devansh Rao",
+    decision_note: null,
     created_at: "2026-08-23T15:20:00Z",
     updated_at: "2026-08-24T11:30:00Z",
   },
@@ -904,6 +909,7 @@ export const REQUESTS: ServiceRequest[] = [
     subject: "Grace Adeyemi → Enterprise Sales",
     status: "approval",
     assignee: "Meera Raghavan",
+    decision_note: null,
     created_at: "2026-08-24T10:40:00Z",
     updated_at: "2026-08-24T10:40:00Z",
   },
@@ -916,6 +922,7 @@ export const REQUESTS: ServiceRequest[] = [
     subject: "Aditya Ghosh — finance reporting VPN",
     status: "fulfilled",
     assignee: null,
+    decision_note: null,
     created_at: "2026-08-22T13:10:00Z",
     updated_at: "2026-08-22T16:05:00Z",
   },
@@ -928,6 +935,7 @@ export const REQUESTS: ServiceRequest[] = [
     subject: "Lena Novak — replacement laptop",
     status: "in_progress",
     assignee: "Farah Naidu",
+    decision_note: null,
     created_at: "2026-08-23T10:15:00Z",
     updated_at: "2026-08-24T09:50:00Z",
   },
@@ -940,6 +948,7 @@ export const REQUESTS: ServiceRequest[] = [
     subject: "Add to Ops-Reports shared drive",
     status: "fulfilled",
     assignee: null,
+    decision_note: null,
     created_at: "2026-08-24T08:35:00Z",
     updated_at: "2026-08-24T10:20:00Z",
   },
@@ -952,6 +961,7 @@ export const REQUESTS: ServiceRequest[] = [
     subject: "CC seat for a new designer",
     status: "in_progress",
     assignee: "Nikhil Bose",
+    decision_note: null,
     created_at: "2026-08-24T11:00:00Z",
     updated_at: "2026-08-24T12:45:00Z",
   },
@@ -964,6 +974,7 @@ export const REQUESTS: ServiceRequest[] = [
     subject: "Second display for hybrid desk",
     status: "approval",
     assignee: "Farah Naidu",
+    decision_note: null,
     created_at: "2026-08-24T13:30:00Z",
     updated_at: "2026-08-24T13:30:00Z",
   },
@@ -976,6 +987,7 @@ export const REQUESTS: ServiceRequest[] = [
     subject: "All Products Pack for a backend hire",
     status: "fulfilled",
     assignee: null,
+    decision_note: null,
     created_at: "2026-08-21T09:25:00Z",
     updated_at: "2026-08-21T15:40:00Z",
   },
@@ -988,6 +1000,7 @@ export const REQUESTS: ServiceRequest[] = [
     subject: "Corporate phone for a field AE",
     status: "in_progress",
     assignee: "Devansh Rao",
+    decision_note: null,
     created_at: "2026-08-23T14:50:00Z",
     updated_at: "2026-08-24T08:10:00Z",
   },
@@ -1000,6 +1013,7 @@ export const REQUESTS: ServiceRequest[] = [
     subject: "Arnav Desai (joined 22 Aug)",
     status: "in_progress",
     assignee: "Meera Raghavan",
+    decision_note: null,
     created_at: "2026-08-20T09:00:00Z",
     updated_at: "2026-08-24T10:05:00Z",
   },
@@ -1012,6 +1026,7 @@ export const REQUESTS: ServiceRequest[] = [
     subject: "Staging VPN for QA contractor",
     status: "fulfilled",
     assignee: null,
+    decision_note: null,
     created_at: "2026-08-23T09:12:00Z",
     updated_at: "2026-08-23T13:40:00Z",
   },
@@ -1024,6 +1039,7 @@ export const REQUESTS: ServiceRequest[] = [
     subject: "Finance-Close group membership",
     status: "approval",
     assignee: "Meera Raghavan",
+    decision_note: null,
     created_at: "2026-08-24T14:00:00Z",
     updated_at: "2026-08-24T14:00:00Z",
   },
@@ -1036,6 +1052,7 @@ export const REQUESTS: ServiceRequest[] = [
     subject: "Harpreet Kaur (transfer-out)",
     status: "fulfilled",
     assignee: null,
+    decision_note: null,
     created_at: "2026-08-19T16:30:00Z",
     updated_at: "2026-08-20T11:15:00Z",
   },
@@ -1048,6 +1065,7 @@ export const REQUESTS: ServiceRequest[] = [
     subject: "High-spec laptop for a new lead",
     status: "in_progress",
     assignee: "Farah Naidu",
+    decision_note: null,
     created_at: "2026-08-22T11:45:00Z",
     updated_at: "2026-08-24T09:20:00Z",
   },

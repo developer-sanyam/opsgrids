@@ -167,3 +167,43 @@ class TestCrossTenantOverHttp:
         assert listed.status_code == 200
         assert listed.json()["items"] == []
         assert "INC-4821" not in listed.text
+
+    async def test_org_b_cannot_change_org_as_incident_status(self, client, org_id, data) -> None:
+        other_org = uuid.uuid4()
+        principal = principal_for(
+            other_org, ["itsm.service.incident.write:ORG"], subject_ref=uuid.uuid4()
+        )
+        app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            response = await client.post(
+                "/api/v1/itsm/incidents/INC-4821/status", json={"status": "on_hold"}
+            )
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+        assert response.status_code == 404
+
+    async def test_org_b_cannot_delete_org_as_incident(self, client, org_id, data) -> None:
+        other_org = uuid.uuid4()
+        principal = principal_for(
+            other_org, ["itsm.service.incident.write:ORG"], subject_ref=uuid.uuid4()
+        )
+        app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            response = await client.delete("/api/v1/itsm/incidents/INC-4821")
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+        assert response.status_code == 404
+
+    async def test_org_b_cannot_decide_org_as_request(self, client, org_id, data) -> None:
+        other_org = uuid.uuid4()
+        principal = principal_for(
+            other_org, ["itsm.service.request.write:ORG"], subject_ref=uuid.uuid4()
+        )
+        app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            response = await client.post(
+                "/api/v1/itsm/service-requests/REQ-2051/decision", json={"decision": "approve"}
+            )
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+        assert response.status_code == 404

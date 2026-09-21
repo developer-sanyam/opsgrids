@@ -43,12 +43,15 @@ def test_unknown_route_returns_problem_json() -> None:
     assert "request_id" in response.json()
 
 
-#: The anonymous surface, in full. Two entries, and the list is written out rather than derived
-#: so that adding a third is a deliberate edit in two repositories' worth of policy rather than a
-#: route that quietly starts asking strangers for a token.
+#: The anonymous surface, in full. Written out rather than derived so that adding an entry is a
+#: deliberate edit in two repositories' worth of policy rather than a route that quietly starts
+#: asking strangers for a token. `public/catalogue` and `public/enquiry` are gaps 4 and 6's —
+#: report their addition to the orchestrator for `STOREFRONT_PUBLIC_PATHS` in `app-gateway`.
 PUBLIC_PATHS = {
     "/api/v1/storefront/public/serviceability",
     "/api/v1/storefront/public/store-context",
+    "/api/v1/storefront/public/catalogue",
+    "/api/v1/storefront/public/enquiry",
 }
 
 

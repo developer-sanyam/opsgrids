@@ -4,7 +4,7 @@
     {
       "action": "write",
       "default_scope": "ORG",
-      "description": "Add or update the agents who work the queue",
+      "description": "Add, edit and deactivate the agents who work the queue",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "desk",
@@ -13,7 +13,7 @@
     {
       "action": "write",
       "default_scope": "ORG",
-      "description": "Set the SLA policy the queue is measured against",
+      "description": "Set the SLA policy governing the queue",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "desk",
@@ -31,7 +31,7 @@
     {
       "action": "write",
       "default_scope": "ORG",
-      "description": "Open tickets, reply to them and assign them",
+      "description": "Reply to tickets, assign them, change their status, and create or edit them",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "desk",
@@ -43,7 +43,7 @@
     {
       "code": "SUPPORT_ADMIN",
       "cross_product": false,
-      "description": "Runs the support desk: reads the whole queue and every thread, opens and works tickets, and maintains the desk's reference data \u2014 the agent roster and the SLA policy. Built from the support catalogue alone \u2014 running the desk is not the same job as owning the account.",
+      "description": "Runs the support desk: reads the whole queue and every thread, replies and assigns, and is the only role that manages agents and the SLA policy. Built from the support catalogue alone \u2014 running the desk is not the same job as owning the account.",
       "grants": [
         {
           "code": "support.desk.agent.write",
@@ -69,7 +69,7 @@
     {
       "code": "SUPPORT_AGENT",
       "cross_product": false,
-      "description": "Works the shared queue: reads every ticket, opens them, replies and assigns. Not the roster or the SLA policy \u2014 those are the administrator's.",
+      "description": "Works the shared queue: reads every ticket, replies and assigns.",
       "grants": [
         {
           "code": "support.desk.ticket.read",

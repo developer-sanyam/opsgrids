@@ -32,6 +32,7 @@
 
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { BrowserRouter } from "react-router-dom";
 
 import "./index.css";
 import { BuyerApp } from "./buyer/BuyerApp";
@@ -41,6 +42,12 @@ if (!rootEl) throw new Error("Root element #root not found");
 
 createRoot(rootEl).render(
   <StrictMode>
-    <BuyerApp />
+    {/* Not an auth boundary or a multi-screen router — the bundle still has neither. This is
+        the theme renderer's own requirement: `StoreRenderer`'s in-store navigation is built from
+        `Link`/`NavLink`, so a store with more than one page needs a router to move between them
+        on a buyer's own domain, at the domain's own root (`ShopFront`'s `basePath=""`). */}
+    <BrowserRouter>
+      <BuyerApp />
+    </BrowserRouter>
   </StrictMode>,
 );

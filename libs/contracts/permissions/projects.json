@@ -56,9 +56,18 @@
       "resource": "project"
     },
     {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See delivery-org members",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "team",
+      "resource": "member"
+    },
+    {
       "action": "write",
       "default_scope": "ORG",
-      "description": "Add people to the delivery team",
+      "description": "Add and edit delivery-org members",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "team",
@@ -97,6 +106,10 @@
           "scope": "ORG"
         },
         {
+          "code": "projects.team.member.read",
+          "scope": "ORG"
+        },
+        {
           "code": "projects.team.member.write",
           "scope": "ORG"
         }
@@ -108,7 +121,7 @@
     {
       "code": "PROJECTS_MANAGER",
       "cross_product": false,
-      "description": "Runs projects, milestones and the board org-wide: reads and writes every portfolio resource and staffs the delivery team, but does not administer the product.",
+      "description": "Runs projects, milestones and the board org-wide: reads and writes every portfolio resource, but does not administer the product.",
       "grants": [
         {
           "code": "projects.board.task.read",
@@ -132,6 +145,10 @@
         },
         {
           "code": "projects.portfolio.project.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.team.member.read",
           "scope": "ORG"
         },
         {
@@ -162,6 +179,10 @@
         },
         {
           "code": "projects.portfolio.project.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "projects.team.member.read",
           "scope": "ORG"
         }
       ],

@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
 
 interface PageHeaderProps {
-  eyebrow?: string;
+  eyebrow?: string | undefined;
   title: ReactNode;
   /** An optional line under the heading, for screens that need a sentence of orientation. */
-  description?: string;
-  actions?: ReactNode;
+  description?: string | undefined;
+  actions?: ReactNode | undefined;
 }
 
 /** A screen's title block: a quiet eyebrow, a big tight heading, optional right-aligned actions. */

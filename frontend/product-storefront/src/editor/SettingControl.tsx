@@ -2,9 +2,10 @@ import { useId, useRef, useState } from "react";
 
 import { Button, InlineAlert, Select, Switch, TextArea, TextField } from "@opsgrids/ui";
 
-import { ASSET_ACCEPT, uploadAsset } from "@/api/client";
+import { ASSET_ACCEPT, isUploadServiceUnavailable, uploadAsset } from "@/api/client";
+import type { Category } from "@/api/types";
 import type { SettingField, SettingValue } from "@/theme/schema";
-import { PRODUCT_SOURCE_OPTIONS } from "@/theme/sources";
+import { BASE_PRODUCT_SOURCE_OPTIONS } from "@/theme/sources";
 import { resolveImageSrc } from "@/theme/render/assetSrc";
 
 /**
@@ -24,6 +25,9 @@ interface SettingControlProps {
   onChange: (value: SettingValue) => void;
   /** Read-only rendering is the inspector's job; this only ever disables during a save. */
   disabled?: boolean;
+  /** The merchant's own categories — what a `product-source` field offers on top of the fixed
+   *  "whole catalogue" / "featured" / "in stock" options. Empty until the catalogue loads. */
+  categories?: Category[];
 }
 
 const HEX = /^#[0-9a-f]{6}$/i;
@@ -32,7 +36,13 @@ function asText(value: SettingValue): string {
   return typeof value === "string" ? value : typeof value === "number" ? String(value) : "";
 }
 
-export function SettingControl({ field, value, onChange, disabled = false }: SettingControlProps) {
+export function SettingControl({
+  field,
+  value,
+  onChange,
+  disabled = false,
+  categories = [],
+}: SettingControlProps) {
   const helper = field.help !== undefined ? { helper: field.help } : {};
 
   switch (field.type) {
@@ -66,10 +76,17 @@ export function SettingControl({ field, value, onChange, disabled = false }: Set
       return (
         <SelectControl
           field={field}
-          // A `product-source` without declared options still has a vocabulary: the one the
-          // catalogue and the renderer agree on. Falling back to a free-text box here is how a
-          // store ends up pointing a grid at a collection that has never existed.
-          options={field.options ?? PRODUCT_SOURCE_OPTIONS}
+          // A `product-source` without declared options still has a vocabulary — the fixed
+          // "whole catalogue" / "featured" / "in stock" collections, plus every category the
+          // merchant's own catalogue actually carries. Falling back to a free-text box here is
+          // how a store ends up pointing a grid at a collection that has never existed; falling
+          // back to a fixed demo vocabulary is how it ends up pointing at one that never will.
+          options={
+            field.options ?? [
+              ...BASE_PRODUCT_SOURCE_OPTIONS,
+              ...categories.map((c) => ({ value: `category:${c.key}`, label: c.label })),
+            ]
+          }
           value={value}
           onChange={onChange}
           disabled={disabled}
@@ -125,7 +142,7 @@ function useDraft(value: SettingValue): [string, (next: string) => void] {
   return [draft, setDraft];
 }
 
-function NumberControl({ field, value, onChange, disabled }: Required<SettingControlProps>) {
+function NumberControl({ field, value, onChange, disabled }: Required<Omit<SettingControlProps, "categories">>) {
   const [draft, setDraft] = useDraft(value);
   const [error, setError] = useState<string | undefined>(undefined);
 
@@ -165,7 +182,7 @@ function SelectControl({
   value,
   onChange,
   disabled,
-}: Required<SettingControlProps> & { options: { value: string; label: string }[] }) {
+}: Required<Omit<SettingControlProps, "categories">> & { options: { value: string; label: string }[] }) {
   const current = typeof value === "string" ? value : "";
   // A stored value the theme no longer offers stays visible and selected rather than silently
   // reading as the first option — the merchant chose it, and losing it on open is a data loss.
@@ -188,7 +205,7 @@ function SelectControl({
   );
 }
 
-function ColorControl({ field, value, onChange, disabled }: Required<SettingControlProps>) {
+function ColorControl({ field, value, onChange, disabled }: Required<Omit<SettingControlProps, "categories">>) {
   const [draft, setDraft] = useDraft(value);
   const [error, setError] = useState<string | undefined>(undefined);
   const swatch = HEX.test(draft) ? draft : "#000000";
@@ -246,13 +263,17 @@ function ColorControl({ field, value, onChange, disabled }: Required<SettingCont
  * 12 MB camera original and an SVG logo, are answered in the same instant they are made rather
  * than after a round trip that was never going to succeed.
  */
-function ImageControl({ field, value, onChange, disabled }: Required<SettingControlProps>) {
+function ImageControl({ field, value, onChange, disabled }: Required<Omit<SettingControlProps, "categories">>) {
   const fileInput = useRef<HTMLInputElement>(null);
   const noteId = useId();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [broken, setBroken] = useState(false);
   const [seen, setSeen] = useState(value);
+  // Set the moment a live upload 404s — the known gap: `services/document` isn't deployed on the
+  // box. Re-read on every render, not cached in state, so every open control on the page learns
+  // it the instant the first one finds out.
+  const uploadsUnavailable = isUploadServiceUnavailable();
 
   // The same "reset when the document moved underneath" shape `useDraft` uses. Without it an undo
   // or a successful upload leaves the preview still saying the *previous* address did not load.
@@ -296,32 +317,39 @@ function ImageControl({ field, value, onChange, disabled }: Required<SettingCont
         {...(field.help !== undefined ? { helper: field.help } : {})}
       />
 
-      <div className="flex items-center gap-3">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => fileInput.current?.click()}
-          disabled={disabled || busy}
-          aria-describedby={noteId}
-        >
-          {busy ? "Uploading…" : "Upload"}
-        </Button>
-        {/* Kept out of the tab order and out of the accessibility tree: the button above is the
-            real control, and a focusable element nobody can see is a keyboard trap in miniature. */}
-        <input
-          ref={fileInput}
-          type="file"
-          accept={ASSET_ACCEPT}
-          tabIndex={-1}
-          aria-label={`Upload an image for ${field.label}`}
-          className="hidden"
-          onChange={(event) => void receive(event.target.files?.[0])}
-        />
-        {/* Reserved whether or not it has anything to say, so nothing moves when it does. */}
-        <p role="status" aria-live="polite" className="min-h-4 text-xs text-muted">
-          {busy ? "Uploading…" : null}
-        </p>
-      </div>
+      {uploadsUnavailable ? (
+        <InlineAlert tone="info" live="off" title="Uploads aren't available yet">
+          Paste an image address above instead. This starts working on its own once the upload
+          service is deployed — nothing here needs to change.
+        </InlineAlert>
+      ) : (
+        <div className="flex items-center gap-3">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => fileInput.current?.click()}
+            disabled={disabled || busy}
+            aria-describedby={noteId}
+          >
+            {busy ? "Uploading…" : "Upload"}
+          </Button>
+          {/* Kept out of the tab order and out of the accessibility tree: the button above is the
+              real control, and a focusable element nobody can see is a keyboard trap in miniature. */}
+          <input
+            ref={fileInput}
+            type="file"
+            accept={ASSET_ACCEPT}
+            tabIndex={-1}
+            aria-label={`Upload an image for ${field.label}`}
+            className="hidden"
+            onChange={(event) => void receive(event.target.files?.[0])}
+          />
+          {/* Reserved whether or not it has anything to say, so nothing moves when it does. */}
+          <p role="status" aria-live="polite" className="min-h-4 text-xs text-muted">
+            {busy ? "Uploading…" : null}
+          </p>
+        </div>
+      )}
 
       <p id={noteId} className="text-xs text-muted">
         JPEG, PNG or WebP, up to 5 MB. SVG files aren&apos;t accepted. An uploaded image can be

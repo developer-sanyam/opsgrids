@@ -39,6 +39,7 @@
     { "prefix": "/api/v1/employees", "upstream": "http://localhost:8120", "product": "hrms" },
     { "prefix": "/api/v1/attendance", "upstream": "http://localhost:8121", "product": "hrms" },
     { "prefix": "/api/v1/shifts", "upstream": "http://localhost:8121", "product": "hrms" },
+    { "prefix": "/api/v1/geofences", "upstream": "http://localhost:8121", "product": "hrms" },
     { "prefix": "/api/v1/leave", "upstream": "http://localhost:8122", "product": "hrms" },
     { "prefix": "/api/v1/payroll", "upstream": "http://localhost:8123", "product": "hrms" },
     { "prefix": "/api/v1/recruit", "upstream": "http://localhost:8124", "product": "hrms" },

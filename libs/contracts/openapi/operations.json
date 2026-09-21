@@ -49,6 +49,23 @@
         "title": "AttentionItem",
         "type": "object"
       },
+      "CancelIn": {
+        "additionalProperties": false,
+        "description": "`POST /purchase-orders/{id}/cancel`. The reason is recorded in the audit row's `after`,\nnever silently dropped \u2014 cancelling committed spend needs a \"why\" on the record.",
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "CancelIn",
+        "type": "object"
+      },
       "CategorySpend": {
         "description": "One category's share of committed spend \u2014 grouped from purchase orders. Mirrors the\nSPA's `CategorySpend`.",
         "properties": {
@@ -100,7 +117,8 @@
         "type": "object"
       },
       "InventoryItemIn": {
-        "description": "Stock an item at a warehouse.\n\nStock value (`on_hand * unit_value_minor`) and low-stock (`on_hand <= reorder_point`) are\nderived on read and never sent. `stocked_at` \u2014 the date of the count, surfaced as\n`updated_at` \u2014 defaults to today.",
+        "additionalProperties": false,
+        "description": "`POST /inventory`. `on_hand` is never accepted \u2014 `opening_on_hand` becomes the item's\nfirst `opening` movement instead, so `on_hand` is always the sum of its movements from the\nmoment the row exists.",
         "properties": {
           "category": {
             "enum": [
@@ -127,10 +145,10 @@
             "title": "Name",
             "type": "string"
           },
-          "on_hand": {
+          "opening_on_hand": {
             "default": 0,
             "minimum": 0.0,
-            "title": "On Hand",
+            "title": "Opening On Hand",
             "type": "integer"
           },
           "reorder_point": {
@@ -142,12 +160,8 @@
           "sku": {
             "maxLength": 60,
             "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$",
             "title": "Sku",
-            "type": "string"
-          },
-          "stocked_at": {
-            "format": "date",
-            "title": "Stocked At",
             "type": "string"
           },
           "unit_value_minor": {
@@ -157,14 +171,14 @@
             "type": "integer"
           },
           "uom": {
-            "default": "",
             "maxLength": 20,
+            "minLength": 1,
             "title": "Uom",
             "type": "string"
           },
           "warehouse": {
-            "default": "",
             "maxLength": 120,
+            "minLength": 1,
             "title": "Warehouse",
             "type": "string"
           }
@@ -172,7 +186,9 @@
         "required": [
           "sku",
           "name",
-          "category"
+          "category",
+          "warehouse",
+          "uom"
         ],
         "title": "InventoryItemIn",
         "type": "object"
@@ -248,6 +264,96 @@
           "updated_at"
         ],
         "title": "InventoryItemOut",
+        "type": "object"
+      },
+      "InventoryItemPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /inventory/{id}`. `sku`, `currency` and \u2014 above all \u2014 `on_hand` are deliberately\nabsent: `sku` is the string a PO line joins on, `currency` is the unit the stock value\naccumulated in, and `on_hand` may only ever move through a movement (`/adjustments`).\nSending any of the three is a 422 by `extra=\"forbid\"`, not a silently ignored field.",
+        "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "enum": [
+                  "raw_materials",
+                  "packaging",
+                  "components",
+                  "mro",
+                  "logistics",
+                  "services"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "reorder_point": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reorder Point"
+          },
+          "unit_value_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Value Minor"
+          },
+          "uom": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uom"
+          },
+          "warehouse": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warehouse"
+          }
+        },
+        "title": "InventoryItemPatch",
         "type": "object"
       },
       "OverviewOut": {
@@ -391,6 +497,42 @@
         "title": "Page[PurchaseOrderOut]",
         "type": "object"
       },
+      "Page_StockMovementOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StockMovementOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[StockMovementOut]",
+        "type": "object"
+      },
       "Page_SupplierOut_": {
         "properties": {
           "items": {
@@ -464,7 +606,8 @@
         "type": "object"
       },
       "PoLineIn": {
-        "description": "One requested line. `amount_minor` is not accepted \u2014 the server computes it as\n`quantity * unit_price_minor`, so the lines foot to the derived total by construction and a\nclient cannot assert a total of its own. `received_qty` is not accepted either: a line has\nreceived nothing until the PO is received.",
+        "additionalProperties": false,
+        "description": "One line on `PurchaseOrderIn`/`PurchaseOrderPatch.lines`. `sku` is free text \u2014 a line\nagainst a SKU with no matching inventory item is a service/logistics line, not an error; it\nsimply posts no stock when the PO is received.",
         "properties": {
           "description": {
             "default": "",
@@ -473,7 +616,7 @@
             "type": "string"
           },
           "quantity": {
-            "exclusiveMinimum": 0.0,
+            "minimum": 1.0,
             "title": "Quantity",
             "type": "integer"
           },
@@ -484,6 +627,7 @@
             "type": "string"
           },
           "unit_price_minor": {
+            "default": 0,
             "minimum": 0.0,
             "title": "Unit Price Minor",
             "type": "integer"
@@ -497,8 +641,7 @@
         },
         "required": [
           "sku",
-          "quantity",
-          "unit_price_minor"
+          "quantity"
         ],
         "title": "PoLineIn",
         "type": "object"
@@ -548,19 +691,21 @@
         "type": "object"
       },
       "PurchaseOrderIn": {
-        "description": "Raise a purchase order, naming the supplier by `supplier_id` or by `supplier_code`.\n\nWhat the server derives does not appear here: the total (summed from the lines), each line's\n`amount_minor`, the PO's `category` (denormalised from the supplier) and `raised_by_id` \u2014\nthe raiser is the caller, because that column is what OWN scope narrows on.",
+        "additionalProperties": false,
+        "description": "`POST /purchase-orders`. `status`, `number`, `received_date` and `received_qty` are\nserver-owned and never accepted here: the number is assigned by `services.next_po_number`,\nstatus always starts `draft`, and receiving is its own endpoint. `raised_by_id` is always\n`ctx.subject_ref` \u2014 never the client's word for who is calling.",
         "properties": {
-          "created_date": {
-            "format": "date",
-            "title": "Created Date",
-            "type": "string"
-          },
           "currency": {
-            "default": "INR",
-            "maxLength": 3,
-            "minLength": 3,
-            "title": "Currency",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 3,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
           },
           "expected_date": {
             "format": "date",
@@ -571,13 +716,15 @@
             "items": {
               "$ref": "#/components/schemas/PoLineIn"
             },
+            "maxItems": 200,
+            "minItems": 1,
             "title": "Lines",
             "type": "array"
           },
           "notes": {
             "anyOf": [
               {
-                "maxLength": 8000,
+                "maxLength": 2000,
                 "type": "string"
               },
               {
@@ -586,61 +733,29 @@
             ],
             "title": "Notes"
           },
-          "number": {
-            "maxLength": 40,
-            "minLength": 1,
-            "title": "Number",
-            "type": "string"
-          },
           "raised_by": {
             "default": "",
             "maxLength": 120,
             "title": "Raised By",
             "type": "string"
           },
-          "status": {
-            "default": "draft",
-            "enum": [
-              "draft",
-              "approved"
-            ],
-            "title": "Status",
+          "supplier_id": {
+            "format": "uuid",
+            "title": "Supplier Id",
             "type": "string"
           },
-          "supplier_code": {
-            "anyOf": [
-              {
-                "maxLength": 40,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Supplier Code"
-          },
-          "supplier_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Supplier Id"
-          },
           "warehouse": {
-            "default": "",
             "maxLength": 120,
+            "minLength": 1,
             "title": "Warehouse",
             "type": "string"
           }
         },
         "required": [
-          "number",
-          "expected_date"
+          "supplier_id",
+          "warehouse",
+          "expected_date",
+          "lines"
         ],
         "title": "PurchaseOrderIn",
         "type": "object"
@@ -721,7 +836,8 @@
               "draft",
               "approved",
               "received",
-              "closed"
+              "closed",
+              "cancelled"
             ],
             "title": "Status",
             "type": "string"
@@ -755,6 +871,232 @@
           "notes"
         ],
         "title": "PurchaseOrderOut",
+        "type": "object"
+      },
+      "PurchaseOrderPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /purchase-orders/{id}`, draft only. When `lines` is present it is a **full\nreplacement** of the PO's lines, never a merge. `status` never appears \u2014 every transition\ngoes through its own endpoint (`/approve`, `/receive`, `/close`, `/cancel`).",
+        "properties": {
+          "currency": {
+            "anyOf": [
+              {
+                "maxLength": 3,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "expected_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Date"
+          },
+          "lines": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PoLineIn"
+                },
+                "maxItems": 200,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lines"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "supplier_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supplier Id"
+          },
+          "warehouse": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warehouse"
+          }
+        },
+        "title": "PurchaseOrderPatch",
+        "type": "object"
+      },
+      "PurchaseOrderReceiptOut": {
+        "description": "What receiving answers with: the order, plus the SKUs of the lines that matched no\ninventory item and therefore posted no stock (a freight or service line, or a SKU nobody\nhas created yet).",
+        "properties": {
+          "category": {
+            "enum": [
+              "raw_materials",
+              "packaging",
+              "components",
+              "mro",
+              "logistics",
+              "services"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "created_date": {
+            "format": "date",
+            "title": "Created Date",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "expected_date": {
+            "format": "date",
+            "title": "Expected Date",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "line_items": {
+            "items": {
+              "$ref": "#/components/schemas/PoLineItem"
+            },
+            "title": "Line Items",
+            "type": "array"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "po_number": {
+            "title": "Po Number",
+            "type": "string"
+          },
+          "raised_by": {
+            "title": "Raised By",
+            "type": "string"
+          },
+          "received_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received Date"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "approved",
+              "received",
+              "closed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "supplier_id": {
+            "title": "Supplier Id",
+            "type": "string"
+          },
+          "supplier_name": {
+            "title": "Supplier Name",
+            "type": "string"
+          },
+          "unmatched_skus": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unmatched Skus",
+            "type": "array"
+          },
+          "warehouse": {
+            "title": "Warehouse",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "po_number",
+          "supplier_id",
+          "supplier_name",
+          "category",
+          "status",
+          "currency",
+          "warehouse",
+          "raised_by",
+          "created_date",
+          "expected_date",
+          "received_date",
+          "notes"
+        ],
+        "title": "PurchaseOrderReceiptOut",
+        "type": "object"
+      },
+      "ReceiveIn": {
+        "additionalProperties": false,
+        "description": "`POST /purchase-orders/{id}/receive`. The body is optional \u2014 an empty POST receives as of\ntoday \u2014 so this schema exists only to validate `received_date` when one is sent.",
+        "properties": {
+          "received_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received Date"
+          }
+        },
+        "title": "ReceiveIn",
         "type": "object"
       },
       "ServiceInfo": {
@@ -806,7 +1148,8 @@
               "draft",
               "approved",
               "received",
-              "closed"
+              "closed",
+              "cancelled"
             ],
             "title": "Key",
             "type": "string"
@@ -829,8 +1172,179 @@
         "title": "StatusSlice",
         "type": "object"
       },
+      "StockAdjustmentIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/{id}/adjustments`. Exactly one of `quantity_delta` (a relative add/remove)\nor `counted_on_hand` (an absolute physical count) \u2014 never both, never neither. `reason` is\nrequired with a delta adjustment (why it moved) and forbidden with a count (a count is a\nfact, not a reason).",
+        "properties": {
+          "counted_on_hand": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counted On Hand"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          },
+          "occurred_on": {
+            "format": "date",
+            "title": "Occurred On",
+            "type": "string"
+          },
+          "quantity_delta": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity Delta"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "damaged",
+                  "lost",
+                  "found",
+                  "consumed",
+                  "returned",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "StockAdjustmentIn",
+        "type": "object"
+      },
+      "StockMovementOut": {
+        "description": "One row of an item's movement history. Append-only, newest first \u2014 the ledger\n`on_hand` is the running sum of.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "opening",
+              "receipt",
+              "adjustment",
+              "count"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "occurred_on": {
+            "format": "date",
+            "title": "Occurred On",
+            "type": "string"
+          },
+          "on_hand_after": {
+            "title": "On Hand After",
+            "type": "integer"
+          },
+          "quantity_delta": {
+            "title": "Quantity Delta",
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "damaged",
+                  "lost",
+                  "found",
+                  "consumed",
+                  "returned",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "reference_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Id"
+          },
+          "reference_type": {
+            "anyOf": [
+              {
+                "const": "purchase_order",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Type"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "reason",
+          "quantity_delta",
+          "on_hand_after",
+          "reference_type",
+          "reference_id",
+          "note",
+          "occurred_on",
+          "created_at",
+          "created_by"
+        ],
+        "title": "StockMovementOut",
+        "type": "object"
+      },
       "SupplierIn": {
-        "description": "Add a supplier to the directory.\n\nThe performance figures on `SupplierOut` are not accepted here. `spend_minor` and `open_pos`\nare rollups of this organization's own purchase orders and `on_time_pct` is a trailing\ndelivery rate: all three are things the platform observes, not things a client asserts, and a\nsupplier being added has no history yet. `since` defaults to today because the read contract\nis not nullable.",
+        "additionalProperties": false,
+        "description": "`POST /suppliers`. `spend_minor`, `open_pos` and `on_time_pct` are system-maintained\nrollups \u2014 never accepted here, only ever moved by `_bump_supplier` and the (unbuilt)\non-time-delivery rollup. `since` defaults to today rather than staying null, so the response\nis never the nullable-column 500 gap-12 found.",
         "properties": {
           "category": {
             "enum": [
@@ -847,6 +1361,7 @@
           "code": {
             "maxLength": 40,
             "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
             "title": "Code",
             "type": "string"
           },
@@ -1005,6 +1520,123 @@
         "title": "SupplierOut",
         "type": "object"
       },
+      "SupplierPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /suppliers/{id}`. `code` and `currency` are deliberately absent \u2014 join keys and\nthe unit spend has already accumulated in, neither may move under a supplier. This is also\nhow a supplier's status changes (`active` <-> `on_hold` <-> `pending`).",
+        "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "enum": [
+                  "raw_materials",
+                  "packaging",
+                  "components",
+                  "mro",
+                  "logistics",
+                  "services"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "contact_email": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Email"
+          },
+          "contact_name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Name"
+          },
+          "lead_time_days": {
+            "anyOf": [
+              {
+                "maximum": 365.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lead Time Days"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "active",
+                  "on_hold",
+                  "pending"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "title": "SupplierPatch",
+        "type": "object"
+      },
       "SupplierSpend": {
         "description": "One supplier's share of lifetime spend \u2014 the supplier-breakdown row on the overview.",
         "properties": {
@@ -1088,11 +1720,13 @@
         "type": "object"
       },
       "WarehouseIn": {
-        "description": "Open a stocking location. `code` (`WH-PUN`) is its identity within the organization.",
+        "additionalProperties": false,
+        "description": "`POST /warehouses`. `code` is immutable once created \u2014 it never appears on\n`WarehousePatch`.",
         "properties": {
           "code": {
             "maxLength": 40,
             "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
             "title": "Code",
             "type": "string"
           },
@@ -1143,6 +1777,39 @@
           "location"
         ],
         "title": "WarehouseOut",
+        "type": "object"
+      },
+      "WarehousePatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /warehouses/{id}`. A rename cascades to `purchase_orders.warehouse` and\n`inventory_items.warehouse` in the same transaction \u2014 those columns are denormalised copies\nof `name`, not a join.",
+        "properties": {
+          "location": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "WarehousePatch",
         "type": "object"
       }
     }
@@ -1350,7 +2017,272 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Stock an inventory item",
+        "summary": "Add an inventory item",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/{item_id}": {
+      "delete": {
+        "operationId": "delete_inventory_item_api_v1_operations_inventory__item_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete an inventory item",
+        "tags": [
+          "operations"
+        ]
+      },
+      "get": {
+        "operationId": "read_inventory_item_api_v1_operations_inventory__item_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InventoryItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One inventory item",
+        "tags": [
+          "operations"
+        ]
+      },
+      "patch": {
+        "operationId": "update_inventory_item_api_v1_operations_inventory__item_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InventoryItemPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InventoryItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update an inventory item's card",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/{item_id}/adjustments": {
+      "post": {
+        "operationId": "adjust_stock_api_v1_operations_inventory__item_id__adjustments_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StockAdjustmentIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InventoryItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Adjust or count an item's stock on hand",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/{item_id}/movements": {
+      "get": {
+        "operationId": "list_movements_api_v1_operations_inventory__item_id__movements_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "opening | receipt | adjustment | count",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "opening | receipt | adjustment | count",
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_StockMovementOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "An item's stock movement history, newest first",
         "tags": [
           "operations"
         ]
@@ -1432,6 +2364,23 @@
             }
           },
           {
+            "in": "query",
+            "name": "supplier_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Supplier Id"
+            }
+          },
+          {
             "description": "expected | created | number",
             "in": "query",
             "name": "sort",
@@ -1501,7 +2450,7 @@
         ]
       },
       "post": {
-        "operationId": "raise_purchase_order_api_v1_operations_purchase_orders_post",
+        "operationId": "create_purchase_order_api_v1_operations_purchase_orders_post",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1534,13 +2483,47 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Raise a purchase order against a supplier",
+        "summary": "Raise a purchase order",
         "tags": [
           "operations"
         ]
       }
     },
     "/api/v1/operations/purchase-orders/{po_id}": {
+      "delete": {
+        "operationId": "delete_purchase_order_api_v1_operations_purchase_orders__po_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "po_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Po Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a draft purchase order",
+        "tags": [
+          "operations"
+        ]
+      },
       "get": {
         "operationId": "read_purchase_order_api_v1_operations_purchase_orders__po_id__get",
         "parameters": [
@@ -1581,11 +2564,62 @@
         "tags": [
           "operations"
         ]
+      },
+      "patch": {
+        "operationId": "update_purchase_order_api_v1_operations_purchase_orders__po_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "po_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Po Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurchaseOrderPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseOrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a draft purchase order (and, optionally, replace its lines)",
+        "tags": [
+          "operations"
+        ]
       }
     },
-    "/api/v1/operations/purchase-orders/{po_id}/receive": {
+    "/api/v1/operations/purchase-orders/{po_id}/approve": {
       "post": {
-        "operationId": "receive_purchase_order_api_v1_operations_purchase_orders__po_id__receive_post",
+        "operationId": "approve_purchase_order_api_v1_operations_purchase_orders__po_id__approve_post",
         "parameters": [
           {
             "in": "path",
@@ -1620,7 +2654,163 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Receive a purchase order (marks it received and fills received quantities)",
+        "summary": "Approve a draft purchase order",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/purchase-orders/{po_id}/cancel": {
+      "post": {
+        "operationId": "cancel_purchase_order_api_v1_operations_purchase_orders__po_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "po_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Po Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseOrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel a draft or approved purchase order",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/purchase-orders/{po_id}/close": {
+      "post": {
+        "operationId": "close_purchase_order_api_v1_operations_purchase_orders__po_id__close_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "po_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Po Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseOrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Close a received purchase order",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/purchase-orders/{po_id}/receive": {
+      "post": {
+        "operationId": "receive_purchase_order_api_v1_operations_purchase_orders__po_id__receive_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "po_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Po Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ReceiveIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseOrderReceiptOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Receive an approved purchase order (marks it received, fills received quantities and posts stock)",
         "tags": [
           "operations"
         ]
@@ -1783,13 +2973,47 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Add a supplier to the directory",
+        "summary": "Add a supplier",
         "tags": [
           "operations"
         ]
       }
     },
     "/api/v1/operations/suppliers/{supplier_id}": {
+      "delete": {
+        "operationId": "delete_supplier_api_v1_operations_suppliers__supplier_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "supplier_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Supplier Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a supplier",
+        "tags": [
+          "operations"
+        ]
+      },
       "get": {
         "operationId": "read_supplier_api_v1_operations_suppliers__supplier_id__get",
         "parameters": [
@@ -1827,6 +3051,57 @@
           }
         },
         "summary": "One supplier",
+        "tags": [
+          "operations"
+        ]
+      },
+      "patch": {
+        "operationId": "update_supplier_api_v1_operations_suppliers__supplier_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "supplier_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Supplier Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupplierPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update a supplier",
         "tags": [
           "operations"
         ]
@@ -1921,7 +3196,94 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Open a stocking location",
+        "summary": "Add a warehouse",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/warehouses/{warehouse_id}": {
+      "delete": {
+        "operationId": "delete_warehouse_api_v1_operations_warehouses__warehouse_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "warehouse_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Warehouse Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a warehouse",
+        "tags": [
+          "operations"
+        ]
+      },
+      "patch": {
+        "operationId": "update_warehouse_api_v1_operations_warehouses__warehouse_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "warehouse_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Warehouse Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WarehousePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarehouseOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update a warehouse",
         "tags": [
           "operations"
         ]

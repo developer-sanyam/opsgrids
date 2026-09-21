@@ -7,10 +7,12 @@ interface ComingSoonPageProps {
   icon?: ReactNode;
   title: string;
   description: string;
+  /** Overrides the "Coming soon" eyebrow — a 404 is not a promise of a future feature. */
+  eyebrow?: string;
 }
 
-/** A tasteful placeholder for surfaces not built yet (Leave, Payroll) and 404. */
-export function ComingSoonPage({ icon, title, description }: ComingSoonPageProps) {
+/** A tasteful placeholder for surfaces not built yet (Reports, Automations) and 404. */
+export function ComingSoonPage({ icon, title, description, eyebrow = "Coming soon" }: ComingSoonPageProps) {
   return (
     <div className="rise flex justify-center pt-8">
       <Card className="w-full max-w-lg p-10 text-center flex flex-col items-center gap-5">
@@ -21,7 +23,7 @@ export function ComingSoonPage({ icon, title, description }: ComingSoonPageProps
         ) : null}
         <div className="flex flex-col gap-2">
           <span className="text-sm font-semibold uppercase tracking-wide text-muted">
-            Coming soon
+            {eyebrow}
           </span>
           <h1 className="display text-3xl font-extrabold">{title}</h1>
           <p className="text-sm text-muted leading-relaxed max-w-sm mx-auto">

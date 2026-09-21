@@ -6,15 +6,17 @@ does not commit for the route, so a crash between the state change and the event
 leave one without the other, and a rolled-back write never leaves an audit row claiming it
 happened. Events are staged into the outbox, never published inline (ADR-0000).
 
-These writers are reached two ways, and the rules are the same on both. `app/api/routes.py`
-exposes them over HTTP — that is how the product creates anything — and the demo seed calls
-them directly, so every seeded row lands with the audit row and the outbox event the live
-product produces. Nothing here knows which caller it has; scope is settled at the route and
-tenancy at the session, so the seed cannot take a path a request could not.
+These writers drive both the public write routes (`app/api/routes.py`) and the demo seed,
+which goes through the same real, RLS-bound path (the finance-service precedent), so every
+seeded row lands with an audit row and an outbox event exactly as the live product
+produces them.
 
-A contact's phone arrives already in its masked display form and is stored as such — this
-slice never accepts a raw number (see `app.models`). `last_activity_at` on a contact is
-maintained by `touch_contact_activity`, called when the pipeline logs a touch.
+A contact's phone arrives either already masked (the seed's historical shape) or as a raw
+`raw_phone`, sealed here and never stored in the clear (see `app.models`).
+`last_activity_at` on a contact is maintained by `touch_contact_activity`, called when the
+pipeline logs a touch. Delete is soft throughout: a row's `deleted_at` is set, never
+removed, and a company with contacts still attached refuses rather than cascading — the
+smaller, safer change (CLAUDE.md; no hard delete of anything with children).
 """
 
 from __future__ import annotations
@@ -30,15 +32,26 @@ from starlette.requests import Request
 from app import selectors
 from app.config import settings
 from app.models import AuditLog, Company, Contact, OutboxEvent, Owner
+from app.schemas import CompanyPatch, ContactPatch
 from platform_core.audit import record_audit, record_sensitive_read
-from platform_core.auth import ScopeContext
-from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
+from platform_core.auth import Principal, Scope, ScopeContext
+from platform_core.errors import (
+    ConflictProblem,
+    ForbiddenProblem,
+    NotFoundProblem,
+    ValidationProblem,
+)
 from platform_core.events import publish_event
+from platform_core.models import utcnow
 from platform_core.pii import blind_index, open_sealed, seal
 
 # Event names. `crm.*` because these are the product's own, not the platform's.
 EVT_COMPANY_CREATED = "crm.book.company.created"
+EVT_COMPANY_UPDATED = "crm.book.company.updated"
+EVT_COMPANY_DELETED = "crm.book.company.deleted"
 EVT_CONTACT_CREATED = "crm.book.contact.created"
+EVT_CONTACT_UPDATED = "crm.book.contact.updated"
+EVT_CONTACT_DELETED = "crm.book.contact.deleted"
 
 
 def _actor(ctx: ScopeContext) -> dict[str, Any]:
@@ -47,6 +60,41 @@ def _actor(ctx: ScopeContext) -> dict[str, Any]:
         "id": str(ctx.principal.sub),
         "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
     }
+
+
+#: The permission the pipeline's `activity.logged` consumer runs under. `touch_contact_activity`
+#: writes no audit row of its own (derived bookkeeping, not a business decision — see its
+#: docstring), so this exists only to give the write path a `ScopeContext`, not to gate anything.
+_ACTIVITY_TOUCH_PERMISSION = "crm.book.contact.write"
+
+
+def service_ctx(organization_id: uuid.UUID) -> ScopeContext:
+    """The scope context the activity-touch consumer runs under.
+
+    `sub` is a stable, all-zero UUID rather than a random one, so this write is
+    attributable to "the platform" rather than to an id nobody can join. ORG scope: the
+    event names the contact directly, so there is no caller-owned row to narrow to.
+    """
+    principal = Principal(
+        sub=uuid.UUID(int=0),
+        organization_id=organization_id,
+        membership_id=None,
+        perms=[f"{_ACTIVITY_TOUCH_PERMISSION}:ORG"],
+        entitlements=["crm"],
+    )
+    return ScopeContext(principal=principal, scope=Scope.ORG, permission=_ACTIVITY_TOUCH_PERMISSION)
+
+
+async def _assert_owner_assignable(
+    session: AsyncSession, ctx: ScopeContext, owner_id: uuid.UUID
+) -> None:
+    """`owner_id` must resolve to a rep in this organization, and an OWN-scoped caller may
+    only assign their own accounts to themselves — they may not hand a company to another
+    rep any more than they could already see another rep's book."""
+    if await selectors.get_owner(session, ctx.organization_id, owner_id) is None:
+        raise NotFoundProblem("That owner is not part of this organization")
+    if ctx.scope is Scope.OWN and ctx.subject_ref != owner_id:
+        raise ForbiddenProblem("You can only assign companies you own to yourself")
 
 
 # ------------------------------------------------------------------ owners
@@ -116,6 +164,7 @@ async def create_company(
     """The core company writer. Inserts the account, records the audit row and stages the
     `created` event — all in the caller's transaction. `annual_revenue_minor` is integer
     minor units of `currency`; no float is accepted anywhere on this path."""
+    await _assert_owner_assignable(session, ctx, owner_id)
     if await selectors.get_company_by_name(session, ctx.organization_id, name):
         raise ConflictProblem(f"A company named {name!r} already exists")
 
@@ -171,6 +220,114 @@ async def create_company(
     return company
 
 
+async def update_company(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    company: Company,
+    payload: CompanyPatch,
+    *,
+    request: Request | None = None,
+) -> Company:
+    """Patch the plain company fields. Absent means "leave alone"; only the fields sent
+    are checked, changed and audited. Renaming onto another live company's name, or
+    reassigning to an owner outside the org (or, for an OWN-scoped caller, to anyone but
+    themselves), both refuse."""
+    changes = payload.model_dump(exclude_unset=True)
+
+    if "name" in changes and changes["name"] != company.name:
+        existing = await selectors.get_company_by_name(
+            session, ctx.organization_id, changes["name"]
+        )
+        if existing is not None and existing.id != company.id:
+            raise ConflictProblem(f"A company named {changes['name']!r} already exists")
+
+    if "owner_id" in changes:
+        await _assert_owner_assignable(session, ctx, changes["owner_id"])
+
+    if "currency" in changes:
+        changes["currency"] = changes["currency"].upper()
+
+    before = {field: getattr(company, field) for field in changes}
+    for field, value in changes.items():
+        setattr(company, field, value)
+    company.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="company.updated",
+        entity="company",
+        entity_id=company.id,
+        before=before,
+        after=changes,
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_COMPANY_UPDATED,
+        aggregate_type="company",
+        aggregate_id=company.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "company_id": str(company.id),
+            "changed": sorted(changes),
+        },
+        actor=_actor(ctx),
+    )
+    return company
+
+
+async def delete_company(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    company: Company,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Soft-delete a company. Refused (409) while it still has contacts — cascading the
+    soft delete onto them would be the alternative, but refusing is the smaller, safer
+    change (CLAUDE.md: no hard delete of anything with children; deal-service cannot see
+    this delete, so a deleted company's deals keep the id and render it as "—")."""
+    remaining = await selectors.count_contacts_for_company(session, ctx.organization_id, company.id)
+    if remaining > 0:
+        raise ConflictProblem(
+            "This company still has contacts. Reassign or delete them before deleting the account."
+        )
+
+    before_deleted_at = company.deleted_at
+    company.deleted_at = utcnow()
+    company.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="company.deleted",
+        entity="company",
+        entity_id=company.id,
+        before={"deleted_at": before_deleted_at},
+        after={"deleted_at": company.deleted_at},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_COMPANY_DELETED,
+        aggregate_type="company",
+        aggregate_id=company.id,
+        payload={"organization_id": str(ctx.organization_id), "company_id": str(company.id)},
+        actor=_actor(ctx),
+    )
+
+
 # ------------------------------------------------------------------ contacts
 
 
@@ -201,6 +358,7 @@ async def create_contact(
     *derived* from it, overriding `phone`, so the pair can never disagree. Callers that pass
     neither get the previous behaviour exactly, which is why no existing caller changes.
     """
+    await _assert_owner_assignable(session, ctx, owner_id)
     if await selectors.get_contact_by_email(session, ctx.organization_id, email):
         raise ConflictProblem(f"A contact with email {email!r} already exists")
     company = await selectors.get_company(session, ctx.organization_id, company_id)
@@ -265,6 +423,110 @@ async def create_contact(
         actor=_actor(ctx),
     )
     return contact
+
+
+async def update_contact(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    contact: Contact,
+    payload: ContactPatch,
+    *,
+    request: Request | None = None,
+) -> Contact:
+    """Patch the plain contact fields. Never the phone — `ContactPatch` has no `phone` or
+    `raw_phone` field, so this can never touch `phone`, `phone_enc` or `phone_index`; the
+    number stays on its own dedicated route. Renaming onto another live contact's email,
+    moving to a company outside the org, or reassigning to an owner outside the org (or,
+    for an OWN-scoped caller, to anyone but themselves), all refuse — the same rule
+    `update_company` applies to `owner_id`."""
+    changes = payload.model_dump(exclude_unset=True)
+
+    if "email" in changes and changes["email"] != contact.email:
+        existing = await selectors.get_contact_by_email(
+            session, ctx.organization_id, changes["email"]
+        )
+        if existing is not None and existing.id != contact.id:
+            raise ConflictProblem(f"A contact with email {changes['email']!r} already exists")
+
+    if "owner_id" in changes:
+        await _assert_owner_assignable(session, ctx, changes["owner_id"])
+
+    if "company_id" in changes:
+        company = await selectors.get_company(session, ctx.organization_id, changes["company_id"])
+        if company is None:
+            raise NotFoundProblem("That company is not part of this organization")
+
+    before = {field: getattr(contact, field) for field in changes}
+    for field, value in changes.items():
+        setattr(contact, field, value)
+    contact.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="contact.updated",
+        entity="contact",
+        entity_id=contact.id,
+        before=before,
+        after=changes,
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_CONTACT_UPDATED,
+        aggregate_type="contact",
+        aggregate_id=contact.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "contact_id": str(contact.id),
+            "changed": sorted(changes),
+        },
+        actor=_actor(ctx),
+    )
+    return contact
+
+
+async def delete_contact(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    contact: Contact,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Soft-delete a contact. No children to worry about — activities reference a
+    contact by plain cross-schema UUID, never a foreign key, so nothing here cascades."""
+    before_deleted_at = contact.deleted_at
+    contact.deleted_at = utcnow()
+    contact.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="contact.deleted",
+        entity="contact",
+        entity_id=contact.id,
+        before={"deleted_at": before_deleted_at},
+        after={"deleted_at": contact.deleted_at},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_CONTACT_DELETED,
+        aggregate_type="contact",
+        aggregate_id=contact.id,
+        payload={"organization_id": str(ctx.organization_id), "contact_id": str(contact.id)},
+        actor=_actor(ctx),
+    )
 
 
 async def touch_contact_activity(

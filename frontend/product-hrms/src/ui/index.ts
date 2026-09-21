@@ -27,7 +27,5 @@ export { HeadcountByDepartment } from "./HeadcountByDepartment";
 export { HeadcountTrend } from "./HeadcountTrend";
 export { WorkforceMix } from "./WorkforceMix";
 export type { MiniStat } from "./WorkforceMix";
-export { RecentActivity } from "./RecentActivity";
-export { TasksToday } from "./TasksToday";
 export { EmployeesPanel } from "./EmployeesPanel";
 export { AttendancePill, EmployeeStatusPill } from "./StatusPill";

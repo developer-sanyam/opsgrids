@@ -83,6 +83,18 @@ export interface PublicStoreContextIn {
  * the buyer surface may pass these through `dangerouslySetInnerHTML` or build markup by hand.
  * `BuyerApp.test.tsx` pins it.
  */
+/** The adopted theme's tokens and pages — the only public representation of the theme document
+ *  (ADR-0012 §11's coordination note: extend `StoreContextOut`, not add a second call). `tokens`
+ *  and `pages` are typed loosely because the server itself types them `dict`/`list[dict]`
+ *  (`ThemeDocOut` in `schemas.py`) — this bundle hands them to `StoreRenderer` as-is, the same
+ *  shape the console's `getStore()` already composes. */
+export interface PublicThemeOut {
+  theme_key: string;
+  mode: string;
+  tokens: Record<string, unknown>;
+  pages: unknown[];
+}
+
 export interface StoreContextOut {
   /** The slug. **Every later public call puts this in its `store` field** — including ADR-0010's
    *  `POST /public/serviceability`, whose body is `extra="forbid"` and is unchanged by this route
@@ -99,6 +111,9 @@ export interface StoreContextOut {
   /** Slice 1 does not redirect. `false` is not an error and not a signal to navigate — at most a
    *  quiet line (ADR-0012 §8). */
   is_canonical: boolean;
+  /** `null` when the store has published with no theme adopted — a store name and nothing else
+   *  is still a valid published store, and `ShopFront` renders its own honest holding state. */
+  theme: PublicThemeOut | null;
   checked_at: string;
 }
 
@@ -159,6 +174,10 @@ function isStoreContext(value: unknown): value is StoreContextOut {
     typeof candidate.timezone === "string" &&
     typeof candidate.canonical_host === "string" &&
     typeof candidate.is_canonical === "boolean" &&
+    (candidate.theme === null ||
+      candidate.theme === undefined ||
+      (typeof candidate.theme === "object" &&
+        typeof (candidate.theme as { theme_key?: unknown }).theme_key === "string")) &&
     typeof candidate.checked_at === "string"
   );
 }

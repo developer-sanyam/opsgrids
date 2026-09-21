@@ -31,6 +31,22 @@ def test_viewer_holds_read_but_not_write() -> None:
     assert "support.desk.ticket.write" not in codes
 
 
+def test_only_support_admin_manages_agents_and_the_sla_policy() -> None:
+    """`support.desk.agent.write` and `support.desk.sla_policy.write` are narrower than the
+    desk's ordinary write — a real tenant with agents managed by anyone but the admin is the
+    exact hole gap 6/7 of the audit exists to close."""
+    for template in SUPPORT_ROLE_TEMPLATES:
+        codes = {g.code for g in template.grants}
+        holds_admin_only = {"support.desk.agent.write", "support.desk.sla_policy.write"} & codes
+        if template.code == "SUPPORT_ADMIN":
+            assert holds_admin_only == {
+                "support.desk.agent.write",
+                "support.desk.sla_policy.write",
+            }
+        else:
+            assert not holds_admin_only
+
+
 def test_guard_rejects_a_foreign_product_grant() -> None:
     rogue = RoleTemplate(
         code="ROGUE",

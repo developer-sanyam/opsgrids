@@ -58,3 +58,12 @@ export function daysBetween(aIso: string, bIso: string): number {
   const b = Date.parse(`${bIso}T00:00:00Z`);
   return Math.round((b - a) / 86_400_000);
 }
+
+/**
+ * The real device clock, as `YYYY-MM-DD`. The one place live code reads "today" — never a frozen
+ * fixture constant, which is only ever imported from a component gated on fixture mode. Takes an
+ * optional injection point for a test that needs a fixed instant.
+ */
+export function today(clock: () => Date = () => new Date()): string {
+  return clock().toISOString().slice(0, 10);
+}

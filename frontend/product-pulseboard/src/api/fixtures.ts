@@ -14,6 +14,7 @@ import type {
   StandupEntry,
   Task,
   TimesheetCell,
+  TimesheetEntry,
   TimesheetRow,
   TimesheetStatus,
 } from "./types";
@@ -116,12 +117,33 @@ function buildCells(personIndex: number, capacity: number): TimesheetCell[] {
   });
 }
 
-export const TIMESHEETS: TimesheetRow[] = PEOPLE.map((p, i) => ({
-  person_id: p.id,
-  week_start: WEEK_START,
-  status: TIMESHEET_STATUS[i] ?? "draft",
-  cells: buildCells(i, p.capacity_hours),
-}));
+/** The first engagement a person owns, for the fixture entries' `project_ref` — or `null`. */
+function projectRefFor(personRef: string): string | null {
+  return PROJECTS.find((p) => p.owner_id === personRef)?.code ?? null;
+}
+
+function buildEntries(personRef: string, cells: TimesheetCell[]): TimesheetEntry[] {
+  const ref = projectRefFor(personRef);
+  return cells
+    .filter((c) => c.entered_hours > 0)
+    .map((c) => ({
+      date: c.date,
+      project_ref: ref,
+      entered_hours: c.entered_hours,
+      billable_hours: c.billable_hours,
+    }));
+}
+
+export const TIMESHEETS: TimesheetRow[] = PEOPLE.map((p, i) => {
+  const cells = buildCells(i, p.capacity_hours);
+  return {
+    person_id: p.id,
+    week_start: WEEK_START,
+    status: TIMESHEET_STATUS[i] ?? "draft",
+    cells,
+    entries: buildEntries(p.id, cells),
+  };
+});
 
 /* ------------------------------------- standups ------------------------------------ */
 

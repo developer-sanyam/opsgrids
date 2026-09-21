@@ -14,11 +14,16 @@
  * error that is *not* a `StoreContextError` — a bug in this bundle — falls to `"unavailable"`.
  * ──────────────────────────────────────────────────────────────────────────────────────────
  *
- * **There is no router, no `AuthProvider` and no `RequireAuth` here, and there cannot be.** The
- * refresh cookie is scoped to `.opsgrids.com` (ADR-0001), so on a merchant's own domain a session
- * cannot exist: a guard would redirect to a sign-in page that cannot help, and the auth client
- * would be dead weight on the first-paint path with an XSS surface and nothing to gain. This is
- * why ADR-0012 §2 builds a second Vite entry instead of a route.
+ * **There is no `AuthProvider` and no `RequireAuth` here, and there cannot be.** The refresh
+ * cookie is scoped to `.opsgrids.com` (ADR-0001), so on a merchant's own domain a session cannot
+ * exist: a guard would redirect to a sign-in page that cannot help, and the auth client would be
+ * dead weight on the first-paint path with an XSS surface and nothing to gain. This is why
+ * ADR-0012 §2 builds a second Vite entry instead of a route.
+ *
+ * **`main.buyer.tsx` does mount a bare `BrowserRouter`**, added once a theme could have more than
+ * one page: `StoreRenderer`'s in-store navigation is `Link`/`NavLink`, which need a router to
+ * move between a shop's pages at all. It carries no `@opsgrids/client` route table, no guard and
+ * no auth-aware anything — just history.
  *
  * **The fetch is hand-rolled rather than `useAsync`.** The console's screens use the SDK's hook,
  * and importing it here would pull `@opsgrids/client`'s barrel — the auth provider, the guard,

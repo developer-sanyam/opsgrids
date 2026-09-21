@@ -16,6 +16,7 @@ FINANCE_READS = (
     "finance.billing.invoice.read",
     "finance.billing.payment.read",
     "finance.billing.customer.read",
+    "finance.billing.purchase.read",
     "finance.reports.summary.read",
     "finance.reports.ledger.read",
     "finance.compliance.einvoice.read",
@@ -34,6 +35,10 @@ FINANCE_WRITES = (
     "finance.compliance.ims.decide",
     "finance.compliance.returns.generate",
     "finance.compliance.returns.file",
+    "finance.billing.invoice.issue",
+    "finance.billing.payment.record",
+    "finance.billing.customer.write",
+    "finance.billing.purchase.write",
 )
 
 FINANCE_PERMISSIONS = FINANCE_READS + FINANCE_WRITES

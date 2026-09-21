@@ -1,28 +1,36 @@
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
+import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
 import { configureSession } from "@opsgrids/client";
-import {
-  FileTextIcon,
-  LifeBuoyIcon,
-  PlugIcon,
-  SettingsIcon,
-  ThemeProvider,
-  UserPlusIcon,
-  UsersIcon,
-} from "@opsgrids/ui";
+import { ThemeProvider } from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
 import { RequireAuth } from "./auth/RequireAuth";
 import { OverviewPage } from "./routes/Overview";
-import { ProjectsPage } from "./routes/Projects";
-import { BoardPage } from "./routes/Board";
-import { TimesheetsPage } from "./routes/Timesheets";
-import { StandupsPage } from "./routes/Standups";
 import { LoginPage } from "./routes/Login";
 import { ComingSoonPage } from "./routes/ComingSoon";
+import { RouteFallback } from "./routes/RouteFallback";
+
+/**
+ * Everything but the landing page is a split point.
+ *
+ * Overview is where a session lands after sign-in, so it (and `Login`) stay on the critical path.
+ * Every other screen — the board's drag-and-drop, the weekly time grid and its entry dialog, the
+ * roster and standup forms — is real weight a person who only ever checks the Overview should
+ * never download. Each gets its own chunk, loaded once its route is actually visited.
+ */
+const ProjectsPage = lazy(() => import("./routes/Projects").then((m) => ({ default: m.ProjectsPage })));
+const BoardPage = lazy(() => import("./routes/Board").then((m) => ({ default: m.BoardPage })));
+const TimesheetsPage = lazy(() => import("./routes/Timesheets").then((m) => ({ default: m.TimesheetsPage })));
+const StandupsPage = lazy(() => import("./routes/Standups").then((m) => ({ default: m.StandupsPage })));
+const PeoplePage = lazy(() => import("./routes/People").then((m) => ({ default: m.PeoplePage })));
+
+function lazyRoute(path: string, element: ReactNode) {
+  return { path, element: <Suspense fallback={<RouteFallback />}>{element}</Suspense> };
+}
 
 const router = createBrowserRouter([
   {
@@ -43,70 +51,11 @@ const router = createBrowserRouter([
         ),
         children: [
           { index: true, element: <OverviewPage /> },
-          { path: "projects", element: <ProjectsPage /> },
-          { path: "board", element: <BoardPage /> },
-          { path: "timesheets", element: <TimesheetsPage /> },
-          { path: "standups", element: <StandupsPage /> },
-          {
-            path: "people",
-            element: (
-              <ComingSoonPage
-                icon={<UsersIcon className="size-6" />}
-                title="People"
-                description="Capacity, allocations and per-person workload land here. Timesheets already show who logged what this week."
-              />
-            ),
-          },
-          {
-            path: "reports",
-            element: (
-              <ComingSoonPage
-                icon={<FileTextIcon className="size-6" />}
-                title="Reports"
-                description="Exportable utilization, margin and delivery reports are on the roadmap. The Overview already rolls up the headline numbers."
-              />
-            ),
-          },
-          {
-            path: "integrations",
-            element: (
-              <ComingSoonPage
-                icon={<PlugIcon className="size-6" />}
-                title="Integrations"
-                description="Connect Git, calendars and invoicing so the board and timesheets stay in sync automatically."
-              />
-            ),
-          },
-          {
-            path: "team",
-            element: (
-              <ComingSoonPage
-                icon={<UserPlusIcon className="size-6" />}
-                title="Team Members"
-                description="Invite and manage the people who can see and edit this delivery workspace."
-              />
-            ),
-          },
-          {
-            path: "settings",
-            element: (
-              <ComingSoonPage
-                icon={<SettingsIcon className="size-6" />}
-                title="Settings"
-                description="Workspace preferences, billing rates and approval policies will live here."
-              />
-            ),
-          },
-          {
-            path: "help",
-            element: (
-              <ComingSoonPage
-                icon={<LifeBuoyIcon className="size-6" />}
-                title="Help & Getting Started"
-                description="Guides and support for setting up your delivery workspace are on the way."
-              />
-            ),
-          },
+          lazyRoute("projects", <ProjectsPage />),
+          lazyRoute("board", <BoardPage />),
+          lazyRoute("timesheets", <TimesheetsPage />),
+          lazyRoute("standups", <StandupsPage />),
+          lazyRoute("people", <PeoplePage />),
           {
             path: "*",
             element: (

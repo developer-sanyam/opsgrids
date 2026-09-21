@@ -14,6 +14,7 @@ float.
 
 from __future__ import annotations
 
+import enum
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
@@ -173,3 +174,51 @@ def campaign_weekly(revenue_minor: int, spent_minor: int) -> list[WeekPoint]:
         )
         for label, rev_frac, spend_frac in CAMPAIGN_WEEK_SHAPE
     ]
+
+
+# --------------------------------------------------------------------- campaign lifecycle
+
+
+class CampaignStatus(enum.StrEnum):
+    """The states a campaign moves through. Mirrors `models.CAMPAIGN_STATUSES` — kept as its own
+    enum here (rather than importing the model's plain tuple) so this module stays a pure layer
+    with no dependency on `app.models`, the same reasoning `CampaignAmounts` follows."""
+
+    DRAFT = "draft"
+    LIVE = "live"
+    PAUSED = "paused"
+    ENDED = "ended"
+
+
+#: The only transitions the product allows. A campaign launches once (`draft` → `live`), then
+#: cycles between running and paused (`live` ⇄ `paused`) until it is deliberately ended.
+#: `ended` is terminal — relaunching is a new campaign, not a resurrection, so the historical
+#: numbers stay attached to what actually ran.
+CAMPAIGN_TRANSITIONS: dict[CampaignStatus, frozenset[CampaignStatus]] = {
+    CampaignStatus.DRAFT: frozenset({CampaignStatus.LIVE}),
+    CampaignStatus.LIVE: frozenset({CampaignStatus.PAUSED, CampaignStatus.ENDED}),
+    CampaignStatus.PAUSED: frozenset({CampaignStatus.LIVE, CampaignStatus.ENDED}),
+    CampaignStatus.ENDED: frozenset(),
+}
+
+
+class IllegalCampaignTransition(ValueError):
+    """A status move the lifecycle does not permit. Carries the offending pair so the service
+    layer can turn it into a conflict naming both states."""
+
+    def __init__(self, current: CampaignStatus, target: CampaignStatus) -> None:
+        self.current = current
+        self.target = target
+        super().__init__(f"A campaign cannot move from {current.value!r} to {target.value!r}")
+
+
+def can_transition_campaign(current: CampaignStatus, target: CampaignStatus) -> bool:
+    """Whether moving from `current` to `target` is a legal lifecycle step."""
+    return target in CAMPAIGN_TRANSITIONS[current]
+
+
+def assert_can_transition_campaign(current: CampaignStatus, target: CampaignStatus) -> None:
+    """Raise `IllegalCampaignTransition` unless the step is allowed. The single validation
+    point — a PATCH can never set a free-form status."""
+    if not can_transition_campaign(current, target):
+        raise IllegalCampaignTransition(current, target)

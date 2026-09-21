@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain
 from app.models import Timesheet, TimesheetEntry
-from app.schemas import TimesheetCellOut, TimesheetRowOut
+from app.schemas import TimesheetCellOut, TimesheetEntryOut, TimesheetRowOut
 from platform_core.auth import ScopeContext
 
 # ------------------------------------------------------------------ timesheets
@@ -109,11 +109,21 @@ def row_out(sheet: Timesheet, entries: list[TimesheetEntry]) -> TimesheetRowOut:
         )
         for day in domain.week_dates(sheet.week_start)
     ]
+    entry_items = [
+        TimesheetEntryOut(
+            date=entry.work_date,
+            project_ref=entry.project_ref,
+            entered_hours=domain.hours(entry.entered_minutes),
+            billable_hours=domain.hours(entry.billable_minutes),
+        )
+        for entry in entries
+    ]
     return TimesheetRowOut(
         person_id=sheet.person_ref,
         week_start=sheet.week_start,
         status=sheet.status,
         cells=cells,
+        entries=entry_items,
     )
 
 

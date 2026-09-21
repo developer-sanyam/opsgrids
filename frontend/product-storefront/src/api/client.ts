@@ -1,13 +1,16 @@
 /**
- * Typed Storefront API client.
+ * Typed Storefront API client — the theme document and the merchant's catalogue.
  *
- * **Fixtures by default, because there is no storefront service yet.** Nothing on the gateway
- * serves themes, store documents or this catalogue on this branch — that is expected at this stage
- * and stated here rather than papered over. The whole app therefore renders from `fixtures.ts` and
- * the theme library with no gateway and no login. Set `VITE_USE_FIXTURES=false` once the service
- * ships and every call switches to the gateway at the same-origin `/api/v1` prefix (Vite proxies
- * it to `http://localhost:8100` in dev) with the bearer token from the session — the live paths are
- * written out below already, so going live is a flag flip and not a rewrite.
+ * **Fixtures by default in dev.** `USE_FIXTURES` is `true` only when `import.meta.env.DEV` and
+ * `VITE_USE_FIXTURES` is not explicitly `"false"`, so a production build always talks to the real
+ * gateway at the same-origin `/api/v1` prefix (Vite proxies it to the gateway in dev) with the
+ * bearer token from the session. `services/storefront` is real and routed
+ * (`infrastructure/edge/routes.prod.json`); this module's live branches are what a merchant's
+ * console actually calls.
+ *
+ * Enquiries and serviceability are anonymous, buyer-facing calls and live in
+ * `@/api/publicClient` instead — that module carries none of `@opsgrids/client`, the theme
+ * library or the fixture catalogue, which the buyer bundle must not ship (see its header).
  */
 
 import {
@@ -22,14 +25,8 @@ import {
 import { adoptTheme as forkTheme, resolveMode } from "@/theme/store";
 import type { StoreDoc, Theme } from "@/theme/schema";
 import { quickcart, suggestedBrand, themeByKey, THEMES } from "@/theme/themes";
-import {
-  CATEGORY_LIST,
-  PRODUCTS,
-  RETAIL_CATEGORY_LIST,
-  RETAIL_PRODUCTS,
-  SERVICEABILITY_FAULT_CODE,
-  SERVICEABILITY_ZONES,
-} from "./fixtures";
+import { getStoreIdentity } from "@/settings/api";
+import { CATEGORY_LIST, PRODUCTS, RETAIL_CATEGORY_LIST, RETAIL_PRODUCTS } from "./fixtures";
 import type { Asset, Category, Page, Product, StoreResponse } from "./types";
 
 /**
@@ -62,7 +59,8 @@ export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXT
 /** True when the app is talking to the real gateway. */
 export const LIVE = !USE_FIXTURES;
 
-/** A generous page size — one request returns the whole (small) catalogue for this org. */
+/** A generous page size — one request returns the whole (small) catalogue for the theme
+ *  renderer's own preview. The dedicated Products/Categories screens page for real. */
 const FULL_PAGE = 200;
 
 /** Small artificial delay so loading states are exercised in fixtures mode. */
@@ -81,48 +79,96 @@ export async function listThemes(): Promise<Theme[]> {
   return settle(THEMES, 120);
 }
 
-/* --------------------------------- store --------------------------------- */
+/* ----------------------------- theme document ----------------------------- */
 
 /**
- * The merchant's store document, in session.
+ * The theme document — `GET/PUT/DELETE /storefront/theme` (ADR-0011 §3). **PUT is adopt**: there
+ * is no separate `/adopt` route, so `adoptTheme` forks the theme client-side (as it always did)
+ * and PUTs the result. `brand` is not part of this document (ADR-0011 §2) — it lives on the store
+ * identity (`StoreOut.name/tagline/logo_text`), so composing a `StoreDoc` for the renderer means
+ * reading both resources and merging them, done once here so every screen keeps calling
+ * `getStore()` and getting a `StoreDoc` back exactly as before.
  *
- * Fixture mode starts with a theme already adopted so the buyer-facing view is reachable without
- * a click; "Remove this store" on the gallery clears it back to `null`, which is the state a
- * merchant who has just activated the product is genuinely in.
- *
- * The pre-adopted theme is `quickcart`, paired with *its own* suggested brand. `adoptTheme` keeps
- * whatever brand the store already has, which is right for a real merchant re-theming and wrong
- * for a seed — forking here rather than calling `adoptTheme` is what keeps both true.
+ * **Optimistic concurrency.** `version` travels with every save and a stale one is a 409
+ * `theme_version_conflict` — the server's own detail already tells the merchant to reload, and
+ * `EditorShell` renders it with a "Reload" action rather than "Try again".
  */
 let currentStore: StoreDoc | null = forkTheme(quickcart, suggestedBrand(quickcart.key));
+/** The version the document was last read or saved at. `null` until a live read or save happens;
+ *  irrelevant in fixture mode, which holds no server-side row to conflict with. */
+let currentVersion: number | null = null;
+
+interface ThemeDocOut {
+  theme_key: string;
+  mode: string;
+  tokens: Record<string, unknown>;
+  pages: unknown[];
+  version: number;
+}
+
+/** Compose the renderer's `StoreDoc` from the theme document and the store's own brand fields. */
+async function composeStoreDoc(doc: ThemeDocOut): Promise<StoreDoc> {
+  const identity = await getStoreIdentity().catch(() => null);
+  const brand = identity
+    ? { name: identity.name, tagline: identity.tagline ?? "", logoText: identity.logo_text ?? "" }
+    : suggestedBrand(doc.theme_key);
+  return {
+    themeKey: doc.theme_key,
+    mode: doc.mode === "retail" ? "retail" : "trade",
+    brand,
+    tokens: doc.tokens as unknown as StoreDoc["tokens"],
+    pages: doc.pages as unknown as StoreDoc["pages"],
+  };
+}
 
 export async function getStore(): Promise<StoreResponse> {
   if (USE_FIXTURES) return settle(currentStore);
-  return apiRequest<StoreResponse>(`/storefront/store`);
+  try {
+    const doc = await apiRequest<ThemeDocOut>("/storefront/theme");
+    currentVersion = doc.version;
+    return await composeStoreDoc(doc);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      currentVersion = null;
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**
- * Adopt a theme: fork it into a store document.
- *
- * Re-adopting keeps the merchant's brand and replaces tokens and pages — the merchant's edits to
- * the old pages are gone, which is what "adopting a different theme replaces the pages" means and
- * why the gallery asks before it does this.
+ * Adopt a theme: fork it into a store document and PUT it — this *is* adopt (ADR-0011 §3). Keeps
+ * the merchant's existing brand where one is on record; a first adopt has none yet, so it starts
+ * from the theme's own suggested brand, which the merchant edits on `/settings`.
  */
 export async function adoptTheme(themeKey: string): Promise<StoreDoc> {
   const theme = themeByKey(themeKey);
   if (!theme) throw new Error("That theme is no longer available.");
-  const brand = currentStore?.brand ?? suggestedBrand(themeKey);
-  const next = forkTheme(theme, brand);
 
   if (USE_FIXTURES) {
+    const brand = currentStore?.brand ?? suggestedBrand(themeKey);
+    const next = forkTheme(theme, brand);
     currentStore = next;
     return settle(next, 320);
   }
-  // The server forks the theme itself — the client never uploads a whole document to adopt one.
-  return apiRequest<StoreDoc>(`/storefront/store/adopt`, {
-    method: "POST",
-    body: { theme_key: themeKey },
+
+  const identity = await getStoreIdentity().catch(() => null);
+  const brand = identity
+    ? { name: identity.name, tagline: identity.tagline ?? "", logoText: identity.logo_text ?? "" }
+    : suggestedBrand(themeKey);
+  const next = forkTheme(theme, brand);
+  const saved = await apiRequest<ThemeDocOut>("/storefront/theme", {
+    method: "PUT",
+    body: {
+      theme_key: next.themeKey,
+      mode: next.mode,
+      tokens: next.tokens,
+      pages: next.pages,
+      version: currentVersion ?? 1,
+    },
   });
+  currentVersion = saved.version;
+  return next;
 }
 
 /** Persist an edited store document. The editor calls this; the renderer only reads. */
@@ -131,16 +177,35 @@ export async function saveStore(store: StoreDoc): Promise<StoreDoc> {
     currentStore = store;
     return settle(store, 200);
   }
-  return apiRequest<StoreDoc>(`/storefront/store`, { method: "PUT", body: store });
+  const saved = await apiRequest<ThemeDocOut>("/storefront/theme", {
+    method: "PUT",
+    body: {
+      theme_key: store.themeKey,
+      mode: store.mode,
+      tokens: store.tokens,
+      pages: store.pages,
+      version: currentVersion ?? 1,
+    },
+  });
+  currentVersion = saved.version;
+  return store;
 }
 
-/** Clear the store back to "no theme adopted". */
+/** Remove the store's theme document — "Remove this store" in the gallery. Soft delete: a later
+ *  adopt starts fresh at `version: 1`. Idempotent: removing an already-removed document is a
+ *  no-op rather than a surfaced 404. */
 export async function removeStore(): Promise<null> {
   if (USE_FIXTURES) {
     currentStore = null;
     return settle(null, 200);
   }
-  return apiRequest<null>(`/storefront/store`, { method: "DELETE" });
+  try {
+    await apiRequest<void>("/storefront/theme", { method: "DELETE" });
+  } catch (error) {
+    if (!(error instanceof ApiError && error.status === 404)) throw error;
+  }
+  currentVersion = null;
+  return null;
 }
 
 /* ------------------------------- catalogue -------------------------------- */
@@ -163,6 +228,12 @@ function fixtureSlice(): { products: Product[]; categories: Category[] } {
     : { products: PRODUCTS, categories: CATEGORY_LIST };
 }
 
+/**
+ * The theme renderer's own catalogue read — everything active, for composing a store preview.
+ * The dedicated `/products` and `/categories` console screens page, filter and sort for real
+ * (`@/catalogue/api`); this stays a flat list because a page's sections need "the catalogue",
+ * not a page of it.
+ */
 export async function listProducts(): Promise<Page<Product>> {
   if (USE_FIXTURES) {
     const { products } = fixtureSlice();
@@ -173,232 +244,8 @@ export async function listProducts(): Promise<Page<Product>> {
 
 export async function listCategories(): Promise<Category[]> {
   if (USE_FIXTURES) return settle(fixtureSlice().categories);
-  return apiRequest<Category[]>(`/storefront/categories`);
-}
-
-/* -------------------------------- enquiries ------------------------------- */
-
-export interface EnquiryInput {
-  name: string;
-  company: string;
-  email: string;
-  phone: string;
-  requirement: string;
-  quantity: string;
-  gstin: string;
-}
-
-export interface EnquiryReceipt {
-  id: string;
-  received_at: string;
-}
-
-/**
- * A buyer's enquiry.
- *
- * The form validates before it calls this, and this validates again — client validation mirrors
- * the server's rules and never replaces them. When the service exists the same rejection arrives
- * as an RFC 7807 problem document; the shape of the failure the form handles does not change.
- */
-export async function submitEnquiry(input: EnquiryInput): Promise<EnquiryReceipt> {
-  const missing =
-    input.name.trim() === "" ||
-    input.company.trim() === "" ||
-    input.email.trim() === "" ||
-    input.requirement.trim() === "";
-  if (missing) throw new Error("Some required details are missing. Check the fields above.");
-
-  if (USE_FIXTURES) {
-    return settle({ id: `enq-${Date.now().toString(36)}`, received_at: new Date().toISOString() }, 480);
-  }
-  return apiRequest<EnquiryReceipt>(`/storefront/enquiries`, { method: "POST", body: input });
-}
-
-/* ----------------------------- serviceability ----------------------------- */
-
-/**
- * "Do you deliver to me?", asked by somebody with no token, no account and no session.
- *
- * `POST /api/v1/storefront/public/serviceability` (ADR-0010 §4). Three things about the shape are
- * decisions rather than style, and each is load-bearing:
- *
- * - **The store slug travels in the body, not the path.** The gateway's `public_paths` is an
- *   exact-match frozenset, so a public route with a path parameter is not expressible at all. Every
- *   anonymous storefront endpoint must put its variables in the query string or the body, and that
- *   is a standing constraint on the whole buyer API rather than a quirk of this call.
- * - **No bearer token, and a 401 here must not sign anybody out.** This is the one call in the app
- *   that is deliberately anonymous; routing it through `apiRequest` would attach the merchant's
- *   token and trip the global unauthorized handler, bouncing a merchant out of the editor because
- *   a *buyer's* request was refused.
- * - **It is a POST that cannot be cached**, because the server counts the check in the same
- *   transaction as the read (§7). That is the price of the merchant's demand report and it is paid
- *   knowingly.
- *
- * `PublicServiceabilityIn` in the published schema.
- */
-export interface ServiceabilityRequest {
-  store: string;
-  postal_code: string;
-}
-
-/**
- * ADR-0010 §3. The same three unions the merchant's admin declares in `src/delivery/types.ts`,
- * under the same names, because they are the same enums off the same schema — one codegen run
- * collapses the two declarations into an import rather than a redesign.
- */
-export type ZoneMode = "PROMISED" | "SLOTTED" | "UNSERVED";
-export type PromiseKind = "DURATION" | "DATE_OFFSET";
-/** Why a postal code is not served. Three distinct facts on purpose (§3), not one "no". */
-export type UnservedReason = "no_mapping" | "excluded" | "zone_inactive";
-
-/**
- * `PromiseOut` — when it arrives. Exactly one of `minutes` / `date` is populated.
- *
- * **`date` is resolved on the server, in the store's timezone, with the cutoff already applied**
- * (§3). The client renders it and never computes it: no offset is added here, no cutoff is
- * evaluated, and the string is never handed to a formatter that would re-read it in the buyer's
- * own zone. Neither field is `required` in the schema, so both are read rather than assumed.
- */
-export interface PromiseOut {
-  kind: PromiseKind;
-  minutes?: number | null;
-  /** `YYYY-MM-DD`, already resolved in the store's timezone. */
-  date?: string | null;
-}
-
-/**
- * `FeesOut` — **display values, and never the numbers charged** (§8).
- *
- * Integer minor units of `currency` (ADR-0000 §8). Slice 1 has no cart and no pricing engine;
- * when one lands it recomputes the total from its own state and this stops being authoritative.
- * They go on the card and are totalled into nothing.
- *
- * Only `currency` and `delivery_fee_minor` are `required`. `min_order_minor` and `display_only`
- * carry server-side defaults (`0` and `true`) and may be absent from the body.
- */
-export interface FeesOut {
-  currency: string;
-  delivery_fee_minor: number;
-  free_delivery_above_minor?: number | null;
-  min_order_minor?: number;
-  display_only?: boolean;
-}
-
-/**
- * `ServiceabilityOut` — the answer to "do you deliver to me?".
- *
- * **Transcribed from `libs/contracts/openapi/storefront.json`, and pinned to it by
- * `serviceability.contract.test.ts`**, which reads that file and compares property names and the
- * `required` set against this declaration. It is written that way because the alternative was
- * tried: this interface was first *guessed* from ADR-0010's prose — the ADR prints no response
- * body — and carried three fields the service has never sent (`outcome`, `promise_date`, a
- * top-level `currency`). A test that restates a hand-written type would have agreed with every one
- * of them. Only reading the published schema catches it.
- *
- * **Four fields are `required`** — `postal_code`, `serviceable`, `mode`, `checked_at`. The other
- * four are optional *and* nullable in the schema, so they are optional here too and every read
- * goes through a `??`.
- *
- * **`serviceable` is the verdict; `mode` is what kind of served it is.** See `classifyAnswer`.
- *
- * **There is no `UNKNOWN` on the wire, deliberately** (§13). The server never returns an outcome it
- * did not compute: a check that fails is a non-2xx problem+json, and "couldn't check" is the
- * client's rendering of that. It lives in `ServiceabilityState`, not here.
- */
-export interface ServiceabilityOut {
-  /** The normalised code the server matched, echoed back. */
-  postal_code: string;
-  /** The verdict. Everything the buyer is told branches off this first. */
-  serviceable: boolean;
-  /** Required and never null — `UNSERVED` for all three refusals, not absent. */
-  mode: ZoneMode;
-  checked_at: string;
-  /** Which refusal, when not served. Null when served. */
-  reason?: UnservedReason | null;
-  promise?: PromiseOut | null;
-  fees?: FeesOut | null;
-  buyer_note?: string | null;
-}
-
-/**
- * The client's own budget, past the server's 2-second one (§13) so a slow-but-working check is
- * never cut off here first. There are no retries on this path — every operation behind it is a
- * single short statement, and the buyer's own retry button is the honest place for one.
- */
-const SERVICEABILITY_TIMEOUT_MS = 8_000;
-
-/** Turn a fixture row into the answer shape the wire uses. */
-function fixtureAnswer(code: string): ServiceabilityOut {
-  const zone = SERVICEABILITY_ZONES[code];
-  /* `checked_at` is the moment the check ran, which for a fixture is now. It is the one date in
-     this path the client may produce, because it is not a promise: nothing renders it. */
-  const checked_at = new Date().toISOString();
-  if (zone === undefined) {
-    return {
-      postal_code: code,
-      serviceable: false,
-      /* No zone matched — and the answer still carries `mode: "UNSERVED"`, exactly as the service
-         does. It is the same `mode` a deliberately excluded code gets, which is why `reason` and
-         not `mode` is what tells the two apart. */
-      mode: "UNSERVED",
-      reason: "no_mapping",
-      promise: null,
-      fees: null,
-      buyer_note: null,
-      checked_at,
-    };
-  }
-  return { postal_code: code, checked_at, ...zone };
-}
-
-/**
- * Ask whether the store delivers to a postal code.
- *
- * **Every failure throws.** The caller renders a throw as "we couldn't check", never as "we don't
- * deliver here" — see the rule at the top of `lib/serviceability.ts`. Nothing in here converts a
- * transport failure into an answer, which is the single most important property of this function:
- * a not-serviceable can only ever come from a server that computed one. A body that will not parse
- * throws out of `res.json()` for the same reason and lands in the same place.
- */
-export async function checkServiceability(input: ServiceabilityRequest): Promise<ServiceabilityOut> {
-  const code = input.postal_code.toUpperCase().replace(/[^0-9A-Z]/g, "");
-
-  if (USE_FIXTURES) {
-    if (code === SERVICEABILITY_FAULT_CODE) {
-      await settle(null, 400);
-      throw new ApiError(503, "The delivery check isn't responding.", null);
-    }
-    return settle(fixtureAnswer(code), 420);
-  }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SERVICEABILITY_TIMEOUT_MS);
-  let res: Response;
-  try {
-    res = await fetch(`${API_BASE}/storefront/public/serviceability`, {
-      method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json" },
-      body: JSON.stringify({ store: input.store, postal_code: code }),
-      signal: controller.signal,
-    });
-  } catch {
-    // A timeout and a dead network are the same fact to a buyer: we do not know yet.
-    throw new ApiError(0, "Couldn't reach the delivery check.", null);
-  } finally {
-    clearTimeout(timer);
-  }
-
-  if (!res.ok) {
-    /* No `notifyUnauthorized` on any status. This request carries no session, so a refusal here
-       says nothing about the merchant's own. */
-    const problem = await res
-      .json()
-      .then((body: ProblemJson) => body)
-      .catch(() => null);
-    throw new ApiError(res.status, problem?.detail ?? `The delivery check failed (${res.status}).`, problem);
-  }
-
-  return (await res.json()) as ServiceabilityOut;
+  const page = await apiRequest<Page<Category>>(`/storefront/categories?size=${FULL_PAGE}`);
+  return page.items;
 }
 
 /* --------------------------------- assets --------------------------------- */
@@ -443,6 +290,24 @@ export const ASSET_WRONG_TYPE = "Only JPEG, PNG and WebP images can be uploaded.
  */
 export const UPLOAD_NEEDS_SERVICE =
   "Uploads need the document service, and this app is running on sample data. Paste an image address instead, or set VITE_USE_FIXTURES=false to run against the gateway.";
+
+/**
+ * What live mode says once it has seen the document service 404 — the known infrastructure gap:
+ * `services/document` and its object store are not deployed on the production box
+ * (`infrastructure/edge/compose.prod.yml` has neither), so every upload fails the same way every
+ * time. Told once, in words, rather than left as a spinner that always ends in the same error.
+ */
+export const UPLOAD_SERVICE_UNDEPLOYED =
+  "Image uploads aren't available yet on this box. Paste an image address (https://…) instead — this starts working on its own once the upload service is deployed.";
+
+/** Set the first time a live upload 404s, so the control can stop offering a button that can only
+ *  fail for the rest of the session. Never reset by a later success — if the route reappears, a
+ *  reload picks it up, which is true of every other route this app calls. */
+let uploadServiceConfirmedMissing = false;
+
+export function isUploadServiceUnavailable(): boolean {
+  return LIVE && uploadServiceConfirmedMissing;
+}
 
 /** How long to wait before giving up. The server's own budget for 5 MiB is 20s (ADR-0009 §10);
  *  this sits beyond it so a slow-but-working upload is never cut off by the client first. */
@@ -528,12 +393,17 @@ export async function uploadAsset(file: File): Promise<Asset> {
 
   if (!res.ok) {
     if (res.status === 401) notifyUnauthorized();
+    if (res.status === 404) uploadServiceConfirmedMissing = true;
     const problem = await res
       .json()
       .then((body: ProblemJson) => body)
       .catch(() => null);
     // The server's own detail is the specific one — it names the quota, the limit, the format.
-    throw new ApiError(res.status, problem?.detail ?? uploadFallbackMessage(res.status), problem);
+    throw new ApiError(
+      res.status,
+      problem?.detail ?? (res.status === 404 ? UPLOAD_SERVICE_UNDEPLOYED : uploadFallbackMessage(res.status)),
+      problem,
+    );
   }
 
   return (await res.json()) as Asset;

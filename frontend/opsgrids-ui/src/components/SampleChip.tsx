@@ -1,14 +1,14 @@
 import { cn } from "../lib/cn";
 
 interface SampleChipProps {
-  className?: string;
+  className?: string | undefined;
   /**
    * What is representative. Defaults to "Sample data" — the whole widget. Pass "Sample trend"
    * where the headline number is live and only its delta and sparkline are stand-ins.
    */
-  label?: string;
+  label?: string | undefined;
   /** The hover explanation. Says which service is not wired yet, in this product's words. */
-  title?: string;
+  title?: string | undefined;
 }
 
 /**

@@ -34,8 +34,11 @@ from platform_core.auth import ScopeContext
 
 # --------------------------------------------------------------------- fixture data
 # Rupee figures are written for legibility and converted to paise (minor units) on the way in.
-
-REFERENCE_TODAY = date(2026, 8, 24)  # the fixtures' "today" — statuses are frozen against it
+#
+# There is no frozen "today" here any more (there used to be, `REFERENCE_TODAY`, matching the
+# service's now-removed `domain.REFERENCE_DATE`): every invoice below is created with its status
+# left for the service to derive, and `paid` comes only from the real `services.record_payment`
+# calls in step 3 — see `_status_override`.
 
 #: The demo organization's own GST registration. Maharashtra, so the two Maharashtra customers
 #: (Orbit Logistics in Pune, Deccan AgriTech in Nagpur) are intra-state supplies taxed CGST+SGST
@@ -525,31 +528,16 @@ def _paise(rupees: float) -> int:
     return round(rupees * 100)
 
 
-def _paid_by_number() -> dict[str, int]:
-    paid: dict[str, int] = {}
-    for payment in PAYMENTS:
-        for alloc in payment.allocations:
-            paid[alloc.number] = paid.get(alloc.number, 0) + _paise(alloc.amount)
-    return paid
-
-
-def _expected_status(seed: InvoiceSeed, paid: int) -> str:
-    """Replicate the fixtures' deriveStatus, frozen against REFERENCE_TODAY.
-
-    The tax is summed **per line**, matching what `services.create_invoice` now does, so this
-    prediction and the row it predicts cannot disagree by a paisa on an odd rate.
+def _status_override(seed: InvoiceSeed) -> str | None:
+    """`draft`/`void` are the only legitimate create-time overrides (`domain.derive_invoice_status`)
+    — everything else is left `None` so the service derives it. `paid` in particular is never
+    forced here: the seed drives `services.record_payment` for real below, and that is what moves
+    an invoice's stored status to `paid` now — the same path a live tenant's book goes through, so
+    the demo book is honest evidence that gap 4 (payments move the invoice) actually works, not a
+    precomputed status hiding whether it does. `overdue` needs no help either: it is derived fresh
+    on every read against the real date (gap 5), not frozen at create against `REFERENCE_TODAY`.
     """
-    if seed.status_override:
-        return seed.status_override
-    if seed.document_type == "credit_note":
-        return "sent"
-    amounts = [round(line.quantity * _paise(line.rate)) for line in seed.lines]
-    subtotal = sum(amounts)
-    tax = sum(round(amount * seed.tax_rate_pct / 100) for amount in amounts)
-    total = subtotal + tax
-    if paid >= total:
-        return "paid"
-    return "overdue" if date.fromisoformat(seed.due_date) < REFERENCE_TODAY else "sent"
+    return seed.status_override
 
 
 # --------------------------------------------------------------------- the seed
@@ -629,8 +617,6 @@ async def seed_finance(session: AsyncSession, ctx: ScopeContext) -> dict[str, in
         customer_ids[cust.key] = customer.id
         created["customers"] += 1
 
-    paid_by_number = _paid_by_number()
-
     # 2) Invoices and credit notes — ordinary invoices first so a credit note can reference one.
     invoice_ids: dict[str, uuid.UUID] = {}
     ordered = sorted(INVOICES, key=lambda s: s.document_type == "credit_note")
@@ -647,7 +633,7 @@ async def seed_finance(session: AsyncSession, ctx: ScopeContext) -> dict[str, in
             invoice_ids[inv_seed.number] = existing_inv
             skipped["invoices"] += 1
             continue
-        status = _expected_status(inv_seed, paid_by_number.get(inv_seed.number, 0))
+        status = _status_override(inv_seed)
         invoice = await services.create_invoice(
             session,
             ctx,

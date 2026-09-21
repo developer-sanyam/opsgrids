@@ -3,10 +3,12 @@ import {
   BoxIcon,
   GlobeIcon,
   LayoutIcon,
-  LifeBuoyIcon,
+  MailIcon,
   MonitorIcon,
+  PackageIcon,
   SettingsIcon,
   Sidebar as SidebarShell,
+  TagIcon,
   TruckIcon,
 } from "@opsgrids/ui";
 import type { NavEntry, NavGroup } from "@opsgrids/ui";
@@ -44,6 +46,9 @@ const GROUPS: NavGroup[] = [
     items: [
       { to: "/", label: "Themes", icon: LayoutIcon, end: true },
       { to: "/editor", label: "Editor", icon: BoxIcon },
+      { to: "/products", label: "Products", icon: PackageIcon },
+      { to: "/categories", label: "Categories", icon: TagIcon },
+      { to: "/enquiries", label: "Enquiries", icon: MailIcon },
       // The delivery admin shipped reachable by URL only, which is the same as not shipping it:
       // zones, the postal-code map and the demand report are a merchant's screen, not a deep link
       // somebody hands them. The label matches the screen's own `PageHeader` title.
@@ -69,10 +74,10 @@ const GROUPS: NavGroup[] = [
   },
 ];
 
-const PINNED: NavEntry[] = [
-  { to: "/settings", label: "Settings", icon: SettingsIcon },
-  { to: "/help", label: "Help & Getting Started", icon: LifeBuoyIcon },
-];
+// `/help` is not pinned here: there is no screen behind it yet, and frontend/CLAUDE.md's rule
+// against placeholder code applies to navigation as much as to components. Add it back the day a
+// help screen ships.
+const PINNED: NavEntry[] = [{ to: "/settings", label: "Settings", icon: SettingsIcon }];
 
 /**
  * This product's navigation. The shell — account switcher, ⌘K search, active pill, workspace card
@@ -100,9 +105,9 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       logo={<LogoMark className="size-8 shrink-0" />}
       product={{ name: "OpsGrids Storefront", tagline: "Themed B2B store" }}
       search={{
-        label: "Search themes",
-        placeholder: "Search themes",
-        to: "/",
+        label: "Search products",
+        placeholder: "Search products",
+        to: "/products",
       }}
       {...(onNavigate ? { onNavigate } : {})}
     />

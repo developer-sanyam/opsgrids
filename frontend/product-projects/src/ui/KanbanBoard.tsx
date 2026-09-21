@@ -1,10 +1,9 @@
 import { useMemo, useState } from "react";
 
-import { NOW } from "@/api/fixtures";
 import type { TaskOut, TaskStage } from "@/api/types";
 import { STAGE_LABEL } from "@/data/labels";
-import { Avatar, ChevronRight, ClockIcon, cn } from "@opsgrids/ui";
 import { daysBetween, formatDateShort } from "@/lib/format";
+import { Avatar, ClockIcon, RowActions, cn } from "@opsgrids/ui";
 import { PriorityPill } from "./ProjectPills";
 
 const STAGES: { key: TaskStage; dot: string }[] = [
@@ -16,34 +15,78 @@ const STAGES: { key: TaskStage; dot: string }[] = [
 
 const ORDER: TaskStage[] = STAGES.map((s) => s.key);
 
+/** A single board card. Draggable for pointer users; every move is also reachable from the row
+ * actions menu — HTML5 drag-and-drop never fires on touch, so that menu is the only path on a
+ * phone, not a fallback for people who can't use a mouse. */
 function TaskCard({
   task,
+  now,
+  canWrite,
+  moving,
   onMove,
+  onEdit,
+  onDelete,
+  onDragStart,
+  onDragEnd,
+  dragging,
 }: {
   task: TaskOut;
-  onMove: (id: string, dir: -1 | 1) => void;
+  now: string;
+  canWrite: boolean;
+  moving: boolean;
+  onMove: (to: TaskStage) => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+  dragging: boolean;
 }) {
-  const index = ORDER.indexOf(task.stage);
-  const overdue =
-    task.due_date !== null && task.stage !== "done" && daysBetween(NOW, task.due_date) < 0;
+  const overdue = task.due_date !== null && task.stage !== "done" && daysBetween(now, task.due_date) < 0;
+  const targets = ORDER.filter((s) => s !== task.stage);
 
   return (
-    <article className="group rounded-tile border border-line bg-surface p-3 shadow-card transition-shadow hover:shadow-float">
+    <article
+      draggable={canWrite}
+      onDragStart={canWrite ? onDragStart : undefined}
+      onDragEnd={canWrite ? onDragEnd : undefined}
+      aria-busy={moving || undefined}
+      className={cn(
+        "group relative flex flex-col gap-2.5 rounded-tile border border-line bg-surface p-3 shadow-card transition-all",
+        canWrite && "cursor-grab active:cursor-grabbing hover:border-accent/40",
+        (dragging || moving) && "opacity-50",
+      )}
+    >
       <div className="flex items-center justify-between gap-2">
         <span className="rounded-full bg-ground px-2 py-0.5 text-[0.7rem] font-bold tnum text-muted">
           {task.project_code}
         </span>
-        <PriorityPill priority={task.priority} />
+        <div className="flex items-center gap-1.5">
+          <PriorityPill priority={task.priority} />
+          {canWrite ? (
+            <RowActions
+              label={task.title}
+              inlineLimit={1}
+              actions={[
+                { label: "Edit", onSelect: onEdit },
+                ...targets.map((to) => ({
+                  label: `Move to ${STAGE_LABEL[to]}`,
+                  onSelect: () => onMove(to),
+                })),
+                { label: "Delete", tone: "danger" as const, onSelect: onDelete },
+              ]}
+            />
+          ) : null}
+        </div>
       </div>
 
-      <p className="mt-2 text-sm font-semibold leading-snug text-ink">{task.title}</p>
+      <p className="text-sm font-semibold leading-snug text-ink">{task.title}</p>
 
-      <div className="mt-3 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="inline-flex items-center gap-1.5 text-xs text-muted min-w-0">
           <Avatar name={task.assignee.name} size="xs" />
-          <span className="truncate text-xs text-muted">{task.assignee.name}</span>
-        </div>
-        <div className="flex items-center gap-2">
+          <span className="truncate max-w-[8rem]">{task.assignee.name}</span>
+        </span>
+        <div className="flex shrink-0 items-center gap-2">
           {task.due_date ? (
             <span
               className={cn(
@@ -60,50 +103,39 @@ function TaskCard({
           </span>
         </div>
       </div>
-
-      {/* Move controls — keyboard reachable, appear on hover/focus-within. */}
-      <div className="mt-2 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-        <button
-          type="button"
-          onClick={() => onMove(task.id, -1)}
-          disabled={index === 0}
-          aria-label={`Move ${task.title} to previous stage`}
-          className="grid size-6 place-items-center rounded-full text-muted hover:bg-ground hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
-        >
-          <ChevronRight className="size-4 rotate-180" />
-        </button>
-        <button
-          type="button"
-          onClick={() => onMove(task.id, 1)}
-          disabled={index === ORDER.length - 1}
-          aria-label={`Move ${task.title} to next stage`}
-          className="grid size-6 place-items-center rounded-full text-muted hover:bg-ground hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
-        >
-          <ChevronRight className="size-4" />
-        </button>
-      </div>
     </article>
   );
 }
 
 /**
- * The workflow board: four stage columns from Backlog to Done. Cards carry their project, title,
- * assignee, priority, due date and estimate; the per-card move controls actually reassign a card's
- * stage in local state, and each column header keeps a live count and point total.
+ * The workflow board: four stage columns from Backlog to Done, over a horizontal scroll on
+ * narrow screens. Cards drag between columns for pointer users; every card also carries a
+ * keyboard-reachable row-actions menu with an explicit "Move to…" entry per other stage, so a
+ * move is never mouse-only. Purely a view over `tasks` — the optimistic patch, its rollback and
+ * the real `PATCH`/`DELETE` calls live in `BoardPage`, the one place that knows whether the write
+ * actually landed.
  */
-export function KanbanBoard({ tasks: seed }: { tasks: TaskOut[] }) {
-  const [tasks, setTasks] = useState<TaskOut[]>(seed);
-
-  function move(id: string, dir: -1 | 1) {
-    setTasks((prev) =>
-      prev.map((t) => {
-        if (t.id !== id) return t;
-        const idx = ORDER.indexOf(t.stage);
-        const next = ORDER[Math.min(Math.max(idx + dir, 0), ORDER.length - 1)];
-        return next ? { ...t, stage: next } : t;
-      }),
-    );
-  }
+export function KanbanBoard({
+  tasks,
+  now,
+  canWrite,
+  movingId,
+  onMove,
+  onEdit,
+  onDelete,
+}: {
+  tasks: TaskOut[];
+  now: string;
+  canWrite: boolean;
+  /** The id of the card currently mid-move, if any — dims it and marks it busy. */
+  movingId: string | null;
+  onMove: (task: TaskOut, to: TaskStage) => void;
+  onEdit: (task: TaskOut) => void;
+  onDelete: (task: TaskOut) => void;
+}) {
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overCol, setOverCol] = useState<TaskStage | null>(null);
+  const [announce, setAnnounce] = useState("");
 
   const byStage = useMemo(() => {
     const map = new Map<TaskStage, TaskOut[]>();
@@ -112,40 +144,97 @@ export function KanbanBoard({ tasks: seed }: { tasks: TaskOut[] }) {
     return map;
   }, [tasks]);
 
-  return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      {STAGES.map(({ key, dot }) => {
-        const columnTasks = byStage.get(key) ?? [];
-        const points = columnTasks.reduce((sum, t) => sum + t.points, 0);
-        return (
-          <section
-            key={key}
-            aria-label={STAGE_LABEL[key]}
-            className="flex flex-col gap-3 rounded-card bg-ground/60 p-3"
-          >
-            <header className="flex items-center gap-2 px-1">
-              <span className="size-2 rounded-full" style={{ backgroundColor: dot }} aria-hidden />
-              <h3 className="text-sm font-bold text-ink">{STAGE_LABEL[key]}</h3>
-              <span className="ml-auto flex items-center gap-2 text-xs font-semibold text-muted tnum">
-                <span>{columnTasks.length}</span>
-                <span className="rounded-full bg-surface px-1.5 py-0.5 text-faint">{points} pts</span>
-              </span>
-            </header>
+  function move(task: TaskOut, to: TaskStage) {
+    if (task.stage === to) return;
+    setAnnounce(`Moving ${task.title} to ${STAGE_LABEL[to]}…`);
+    onMove(task, to);
+  }
 
-            <div className="flex flex-col gap-2.5">
-              {columnTasks.length === 0 ? (
-                <p className="rounded-tile border border-dashed border-line px-3 py-6 text-center text-xs text-faint">
-                  Nothing here
-                </p>
-              ) : (
-                columnTasks.map((task) => (
-                  <TaskCard key={task.id} task={task} onMove={move} />
-                ))
+  return (
+    <div>
+      <div className="flex gap-4 overflow-x-auto pb-2">
+        {STAGES.map(({ key, dot }) => {
+          const columnTasks = byStage.get(key) ?? [];
+          const points = columnTasks.reduce((sum, t) => sum + t.points, 0);
+          const isOver = overCol === key && dragId !== null;
+          return (
+            <section
+              key={key}
+              aria-label={STAGE_LABEL[key]}
+              onDragOver={
+                canWrite
+                  ? (e) => {
+                      e.preventDefault();
+                      setOverCol(key);
+                    }
+                  : undefined
+              }
+              onDragLeave={
+                canWrite
+                  ? (e) => {
+                      if (e.currentTarget === e.target) setOverCol(null);
+                    }
+                  : undefined
+              }
+              onDrop={
+                canWrite
+                  ? (e) => {
+                      e.preventDefault();
+                      const task = tasks.find((t) => t.id === dragId);
+                      if (task) move(task, key);
+                      setOverCol(null);
+                      setDragId(null);
+                    }
+                  : undefined
+              }
+              className={cn(
+                "flex w-[280px] shrink-0 flex-col gap-3 rounded-card p-3 transition-colors",
+                isOver ? "bg-accent-soft/60 outline outline-2 outline-dashed outline-accent/50" : "bg-ground/60",
               )}
-            </div>
-          </section>
-        );
-      })}
+            >
+              <header className="flex items-center gap-2 px-1">
+                <span className="size-2.5 rounded-full" style={{ backgroundColor: dot }} aria-hidden />
+                <h3 className="text-sm font-bold text-ink">{STAGE_LABEL[key]}</h3>
+                <span className="ml-auto flex items-center gap-2 text-xs font-semibold text-muted tnum">
+                  <span>{columnTasks.length}</span>
+                  <span className="rounded-full bg-surface px-1.5 py-0.5 text-faint shadow-card">
+                    {points} pts
+                  </span>
+                </span>
+              </header>
+
+              <div className="flex flex-col gap-2.5">
+                {columnTasks.map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    now={now}
+                    canWrite={canWrite}
+                    moving={movingId === task.id}
+                    onMove={(to) => move(task, to)}
+                    onEdit={() => onEdit(task)}
+                    onDelete={() => onDelete(task)}
+                    onDragStart={() => setDragId(task.id)}
+                    onDragEnd={() => {
+                      setDragId(null);
+                      setOverCol(null);
+                    }}
+                    dragging={dragId === task.id}
+                  />
+                ))}
+                {columnTasks.length === 0 ? (
+                  <p className="rounded-tile border border-dashed border-line px-3 py-6 text-center text-xs text-faint">
+                    Nothing here
+                  </p>
+                ) : null}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+      <p className="sr-only" role="status" aria-live="polite">
+        {announce}
+      </p>
     </div>
   );
 }

@@ -92,18 +92,22 @@ export function PlanSummary({ plan }: { plan: SavePlan }) {
     <div className="flex flex-col gap-5">
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <Count value={plan.added.length} label="New" tone="positive" />
-        <Count value={plan.moves.length} label="Moved here" tone="warning" />
+        <Count value={plan.moves.length} label="Owned by another zone" tone="negative" />
         <Count value={plan.unchanged.length} label="Already here" />
         <Count value={plan.removed.length} label="Dropped" tone={plan.removed.length > 0 ? "negative" : "neutral"} />
       </div>
 
       {movesByZone.size > 0 ? (
-        <Section title="Moving out of another zone">
+        <Section title="Blocking this save — already in another zone">
+          <p className="text-sm text-muted">
+            A postal code belongs to exactly one zone, and the server refuses to move one for
+            you. Remove these from their current zone before saving here.
+          </p>
           <ul className="m-0 flex list-none flex-col gap-3 p-0">
             {[...movesByZone].map(([zoneId, bucket]) => (
               <li key={zoneId} className="flex flex-col gap-1.5">
                 <p className="text-sm text-ink-soft">
-                  <span className="font-semibold">{bucket.codes.length}</span> leaving{" "}
+                  <span className="font-semibold">{bucket.codes.length}</span> currently in{" "}
                   <span className="font-semibold">{bucket.zoneName}</span>
                 </p>
                 <CodeList codes={bucket.codes} />

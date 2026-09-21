@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { AuthProvider as BaseAuthProvider } from "@opsgrids/client";
+import { AuthProvider as BaseAuthProvider, PermissionProvider } from "@opsgrids/client";
 import type { MeOut } from "@opsgrids/client";
 
 import { USE_FIXTURES } from "@/api/client";
@@ -30,11 +30,31 @@ const FIXTURE_USER: MeOut = {
   organizations: [FIXTURE_ORG],
 };
 
+/**
+ * The fixture identity's grants — the delivery administrator's full set, so fixture mode
+ * demonstrates every gated control. A real build passes nothing: `PermissionProvider` then
+ * fetches `GET /members/me/grants` once the session is authenticated.
+ */
+const FIXTURE_GRANTS = [
+  "pulseboard.board.task.read:ORG",
+  "pulseboard.board.task.write:ORG",
+  "pulseboard.engagements.project.read:ORG",
+  "pulseboard.engagements.project.write:ORG",
+  "pulseboard.standup.entry.read:ORG",
+  "pulseboard.standup.entry.write:ORG",
+  "pulseboard.team.person.read:ORG",
+  "pulseboard.team.person.write:ORG",
+  "pulseboard.time.timesheet.read:ORG",
+  "pulseboard.time.timesheet.write:ORG",
+];
+
 /** The session, wired to this product's fixture identity. The logic lives in `@opsgrids/client`. */
 export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <BaseAuthProvider fixtureUser={USE_FIXTURES ? FIXTURE_USER : null}>
-      {children}
+      <PermissionProvider grants={USE_FIXTURES ? FIXTURE_GRANTS : null}>
+        {children}
+      </PermissionProvider>
     </BaseAuthProvider>
   );
 }

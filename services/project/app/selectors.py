@@ -59,6 +59,17 @@ async def get_person_by_ref(session: AsyncSession, org_id: uuid.UUID, ref: str) 
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def person_ref_taken(session: AsyncSession, org_id: uuid.UUID, ref: str) -> bool:
+    """Whether `ref` is already used in this organization, active **or soft-deleted**.
+
+    `uq_people_org_ref` is not a partial index, so a soft-deleted row still occupies the
+    value; the create-time duplicate check has to see it too or the insert falls through to
+    the database and an `IntegrityError` becomes an unhandled 500.
+    """
+    stmt = select(Person.id).where(Person.organization_id == org_id, Person.ref == ref)
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
 def ref_of(people: dict[uuid.UUID, Person], person_id: uuid.UUID | None) -> str | None:
     """The wire `ref` for a (possibly absent) person id. None stays None — the SPA renders
     "Unassigned" for a null assignee."""
@@ -116,6 +127,13 @@ async def get_project(session: AsyncSession, org_id: uuid.UUID, code: str) -> Pr
         Project.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def project_code_taken(session: AsyncSession, org_id: uuid.UUID, code: str) -> bool:
+    """Whether `code` is already used in this organization, active **or soft-deleted** — the
+    same non-partial-index reasoning as `person_ref_taken`."""
+    stmt = select(Project.id).where(Project.organization_id == org_id, Project.code == code)
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
 
 
 async def all_projects(session: AsyncSession, ctx: ScopeContext) -> list[Project]:
@@ -180,6 +198,13 @@ async def get_task_by_key(session: AsyncSession, org_id: uuid.UUID, key: str) ->
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def task_key_taken(session: AsyncSession, org_id: uuid.UUID, key: str) -> bool:
+    """Whether `key` is already used in this organization, active **or soft-deleted** — the
+    same non-partial-index reasoning as `person_ref_taken`."""
+    stmt = select(Task.id).where(Task.organization_id == org_id, Task.key == key)
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
 async def all_tasks(session: AsyncSession, ctx: ScopeContext) -> list[Task]:
     return list((await session.execute(tasks_stmt(ctx))).scalars().all())
 
@@ -190,6 +215,7 @@ async def all_tasks(session: AsyncSession, ctx: ScopeContext) -> list[Task]:
 def person_out(person: Person) -> PersonOut:
     return PersonOut(
         id=person.ref,
+        uuid=str(person.id),
         name=person.name,
         role=person.role,
         location=person.location,

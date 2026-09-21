@@ -2,34 +2,41 @@
  * The shop, as a buyer meets it on the merchant's own address.
  *
  * ──────────────────────────────────────────────────────────────────────────────────────────
- * **What this can draw today, and why it is not the theme renderer.**
+ * **What this draws, and from where.**
  *
- * `StoreRenderer` needs a `StoreDoc` — twelve `ThemeTokens` and a list of `PageDoc`s. **No
- * public route in `libs/contracts/openapi/storefront.json` returns either.** The store document
- * lives behind `GET /api/v1/storefront/store`, which is the merchant's authenticated route, and
- * ADR-0001 scopes the refresh cookie to `.opsgrids.com` — so a buyer on `merchant.com` can never
- * call it, by construction rather than by omission.
+ * `context.theme` — `tokens` and `pages` — arrives in the same `store-context` bootstrap this
+ * component already had (ADR-0012 §11: the theme document extends that payload rather than
+ * adding a second call on the first-paint path). The catalogue is a second, deliberate call —
+ * `POST /storefront/public/catalogue` — made only once a theme exists to draw it with, so a
+ * store with no theme never asks for products it has nowhere to put.
  *
- * `StoreContextOut` is the only public representation of the brand, and the storefront-document
- * ADR **extends that payload** rather than adding a second one (ADR-0012 §11). When it does, the
- * tokens and the pages arrive in the same bootstrap this component already has, and the `<main>`
- * below hands them to `StoreRenderer`. Until then the honest surface is the brand and an empty
- * state that says so.
+ * A published store with **no theme adopted** is still a valid published store (ADR-0012 §11's
+ * `theme: null` case) and gets its own honest empty state — a brand bar and a sentence — rather
+ * than an error. A theme with **no products** is not this component's problem: every commerce
+ * section already draws its own empty state from an empty `products` array, the same one a
+ * merchant sees in the gallery's preview before they have written a catalogue.
  * ──────────────────────────────────────────────────────────────────────────────────────────
  *
  * **Escaping.** `name`, `tagline` and `logo_text` are merchant-authored and returned verbatim —
  * the service trims, bounds and strips control characters and nothing else. Every one of them is
  * rendered as a React text child, which escapes. There is no `dangerouslySetInnerHTML` on this
- * surface and none may be added: `BuyerApp.test.tsx` renders a shop called `<b>Verma</b> & Sons`
- * and asserts those characters appear as text with no element built from them.
+ * surface and none may be added.
  *
- * **This is pre-theme chrome, not a store page.** It styles itself from the app's own tokens
- * because the merchant's palette has not arrived yet, and it spends none of the Console accent —
- * a violet button on a merchant's shop front is the exact mistake `theme/render/`'s isolation
- * rule exists to prevent.
+ * **This is pre-theme chrome, not a store page.** The brand bar below styles itself from the
+ * app's own tokens, for the one state that has no theme to draw with yet. Once a theme exists,
+ * `StoreRenderer` takes over entirely and draws with the *merchant's* tokens — this component
+ * spends none of its own accent inside that tree, which is `theme/render/`'s isolation rule.
  */
 
+import { useEffect, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
+
 import type { StoreContextOut } from "@/api/storeContext";
+import { fetchPublicCatalogue } from "@/api/publicClient";
+import type { CategoryPublic, ProductPublic } from "@/api/publicClient";
+import { useElementWidth } from "@/lib/useElementWidth";
+import type { PageDoc, StoreDoc, ThemeTokens } from "@/theme/schema";
+import { StoreRenderer } from "@/theme/render";
 import { NO_PAGES_BODY, NO_PAGES_TITLE, otherAddressNotice } from "./copy";
 
 /**
@@ -69,22 +76,17 @@ export function ShopHeader({ context }: { context: StoreContextOut }) {
   );
 }
 
-export function ShopFront({ context }: { context: StoreContextOut }) {
+/** A published store with no theme adopted yet — a real, honest state, not an error. */
+function NoTheme({ context }: { context: StoreContextOut }) {
   return (
     <div className="flex min-h-dvh flex-col bg-ground text-ink">
       <ShopHeader context={context} />
-
       <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col justify-center px-4 py-16">
         <div className="max-w-prose">
           <h2 className="display text-xl font-extrabold">{NO_PAGES_TITLE}</h2>
           <p className="mt-2 text-sm text-ink-soft">{NO_PAGES_BODY}</p>
         </div>
       </main>
-
-      {/* The canonical pointer, as a line and never as a redirect (ADR-0012 §8). `is_canonical`
-          is computed from the live domain state, so a failing custom domain makes the platform
-          host canonical again — which is precisely when pushing a buyer at the other address
-          would send them to a name that does not answer. */}
       {context.is_canonical ? null : (
         <footer className="border-t border-line bg-surface">
           <p className="mx-auto w-full max-w-5xl px-4 py-3 text-xs text-muted">
@@ -94,4 +96,89 @@ export function ShopFront({ context }: { context: StoreContextOut }) {
       )}
     </div>
   );
+}
+
+interface CatalogueState {
+  products: ProductPublic[];
+  categories: CategoryPublic[];
+}
+
+const EMPTY_CATALOGUE: CatalogueState = { products: [], categories: [] };
+
+/** The width to render at before the frame is measured — the viewport's own, so a phone never
+ *  paints a desktop grid first. Mirrors `LiveStore.tsx`'s `initialWidth`. */
+function initialWidth(): number {
+  if (typeof document === "undefined") return 1200;
+  return document.documentElement.clientWidth || window.innerWidth;
+}
+
+/** The theme's own tokens/pages, plus the brand this bundle already has — composed once per
+ *  render rather than stored, since the buyer bundle holds no document state of its own. */
+function composeStoreDoc(context: StoreContextOut): StoreDoc {
+  const theme = context.theme;
+  if (theme === null) throw new Error("composeStoreDoc called with no theme");
+  return {
+    themeKey: theme.theme_key,
+    mode: theme.mode === "retail" ? "retail" : "trade",
+    brand: {
+      name: context.name,
+      tagline: context.tagline ?? "",
+      logoText: context.logo_text ?? "",
+    },
+    tokens: theme.tokens as unknown as ThemeTokens,
+    pages: theme.pages as unknown as PageDoc[],
+  };
+}
+
+/** The themed shop — fetches the catalogue once a theme exists, and renders the current path's
+ *  page with it. A catalogue that fails to load degrades to an empty one rather than blanking
+ *  the whole shop: the chrome, the brand and every other page still work. */
+function ThemedShop({ context }: { context: StoreContextOut }) {
+  const [catalogue, setCatalogue] = useState<CatalogueState>(EMPTY_CATALOGUE);
+  const loadedFor = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (loadedFor.current === context.store) return;
+    loadedFor.current = context.store;
+    let active = true;
+    fetchPublicCatalogue({ store: context.store, size: 200 }).then(
+      (result) => {
+        if (active) setCatalogue({ products: result.products.items, categories: result.categories });
+      },
+      () => {
+        /* Degrade to an empty catalogue. Every commerce section already has its own empty state,
+           and a buyer who cannot see products is better served by a working page with none than
+           by no page at all. */
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [context.store]);
+
+  const store = composeStoreDoc(context);
+  const location = useLocation();
+  const frameRef = useRef<HTMLDivElement>(null);
+  const [fallbackWidth] = useState(initialWidth);
+  const width = useElementWidth(frameRef, fallbackWidth);
+
+  return (
+    <div className="min-h-dvh" style={{ backgroundColor: store.tokens.colorBg }}>
+      <div ref={frameRef} data-live-store className="grid min-h-dvh w-full">
+        <StoreRenderer
+          store={store}
+          route={location.pathname === "" ? "/" : location.pathname}
+          products={catalogue.products}
+          categories={catalogue.categories}
+          width={width}
+          basePath=""
+        />
+      </div>
+    </div>
+  );
+}
+
+export function ShopFront({ context }: { context: StoreContextOut }) {
+  if (context.theme === null) return <NoTheme context={context} />;
+  return <ThemedShop context={context} />;
 }

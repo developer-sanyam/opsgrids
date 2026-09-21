@@ -8,6 +8,7 @@ import for its side effects — every function is called explicitly by the scrip
 # scripts generated themselves (never user input), and the compose command reads best unwrapped.
 from __future__ import annotations
 
+import contextlib
 import re
 import shlex
 import subprocess
@@ -48,6 +49,31 @@ class StepLog:
     @property
     def ok(self) -> bool:
         return not self.failed
+
+
+class PatientClient(httpx.Client):
+    """An `httpx.Client` that waits out the gateway's rate limit instead of failing on it.
+
+    The gateway allows 300 requests a minute signed in and 60 anonymous per address. A
+    create-read-update-delete walk across eleven products stays under both, but only just on a
+    fast link, and a throttled request is not a product failure — reporting it as one would make
+    the first real run of these scripts lie. A 429 is retried after the server's `Retry-After`
+    (or a growing pause), a few times, and then returned as it is so a genuine lockout still
+    shows up.
+    """
+
+    MAX_WAITS = 4
+
+    def request(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        response = super().request(*args, **kwargs)
+        for attempt in range(self.MAX_WAITS):
+            if response.status_code != 429:
+                return response
+            header = response.headers.get("retry-after", "")
+            pause = float(header) if header.replace(".", "", 1).isdigit() else 5.0 * (attempt + 1)
+            time.sleep(min(pause, 60.0))
+            response = super().request(*args, **kwargs)
+        return response
 
 
 #: What an address may look like before it is allowed inside a SQL literal.
@@ -137,3 +163,131 @@ def find_flat_offer(plans: list[dict]) -> tuple[dict, dict] | None:
             if price is not None:
                 return version, price
     return None
+
+
+def bootstrap_owner(
+    c: httpx.Client,
+    log: StepLog,
+    *,
+    key: str | None,
+    slug: str,
+    email: str,
+    password: str,
+    org_name: str,
+) -> dict[str, str] | None:
+    """Sign up a throwaway org, set its password from the reset link, log in — and, when `key`
+    names a product, start its 14-day trial and wait for the subscription event to entitle it
+    and install its roles, exactly as `edge_product_smoke.py`'s steps 1-3 do (re-logging in on
+    the gateway's `401 token-stale`, ADR-0007). Logs one `StepLog` line per step and returns the
+    resulting bearer-header dict, or `None` once a step has failed (already logged as FAIL —
+    callers do not need to log the failure again, only stop).
+
+    `key=None` skips the marketplace/subscribe/entitlement dance entirely: the core organisation
+    surfaces (`/organization`, `/members`, `/roles`, `/org-units`, `/locations`, `/invitations`)
+    carry no `product` key at the gateway (`services/app-gateway/routes.json`), so the
+    freshly-signed-up owner can reach them immediately.
+    """
+
+    def require(name: str, ok: bool, detail: str = "") -> bool:
+        log.step(name, ok, detail)
+        return ok
+
+    r = c.post(
+        "/api/v1/account/signup",
+        json={
+            "organization_name": org_name,
+            "slug": slug,
+            "full_name": "Crud Test Owner",
+            "email": email,
+        },
+    )
+    if not require("sign up (public)", r.status_code == 201, f"{r.status_code} {r.text[:120]}"):
+        return None
+
+    r = c.post("/api/v1/auth/password/forgot", json={"email": email})
+    if not require("request the set-password link", r.status_code == 202, str(r.status_code)):
+        return None
+
+    token, body = read_reset_token(email)
+    if not require("the set-password email carries the link", token != "", f"{len(body)} bytes"):
+        return None
+
+    r = c.post("/api/v1/auth/password/reset", json={"token": token, "new_password": password})
+    if not require("set the password from the link", r.status_code == 204, str(r.status_code)):
+        return None
+
+    try:
+        tok = login(c, email, password)
+    except RuntimeError as exc:
+        require("log in", False, str(exc))
+        return None
+    require("log in", True, "")
+    h = {"Authorization": f"Bearer {tok}"}
+
+    if key is None:
+        return h
+
+    r = c.get("/api/v1/products", headers=h)
+    product = next((p for p in r.json() if p["key"] == key), None) if r.status_code == 200 else None
+    if not require(
+        "marketplace lists the product as available",
+        product is not None and product.get("status") == "available",
+        f"{r.status_code} {product and (product.get('name'), product.get('status'))}",
+    ):
+        return None
+
+    r = c.get("/api/v1/plans", params={"product_key": key}, headers=h)
+    plans = r.json() if r.status_code == 200 else []
+    offer = find_flat_offer(plans) if r.status_code == 200 else None
+    if not require(
+        "a published flat price exists (the card's 'Start 14-day trial' condition)",
+        offer is not None,
+        f"{r.status_code}",
+    ):
+        return None
+    version, _price = offer
+
+    r = c.post(
+        "/api/v1/subscriptions",
+        headers=h,
+        json={"product_key": key, "plan_version_id": version["id"], "trial_days": 14},
+    )
+    if not require(
+        "start the 14-day trial (POST /subscriptions)",
+        r.status_code == 201 and r.json().get("state") == "trial",
+        f"{r.status_code} {r.text[:120]}",
+    ):
+        return None
+
+    entitled = False
+    stale_seen = False
+    t0 = time.time()
+    last = ""
+    for _ in range(40):  # every 3 s, <=120 s: the gateway rate-limits a caller per minute
+        acts = c.get("/api/v1/products/activations", headers=h)
+        last = f"{acts.status_code} {acts.text[:100]}"
+        if acts.status_code == 401 and "token-stale" in acts.text:
+            stale_seen = True
+            with contextlib.suppress(RuntimeError):
+                h = {"Authorization": f"Bearer {login(c, email, password)}"}
+            continue
+        if acts.status_code == 200 and any(
+            a["product_key"] == key and a["entitles"] for a in acts.json()
+        ):
+            entitled = True
+            break
+        time.sleep(3)
+    if not require(
+        "subscription event -> product activation entitles (re-login on token-stale, ADR-0007)",
+        entitled,
+        f"after {time.time() - t0:.0f}s; stale_seen={stale_seen}; last={last}",
+    ):
+        return None
+
+    try:
+        tok = login(c, email, password)  # a fresh token carries the new entitlement and grants
+    except RuntimeError as exc:
+        require("re-login for a fresh token", False, str(exc))
+        return None
+    require("re-login for a fresh token", True, "")
+    return {"Authorization": f"Bearer {tok}"}

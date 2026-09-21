@@ -9,8 +9,8 @@ interface DeltaPillProps {
    * metric where less is better — cost per lead, open incidents, overdue balance — and a fall
    * turns green while the arrow still points down.
    */
-  goodWhen?: "up" | "down";
-  className?: string;
+  goodWhen?: "up" | "down" | undefined;
+  className?: string | undefined;
 }
 
 /**

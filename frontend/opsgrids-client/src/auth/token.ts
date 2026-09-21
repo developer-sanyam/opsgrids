@@ -13,19 +13,19 @@ import { getAccessToken } from "../session";
 /** The claims `mint_access` puts in a product token (`services/auth/app/tokens.py`). */
 export interface AccessClaims {
   /** The product this token addresses. */
-  aud?: string;
+  aud?: string | undefined;
   /** Activated products — what `useEntitlement` reads. */
-  ent?: string[];
+  ent?: string[] | undefined;
   /** Role codes. Deliberately *not* used to derive permissions: see `PermissionProvider`. */
-  roles?: string[];
+  roles?: string[] | undefined;
   /** Location codes the caller's scope covers. */
-  loc?: string[];
+  loc?: string[] | undefined;
   /** The organization's permission version; the gateway invalidates on a mismatch. */
-  pv?: number;
+  pv?: number | undefined;
   /** The caller's employee record, when they have one. */
-  sref?: string;
-  act_org?: string;
-  exp?: number;
+  sref?: string | undefined;
+  act_org?: string | undefined;
+  exp?: number | undefined;
 }
 
 function decodeSegment(segment: string): unknown {

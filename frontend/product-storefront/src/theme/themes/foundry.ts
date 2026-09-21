@@ -123,6 +123,7 @@ export const foundry: Theme = {
         image: "/img/hero-foundry.svg",
       }),
       sec("fdy-prd-enquiry", "enquiry-form", { x: 7, y: 6, w: 5, h: 12 }, {
+        storeSlug: "foundry",
         heading: "Ask for a quote on this line",
         body: "Give us the grade, the finish and the quantity. Same-day reply on working days.",
       }),

@@ -99,29 +99,62 @@ OPERATIONS = PermissionCatalogue(
         # Purchase orders. Reading has a meaningful OWN reading (the POs I raised), so it
         # defaults to OWN and tops out at ORG. Writing (raise, receive) has an OWN reading too —
         # a buyer works their own POs — so the write route sets no floor and the object-level
-        # check does the rest.
+        # check does the rest. Receiving still needs the PO to already be `approved`
+        # (`domain.PO_TRANSITIONS` has no `draft -> received` edge) — `write` alone gets a buyer
+        # to a draft, never past the approval gate. Cancelling a draft is `write` too (nothing
+        # committed, nothing to reverse); cancelling an *approved* PO additionally needs
+        # `purchase_order.approve`, because it reverses spend an approver committed.
         PermissionSpec(
             "procurement", "purchase_order", "read", "See purchase orders and their lines", "OWN"
         ),
         PermissionSpec(
-            "procurement", "purchase_order", "write", "Raise and receive purchase orders", "OWN"
+            "procurement",
+            "purchase_order",
+            "write",
+            "Raise, edit and delete draft purchase orders; receive an approved one; close it; "
+            "cancel a draft (cancelling an approved one also needs approve)",
+            "OWN",
+        ),
+        # Approving is a commitment step distinct from raising/editing/receiving, and the
+        # prerequisite gate before a PO can be received at all: a buyer holds
+        # `purchase_order.write` at OWN so they can work their own POs, but approving must not
+        # let that same buyer sign off on their own spend, or walk around the sign-off by
+        # receiving straight from draft. No OWN reading, so every grant floors at ORG. The same
+        # floor gates cancelling an already-approved PO, since that reverses the commitment.
+        PermissionSpec(
+            "procurement", "purchase_order", "approve", "Approve a purchase order", "ORG", "ORG"
         ),
         # Suppliers are org reference data — no per-person owner — so the natural reading is ORG.
-        # Writing is the same shape: curating the directory is an org-wide act, not a personal
-        # one, so there is no OWN rung to offer and the write tops out where the read does.
         PermissionSpec(
             "procurement", "supplier", "read", "See the supplier directory", "ORG", "ORG"
         ),
         PermissionSpec(
-            "procurement", "supplier", "write", "Add suppliers to the directory", "ORG", "ORG"
+            "procurement",
+            "supplier",
+            "write",
+            "Create, edit and delete suppliers",
+            "ORG",
+            "ORG",
         ),
-        # Inventory and warehouses are org infrastructure; reading is ORG for everyone with a
-        # seat, and writing is ORG too — it is held by the roles that curate the reference data,
-        # not by every seat.
+        # Inventory and warehouses are org infrastructure; ORG for everyone with a seat.
         PermissionSpec("inventory", "item", "read", "See inventory on hand", "ORG", "ORG"),
-        PermissionSpec("inventory", "item", "write", "Add inventory items", "ORG", "ORG"),
+        PermissionSpec(
+            "inventory", "item", "write", "Create, edit and delete inventory items", "ORG", "ORG"
+        ),
+        # Separate from `item.write`: editing the item card is not the same act as changing its
+        # quantity, and a stock count needs its own audit trail either way.
+        PermissionSpec(
+            "inventory",
+            "stock",
+            "adjust",
+            "Adjust or count an item's stock on hand",
+            "ORG",
+            "ORG",
+        ),
         PermissionSpec("inventory", "warehouse", "read", "See warehouses", "ORG", "ORG"),
-        PermissionSpec("inventory", "warehouse", "write", "Open warehouses", "ORG", "ORG"),
+        PermissionSpec(
+            "inventory", "warehouse", "write", "Create, edit and delete warehouses", "ORG", "ORG"
+        ),
     ],
 )
 
@@ -143,19 +176,19 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
         name="Procurement manager",
         product=PRODUCT,
         description=(
-            "Raises and receives purchase orders org-wide, and curates the supplier directory "
-            "and the inventory records. Reads warehouses but does not open them — a stocking "
-            "site is administered, not procured."
+            "Raises, approves and receives purchase orders org-wide; maintains suppliers and "
+            "inventory (including stock adjustments); reads warehouses. Does not create or "
+            "rename warehouses — that stays with the admin."
         ),
-        # An explicit list, so a permission added to the catalogue does not silently widen this
-        # role the way `.all()` would.
         grants=OPERATIONS.pick(
             ("operations.procurement.purchase_order.read", "ORG"),
             ("operations.procurement.purchase_order.write", "ORG"),
+            ("operations.procurement.purchase_order.approve", "ORG"),
             ("operations.procurement.supplier.read", "ORG"),
             ("operations.procurement.supplier.write", "ORG"),
             ("operations.inventory.item.read", "ORG"),
             ("operations.inventory.item.write", "ORG"),
+            ("operations.inventory.stock.adjust", "ORG"),
             ("operations.inventory.warehouse.read", "ORG"),
         ),
     ),
@@ -165,8 +198,7 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
         product=PRODUCT,
         description=(
             "Every person with an Operations seat. Raises and sees their own purchase orders, and "
-            "reads the shared suppliers, inventory and warehouses — reference data is curated by "
-            "the manager and administrator roles, not by every seat."
+            "reads the shared suppliers, inventory and warehouses."
         ),
         is_default=True,
         grants=OPERATIONS.pick(

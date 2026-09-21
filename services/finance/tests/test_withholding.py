@@ -37,6 +37,7 @@ from app.schemas import (
     InvoiceCreate,
     InvoiceLineCreate,
 )
+from platform_core.errors import BusinessRuleProblem
 from tests.helpers import admin_ctx
 
 pytestmark = pytest.mark.integration
@@ -634,13 +635,26 @@ class TestTheAggregateHeadsEndToEnd:
         # And the year's bases sum to the whole excess, exactly.
         assert sum(collected) == max(0, running - INCOME_TAX_THRESHOLD)
 
-    async def test_a_194q_buyer_is_deducted_from_and_never_also_collected_from(
-        self, session, org_id
-    ) -> None:
+    async def test_creating_a_customer_with_both_flags_is_refused(self, session, org_id) -> None:
+        """194Q and 206C(1H) are mutually exclusive by statute — `create_customer` refuses a
+        write that sets both, rather than silently accepting a state `assess_withholdings` would
+        then have to arbitrate between."""
         ctx = admin_ctx(org_id)
         async with session.begin():
             await _register(session, ctx)
-            customer = await _customer(session, ctx, deducts_tds_194q=True, tcs_applicable=True)
+            with pytest.raises(BusinessRuleProblem):
+                await _customer(session, ctx, deducts_tds_194q=True, tcs_applicable=True)
+
+    async def test_a_194q_buyer_is_deducted_from_and_never_also_collected_from(
+        self, session, org_id
+    ) -> None:
+        """Defense in depth: even if a row somehow carries both flags (data predating the write
+        guard, or written directly), `assess_withholdings` still picks 194Q and never both."""
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _register(session, ctx)
+            customer = await _customer(session, ctx, deducts_tds_194q=True)
+            customer.tcs_applicable = True
             invoice = await services.create_invoice(
                 session, ctx, _invoice(customer.id, "INV-194Q-1", unit_minor=9_000_000_00)
             )

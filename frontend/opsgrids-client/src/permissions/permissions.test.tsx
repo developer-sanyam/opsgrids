@@ -1,7 +1,10 @@
 /**
- * What the hooks do when they are *not* told anything matters more than what they do when they
- * are: no browser-visible response states the caller's grants today, so "unknown" is the ordinary
- * case, and it must hide a control rather than show one that 403s at the end of a form.
+ * The hooks reading a grant set they were handed directly — fixture mode, and any test that wants
+ * a caller with a known set. The provider fetching its own from `GET /members/me/grants` is
+ * covered next door in `grants.test.tsx`.
+ *
+ * What the hooks do when they are *not* told anything still matters most: "unknown" must hide a
+ * control rather than show one that 403s at the end of a form.
  */
 
 import { describe, expect, it } from "vitest";

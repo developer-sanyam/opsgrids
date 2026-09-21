@@ -54,3 +54,23 @@ export function formatHours(hours: number): string {
   const rounded = Math.round(hours * 10) / 10;
   return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}h`;
 }
+
+/** "2026-08-24" .. "2026-08-30" -> "24–30 Aug 2026" (or "28 Aug – 3 Sep 2026" across months). */
+export function formatWeekRange(weekDates: readonly string[]): string {
+  const start = weekDates[0];
+  const end = weekDates[weekDates.length - 1];
+  if (!start || !end) return "";
+  const startDate = new Date(`${start}T00:00:00Z`);
+  const endDate = new Date(`${end}T00:00:00Z`);
+  const sameMonth = startDate.getUTCMonth() === endDate.getUTCMonth();
+  const startDay = startDate.toLocaleDateString("en-GB", { day: "numeric", timeZone: "UTC" });
+  const endLabel = endDate.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+  if (sameMonth) return `${startDay}–${endLabel}`;
+  const startLabel = startDate.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+  return `${startLabel} – ${endLabel}`;
+}

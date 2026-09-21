@@ -50,7 +50,8 @@ export function onTimeFraction(milestones: readonly MilestoneOut[]): number {
 
 /**
  * Milestones due within the next `withinDays` (including anything already overdue and unfinished).
- * Completed milestones never count.
+ * Completed milestones never count, and neither does an undated milestone — there is no date to
+ * judge it against.
  */
 export function milestonesDue(
   milestones: readonly MilestoneOut[],
@@ -58,7 +59,7 @@ export function milestonesDue(
   withinDays = 14,
 ): number {
   return milestones.filter((m) => {
-    if (m.status === "completed") return false;
+    if (m.status === "completed" || m.due_date === null) return false;
     const days = daysBetween(now, m.due_date);
     return days <= withinDays;
   }).length;
@@ -69,11 +70,22 @@ const ATTENTION: ReadonlySet<MilestoneStatus> = new Set<MilestoneStatus>([
   "at_risk",
 ]);
 
+/** A due date sorts before an undated one, which sorts last rather than first. */
+function byDueDate(a: MilestoneOut, b: MilestoneOut): number {
+  if (a.due_date === null && b.due_date === null) return 0;
+  if (a.due_date === null) return 1;
+  if (b.due_date === null) return -1;
+  return a.due_date.localeCompare(b.due_date);
+}
+
 /** Milestones that need attention — slipping or at risk — soonest due first. */
 export function needsAttention(milestones: readonly MilestoneOut[]): MilestoneOut[] {
-  return milestones
-    .filter((m) => ATTENTION.has(m.status))
-    .sort((a, b) => a.due_date.localeCompare(b.due_date));
+  return milestones.filter((m) => ATTENTION.has(m.status)).sort(byDueDate);
+}
+
+/** Milestones sorted by due date, undated ones last. Shared by every screen that lists them. */
+export function sortByDueDate(milestones: readonly MilestoneOut[]): MilestoneOut[] {
+  return [...milestones].sort(byDueDate);
 }
 
 /** Total budget across the portfolio, in minor units. */

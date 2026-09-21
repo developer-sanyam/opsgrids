@@ -9,29 +9,16 @@ refused another's by number.
 
 from __future__ import annotations
 
-import contextlib
-from collections.abc import Iterator
-
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
-from app.main import app
 from app.schemas import IncidentIn
-from platform_core.auth import Principal, Scope, ScopeContext, get_principal
+from platform_core.auth import Scope, ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem
-from tests.helpers import ctx_for, principal_for
+from tests.helpers import as_principal, ctx_for, principal_for
 
 pytestmark = pytest.mark.integration
-
-
-@contextlib.contextmanager
-def as_principal(principal: Principal) -> Iterator[None]:
-    app.dependency_overrides[get_principal] = lambda: principal
-    try:
-        yield
-    finally:
-        app.dependency_overrides.pop(get_principal, None)
 
 
 # --------------------------------------------------------------------- list scope
@@ -220,13 +207,13 @@ class TestEndpointAuthorization:
             response = await client.post(
                 "/api/v1/itsm/catalog",
                 json={
-                    "code": "CAT-09",
+                    # `CatalogItemIn.id` is the human `CAT-..` code; unknown fields are a 422,
+                    # so the trailing rollup below cannot ride along even as a no-op.
+                    "id": "CAT-09",
                     "name": "Replacement laptop",
                     "category": "hardware",
                     "description": "Swap a failed machine.",
                     "sla_days": 2,
-                    # The trailing rollup is the server's to count; sending it changes nothing.
-                    "requests_30d": 999,
                 },
             )
         assert response.status_code == 201
@@ -249,7 +236,7 @@ class TestEndpointAuthorization:
         with as_principal(principal):
             response = await client.post(
                 "/api/v1/itsm/catalog",
-                json={"code": "CAT-01", "name": "Second onboarding", "category": "onboarding"},
+                json={"id": "CAT-01", "name": "Second onboarding", "category": "onboarding"},
             )
         assert response.status_code == 409
 
@@ -263,8 +250,7 @@ class TestEndpointAuthorization:
             response = await client.post(
                 "/api/v1/itsm/service-requests",
                 json={
-                    "number": "REQ-3001",
-                    "catalog_item_code": "CAT-01",
+                    "catalog_item_id": "CAT-01",
                     "requester": "Nobody",
                     "subject": "Nobody at all",
                 },
@@ -281,27 +267,25 @@ class TestEndpointAuthorization:
             org_id, ["itsm.service.request.write:OWN"], subject_ref=data["subject_a"]
         )
         with as_principal(principal):
+            # `ServiceRequestIn` carries only `catalog_item_id`, `subject` and `requester` —
+            # `number`, `assignee`, `category` and `status` are all server-owned, and
+            # `extra="forbid"` means sending any of them is a 422, not a silently ignored field.
             response = await client.post(
                 "/api/v1/itsm/service-requests",
                 json={
-                    "number": "REQ-3001",
-                    "catalog_item_code": "CAT-01",
+                    "catalog_item_id": "CAT-01",
                     "requester": "Sneha Kulkarni",
                     "subject": "Kiran Rao (joins 14 Oct)",
-                    "assignee": "Meera Raghavan",
-                    # Neither of these is part of the contract; both must be ignored.
-                    "category": "access",
-                    "status": "fulfilled",
                 },
             )
         assert response.status_code == 201
         body = response.json()
-        assert body["id"] == "REQ-3001"
+        assert body["id"] == "REQ-2052"  # server-allocated, after the seeded REQ-2051/REQ-2048
         assert body["status"] == "approval"
         assert body["category"] == "onboarding"
         assert body["catalog_item_name"] == "New joiner onboarding"
 
-        raised = await selectors.get_request(session, org_id, "REQ-3001")
+        raised = await selectors.get_request(session, org_id, "REQ-2052")
         assert raised is not None
         # The caller's directory id is stamped as the requester — what OWN scope reads back.
         assert raised.requester_id == data["subject_a"]
@@ -317,8 +301,7 @@ class TestEndpointAuthorization:
             response = await client.post(
                 "/api/v1/itsm/service-requests",
                 json={
-                    "number": "REQ-3002",
-                    "catalog_item_code": "CAT-NOPE",
+                    "catalog_item_id": "CAT-NOPE",
                     "requester": "Sneha Kulkarni",
                     "subject": "Something unoffered",
                 },

@@ -1,127 +1,115 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 
-import { listInventory } from "@/api/client";
+import { deleteInventoryItem, listInventory } from "@/api/client";
 import type { InventoryItemOut } from "@/api/types";
-import { CATEGORY_LABEL, inventoryValueMinor, isLowStock, isOutOfStock } from "@/data/derive";
-import { useAsync } from "@opsgrids/client";
+import { CATEGORY_LABEL } from "@/data/derive";
+import { useWarehouseOptions } from "@/data/useWarehouseOptions";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import { formatMoney, formatMoneyCompact, formatNumber } from "@/lib/format";
 import {
+  Button,
   Card,
+  ConfirmDialog,
   DataTable,
   EmptyState,
   ErrorState,
   PageHeader,
+  Pagination,
   Pill,
+  RowActions,
   SearchInput,
+  Select,
   Skeleton,
   StockPill,
   Tag,
 } from "@/ui";
 import type { Column, StockLevel } from "@/ui";
-import { LayersIcon } from "@opsgrids/ui";
+import { LayersIcon, PlusIcon, useToast } from "@opsgrids/ui";
+import { InventoryItemFormDialog } from "@/forms/InventoryItemFormDialog";
+import { StockAdjustmentDialog } from "@/forms/StockAdjustmentDialog";
 
-type Filter = "all" | "low" | "out";
+type Filter = "all" | "low";
 
 const FILTERS: { value: Filter; label: string }[] = [
   { value: "all", label: "All items" },
   { value: "low", label: "Low stock" },
-  { value: "out", label: "Out of stock" },
 ];
 
-type SortKey = "name" | "warehouse" | "on_hand" | "value";
-interface Sort {
-  key: SortKey;
-  dir: "asc" | "desc";
-}
-
-const NO_ROWS: InventoryItemOut[] = [];
-
-interface Row extends InventoryItemOut {
-  _value: number;
-  _level: StockLevel;
-}
+type SortKey = "sku" | "on_hand" | "value";
 
 function levelOf(item: InventoryItemOut): StockLevel {
-  if (isOutOfStock(item)) return "out";
-  if (isLowStock(item)) return "low";
+  if (item.on_hand === 0) return "out";
+  if (item.on_hand <= item.reorder_point) return "low";
   return "ok";
 }
 
 export function InventoryPage() {
+  const toast = useToast();
+  const navigate = useNavigate();
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [filter, setFilter] = useState<Filter>("all");
-  const [sort, setSort] = useState<Sort>({ key: "value", dir: "desc" });
+  const [warehouse, setWarehouse] = useState<string | "all">("all");
+  const [sort, setSort] = useState<SortKey>("value");
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(25);
+  const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<InventoryItemOut | null>(null);
+  const [adjusting, setAdjusting] = useState<InventoryItemOut | null>(null);
+  const [deleting, setDeleting] = useState<InventoryItemOut | null>(null);
+  const canWrite = useCan("operations.inventory.item.write", "ORG");
+  const canAdjust = useCan("operations.inventory.stock.adjust", "ORG");
+  const warehouses = useWarehouseOptions();
 
-  const state = useAsync(listInventory, []);
-  const items = state.status === "success" ? state.data.items : NO_ROWS;
-
-  const totalValue = useMemo(() => inventoryValueMinor(items), [items]);
-  const lowCount = useMemo(() => items.filter(isLowStock).length, [items]);
-
-  const rows: Row[] = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const enriched = items
-      .filter((it) => {
-        const matchesQuery =
-          q === "" ||
-          it.sku.toLowerCase().includes(q) ||
-          it.name.toLowerCase().includes(q) ||
-          it.warehouse.toLowerCase().includes(q);
-        const level = levelOf(it);
-        const matchesFilter =
-          filter === "all" ||
-          (filter === "low" && level !== "ok") ||
-          (filter === "out" && level === "out");
-        return matchesQuery && matchesFilter;
-      })
-      .map((it) => ({ ...it, _value: it.on_hand * it.unit_value_minor, _level: levelOf(it) }));
-
-    const dir = sort.dir === "asc" ? 1 : -1;
-    enriched.sort((a, b) => {
-      switch (sort.key) {
-        case "on_hand":
-          return (a.on_hand - b.on_hand) * dir;
-        case "value":
-          return (a._value - b._value) * dir;
-        case "warehouse":
-          return a.warehouse.localeCompare(b.warehouse) * dir;
-        case "name":
-        default:
-          return a.name.localeCompare(b.name) * dir;
-      }
+  const loader = () =>
+    listInventory({
+      q: debouncedSearch,
+      warehouse,
+      sort,
+      page,
+      size,
+      ...(filter === "low" ? { low_stock: true } : {}),
     });
-    return enriched;
-  }, [items, search, filter, sort]);
+  const state = useAsync(loader, [debouncedSearch, filter, warehouse, sort, page, size]);
 
-  function onSort(key: string) {
-    setSort((prev) =>
-      prev.key === key
-        ? { key: prev.key, dir: prev.dir === "asc" ? "desc" : "asc" }
-        : { key: key as SortKey, dir: "asc" },
-    );
-  }
+  const remove = useMutation((item: InventoryItemOut) => deleteInventoryItem(item.id), {
+    onSuccess: (_result, item) => {
+      setDeleting(null);
+      toast.success(`${item.name} deleted.`);
+      state.reload();
+    },
+  });
 
-  const columns: Column<Row>[] = [
+  const filtersActive = debouncedSearch !== "" || filter !== "all" || warehouse !== "all";
+
+  const columns: Column<InventoryItemOut>[] = [
     {
       key: "sku",
       header: "SKU",
+      sortKey: "sku",
       render: (it) => <span className="tnum text-xs font-semibold text-muted">{it.sku}</span>,
     },
     {
       key: "item",
       header: "Item",
-      sortKey: "name",
       render: (it) => (
-        <div className="flex flex-col leading-tight">
-          <span className="font-semibold text-ink">{it.name}</span>
+        <button
+          type="button"
+          onClick={() => navigate(`/inventory/${it.id}`)}
+          className="flex flex-col text-left leading-tight"
+        >
+          <span className="font-semibold text-ink hover:text-accent transition-colors">
+            {it.name}
+          </span>
           <span className="text-xs text-faint">{CATEGORY_LABEL[it.category]}</span>
-        </div>
+        </button>
       ),
     },
     {
       key: "warehouse",
       header: "Warehouse",
-      sortKey: "warehouse",
       cellClassName: "hidden md:table-cell",
       headerClassName: "hidden md:table-cell",
       render: (it) => <Tag>{it.warehouse}</Tag>,
@@ -150,7 +138,11 @@ export function InventoryPage() {
       header: "Value",
       align: "right",
       sortKey: "value",
-      render: (it) => <span className="tnum font-semibold text-ink">{formatMoney(it._value)}</span>,
+      render: (it) => (
+        <span className="tnum font-semibold text-ink">
+          {formatMoney(it.on_hand * it.unit_value_minor, it.currency)}
+        </span>
+      ),
     },
     {
       key: "status",
@@ -158,11 +150,39 @@ export function InventoryPage() {
       align: "right",
       render: (it) => (
         <div className="flex justify-end">
-          <StockPill level={it._level} />
+          <StockPill level={levelOf(it)} />
         </div>
       ),
     },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      render: (it) => (
+        <RowActions
+          label={it.name}
+          actions={[
+            { label: "View", onSelect: () => navigate(`/inventory/${it.id}`) },
+            { label: "Adjust stock", onSelect: () => setAdjusting(it), hidden: !canAdjust },
+            { label: "Edit", onSelect: () => setEditing(it), hidden: !canWrite },
+            {
+              label: "Delete",
+              tone: "danger",
+              onSelect: () => setDeleting(it),
+              hidden: !canWrite,
+              disabled: it.on_hand !== 0,
+              disabledReason: "Adjust stock to zero before deleting this item.",
+            },
+          ]}
+        />
+      ),
+    },
   ];
+
+  const totalValue =
+    state.status === "success"
+      ? state.data.items.reduce((s, it) => s + it.on_hand * it.unit_value_minor, 0)
+      : 0;
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -172,14 +192,14 @@ export function InventoryPage() {
         actions={
           <div className="flex items-center gap-2">
             <span className="rounded-full bg-surface shadow-card px-4 h-11 hidden sm:inline-flex items-center gap-2 text-sm font-semibold">
-              <span className="text-muted font-medium">Value</span>
+              <span className="text-muted font-medium">Page value</span>
               <span className="tnum">{formatMoneyCompact(totalValue)}</span>
             </span>
-            <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
-              <LayersIcon className="size-4 text-muted" />
-              <span className="tnum">{items.length}</span>
-              <span className="text-muted font-medium">SKUs</span>
-            </span>
+            <Can permission="operations.inventory.item.write" scope="ORG">
+              <Button onClick={() => setCreating(true)} leadingIcon={<PlusIcon className="size-4" />}>
+                Add item
+              </Button>
+            </Can>
           </div>
         }
       />
@@ -190,19 +210,47 @@ export function InventoryPage() {
             label="Search inventory"
             placeholder="Search by SKU, item or warehouse…"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
             containerClassName="lg:max-w-sm"
           />
-          <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
-            {FILTERS.map((f) => (
-              <Pill key={f.value} active={filter === f.value} onClick={() => setFilter(f.value)}>
-                {f.label}
-                {f.value === "low" && lowCount > 0 ? (
-                  <span className="ml-1 tnum text-xs opacity-80">{lowCount}</span>
-                ) : null}
-              </Pill>
-            ))}
-          </div>
+          <Select
+            label="Warehouse"
+            containerClassName="lg:w-48"
+            value={warehouse}
+            onChange={(e) => {
+              setWarehouse(e.target.value);
+              setPage(1);
+            }}
+            options={[{ value: "all", label: "All warehouses" }, ...warehouses.options]}
+          />
+          <Select
+            label="Sort inventory"
+            containerClassName="lg:ml-auto lg:w-52"
+            value={sort}
+            onChange={(e) => setSort(e.target.value as SortKey)}
+            options={[
+              { value: "value", label: "Value high–low" },
+              { value: "on_hand", label: "On hand high–low" },
+              { value: "sku", label: "SKU A–Z" },
+            ]}
+          />
+        </div>
+        <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
+          {FILTERS.map((f) => (
+            <Pill
+              key={f.value}
+              active={filter === f.value}
+              onClick={() => {
+                setFilter(f.value);
+                setPage(1);
+              }}
+            >
+              {f.label}
+            </Pill>
+          ))}
         </div>
       </Card>
 
@@ -213,26 +261,110 @@ export function InventoryPage() {
               <Skeleton key={i} className="h-12 w-full rounded-tile" />
             ))}
           </div>
-        ) : state.status === "error" ? (
-          <ErrorState message={state.error.message} />
-        ) : (
-          <DataTable
-            columns={columns}
-            rows={rows}
-            rowKey={(it) => it.id}
-            caption="Inventory stock levels"
-            sort={sort}
-            onSort={onSort}
-            emptyState={
-              <EmptyState
-                icon={<LayersIcon className="size-6" />}
-                title="No matching items"
-                description="No stock matches these filters. Try a different view or clear the search."
-              />
-            }
+        ) : null}
+        {state.status === "error" ? (
+          <ErrorState
+            title="Couldn't load inventory"
+            message={problemMessage(state.error)}
+            onRetry={state.reload}
           />
-        )}
+        ) : null}
+        {state.status === "success" ? (
+          <>
+            <DataTable
+              columns={columns}
+              rows={state.data.items}
+              rowKey={(it) => it.id}
+              caption="Inventory stock levels"
+              onRowClick={(it) => navigate(`/inventory/${it.id}`)}
+              emptyState={
+                <EmptyState
+                  icon={<LayersIcon className="size-6" />}
+                  title={filtersActive ? "No items match these filters" : "No inventory yet"}
+                  description={
+                    filtersActive
+                      ? "Try a different warehouse or view, or clear the search."
+                      : "Add the first item to start tracking stock."
+                  }
+                  action={
+                    filtersActive ? null : (
+                      <Can permission="operations.inventory.item.write" scope="ORG">
+                        <Button size="sm" onClick={() => setCreating(true)}>
+                          Add item
+                        </Button>
+                      </Can>
+                    )
+                  }
+                />
+              }
+            />
+            <Pagination
+              page={state.data.page}
+              pages={state.data.pages}
+              total={state.data.total}
+              size={state.data.size}
+              noun="items"
+              onPageChange={setPage}
+              onSizeChange={(n) => {
+                setSize(n);
+                setPage(1);
+              }}
+            />
+          </>
+        ) : null}
       </Card>
+
+      {creating ? (
+        <InventoryItemFormDialog
+          item={null}
+          onClose={() => setCreating(false)}
+          onSaved={(item) => {
+            setCreating(false);
+            toast.success(`${item.name} created.`);
+            state.reload();
+          }}
+        />
+      ) : null}
+
+      {editing ? (
+        <InventoryItemFormDialog
+          item={editing}
+          onClose={() => setEditing(null)}
+          onSaved={(item) => {
+            setEditing(null);
+            toast.success(`${item.name} saved.`);
+            state.reload();
+          }}
+        />
+      ) : null}
+
+      {adjusting ? (
+        <StockAdjustmentDialog
+          item={adjusting}
+          onClose={() => setAdjusting(null)}
+          onSaved={(item) => {
+            setAdjusting(null);
+            toast.success(`Stock adjusted — ${item.on_hand} ${item.uom} on hand.`);
+            state.reload();
+          }}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onClose={() => {
+          setDeleting(null);
+          remove.reset();
+        }}
+        onConfirm={() => deleting && void remove.mutate(deleting)}
+        title="Delete this item?"
+        body={`${deleting?.sku} — ${deleting?.name} is removed from inventory. This can't be undone.`}
+        confirmLabel="Delete"
+        pendingLabel="Deleting…"
+        pending={remove.pending}
+        {...(remove.error ? { error: problemMessage(remove.error) } : {})}
+      />
     </div>
   );
 }
+

@@ -56,6 +56,9 @@ export function EditorShell({
   const [state, dispatch] = useReducer(editorReducer, store, (value) => initEditor(value));
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // A stale `version` conflict is not fixed by resending the same document — the merchant needs
+  // the other tab's edit first. Tracked apart from `saveError` so the action offered differs.
+  const [saveConflict, setSaveConflict] = useState(false);
   const [focusRequest, setFocusRequest] = useState<{ id: string; token: number } | null>(null);
   // The canvas scales to fit whatever the side panes leave it, so hiding one is a real zoom
   // control on a laptop. Kept here rather than in a store: two components read it, both children.
@@ -152,6 +155,7 @@ export function EditorShell({
     // this guard covers the keyboard and any race the button cannot see.
     if (saving || !dirty) return;
     setSaveError(null);
+    setSaveConflict(false);
 
     if (!navigator.onLine) {
       setSaveError("You're offline. Your changes are still here — reconnect and save again.");
@@ -167,11 +171,21 @@ export function EditorShell({
       dispatch({ type: "saved", store: snapshot });
       announce("Store saved.");
     } catch (error) {
-      const message =
-        error instanceof ApiError
-          ? (error.problem?.detail ?? error.message)
-          : "Your changes couldn't be saved. They're still here — try again.";
-      setSaveError(message);
+      if (error instanceof ApiError && error.status === 409) {
+        // Someone else saved this store's theme since it loaded here. Resending the same document
+        // would silently overwrite their change — the only honest move is a reload, not a retry.
+        setSaveConflict(true);
+        setSaveError(
+          error.problem?.detail ??
+            "This store's design changed since you loaded it. Reload to see the latest version before saving again.",
+        );
+      } else {
+        const message =
+          error instanceof ApiError
+            ? (error.problem?.detail ?? error.message)
+            : "Your changes couldn't be saved. They're still here — try again.";
+        setSaveError(message);
+      }
     } finally {
       setSaving(false);
     }
@@ -205,9 +219,15 @@ export function EditorShell({
           tone="danger"
           title={saveError}
           action={
-            <Button variant="dark" size="sm" onClick={() => void save()} disabled={saving}>
-              Try again
-            </Button>
+            saveConflict ? (
+              <Button variant="dark" size="sm" onClick={() => window.location.reload()}>
+                Reload
+              </Button>
+            ) : (
+              <Button variant="dark" size="sm" onClick={() => void save()} disabled={saving}>
+                Try again
+              </Button>
+            )
           }
         />
       ) : null}
@@ -317,6 +337,7 @@ export function EditorShell({
               <SettingsInspector
                 section={selected}
                 def={selected ? findDef(library, selected.type) : undefined}
+                categories={categories}
                 canEdit={canEdit}
                 onSettingChange={(key, value) => {
                   if (!selected) return;

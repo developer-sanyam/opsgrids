@@ -32,16 +32,39 @@ CATEGORY_LABELS: dict[str, str] = {
     "services": "Services",
 }
 
-PO_STATUS_ORDER: tuple[str, ...] = ("draft", "approved", "received", "closed")
+PO_STATUS_ORDER: tuple[str, ...] = ("draft", "approved", "received", "closed", "cancelled")
 PO_STATUS_LABELS: dict[str, str] = {
     "draft": "Draft",
     "approved": "Approved",
     "received": "Received",
     "closed": "Closed",
+    "cancelled": "Cancelled",
 }
 
 #: PO statuses that count as "still in flight".
 OPEN_STATUSES: frozenset[str] = frozenset({"draft", "approved"})
+
+#: The lifecycle: draft -> approved -> received -> closed, with a `cancelled` terminal state
+#: reachable from draft or approved (an approved PO that will never arrive must not stay "open"
+#: forever, inflating `open_pos` and the late-delivery attention queue). Approval is a
+#: prerequisite gate on receiving, not merely a commitment step: `purchase_order.approve` is
+#: floored at ORG specifically so a buyer can never approve their own PO, and a buyer who could
+#: still receive straight from `draft` would walk straight around that gate — stock would move
+#: and spend would commit with no second person ever having signed off.
+PO_TRANSITIONS: dict[str, frozenset[str]] = {
+    "draft": frozenset({"approved", "cancelled"}),
+    "approved": frozenset({"received", "cancelled"}),
+    "received": frozenset({"closed"}),
+    "closed": frozenset(),
+    "cancelled": frozenset(),
+}
+
+
+def can_transition_po(current: str, new: str) -> bool:
+    """Whether a purchase order may move `current` -> `new`. Every other move — including a
+    no-op "move" to the same status — answers 409."""
+    return new in PO_TRANSITIONS.get(current, frozenset())
+
 
 MONTH_LABELS: tuple[str, ...] = (
     "Jan",
@@ -98,10 +121,11 @@ def _pct(part: int, whole: int) -> int:
 def spend_by_category(
     pos: Sequence[PurchaseOrder], totals: dict[str, int]
 ) -> list[dict[str, object]]:
-    """Committed spend grouped by category, largest first. Draft POs are excluded — spend is
-    only committed once a PO is approved. `totals` maps a PO id (str) to its derived total.
-    Percentages are shares of the resolved total."""
-    committed = [po for po in pos if po.status != "draft"]
+    """Committed spend grouped by category, largest first. Draft and cancelled POs are excluded
+    — spend is only committed once a PO is approved, and a cancelled PO committed nothing in the
+    end. `totals` maps a PO id (str) to its derived total. Percentages are shares of the resolved
+    total."""
+    committed = [po for po in pos if po.status not in ("draft", "cancelled")]
     by_cat: dict[str, int] = {}
     for po in committed:
         by_cat[po.category] = by_cat.get(po.category, 0) + totals.get(str(po.id), 0)
@@ -141,9 +165,9 @@ def spend_trend(
     pos: Sequence[PurchaseOrder], totals: dict[str, int], *, months: int = 12
 ) -> list[dict[str, object]]:
     """Committed spend per calendar month, in minor units — the trend chart's representative
-    series. Committed POs (anything past draft) are bucketed by `created_date` month. Returns a
-    point per month present, oldest first."""
-    committed = [po for po in pos if po.status != "draft"]
+    series. Committed POs (anything past draft, excluding cancelled) are bucketed by
+    `created_date` month. Returns a point per month present, oldest first."""
+    committed = [po for po in pos if po.status not in ("draft", "cancelled")]
     by_month: dict[tuple[int, int], int] = {}
     for po in committed:
         key = (po.created_date.year, po.created_date.month)

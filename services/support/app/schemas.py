@@ -10,9 +10,9 @@ UTC, and `assignee_id` is the agent's public ref.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Literal, Self, get_args
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 Priority = Literal["urgent", "high", "normal", "low"]
 TicketStatusT = Literal["new", "open", "pending", "on_hold", "solved"]
@@ -118,121 +118,21 @@ class OverviewOut(BaseModel):
 # --------------------------------------------------------------------- write contracts
 
 
-class RequesterIn(BaseModel):
-    """Who a ticket is being opened for.
-
-    A contact snapshot denormalised onto the ticket, not a link to a customer record — the same
-    shape the queue reads back as `requester`.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(min_length=1, max_length=160)
-    email: str = Field(min_length=1, max_length=254)
-    company: str = Field(min_length=1, max_length=200)
-    kind: RequesterKind = "customer"
-
-
-class OpeningMessageIn(BaseModel):
-    """One message of a new ticket's opening thread.
-
-    The per-ticket code (`m1`, `m2`) and the timestamp are stamped by the server — a client that
-    could choose either could rewrite the order of a conversation that is meant to be append-only.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    author_type: AuthorType = "customer"
-    author_name: str = Field(min_length=1, max_length=160)
-    body: str = Field(min_length=1)
-    internal: bool = False
-
-
-class TicketIn(BaseModel):
-    """Open a ticket, with its opening thread.
-
-    What is deliberately **not** on this payload:
-
-    * `status` — a new ticket always starts `new`; it moves through the lifecycle from there.
-    * `assignee_id` — assignment goes through `POST /support/tickets/{number}/assign`, which
-      refuses an agent who is not part of the organization. Accepting it here would be the one
-      way to assign a ticket to a ghost.
-    * `created_at`, `updated_at`, `first_response_at`, `sla_due`, `sla_breached`, `satisfaction`
-      — lifecycle state the desk stamps as it happens, never something a caller declares.
-
-    `number` *is* accepted: it is the organization's own ticket code (`TK-4001`) and nothing here
-    allocates one. A repeat is a 409, not a second ticket.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    number: str = Field(min_length=1, max_length=40)
-    subject: str = Field(min_length=1, max_length=300)
-    requester: RequesterIn
-    priority: Priority = "normal"
-    channel: Channel = "email"
-    tags: list[Annotated[str, Field(min_length=1, max_length=60)]] = Field(default_factory=list)
-    messages: list[OpeningMessageIn] = Field(default_factory=list)
-
-
-class AgentIn(BaseModel):
-    """Create or replace one agent's record. The agent's public ref (`ag-01`) is the path segment,
-    because it is the natural key the upsert is idempotent on.
-
-    The performance figures are a stored projection the desk maintains, so they are writable here
-    rather than derived — see `models.Agent`.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(min_length=1, max_length=160)
-    email: str = Field(min_length=1, max_length=254)
-    role: AgentRole = "agent"
-    team: str = Field(default="Tier 1", min_length=1, max_length=80)
-    open_load: int = Field(default=0, ge=0)
-    avg_first_response_min: int = Field(default=0, ge=0)
-    csat_pct: int = Field(default=0, ge=0, le=100)
-    solved_7d: int = Field(default=0, ge=0)
-    online: bool = False
-
-
-class SlaTargetIn(BaseModel):
-    """One priority's first-response and resolution windows, in minutes."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    priority: Priority
-    first_response_min: int = Field(ge=0)
-    resolution_min: int = Field(ge=0)
-
-
-class SlaPolicyIn(BaseModel):
-    """Set the organization's one SLA policy.
-
-    A **whole replacement**, not a patch: an organization has exactly one policy and `targets`
-    replaces the stored list outright, so the field is required rather than defaulted — a payload
-    that silently wiped the targets by omitting them is worse than one that refuses.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(min_length=1, max_length=160)
-    business_hours: str = Field(default="", max_length=200)
-    coverage: str = Field(default="", max_length=2000)
-    targets: list[SlaTargetIn]
-
-
 class ReplyIn(BaseModel):
-    """Append one message to a ticket's thread.
+    """Append one message to a ticket's thread, written by the authenticated caller.
 
-    `author_type` defaults to `agent` — a reply from the desk is the common case; a `system`
-    note or a logged `customer` message names itself.
+    `author_type` is **not** a field here: every reply through this endpoint is the desk
+    replying, and the caller is the one holding `support.desk.ticket.write` — the server fixes
+    the type to `agent` rather than trusting the client to declare it, so nobody can use this
+    endpoint to post a message that reads as if the customer or the system said it.
+    `author_name` stays client-supplied: the forwarded principal carries no display name
+    (`platform_core.auth.Principal` has no name claim) and no `Agent` row is linked to a
+    calling membership in this slice, so the server has nothing else to derive it from.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     body: str = Field(min_length=1)
-    author_type: AuthorType = "agent"
     author_name: str = Field(min_length=1, max_length=160)
     internal: bool = False
 
@@ -243,3 +143,118 @@ class AssignIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     assignee_id: str | None = Field(default=None, max_length=40)
+
+
+class StatusIn(BaseModel):
+    """Move a ticket through the lifecycle. The target must be a legal next state
+    (`app.domain.ALLOWED_TRANSITIONS`) — anything else is a 409, not a free-form set."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: TicketStatusT
+
+
+class RequesterIn(BaseModel):
+    """The requester snapshot taken when a ticket opens."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+    email: EmailStr = Field(max_length=254)
+    company: str = Field(max_length=200)
+    kind: RequesterKind = "customer"
+
+
+class TicketCreateIn(BaseModel):
+    """Open a ticket with its first message.
+
+    Server-owned, never accepted here: `number` (allocated per organization), `status`
+    (always starts `new`), `created_at`, `first_response_at`, `sla_due`, `sla_breached` and
+    `satisfaction` — all stored server truth, not form fields (`Must not be built`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str = Field(min_length=1, max_length=300)
+    requester: RequesterIn
+    priority: Priority = "normal"
+    channel: Channel = "web"
+    assignee_id: str | None = Field(default=None, max_length=40)
+    tags: list[str] = Field(default_factory=list)
+    body: str = Field(min_length=1)
+
+
+class TicketUpdateIn(BaseModel):
+    """Edit a ticket's plain properties. Absent means "leave alone"; status and assignee stay
+    on their own endpoints, each with its own audit action and event."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    priority: Priority | None = None
+    subject: str | None = Field(default=None, min_length=1, max_length=300)
+    tags: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one_field(self) -> Self:
+        if not self.model_fields_set:
+            raise ValueError("Provide at least one of priority, subject or tags")
+        return self
+
+
+class AgentIn(BaseModel):
+    """Add an agent to the desk. `ref` (`ag-04`) is server-allocated, not accepted here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+    email: EmailStr = Field(max_length=254)
+    role: AgentRole = "agent"
+    team: str = Field(default="Tier 1", min_length=1, max_length=80)
+    online: bool = False
+
+
+class AgentPatch(BaseModel):
+    """Edit an agent. Absent means "leave alone". The four metric columns
+    (`open_load`, `avg_first_response_min`, `csat_pct`, `solved_7d`) are a desk projection and
+    are never writable here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    email: EmailStr | None = Field(default=None, max_length=254)
+    role: AgentRole | None = None
+    team: str | None = Field(default=None, min_length=1, max_length=80)
+    online: bool | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one_field(self) -> Self:
+        if not self.model_fields_set:
+            raise ValueError("Provide at least one field to update")
+        return self
+
+
+class SlaTargetIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    priority: Priority
+    first_response_min: int = Field(ge=1)
+    resolution_min: int = Field(ge=1)
+
+
+class SlaPolicyIn(BaseModel):
+    """Replace the organization's one SLA policy. `targets` must carry exactly one row per
+    priority — the policy is total, not a sparse override."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+    business_hours: str = Field(default="", max_length=200)
+    coverage: str = Field(default="")
+    targets: list[SlaTargetIn]
+
+    @model_validator(mode="after")
+    def _one_row_per_priority(self) -> Self:
+        priorities = [t.priority for t in self.targets]
+        if len(priorities) != len(set(priorities)) or set(priorities) != set(get_args(Priority)):
+            raise ValueError("targets must carry exactly one row for each priority")
+        return self

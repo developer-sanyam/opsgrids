@@ -31,12 +31,18 @@ from app.models import (
     PurchaseDocument,
 )
 from app.schemas import (
+    CustomerCreate,
     FileInvoiceIn,
     GstRegistrationUpsert,
     ImsDecisionCreate,
+    InvoiceCreate,
+    InvoiceLineCreate,
+    PaymentAllocationCreate,
+    PaymentCreate,
     PurchaseDocumentCreate,
 )
 from platform_core.db import TENANT_GUC
+from platform_core.errors import NotFoundProblem
 from tests.helpers import admin_ctx
 
 pytestmark = pytest.mark.integration
@@ -91,6 +97,98 @@ class TestCrossTenantIsolation:
                 # 4) The paid-amount rollup returns nothing for A's ids under B's tenant.
                 paid = await selectors.paid_by_invoice(s_b, org_b, [a_invoice_id])
                 assert paid == {}
+        finally:
+            await s_b.close()
+            await engine.dispose()
+
+    async def test_org_b_cannot_reference_org_as_invoices_in_its_own_writes(
+        self, session, org_id, book
+    ) -> None:
+        """The two new writes that name another document by id — a credit note's
+        `corrects_invoice_id` and a payment's allocation `invoice_id` — go through the same
+        tenant-scoped fetch (`selectors.get_invoice` / `get_invoices`) every read here does, so
+        org B naming org A's invoice gets exactly the same 404-shaped refusal as reading it would,
+        and nothing is written."""
+        org_a = org_id
+        org_b = uuid.uuid4()
+
+        async with session.begin():
+            a_invoice = next(
+                inv
+                for inv in await selectors.all_invoices(session, org_a)
+                if inv.document_type == "invoice"
+            )
+            a_invoice_id = a_invoice.id
+
+        engine, s_b = await _session_bound_to(org_b)
+        try:
+            ctx_b = admin_ctx(org_b)
+            async with s_b.begin():
+                await services.set_gst_registration(
+                    s_b,
+                    ctx_b,
+                    GstRegistrationUpsert(
+                        gstin="27AAECO9012H1ZG", legal_name="Org B Industries Pvt Ltd"
+                    ),
+                )
+                b_customer = await services.create_customer(
+                    s_b,
+                    ctx_b,
+                    CustomerCreate(
+                        name="Org B Buyer",
+                        contact_name="",
+                        email="",
+                        city="Pune",
+                        state="Maharashtra",
+                    ),
+                )
+                # Captured now, as a plain uuid: a rollback below (the `pytest.raises` blocks)
+                # expires every object still attached to this session, `b_customer` included, and
+                # reloading an expired attribute outside an active greenlet is itself an error.
+                b_customer_id = b_customer.id
+
+            # 1) A credit note naming org A's invoice: refused as not-found, not written.
+            with pytest.raises(NotFoundProblem):
+                async with s_b.begin():
+                    await services.create_invoice(
+                        s_b,
+                        ctx_b,
+                        InvoiceCreate(
+                            number="CN-CROSS-TENANT-1",
+                            customer_id=b_customer_id,
+                            issued_date=date(2026, 1, 10),
+                            due_date=date(2026, 1, 10),
+                            tax_rate_pct=18,
+                            document_type="credit_note",
+                            corrects_invoice_id=a_invoice_id,
+                            lines=[
+                                InvoiceLineCreate(
+                                    description="Return", quantity=-1, unit_price_minor=1000
+                                )
+                            ],
+                        ),
+                    )
+            async with s_b.begin():
+                assert not await selectors.number_exists(s_b, org_b, "CN-CROSS-TENANT-1")
+
+            # 2) A payment allocating to org A's invoice: refused as not-found, not written.
+            with pytest.raises(NotFoundProblem):
+                async with s_b.begin():
+                    await services.record_payment(
+                        s_b,
+                        ctx_b,
+                        PaymentCreate(
+                            reference="PMT-CROSS-TENANT-1",
+                            customer_id=b_customer_id,
+                            received_date=date(2026, 1, 10),
+                            method="upi",
+                            allocations=[
+                                PaymentAllocationCreate(invoice_id=a_invoice_id, amount_minor=100)
+                            ],
+                        ),
+                    )
+            async with s_b.begin():
+                assert not await selectors.reference_exists(s_b, org_b, "PMT-CROSS-TENANT-1")
         finally:
             await s_b.close()
             await engine.dispose()

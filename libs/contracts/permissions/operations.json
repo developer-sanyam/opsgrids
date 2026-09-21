@@ -13,11 +13,20 @@
     {
       "action": "write",
       "default_scope": "ORG",
-      "description": "Add inventory items",
+      "description": "Create, edit and delete inventory items",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "inventory",
       "resource": "item"
+    },
+    {
+      "action": "adjust",
+      "default_scope": "ORG",
+      "description": "Adjust or count an item's stock on hand",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "stock"
     },
     {
       "action": "read",
@@ -31,11 +40,20 @@
     {
       "action": "write",
       "default_scope": "ORG",
-      "description": "Open warehouses",
+      "description": "Create, edit and delete warehouses",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "inventory",
       "resource": "warehouse"
+    },
+    {
+      "action": "approve",
+      "default_scope": "ORG",
+      "description": "Approve a purchase order",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "purchase_order"
     },
     {
       "action": "read",
@@ -49,7 +67,7 @@
     {
       "action": "write",
       "default_scope": "OWN",
-      "description": "Raise and receive purchase orders",
+      "description": "Raise, edit and delete draft purchase orders; receive an approved one; close it; cancel a draft (cancelling an approved one also needs approve)",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "procurement",
@@ -67,7 +85,7 @@
     {
       "action": "write",
       "default_scope": "ORG",
-      "description": "Add suppliers to the directory",
+      "description": "Create, edit and delete suppliers",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "procurement",
@@ -90,11 +108,19 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.stock.adjust",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.warehouse.read",
           "scope": "ORG"
         },
         {
           "code": "operations.inventory.warehouse.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.purchase_order.approve",
           "scope": "ORG"
         },
         {
@@ -121,7 +147,7 @@
     {
       "code": "OPERATIONS_MANAGER",
       "cross_product": false,
-      "description": "Raises and receives purchase orders org-wide, and curates the supplier directory and the inventory records. Reads warehouses but does not open them \u2014 a stocking site is administered, not procured.",
+      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Does not create or rename warehouses \u2014 that stays with the admin.",
       "grants": [
         {
           "code": "operations.inventory.item.read",
@@ -132,7 +158,15 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.stock.adjust",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.warehouse.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.purchase_order.approve",
           "scope": "ORG"
         },
         {
@@ -159,7 +193,7 @@
     {
       "code": "OPERATIONS_USER",
       "cross_product": false,
-      "description": "Every person with an Operations seat. Raises and sees their own purchase orders, and reads the shared suppliers, inventory and warehouses \u2014 reference data is curated by the manager and administrator roles, not by every seat.",
+      "description": "Every person with an Operations seat. Raises and sees their own purchase orders, and reads the shared suppliers, inventory and warehouses.",
       "grants": [
         {
           "code": "operations.inventory.item.read",

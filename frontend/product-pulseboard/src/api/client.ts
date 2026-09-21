@@ -4,18 +4,19 @@
  * Live by default: every function calls the real backend through the gateway's same-origin
  * `/api/v1` prefix (Vite proxies it to `http://localhost:8100` in dev) with the bearer token
  * from the session. Set `VITE_USE_FIXTURES=true` to render the whole app from `fixtures.ts` with
- * no login — handy for offline design work.
+ * no login — handy for offline design work. Dev builds only: `import.meta.env.DEV` compiles to
+ * `false` in production, so a stray CI/production env var can never ship fixture mode.
  *
  * PulseBoard has no single `pulseboard` service — the gateway mounts three services with no
  * product segment, all gated by the `pulseboard` entitlement: `project` (`/projects`, the
  * portfolio, the board and the roster), `timesheet` (`/timesheets`, the weekly grid) and
- * `standup` (`/standups`, the daily check-ins). Every route returns the platform's paginated
- * envelope (`items` / `total`); the small `mapX` functions below turn one wire item into this
- * app's domain type, so a field rename on the wire is a one-line change here, not a hunt through
- * every screen.
+ * `standup` (`/standups`, the daily check-ins). Every list route returns the platform's
+ * paginated envelope (`items` / `total` / `page` / `size` / `pages`); the small `mapX` functions
+ * below turn one wire item into this app's domain type, so a field rename on the wire is a
+ * one-line change here, not a hunt through every screen.
  */
 
-import { apiRequest } from "@opsgrids/client";
+import { apiRequest, settle } from "@opsgrids/client";
 import { isoOf, mondayOf, weekFrom } from "./dates";
 import {
   PROJECTS,
@@ -28,28 +29,36 @@ import {
 } from "./fixtures";
 import { PEOPLE } from "@/data/people";
 import type {
+  Page,
   Person,
+  PersonIn,
+  PersonPatch,
   Priority,
   Project,
+  ProjectIn,
   ProjectStatus,
+  ProjectUpdate,
   StandupEntry,
+  StandupEntryIn,
   Task,
+  TaskIn,
   TaskStatus,
+  TaskUpdate,
+  TimesheetEntry,
   TimesheetRow,
   TimesheetStatus,
+  TimesheetStatusIn,
+  TimesheetSummary,
+  TimesheetWeekIn,
+  TrendPoint,
 } from "./types";
 
-/** Default source. Live unless `VITE_USE_FIXTURES=true` pins the app to fixtures.
- *  Dev builds only: `import.meta.env.DEV` compiles to `false` in production, so a stray
- *  CI/production env var can never ship fixture mode — an app rendering fabricated data
- *  with the "Sample data" markers suppressed. */
+/** Default source. Live unless `VITE_USE_FIXTURES=true` pins the app to fixtures. */
 export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES === "true";
 
 /** The fixture rows in `fixtures.ts` are generated from a pinned date, so the date itself is
  *  pinned too — move it and the standups, the timesheet week and the "due this week" rollups all
- *  drift out of sync with the rows built around it. Live traffic has no generated rows to stay
- *  consistent with, so it gets the real clock: pin that one too and every date-derived view on
- *  this screen would quietly keep serving the same stale week forever. */
+ *  drift out of sync with the rows built around it. Live traffic gets the real clock. */
 const LIVE_TODAY = isoOf(new Date());
 
 /** The current week's Monday and its seven ISO dates — shared by the Overview and Timesheets. */
@@ -57,20 +66,24 @@ export const TODAY = USE_FIXTURES ? FIXTURE_TODAY : LIVE_TODAY;
 export const WEEK_START = USE_FIXTURES ? FIXTURE_WEEK_START : mondayOf(TODAY);
 export const WEEK_DATES = USE_FIXTURES ? FIXTURE_WEEK_DATES : weekFrom(WEEK_START);
 
-/** Small artificial delay so loading states are exercised in fixture mode. */
-function settle<T>(value: T, ms = 240): Promise<T> {
-  return new Promise((resolve) => setTimeout(() => resolve(value), ms));
-}
+/** The default page size for a screen with real server paging. */
+export const DEFAULT_PAGE_SIZE = 25;
 
-/** A generous page size — one request returns the whole (small) working set for this org. The
- *  page params cap `size` at 200 (`platform_core.pagination`), so this is the largest single
- *  page the backend allows. */
-const FULL_PAGE = 200;
+/**
+ * The largest page the backend allows (`platform_core.pagination` caps `size` at 200). Used only
+ * by aggregate widgets that need the whole working set to add up a number — never by a list
+ * screen, which pages through `{items,total,page,size,pages}` instead of capping silently.
+ */
+const ROLLUP_PAGE = 200;
 
-/** The envelope every list endpoint on this platform returns. */
-interface PageEnvelope<T> {
-  items: T[];
-  total: number;
+function qs(params: Record<string, string | number | boolean | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) continue;
+    search.set(key, String(value));
+  }
+  const s = search.toString();
+  return s ? `?${s}` : "";
 }
 
 /* ------------------------------------------------------------------------ wire shapes
@@ -81,6 +94,7 @@ interface PageEnvelope<T> {
 
 interface PersonWire {
   id: string;
+  uuid: string;
   name: string;
   role: string;
   location: string;
@@ -123,11 +137,19 @@ interface TimesheetCellWire {
   billable_hours: number;
 }
 
+interface TimesheetEntryWire {
+  date: string;
+  project_ref: string | null;
+  entered_hours: number;
+  billable_hours: number;
+}
+
 interface TimesheetRowWire {
   person_id: string;
   week_start: string;
   status: TimesheetStatus;
   cells: TimesheetCellWire[];
+  entries: TimesheetEntryWire[];
 }
 
 interface StandupEntryWire {
@@ -139,13 +161,22 @@ interface StandupEntryWire {
   blockers: string | null;
 }
 
-// Named aliases (rather than `apiRequest<PageEnvelope<X>>` at each call site) so every response
-// type is a single identifier — one generic argument, not a nest of them.
-type ProjectPage = PageEnvelope<ProjectWire>;
-type TaskPage = PageEnvelope<TaskWire>;
-type PersonPage = PageEnvelope<PersonWire>;
-type TimesheetPage = PageEnvelope<TimesheetRowWire>;
-type StandupPage = PageEnvelope<StandupEntryWire>;
+interface PageWire<T> {
+  items: T[];
+  total: number;
+  page: number;
+  size: number;
+  pages: number;
+}
+
+interface TimesheetSummaryWire {
+  week_start: string;
+  entered_hours: number;
+  billable_hours: number;
+  capacity_hours: number;
+  utilization_pct: number;
+  series: TrendPoint[];
+}
 
 /* ------------------------------------------------------------------------ mappers
  * Explicit, field-by-field — a wire field that is renamed or dropped fails typechecking here
@@ -155,6 +186,7 @@ type StandupPage = PageEnvelope<StandupEntryWire>;
 function mapPerson(raw: PersonWire): Person {
   return {
     id: raw.id,
+    uuid: raw.uuid,
     name: raw.name,
     role: raw.role,
     location: raw.location,
@@ -196,6 +228,15 @@ function mapTask(raw: TaskWire): Task {
   };
 }
 
+function mapTimesheetEntry(raw: TimesheetEntryWire): TimesheetEntry {
+  return {
+    date: raw.date,
+    project_ref: raw.project_ref,
+    entered_hours: raw.entered_hours,
+    billable_hours: raw.billable_hours,
+  };
+}
+
 function mapTimesheetRow(raw: TimesheetRowWire): TimesheetRow {
   return {
     person_id: raw.person_id,
@@ -206,6 +247,7 @@ function mapTimesheetRow(raw: TimesheetRowWire): TimesheetRow {
       entered_hours: c.entered_hours,
       billable_hours: c.billable_hours,
     })),
+    entries: raw.entries.map(mapTimesheetEntry),
   };
 }
 
@@ -220,73 +262,381 @@ function mapStandupEntry(raw: StandupEntryWire): StandupEntry {
   };
 }
 
-export interface ListProjectsParams {
-  search?: string;
-  status?: ProjectStatus | "all";
+function mapPage<W, T>(raw: PageWire<W>, mapItem: (w: W) => T): Page<T> {
+  return {
+    items: raw.items.map(mapItem),
+    total: raw.total,
+    page: raw.page,
+    size: raw.size,
+    pages: raw.pages,
+  };
 }
 
-/** The project list for the Projects screen, filtered by free-text search and health status. */
-export async function listProjects(
-  params: ListProjectsParams = {},
-): Promise<Project[]> {
+/** A fixture-mode page envelope over an already-filtered, already-sorted array. */
+function pageOf<T>(all: T[], page: number, size: number): Page<T> {
+  const start = (page - 1) * size;
+  return {
+    items: all.slice(start, start + size),
+    total: all.length,
+    page,
+    size,
+    pages: Math.max(1, Math.ceil(all.length / size)),
+  };
+}
+
+/* ------------------------------------------------------------------------ projects */
+
+export interface ListProjectsParams {
+  page?: number;
+  size?: number;
+  q?: string | undefined;
+  status?: ProjectStatus | "all" | undefined;
+  billable?: boolean | undefined;
+  sort?: "code" | "progress" | "due" | undefined;
+}
+
+/** The project list for the Projects screen: search, health filter, billing filter and sort. */
+export async function listProjects(params: ListProjectsParams = {}): Promise<Page<Project>> {
+  const page = params.page ?? 1;
+  const size = params.size ?? DEFAULT_PAGE_SIZE;
   if (USE_FIXTURES) {
-    const q = params.search?.trim().toLowerCase() ?? "";
-    const filtered = PROJECTS.filter((p) => {
+    const q = params.q?.trim().toLowerCase() ?? "";
+    let filtered = PROJECTS.filter((p) => {
       const matchesQuery =
         q === "" ||
         p.name.toLowerCase().includes(q) ||
         p.client.toLowerCase().includes(q) ||
         p.code.toLowerCase().includes(q);
-      const matchesStatus =
-        !params.status || params.status === "all" || p.status === params.status;
-      return matchesQuery && matchesStatus;
+      const matchesStatus = !params.status || params.status === "all" || p.status === params.status;
+      const matchesBillable = params.billable === undefined || p.billable === params.billable;
+      return matchesQuery && matchesStatus && matchesBillable;
     });
-    return settle(filtered);
+    if (params.sort === "code") filtered = [...filtered].sort((a, b) => a.code.localeCompare(b.code));
+    if (params.sort === "progress") filtered = [...filtered].sort((a, b) => b.progress_pct - a.progress_pct);
+    if (params.sort === "due")
+      filtered = [...filtered].sort((a, b) => (a.due_date ?? "9999").localeCompare(b.due_date ?? "9999"));
+    return settle(pageOf(filtered, page, size));
   }
 
-  const query = new URLSearchParams();
-  if (params.search?.trim()) query.set("q", params.search.trim());
-  if (params.status && params.status !== "all") query.set("status", params.status);
-  query.set("size", String(FULL_PAGE));
-  const page = await apiRequest<ProjectPage>(`/projects?${query.toString()}`);
-  return page.items.map(mapProject);
+  const query = qs({
+    q: params.q?.trim() || undefined,
+    status: params.status && params.status !== "all" ? params.status : undefined,
+    billable: params.billable,
+    sort: params.sort,
+    page,
+    size,
+  });
+  const raw = await apiRequest<PageWire<ProjectWire>>(`/projects${query}`);
+  return mapPage(raw, mapProject);
 }
 
-/** Every project (unfiltered) — powers the Overview rollups. */
+/** Every engagement, one full page — used to resolve codes against ids in a join (the board,
+ * task and timesheet forms' project pickers). */
 export async function getProjects(): Promise<Project[]> {
-  if (USE_FIXTURES) return settle(PROJECTS);
-  const page = await apiRequest<ProjectPage>(`/projects?size=${FULL_PAGE}`);
-  return page.items.map(mapProject);
+  const result = await listProjects({ page: 1, size: ROLLUP_PAGE });
+  return result.items;
 }
 
-/** Every task on the board. */
+export async function createProject(input: ProjectIn): Promise<Project> {
+  if (USE_FIXTURES) {
+    const { owner_ref, ...rest } = input;
+    const created: Project = { id: `PB-${input.code}`, owner_id: owner_ref, ...rest };
+    PROJECTS.push(created);
+    return settle(created);
+  }
+  const raw = await apiRequest<ProjectWire>("/projects", { method: "POST", body: input });
+  return mapProject(raw);
+}
+
+export async function updateProject(code: string, input: ProjectUpdate): Promise<Project> {
+  if (USE_FIXTURES) {
+    const found = PROJECTS.find((p) => p.code === code);
+    if (!found) throw new Error("Not found");
+    Object.assign(found, input);
+    return settle(found);
+  }
+  const raw = await apiRequest<ProjectWire>(`/projects/${encodeURIComponent(code)}`, {
+    method: "PATCH",
+    body: input,
+  });
+  return mapProject(raw);
+}
+
+export async function deleteProject(code: string): Promise<void> {
+  if (USE_FIXTURES) {
+    const index = PROJECTS.findIndex((p) => p.code === code);
+    if (index >= 0) PROJECTS.splice(index, 1);
+    return settle(undefined);
+  }
+  await apiRequest<void>(`/projects/${encodeURIComponent(code)}`, { method: "DELETE" });
+}
+
+/* ------------------------------------------------------------------------ tasks (the board) */
+
+export interface ListTasksParams {
+  page?: number;
+  size?: number;
+  status?: TaskStatus | undefined;
+  project?: string | undefined;
+  assignee?: string | undefined;
+}
+
+export async function listTasks(params: ListTasksParams = {}): Promise<Page<Task>> {
+  const page = params.page ?? 1;
+  const size = params.size ?? ROLLUP_PAGE;
+  if (USE_FIXTURES) {
+    const filtered = TASKS.filter(
+      (t) =>
+        (!params.status || t.status === params.status) &&
+        (!params.project || t.project_id === params.project) &&
+        (!params.assignee || t.assignee_id === params.assignee),
+    );
+    return settle(pageOf(filtered, page, size));
+  }
+  const query = qs({ status: params.status, project: params.project, assignee: params.assignee, page, size });
+  const raw = await apiRequest<PageWire<TaskWire>>(`/projects/tasks${query}`);
+  return mapPage(raw, mapTask);
+}
+
+/** Every task on the board, one full page — the Overview's rollups need the whole set. */
 export async function getTasks(): Promise<Task[]> {
-  if (USE_FIXTURES) return settle(TASKS);
-  const page = await apiRequest<TaskPage>(`/projects/tasks?size=${FULL_PAGE}`);
-  return page.items.map(mapTask);
+  const result = await listTasks({ page: 1, size: ROLLUP_PAGE });
+  return result.items;
 }
 
-/** The delivery-team roster. */
+export async function createTask(input: TaskIn): Promise<Task> {
+  if (USE_FIXTURES) {
+    const project = PROJECTS.find((p) => p.code === input.project_code);
+    const created: Task = {
+      id: `t-${input.key}`,
+      key: input.key,
+      title: input.title,
+      status: input.status,
+      assignee_id: input.assignee_ref,
+      project_id: project?.id ?? input.project_code,
+      estimate_hours: input.estimate_hours,
+      priority: input.priority,
+      tags: input.tags,
+      due_date: input.due_date,
+    };
+    TASKS.push(created);
+    return settle(created);
+  }
+  const raw = await apiRequest<TaskWire>("/projects/tasks", { method: "POST", body: input });
+  return mapTask(raw);
+}
+
+export async function updateTask(key: string, input: TaskUpdate): Promise<Task> {
+  if (USE_FIXTURES) {
+    const found = TASKS.find((t) => t.key === key);
+    if (!found) throw new Error("Not found");
+    if (input.title !== undefined) found.title = input.title;
+    if (input.status !== undefined) found.status = input.status;
+    if ("assignee_ref" in input) found.assignee_id = input.assignee_ref ?? null;
+    if (input.estimate_hours !== undefined) found.estimate_hours = input.estimate_hours;
+    if (input.priority !== undefined) found.priority = input.priority;
+    if (input.tags !== undefined) found.tags = input.tags;
+    if ("due_date" in input) found.due_date = input.due_date ?? null;
+    return settle(found);
+  }
+  const raw = await apiRequest<TaskWire>(`/projects/tasks/${encodeURIComponent(key)}`, {
+    method: "PATCH",
+    body: input,
+  });
+  return mapTask(raw);
+}
+
+export async function deleteTask(key: string): Promise<void> {
+  if (USE_FIXTURES) {
+    const index = TASKS.findIndex((t) => t.key === key);
+    if (index >= 0) TASKS.splice(index, 1);
+    return settle(undefined);
+  }
+  await apiRequest<void>(`/projects/tasks/${encodeURIComponent(key)}`, { method: "DELETE" });
+}
+
+/* ------------------------------------------------------------------------ people (the roster) */
+
+export interface ListPeopleParams {
+  page?: number;
+  size?: number;
+}
+
+export async function listPeople(params: ListPeopleParams = {}): Promise<Page<Person>> {
+  const page = params.page ?? 1;
+  const size = params.size ?? DEFAULT_PAGE_SIZE;
+  if (USE_FIXTURES) return settle(pageOf(PEOPLE, page, size));
+  const raw = await apiRequest<PageWire<PersonWire>>(`/projects/people${qs({ page, size })}`);
+  return mapPage(raw, mapPerson);
+}
+
+/** Every person on the roster, one full page — used to resolve names against ids in a join. */
 export async function getPeople(): Promise<Person[]> {
-  if (USE_FIXTURES) return settle(PEOPLE);
-  const page = await apiRequest<PersonPage>(`/projects/people?size=${FULL_PAGE}`);
-  return page.items.map(mapPerson);
+  const result = await listPeople({ page: 1, size: ROLLUP_PAGE });
+  return result.items;
 }
 
-/** The current week's timesheets, one row per person. */
+export async function createPerson(input: PersonIn): Promise<Person> {
+  if (USE_FIXTURES) {
+    const created: Person = { id: input.ref, uuid: `uuid-${input.ref}`, ...input };
+    PEOPLE.push(created);
+    return settle(created);
+  }
+  const raw = await apiRequest<PersonWire>("/projects/people", { method: "POST", body: input });
+  return mapPerson(raw);
+}
+
+export async function updatePerson(ref: string, input: PersonPatch): Promise<Person> {
+  if (USE_FIXTURES) {
+    const found = PEOPLE.find((p) => p.id === ref);
+    if (!found) throw new Error("Not found");
+    Object.assign(found, input);
+    return settle(found);
+  }
+  const raw = await apiRequest<PersonWire>(`/projects/people/${encodeURIComponent(ref)}`, {
+    method: "PATCH",
+    body: input,
+  });
+  return mapPerson(raw);
+}
+
+export async function deletePerson(ref: string): Promise<void> {
+  if (USE_FIXTURES) {
+    const index = PEOPLE.findIndex((p) => p.id === ref);
+    if (index >= 0) PEOPLE.splice(index, 1);
+    return settle(undefined);
+  }
+  await apiRequest<void>(`/projects/people/${encodeURIComponent(ref)}`, { method: "DELETE" });
+}
+
+/* ------------------------------------------------------------------------ timesheets */
+
+export interface ListTimesheetsParams {
+  page?: number;
+  size?: number;
+  week?: string | undefined;
+  status?: TimesheetStatus | undefined;
+}
+
+export async function listTimesheets(params: ListTimesheetsParams = {}): Promise<Page<TimesheetRow>> {
+  const page = params.page ?? 1;
+  const size = params.size ?? ROLLUP_PAGE;
+  const week = params.week ?? WEEK_START;
+  if (USE_FIXTURES) {
+    const filtered = TIMESHEETS.filter(
+      (r) => r.week_start === week && (!params.status || r.status === params.status),
+    );
+    return settle(pageOf(filtered, page, size));
+  }
+  const query = qs({ week, status: params.status, page, size });
+  const raw = await apiRequest<PageWire<TimesheetRowWire>>(`/timesheets${query}`);
+  return mapPage(raw, mapTimesheetRow);
+}
+
+/** The current week's timesheets, one full page — the Overview's rollups need the whole set. */
 export async function getTimesheets(): Promise<TimesheetRow[]> {
-  if (USE_FIXTURES) return settle(TIMESHEETS);
-  const page = await apiRequest<TimesheetPage>(
-    `/timesheets?week=${WEEK_START}&size=${FULL_PAGE}`,
-  );
-  return page.items.map(mapTimesheetRow);
+  const result = await listTimesheets({ page: 1, size: ROLLUP_PAGE });
+  return result.items;
 }
 
-/** Standup entries for a given day (defaults to today). */
-export async function getStandups(date: string = TODAY): Promise<StandupEntry[]> {
-  if (USE_FIXTURES) return settle(STANDUPS.filter((s) => s.date === date));
-  const page = await apiRequest<StandupPage>(
-    `/standups?date=${date}&size=${FULL_PAGE}`,
-  );
-  return page.items.map(mapStandupEntry);
+/** Record (or re-record) one person's week. Resend every entry — a partial PUT wipes the rest. */
+export async function recordTimesheetWeek(input: TimesheetWeekIn): Promise<TimesheetRow> {
+  if (USE_FIXTURES) {
+    const existing = TIMESHEETS.find(
+      (r) => r.person_id === input.person_ref && r.week_start === input.week_start,
+    );
+    const row: TimesheetRow = {
+      person_id: input.person_ref,
+      week_start: input.week_start,
+      status: input.status,
+      cells: WEEK_DATES.map((date) => {
+        const entry = input.entries.find((e) => e.date === date);
+        return { date, entered_hours: entry?.entered_hours ?? 0, billable_hours: entry?.billable_hours ?? 0 };
+      }),
+      entries: input.entries,
+    };
+    if (existing) Object.assign(existing, row);
+    else TIMESHEETS.push(row);
+    return settle(row);
+  }
+  const raw = await apiRequest<TimesheetRowWire>("/timesheets", { method: "PUT", body: input });
+  return mapTimesheetRow(raw);
+}
+
+/** Submit, approve or reopen one person's week. Entries are untouched — only `status` moves. */
+export async function setTimesheetStatus(input: TimesheetStatusIn): Promise<TimesheetRow> {
+  if (USE_FIXTURES) {
+    const found = TIMESHEETS.find(
+      (r) => r.person_id === input.person_ref && r.week_start === input.week_start,
+    );
+    if (!found) throw new Error("Not found");
+    found.status = input.status;
+    return settle(found);
+  }
+  const raw = await apiRequest<TimesheetRowWire>("/timesheets/status", { method: "POST", body: input });
+  return mapTimesheetRow(raw);
+}
+
+/** The Overview's and Timesheets' time-side rollup for one week — real server arithmetic. */
+export async function getTimesheetSummary(week: string = WEEK_START): Promise<TimesheetSummary> {
+  if (USE_FIXTURES) {
+    const rows = TIMESHEETS.filter((r) => r.week_start === week);
+    const entered = rows.reduce((s, r) => s + r.cells.reduce((cs, c) => cs + c.entered_hours, 0), 0);
+    const billable = rows.reduce((s, r) => s + r.cells.reduce((cs, c) => cs + c.billable_hours, 0), 0);
+    const capacity = PEOPLE.reduce((s, p) => s + p.capacity_hours, 0);
+    const utilization_pct = capacity === 0 ? 0 : Math.round((billable / capacity) * 1000) / 10;
+    return settle({
+      week_start: week,
+      entered_hours: entered,
+      billable_hours: billable,
+      capacity_hours: capacity,
+      utilization_pct,
+      series: [{ label: "This week", value: utilization_pct }],
+    });
+  }
+  return apiRequest<TimesheetSummaryWire>(`/timesheets/summary${qs({ week })}`);
+}
+
+/* ------------------------------------------------------------------------ standups */
+
+export interface ListStandupsParams {
+  page?: number;
+  size?: number;
+  date?: string | undefined;
+  blocked?: boolean | undefined;
+}
+
+export async function listStandups(params: ListStandupsParams = {}): Promise<Page<StandupEntry>> {
+  const page = params.page ?? 1;
+  const size = params.size ?? ROLLUP_PAGE;
+  const date = params.date ?? TODAY;
+  if (USE_FIXTURES) {
+    const filtered = STANDUPS.filter(
+      (s) => s.date === date && (!params.blocked || s.blockers !== null),
+    );
+    return settle(pageOf(filtered, page, size));
+  }
+  const query = qs({ date, blocked: params.blocked, page, size });
+  const raw = await apiRequest<PageWire<StandupEntryWire>>(`/standups${query}`);
+  return mapPage(raw, mapStandupEntry);
+}
+
+/** Post (or repost) a day's check-in. Reposting the same person+day replaces the entry. */
+export async function postStandup(input: StandupEntryIn): Promise<StandupEntry> {
+  if (USE_FIXTURES) {
+    const existing = STANDUPS.find((s) => s.person_id === input.person_ref && s.date === input.date);
+    const entry: StandupEntry = {
+      id: existing?.id ?? `s-${input.person_ref}-${input.date}`,
+      person_id: input.person_ref,
+      date: input.date,
+      yesterday: input.yesterday,
+      today: input.today,
+      blockers: input.blockers,
+    };
+    if (existing) Object.assign(existing, entry);
+    else STANDUPS.push(entry);
+    return settle(entry);
+  }
+  const raw = await apiRequest<StandupEntryWire>("/standups", { method: "POST", body: input });
+  return mapStandupEntry(raw);
 }

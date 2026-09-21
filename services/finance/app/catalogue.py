@@ -99,8 +99,27 @@ FINANCE = PermissionCatalogue(
     PRODUCT,
     [
         PermissionSpec("billing", "invoice", "read", "See invoices and credit notes"),
+        # Issuing a document is dangerous in the platform's sense: a B2B/export/SEZ document
+        # stages an IRP filing on the outbox in the same transaction as the write, so granting
+        # this hands somebody the ability to make a real filing request, not just add a row.
+        PermissionSpec(
+            "billing",
+            "invoice",
+            "issue",
+            "Issue an invoice or a credit note against one",
+            is_dangerous=True,
+        ),
         PermissionSpec("billing", "payment", "read", "See payments received"),
+        PermissionSpec(
+            "billing", "payment", "record", "Record a payment received and allocate it to invoices"
+        ),
         PermissionSpec("billing", "customer", "read", "See customers and their receivables"),
+        PermissionSpec("billing", "customer", "write", "Add, edit or archive a customer"),
+        # Purchases are the inbound half of the book: what a supplier billed this organization.
+        # Read/write rather than read/record because there is no lifecycle here to name — see
+        # `finance.md`: recording is the only write, and there is no update or delete path.
+        PermissionSpec("billing", "purchase", "read", "See recorded purchase documents"),
+        PermissionSpec("billing", "purchase", "write", "Record what a supplier billed"),
         PermissionSpec("reports", "summary", "read", "See the finance overview / KPIs"),
         PermissionSpec("reports", "ledger", "read", "See the ledger / trial balance"),
         # Compliance. Reading a filing history or a supplier's claim is an ordinary finance read.

@@ -1,10 +1,8 @@
 import { useCallback, useMemo, useState } from "react";
-import type { CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { getPeople, getProjects, getTasks, getTimesheets, WEEK_DATES, TODAY } from "@/api/client";
-import type { Person, Project, Task, TimesheetRow } from "@/api/types";
-import { useAuth } from "@opsgrids/client";
+import { WEEK_DATES, TODAY, getProjects, getTasks, getTimesheets, getPeople, getTimesheetSummary } from "@/api/client";
+import type { Person, Project, Task, TimesheetRow, TimesheetSummary } from "@/api/types";
 import {
   activeProjects,
   needsAttention,
@@ -14,52 +12,41 @@ import {
   weeklyBillableHours,
   countByStatus,
 } from "@/data/derive";
-import { BILLABLE_THIS_MONTH, KPI_TREND, UTILIZATION_TREND } from "@/data/samples";
-import { formatHours, formatMoneyCompact } from "@/lib/format";
-import { useAsync } from "@opsgrids/client";
+import { formatHours, formatMoneyCompact, formatWeekRange } from "@/lib/format";
+import { Can, useAsync, useAuth } from "@opsgrids/client";
 import {
   Button,
   Card,
   EmptyState,
   ErrorState,
-  KpiCard,
   NeedsAttention,
   ProjectHealth,
   SectionHeader,
   Skeleton,
   UtilizationTrend,
 } from "@/ui";
-import type { KpiTone } from "@/ui";
-import {
-  CalendarIcon,
-  CheckCircleIcon,
-  ClipboardCheckIcon,
-  ClockIcon,
-  GaugeIcon,
-  LayersIcon,
-  PlusIcon,
-  SearchIcon,
-  UsersIcon,
-} from "@opsgrids/ui";
+import { CalendarIcon, CheckCircleIcon, ClockIcon, PlusIcon, SearchIcon, UsersIcon } from "@opsgrids/ui";
 
 interface OverviewData {
   projects: Project[];
   tasks: Task[];
   timesheets: TimesheetRow[];
   people: Person[];
+  timesheetSummary: TimesheetSummary;
 }
 
 async function loadOverview(): Promise<OverviewData> {
-  const [projects, tasks, timesheets, people] = await Promise.all([
+  const [projects, tasks, timesheets, people, timesheetSummary] = await Promise.all([
     getProjects(),
     getTasks(),
     getTimesheets(),
     getPeople(),
+    getTimesheetSummary(),
   ]);
-  return { projects, tasks, timesheets, people };
+  return { projects, tasks, timesheets, people, timesheetSummary };
 }
 
-/** The Overview's top bar: breadcrumb + title, then search / period / new-project controls. */
+/** The Overview's top bar: breadcrumb + title, then search / week / new-project controls. */
 function OverviewHeader({ orgName }: { orgName: string }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
@@ -99,95 +86,41 @@ function OverviewHeader({ orgName }: { orgName: string }) {
 
         <span className="hidden h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold text-ink-soft shadow-card sm:inline-flex">
           <CalendarIcon className="size-4 text-muted" />
-          <span className="tnum">This week · 24–30 Aug</span>
+          <span className="tnum">This week · {formatWeekRange(WEEK_DATES)}</span>
         </span>
 
-        <Button size="md" leadingIcon={<PlusIcon className="size-4" />} onClick={() => navigate("/projects")}>
-          New project
-        </Button>
+        <Can permission="pulseboard.engagements.project.write">
+          <Button size="md" leadingIcon={<PlusIcon className="size-4" />} onClick={() => navigate("/projects?new=1")}>
+            New project
+          </Button>
+        </Can>
       </div>
     </header>
   );
 }
 
-interface KpiConfig {
-  key: string;
-  label: string;
-  value: string;
-  deltaPct: number;
-  series: number[];
-  icon: React.ReactNode;
-  tone: KpiTone;
-  goodWhen?: "down";
-}
-
-function buildKpis(data: OverviewData): KpiConfig[] {
-  const active = activeProjects(data.projects);
-  const due = tasksDueThisWeek(data.tasks, WEEK_DATES);
-  const util = teamUtilization(data.timesheets, data.people);
-  return [
-    {
-      key: "active",
-      label: "Active projects",
-      value: String(active),
-      deltaPct: KPI_TREND.activeProjects.deltaPct,
-      series: KPI_TREND.activeProjects.series,
-      icon: <LayersIcon className="size-5" />,
-      tone: "accent",
-    },
-    {
-      key: "due",
-      label: "Tasks due this week",
-      value: String(due),
-      deltaPct: KPI_TREND.tasksDue.deltaPct,
-      series: KPI_TREND.tasksDue.series,
-      icon: <ClipboardCheckIcon className="size-5" />,
-      tone: "info",
-      goodWhen: "down",
-    },
-    {
-      key: "util",
-      label: "Team utilization",
-      value: `${util}%`,
-      deltaPct: KPI_TREND.utilization.deltaPct,
-      series: KPI_TREND.utilization.series,
-      icon: <GaugeIcon className="size-5" />,
-      tone: "positive",
-    },
-    {
-      key: "billable",
-      label: "Billable hours this month",
-      value: BILLABLE_THIS_MONTH.hours.toLocaleString("en-US"),
-      deltaPct: BILLABLE_THIS_MONTH.deltaPct,
-      series: BILLABLE_THIS_MONTH.series,
-      icon: <ClockIcon className="size-5" />,
-      tone: "cyan",
-    },
-  ];
+/** A plain stat tile for a real, undecorated number — no delta, no sparkline, because this
+ * product has no rollup history to draw either from honestly. */
+function StatTile({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
+  return (
+    <Card className="flex flex-col gap-4 p-5">
+      <span className="grid size-10 place-items-center rounded-tile bg-accent-soft text-accent-ink">{icon}</span>
+      <div className="flex flex-col gap-1">
+        <span className="text-sm font-medium text-muted">{label}</span>
+        <span className="display text-[2.1rem] leading-none font-extrabold tnum">{value}</span>
+      </div>
+    </Card>
+  );
 }
 
 export function OverviewPage() {
   const { user } = useAuth();
   const state = useAsync(useCallback(loadOverview, []), []);
 
-  const orgName =
-    user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
-    user?.organizations[0]?.name ??
-    "OpsGrids Studio";
+  const orgName = user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ?? user?.organizations[0]?.name ?? "your organization";
 
-  const kpis = useMemo(
-    () => (state.status === "success" ? buildKpis(state.data) : []),
-    [state],
-  );
-
-  const health = useMemo(
-    () => (state.status === "success" ? projectHealth(state.data.projects) : []),
-    [state],
-  );
-  const attention = useMemo(
-    () => (state.status === "success" ? needsAttention(state.data.projects, TODAY) : []),
-    [state],
-  );
+  const health = useMemo(() => (state.status === "success" ? projectHealth(state.data.projects) : []), [state]);
+  const attention = useMemo(() => (state.status === "success" ? needsAttention(state.data.projects, TODAY) : []), [state]);
 
   const portfolio = useMemo(() => {
     if (state.status !== "success") return null;
@@ -201,21 +134,19 @@ export function OverviewPage() {
 
   const activeTotal = state.status === "success" ? activeProjects(state.data.projects) : 0;
   const deliveredCount = state.status === "success" ? countByStatus(state.data.projects, "done") : 0;
+  const dueThisWeek = state.status === "success" ? tasksDueThisWeek(state.data.tasks, WEEK_DATES) : 0;
   const currentUtil = state.status === "success" ? teamUtilization(state.data.timesheets, state.data.people) : 0;
 
   return (
     <div className="rise flex flex-col gap-5">
       <OverviewHeader orgName={orgName} />
 
-      {/* Row 1 — KPI cards */}
+      {/* Row 1 — headline stats, every one of them real */}
       <section aria-label="Key metrics" className="cascade grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {state.status === "loading"
           ? Array.from({ length: 4 }).map((_, i) => (
-              <Card key={i} className="flex flex-col gap-4 p-5" style={{ "--i": i } as CSSProperties}>
-                <div className="flex justify-between">
-                  <Skeleton className="size-10 rounded-tile" />
-                  <Skeleton className="h-8 w-20" />
-                </div>
+              <Card key={i} className="flex flex-col gap-4 p-5">
+                <Skeleton className="size-10 rounded-tile" />
                 <Skeleton className="h-4 w-28" />
                 <Skeleton className="h-9 w-24 rounded-tile" />
               </Card>
@@ -223,24 +154,21 @@ export function OverviewPage() {
           : null}
         {state.status === "error" ? (
           <Card className="p-5 sm:col-span-2 xl:col-span-4">
-            <ErrorState message={state.error.message} />
+            <ErrorState
+              title="Couldn't load the overview"
+              message={state.error.message}
+              action={<Button onClick={state.reload}>Try again</Button>}
+            />
           </Card>
         ) : null}
-        {state.status === "success"
-          ? kpis.map((kpi, i) => (
-              <div key={kpi.key} style={{ "--i": i } as CSSProperties}>
-                <KpiCard
-                  label={kpi.label}
-                  value={kpi.value}
-                  deltaPct={kpi.deltaPct}
-                  series={kpi.series}
-                  icon={kpi.icon}
-                  tone={kpi.tone}
-                  goodWhen={kpi.goodWhen ?? "up"}
-                />
-              </div>
-            ))
-          : null}
+        {state.status === "success" ? (
+          <>
+            <StatTile label="Active projects" value={String(activeTotal)} icon={<CheckCircleIcon className="size-5" />} />
+            <StatTile label="Tasks due this week" value={String(dueThisWeek)} icon={<ClockIcon className="size-5" />} />
+            <StatTile label="Team utilization" value={`${currentUtil}%`} icon={<UsersIcon className="size-5" />} />
+            <StatTile label="Billable hours this week" value={formatHours(weeklyBillableHours(state.data.timesheets))} icon={<ClockIcon className="size-5" />} />
+          </>
+        ) : null}
       </section>
 
       {/* Row 2 — utilization trend · project health */}
@@ -248,7 +176,11 @@ export function OverviewPage() {
         <Card className="flex flex-col gap-4 p-6 xl:col-span-2">
           <SectionHeader title="Team utilization" subtitle="Billable share of capacity, by week" />
           {state.status === "success" ? (
-            <UtilizationTrend current={currentUtil} deltaPct={KPI_TREND.utilization.deltaPct} series={UTILIZATION_TREND} />
+            <UtilizationTrend
+              current={state.data.timesheetSummary.utilization_pct}
+              series={state.data.timesheetSummary.series}
+              sampleHistory
+            />
           ) : state.status === "error" ? (
             <ErrorState message={state.error.message} />
           ) : (
@@ -262,6 +194,8 @@ export function OverviewPage() {
             <ProjectHealth buckets={health} activeTotal={activeTotal} deliveredCount={deliveredCount} />
           ) : state.status === "error" ? (
             <ErrorState message={state.error.message} />
+          ) : state.status === "success" ? (
+            <EmptyState title="No projects yet" description="Create an engagement to see its health here." />
           ) : (
             <Skeleton className="h-56 w-full rounded-tile" />
           )}
@@ -275,10 +209,7 @@ export function OverviewPage() {
             title="Needs attention"
             subtitle="Blocked, over budget, overdue or at risk"
             action={
-              <Link
-                to="/projects"
-                className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
-              >
+              <Link to="/projects" className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors">
                 All projects
               </Link>
             }
@@ -325,10 +256,7 @@ export function OverviewPage() {
 
               <div className="flex flex-col gap-1.5">
                 <div className="h-2.5 w-full overflow-hidden rounded-full bg-ground">
-                  <div
-                    className="h-full rounded-full bg-accent"
-                    style={{ width: `${Math.min(portfolio.pct, 100)}%` }}
-                  />
+                  <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(portfolio.pct, 100)}%` }} />
                 </div>
                 <p className="text-xs text-muted">
                   <span className="tnum font-semibold text-ink">{portfolio.pct}%</span> of budget

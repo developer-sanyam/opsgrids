@@ -18,20 +18,26 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
 from app.config import settings
-from app.models import SCHEMA
+from app.models import SCHEMA, ServiceRequest
 from app.schemas import (
     AssetIn,
     AssetOut,
+    AssetUpdate,
     CatalogItemIn,
     CatalogItemOut,
+    CatalogItemUpdate,
     IncidentIn,
     IncidentOut,
+    IncidentStatusIn,
+    IncidentUpdate,
     OverviewOut,
+    RequestDecisionIn,
+    RequestPatch,
     ServiceInfo,
     ServiceRequestIn,
     ServiceRequestOut,
@@ -57,16 +63,34 @@ Entitled = Depends(require_product("itsm"))
 
 IncidentRead = Annotated[ScopeContext, Depends(require("itsm.service.incident.read"))]
 IncidentWrite = Annotated[ScopeContext, Depends(require("itsm.service.incident.write"))]
+#: Status transitions and delete have no "own" reading — resolving, closing or withdrawing
+#: someone else's incident is not something OWN scope should ever grant (the audit's key
+#: warning: ITSM_USER holds `incident.write` at OWN and must not resolve or reprioritise their
+#: own ticket, let alone anyone else's). `PATCH` stays on `IncidentWrite` because it also carries
+#: summary/description edits an OWN caller may make on their own ticket; the ORG floor for its
+#: `priority`/`assignee` fields is enforced in `services.update_incident`.
+IncidentWriteOrg = Annotated[
+    ScopeContext, Depends(require("itsm.service.incident.write", minimum=Scope.ORG))
+]
 RequestRead = Annotated[ScopeContext, Depends(require("itsm.service.request.read"))]
 RequestWrite = Annotated[ScopeContext, Depends(require("itsm.service.request.write"))]
-#: The catalog is org-wide reference data — an offering is nobody's own row — so writing it is
-#: floored at ORG here as well as in the catalogue, and an OWN grant is refused rather than
-#: silently narrowed to nothing.
+#: Approve, reject, fulfil, assign and delete: no "own" reading, same reasoning as
+#: `IncidentWriteOrg` — a requester must not approve or fulfil their own request.
+RequestWriteOrg = Annotated[
+    ScopeContext, Depends(require("itsm.service.request.write", minimum=Scope.ORG))
+]
+#: Catalog administration. The catalog is the organization's reference data, not anyone's own
+#: row, so it has its own ORG-only code rather than riding on the request write a requester
+#: also holds.
 CatalogWrite = Annotated[
     ScopeContext, Depends(require("itsm.service.catalog.write", minimum=Scope.ORG))
 ]
 AssetRead = Annotated[ScopeContext, Depends(require("itsm.cmdb.asset.read"))]
 AssetWrite = Annotated[ScopeContext, Depends(require("itsm.cmdb.asset.write"))]
+#: Deleting CMDB infrastructure is an ORG action; editing one's own asset stays on `AssetWrite`.
+AssetWriteOrg = Annotated[
+    ScopeContext, Depends(require("itsm.cmdb.asset.write", minimum=Scope.ORG))
+]
 
 
 @router.get("/itsm/info", response_model=ServiceInfo, summary="What this service is")
@@ -157,12 +181,85 @@ async def add_worklog(
     if incident is None:
         raise NotFoundProblem("That incident is not part of this organization")
     ctx.assert_can_touch(owner_id=incident.requester_id)
+    # `kind` is forced to "note" here, whatever the client sent: status/assignment/sla/resolution
+    # entries are system-written by the lifecycle endpoints only, so a caller cannot make the
+    # thread claim a change — e.g. a resolution — that never happened (`Must not be built`).
+    payload = payload.model_copy(update={"kind": "note"})
     await services.add_worklog(session, ctx, incident, payload, request=request)
     worklog = await selectors.worklogs_for(session, ctx.organization_id, incident.id)
     tags = await selectors.asset_tag_map(session, ctx.organization_id, [incident.affected_asset_id])
     return selectors.incident_out(
         incident, asset_tag=selectors.resolve_tag(tags, incident.affected_asset_id), worklog=worklog
     )
+
+
+@router.patch(
+    "/itsm/incidents/{number}",
+    response_model=IncidentOut,
+    summary="Edit an incident's properties, reassign it or reprioritise it",
+    dependencies=[Entitled],
+)
+async def update_incident(
+    number: str,
+    payload: IncidentUpdate,
+    session: SessionDep,
+    ctx: IncidentWrite,
+    request: Request,
+) -> IncidentOut:
+    incident = await selectors.get_incident(session, ctx.organization_id, number)
+    if incident is None:
+        raise NotFoundProblem("That incident is not part of this organization")
+    ctx.assert_can_touch(owner_id=incident.requester_id)
+    updated = await services.update_incident(session, ctx, incident, payload, request=request)
+    worklog = await selectors.worklogs_for(session, ctx.organization_id, updated.id)
+    tags = await selectors.asset_tag_map(session, ctx.organization_id, [updated.affected_asset_id])
+    return selectors.incident_out(
+        updated, asset_tag=selectors.resolve_tag(tags, updated.affected_asset_id), worklog=worklog
+    )
+
+
+@router.post(
+    "/itsm/incidents/{number}/status",
+    response_model=IncidentOut,
+    summary="Move an incident through its lifecycle",
+    dependencies=[Entitled],
+)
+async def change_incident_status(
+    number: str,
+    payload: IncidentStatusIn,
+    session: SessionDep,
+    ctx: IncidentWriteOrg,
+    request: Request,
+) -> IncidentOut:
+    incident = await selectors.get_incident(session, ctx.organization_id, number)
+    if incident is None:
+        raise NotFoundProblem("That incident is not part of this organization")
+    ctx.assert_can_touch(owner_id=incident.requester_id)
+    updated = await services.transition_incident_status(
+        session, ctx, incident, payload, request=request
+    )
+    worklog = await selectors.worklogs_for(session, ctx.organization_id, updated.id)
+    tags = await selectors.asset_tag_map(session, ctx.organization_id, [updated.affected_asset_id])
+    return selectors.incident_out(
+        updated, asset_tag=selectors.resolve_tag(tags, updated.affected_asset_id), worklog=worklog
+    )
+
+
+@router.delete(
+    "/itsm/incidents/{number}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Withdraw an incident (soft delete)",
+    dependencies=[Entitled],
+)
+async def delete_incident(
+    number: str, session: SessionDep, ctx: IncidentWriteOrg, request: Request
+) -> Response:
+    incident = await selectors.get_incident(session, ctx.organization_id, number)
+    if incident is None:
+        raise NotFoundProblem("That incident is not part of this organization")
+    ctx.assert_can_touch(owner_id=incident.requester_id)
+    await services.delete_incident(session, ctx, incident, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ------------------------------------------------------------------ service requests & catalog
@@ -191,31 +288,113 @@ async def list_requests(
     return Page.build(items, total=total, params=params)
 
 
+async def _request_out(
+    session: AsyncSession, ctx: ScopeContext, req: ServiceRequest
+) -> ServiceRequestOut:
+    names = await selectors.catalog_name_map(session, ctx.organization_id)
+    return selectors.request_out(
+        req, catalog_name=names.get(req.catalog_item_code, req.catalog_item_code)
+    )
+
+
 @router.post(
     "/itsm/service-requests",
     response_model=ServiceRequestOut,
     status_code=status.HTTP_201_CREATED,
-    summary="Raise a service request",
+    summary="Raise a service request against the catalog",
     dependencies=[Entitled],
 )
 async def raise_request(
     payload: ServiceRequestIn, session: SessionDep, ctx: RequestWrite, request: Request
 ) -> ServiceRequestOut:
-    req = await services.create_request(
-        session,
-        ctx,
-        number=payload.number,
-        catalog_item_code=payload.catalog_item_code,
-        requester=payload.requester,
-        requester_id=ctx.principal.subject_ref,
-        subject=payload.subject,
-        assignee=payload.assignee,
-        request=request,
-    )
-    names = await selectors.catalog_name_map(session, ctx.organization_id)
-    return selectors.request_out(
-        req, catalog_name=names.get(req.catalog_item_code, req.catalog_item_code)
-    )
+    req = await services.raise_request(session, ctx, payload, request=request)
+    return await _request_out(session, ctx, req)
+
+
+@router.get(
+    "/itsm/service-requests/{number}",
+    response_model=ServiceRequestOut,
+    summary="One service request",
+    dependencies=[Entitled],
+)
+async def read_request(number: str, session: SessionDep, ctx: RequestRead) -> ServiceRequestOut:
+    req = await selectors.get_request(session, ctx.organization_id, number)
+    if req is None:
+        raise NotFoundProblem("That request is not part of this organization")
+    ctx.assert_can_touch(owner_id=req.requester_id)
+    return await _request_out(session, ctx, req)
+
+
+@router.post(
+    "/itsm/service-requests/{number}/decision",
+    response_model=ServiceRequestOut,
+    summary="Approve or reject a request awaiting approval",
+    dependencies=[Entitled],
+)
+async def decide_request(
+    number: str,
+    payload: RequestDecisionIn,
+    session: SessionDep,
+    ctx: RequestWriteOrg,
+    request: Request,
+) -> ServiceRequestOut:
+    req = await selectors.get_request(session, ctx.organization_id, number)
+    if req is None:
+        raise NotFoundProblem("That request is not part of this organization")
+    updated = await services.decide_request(session, ctx, req, payload, request=request)
+    return await _request_out(session, ctx, updated)
+
+
+@router.post(
+    "/itsm/service-requests/{number}/fulfil",
+    response_model=ServiceRequestOut,
+    summary="Mark an in-progress request fulfilled",
+    dependencies=[Entitled],
+)
+async def fulfil_request(
+    number: str, session: SessionDep, ctx: RequestWriteOrg, request: Request
+) -> ServiceRequestOut:
+    req = await selectors.get_request(session, ctx.organization_id, number)
+    if req is None:
+        raise NotFoundProblem("That request is not part of this organization")
+    updated = await services.fulfil_request(session, ctx, req, request=request)
+    return await _request_out(session, ctx, updated)
+
+
+@router.patch(
+    "/itsm/service-requests/{number}",
+    response_model=ServiceRequestOut,
+    summary="Assign (or unassign) a service request",
+    dependencies=[Entitled],
+)
+async def update_request(
+    number: str,
+    payload: RequestPatch,
+    session: SessionDep,
+    ctx: RequestWriteOrg,
+    request: Request,
+) -> ServiceRequestOut:
+    req = await selectors.get_request(session, ctx.organization_id, number)
+    if req is None:
+        raise NotFoundProblem("That request is not part of this organization")
+    updated = await services.update_request(session, ctx, req, payload, request=request)
+    return await _request_out(session, ctx, updated)
+
+
+@router.delete(
+    "/itsm/service-requests/{number}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Cancel a service request (soft delete)",
+    dependencies=[Entitled],
+)
+async def delete_request(
+    number: str, session: SessionDep, ctx: RequestWriteOrg, request: Request
+) -> Response:
+    req = await selectors.get_request(session, ctx.organization_id, number)
+    if req is None:
+        raise NotFoundProblem("That request is not part of this organization")
+    await services.delete_request(session, ctx, req, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(
@@ -236,7 +415,7 @@ async def list_catalog(
     "/itsm/catalog",
     response_model=CatalogItemOut,
     status_code=status.HTTP_201_CREATED,
-    summary="Add an offering to the service catalog",
+    summary="Add a service-catalog offering",
     dependencies=[Entitled],
 )
 async def create_catalog_item(
@@ -245,7 +424,7 @@ async def create_catalog_item(
     item = await services.create_catalog_item(
         session,
         ctx,
-        code=payload.code,
+        code=payload.id,
         name=payload.name,
         category=payload.category,
         description=payload.description,
@@ -253,6 +432,42 @@ async def create_catalog_item(
         request=request,
     )
     return selectors.catalog_out(item)
+
+
+@router.patch(
+    "/itsm/catalog/{code}",
+    response_model=CatalogItemOut,
+    summary="Edit a service-catalog offering",
+    dependencies=[Entitled],
+)
+async def update_catalog_item(
+    code: str,
+    payload: CatalogItemUpdate,
+    session: SessionDep,
+    ctx: CatalogWrite,
+    request: Request,
+) -> CatalogItemOut:
+    item = await selectors.get_catalog_item(session, ctx.organization_id, code)
+    if item is None:
+        raise NotFoundProblem("That catalog item is not part of this organization")
+    updated = await services.update_catalog_item(session, ctx, item, payload, request=request)
+    return selectors.catalog_out(updated)
+
+
+@router.delete(
+    "/itsm/catalog/{code}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Retire a service-catalog offering (soft delete)",
+    dependencies=[Entitled],
+)
+async def delete_catalog_item(
+    code: str, session: SessionDep, ctx: CatalogWrite, request: Request
+) -> Response:
+    item = await selectors.get_catalog_item(session, ctx.organization_id, code)
+    if item is None:
+        raise NotFoundProblem("That catalog item is not part of this organization")
+    await services.delete_catalog_item(session, ctx, item, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ------------------------------------------------------------------ assets (CMDB)
@@ -308,6 +523,40 @@ async def read_asset(tag: str, session: SessionDep, ctx: AssetRead) -> AssetOut:
     return selectors.asset_out(asset, open_numbers=open_map.get(asset.id, []))
 
 
+@router.patch(
+    "/itsm/assets/{tag}",
+    response_model=AssetOut,
+    summary="Edit a CMDB asset, including retiring it",
+    dependencies=[Entitled],
+)
+async def update_asset(
+    tag: str, payload: AssetUpdate, session: SessionDep, ctx: AssetWrite, request: Request
+) -> AssetOut:
+    asset = await selectors.get_asset(session, ctx.organization_id, tag)
+    if asset is None:
+        raise NotFoundProblem("That asset is not part of this organization")
+    ctx.assert_can_touch(owner_id=asset.owner_id)
+    updated = await services.update_asset(session, ctx, asset, payload, request=request)
+    open_map = await selectors.open_incident_numbers(session, ctx.organization_id)
+    return selectors.asset_out(updated, open_numbers=open_map.get(updated.id, []))
+
+
+@router.delete(
+    "/itsm/assets/{tag}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a CMDB asset (soft delete)",
+    dependencies=[Entitled],
+)
+async def delete_asset(
+    tag: str, session: SessionDep, ctx: AssetWriteOrg, request: Request
+) -> Response:
+    asset = await selectors.get_asset(session, ctx.organization_id, tag)
+    if asset is None:
+        raise NotFoundProblem("That asset is not part of this organization")
+    await services.delete_asset(session, ctx, asset, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 # ------------------------------------------------------------------ overview
 
 
@@ -317,10 +566,18 @@ async def read_asset(tag: str, session: SessionDep, ctx: AssetRead) -> AssetOut:
     summary="Service-desk overview rollups",
     dependencies=[Entitled],
 )
-async def overview(session: SessionDep, ctx: IncidentRead) -> OverviewOut:
-    incidents = await selectors.all_incidents(session, ctx)
-    requests = await selectors.all_requests(session, ctx)
-    assets = await selectors.all_assets(session, ctx)
+async def overview(
+    session: SessionDep,
+    incident_ctx: IncidentRead,
+    request_ctx: RequestRead,
+    asset_ctx: AssetRead,
+) -> OverviewOut:
+    # Each count is gated on the read permission for what it counts — incident.read alone used
+    # to gate the requests and assets rollups too, which would have handed their counts to a
+    # caller who could not otherwise see a single request or asset.
+    incidents = await selectors.all_incidents(session, incident_ctx)
+    requests = await selectors.all_requests(session, request_ctx)
+    assets = await selectors.all_assets(session, asset_ctx)
     return OverviewOut(
         open_incidents=domain.open_incident_count(incidents),
         sla_compliance_pct=domain.sla_compliance_pct(incidents),

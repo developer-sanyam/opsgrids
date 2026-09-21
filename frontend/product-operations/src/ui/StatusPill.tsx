@@ -11,6 +11,7 @@ const PO_TONE: Record<PoStatus, string> = {
   approved: "bg-info-soft text-info",
   received: "bg-present-soft text-present",
   closed: "bg-cyan-soft text-cyan",
+  cancelled: "bg-danger-soft text-danger",
 };
 
 const PO_LABEL: Record<PoStatus, string> = {
@@ -18,6 +19,7 @@ const PO_LABEL: Record<PoStatus, string> = {
   approved: "Approved",
   received: "Received",
   closed: "Closed",
+  cancelled: "Cancelled",
 };
 
 /** Purchase-order lifecycle. A dot backs up the colour so meaning never rests on colour alone. */

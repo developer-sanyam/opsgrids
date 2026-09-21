@@ -1,40 +1,47 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { ATTENDANCE_IS_SAMPLE, listAttendance } from "@/api/client";
+import { USE_FIXTURES, checkOut, listAttendance, listAttendanceRoster } from "@/api/client";
 import type { AttendanceRecord, AttendanceStatus } from "@/api/types";
 import { departmentLabel } from "@/data/departments";
 import { getMyEmployeeId } from "@/lib/subject";
 import { useZoneLookup } from "@/lib/zone";
-import { useAsync } from "@opsgrids/client";
+import { ApiError, problemMessage, useAsync, useCan } from "@opsgrids/client";
 import {
   Announcer,
+  Button,
   CalendarCheckIcon,
   ClockIcon,
   MapPinIcon,
+  Pagination,
+  RowActions,
   cn,
   formatInstant,
   useAnnounce,
+  useToast,
 } from "@opsgrids/ui";
 import type { ZoneLookup } from "@opsgrids/ui";
 import { formatMinutes } from "@/lib/format";
 import {
-  AttendancePill,
   Avatar,
   Card,
   DataTable,
   EmptyState,
   ErrorState,
   PageHeader,
-  SampleChip,
   SectionHeader,
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
+import { AttendancePill } from "@/ui/StatusPill";
+import { CheckInDialog } from "@/ui/CheckInDialog";
+import { CorrectAttendanceDialog } from "@/ui/CorrectAttendanceDialog";
 import { CorrectionCell } from "@/ui/CorrectionCell";
 import { RequestCorrectionDialog } from "@/ui/RequestCorrectionDialog";
-import { SAMPLE_DATA } from "@/ui/sampleCopy";
 
-const TODAY_ISO = "2026-08-24";
+/** The real clock, not a frozen fixture date — injectable so a test can pin it. */
+function todayISO(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
 function toISO(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -61,7 +68,6 @@ const SOURCE_LABEL: Record<AttendanceRecord["source"], string> = {
   web: "Web",
   mobile: "Mobile",
   biometric: "Biometric",
-  field: "Field",
 };
 
 /** A punch instant, in the record's own location zone (ADR-0000, C9) — "—" for a missing punch,
@@ -77,26 +83,100 @@ function punchTime(
   return formatInstant(iso, record.location_code, zoneLookup, "time").text;
 }
 
+type MyPunchStatus =
+  | { kind: "loading" }
+  | { kind: "no-employee" }
+  | { kind: "fixture-unsupported" }
+  | { kind: "not-checked-in" }
+  | { kind: "checked-in"; recordId: string }
+  | { kind: "checked-out" }
+  | { kind: "error"; message: string };
+
+function useMyPunchStatus(date: string, refreshKey: number): MyPunchStatus {
+  const [status, setStatus] = useState<MyPunchStatus>({ kind: "loading" });
+  const myEmployeeId = getMyEmployeeId();
+
+  useEffect(() => {
+    // The punch roster is real, but check-in/out has no fixture-mode stand-in yet (there is no
+    // offline session to punch against) — disable rather than attempt a live call that will fail.
+    if (USE_FIXTURES) {
+      setStatus({ kind: "fixture-unsupported" });
+      return;
+    }
+    if (!myEmployeeId) {
+      setStatus({ kind: "no-employee" });
+      return;
+    }
+    let active = true;
+    setStatus({ kind: "loading" });
+    listAttendance({ employeeId: myEmployeeId, dateFrom: date, dateTo: date, size: 1 })
+      .then((page) => {
+        if (!active) return;
+        const record = page.items[0];
+        if (!record) {
+          setStatus({ kind: "not-checked-in" });
+        } else if (record.check_out_at) {
+          setStatus({ kind: "checked-out" });
+        } else {
+          setStatus({ kind: "checked-in", recordId: record.id });
+        }
+      })
+      .catch((err: unknown) => {
+        if (active) {
+          setStatus({ kind: "error", message: err instanceof Error ? err.message : "Something went wrong" });
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [myEmployeeId, date, refreshKey]);
+
+  return status;
+}
+
+const PAGE_SIZE = 25;
+
 function AttendanceTable() {
-  const [date, setDate] = useState(TODAY_ISO);
+  const [date, setDate] = useState(todayISO());
+  const [page, setPage] = useState(1);
   const [refreshKey, setRefreshKey] = useState(0);
   const [correctionRecord, setCorrectionRecord] = useState<AttendanceRecord | null>(null);
+  const [correctingHr, setCorrectingHr] = useState<AttendanceRecord | null>(null);
+  const [checkingIn, setCheckingIn] = useState(false);
   const week = useMemo(() => weekOf(date), [date]);
   const zoneLookup = useZoneLookup();
   const announce = useAnnounce();
+  const toast = useToast();
   const myEmployeeId = getMyEmployeeId();
+  const canHrCorrect = useCan("hrms.time.attendance.write", "ORG");
 
-  const loader = useCallback(() => listAttendance(date), [date]);
-  const attendance = useAsync(loader, [date, refreshKey]);
+  const punchStatus = useMyPunchStatus(date, refreshKey);
 
-  const records = attendance.status === "success" ? attendance.data : [];
+  const loader = useCallback(() => listAttendanceRoster(date, { page, size: PAGE_SIZE }), [date, page]);
+  const attendance = useAsync(loader, [date, page, refreshKey]);
+
+  function reload() {
+    setRefreshKey((k) => k + 1);
+  }
+
+  async function doCheckOut() {
+    try {
+      await checkOut({});
+      toast.success("Checked out.");
+      reload();
+    } catch (err) {
+      toast.error(problemMessage(err));
+    }
+  }
+
+  const records = attendance.status === "success" ? attendance.data.items : [];
+  const total = attendance.status === "success" ? attendance.data.total : 0;
   const present = records.filter((r) => r.status === "present").length;
   const halfDay = records.filter((r) => r.status === "half_day").length;
   const absent = records.filter((r) => r.status === "absent").length;
-  // Actual field check-ins only — a field-mode worker who is absent has no punch to show.
-  const fieldPunches = records.filter(
-    (r) => r.source === "field" && r.check_in !== null,
-  );
+  // Real field check-ins: `work_mode === "field"`, never `source` — a field punch's source is
+  // still web/mobile/biometric (the wire's `Source` enum has no `"field"` member).
+  const fieldPunches = records.filter((r) => r.work_mode === "field" && r.check_in !== null);
 
   const columns: Column<AttendanceRecord>[] = useMemo(
     () => [
@@ -148,9 +228,6 @@ function AttendanceTable() {
         render: (r) => (
           <div className="flex flex-col items-end gap-1.5">
             <AttendancePill status={r.status} />
-            {/* §4.C item 3: below `md` the Correction column has nowhere to render, so its
-             *  content collapses into a line under the status pill instead of disappearing —
-             *  every correction state, including "Request a correction", must survive at 360px. */}
             <div className="md:hidden">
               <CorrectionCell
                 record={r}
@@ -177,8 +254,30 @@ function AttendanceTable() {
           />
         ),
       },
+      ...(canHrCorrect
+        ? [
+            {
+              key: "actions",
+              header: "",
+              align: "right" as const,
+              render: (r: AttendanceRecord) => (
+                <RowActions
+                  label={r.full_name}
+                  actions={[
+                    {
+                      label: "Correct status",
+                      onSelect: () => setCorrectingHr(r),
+                      disabled: r.status === "regularized" || r.allowed_transitions.length === 0,
+                      disabledReason: "This record is regularised and can no longer be corrected.",
+                    },
+                  ]}
+                />
+              ),
+            },
+          ]
+        : []),
     ],
-    [myEmployeeId, zoneLookup],
+    [myEmployeeId, zoneLookup, canHrCorrect],
   );
 
   return (
@@ -188,20 +287,56 @@ function AttendanceTable() {
         title="Attendance"
         actions={
           <>
-            {ATTENDANCE_IS_SAMPLE ? <SampleChip {...SAMPLE_DATA} /> : null}
+            {punchStatus.kind === "checked-in" ? (
+              <Button variant="dark" onClick={() => void doCheckOut()}>
+                Check out
+              </Button>
+            ) : (
+              <Button
+                variant="dark"
+                onClick={() => setCheckingIn(true)}
+                disabled={
+                  punchStatus.kind === "no-employee" ||
+                  punchStatus.kind === "checked-out" ||
+                  punchStatus.kind === "fixture-unsupported"
+                }
+                title={
+                  punchStatus.kind === "no-employee"
+                    ? "No employee record is linked to your account."
+                    : punchStatus.kind === "checked-out"
+                      ? "Already checked out for the day."
+                      : punchStatus.kind === "fixture-unsupported"
+                        ? "Not available in fixture mode."
+                        : undefined
+                }
+              >
+                Check in
+              </Button>
+            )}
             <label className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold cursor-pointer">
-            <CalendarCheckIcon className="size-4 text-muted" />
-            <span className="sr-only">Select date</span>
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value || TODAY_ISO)}
-              className="bg-transparent text-ink focus:outline-none tnum"
-            />
+              <CalendarCheckIcon className="size-4 text-muted" />
+              <span className="sr-only">Select date</span>
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => {
+                  setDate(e.target.value || todayISO());
+                  setPage(1);
+                }}
+                className="bg-transparent text-ink focus:outline-none tnum"
+              />
             </label>
           </>
         }
       />
+
+      {punchStatus.kind === "no-employee" ? (
+        <Card className="p-4">
+          <p className="text-sm text-muted">
+            Your account has no employee record linked, so you can't punch attendance here.
+          </p>
+        </Card>
+      ) : null}
 
       {/* Week strip */}
       <Card className="p-3">
@@ -212,7 +347,10 @@ function AttendanceTable() {
               <button
                 key={d.iso}
                 type="button"
-                onClick={() => setDate(d.iso)}
+                onClick={() => {
+                  setDate(d.iso);
+                  setPage(1);
+                }}
                 aria-pressed={active}
                 className={cn(
                   "flex flex-1 min-w-14 flex-col items-center gap-0.5 rounded-tile px-3 py-2.5 transition-colors",
@@ -247,7 +385,7 @@ function AttendanceTable() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
         {/* Punch table */}
         <Card className="lg:col-span-2 p-6">
-          <SectionHeader title="Punches" subtitle={`${records.length} records`} />
+          <SectionHeader title="Punches" subtitle={`${total} records`} />
           <div className="mt-3">
             {attendance.status === "loading" ? (
               <div className="flex flex-col gap-3 py-2">
@@ -257,22 +395,46 @@ function AttendanceTable() {
               </div>
             ) : null}
             {attendance.status === "error" ? (
-              <ErrorState message={attendance.error.message} onRetry={() => setRefreshKey((k) => k + 1)} />
+              attendance.error instanceof ApiError && attendance.error.status === 403 ? (
+                <ErrorState
+                  title="You can't see this roster"
+                  message={problemMessage(attendance.error)}
+                  tone="warning"
+                />
+              ) : (
+                <ErrorState
+                  title="Couldn't load attendance"
+                  message={problemMessage(attendance.error)}
+                  onRetry={() => attendance.reload()}
+                />
+              )
             ) : null}
             {attendance.status === "success" ? (
-              <DataTable
-                caption="Attendance punches for the selected day"
-                columns={columns}
-                rows={records}
-                rowKey={(r) => r.id}
-                emptyState={
-                  <EmptyState
-                    icon={<ClockIcon className="size-6" />}
-                    title="No punches for this day"
-                    description="Nothing was recorded on this date. Pick another day from the week strip."
+              <>
+                <DataTable
+                  caption="Attendance punches for the selected day"
+                  columns={columns}
+                  rows={records}
+                  rowKey={(r) => r.id}
+                  emptyState={
+                    <EmptyState
+                      icon={<ClockIcon className="size-6" />}
+                      title="No punches for this day"
+                      description="Nothing was recorded on this date. Pick another day from the week strip."
+                    />
+                  }
+                />
+                {records.length > 0 ? (
+                  <Pagination
+                    page={attendance.data.page}
+                    pages={attendance.data.pages}
+                    total={attendance.data.total}
+                    size={attendance.data.size}
+                    noun="punches"
+                    onPageChange={setPage}
                   />
-                }
-              />
+                ) : null}
+              </>
             ) : null}
           </div>
         </Card>
@@ -329,10 +491,33 @@ function AttendanceTable() {
           zoneLookup={zoneLookup}
           onSettled={(result) => {
             setCorrectionRecord(null);
-            setRefreshKey((k) => k + 1);
+            reload();
             if (result.kind === "gone") {
               announce("That attendance record isn't available any more.");
             }
+          }}
+        />
+      ) : null}
+
+      {correctingHr ? (
+        <CorrectAttendanceDialog
+          record={correctingHr}
+          onClose={() => setCorrectingHr(null)}
+          onSaved={() => {
+            toast.success(`${correctingHr.full_name}'s status corrected.`);
+            setCorrectingHr(null);
+            reload();
+          }}
+        />
+      ) : null}
+
+      {checkingIn ? (
+        <CheckInDialog
+          onClose={() => setCheckingIn(false)}
+          onSaved={() => {
+            toast.success("Checked in.");
+            setCheckingIn(false);
+            reload();
           }}
         />
       ) : null}

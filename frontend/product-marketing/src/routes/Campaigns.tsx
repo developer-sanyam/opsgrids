@@ -1,38 +1,37 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
-import { getCampaigns } from "@/api/client";
+import { deleteCampaign, getCampaigns } from "@/api/client";
 import type { Campaign, CampaignStatus, Channel } from "@/api/types";
 import { roas } from "@/data/derive";
-import { useAsync } from "@opsgrids/client";
-import { ArrowRightIcon, ChevronDown, MegaphoneIcon, PlusIcon, cn } from "@opsgrids/ui";
-import {
-  campaignStatusLabel,
-  channelLabel,
-  formatMoneyCompact,
-  formatNumber,
-  formatRoas,
-} from "@/lib/format";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import { MegaphoneIcon, PlusIcon, cn, useToast } from "@opsgrids/ui";
+import { formatMoneyCompact, formatNumber, formatRoas } from "@/lib/format";
 import {
   BudgetBar,
   Button,
   Card,
   CampaignStatusPill,
   ChannelBadge,
+  ConfirmDialog,
+  DataTable,
   EmptyState,
   ErrorState,
+  Pagination,
   PageHeader,
   Pill,
+  RowActions,
   SearchInput,
   Skeleton,
 } from "@/ui";
+import type { Column } from "@/ui";
+import { CampaignFormDialog } from "@/forms/CampaignFormDialog";
 
-const NO_CAMPAIGNS: Campaign[] = [];
+const WRITE_PERMISSION = "marketing.analytics.campaign.write";
 
 type ChannelFilter = Channel | "all";
 type StatusFilter = CampaignStatus | "all";
-type SortKey = "name" | "spent" | "leads" | "revenue" | "roas";
-type SortDir = "asc" | "desc";
 
 const CHANNEL_FILTERS: { value: ChannelFilter; label: string }[] = [
   { value: "all", label: "All channels" },
@@ -57,71 +56,130 @@ function roasClass(r: number): string {
   return "text-negative";
 }
 
-function value(c: Campaign, key: SortKey): number | string {
-  switch (key) {
-    case "name":
-      return c.name.toLowerCase();
-    case "spent":
-      return c.spent_minor;
-    case "leads":
-      return c.leads;
-    case "revenue":
-      return c.revenue_minor;
-    case "roas":
-      return roas(c.revenue_minor, c.spent_minor);
-  }
-}
-
 export function CampaignsPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const toast = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
+  const debouncedSearch = useDebouncedValue(search);
   const [channel, setChannel] = useState<ChannelFilter>("all");
   const [status, setStatus] = useState<StatusFilter>("all");
-  const [sortKey, setSortKey] = useState<SortKey>("revenue");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(25);
+  const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<Campaign | null>(null);
+  const [deleting, setDeleting] = useState<Campaign | null>(null);
+  const canWrite = useCan(WRITE_PERMISSION, "ORG");
 
+  // The sidebar's ⌘K search lands here with `?q=` — sync it into local state without touching the
+  // URL further (typing afterwards just diverges from it, harmlessly).
   useEffect(() => {
     const q = searchParams.get("q");
     if (q !== null) setSearch(q);
   }, [searchParams]);
 
-  const campaigns = useAsync(getCampaigns, []);
-  const items = useMemo(
-    () => (campaigns.status === "success" ? campaigns.data.items : NO_CAMPAIGNS),
-    [campaigns],
+  // "New campaign" on the Overview lands here with `?new=1` rather than pretending to create one
+  // itself. Consumed once and cleared from the URL so a reload or a Back doesn't replay it.
+  useEffect(() => {
+    if (searchParams.get("new") !== "1") return;
+    setCreating(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete("new");
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  const campaigns = useAsync(
+    () => getCampaigns({ q: debouncedSearch, channel, status, page, size }),
+    [debouncedSearch, channel, status, page, size],
   );
 
-  const rows = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const filtered = items.filter((c) => {
-      const matchesQuery =
-        q === "" ||
-        c.name.toLowerCase().includes(q) ||
-        c.goal.toLowerCase().includes(q) ||
-        c.owner.toLowerCase().includes(q);
-      const matchesChannel = channel === "all" || c.channel === channel;
-      const matchesStatus = status === "all" || c.status === status;
-      return matchesQuery && matchesChannel && matchesStatus;
-    });
-    const dir = sortDir === "asc" ? 1 : -1;
-    return [...filtered].sort((a, b) => {
-      const va = value(a, sortKey);
-      const vb = value(b, sortKey);
-      if (va < vb) return -1 * dir;
-      if (va > vb) return 1 * dir;
-      return 0;
-    });
-  }, [items, search, channel, status, sortKey, sortDir]);
+  const remove = useMutation((c: Campaign) => deleteCampaign(c.id), {
+    onSuccess: (_result, c) => {
+      setDeleting(null);
+      toast.success(`${c.name} deleted.`);
+      campaigns.reload();
+    },
+  });
 
-  function toggleSort(key: SortKey) {
-    if (key === sortKey) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSortKey(key);
-      setSortDir(key === "name" ? "asc" : "desc");
-    }
-  }
+  const hasFilters = debouncedSearch !== "" || channel !== "all" || status !== "all";
+
+  const columns: Column<Campaign>[] = [
+    {
+      key: "name",
+      header: "Campaign",
+      render: (c) => (
+        <button
+          type="button"
+          onClick={() => navigate(`/campaigns/${c.id}`)}
+          className="flex flex-col gap-1.5 text-left"
+        >
+          <span className="font-semibold text-ink hover:text-accent transition-colors w-fit">
+            {c.name}
+          </span>
+          <span className="flex items-center gap-2">
+            <ChannelBadge channel={c.channel} />
+            <span className="hidden text-xs text-muted md:inline">{c.goal}</span>
+          </span>
+        </button>
+      ),
+    },
+    {
+      key: "status",
+      header: "Status",
+      render: (c) => <CampaignStatusPill status={c.status} />,
+    },
+    {
+      key: "budget",
+      header: "Budget",
+      render: (c) =>
+        c.status === "draft" ? (
+          <span className="text-xs text-faint">Not launched</span>
+        ) : (
+          <BudgetBar spentMinor={c.spent_minor} budgetMinor={c.budget_minor} currency={c.currency} />
+        ),
+    },
+    {
+      key: "leads",
+      header: "Leads",
+      align: "right",
+      render: (c) => <span className="tnum text-ink-soft">{formatNumber(c.leads)}</span>,
+    },
+    {
+      key: "revenue",
+      header: "Revenue",
+      align: "right",
+      render: (c) => (
+        <span className="tnum font-semibold text-ink">
+          {formatMoneyCompact(c.revenue_minor, c.currency)}
+        </span>
+      ),
+    },
+    {
+      key: "roas",
+      header: "ROAS",
+      align: "right",
+      render: (c) => {
+        const r = roas(c.revenue_minor, c.spent_minor);
+        return <span className={cn("tnum font-bold", roasClass(r))}>{formatRoas(r)}</span>;
+      },
+    },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      render: (c) => (
+        <RowActions
+          label={c.name}
+          actions={[
+            { label: "View", onSelect: () => navigate(`/campaigns/${c.id}`) },
+            { label: "Edit", onSelect: () => setEditing(c), hidden: !canWrite },
+            { label: "Delete", tone: "danger", onSelect: () => setDeleting(c), hidden: !canWrite },
+          ]}
+        />
+      ),
+    },
+  ];
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -129,14 +187,11 @@ export function CampaignsPage() {
         eyebrow="Campaigns"
         title="Campaigns"
         actions={
-          <>
-            <span className="hidden rounded-full bg-surface shadow-card px-4 h-11 sm:inline-flex items-center gap-2 text-sm font-semibold">
-              <MegaphoneIcon className="size-4 text-muted" />
-              <span className="tnum">{items.length}</span>
-              <span className="text-muted font-medium">total</span>
-            </span>
-            <Button leadingIcon={<PlusIcon className="size-4" />}>New campaign</Button>
-          </>
+          <Can permission={WRITE_PERMISSION} scope="ORG">
+            <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
+              New campaign
+            </Button>
+          </Can>
         }
       />
 
@@ -147,12 +202,22 @@ export function CampaignsPage() {
             label="Search campaigns"
             placeholder="Search by name, goal or owner…"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
             containerClassName="lg:max-w-xs"
           />
           <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
             {STATUS_FILTERS.map((f) => (
-              <Pill key={f.value} active={status === f.value} onClick={() => setStatus(f.value)}>
+              <Pill
+                key={f.value}
+                active={status === f.value}
+                onClick={() => {
+                  setStatus(f.value);
+                  setPage(1);
+                }}
+              >
                 {f.label}
               </Pill>
             ))}
@@ -163,7 +228,14 @@ export function CampaignsPage() {
             Channel
           </span>
           {CHANNEL_FILTERS.map((f) => (
-            <Pill key={f.value} active={channel === f.value} onClick={() => setChannel(f.value)}>
+            <Pill
+              key={f.value}
+              active={channel === f.value}
+              onClick={() => {
+                setChannel(f.value);
+                setPage(1);
+              }}
+            >
               {f.label}
             </Pill>
           ))}
@@ -182,193 +254,97 @@ export function CampaignsPage() {
 
         {campaigns.status === "error" ? (
           <div className="p-4">
-            <ErrorState message={campaigns.error.message} />
+            <ErrorState
+              title="Couldn't load campaigns"
+              message={problemMessage(campaigns.error)}
+              onRetry={campaigns.reload}
+            />
           </div>
         ) : null}
 
         {campaigns.status === "success" ? (
-          rows.length === 0 ? (
-            <div className="p-4">
-              <EmptyState
-                icon={<MegaphoneIcon className="size-6" />}
-                title="No matching campaigns"
-                description="Nothing matches these filters. Clear the search or pick a different channel or status."
-              />
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[820px] border-collapse text-sm">
-                <caption className="sr-only">
-                  Campaigns with channel, status, budget, leads, revenue and ROAS
-                </caption>
-                <thead>
-                  <tr className="border-b border-line">
-                    <SortableTh
-                      label="Campaign"
-                      col="name"
-                      sortKey={sortKey}
-                      sortDir={sortDir}
-                      onSort={toggleSort}
-                      align="left"
-                    />
-                    <th
-                      scope="col"
-                      className="py-3 px-3 text-left text-xs font-semibold uppercase tracking-wide text-faint"
-                    >
-                      Status
-                    </th>
-                    <th
-                      scope="col"
-                      className="py-3 px-3 text-left text-xs font-semibold uppercase tracking-wide text-faint w-48"
-                    >
-                      Budget
-                    </th>
-                    <SortableTh
-                      label="Leads"
-                      col="leads"
-                      sortKey={sortKey}
-                      sortDir={sortDir}
-                      onSort={toggleSort}
-                      align="right"
-                    />
-                    <SortableTh
-                      label="Revenue"
-                      col="revenue"
-                      sortKey={sortKey}
-                      sortDir={sortDir}
-                      onSort={toggleSort}
-                      align="right"
-                    />
-                    <SortableTh
-                      label="ROAS"
-                      col="roas"
-                      sortKey={sortKey}
-                      sortDir={sortDir}
-                      onSort={toggleSort}
-                      align="right"
-                    />
-                    <th scope="col" className="w-8" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((c) => {
-                    const r = roas(c.revenue_minor, c.spent_minor);
-                    return (
-                      <tr
-                        key={c.id}
-                        onClick={() => navigate(`/campaigns/${c.id}`)}
-                        className="group cursor-pointer border-b border-line/70 last:border-0 transition-colors hover:bg-ground/60"
-                      >
-                        <td className="py-3 px-3 align-middle">
-                          <div className="flex flex-col gap-1.5">
-                            <Link
-                              to={`/campaigns/${c.id}`}
-                              onClick={(e) => e.stopPropagation()}
-                              className="font-semibold text-ink hover:text-accent transition-colors w-fit"
-                            >
-                              {c.name}
-                            </Link>
-                            <span className="flex items-center gap-2">
-                              <ChannelBadge channel={c.channel} />
-                              <span className="hidden text-xs text-muted md:inline">{c.goal}</span>
-                            </span>
-                          </div>
-                        </td>
-                        <td className="py-3 px-3 align-middle">
-                          <CampaignStatusPill status={c.status} />
-                        </td>
-                        <td className="py-3 px-3 align-middle">
-                          {c.status === "draft" ? (
-                            <span className="text-xs text-faint">Not launched</span>
-                          ) : (
-                            <BudgetBar
-                              spentMinor={c.spent_minor}
-                              budgetMinor={c.budget_minor}
-                              currency={c.currency}
-                            />
-                          )}
-                        </td>
-                        <td className="py-3 px-3 align-middle text-right tnum text-ink-soft">
-                          {formatNumber(c.leads)}
-                        </td>
-                        <td className="py-3 px-3 align-middle text-right tnum font-semibold text-ink">
-                          {formatMoneyCompact(c.revenue_minor, c.currency)}
-                        </td>
-                        <td
-                          className={cn(
-                            "py-3 px-3 align-middle text-right tnum font-bold",
-                            roasClass(r),
-                          )}
-                        >
-                          {formatRoas(r)}
-                        </td>
-                        <td className="py-3 pr-3 align-middle text-right">
-                          <ArrowRightIcon className="ml-auto size-4 text-faint transition-colors group-hover:text-accent" />
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )
+          <>
+            <DataTable
+              columns={columns}
+              rows={campaigns.data.items}
+              rowKey={(c) => c.id}
+              caption="Campaigns with channel, status, budget, leads, revenue and ROAS"
+              onRowClick={(c) => navigate(`/campaigns/${c.id}`)}
+              emptyState={
+                <EmptyState
+                  icon={<MegaphoneIcon className="size-6" />}
+                  title={hasFilters ? "No campaigns match these filters" : "No campaigns yet"}
+                  description={
+                    hasFilters
+                      ? "Nothing matches these filters. Clear the search or pick a different channel or status."
+                      : "Create the first campaign to start tracking spend against revenue."
+                  }
+                  action={
+                    hasFilters ? null : (
+                      <Can permission={WRITE_PERMISSION} scope="ORG">
+                        <Button size="sm" onClick={() => setCreating(true)}>
+                          New campaign
+                        </Button>
+                      </Can>
+                    )
+                  }
+                />
+              }
+            />
+            <Pagination
+              page={campaigns.data.page}
+              pages={campaigns.data.pages}
+              total={campaigns.data.total}
+              size={campaigns.data.size}
+              noun="campaigns"
+              onPageChange={setPage}
+              onSizeChange={(n) => {
+                setSize(n);
+                setPage(1);
+              }}
+            />
+          </>
         ) : null}
       </Card>
 
-      {campaigns.status === "success" && rows.length > 0 ? (
-        <p className="text-center text-sm text-faint">
-          Showing {rows.length} of {items.length} campaigns
-          {channel !== "all" ? ` · ${channelLabel(channel)}` : ""}
-          {status !== "all" ? ` · ${campaignStatusLabel(status)}` : ""}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-function SortableTh({
-  label,
-  col,
-  sortKey,
-  sortDir,
-  onSort,
-  align,
-}: {
-  label: string;
-  col: SortKey;
-  sortKey: SortKey;
-  sortDir: SortDir;
-  onSort: (key: SortKey) => void;
-  align: "left" | "right";
-}) {
-  const active = sortKey === col;
-  return (
-    <th
-      scope="col"
-      aria-sort={active ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
-      className={cn(
-        "py-3 px-3 text-xs font-semibold uppercase tracking-wide text-faint",
-        align === "right" ? "text-right" : "text-left",
-      )}
-    >
-      <button
-        type="button"
-        onClick={() => onSort(col)}
-        className={cn(
-          "inline-flex items-center gap-1 rounded-md transition-colors hover:text-ink",
-          align === "right" ? "flex-row-reverse" : "",
-          active ? "text-ink" : "",
-        )}
-      >
-        {label}
-        <ChevronDown
-          className={cn(
-            "size-3.5 transition-transform",
-            active ? "text-accent" : "text-faint/60",
-            active && sortDir === "asc" ? "rotate-180" : "",
-          )}
+      {creating ? (
+        <CampaignFormDialog
+          campaign={null}
+          onClose={() => setCreating(false)}
+          onSaved={(saved) => {
+            setCreating(false);
+            toast.success(`${saved.name} created.`);
+            campaigns.reload();
+          }}
         />
-      </button>
-    </th>
+      ) : null}
+
+      {editing ? (
+        <CampaignFormDialog
+          campaign={editing}
+          onClose={() => setEditing(null)}
+          onSaved={(saved) => {
+            setEditing(null);
+            toast.success(`${saved.name} saved.`);
+            campaigns.reload();
+          }}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onClose={() => {
+          setDeleting(null);
+          remove.reset();
+        }}
+        onConfirm={() => deleting && void remove.mutate(deleting)}
+        title="Delete this campaign?"
+        body={`${deleting?.name} is removed from Campaigns, Channels and the Overview. This can't be undone.`}
+        confirmLabel="Delete"
+        pendingLabel="Deleting…"
+        pending={remove.pending}
+        {...(remove.error ? { error: problemMessage(remove.error) } : {})}
+      />
+    </div>
   );
 }

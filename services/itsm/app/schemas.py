@@ -14,9 +14,9 @@ minor units in `cost_currency` (ISO-4217), never a float.
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ------------------------------------------------------------------ vocabularies (match the SPA)
 
@@ -26,7 +26,7 @@ SlaState = Literal["met", "on_track", "at_risk", "breached"]
 IncidentCategory = Literal["network", "hardware", "software", "access", "email", "security"]
 WorklogKind = Literal["note", "status", "assignment", "sla", "resolution"]
 CatalogCategory = Literal["onboarding", "offboarding", "access", "hardware", "software"]
-RequestStatus = Literal["approval", "in_progress", "fulfilled"]
+RequestStatus = Literal["approval", "in_progress", "fulfilled", "rejected"]
 AssetType = Literal["laptop", "desktop", "server", "monitor", "phone", "network", "license"]
 AssetStatus = Literal["in_use", "in_stock", "in_repair", "retired"]
 
@@ -82,11 +82,64 @@ class IncidentIn(BaseModel):
 
 
 class WorklogIn(BaseModel):
-    """Append one entry to an incident's thread. There is no update or delete — by design."""
+    """Append one manual note to an incident's thread. There is no update or delete — by design.
+
+    `author` stays client-supplied: `platform_core.auth.Principal` carries no name claim (no
+    `Agent`/directory row is linked to a calling membership in this slice either), so the server
+    has nothing else to derive a display name from — the same reasoning `support.ReplyIn` uses
+    for `author_name`. What *is* derived server-side, and never trusted from the payload, is
+    `kind`: the route that accepts this schema forces it to `"note"` regardless of what is sent,
+    because `status` / `assignment` / `sla` / `resolution` entries are system-written by the
+    lifecycle endpoints only — a client must never be able to make the thread claim a change that
+    did not happen. The true identity of who posted stays out of band, in `created_by` /
+    `AuditLog.actor_id`, which this endpoint already sets from the caller."""
 
     author: str = Field(min_length=1, max_length=120)
     body: str = Field(min_length=1, max_length=8000)
     kind: WorklogKind = "note"
+
+
+class IncidentUpdate(BaseModel):
+    """Edit an incident's mutable properties. Absent means "leave alone"; `status` stays on its
+    own endpoint (`/status`) with its own transition rules, audit action and event.
+
+    `priority` and `assignee` require ORG scope in `services.update_incident` — an OWN-scoped
+    caller may edit their own ticket's summary, description, category and affected asset, but
+    must not reprioritise or reassign it (an ITSM_USER resolving or escalating their own ticket
+    is exactly the privilege the audit flags). `affected_asset_tag: null` clears the link."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str | None = Field(default=None, min_length=1, max_length=300)
+    description: str | None = Field(default=None, max_length=8000)
+    category: IncidentCategory | None = None
+    priority: Priority | None = None
+    assignee: str | None = Field(default=None, max_length=120)
+    affected_asset_tag: str | None = Field(default=None, max_length=40)
+
+    @model_validator(mode="after")
+    def _at_least_one_field(self) -> Self:
+        if not self.model_fields_set:
+            raise ValueError("Provide at least one field to update")
+        return self
+
+
+class IncidentStatusIn(BaseModel):
+    """Move an incident through its lifecycle (`app.domain.INCIDENT_TRANSITIONS`). Anything not a
+    legal next state is a 409, not a free-form set. `note` becomes the resolution worklog entry
+    when resolving, so it is required there — a "resolved" with no resolution text is not
+    useful — and optional (but still recorded) on every other move."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: IncidentStatus
+    note: str | None = Field(default=None, max_length=8000)
+
+    @model_validator(mode="after")
+    def _note_required_to_resolve(self) -> Self:
+        if self.status == "resolved" and not (self.note and self.note.strip()):
+            raise ValueError("note is required when resolving an incident")
+        return self
 
 
 # ------------------------------------------------------------------ service catalog & requests
@@ -104,23 +157,40 @@ class CatalogItemOut(BaseModel):
 
 
 class CatalogItemIn(BaseModel):
-    """Add an offering to the service catalog.
+    """Add a service-catalog offering. `id` is the human `CAT-..` code, unique within the
+    organization; requests key on it by string, not a foreign key, so it is immutable once set."""
 
-    `requests_30d` is not accepted: the trailing-30-day rollup is counted from the requests
-    themselves, so it is the server's to state and never the client's to assert.
-    """
+    model_config = ConfigDict(extra="forbid")
 
-    code: str = Field(min_length=1, max_length=20, pattern=r"^[A-Za-z0-9_-]+$")
+    id: str = Field(min_length=1, max_length=20, pattern=r"^[A-Za-z0-9_-]+$")
     name: str = Field(min_length=1, max_length=160)
     category: CatalogCategory
-    description: str = Field(default="", max_length=8000)
-    #: Target fulfilment time in working days.
-    sla_days: int = Field(default=1, ge=1, le=365)
+    description: str = Field(default="", max_length=2000)
+    sla_days: int = Field(default=1, ge=1)
+
+
+class CatalogItemUpdate(BaseModel):
+    """Edit a catalog item. `id` (the code) is not here — it is the API identity and the
+    denormalised join key `requests.catalog_item_code` reads through, so it cannot move."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    category: CatalogCategory | None = None
+    description: str | None = Field(default=None, max_length=2000)
+    sla_days: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _at_least_one_field(self) -> Self:
+        if not self.model_fields_set:
+            raise ValueError("Provide at least one field to update")
+        return self
 
 
 class ServiceRequestOut(BaseModel):
     """Mirrors the SPA's `ServiceRequest`. `id` is the human number; `catalog_item_id` is the
-    catalog item's code, with its name denormalised so a table row renders without a lookup."""
+    catalog item's code, with its name denormalised so a table row renders without a lookup.
+    `decision_note` is set once, by `/decision`, and is most often populated on a rejection."""
 
     id: str
     catalog_item_id: str
@@ -130,26 +200,53 @@ class ServiceRequestOut(BaseModel):
     subject: str
     status: RequestStatus
     assignee: str | None
+    decision_note: str | None
     created_at: datetime
     updated_at: datetime
 
 
 class ServiceRequestIn(BaseModel):
-    """Raise a service request against a catalog item.
+    """Raise a service request against a catalog item — the entry point for the JML flows.
+    `catalog_item_id` is the `CAT-..` code; an unknown one is a 404, not a 422, because it is a
+    reference to another row rather than a shape the client got wrong. `status` is not accepted:
+    every new request starts `approval`, and `requester_id` is the caller, not a client field."""
 
-    `number` is the organization's own `REQ-2051` identity, minted the way an asset carries its
-    tag — a clash is refused rather than quietly renumbered. `category` is not accepted: it is
-    denormalised from the catalog item the request names. Neither is `status` — a new request
-    always starts awaiting approval, so no payload can skip the approval step. The requester's
-    directory id comes from the caller, which is what OWN scope later reads back.
-    """
+    model_config = ConfigDict(extra="forbid")
 
-    number: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
-    catalog_item_code: str = Field(min_length=1, max_length=20, pattern=r"^[A-Za-z0-9_-]+$")
-    requester: str = Field(min_length=1, max_length=120)
-    #: Who the request is for — often the requester, but not for JML flows.
+    catalog_item_id: str = Field(min_length=1, max_length=20)
     subject: str = Field(min_length=1, max_length=200)
+    requester: str = Field(min_length=1, max_length=120)
+
+
+class RequestDecisionIn(BaseModel):
+    """Approve or reject a request awaiting approval. `note` becomes `decision_note`; required on
+    a rejection (a rejection with no visible reason is not usable), optional on an approval."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve", "reject"]
+    note: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def _note_required_to_reject(self) -> Self:
+        if self.decision == "reject" and not (self.note and self.note.strip()):
+            raise ValueError("note is required when rejecting a request")
+        return self
+
+
+class RequestPatch(BaseModel):
+    """The one field an agent may set directly on a request outside the decision/fulfil
+    endpoints. `assignee: null` unassigns it."""
+
+    model_config = ConfigDict(extra="forbid")
+
     assignee: str | None = Field(default=None, max_length=120)
+
+    @model_validator(mode="after")
+    def _at_least_one_field(self) -> Self:
+        if not self.model_fields_set:
+            raise ValueError("Provide at least one field to update")
+        return self
 
 
 # ------------------------------------------------------------------ assets
@@ -187,6 +284,31 @@ class AssetIn(BaseModel):
     warranty_expires_at: date | None = None
     cost_minor: int = Field(default=0, ge=0)
     cost_currency: str = Field(default="INR", min_length=3, max_length=3)
+
+
+class AssetUpdate(BaseModel):
+    """Edit a CMDB asset. `tag` cannot appear here — it is the API identity and the join key
+    incidents key on by `affected_asset_tag`, so it is immutable (`Must not be built`). A status
+    change, including retiring an asset, rides this same PATCH rather than a separate endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    type: AssetType | None = None
+    status: AssetStatus | None = None
+    owner: str | None = Field(default=None, max_length=120)
+    location: str | None = Field(default=None, max_length=160)
+    serial: str | None = Field(default=None, max_length=120)
+    purchased_at: date | None = None
+    warranty_expires_at: date | None = None
+    cost_minor: int | None = Field(default=None, ge=0)
+    cost_currency: str | None = Field(default=None, min_length=3, max_length=3)
+
+    @model_validator(mode="after")
+    def _at_least_one_field(self) -> Self:
+        if not self.model_fields_set:
+            raise ValueError("Provide at least one field to update")
+        return self
 
 
 # ------------------------------------------------------------------ overview rollups

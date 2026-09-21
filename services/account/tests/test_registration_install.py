@@ -82,29 +82,24 @@ async def owner(session: AsyncSession, org: Organization) -> Membership:
     return membership
 
 
-def _support_admin_grant_count() -> int:
-    """How many grants SUPPORT_ADMIN *should* have, read from the shipped manifest.
+def _support_manifest_sizes() -> tuple[int, int]:
+    """How many permissions the committed support manifest declares, and how many of them its
+    admin role carries.
 
-    Derived rather than written down. These tests are about idempotency — that installing
-    twice grants once — and a literal here turns every honest addition to the Support
-    catalogue into a failure in account's suite, which is how it last broke: two write
-    permissions were added to Support and this file, which never mentions them, went red.
+    Read from the file rather than written down here: these tests are about idempotency —
+    installing twice must leave exactly what installing once does — and a literal count went
+    stale the day the support catalogue gained a permission.
     """
-    template = next(
-        t for t in _support_manifest().registration.role_templates if t.code == "SUPPORT_ADMIN"
+    import json
+    from pathlib import Path
+
+    manifest = json.loads(
+        (
+            Path(__file__).resolve().parents[3] / "libs/contracts/permissions/support.json"
+        ).read_text()
     )
-    return len(template.grants)
-
-
-def _support_manifest():  # type: ignore[no-untyped-def]
-    manifest = load_product_manifest("support")
-    assert manifest is not None, "support ships no permission manifest; run `make openapi`"
-    return manifest
-
-
-def _support_permission_count() -> int:
-    """How many permissions the Support catalogue declares, for the same reason as above."""
-    return len(_support_manifest().registration.catalogue.specs)
+    admin = next(r for r in manifest["role_templates"] if r["code"] == "SUPPORT_ADMIN")
+    return len(manifest["permissions"]), len(admin["grants"])
 
 
 async def _support_role_grant_count(session: AsyncSession, org: Organization) -> int:
@@ -209,8 +204,9 @@ class TestIdempotency:
         await install_registration_on_activation(envelope)
         await install_registration_on_activation(envelope)
 
+        _, admin_grants = _support_manifest_sizes()
         async with session.begin():
-            assert await _support_role_grant_count(session, org) == _support_admin_grant_count()
+            assert await _support_role_grant_count(session, org) == admin_grants
             owner_roles = await session.execute(
                 select(func.count())
                 .select_from(MembershipRole)
@@ -226,12 +222,13 @@ class TestIdempotency:
         await install_registration_on_activation(_activation_envelope(org.id, "support"))
         await install_registration_on_activation(_activation_envelope(org.id, "support"))
 
+        declared, admin_grants = _support_manifest_sizes()
         async with session.begin():
-            assert await _support_role_grant_count(session, org) == _support_admin_grant_count()
+            assert await _support_role_grant_count(session, org) == admin_grants
             permissions = await session.execute(
                 select(func.count()).select_from(Permission).where(Permission.product == "support")
             )
-            assert int(permissions.scalar_one()) == _support_permission_count()
+            assert int(permissions.scalar_one()) == declared
 
 
 class TestNegativeCases:

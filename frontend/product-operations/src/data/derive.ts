@@ -32,6 +32,7 @@ export const PO_STATUS_LABEL: Record<PoStatus, string> = {
   approved: "Approved",
   received: "Received",
   closed: "Closed",
+  cancelled: "Cancelled",
 };
 
 /** A purchase order's total in minor units — summed from its line items, never stored. */
@@ -107,11 +108,12 @@ export function weightedOnTimePct(suppliers: readonly SupplierOut[]): number {
 }
 
 /**
- * Committed spend grouped by category, largest first. Draft POs are excluded — spend is only
- * committed once a PO is approved. Percentages are shares of the resolved total.
+ * Committed spend grouped by category, largest first. Draft and cancelled POs are excluded —
+ * spend is only committed once a PO is approved, and a cancelled PO committed nothing in the end.
+ * Percentages are shares of the resolved total.
  */
 export function spendByCategory(pos: readonly PurchaseOrderOut[]): CategorySpend[] {
-  const committed = pos.filter((po) => po.status !== "draft");
+  const committed = pos.filter((po) => po.status !== "draft" && po.status !== "cancelled");
   const totals = new Map<Category, number>();
   for (const po of committed) {
     totals.set(po.category, (totals.get(po.category) ?? 0) + poTotalMinor(po));
@@ -127,7 +129,7 @@ export function spendByCategory(pos: readonly PurchaseOrderOut[]): CategorySpend
     .sort((a, b) => b.spend_minor - a.spend_minor);
 }
 
-const STATUS_ORDER: PoStatus[] = ["draft", "approved", "received", "closed"];
+const STATUS_ORDER: PoStatus[] = ["draft", "approved", "received", "closed", "cancelled"];
 
 /** Purchase orders grouped by status, in lifecycle order, as donut slices. */
 export function poStatusMix(pos: readonly PurchaseOrderOut[]): StatusSlice[] {

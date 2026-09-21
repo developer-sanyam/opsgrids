@@ -8,6 +8,8 @@ revenue, largest first.
 
 from __future__ import annotations
 
+import pytest
+
 from app import domain
 from app.domain import CampaignAmounts
 
@@ -111,3 +113,37 @@ class TestCampaignWeekly:
         weekly = domain.campaign_weekly(revenue_minor=1_000_000, spent_minor=1_000_000)
         assert weekly[0].revenue_minor == 40_000
         assert weekly[0].spend_minor == 90_000
+
+
+class TestCampaignLifecycle:
+    """`draft → live ⇄ paused → ended`. `ended` is terminal."""
+
+    def test_draft_may_only_launch(self) -> None:
+        draft, live = domain.CampaignStatus.DRAFT, domain.CampaignStatus.LIVE
+        assert domain.can_transition_campaign(draft, live)
+        assert not domain.can_transition_campaign(draft, domain.CampaignStatus.PAUSED)
+        assert not domain.can_transition_campaign(draft, domain.CampaignStatus.ENDED)
+
+    def test_live_may_pause_or_end(self) -> None:
+        live = domain.CampaignStatus.LIVE
+        assert domain.can_transition_campaign(live, domain.CampaignStatus.PAUSED)
+        assert domain.can_transition_campaign(live, domain.CampaignStatus.ENDED)
+        assert not domain.can_transition_campaign(live, domain.CampaignStatus.DRAFT)
+
+    def test_paused_may_resume_or_end(self) -> None:
+        assert domain.can_transition_campaign(
+            domain.CampaignStatus.PAUSED, domain.CampaignStatus.LIVE
+        )
+        assert domain.can_transition_campaign(
+            domain.CampaignStatus.PAUSED, domain.CampaignStatus.ENDED
+        )
+
+    def test_ended_is_terminal(self) -> None:
+        for target in domain.CampaignStatus:
+            assert not domain.can_transition_campaign(domain.CampaignStatus.ENDED, target)
+
+    def test_assert_raises_on_an_illegal_move(self) -> None:
+        with pytest.raises(domain.IllegalCampaignTransition, match=r"draft.*ended"):
+            domain.assert_can_transition_campaign(
+                domain.CampaignStatus.DRAFT, domain.CampaignStatus.ENDED
+            )

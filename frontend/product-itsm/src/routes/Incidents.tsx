@@ -5,15 +5,18 @@ import { listIncidents } from "@/api/client";
 import type { IncidentSort } from "@/api/client";
 import type { Incident, IncidentStatus, Priority } from "@/api/types";
 import { formatSlaClock, incidentCategoryLabel, relativeTime } from "@/lib/format";
-import { useAsync } from "@opsgrids/client";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { Can, problemMessage, useAsync, useCan } from "@opsgrids/client";
 import {
   Avatar,
+  Button,
   Card,
   DataTable,
   EmptyState,
   ErrorState,
   IncidentStatusPill,
   PageHeader,
+  Pagination,
   Pill,
   PriorityPill,
   SearchInput,
@@ -21,7 +24,10 @@ import {
   SlaPill,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { AlertTriangleIcon, SortIcon } from "@opsgrids/ui";
+import { AlertTriangleIcon, PlusIcon, SortIcon, useToast } from "@opsgrids/ui";
+import { RaiseIncidentDialog } from "@/forms/RaiseIncidentDialog";
+
+const CAN_WRITE = "itsm.service.incident.write";
 
 type PriorityFilter = Priority | "all";
 type StatusFilter = IncidentStatus | "all";
@@ -57,29 +63,43 @@ function isPriority(value: string | null): value is Priority {
 
 export function IncidentsPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const toast = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const canWrite = useCan(CAN_WRITE, "OWN");
 
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
+  const debouncedSearch = useDebouncedValue(search);
   const [priority, setPriority] = useState<PriorityFilter>(() => {
     const p = searchParams.get("priority");
     return isPriority(p) ? p : "all";
   });
   const [status, setStatus] = useState<StatusFilter>("all");
   const [sort, setSort] = useState<IncidentSort>("updated");
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(25);
+  const [creating, setCreating] = useState(() => searchParams.get("new") === "1");
 
-  // Seed search / priority from the URL when arriving from the sidebar or an Overview link.
+  // Seed search / priority from the URL when arriving from the sidebar or an Overview link, and
+  // clear the `new=1` deep link once the dialog has taken over so a reload doesn't reopen it.
   useEffect(() => {
     const q = searchParams.get("q");
     if (q !== null) setSearch(q);
     const p = searchParams.get("priority");
     if (isPriority(p)) setPriority(p);
-  }, [searchParams]);
+    if (searchParams.get("new") === "1") {
+      setCreating(true);
+      const next = new URLSearchParams(searchParams);
+      next.delete("new");
+      setSearchParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const loader = useCallback(
-    () => listIncidents({ search, priority, status, sort }),
-    [search, priority, status, sort],
+    () => listIncidents({ search: debouncedSearch, priority, status, sort, page, size }),
+    [debouncedSearch, priority, status, sort, page, size],
   );
-  const state = useAsync(loader, [search, priority, status, sort]);
+  const state = useAsync(loader, [debouncedSearch, priority, status, sort, page, size]);
 
   const items = useMemo(
     () => (state.status === "success" ? state.data.items : NO_INCIDENTS),
@@ -128,8 +148,10 @@ export function IncidentsPage() {
         headerClassName: "hidden md:table-cell",
         render: (i) => (
           <span className="inline-flex items-center gap-2">
-            <Avatar name={i.assignee} size="sm" />
-            <span className="text-sm text-ink-soft whitespace-nowrap">{i.assignee}</span>
+            <Avatar name={i.assignee || "Unassigned"} size="sm" />
+            <span className="text-sm text-ink-soft whitespace-nowrap">
+              {i.assignee || "Unassigned"}
+            </span>
           </span>
         ),
       },
@@ -169,11 +191,18 @@ export function IncidentsPage() {
         eyebrow="Service desk"
         title="Incidents"
         actions={
-          <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
-            <AlertTriangleIcon className="size-4 text-muted" />
-            <span className="tnum">{items.length}</span>
-            <span className="text-muted font-medium">shown</span>
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
+              <AlertTriangleIcon className="size-4 text-muted" />
+              <span className="tnum">{state.status === "success" ? state.data.total : "—"}</span>
+              <span className="text-muted font-medium">total</span>
+            </span>
+            <Can permission={CAN_WRITE} scope="OWN">
+              <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
+                Raise incident
+              </Button>
+            </Can>
+          </div>
         }
       />
 
@@ -182,9 +211,12 @@ export function IncidentsPage() {
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <SearchInput
             label="Search incidents"
-            placeholder="Search by ID, summary, assignee or asset…"
+            placeholder="Search by ID, summary, assignee or requester…"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
             containerClassName="lg:max-w-sm"
           />
           <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
@@ -195,13 +227,16 @@ export function IncidentsPage() {
               <Pill
                 key={f.value}
                 active={priority === f.value}
-                onClick={() => setPriority(f.value)}
+                onClick={() => {
+                  setPriority(f.value);
+                  setPage(1);
+                }}
               >
                 {f.label}
               </Pill>
             ))}
           </div>
-          <label className="ml-auto inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-ground px-3 text-sm font-semibold text-ink-soft">
+          <label className="ml-auto inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-ground px-3 text-sm font-semibold text-ink-soft focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2">
             <SortIcon className="size-4 text-muted" />
             <span className="sr-only">Sort incidents</span>
             <select
@@ -223,7 +258,14 @@ export function IncidentsPage() {
             Status
           </span>
           {STATUS_FILTERS.map((f) => (
-            <Pill key={f.value} active={status === f.value} onClick={() => setStatus(f.value)}>
+            <Pill
+              key={f.value}
+              active={status === f.value}
+              onClick={() => {
+                setStatus(f.value);
+                setPage(1);
+              }}
+            >
               {f.label}
             </Pill>
           ))}
@@ -239,24 +281,66 @@ export function IncidentsPage() {
             ))}
           </div>
         ) : null}
-        {state.status === "error" ? <ErrorState message={state.error.message} /> : null}
-        {state.status === "success" ? (
-          <DataTable
-            columns={columns}
-            rows={items}
-            rowKey={(i) => i.id}
-            caption="Incidents"
-            onRowClick={(i) => navigate(`/incidents/${i.id}`)}
-            emptyState={
-              <EmptyState
-                icon={<AlertTriangleIcon className="size-6" />}
-                title="No matching incidents"
-                description="Nothing matches these filters. Try a different priority, status, or clear the search."
-              />
-            }
+        {state.status === "error" ? (
+          <ErrorState
+            title="Couldn't load incidents"
+            message={problemMessage(state.error)}
+            onRetry={state.reload}
           />
         ) : null}
+        {state.status === "success" ? (
+          <>
+            <DataTable
+              columns={columns}
+              rows={items}
+              rowKey={(i) => i.id}
+              caption="Incidents"
+              onRowClick={(i) => navigate(`/incidents/${i.id}`)}
+              emptyState={
+                <EmptyState
+                  icon={<AlertTriangleIcon className="size-6" />}
+                  title={search || priority !== "all" || status !== "all" ? "No matching incidents" : "No incidents yet"}
+                  description={
+                    search || priority !== "all" || status !== "all"
+                      ? "Nothing matches these filters. Try a different priority, status, or clear the search."
+                      : "Raise the first incident to get started."
+                  }
+                  action={
+                    canWrite && !(search || priority !== "all" || status !== "all") ? (
+                      <Button size="sm" onClick={() => setCreating(true)}>
+                        Raise incident
+                      </Button>
+                    ) : null
+                  }
+                />
+              }
+            />
+            <Pagination
+              page={state.data.page}
+              pages={state.data.pages}
+              total={state.data.total}
+              size={state.data.size}
+              noun="incidents"
+              onPageChange={setPage}
+              onSizeChange={(n) => {
+                setSize(n);
+                setPage(1);
+              }}
+            />
+          </>
+        ) : null}
       </Card>
+
+      {creating ? (
+        <RaiseIncidentDialog
+          onClose={() => setCreating(false)}
+          onCreated={(incident) => {
+            setCreating(false);
+            toast.success(`${incident.id} raised as ${incident.priority}.`);
+            navigate(`/incidents/${incident.id}`);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

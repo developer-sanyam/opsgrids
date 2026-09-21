@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { ApiError } from "@opsgrids/client";
+import { EmptyState, ErrorState, SearchInput, Skeleton } from "@opsgrids/ui";
 
 import { listActivations, listPlans, listProducts, listSubscriptions, startTrial } from "@/api";
 import type { Activation, Plan, PlanVersion, Price, Product, Subscription } from "@/api/types";
@@ -54,8 +56,11 @@ export function MarketplacePage() {
   const [load, setLoad] = useState<Load>({ state: "loading" });
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const query = searchParams.get("q") ?? "";
 
   const refresh = useCallback(async () => {
+    setLoad({ state: "loading" });
     try {
       const [products, activations, subscriptions] = await Promise.all([
         listProducts(),
@@ -117,19 +122,67 @@ export function MarketplacePage() {
         </p>
       ) : null}
 
-      {load.state === "loading" ? <p className="text-sm text-muted">Loading the catalogue…</p> : null}
+      {load.state === "loading" ? (
+        <ul className="grid list-none gap-4 p-0 sm:grid-cols-2 xl:grid-cols-3" aria-hidden>
+          {[0, 1, 2].map((i) => (
+            <li key={i}>
+              <Skeleton className="h-56 w-full rounded-card" />
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {load.state === "error" ? (
-        <p role="alert" className="rounded-tile bg-danger-soft px-4 py-3 text-sm font-medium text-danger">
-          Couldn't load the catalogue. {load.message}
-        </p>
+        <ErrorState
+          title="Couldn't load the catalogue"
+          message={load.message}
+          onRetry={() => void refresh()}
+        />
       ) : null}
 
       {load.state === "ready" ? (
-        <ul className="grid list-none gap-4 p-0 sm:grid-cols-2 xl:grid-cols-3">
-          {load.rows.map((row) => (
-            <ProductCard key={row.product.key} row={row} busy={busy === row.product.key} onStart={() => void handleStart(row)} />
-          ))}
-        </ul>
+        <SearchInput
+          label="Search products"
+          placeholder="Search by name, tagline or category"
+          value={query}
+          onChange={(e) => {
+            const next = e.target.value;
+            setSearchParams(next ? { q: next } : {}, { replace: true });
+          }}
+          containerClassName="max-w-sm"
+        />
+      ) : null}
+
+      {load.state === "ready" ? (
+        (() => {
+          const needle = query.trim().toLowerCase();
+          const filtered = needle
+            ? load.rows.filter((row) =>
+                [row.product.name, row.product.tagline, row.product.category]
+                  .filter((v): v is string => v !== null)
+                  .some((v) => v.toLowerCase().includes(needle)),
+              )
+            : load.rows;
+          if (filtered.length === 0) {
+            return (
+              <EmptyState
+                title="No products match that search"
+                description="Try a shorter search term."
+                action={
+                  <Button variant="outline" onClick={() => setSearchParams({}, { replace: true })}>
+                    Clear search
+                  </Button>
+                }
+              />
+            );
+          }
+          return (
+            <ul className="grid list-none gap-4 p-0 sm:grid-cols-2 xl:grid-cols-3">
+              {filtered.map((row) => (
+                <ProductCard key={row.product.key} row={row} busy={busy === row.product.key} onStart={() => void handleStart(row)} />
+              ))}
+            </ul>
+          );
+        })()
       ) : null}
     </div>
   );

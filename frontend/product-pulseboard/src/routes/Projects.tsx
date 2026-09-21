@@ -1,27 +1,37 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
-import { getPeople, listProjects } from "@/api/client";
+import { DEFAULT_PAGE_SIZE, deleteProject, getPeople, listProjects } from "@/api/client";
 import type { Person, Project, ProjectStatus } from "@/api/types";
-import { ChevronDown, CloseIcon, LayersIcon, cn } from "@opsgrids/ui";
-import { formatDate, formatMoney } from "@/lib/format";
-import { useAsync } from "@opsgrids/client";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
   Avatar,
+  Button,
   Card,
+  ConfirmDialog,
   DataTable,
   EmptyState,
   ErrorState,
+  LayersIcon,
   PageHeader,
+  Pagination,
   Pill,
-  ProjectStatusPill,
+  RowActions,
   SearchInput,
+  Select,
   Skeleton,
-} from "@/ui";
-import type { Column } from "@/ui";
+  useToast,
+} from "@opsgrids/ui";
+import type { Column, SelectOption } from "@opsgrids/ui";
+import { formatMoney } from "@/lib/format";
+import { ProjectStatusPill } from "@/ui";
+import { ProjectDetailDialog } from "./ProjectDetailDialog";
+import { ProjectFormDialog } from "./ProjectFormDialog";
 
 type StatusFilter = ProjectStatus | "all";
-type SortKey = "name" | "client" | "progress" | "budget" | "spent";
+type BillableFilter = "all" | "billable" | "internal";
+type SortKey = "code" | "progress" | "due";
 
 const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
   { value: "all", label: "All" },
@@ -31,7 +41,17 @@ const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
   { value: "done", label: "Delivered" },
 ];
 
-const NO_PROJECTS: Project[] = [];
+const BILLABLE_OPTIONS: SelectOption[] = [
+  { value: "all", label: "Billable & internal" },
+  { value: "billable", label: "Billable only" },
+  { value: "internal", label: "Internal only" },
+];
+
+const SORT_OPTIONS: SelectOption[] = [
+  { value: "code", label: "Code" },
+  { value: "progress", label: "Progress (highest first)" },
+  { value: "due", label: "Due date (soonest first)" },
+];
 
 /** A slim progress meter with its percentage, tabular so columns line up. */
 function ProgressMeter({ pct }: { pct: number }) {
@@ -45,183 +65,63 @@ function ProgressMeter({ pct }: { pct: number }) {
   );
 }
 
-/** A sortable header cell — a button that toggles the active sort key and direction. */
-function SortHeader({
-  label,
-  active,
-  dir,
-  onClick,
-  align = "left",
-}: {
-  label: string;
-  active: boolean;
-  dir: "asc" | "desc";
-  onClick: () => void;
-  align?: "left" | "right";
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide transition-colors hover:text-ink",
-        active ? "text-accent" : "text-faint",
-        align === "right" && "flex-row-reverse",
-      )}
-    >
-      {label}
-      <ChevronDown
-        className={cn(
-          "size-3.5 transition-transform",
-          active && dir === "asc" && "rotate-180",
-          !active && "opacity-0 group-hover:opacity-100",
-        )}
-      />
-    </button>
-  );
-}
-
-/** The drill-down: a right-hand drawer with the full picture for one project. */
-function ProjectDrawer({
-  project,
-  ownerName,
-  onClose,
-}: {
-  project: Project;
-  ownerName: string;
-  onClose: () => void;
-}) {
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const overBudget = project.spent_minor > project.budget_minor;
-  const remaining = project.budget_minor - project.spent_minor;
-  const spentPct = project.budget_minor === 0 ? 0 : Math.round((project.spent_minor / project.budget_minor) * 100);
-
-  return (
-    <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label={`${project.name} details`}>
-      <div className="absolute inset-0 bg-ink/40" onClick={onClose} aria-hidden />
-      <div className="absolute right-0 top-0 flex h-full w-full max-w-[26rem] flex-col overflow-y-auto bg-surface shadow-float">
-        <header className="flex items-start justify-between gap-3 border-b border-line p-6">
-          <div className="flex flex-col gap-2">
-            <span className="text-xs font-semibold uppercase tracking-wide text-faint tnum">{project.code}</span>
-            <h2 className="display text-xl font-extrabold leading-tight">{project.name}</h2>
-            <ProjectStatusPill status={project.status} />
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close details"
-            className="grid size-9 shrink-0 place-items-center rounded-full text-muted hover:bg-ground hover:text-ink transition-colors"
-          >
-            <CloseIcon className="size-5" />
-          </button>
-        </header>
-
-        <div className="flex flex-col gap-6 p-6">
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between text-sm">
-              <span className="font-semibold text-ink">Progress</span>
-              <span className="tnum font-semibold text-ink-soft">{project.progress_pct}%</span>
-            </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-ground">
-              <div className="h-full rounded-full bg-accent" style={{ width: `${project.progress_pct}%` }} />
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-3 rounded-card bg-ground p-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted">Spent</span>
-              <span className={cn("tnum font-bold", overBudget ? "text-danger" : "text-ink")}>
-                {formatMoney(project.spent_minor, project.currency)}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted">Budget</span>
-              <span className="tnum font-semibold text-ink-soft">
-                {formatMoney(project.budget_minor, project.currency)}
-              </span>
-            </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-surface">
-              <div
-                className={cn("h-full rounded-full", overBudget ? "bg-danger" : "bg-accent")}
-                style={{ width: `${Math.min(spentPct, 100)}%` }}
-              />
-            </div>
-            <div className="flex items-center justify-between border-t border-line pt-3 text-sm">
-              <span className="text-muted">{overBudget ? "Over budget by" : "Remaining"}</span>
-              <span className={cn("tnum font-bold", overBudget ? "text-danger" : "text-present")}>
-                {formatMoney(Math.abs(remaining), project.currency)}
-              </span>
-            </div>
-          </div>
-
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-4 text-sm">
-            <div className="flex flex-col gap-1">
-              <dt className="text-xs font-medium text-muted">Client</dt>
-              <dd className="font-semibold text-ink">{project.client}</dd>
-            </div>
-            <div className="flex flex-col gap-1">
-              <dt className="text-xs font-medium text-muted">Owner</dt>
-              <dd className="flex items-center gap-2 font-semibold text-ink">
-                <Avatar name={ownerName} size="xs" />
-                {ownerName}
-              </dd>
-            </div>
-            <div className="flex flex-col gap-1">
-              <dt className="text-xs font-medium text-muted">Started</dt>
-              <dd className="tnum font-semibold text-ink">{formatDate(project.start_date)}</dd>
-            </div>
-            <div className="flex flex-col gap-1">
-              <dt className="text-xs font-medium text-muted">Due</dt>
-              <dd className="tnum font-semibold text-ink">{formatDate(project.due_date)}</dd>
-            </div>
-            <div className="flex flex-col gap-1">
-              <dt className="text-xs font-medium text-muted">Open tasks</dt>
-              <dd className="tnum font-semibold text-ink">{project.open_tasks}</dd>
-            </div>
-            <div className="flex flex-col gap-1">
-              <dt className="text-xs font-medium text-muted">Billing</dt>
-              <dd className="font-semibold text-ink">{project.billable ? "Billable" : "Internal"}</dd>
-            </div>
-          </dl>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function ProjectsPage() {
-  const [searchParams] = useSearchParams();
+  const toast = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
+  const debouncedSearch = useDebouncedValue(search);
   const [status, setStatus] = useState<StatusFilter>("all");
-  const [sortKey, setSortKey] = useState<SortKey>("name");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [billable, setBillable] = useState<BillableFilter>("all");
+  const [sort, setSort] = useState<SortKey>("code");
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
   const [selected, setSelected] = useState<Project | null>(null);
+  const [editing, setEditing] = useState<Project | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState<Project | null>(null);
 
+  const canWrite = useCan("pulseboard.engagements.project.write");
+
+  // A query-string search opens the list already filtered (e.g. the Overview's "needs
+  // attention" links here). Only takes effect once, on arrival — after that the field owns it.
   useEffect(() => {
     const q = searchParams.get("q");
-    if (q !== null) setSearch(q);
+    if (q !== null && q !== search) setSearch(q);
+    if (searchParams.get("new") === "1") {
+      setCreating(true);
+      const next = new URLSearchParams(searchParams);
+      next.delete("new");
+      setSearchParams(next, { replace: true });
+    }
+    // Only ever reads the URL on mount/navigation, never on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  const loader = useCallback(() => listProjects({ search, status }), [search, status]);
-  const projects = useAsync(loader, [search, status]);
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, status, billable, sort]);
 
-  // The roster doesn't depend on the search or status filter, so it loads once, separately —
-  // no point re-fetching everyone's name on every keystroke.
+  const loader = useCallback(
+    () =>
+      listProjects({
+        q: debouncedSearch,
+        status,
+        billable: billable === "all" ? undefined : billable === "billable",
+        sort,
+        page,
+        size,
+      }),
+    [debouncedSearch, status, billable, sort, page, size],
+  );
+  const projects = useAsync(loader, [debouncedSearch, status, billable, sort, page, size]);
+
+  // The roster doesn't depend on the filters, so it loads once, separately.
   const peopleState = useAsync(useCallback(getPeople, []), []);
   const personById = useMemo(
-    () =>
-      new Map<string, Person>(
-        (peopleState.status === "success" ? peopleState.data : []).map((p) => [p.id, p]),
-      ),
+    () => new Map<string, Person>((peopleState.status === "success" ? peopleState.data : []).map((p) => [p.id, p])),
     [peopleState],
   );
+  const people = peopleState.status === "success" ? peopleState.data : [];
   const ownerName = useCallback(
     (id: string | null): string => {
       if (id === null) return "Unassigned";
@@ -230,50 +130,19 @@ export function ProjectsPage() {
     [personById],
   );
 
-  const items = useMemo(
-    () => (projects.status === "success" ? projects.data : NO_PROJECTS),
-    [projects],
-  );
-
-  function toggleSort(key: SortKey) {
-    if (key === sortKey) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSortKey(key);
-      setSortDir(key === "progress" || key === "budget" || key === "spent" ? "desc" : "asc");
-    }
-  }
-
-  const sorted = useMemo(() => {
-    const rows = [...items];
-    rows.sort((a, b) => {
-      let cmp = 0;
-      switch (sortKey) {
-        case "name":
-          cmp = a.name.localeCompare(b.name);
-          break;
-        case "client":
-          cmp = a.client.localeCompare(b.client);
-          break;
-        case "progress":
-          cmp = a.progress_pct - b.progress_pct;
-          break;
-        case "budget":
-          cmp = a.budget_minor - b.budget_minor;
-          break;
-        case "spent":
-          cmp = a.spent_minor - b.spent_minor;
-          break;
-      }
-      return sortDir === "asc" ? cmp : -cmp;
-    });
-    return rows;
-  }, [items, sortKey, sortDir]);
+  const remove = useMutation((project: Project) => deleteProject(project.code), {
+    onSuccess: (_result, project) => {
+      setDeleting(null);
+      setSelected(null);
+      toast.success(`${project.name} deleted.`);
+      projects.reload();
+    },
+  });
 
   const columns: Column<Project>[] = [
     {
       key: "name",
-      header: <SortHeader label="Project" active={sortKey === "name"} dir={sortDir} onClick={() => toggleSort("name")} />,
+      header: "Project",
       render: (p) => (
         <div className="flex flex-col leading-tight">
           <span className="font-semibold text-ink">{p.name}</span>
@@ -283,37 +152,31 @@ export function ProjectsPage() {
     },
     {
       key: "client",
-      header: <SortHeader label="Client" active={sortKey === "client"} dir={sortDir} onClick={() => toggleSort("client")} />,
+      header: "Client",
       cellClassName: "hidden md:table-cell",
       headerClassName: "hidden md:table-cell",
-      render: (p) => <span className="text-ink-soft">{p.client}</span>,
+      render: (p) => <span className="text-ink-soft">{p.client || "—"}</span>,
     },
-    {
-      key: "status",
-      header: "Status",
-      render: (p) => <ProjectStatusPill status={p.status} />,
-    },
+    { key: "status", header: "Status", render: (p) => <ProjectStatusPill status={p.status} /> },
     {
       key: "progress",
-      header: <SortHeader label="Progress" active={sortKey === "progress"} dir={sortDir} onClick={() => toggleSort("progress")} />,
+      header: "Progress",
       cellClassName: "hidden lg:table-cell",
       headerClassName: "hidden lg:table-cell",
       render: (p) => <ProgressMeter pct={p.progress_pct} />,
     },
     {
       key: "budget",
-      header: <SortHeader label="Budget / Spent" active={sortKey === "spent"} dir={sortDir} onClick={() => toggleSort("spent")} align="right" />,
+      header: "Budget / Spent",
       align: "right",
       render: (p) => {
         const over = p.spent_minor > p.budget_minor;
         return (
           <div className="flex flex-col items-end leading-tight">
-            <span className={cn("tnum font-semibold", over ? "text-danger" : "text-ink")}>
+            <span className={over ? "tnum font-semibold text-danger" : "tnum font-semibold text-ink"}>
               {formatMoney(p.spent_minor, p.currency)}
             </span>
-            <span className="tnum text-xs text-muted">
-              of {formatMoney(p.budget_minor, p.currency)}
-            </span>
+            <span className="tnum text-xs text-muted">of {formatMoney(p.budget_minor, p.currency)}</span>
           </div>
         );
       },
@@ -330,6 +193,21 @@ export function ProjectsPage() {
         </span>
       ),
     },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      render: (p) => (
+        <RowActions
+          label={p.name}
+          actions={[
+            { label: "View", onSelect: () => setSelected(p) },
+            { label: "Edit", onSelect: () => setEditing(p), hidden: !canWrite },
+            { label: "Delete", tone: "danger", onSelect: () => setDeleting(p), hidden: !canWrite },
+          ]}
+        />
+      ),
+    },
   ];
 
   return (
@@ -338,11 +216,9 @@ export function ProjectsPage() {
         eyebrow="Portfolio"
         title="Projects"
         actions={
-          <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
-            <LayersIcon className="size-4 text-muted" />
-            <span className="tnum">{items.length}</span>
-            <span className="text-muted font-medium">projects</span>
-          </span>
+          <Can permission="pulseboard.engagements.project.write">
+            <Button onClick={() => setCreating(true)}>New project</Button>
+          </Can>
         }
       />
 
@@ -362,6 +238,22 @@ export function ProjectsPage() {
               </Pill>
             ))}
           </div>
+          <div className="flex flex-wrap items-center gap-3 lg:ml-auto">
+            <Select
+              label="Billing"
+              containerClassName="w-48"
+              value={billable}
+              onChange={(e) => setBillable(e.target.value as BillableFilter)}
+              options={BILLABLE_OPTIONS}
+            />
+            <Select
+              label="Sort by"
+              containerClassName="w-56"
+              value={sort}
+              onChange={(e) => setSort(e.target.value as SortKey)}
+              options={SORT_OPTIONS}
+            />
+          </div>
         </div>
       </Card>
 
@@ -373,32 +265,116 @@ export function ProjectsPage() {
             ))}
           </div>
         ) : null}
-        {projects.status === "error" ? <ErrorState message={projects.error.message} /> : null}
-        {projects.status === "success" ? (
-          <DataTable
-            caption="Projects with status, progress and budget"
-            columns={columns}
-            rows={sorted}
-            rowKey={(p) => p.id}
-            onRowClick={(p) => setSelected(p)}
-            emptyState={
-              <EmptyState
-                icon={<LayersIcon className="size-6" />}
-                title="No matching projects"
-                description="No project matches this search or filter. Clear it to see the whole portfolio."
-              />
-            }
+        {projects.status === "error" ? (
+          <ErrorState
+            title="Couldn't load projects"
+            message={problemMessage(projects.error)}
+            action={<Button onClick={projects.reload}>Try again</Button>}
           />
+        ) : null}
+        {projects.status === "success" ? (
+          <>
+            <DataTable
+              caption="Projects with status, progress and budget"
+              columns={columns}
+              rows={projects.data.items}
+              rowKey={(p) => p.id}
+              onRowClick={setSelected}
+              emptyState={
+                <EmptyState
+                  icon={<LayersIcon className="size-6" />}
+                  title={search ? "No projects match that search" : "No projects yet"}
+                  description={
+                    search
+                      ? "Try a shorter search term, or clear it to see the whole portfolio."
+                      : "Create the first engagement to get started."
+                  }
+                  action={
+                    search ? (
+                      <Button variant="outline" onClick={() => setSearch("")}>
+                        Clear search
+                      </Button>
+                    ) : (
+                      <Can permission="pulseboard.engagements.project.write">
+                        <Button onClick={() => setCreating(true)}>New project</Button>
+                      </Can>
+                    )
+                  }
+                />
+              }
+            />
+            {projects.data.items.length > 0 ? (
+              <Pagination
+                page={page}
+                pages={projects.data.pages}
+                total={projects.data.total}
+                size={size}
+                noun="projects"
+                onPageChange={setPage}
+                onSizeChange={(n) => {
+                  setSize(n);
+                  setPage(1);
+                }}
+              />
+            ) : null}
+          </>
         ) : null}
       </Card>
 
       {selected ? (
-        <ProjectDrawer
+        <ProjectDetailDialog
           project={selected}
           ownerName={ownerName(selected.owner_id)}
           onClose={() => setSelected(null)}
+          onEdit={() => {
+            setEditing(selected);
+            setSelected(null);
+          }}
+          onDelete={() => {
+            setDeleting(selected);
+            setSelected(null);
+          }}
         />
       ) : null}
+
+      {creating ? (
+        <ProjectFormDialog
+          project={null}
+          people={people}
+          onClose={() => setCreating(false)}
+          onSaved={(_project, message) => {
+            toast.success(message);
+            projects.reload();
+          }}
+        />
+      ) : null}
+      {editing ? (
+        <ProjectFormDialog
+          project={editing}
+          people={people}
+          onClose={() => setEditing(null)}
+          onSaved={(_project, message) => {
+            setEditing(null);
+            toast.success(message);
+            projects.reload();
+          }}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onClose={() => {
+          setDeleting(null);
+          remove.reset();
+        }}
+        onConfirm={() => deleting && void remove.mutate(deleting)}
+        title={deleting ? `Delete ${deleting.name}?` : "Delete this project?"}
+        body={`${deleting?.name} and its tasks are removed. This can't be undone.`}
+        confirmLabel="Delete"
+        pendingLabel="Deleting…"
+        pending={remove.pending}
+        {...(remove.error ? { error: problemMessage(remove.error) } : {})}
+      />
     </div>
   );
 }

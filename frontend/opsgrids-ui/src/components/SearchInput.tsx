@@ -6,12 +6,12 @@ import { SearchIcon } from "../icons";
 
 interface SearchInputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, "type"> {
   label: string;
-  containerClassName?: string;
+  containerClassName?: string | undefined;
   /**
    * The colour of the focus-within ring. `ink` is the default quiet treatment; `accent` matches
    * the global `:focus-visible` violet, for screens where search is the primary control.
    */
-  focusRing?: "ink" | "accent";
+  focusRing?: "ink" | "accent" | undefined;
 }
 
 /** A pill search field with a leading icon and an accessible, visually-hidden label. */

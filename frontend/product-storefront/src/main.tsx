@@ -3,19 +3,20 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
 import { configureSession } from "@opsgrids/client";
-import { LifeBuoyIcon, SettingsIcon, ThemeProvider } from "@opsgrids/ui";
+import { ThemeProvider, Toaster } from "@opsgrids/ui";
 
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
 import { RequireAuth } from "./auth/RequireAuth";
 import { DeliveryFallback } from "./delivery/DeliveryFallback";
-import { ComingSoonPage } from "./routes/ComingSoon";
+import { CatalogueFallback } from "./routes/CatalogueFallback";
 import { EditorFallback } from "./routes/EditorFallback";
 import { GalleryPage } from "./routes/Gallery";
 import { LiveStorePage } from "./routes/LiveStore";
 import { LoginPage } from "./routes/Login";
 import { NotFoundPage } from "./routes/NotFound";
+import { SettingsPage } from "./routes/Settings";
 import { StorefrontPage } from "./routes/Storefront";
 
 /**
@@ -31,6 +32,15 @@ const EditorPage = lazy(() => import("./routes/editor"));
  * screen they may never open (ADR-0010 slice 1).
  */
 const DeliveryPage = lazy(() => import("./delivery"));
+
+/** The catalogue and enquiries screens are further split points, for the same reason. */
+const ProductsPage = lazy(() => import("./catalogue/Products").then((m) => ({ default: m.ProductsPage })));
+const CategoriesPage = lazy(() =>
+  import("./catalogue/Categories").then((m) => ({ default: m.CategoriesPage })),
+);
+const EnquiriesPage = lazy(() =>
+  import("./enquiries/Enquiries").then((m) => ({ default: m.EnquiriesPage })),
+);
 
 /**
  * The routed screens under the app shell.
@@ -65,24 +75,29 @@ const shellRoutes = [
       </Suspense>
     ),
   },
+  { path: "settings", element: <SettingsPage /> },
   {
-    path: "settings",
+    path: "products",
     element: (
-      <ComingSoonPage
-        icon={<SettingsIcon className="size-6" />}
-        title="Settings"
-        description="Domain, brand details and publishing controls will live here. Brand name and tagline currently come from the theme you adopted."
-      />
+      <Suspense fallback={<CatalogueFallback />}>
+        <ProductsPage />
+      </Suspense>
     ),
   },
   {
-    path: "help",
+    path: "categories",
     element: (
-      <ComingSoonPage
-        icon={<LifeBuoyIcon className="size-6" />}
-        title="Help & Getting Started"
-        description="Guides for composing a store, writing product copy and going live are on the way."
-      />
+      <Suspense fallback={<CatalogueFallback />}>
+        <CategoriesPage />
+      </Suspense>
+    ),
+  },
+  {
+    path: "enquiries",
+    element: (
+      <Suspense fallback={<CatalogueFallback />}>
+        <EnquiriesPage />
+      </Suspense>
     ),
   },
   { path: "*", element: <NotFoundPage /> },
@@ -142,7 +157,9 @@ if (!rootEl) throw new Error("Root element #root not found");
 createRoot(rootEl).render(
   <StrictMode>
     <ThemeProvider storageKey="opsgrids.storefront.theme">
-      <RouterProvider router={router} />
+      <Toaster>
+        <RouterProvider router={router} />
+      </Toaster>
     </ThemeProvider>
   </StrictMode>,
 );

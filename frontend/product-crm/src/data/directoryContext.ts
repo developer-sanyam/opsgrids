@@ -21,6 +21,12 @@ export interface Directory {
    * this directory only resolves the *other* ids a record references.
    */
   status: "loading" | "success" | "error";
+  /**
+   * Ask the directory to fetch again — after an owner/company/contact write, so a newly created
+   * row resolves by name everywhere else on the next render rather than showing "Unassigned"
+   * until the next full page load.
+   */
+  reload: () => void;
 }
 
 export const EMPTY_DIRECTORY: Directory = {
@@ -28,6 +34,7 @@ export const EMPTY_DIRECTORY: Directory = {
   companies: [],
   contacts: [],
   status: "loading",
+  reload: () => undefined,
 };
 
 export const DirectoryContext = createContext<Directory | null>(null);

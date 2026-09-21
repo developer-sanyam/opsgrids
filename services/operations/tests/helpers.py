@@ -10,9 +10,11 @@ take a bare `subject_ref` uuid.
 
 from __future__ import annotations
 
+import contextlib
 import uuid
+from collections.abc import Iterator
 
-from platform_core.auth import Principal, Scope, ScopeContext
+from platform_core.auth import Principal, Scope, ScopeContext, get_principal
 
 
 def principal_for(
@@ -50,3 +52,15 @@ def ctx_for(
         org_id, [f"{permission}:{scope.value}"], subject_ref=subject_ref, locations=locations
     )
     return ScopeContext(principal=principal, scope=scope, permission=permission)
+
+
+@contextlib.contextmanager
+def as_principal(principal: Principal) -> Iterator[None]:
+    """Override `get_principal` for the app under test so `client` calls act as `principal`."""
+    from app.main import app
+
+    app.dependency_overrides[get_principal] = lambda: principal
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_principal, None)

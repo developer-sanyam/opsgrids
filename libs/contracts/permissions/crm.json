@@ -2,6 +2,15 @@
   "manifest_version": 1,
   "permissions": [
     {
+      "action": "delete",
+      "default_scope": "OWN",
+      "description": "Delete a company",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "book",
+      "resource": "company"
+    },
+    {
       "action": "read",
       "default_scope": "OWN",
       "description": "See companies and the rep directory",
@@ -18,6 +27,15 @@
       "max_scope": "ORG",
       "module": "book",
       "resource": "company"
+    },
+    {
+      "action": "delete",
+      "default_scope": "OWN",
+      "description": "Delete a contact",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "book",
+      "resource": "contact"
     },
     {
       "action": "read",
@@ -74,6 +92,15 @@
       "resource": "activity"
     },
     {
+      "action": "delete",
+      "default_scope": "OWN",
+      "description": "Delete a deal",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "pipeline",
+      "resource": "deal"
+    },
+    {
       "action": "read",
       "default_scope": "OWN",
       "description": "See deals and the pipeline summary",
@@ -100,11 +127,19 @@
       "description": "Administers the whole account book across the organization. Built from this service's own slice of the CRM catalogue alone \u2014 administering the CRM is not the same job as owning the account.",
       "grants": [
         {
+          "code": "crm.book.company.delete",
+          "scope": "ORG"
+        },
+        {
           "code": "crm.book.company.read",
           "scope": "ORG"
         },
         {
           "code": "crm.book.company.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "crm.book.contact.delete",
           "scope": "ORG"
         },
         {
@@ -165,6 +200,10 @@
         },
         {
           "code": "crm.pipeline.activity.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "crm.pipeline.deal.delete",
           "scope": "ORG"
         },
         {

@@ -1,8 +1,8 @@
-import { useCallback } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useCallback, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 
-import { getDeal, listActivities } from "@/api/client";
-import type { Contact } from "@/api/types";
+import { deleteDeal, getDeal, listActivities, moveDealStage } from "@/api/client";
+import type { Contact, DealStage } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
 import {
   companyById,
@@ -10,20 +10,26 @@ import {
   contactsForCompany,
   ownerById,
 } from "@/data/lookups";
+import { isOpen, STAGES } from "@/data/stages";
 import { formatDate, formatMoney, formatRelative } from "@/lib/format";
-import { useAsync } from "@opsgrids/client";
+import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
   ActivityTimeline,
   Avatar,
+  Button,
   Card,
+  ConfirmDialog,
   ContactStatusPill,
   EmptyState,
   ErrorState,
+  Select,
   SectionHeader,
   Skeleton,
   StagePill,
 } from "@/ui";
-import { ActivityIcon, ArrowLeftIcon, BuildingIcon, MailIcon, PhoneIcon } from "@opsgrids/ui";
+import { ActivityIcon, ArrowLeftIcon, BuildingIcon, MailIcon, PhoneIcon, useToast } from "@opsgrids/ui";
+import { DealFormDialog } from "@/forms/DealFormDialog";
+import { ActivityFormDialog } from "@/forms/ActivityFormDialog";
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -76,9 +82,34 @@ function DealDetailSkeleton() {
 
 export function DealDetailPage() {
   const { id = "" } = useParams();
+  const navigate = useNavigate();
+  const toast = useToast();
   const deal = useAsync(useCallback(() => getDeal(id), [id]), [id]);
   const activities = useAsync(useCallback(() => listActivities({ dealId: id }), [id]), [id]);
-  const { owners, companies, contacts } = useDirectory();
+  const directory = useDirectory();
+  const { owners, companies, contacts } = directory;
+  const canLog = useCan("crm.pipeline.activity.write", "OWN");
+  const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [logging, setLogging] = useState(false);
+
+  const move = useMutation(
+    (stage: DealStage) => moveDealStage(id, { stage }),
+    {
+      onSuccess: (updated) => {
+        toast.success(`Moved to ${STAGES.find((s) => s.stage === updated.stage)?.label ?? updated.stage}.`);
+        deal.reload();
+      },
+      onError: (error) => toast.error(problemMessage(error)),
+    },
+  );
+
+  const remove = useMutation(() => deleteDeal(id), {
+    onSuccess: () => {
+      toast.success("Deal deleted.");
+      navigate("/deals");
+    },
+  });
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -93,7 +124,11 @@ export function DealDetailPage() {
       {deal.status === "loading" ? <DealDetailSkeleton /> : null}
       {deal.status === "error" ? (
         <Card className="p-6">
-          <ErrorState message={deal.error.message} />
+          <ErrorState
+            title="Couldn't load this deal"
+            message={problemMessage(deal.error)}
+            onRetry={deal.reload}
+          />
         </Card>
       ) : null}
 
@@ -106,6 +141,7 @@ export function DealDetailPage() {
             const companyContacts = company
               ? contactsForCompany(contacts, company.id).filter((c) => c.id !== primary?.id)
               : [];
+            const activityItems = activities.status === "success" ? activities.data.items : [];
 
             return (
               <>
@@ -130,19 +166,62 @@ export function DealDetailPage() {
                         </Link>
                       ) : null}
                     </div>
-                    <div className="flex flex-col items-end">
-                      <span className="display text-[2rem] font-extrabold leading-none tnum">
-                        {formatMoney(d.value_minor, d.currency)}
-                      </span>
-                      <span className="text-sm text-muted">{d.probability}% to close</span>
+                    <div className="flex flex-col items-end gap-3">
+                      <div className="flex flex-col items-end">
+                        <span className="display text-[2rem] font-extrabold leading-none tnum">
+                          {formatMoney(d.value_minor, d.currency)}
+                        </span>
+                        <span className="text-sm text-muted">{d.probability}% to close</span>
+                      </div>
+                      <Can permission="crm.pipeline.deal.write" scope="OWN">
+                        <div className="flex items-center gap-2">
+                          <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
+                            Edit
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-negative"
+                            onClick={() => setDeleting(true)}
+                          >
+                            Delete
+                          </Button>
+                        </div>
+                      </Can>
                     </div>
                   </div>
+
+                  <Can permission="crm.pipeline.deal.write" scope="OWN">
+                    <Select
+                      label="Move stage"
+                      value={d.stage}
+                      disabled={!isOpen(d.stage) || move.pending}
+                      onChange={(e) => void move.mutate(e.target.value as DealStage)}
+                      options={STAGES.map((s) => ({ value: s.stage, label: s.label }))}
+                      helper={
+                        !isOpen(d.stage)
+                          ? "Closed deals can't be moved — log a new deal instead of reopening one."
+                          : "The keyboard- and touch-friendly way to move this deal, same as dragging its card on the board."
+                      }
+                      containerClassName="max-w-xs"
+                    />
+                  </Can>
                 </Card>
 
                 <div className="grid grid-cols-1 gap-6 lg:grid-cols-3 items-start">
                   {/* Activity timeline */}
                   <Card className="flex flex-col gap-5 p-6 lg:col-span-2">
-                    <SectionHeader title="Activity" subtitle="Every logged touch on this deal" />
+                    <SectionHeader
+                      title="Activity"
+                      subtitle="Every logged touch on this deal"
+                      action={
+                        <Can permission="crm.pipeline.activity.write" scope="OWN">
+                          <Button size="sm" variant="outline" onClick={() => setLogging(true)}>
+                            Log activity
+                          </Button>
+                        </Can>
+                      }
+                    />
                     {activities.status === "loading" ? (
                       <div className="flex flex-col gap-4">
                         {Array.from({ length: 4 }).map((_, i) => (
@@ -151,16 +230,26 @@ export function DealDetailPage() {
                       </div>
                     ) : null}
                     {activities.status === "error" ? (
-                      <ErrorState message={activities.error.message} />
+                      <ErrorState
+                        message={problemMessage(activities.error)}
+                        onRetry={activities.reload}
+                      />
                     ) : null}
                     {activities.status === "success" ? (
-                      activities.data.length > 0 ? (
-                        <ActivityTimeline activities={activities.data} showCompany={false} />
+                      activityItems.length > 0 ? (
+                        <ActivityTimeline activities={activityItems} showCompany={false} />
                       ) : (
                         <EmptyState
                           icon={<ActivityIcon className="size-6" />}
                           title="No activity yet"
                           description="Log a call, email or meeting to start the timeline for this deal."
+                          action={
+                            canLog ? (
+                              <Button size="sm" onClick={() => setLogging(true)}>
+                                Log activity
+                              </Button>
+                            ) : null
+                          }
                         />
                       )
                     ) : null}
@@ -187,7 +276,7 @@ export function DealDetailPage() {
                         <Fact label="Probability">
                           <span className="tnum">{d.probability}%</span>
                         </Fact>
-                        <Fact label="Source">{d.source}</Fact>
+                        <Fact label="Source">{d.source || "—"}</Fact>
                         <Fact label="Created">
                           <span className="tnum">{formatDate(d.created_at)}</span>
                         </Fact>
@@ -225,6 +314,50 @@ export function DealDetailPage() {
                     </Card>
                   </div>
                 </div>
+
+                {editing ? (
+                  <DealFormDialog
+                    deal={d}
+                    companies={companies}
+                    contacts={contacts}
+                    owners={owners}
+                    onOwnerCreated={() => directory.reload()}
+                    onClose={() => setEditing(false)}
+                    onSaved={() => {
+                      setEditing(false);
+                      toast.success(`${d.name} saved.`);
+                      deal.reload();
+                    }}
+                  />
+                ) : null}
+
+                {logging ? (
+                  <ActivityFormDialog
+                    context={{ dealId: d.id, label: d.name }}
+                    onClose={() => setLogging(false)}
+                    onSaved={() => {
+                      setLogging(false);
+                      toast.success("Activity logged.");
+                      activities.reload();
+                      deal.reload();
+                    }}
+                  />
+                ) : null}
+
+                <ConfirmDialog
+                  open={deleting}
+                  onClose={() => {
+                    setDeleting(false);
+                    remove.reset();
+                  }}
+                  onConfirm={() => void remove.mutate(undefined)}
+                  title="Delete this deal?"
+                  body={`${d.name} is removed from the pipeline. This can't be undone.`}
+                  confirmLabel="Delete"
+                  pendingLabel="Deleting…"
+                  pending={remove.pending}
+                  {...(remove.error ? { error: problemMessage(remove.error) } : {})}
+                />
               </>
             );
           })()

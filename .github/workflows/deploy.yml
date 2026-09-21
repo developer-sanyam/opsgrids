@@ -39,6 +39,10 @@ on:
         description: 'App bundles to publish: all, none, or a comma-separated list'
         default: all
         required: true
+      reconcile:
+        description: 'Product keys whose NEW permission codes should reach organizations that already exist (ADR-0007), e.g. crm,finance. Empty = none. A fleet write: every member of those organizations refreshes their token.'
+        default: ''
+        required: false
 
 # One deploy at a time, and never cancel one half way: a cancelled `up` is a half-recreated box.
 concurrency:
@@ -140,6 +144,16 @@ jobs:
           # Through the environment, never interpolated into the script body.
           SHA: ${{ needs.plan.outputs.sha }}
         run: infrastructure/edge/ssh-deploy.sh "$EDGE_SSH_TARGET" "$EDGE_CONFIRM_HOST" "$SHA" deploy
+      # Never automatic: only when a person running the workflow names the products (ADR-0007
+      # calls this a reviewed step, not something a restart does). The dry run prints first.
+      - name: Reconcile permissions for existing organizations
+        if: github.event_name == 'workflow_dispatch' && inputs.reconcile != ''
+        env:
+          EDGE_SSH_TARGET: ${{ vars.EDGE_SSH_TARGET }}
+          RECONCILE: ${{ inputs.reconcile }}
+        run: |
+          case "$RECONCILE" in *[!a-z_,]*) echo "::error::reconcile takes product keys separated by commas"; exit 1 ;; esac
+          ssh -o BatchMode=yes "$EDGE_SSH_TARGET" /srv/opsgrids/repo/infrastructure/edge/remote.sh reconcile-permissions "$RECONCILE" --apply
       - name: The edge answers
         env:
           EDGE_CONFIRM_HOST: ${{ vars.EDGE_CONFIRM_HOST }}

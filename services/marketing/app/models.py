@@ -20,7 +20,16 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from sqlalchemy import BigInteger, Date, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Date,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -77,7 +86,17 @@ class Audience(Base, TenantBase):
         # ANDed into every query, so an index that did not lead with the tenant column would scan
         # the whole platform's rows and discard almost all of them (ADR-0002).
         Index("ix_audiences_org_name", "organization_id", "name"),
-        UniqueConstraint("organization_id", "name", name="uq_audiences_org_name"),
+        # A **partial** unique index, not a full constraint: a soft-deleted audience must free
+        # its name for reuse, or `services.create_audience` / `update_audience`'s own duplicate
+        # check (which already filters `deleted_at`) would pass while the insert then dies on the
+        # constraint anyway (migration `96e4780b8df1`).
+        Index(
+            "uq_audiences_org_name",
+            "organization_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
     )
 
 

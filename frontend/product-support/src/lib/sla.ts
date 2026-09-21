@@ -1,12 +1,11 @@
 /**
  * SLA state derivation. Pure, no I/O — turns a ticket's deadline into a labelled state so the UI
- * never conveys SLA health by colour alone. The clock is a fixed instant (`NOW`) matching the
- * seeded fixtures, so what renders is deterministic.
+ * never conveys SLA health by colour alone. The clock defaults to `now()` (`@/lib/clock`): the
+ * real time live, the fixed fixture instant in fixture mode — never a constant snapshot baked in
+ * at import time.
  */
 import type { Ticket } from "@/api/types";
-
-/** The fixed "current time" the fixtures are written around. */
-export const NOW = new Date("2026-08-24T14:30:00Z");
+import { now as clockNow } from "@/lib/clock";
 
 export type SlaState =
   | "breached" // still open, past its deadline
@@ -35,7 +34,7 @@ export function formatDuration(mins: number): string {
   return r === 0 ? `${h}h` : `${h}h ${r}m`;
 }
 
-export function slaInfo(ticket: Ticket, now: Date = NOW): SlaInfo {
+export function slaInfo(ticket: Ticket, now: Date = clockNow()): SlaInfo {
   if (ticket.status === "solved") {
     return ticket.sla_breached
       ? { state: "missed", label: "SLA missed", shortLabel: "Missed", minutes: null }
@@ -60,7 +59,7 @@ export function slaInfo(ticket: Ticket, now: Date = NOW): SlaInfo {
 }
 
 /** Whether this ticket needs attention now: open and either breached or under an hour of headroom. */
-export function needsAttention(ticket: Ticket, now: Date = NOW): boolean {
+export function needsAttention(ticket: Ticket, now: Date = clockNow()): boolean {
   const info = slaInfo(ticket, now);
   return info.state === "breached" || info.state === "due_soon";
 }

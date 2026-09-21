@@ -158,6 +158,7 @@ export const harvest: Theme = {
         note: "Dealer rates, inclusive of GST, ex-district warehouse. Season credit applies.",
       }),
       sec("hrv-prd-enquiry", "enquiry-form", { x: 7, y: 15, w: 5, h: 12 }, {
+        storeSlug: "harvest",
         heading: "Send your indent",
         body: "Grade, quantity and the district you want it held in.",
         submitLabel: "Send the indent",

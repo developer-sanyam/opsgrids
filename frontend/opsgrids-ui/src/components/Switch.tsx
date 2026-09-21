@@ -13,9 +13,9 @@ interface SwitchProps {
    * control rather than after it. Swap the text on toggle and a screen reader hears the new
    * meaning, which is the entire reason this is a prop and not a paragraph underneath.
    */
-  description?: ReactNode;
-  disabled?: boolean;
-  className?: string;
+  description?: ReactNode | undefined;
+  disabled?: boolean | undefined;
+  className?: string | undefined;
 }
 
 /**

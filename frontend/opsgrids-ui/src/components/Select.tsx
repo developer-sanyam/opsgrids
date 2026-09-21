@@ -1,4 +1,4 @@
-import type { SelectHTMLAttributes } from "react";
+import type { Ref, SelectHTMLAttributes } from "react";
 
 import { ChevronDown } from "../icons";
 import { fieldSkin } from "../lib/field";
@@ -7,7 +7,7 @@ import { FormField } from "./FormField";
 export interface SelectOption {
   value: string;
   label: string;
-  disabled?: boolean;
+  disabled?: boolean | undefined;
 }
 
 type NativeSelect = Omit<
@@ -18,11 +18,18 @@ type NativeSelect = Omit<
 interface SelectProps extends NativeSelect {
   label: string;
   options: SelectOption[];
-  helper?: string;
-  error?: string;
+  helper?: string | undefined;
+  error?: string | undefined;
+  /**
+   * Keep the label in the accessibility tree but off the screen — for a dense row whose column
+   * heading already says what the control is. Default false.
+   */
+  hideLabel?: boolean | undefined;
   /** The unselected first entry. Omit it where a value is always chosen. */
-  placeholder?: string;
-  containerClassName?: string;
+  placeholder?: string | undefined;
+  containerClassName?: string | undefined;
+  /** The select itself — for moving focus to the field a server error landed on. */
+  ref?: Ref<HTMLSelectElement> | undefined;
 }
 
 /**
@@ -37,9 +44,11 @@ export function Select({
   options,
   helper,
   error,
+  hideLabel = false,
   placeholder,
   containerClassName,
   className,
+  ref,
   ...props
 }: SelectProps) {
   return (
@@ -47,11 +56,13 @@ export function Select({
       label={label}
       {...(helper !== undefined ? { helper } : {})}
       {...(error !== undefined ? { error } : {})}
+      hideLabel={hideLabel}
       {...(containerClassName !== undefined ? { className: containerClassName } : {})}
     >
       {({ id, describedBy, invalid }) => (
         <div className="relative">
           <select
+            ref={ref}
             id={id}
             aria-describedby={describedBy}
             aria-invalid={invalid || undefined}

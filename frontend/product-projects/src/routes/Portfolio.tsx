@@ -1,40 +1,39 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
-import { listMilestones, listProjects } from "@/api/client";
-import { NOW } from "@/api/fixtures";
-import type {
-  MilestoneOut,
-  ProjectHealth,
-  ProjectOut,
-  ProjectPhase,
-} from "@/api/types";
+import { DEFAULT_PAGE_SIZE, deleteProject, getAllMembers, listProjects } from "@/api/client";
+import type { ProjectHealth, ProjectOut, ProjectPhase } from "@/api/types";
 import { HEALTH_LABEL, PHASE_LABEL } from "@/data/labels";
-import { formatDate, formatMoney, relativeDue } from "@/lib/format";
-import { useAsync } from "@opsgrids/client";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { formatDate } from "@/lib/format";
+import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
   Avatar,
+  Button,
   Card,
+  ConfirmDialog,
   DataTable,
   EmptyState,
   ErrorState,
   HealthPill,
-  MilestoneStatusPill,
   PageHeader,
-  PhasePill,
+  Pagination,
   Pill,
+  PhasePill,
   ProgressBar,
+  RowActions,
   SearchInput,
+  Select,
   Skeleton,
 } from "@/ui";
-import type { Column } from "@/ui";
-import { BriefcaseIcon } from "@opsgrids/ui";
-
-const NO_PROJECTS: ProjectOut[] = [];
-const NO_MILESTONES: MilestoneOut[] = [];
+import type { Column, SelectOption } from "@/ui";
+import { BriefcaseIcon, useToast } from "@opsgrids/ui";
+import { MilestoneFormDialog } from "./MilestoneFormDialog";
+import { ProjectDetailDialog } from "./ProjectDetailDialog";
+import { ProjectFormDialog } from "./ProjectFormDialog";
 
 type HealthFilter = ProjectHealth | "all";
-type SortKey = "target" | "name" | "progress" | "health";
+type SortKey = "code" | "progress" | "target" | "name" | "health";
 
 const HEALTH_FILTERS: { value: HealthFilter; label: string }[] = [
   { value: "all", label: "All" },
@@ -45,165 +44,83 @@ const HEALTH_FILTERS: { value: HealthFilter; label: string }[] = [
 
 const PHASES: ProjectPhase[] = ["discovery", "design", "build", "stabilize", "launch", "live"];
 
-const HEALTH_RANK: Record<ProjectHealth, number> = { delayed: 0, at_risk: 1, on_track: 2 };
+const SORT_OPTIONS: SelectOption[] = [
+  { value: "code", label: "Code" },
+  { value: "name", label: "Name A–Z" },
+  { value: "progress", label: "Progress (highest first)" },
+  { value: "target", label: "Target date" },
+  { value: "health", label: "Health (worst first)" },
+];
 
-function sortProjects(rows: ProjectOut[], key: SortKey): ProjectOut[] {
-  const copy = [...rows];
-  switch (key) {
-    case "name":
-      return copy.sort((a, b) => a.name.localeCompare(b.name));
-    case "progress":
-      return copy.sort((a, b) => b.progress_pct - a.progress_pct);
-    case "health":
-      return copy.sort((a, b) => HEALTH_RANK[a.health] - HEALTH_RANK[b.health]);
-    case "target":
-    default:
-      return copy.sort((a, b) => a.target_date.localeCompare(b.target_date));
-  }
-}
-
-/** The drill-down detail for the selected project: money, dates, team and its milestones. */
-function ProjectDetail({
-  project,
-  milestones,
-}: {
-  project: ProjectOut;
-  milestones: MilestoneOut[];
-}) {
-  const spentPct =
-    project.budget_minor === 0
-      ? 0
-      : Math.round((project.spent_minor / project.budget_minor) * 100);
-  const own = milestones
-    .filter((m) => m.project_code === project.code)
-    .sort((a, b) => a.due_date.localeCompare(b.due_date));
-
-  return (
-    <div className="flex flex-col gap-5">
-      <div className="flex items-start gap-3">
-        <Avatar name={project.owner.name} size="lg" />
-        <div className="flex min-w-0 flex-col leading-tight">
-          <span className="text-xs font-semibold text-faint tnum">{project.code}</span>
-          <span className="text-lg font-extrabold text-ink">{project.name}</span>
-          <span className="text-sm text-muted">{project.client}</span>
-        </div>
-      </div>
-
-      <p className="text-sm leading-relaxed text-ink-soft">{project.summary}</p>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <HealthPill health={project.health} />
-        <PhasePill phase={project.phase} />
-      </div>
-
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted">Delivery progress</span>
-          <span className="font-semibold text-ink tnum">{project.progress_pct}%</span>
-        </div>
-        <ProgressBar value={project.progress_pct} health={project.health} />
-      </div>
-
-      <dl className="grid grid-cols-2 gap-3 text-sm">
-        <div className="rounded-tile bg-ground px-3 py-2.5">
-          <dt className="text-xs text-muted">Owner</dt>
-          <dd className="font-semibold text-ink">{project.owner.name}</dd>
-        </div>
-        <div className="rounded-tile bg-ground px-3 py-2.5">
-          <dt className="text-xs text-muted">Team size</dt>
-          <dd className="font-semibold text-ink tnum">{project.team_size} people</dd>
-        </div>
-        <div className="rounded-tile bg-ground px-3 py-2.5">
-          <dt className="text-xs text-muted">Start</dt>
-          <dd className="font-semibold text-ink tnum">{formatDate(project.start_date)}</dd>
-        </div>
-        <div className="rounded-tile bg-ground px-3 py-2.5">
-          <dt className="text-xs text-muted">Target</dt>
-          <dd className="font-semibold text-ink tnum">{formatDate(project.target_date)}</dd>
-        </div>
-        <div className="rounded-tile bg-ground px-3 py-2.5">
-          <dt className="text-xs text-muted">Budget</dt>
-          <dd className="font-semibold text-ink tnum">{formatMoney(project.budget_minor)}</dd>
-        </div>
-        <div className="rounded-tile bg-ground px-3 py-2.5">
-          <dt className="text-xs text-muted">Spent</dt>
-          <dd className="font-semibold text-ink tnum">
-            {formatMoney(project.spent_minor)} · {spentPct}%
-          </dd>
-        </div>
-      </dl>
-
-      <div className="flex flex-col gap-2">
-        <h3 className="text-sm font-bold text-ink">Milestones</h3>
-        {own.length === 0 ? (
-          <p className="text-sm text-muted">No milestones logged for this project yet.</p>
-        ) : (
-          <ul className="flex flex-col gap-1.5">
-            {own.map((m) => (
-              <li
-                key={m.id}
-                className="flex items-center gap-2 rounded-tile bg-ground px-3 py-2"
-              >
-                <div className="flex min-w-0 flex-col leading-tight">
-                  <span className="truncate text-sm font-semibold text-ink">{m.title}</span>
-                  <span className="text-xs text-muted tnum">
-                    {formatDate(m.due_date)} · {relativeDue(m.due_date, NOW)}
-                  </span>
-                </div>
-                <span className="ml-auto shrink-0">
-                  <MilestoneStatusPill status={m.status} />
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
-  );
-}
+const WRITE = "projects.portfolio.project.write";
 
 export function PortfolioPage() {
-  const [searchParams] = useSearchParams();
+  const toast = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
+  const debouncedSearch = useDebouncedValue(search);
   const [health, setHealth] = useState<HealthFilter>("all");
   const [phase, setPhase] = useState<ProjectPhase | "all">("all");
-  const [sort, setSort] = useState<SortKey>("target");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [sort, setSort] = useState<SortKey>("code");
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
+  const [selected, setSelected] = useState<ProjectOut | null>(null);
+  const [editing, setEditing] = useState<ProjectOut | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState<ProjectOut | null>(null);
+  const [addingMilestoneTo, setAddingMilestoneTo] = useState<ProjectOut | null>(null);
 
+  const canWrite = useCan(WRITE);
+
+  // A query-string search or `?new=1` (the Overview's "New project" button) opens the screen
+  // already primed. Only takes effect on arrival — after that the field and the dialog own it.
   useEffect(() => {
     const q = searchParams.get("q");
-    if (q !== null) setSearch(q);
+    if (q !== null && q !== search) setSearch(q);
+    if (searchParams.get("new") === "1") {
+      setCreating(true);
+      const next = new URLSearchParams(searchParams);
+      next.delete("new");
+      setSearchParams(next, { replace: true });
+    }
+    // Only ever reads the URL on mount/navigation, never on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  const projectsState = useAsync(
-    () => listProjects({ search, health, phase }),
-    [search, health, phase],
-  );
-  const milestonesState = useAsync(listMilestones, []);
-
-  const items = useMemo(
-    () => (projectsState.status === "success" ? projectsState.data.items : NO_PROJECTS),
-    [projectsState],
-  );
-  const milestones = useMemo(
-    () => (milestonesState.status === "success" ? milestonesState.data.items : NO_MILESTONES),
-    [milestonesState],
-  );
-
-  const rows = useMemo(() => sortProjects(items, sort), [items, sort]);
-
-  // Keep a valid selection: default to the first row, and recover if the current one filters out.
   useEffect(() => {
-    if (rows.length === 0) {
-      setSelectedId(null);
-      return;
-    }
-    setSelectedId((prev) =>
-      prev && rows.some((r) => r.id === prev) ? prev : (rows[0]?.id ?? null),
-    );
-  }, [rows]);
+    setPage(1);
+  }, [debouncedSearch, health, phase, sort]);
 
-  const selected = rows.find((r) => r.id === selectedId) ?? null;
+  const loader = useCallback(
+    () =>
+      listProjects({
+        q: debouncedSearch,
+        health,
+        phase,
+        sort,
+        page,
+        size,
+      }),
+    [debouncedSearch, health, phase, sort, page, size],
+  );
+  const projects = useAsync(loader, [debouncedSearch, health, phase, sort, page, size]);
+
+  // The roster doesn't depend on the filters, so it loads once, separately — the source for the
+  // create/edit form's owner picker.
+  const membersState = useAsync(useCallback(getAllMembers, []), []);
+  const members = useMemo(
+    () => (membersState.status === "success" ? membersState.data : []),
+    [membersState],
+  );
+
+  const remove = useMutation((project: ProjectOut) => deleteProject(project.code), {
+    onSuccess: (_result, project) => {
+      setDeleting(null);
+      setSelected(null);
+      toast.success(`${project.name} and its milestones and cards are gone.`);
+      projects.reload();
+    },
+  });
 
   const columns: Column<ProjectOut>[] = [
     {
@@ -213,7 +130,7 @@ export function PortfolioPage() {
         <div className="flex min-w-0 flex-col leading-tight">
           <span className="truncate font-semibold text-ink">{p.name}</span>
           <span className="truncate text-xs text-muted tnum">
-            {p.code} · {p.client}
+            {p.code} · {p.client || "No client"}
           </span>
         </div>
       ),
@@ -249,9 +166,7 @@ export function PortfolioPage() {
       header: "Target",
       cellClassName: "hidden xl:table-cell whitespace-nowrap",
       headerClassName: "hidden xl:table-cell",
-      render: (p) => (
-        <span className="text-sm text-ink-soft tnum">{formatDate(p.target_date)}</span>
-      ),
+      render: (p) => <span className="text-sm text-ink-soft tnum">{formatDate(p.target_date)}</span>,
     },
     {
       key: "health",
@@ -263,6 +178,21 @@ export function PortfolioPage() {
         </span>
       ),
     },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      render: (p) => (
+        <RowActions
+          label={p.name}
+          actions={[
+            { label: "View", onSelect: () => setSelected(p) },
+            { label: "Edit", onSelect: () => setEditing(p), hidden: !canWrite },
+            { label: "Delete", tone: "danger", onSelect: () => setDeleting(p), hidden: !canWrite },
+          ]}
+        />
+      ),
+    },
   ];
 
   return (
@@ -271,11 +201,18 @@ export function PortfolioPage() {
         eyebrow="Portfolio"
         title="Projects"
         actions={
-          <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
-            <BriefcaseIcon className="size-4 text-muted" />
-            <span className="tnum">{items.length}</span>
-            <span className="text-muted font-medium">projects</span>
-          </span>
+          <div className="flex items-center gap-2">
+            {projects.status === "success" ? (
+              <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
+                <BriefcaseIcon className="size-4 text-muted" />
+                <span className="tnum">{projects.data.total}</span>
+                <span className="text-muted font-medium">projects</span>
+              </span>
+            ) : null}
+            <Can permission={WRITE}>
+              <Button onClick={() => setCreating(true)}>New project</Button>
+            </Can>
+          </div>
         }
       />
 
@@ -284,7 +221,7 @@ export function PortfolioPage() {
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <SearchInput
             label="Search projects"
-            placeholder="Search by name, code, client or owner…"
+            placeholder="Search by name, code, client or summary…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             containerClassName="lg:max-w-sm"
@@ -296,19 +233,13 @@ export function PortfolioPage() {
               </Pill>
             ))}
           </div>
-          <label className="ml-auto inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-ground px-4 text-sm font-semibold text-ink-soft">
-            <span className="text-muted">Sort</span>
-            <select
-              value={sort}
-              onChange={(e) => setSort(e.target.value as SortKey)}
-              className="cursor-pointer bg-transparent font-semibold text-ink focus:outline-none"
-            >
-              <option value="target">Target date</option>
-              <option value="name">Name A–Z</option>
-              <option value="progress">Progress</option>
-              <option value="health">Health</option>
-            </select>
-          </label>
+          <Select
+            label="Sort by"
+            containerClassName="lg:ml-auto lg:w-56"
+            value={sort}
+            onChange={(e) => setSort(e.target.value as SortKey)}
+            options={SORT_OPTIONS}
+          />
         </div>
 
         <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1 border-t border-line pt-4">
@@ -326,50 +257,142 @@ export function PortfolioPage() {
         </div>
       </Card>
 
-      {/* Table + drill-down */}
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-3 items-start">
-        <Card className="p-2 sm:p-4 xl:col-span-2">
-          {projectsState.status === "loading" ? (
-            <div className="flex flex-col gap-3 p-3">
-              {Array.from({ length: 8 }).map((_, i) => (
-                <Skeleton key={i} className="h-12 w-full rounded-tile" />
-              ))}
-            </div>
-          ) : projectsState.status === "error" ? (
-            <ErrorState message={projectsState.error.message} />
-          ) : (
+      <Card className="p-2 sm:p-4">
+        {projects.status === "loading" ? (
+          <div className="flex flex-col gap-3 p-3">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <Skeleton key={i} className="h-12 w-full rounded-tile" />
+            ))}
+          </div>
+        ) : null}
+        {projects.status === "error" ? (
+          <ErrorState
+            title="Couldn't load projects"
+            message={problemMessage(projects.error)}
+            action={<Button onClick={projects.reload}>Try again</Button>}
+          />
+        ) : null}
+        {projects.status === "success" ? (
+          <>
             <DataTable
-              columns={columns}
-              rows={rows}
-              rowKey={(p) => p.id}
               caption="Project portfolio"
-              onRowClick={(p) => setSelectedId(p.id)}
-              isSelected={(p) => p.id === selectedId}
+              columns={columns}
+              rows={projects.data.items}
+              rowKey={(p) => p.id}
+              onRowClick={setSelected}
               emptyState={
                 <EmptyState
                   icon={<BriefcaseIcon className="size-6" />}
-                  title="No matching projects"
-                  description="No project matches these filters. Clear the search or switch back to all health and phases."
+                  title={search ? "No projects match that search" : "No projects yet"}
+                  description={
+                    search
+                      ? "Try a shorter search term, or clear it to see the whole portfolio."
+                      : "Create the first project to get started."
+                  }
+                  action={
+                    search ? (
+                      <Button variant="outline" onClick={() => setSearch("")}>
+                        Clear search
+                      </Button>
+                    ) : (
+                      <Can permission={WRITE}>
+                        <Button onClick={() => setCreating(true)}>New project</Button>
+                      </Can>
+                    )
+                  }
                 />
               }
             />
-          )}
-        </Card>
+            {projects.data.items.length > 0 ? (
+              <Pagination
+                page={page}
+                pages={projects.data.pages}
+                total={projects.data.total}
+                size={size}
+                noun="projects"
+                onPageChange={setPage}
+                onSizeChange={(n) => {
+                  setSize(n);
+                  setPage(1);
+                }}
+              />
+            ) : null}
+          </>
+        ) : null}
+      </Card>
 
-        <Card className="p-6 xl:col-span-1 xl:sticky xl:top-4">
-          {projectsState.status === "loading" ? (
-            <Skeleton className="h-96 w-full rounded-tile" />
-          ) : selected ? (
-            <ProjectDetail project={selected} milestones={milestones} />
-          ) : (
-            <EmptyState
-              icon={<BriefcaseIcon className="size-6" />}
-              title="Select a project"
-              description="Pick a row to see its owner, budget, dates and milestones here."
-            />
-          )}
-        </Card>
-      </div>
+      {selected ? (
+        <ProjectDetailDialog
+          project={selected}
+          onClose={() => setSelected(null)}
+          onEdit={() => {
+            setEditing(selected);
+            setSelected(null);
+          }}
+          onDelete={() => {
+            setDeleting(selected);
+            setSelected(null);
+          }}
+          onAddMilestone={() => {
+            setAddingMilestoneTo(selected);
+            setSelected(null);
+          }}
+        />
+      ) : null}
+
+      {creating ? (
+        <ProjectFormDialog
+          project={null}
+          members={members}
+          onClose={() => setCreating(false)}
+          onSaved={(_project, message) => {
+            toast.success(message);
+            projects.reload();
+          }}
+        />
+      ) : null}
+      {editing ? (
+        <ProjectFormDialog
+          project={editing}
+          members={members}
+          onClose={() => setEditing(null)}
+          onSaved={(_project, message) => {
+            setEditing(null);
+            toast.success(message);
+            projects.reload();
+          }}
+        />
+      ) : null}
+
+      {addingMilestoneTo ? (
+        <MilestoneFormDialog
+          milestone={null}
+          projects={[addingMilestoneTo]}
+          members={members}
+          defaultProjectCode={addingMilestoneTo.code}
+          onClose={() => setAddingMilestoneTo(null)}
+          onSaved={(_milestone, message) => {
+            setAddingMilestoneTo(null);
+            toast.success(message);
+            projects.reload();
+          }}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onClose={() => {
+          setDeleting(null);
+          remove.reset();
+        }}
+        onConfirm={() => deleting && void remove.mutate(deleting)}
+        title={deleting ? `Delete ${deleting.name}?` : "Delete this project?"}
+        body={`${deleting?.name} and its ${deleting?.milestone_count ?? 0} milestone${deleting?.milestone_count === 1 ? "" : "s"} and every card on its board are removed. This can't be undone.`}
+        confirmLabel="Delete"
+        pendingLabel="Deleting…"
+        pending={remove.pending}
+        {...(remove.error ? { error: problemMessage(remove.error) } : {})}
+      />
     </div>
   );
 }

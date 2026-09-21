@@ -26,8 +26,8 @@ export function Tag({
   className,
 }: {
   children: ReactNode;
-  tone?: TagTone;
-  className?: string;
+  tone?: TagTone | undefined;
+  className?: string | undefined;
 }) {
   return (
     <span

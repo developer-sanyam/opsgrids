@@ -1,4 +1,4 @@
-import type { InputHTMLAttributes } from "react";
+import type { InputHTMLAttributes, Ref } from "react";
 
 import { fieldSkin } from "../lib/field";
 import { FormField } from "./FormField";
@@ -10,10 +10,21 @@ type NativeInput = Omit<
 
 interface TextFieldProps extends NativeInput {
   label: string;
-  helper?: string;
-  error?: string;
-  optional?: boolean;
-  containerClassName?: string;
+  helper?: string | undefined;
+  error?: string | undefined;
+  optional?: boolean | undefined;
+  /**
+   * Keep the label in the accessibility tree but off the screen — for a dense row whose column
+   * heading already says what the control is. Default false.
+   */
+  hideLabel?: boolean | undefined;
+  containerClassName?: string | undefined;
+  /**
+   * The input itself — for moving focus to the field a server error landed on, and for a form
+   * dialog's `initialFocusRef`. Without it a screen has to reach its own control by
+   * `querySelector`, which is a position in the DOM standing in for an identity.
+   */
+  ref?: Ref<HTMLInputElement> | undefined;
 }
 
 /**
@@ -25,9 +36,11 @@ export function TextField({
   helper,
   error,
   optional = false,
+  hideLabel = false,
   containerClassName,
   className,
   type = "text",
+  ref,
   ...props
 }: TextFieldProps) {
   return (
@@ -36,10 +49,12 @@ export function TextField({
       {...(helper !== undefined ? { helper } : {})}
       {...(error !== undefined ? { error } : {})}
       optional={optional}
+      hideLabel={hideLabel}
       {...(containerClassName !== undefined ? { className: containerClassName } : {})}
     >
       {({ id, describedBy, invalid }) => (
         <input
+          ref={ref}
           id={id}
           type={type}
           aria-describedby={describedBy}

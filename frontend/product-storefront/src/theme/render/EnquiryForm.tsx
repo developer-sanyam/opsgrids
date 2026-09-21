@@ -1,19 +1,23 @@
 import { useId, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 
-import { submitEnquiry } from "@/api/client";
-import type { EnquiryInput } from "@/api/client";
+import { submitEnquiry } from "@/api/publicClient";
+import type { EnquiryInput } from "@/api/publicClient";
+import { useLineList } from "@/store/lineList";
 import { ActionButton, StoreHeading, StoreText } from "./primitives";
 import { bool, optional, str } from "./settings";
 import { T, step } from "./tokens";
 import type { SectionRenderProps } from "./types";
 
-type Errors = Partial<Record<keyof EnquiryInput, string>>;
+/** The fields this form's own inputs collect — `store` and `lines` are assembled at submit time
+ *  from the section's `storeSlug` setting and the buyer's line list, not typed by hand. */
+type FormFields = Omit<EnquiryInput, "store" | "lines">;
+type Errors = Partial<Record<keyof FormFields, string>>;
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const GSTIN = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
 
-const EMPTY: EnquiryInput = {
+const EMPTY: FormFields = {
   name: "",
   company: "",
   email: "",
@@ -28,7 +32,7 @@ const EMPTY: EnquiryInput = {
  * re-checked by `submitEnquiry`, which is what the real endpoint will do; this pass only saves the
  * buyer a round trip.
  */
-function validate(values: EnquiryInput, askGstin: boolean): Errors {
+function validate(values: FormFields, askGstin: boolean): Errors {
   const errors: Errors = {};
   if (values.name.trim() === "") errors.name = "Enter your name.";
   if (values.company.trim() === "") errors.company = "Enter your company name.";
@@ -54,19 +58,24 @@ const fieldStyle = {
 /** The buyer's way in. Every field is labelled, every error is tied to its input. */
 export function EnquiryForm({ settings }: SectionRenderProps) {
   const base = useId();
-  const [values, setValues] = useState<EnquiryInput>(EMPTY);
+  const [values, setValues] = useState<FormFields>(EMPTY);
   const [errors, setErrors] = useState<Errors>({});
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const { lines } = useLineList();
 
   const askQuantity = bool(settings, "showQuantity", true);
   const askGstin = bool(settings, "showGstin", true);
   const heading = optional(settings, "heading");
   const body = optional(settings, "body");
   const consent = optional(settings, "consentText");
+  // The same merchant-typed setting `delivery-check` reads (`optional(settings, "storeSlug")`):
+  // the request names the store in its body (public paths carry no variables), and the section
+  // has no other way to know which store it is on.
+  const slug = optional(settings, "storeSlug");
 
-  function set<K extends keyof EnquiryInput>(key: K, value: string) {
+  function set<K extends keyof FormFields>(key: K, value: string) {
     setValues((current) => ({ ...current, [key]: value }));
   }
 
@@ -74,6 +83,10 @@ export function EnquiryForm({ settings }: SectionRenderProps) {
     event.preventDefault();
     // Guard the second click: a submit already in flight ignores the next one.
     if (submitting) return;
+    if (slug === null) {
+      setFailure("This block has no store handle set, so nothing can be sent yet.");
+      return;
+    }
     const found = validate(values, askGstin);
     setErrors(found);
     setFailure(null);
@@ -81,7 +94,15 @@ export function EnquiryForm({ settings }: SectionRenderProps) {
 
     setSubmitting(true);
     try {
-      await submitEnquiry(values);
+      await submitEnquiry({
+        ...values,
+        store: slug,
+        lines: [...lines.values()].map((line) => ({
+          product_id: line.productId,
+          name: line.name,
+          quantity: line.qty,
+        })),
+      });
       setDone(true);
       setValues(EMPTY);
     } catch (error) {
@@ -93,7 +114,7 @@ export function EnquiryForm({ settings }: SectionRenderProps) {
     }
   }
 
-  function field(key: keyof EnquiryInput, label: string, type: "text" | "email" | "tel" | "textarea") {
+  function field(key: keyof FormFields, label: string, type: "text" | "email" | "tel" | "textarea") {
     const id = `${base}-${key}`;
     const errorId = `${id}-error`;
     const error = errors[key];

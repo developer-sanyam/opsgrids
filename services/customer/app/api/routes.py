@@ -7,11 +7,6 @@ flips the CRM SPA from fixtures to live, and each returns exactly the shape
 calls map onto `/customers` and `/customers/owners` — the entity is the same, the gateway
 prefix is already routed).
 
-The writes POST to those same collections, and they add no rules of their own: the domain
-lives in `services`, which is also what the demo seed calls, so a row created over HTTP and
-a row created by the seed are the same row made the same way. A create answers 201 with the
-resource it made, in the shape a subsequent read returns.
-
 Every route declares the permission it needs and is guarded by `require_product("crm")`
 as defence in depth behind the gateway's own entitlement gate. Reads go through
 `selectors`; a router never builds its own query. Every route takes the tenant-bound
@@ -27,7 +22,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import scope, selectors, services
@@ -36,8 +31,10 @@ from app.models import SCHEMA
 from app.schemas import (
     CompanyIn,
     CompanyOut,
+    CompanyPatch,
     ContactIn,
     ContactOut,
+    ContactPatch,
     ContactPhoneIn,
     ContactPhoneRevealed,
     OwnerIn,
@@ -64,15 +61,13 @@ Entitled = Depends(require_product("crm"))
 
 CompanyRead = Annotated[ScopeContext, Depends(require("crm.book.company.read"))]
 CompanyWrite = Annotated[ScopeContext, Depends(require("crm.book.company.write"))]
+CompanyDelete = Annotated[ScopeContext, Depends(require("crm.book.company.delete"))]
+#: Reference data for the whole organization — there is no rep who owns the list of reps —
+#: so the floor is ORG; an OWN grant is refused outright rather than silently widened.
+OwnerWrite = Annotated[ScopeContext, Depends(require("crm.book.owner.write", minimum=Scope.ORG))]
 ContactRead = Annotated[ScopeContext, Depends(require("crm.book.contact.read"))]
 ContactWrite = Annotated[ScopeContext, Depends(require("crm.book.contact.write"))]
-#: Writing the rep directory. Reference data for the whole product, so there is no "own"
-#: reading of it — `minimum` makes that a floor rather than a convention, the way the
-#: platform intends for actions with no OWN meaning.
-OwnerWrite = Annotated[
-    ScopeContext,
-    Depends(require("crm.book.owner.write", minimum=Scope.ORG)),
-]
+ContactDelete = Annotated[ScopeContext, Depends(require("crm.book.contact.delete"))]
 #: Revealing a real phone number. The dangerous permission **and** a second factor, the
 #: same pairing employee-service requires to unmask an employee's personal details — an
 #: ordinary CRM session must not be a route to a customer's phone book.
@@ -115,23 +110,12 @@ async def list_companies(
     "/customers",
     response_model=CompanyOut,
     status_code=status.HTTP_201_CREATED,
-    summary="Open an account in the book",
+    summary="Add a company to the account book",
     dependencies=[Entitled],
 )
 async def create_company(
     payload: CompanyIn, session: SessionDep, ctx: CompanyWrite, request: Request
 ) -> CompanyOut:
-    """Create a company through the service writer, which stages the audit row and the
-    `crm.book.company.created` event in the same transaction as the insert.
-
-    Scope is checked against the owner the payload *names*, because there is no row yet to
-    check against: a rep holding OWN scope may open an account they will own, and is refused
-    one they would hand to a colleague. Skipping the check here would make create the way
-    around a detail route that has one.
-
-    `request` is threaded through so the audit row records who acted and from where.
-    """
-    ctx.assert_can_touch(owner_id=payload.owner_id)
     company = await services.create_company(
         session,
         ctx,
@@ -172,23 +156,10 @@ async def list_owners(session: SessionDep, ctx: CompanyRead) -> list[OwnerOut]:
     dependencies=[Entitled],
 )
 async def create_owner(payload: OwnerIn, session: SessionDep, ctx: OwnerWrite) -> OwnerOut:
-    """Add a sales rep to the org's directory — its own permission, at ORG scope.
-
-    Not `company.write`: a rep who maintains their own accounts has no business extending the
-    directory those accounts point at, and riding on the company permission would have handed
-    every seat that power the moment this route existed.
-
-    A duplicate email is refused by the service as a conflict rather than inserted, so
-    `email` stays the per-organization natural key the seeds and the SPA rely on. The writer
-    takes no `request` — a rep row is reference data and its audit row records no origin — so
-    the route does not invent one.
-    """
+    """The prerequisite for everything else: a production org starts with zero owners,
+    and every company / contact / deal create needs an `owner_id` that resolves to one."""
     owner = await services.create_owner(
-        session,
-        ctx,
-        full_name=payload.full_name,
-        email=payload.email,
-        role=payload.role,
+        session, ctx, full_name=payload.full_name, email=payload.email, role=payload.role
     )
     return selectors.owner_out(owner)
 
@@ -207,6 +178,44 @@ async def read_company(company_id: uuid.UUID, session: SessionDep, ctx: CompanyR
     return selectors.company_out(company)
 
 
+@router.patch(
+    "/customers/{company_id}",
+    response_model=CompanyOut,
+    summary="Update a company",
+    dependencies=[Entitled],
+)
+async def update_company(
+    company_id: uuid.UUID,
+    payload: CompanyPatch,
+    session: SessionDep,
+    ctx: CompanyWrite,
+    request: Request,
+) -> CompanyOut:
+    company = await selectors.get_company(session, ctx.organization_id, company_id)
+    if company is None:
+        raise NotFoundProblem("That company is not part of this organization")
+    ctx.assert_can_touch(owner_id=company.owner_id)
+    updated = await services.update_company(session, ctx, company, payload, request=request)
+    return selectors.company_out(updated)
+
+
+@router.delete(
+    "/customers/{company_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a company",
+    dependencies=[Entitled],
+)
+async def delete_company(
+    company_id: uuid.UUID, session: SessionDep, ctx: CompanyDelete, request: Request
+) -> Response:
+    company = await selectors.get_company(session, ctx.organization_id, company_id)
+    if company is None:
+        raise NotFoundProblem("That company is not part of this organization")
+    ctx.assert_can_touch(owner_id=company.owner_id)
+    await services.delete_company(session, ctx, company, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 # ------------------------------------------------------------------ contacts
 
 
@@ -222,8 +231,11 @@ async def list_contacts(
     params: PageQuery,
     q: Annotated[str | None, Query(description="Name, title or email")] = None,
     contact_status: Annotated[str | None, Query(alias="status")] = None,
+    company_id: Annotated[
+        uuid.UUID | None, Query(description="One account's contacts only")
+    ] = None,
 ) -> Page[ContactOut]:
-    stmt = selectors.contacts_stmt(ctx, q=q, status=contact_status)
+    stmt = selectors.contacts_stmt(ctx, q=q, status=contact_status, company_id=company_id)
     rows, total = await paginate(session, stmt, params)
     return Page.build([selectors.contact_out(c) for c in rows], total=total, params=params)
 
@@ -232,24 +244,12 @@ async def list_contacts(
     "/contacts",
     response_model=ContactOut,
     status_code=status.HTTP_201_CREATED,
-    summary="Add a person to an account",
+    summary="Add a contact to an account",
     dependencies=[Entitled],
 )
 async def create_contact(
     payload: ContactIn, session: SessionDep, ctx: ContactWrite, request: Request
 ) -> ContactOut:
-    """Create a contact through the service writer — audit row and `contact.created` event
-    staged in the same transaction as the insert.
-
-    Scope is checked against the owner the payload names, as on a company. The company itself
-    is validated inside the service: a company belonging to another organization reads as
-    not-found, never as a constraint error, so an id cannot be probed for existence.
-
-    A supplied `raw_phone` is sealed and its mask derived. The response is the ordinary masked
-    `ContactOut`, so creating a contact is not a way to read a number back — the only route
-    that returns one is the stepped-up, audited reveal below.
-    """
-    ctx.assert_can_touch(owner_id=payload.owner_id)
     contact = await services.create_contact(
         session,
         ctx,
@@ -258,8 +258,8 @@ async def create_contact(
         company_id=payload.company_id,
         owner_id=payload.owner_id,
         title=payload.title,
-        raw_phone=payload.raw_phone,
         status=payload.status,
+        raw_phone=payload.raw_phone,
         request=request,
     )
     return selectors.contact_out(contact)
@@ -277,6 +277,44 @@ async def read_contact(contact_id: uuid.UUID, session: SessionDep, ctx: ContactR
         raise NotFoundProblem("That contact is not part of this organization")
     ctx.assert_can_touch(owner_id=contact.owner_id)
     return selectors.contact_out(contact)
+
+
+@router.patch(
+    "/contacts/{contact_id}",
+    response_model=ContactOut,
+    summary="Update a contact",
+    dependencies=[Entitled],
+)
+async def update_contact(
+    contact_id: uuid.UUID,
+    payload: ContactPatch,
+    session: SessionDep,
+    ctx: ContactWrite,
+    request: Request,
+) -> ContactOut:
+    contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+    if contact is None:
+        raise NotFoundProblem("That contact is not part of this organization")
+    ctx.assert_can_touch(owner_id=contact.owner_id)
+    updated = await services.update_contact(session, ctx, contact, payload, request=request)
+    return selectors.contact_out(updated)
+
+
+@router.delete(
+    "/contacts/{contact_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a contact",
+    dependencies=[Entitled],
+)
+async def delete_contact(
+    contact_id: uuid.UUID, session: SessionDep, ctx: ContactDelete, request: Request
+) -> Response:
+    contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+    if contact is None:
+        raise NotFoundProblem("That contact is not part of this organization")
+    ctx.assert_can_touch(owner_id=contact.owner_id)
+    await services.delete_contact(session, ctx, contact, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.put(

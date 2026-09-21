@@ -1,9 +1,9 @@
 import { useId, useState } from "react";
 import type { FormEvent } from "react";
-import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, useLocation } from "react-router-dom";
 
-import { ApiError, useAuth } from "@opsgrids/client";
-import type { OrganizationChoice } from "@opsgrids/client";
+import { ApiError, problemMessage, useAuth } from "@opsgrids/client";
+import type { LoginStep, OrganizationChoice } from "@opsgrids/client";
 import { EyeIcon, EyeOffIcon } from "@opsgrids/ui";
 
 import { AuthCard, Button, Field, InlineError, inputClass } from "@/ui";
@@ -15,25 +15,45 @@ interface LocationState {
   from?: string;
 }
 
-/** The sign-in screen: one card, two labelled fields, one primary action, one inline error. */
+/** What this screen renders. Distinct from `LoginStep`: it also carries the org list to show. */
+type Step = { kind: "password" } | { kind: "mfa" } | { kind: "org_selection"; organizations: OrganizationChoice[] };
+
+/**
+ * The sign-in screen, entirely through `useAuth()`. `login()` and `verifyMfa()` both resolve to a
+ * `LoginStep` — `complete`, `mfa_required`, or `org_selection` (a single organization auto-selects,
+ * so that step only ever appears with a real choice to make) — and the provider is the one holding
+ * the pre-auth token behind the last two; this component never sees it, whichever call minted it.
+ *
+ * A completed sign-in needs nothing further here: `status` flips to `authenticated` inside the
+ * provider the moment any of `login` / `verifyMfa` / `selectOrg` finishes, so the redirect below
+ * fires on the next render — no reload, nothing to hydrate by hand.
+ */
 export function LoginPage() {
-  const { status, login, selectOrg } = useAuth();
-  const navigate = useNavigate();
+  const { status, login, verifyMfa, selectOrg } = useAuth();
   const location = useLocation();
 
   const emailId = useId();
   const passwordId = useId();
+  const codeId = useId();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [code, setCode] = useState("");
+  const [step, setStep] = useState<Step>({ kind: "password" });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [orgs, setOrgs] = useState<OrganizationChoice[] | null>(null);
 
   const destination = (location.state as LocationState | null)?.from ?? "/";
 
   if (status === "authenticated") return <Navigate to={destination} replace />;
+
+  /** Land on the step a `login`/`verifyMfa` call answered with. `complete` needs nothing here. */
+  function afterStep(next: LoginStep) {
+    if (next.kind === "mfa_required") setStep({ kind: "mfa" });
+    else if (next.kind === "org_selection") setStep({ kind: "org_selection", organizations: next.organizations });
+    setSubmitting(false);
+  }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -41,46 +61,58 @@ export function LoginPage() {
     setError(null);
     setSubmitting(true);
     try {
-      const step = await login(email.trim(), password);
-      if (step.kind === "complete") {
-        navigate(destination, { replace: true });
-      } else if (step.kind === "org_selection") {
-        setOrgs(step.organizations);
-      } else {
-        setError("This account needs a second factor, which isn't supported here yet.");
-      }
+      afterStep(await login(email.trim(), password));
     } catch (err) {
       if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
         setError(CREDENTIAL_ERROR);
       } else {
-        const detail = err instanceof Error ? err.message : "Something went wrong.";
-        setError(`Couldn't sign in. ${detail}`);
+        setError(`Couldn't sign in. ${problemMessage(err)}`);
       }
-    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleVerifyMfa(event: FormEvent) {
+    event.preventDefault();
+    if (submitting) return;
+    setError(null);
+    setSubmitting(true);
+    try {
+      afterStep(await verifyMfa(code.trim()));
+    } catch (err) {
+      // The server's own sentence ("That code is not valid") — the pending sign-in survives a
+      // wrong code, so the field stays and the next attempt goes through the same call.
+      setError(problemMessage(err));
       setSubmitting(false);
     }
   }
 
   async function handlePickOrg(organizationId: string) {
+    if (submitting) return;
     setError(null);
     setSubmitting(true);
     try {
       await selectOrg(organizationId);
-      navigate(destination, { replace: true });
+      // `status` flips to authenticated inside `selectOrg`; the redirect above takes it from here.
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "Something went wrong.";
-      setError(`Couldn't finish signing in. ${detail}`);
+      setError(`Couldn't finish signing in. ${problemMessage(err)}`);
       setSubmitting(false);
     }
   }
 
-  if (orgs) {
+  function backToPassword() {
+    setStep({ kind: "password" });
+    setCode("");
+    setError(null);
+  }
+
+  if (step.kind === "org_selection") {
     return (
       <AuthCard title="Choose a workspace">
         <div className="flex flex-col gap-4">
           {error ? <InlineError>{error}</InlineError> : null}
           <ul className="flex list-none flex-col gap-2 p-0">
-            {orgs.map((org) => (
+            {step.organizations.map((org) => (
               <li key={org.organization_id}>
                 <button
                   type="button"
@@ -94,6 +126,39 @@ export function LoginPage() {
             ))}
           </ul>
         </div>
+      </AuthCard>
+    );
+  }
+
+  if (step.kind === "mfa") {
+    return (
+      <AuthCard title="Enter your code" intro="From your authenticator app, or one of your recovery codes.">
+        <form onSubmit={handleVerifyMfa} className="flex flex-col gap-4" noValidate>
+          {error ? <InlineError>{error}</InlineError> : null}
+          <Field id={codeId} label="Code">
+            <input
+              id={codeId}
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              required
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="123456"
+              className={inputClass}
+            />
+          </Field>
+          <Button type="submit" loading={submitting}>
+            {submitting ? "Verifying…" : "Verify"}
+          </Button>
+          <button
+            type="button"
+            onClick={backToPassword}
+            className="self-start text-xs font-semibold text-muted underline-offset-2 hover:text-ink hover:underline"
+          >
+            Back to sign in
+          </button>
+        </form>
       </AuthCard>
     );
   }
@@ -151,7 +216,7 @@ export function LoginPage() {
           </div>
         </Field>
 
-        <Button type="submit" disabled={submitting}>
+        <Button type="submit" loading={submitting}>
           {submitting ? "Signing in…" : "Sign in"}
         </Button>
 

@@ -9,7 +9,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { ServiceabilityOut, UnservedReason } from "@/api/client";
+import type { ServiceabilityOut, UnservedReason } from "@/api/publicClient";
 import {
   POSTAL_CODE_MALFORMED,
   POSTAL_CODE_REQUIRED,

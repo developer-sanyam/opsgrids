@@ -3,7 +3,7 @@
     "schemas": {
       "CompanyIn": {
         "additionalProperties": false,
-        "description": "Open an account in the book.\n\n`annual_revenue_minor` is integer minor units of `currency` (ISO-4217) \u2014 a float is\nrefused rather than rounded, because rounding money silently is the bug the integer rule\nexists to prevent. `created_at` and the row's id are the service's to set, not the\nclient's, and `organization_id` comes from the tenant context.",
+        "description": "Create an account. `owner_id` must resolve to a rep in this organization's\ndirectory (`GET /customers/owners`). `annual_revenue_minor` is integer minor units of\n`currency`; no float is accepted on this path.",
         "properties": {
           "annual_revenue_minor": {
             "default": 0,
@@ -154,9 +154,144 @@
         "title": "CompanyOut",
         "type": "object"
       },
+      "CompanyPatch": {
+        "additionalProperties": false,
+        "description": "Partial update. Absent means \"leave alone\"; every field is the same shape as\n`CompanyIn`, just optional.",
+        "properties": {
+          "annual_revenue_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Annual Revenue Minor"
+          },
+          "city": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "City"
+          },
+          "country": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "maxLength": 3,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "domain": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain"
+          },
+          "industry": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Industry"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "size_band": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Band"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "customer",
+                  "prospect",
+                  "lead",
+                  "churned"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "title": "CompanyPatch",
+        "type": "object"
+      },
       "ContactIn": {
         "additionalProperties": false,
-        "description": "Add a person to an account.\n\nA number arrives as `raw_phone` or not at all. The service also accepts a pre-masked\n`phone` string \u2014 that is how the seeds pass the display forms they were written with \u2014\nbut the public surface deliberately does not offer it: a mask a client supplied is a\nredaction of nothing, unverifiable against a number the service never held, and it would\nleave `phone` disagreeing with the sealed column beside it. Given `raw_phone`, the service\nseals it and *derives* the mask, exactly as `PUT /contacts/{id}/phone` does.\n\n`last_activity_at` is not accepted either: it is maintained from the pipeline's activity\ntimeline (`touch_contact_activity`), so a client setting it would be writing over derived\nbookkeeping with a claim nothing backs.",
+        "description": "Add a person to an account. Deliberately **no `phone` field** \u2014 the mask is a\nserver-derived projection and must never be writable. Give a real number, if there is\none, through `raw_phone`; it is sealed and the mask derived from it (see\n`services.create_contact`). `extra=\"forbid\"` so a caller can never smuggle `phone` in.",
         "properties": {
           "company_id": {
             "format": "uuid",
@@ -294,6 +429,93 @@
         "title": "ContactOut",
         "type": "object"
       },
+      "ContactPatch": {
+        "additionalProperties": false,
+        "description": "Partial update of the plain contact fields. Deliberately **no `phone`, no\n`raw_phone`** \u2014 the number stays on its own dedicated route\n(`PUT /contacts/{id}/phone`), so a masked value can never be written back over a\nsealed one and a PATCH can never smuggle a raw number in unaudited.",
+        "properties": {
+          "company_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Company Id"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "format": "email",
+                "maxLength": 254,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "customer",
+                  "qualified",
+                  "lead",
+                  "dormant"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "ContactPatch",
+        "type": "object"
+      },
       "ContactPhoneIn": {
         "additionalProperties": false,
         "description": "Set a contact's real number. The mask is derived from it, never supplied.",
@@ -352,7 +574,7 @@
       },
       "OwnerIn": {
         "additionalProperties": false,
-        "description": "Add a rep to the directory.\n\nThe row's id is generated by the service. The demo seed derives deterministic ids so\ndeal-service's rows cross-link, but that is a seeding affordance: a client choosing the\nprimary key of a row it is about to create is how one tenant's id collides with another's\nintent. `organization_id` is absent for the same family of reason \u2014 the tenant comes from\nthe caller's context, never from the payload.",
+        "description": "Add a rep to the directory. A production org starts with zero owners, and every\ncompany / contact / deal create needs an `owner_id`, so this is the first write.",
         "properties": {
           "email": {
             "format": "email",
@@ -587,6 +809,25 @@
             }
           },
           {
+            "description": "One account's contacts only",
+            "in": "query",
+            "name": "company_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One account's contacts only",
+              "title": "Company Id"
+            }
+          },
+          {
             "in": "query",
             "name": "page",
             "required": false,
@@ -638,7 +879,6 @@
         ]
       },
       "post": {
-        "description": "Create a contact through the service writer \u2014 audit row and `contact.created` event\nstaged in the same transaction as the insert.\n\nScope is checked against the owner the payload names, as on a company. The company itself\nis validated inside the service: a company belonging to another organization reads as\nnot-found, never as a constraint error, so an id cannot be probed for existence.\n\nA supplied `raw_phone` is sealed and its mask derived. The response is the ordinary masked\n`ContactOut`, so creating a contact is not a way to read a number back \u2014 the only route\nthat returns one is the stepped-up, audited reveal below.",
         "operationId": "create_contact_api_v1_contacts_post",
         "requestBody": {
           "content": {
@@ -672,13 +912,47 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Add a person to an account",
+        "summary": "Add a contact to an account",
         "tags": [
           "customer"
         ]
       }
     },
     "/api/v1/contacts/{contact_id}": {
+      "delete": {
+        "operationId": "delete_contact_api_v1_contacts__contact_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Contact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a contact",
+        "tags": [
+          "customer"
+        ]
+      },
       "get": {
         "operationId": "read_contact_api_v1_contacts__contact_id__get",
         "parameters": [
@@ -716,6 +990,57 @@
           }
         },
         "summary": "One contact",
+        "tags": [
+          "customer"
+        ]
+      },
+      "patch": {
+        "operationId": "update_contact_api_v1_contacts__contact_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "contact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Contact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update a contact",
         "tags": [
           "customer"
         ]
@@ -930,7 +1255,6 @@
         ]
       },
       "post": {
-        "description": "Create a company through the service writer, which stages the audit row and the\n`crm.book.company.created` event in the same transaction as the insert.\n\nScope is checked against the owner the payload *names*, because there is no row yet to\ncheck against: a rep holding OWN scope may open an account they will own, and is refused\none they would hand to a colleague. Skipping the check here would make create the way\naround a detail route that has one.\n\n`request` is threaded through so the audit row records who acted and from where.",
         "operationId": "create_company_api_v1_customers_post",
         "requestBody": {
           "content": {
@@ -964,7 +1288,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Open an account in the book",
+        "summary": "Add a company to the account book",
         "tags": [
           "customer"
         ]
@@ -996,7 +1320,7 @@
         ]
       },
       "post": {
-        "description": "Add a sales rep to the org's directory \u2014 its own permission, at ORG scope.\n\nNot `company.write`: a rep who maintains their own accounts has no business extending the\ndirectory those accounts point at, and riding on the company permission would have handed\nevery seat that power the moment this route existed.\n\nA duplicate email is refused by the service as a conflict rather than inserted, so\n`email` stays the per-organization natural key the seeds and the SPA rely on. The writer\ntakes no `request` \u2014 a rep row is reference data and its audit row records no origin \u2014 so\nthe route does not invent one.",
+        "description": "The prerequisite for everything else: a production org starts with zero owners,\nand every company / contact / deal create needs an `owner_id` that resolves to one.",
         "operationId": "create_owner_api_v1_customers_owners_post",
         "requestBody": {
           "content": {
@@ -1037,6 +1361,40 @@
       }
     },
     "/api/v1/customers/{company_id}": {
+      "delete": {
+        "operationId": "delete_company_api_v1_customers__company_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "company_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Company Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a company",
+        "tags": [
+          "customer"
+        ]
+      },
       "get": {
         "operationId": "read_company_api_v1_customers__company_id__get",
         "parameters": [
@@ -1074,6 +1432,57 @@
           }
         },
         "summary": "One company",
+        "tags": [
+          "customer"
+        ]
+      },
+      "patch": {
+        "operationId": "update_company_api_v1_customers__company_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "company_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Company Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompanyPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update a company",
         "tags": [
           "customer"
         ]

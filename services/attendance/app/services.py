@@ -70,8 +70,10 @@ EVT_REGULARIZATION_APPLIED = "hrms.time.regularization.applied"
 REQUEST_TYPE_REGULARIZATION = "hrms.time.regularization"
 EVT_SHIFT_CREATED = "hrms.time.shift.created"
 EVT_SHIFT_UPDATED = "hrms.time.shift.updated"
+EVT_SHIFT_DELETED = "hrms.time.shift.deleted"
 EVT_GEOFENCE_CREATED = "hrms.time.geofence.created"
 EVT_GEOFENCE_UPDATED = "hrms.time.geofence.updated"
+EVT_GEOFENCE_DELETED = "hrms.time.geofence.deleted"
 
 
 def _actor(ctx: ScopeContext) -> dict[str, Any]:
@@ -767,6 +769,55 @@ async def update_shift(
     return shift
 
 
+async def delete_shift(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    shift: Shift,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Soft-delete a shift. `shifts.id` is the one foreign key `attendance_records.shift_id`
+    holds inside this schema, and it carries no `ON DELETE` action — a soft delete never touches
+    that row, so past punches keep their shift reference exactly as they always have. There is no
+    "assignment" or "roster" table anywhere in this service (or in employee-service, which holds
+    no shift/geofence reference at all) that names a shift as a standing, ongoing obligation, so
+    there is nothing "live" to refuse this against: the only guard a retired shift needs is that
+    `selectors.get_shift` already stops offering it to a *new* check-in (404, `services.check_in`)
+    once `deleted_at` is set. `uq_shifts_org_code` is a partial index on `deleted_at is null`
+    (migration `f4c1a9b3d2e7`), so the code frees up for reuse the moment this commits."""
+    before_deleted_at = shift.deleted_at
+    shift.deleted_at = datetime.now(UTC)
+    shift.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="shift.deleted",
+        entity="shift",
+        entity_id=shift.id,
+        before={"deleted_at": before_deleted_at},
+        after={"deleted_at": shift.deleted_at},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_SHIFT_DELETED,
+        aggregate_type="shift",
+        aggregate_id=shift.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "shift_id": str(shift.id),
+            "code": shift.code,
+        },
+        actor=_actor(ctx),
+    )
+
+
 # --------------------------------------------------------------------- geofences
 
 
@@ -864,3 +915,51 @@ async def update_geofence(
         actor=_actor(ctx),
     )
     return fence
+
+
+async def delete_geofence(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    fence: Geofence,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Soft-delete a geo-fence. `AttendanceRecord` carries no foreign key to `geofences` — a
+    fence is matched against a punch's `location_code` at check-in time
+    (`selectors.get_geofence_by_location`), never stored as a reference on the record — so there
+    is no "live assignment" a retired fence could orphan. A field punch against a location whose
+    fence was just deleted simply stops being fenced (falls back to whatever `check_in` does for
+    an unfenced `location_code`); it does not fail. `uq_geofences_org_location` is a partial
+    index on `deleted_at is null` (migration `f4c1a9b3d2e7`), so the location code frees up for a
+    new fence the moment this commits."""
+    before_deleted_at = fence.deleted_at
+    fence.deleted_at = datetime.now(UTC)
+    fence.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="geofence.deleted",
+        entity="geofence",
+        entity_id=fence.id,
+        before={"deleted_at": before_deleted_at},
+        after={"deleted_at": fence.deleted_at},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_GEOFENCE_DELETED,
+        aggregate_type="geofence",
+        aggregate_id=fence.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "geofence_id": str(fence.id),
+            "location_code": fence.location_code,
+        },
+        actor=_actor(ctx),
+    )

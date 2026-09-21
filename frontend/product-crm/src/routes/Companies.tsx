@@ -1,26 +1,33 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { listCompanies } from "@/api/client";
+import { deleteCompany, listCompanies } from "@/api/client";
 import type { Company, CompanyStatus, Owner } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
-import { contactsForCompany, ownerName } from "@/data/lookups";
+import { ownerName } from "@/data/lookups";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { formatMoneyCompact } from "@/lib/format";
-import { useAsync } from "@opsgrids/client";
+import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
   Avatar,
+  Button,
   Card,
   CompanyStatusPill,
+  ConfirmDialog,
   DataTable,
   EmptyState,
   ErrorState,
+  Pagination,
   PageHeader,
   Pill,
+  RowActions,
   SearchInput,
+  Select,
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { BuildingIcon, GlobeIcon, MapPinIcon } from "@opsgrids/ui";
+import { BuildingIcon, GlobeIcon, MapPinIcon, PlusIcon, useToast } from "@opsgrids/ui";
+import { CompanyFormDialog } from "@/forms/CompanyFormDialog";
 
 type StatusFilter = CompanyStatus | "all";
 type Sort = "name" | "revenue" | "contacts";
@@ -35,85 +42,129 @@ const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
 
 const NO_COMPANIES: Company[] = [];
 
-function buildColumns(owners: Owner[]): Column<Company>[] {
+function buildColumns(
+  owners: Owner[],
+  canWrite: boolean,
+  onEdit: (c: Company) => void,
+  onDelete: (c: Company) => void,
+): Column<Company>[] {
   return [
-  {
-    key: "name",
-    header: "Company",
-    render: (c) => (
-      <div className="flex items-center gap-3">
-        <span className="grid size-9 shrink-0 place-items-center rounded-tile bg-accent-soft text-accent-ink">
-          <BuildingIcon className="size-4" />
-        </span>
-        <div className="flex min-w-0 flex-col leading-tight">
-          <Link
-            to={`/companies/${c.id}`}
-            className="truncate font-semibold text-ink hover:text-accent transition-colors"
-          >
-            {c.name}
-          </Link>
-          <span className="inline-flex items-center gap-1 truncate text-xs text-muted">
-            <GlobeIcon className="size-3" />
-            {c.domain}
+    {
+      key: "name",
+      header: "Company",
+      render: (c) => (
+        <div className="flex items-center gap-3">
+          <span className="grid size-9 shrink-0 place-items-center rounded-tile bg-accent-soft text-accent-ink">
+            <BuildingIcon className="size-4" />
           </span>
+          <div className="flex min-w-0 flex-col leading-tight">
+            <Link
+              to={`/companies/${c.id}`}
+              className="truncate font-semibold text-ink hover:text-accent transition-colors"
+            >
+              {c.name}
+            </Link>
+            <span className="inline-flex items-center gap-1 truncate text-xs text-muted">
+              <GlobeIcon className="size-3" />
+              {c.domain}
+            </span>
+          </div>
         </div>
-      </div>
-    ),
-  },
-  {
-    key: "industry",
-    header: "Industry",
-    cellClassName: "hidden md:table-cell",
-    headerClassName: "hidden md:table-cell",
-    render: (c) => <span className="text-ink-soft">{c.industry}</span>,
-  },
-  {
-    key: "location",
-    header: "Location",
-    cellClassName: "hidden lg:table-cell",
-    headerClassName: "hidden lg:table-cell",
-    render: (c) => (
-      <span className="inline-flex items-center gap-1.5 text-muted">
-        <MapPinIcon className="size-4 text-faint" />
-        {c.city}
-      </span>
-    ),
-  },
-  { key: "status", header: "Status", render: (c) => <CompanyStatusPill status={c.status} /> },
-  {
-    key: "owner",
-    header: "Owner",
-    cellClassName: "hidden sm:table-cell",
-    headerClassName: "hidden sm:table-cell",
-    render: (c) => (
-      <span className="inline-flex items-center gap-2 min-w-0">
-        <Avatar name={ownerName(owners, c.owner_id)} size="sm" />
-        <span className="truncate text-sm text-ink-soft">{ownerName(owners, c.owner_id)}</span>
-      </span>
-    ),
-  },
-  {
-    key: "revenue",
-    header: "Annual revenue",
-    align: "right",
-    render: (c) => (
-      <span className="tnum font-semibold text-ink">
-        {formatMoneyCompact(c.annual_revenue_minor, c.currency)}
-      </span>
-    ),
-  },
+      ),
+    },
+    {
+      key: "industry",
+      header: "Industry",
+      cellClassName: "hidden md:table-cell",
+      headerClassName: "hidden md:table-cell",
+      render: (c) => <span className="text-ink-soft">{c.industry}</span>,
+    },
+    {
+      key: "location",
+      header: "Location",
+      cellClassName: "hidden lg:table-cell",
+      headerClassName: "hidden lg:table-cell",
+      render: (c) => (
+        <span className="inline-flex items-center gap-1.5 text-muted">
+          <MapPinIcon className="size-4 text-faint" />
+          {c.city}
+        </span>
+      ),
+    },
+    { key: "status", header: "Status", render: (c) => <CompanyStatusPill status={c.status} /> },
+    {
+      key: "owner",
+      header: "Owner",
+      cellClassName: "hidden sm:table-cell",
+      headerClassName: "hidden sm:table-cell",
+      render: (c) => (
+        <span className="inline-flex items-center gap-2 min-w-0">
+          <Avatar name={ownerName(owners, c.owner_id)} size="sm" />
+          <span className="truncate text-sm text-ink-soft">{ownerName(owners, c.owner_id)}</span>
+        </span>
+      ),
+    },
+    {
+      key: "revenue",
+      header: "Annual revenue",
+      align: "right",
+      render: (c) => (
+        <span className="tnum font-semibold text-ink">
+          {formatMoneyCompact(c.annual_revenue_minor, c.currency)}
+        </span>
+      ),
+    },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      render: (c) => (
+        <RowActions
+          label={c.name}
+          actions={[
+            { label: "Edit", onSelect: () => onEdit(c), hidden: !canWrite },
+            { label: "Delete", tone: "danger", onSelect: () => onDelete(c), hidden: !canWrite },
+          ]}
+        />
+      ),
+    },
   ];
 }
 
 export function CompaniesPage() {
+  const toast = useToast();
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [status, setStatus] = useState<StatusFilter>("all");
   const [sort, setSort] = useState<Sort>("name");
-  const { owners, contacts } = useDirectory();
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(25);
+  const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<Company | null>(null);
+  const [deleting, setDeleting] = useState<Company | null>(null);
+  const directory = useDirectory();
+  const { owners, contacts } = directory;
+  const canWrite = useCan("crm.book.company.write", "OWN");
 
-  const loader = useCallback(() => listCompanies({ search, status }), [search, status]);
-  const companies = useAsync(loader, [search, status]);
-  const columns = useMemo(() => buildColumns(owners), [owners]);
+  const loader = useCallback(
+    () => listCompanies({ search: debouncedSearch, status, page, size }),
+    [debouncedSearch, status, page, size],
+  );
+  const companies = useAsync(loader, [debouncedSearch, status, page, size]);
+
+  const remove = useMutation((company: Company) => deleteCompany(company.id), {
+    onSuccess: (_result, company) => {
+      setDeleting(null);
+      toast.success(`${company.name} deleted.`);
+      companies.reload();
+      directory.reload();
+    },
+  });
+
+  const columns = useMemo(
+    () => buildColumns(owners, canWrite, setEditing, setDeleting),
+    [owners, canWrite],
+  );
 
   const rows = useMemo(() => {
     const items = companies.status === "success" ? companies.data.items : NO_COMPANIES;
@@ -124,12 +175,11 @@ export function CompaniesPage() {
     else
       sorted.sort(
         (a, b) =>
-          contactsForCompany(contacts, b.id).length - contactsForCompany(contacts, a.id).length,
+          contacts.filter((c) => c.company_id === b.id).length -
+          contacts.filter((c) => c.company_id === a.id).length,
       );
     return sorted;
   }, [companies, sort, contacts]);
-
-  const total = companies.status === "success" ? companies.data.total : 0;
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -137,11 +187,11 @@ export function CompaniesPage() {
         eyebrow="Records"
         title="Companies"
         actions={
-          <span className="inline-flex h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold shadow-card">
-            <BuildingIcon className="size-4 text-muted" />
-            <span className="tnum">{total}</span>
-            <span className="font-medium text-muted">accounts</span>
-          </span>
+          <Can permission="crm.book.company.write" scope="OWN">
+            <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
+              New company
+            </Button>
+          </Can>
         }
       />
 
@@ -151,28 +201,37 @@ export function CompaniesPage() {
             label="Search companies"
             placeholder="Search by name, industry or city…"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
             containerClassName="lg:max-w-xs"
           />
           <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
             {STATUS_FILTERS.map((f) => (
-              <Pill key={f.value} active={status === f.value} onClick={() => setStatus(f.value)}>
+              <Pill
+                key={f.value}
+                active={status === f.value}
+                onClick={() => {
+                  setStatus(f.value);
+                  setPage(1);
+                }}
+              >
                 {f.label}
               </Pill>
             ))}
           </div>
-          <label className="ml-auto inline-flex h-11 shrink-0 items-center rounded-full bg-ground px-4">
-            <span className="sr-only">Sort companies</span>
-            <select
-              value={sort}
-              onChange={(e) => setSort(e.target.value as Sort)}
-              className="h-full cursor-pointer bg-transparent pr-1 text-sm font-semibold text-ink focus:outline-none"
-            >
-              <option value="name">Name A–Z</option>
-              <option value="revenue">Revenue high–low</option>
-              <option value="contacts">Most contacts</option>
-            </select>
-          </label>
+          <Select
+            label="Sort companies"
+            containerClassName="lg:ml-auto lg:w-52"
+            value={sort}
+            onChange={(e) => setSort(e.target.value as Sort)}
+            options={[
+              { value: "name", label: "Name A–Z" },
+              { value: "revenue", label: "Revenue high–low" },
+              { value: "contacts", label: "Most contacts" },
+            ]}
+          />
         </div>
       </Card>
 
@@ -184,23 +243,101 @@ export function CompaniesPage() {
             ))}
           </div>
         ) : null}
-        {companies.status === "error" ? <ErrorState message={companies.error.message} /> : null}
-        {companies.status === "success" ? (
-          <DataTable
-            caption="All companies"
-            columns={columns}
-            rows={rows}
-            rowKey={(c) => c.id}
-            emptyState={
-              <EmptyState
-                icon={<BuildingIcon className="size-6" />}
-                title="No matching companies"
-                description="No accounts match this search or status. Clear the filters to see them all."
-              />
-            }
+        {companies.status === "error" ? (
+          <ErrorState
+            title="Couldn't load companies"
+            message={problemMessage(companies.error)}
+            onRetry={companies.reload}
           />
         ) : null}
+        {companies.status === "success" ? (
+          <>
+            <DataTable
+              caption="All companies"
+              columns={columns}
+              rows={rows}
+              rowKey={(c) => c.id}
+              emptyState={
+                <EmptyState
+                  icon={<BuildingIcon className="size-6" />}
+                  title={search ? "No companies match that search" : "No companies yet"}
+                  description={
+                    search
+                      ? "Try a shorter search term, or clear the filters to see them all."
+                      : "Create the first one to get started."
+                  }
+                  action={
+                    search ? null : (
+                      <Can permission="crm.book.company.write" scope="OWN">
+                        <Button size="sm" onClick={() => setCreating(true)}>
+                          New company
+                        </Button>
+                      </Can>
+                    )
+                  }
+                />
+              }
+            />
+            <Pagination
+              page={companies.data.page}
+              pages={companies.data.pages}
+              total={companies.data.total}
+              size={companies.data.size}
+              noun="companies"
+              onPageChange={setPage}
+              onSizeChange={(n) => {
+                setSize(n);
+                setPage(1);
+              }}
+            />
+          </>
+        ) : null}
       </Card>
+
+      {creating ? (
+        <CompanyFormDialog
+          company={null}
+          owners={owners}
+          onOwnerCreated={() => directory.reload()}
+          onClose={() => setCreating(false)}
+          onSaved={(company) => {
+            setCreating(false);
+            toast.success(`${company.name} created.`);
+            companies.reload();
+            directory.reload();
+          }}
+        />
+      ) : null}
+
+      {editing ? (
+        <CompanyFormDialog
+          company={editing}
+          owners={owners}
+          onOwnerCreated={() => directory.reload()}
+          onClose={() => setEditing(null)}
+          onSaved={(company) => {
+            setEditing(null);
+            toast.success(`${company.name} saved.`);
+            companies.reload();
+            directory.reload();
+          }}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onClose={() => {
+          setDeleting(null);
+          remove.reset();
+        }}
+        onConfirm={() => deleting && void remove.mutate(deleting)}
+        title="Delete this company?"
+        body={`${deleting?.name} is removed from the account book. This can't be undone.`}
+        confirmLabel="Delete"
+        pendingLabel="Deleting…"
+        pending={remove.pending}
+        {...(remove.error ? { error: problemMessage(remove.error) } : {})}
+      />
     </div>
   );
 }

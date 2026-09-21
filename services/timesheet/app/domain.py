@@ -22,6 +22,20 @@ STATUS_LABELS: dict[str, str] = {
 
 MINUTES_PER_HOUR = 60
 
+#: Forward through the approval flow, plus a reopen step back to `draft` from either rung —
+#: a submitted or approved week can be pulled back for correction, but never skips a stage.
+STATUS_TRANSITIONS: dict[str, frozenset[str]] = {
+    "draft": frozenset({"submitted"}),
+    "submitted": frozenset({"approved", "draft"}),
+    "approved": frozenset({"draft"}),
+}
+
+
+def can_transition(current: str, target: str) -> bool:
+    """Whether a week may move from `current` to `target` — the single source of truth for
+    the status endpoint, so an illegal move is refused by name rather than free-form."""
+    return target in STATUS_TRANSITIONS.get(current, frozenset())
+
 
 # ------------------------------------------------------------------ week arithmetic
 

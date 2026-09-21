@@ -28,6 +28,7 @@ from app.models import (
     InventoryItem,
     PurchaseOrder,
     PurchaseOrderLine,
+    StockMovement,
     Supplier,
     Warehouse,
 )
@@ -35,6 +36,7 @@ from app.schemas import (
     InventoryItemOut,
     PoLineItem,
     PurchaseOrderOut,
+    StockMovementOut,
     SupplierOut,
     WarehouseOut,
 )
@@ -82,14 +84,18 @@ def suppliers_stmt(
 
 
 async def get_supplier(
-    session: AsyncSession, org_id: uuid.UUID, supplier_id: uuid.UUID
+    session: AsyncSession, org_id: uuid.UUID, supplier_id: uuid.UUID, *, for_update: bool = False
 ) -> Supplier | None:
-    """Org-scoped fetch by primary key. None on a tenant mismatch or a soft-deleted row."""
+    """Org-scoped fetch by primary key. None on a tenant mismatch or a soft-deleted row.
+    `for_update` locks the row — used wherever a rollup (`spend_minor`, `open_pos`) is about to
+    be bumped, so two concurrent PO transitions cannot lose one's update."""
     stmt = select(Supplier).where(
         Supplier.id == supplier_id,
         Supplier.organization_id == org_id,
         Supplier.deleted_at.is_(None),
     )
+    if for_update:
+        stmt = stmt.with_for_update()
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -111,6 +117,24 @@ async def all_suppliers(session: AsyncSession, org_id: uuid.UUID) -> list[Suppli
     return list((await session.execute(stmt)).scalars().all())
 
 
+async def count_open_purchase_orders_for_supplier(
+    session: AsyncSession, org_id: uuid.UUID, supplier_id: uuid.UUID
+) -> int:
+    """How many `draft`/`approved` purchase orders still name this supplier — the delete guard
+    (409 while any are open; suggest `on_hold` instead)."""
+    stmt = (
+        select(func.count())
+        .select_from(PurchaseOrder)
+        .where(
+            PurchaseOrder.organization_id == org_id,
+            PurchaseOrder.supplier_id == supplier_id,
+            PurchaseOrder.deleted_at.is_(None),
+            PurchaseOrder.status.in_(("draft", "approved")),
+        )
+    )
+    return (await session.execute(stmt)).scalar_one()
+
+
 # ------------------------------------------------------------------ purchase orders
 
 
@@ -120,6 +144,7 @@ def purchase_orders_stmt(
     q: str | None = None,
     status: str | None = None,
     category: str | None = None,
+    supplier_id: uuid.UUID | None = None,
     sort: str | None = None,
 ) -> Select[Any]:
     """Scope-filtered purchase-order list. `ctx.apply` is the enforcement point (OWN reads the
@@ -130,6 +155,8 @@ def purchase_orders_stmt(
     )
     stmt = ctx.apply(stmt, owner_col=PurchaseOrder.raised_by_id)
 
+    if supplier_id:
+        stmt = stmt.where(PurchaseOrder.supplier_id == supplier_id)
     if q:
         needle = f"%{q.lower()}%"
         stmt = stmt.where(
@@ -266,14 +293,32 @@ def inventory_stmt(
 
 
 async def get_inventory_by_sku(
-    session: AsyncSession, org_id: uuid.UUID, sku: str
+    session: AsyncSession, org_id: uuid.UUID, sku: str, *, for_update: bool = False
 ) -> InventoryItem | None:
-    """Fetch by SKU — used by the demo seed for idempotency."""
+    """Fetch by SKU — used by the demo seed for idempotency, and by `receive_purchase_order`
+    (locked) to match a PO line against a stocked item."""
     stmt = select(InventoryItem).where(
         InventoryItem.sku == sku,
         InventoryItem.organization_id == org_id,
         InventoryItem.deleted_at.is_(None),
     )
+    if for_update:
+        stmt = stmt.with_for_update()
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_inventory_item(
+    session: AsyncSession, org_id: uuid.UUID, item_id: uuid.UUID, *, for_update: bool = False
+) -> InventoryItem | None:
+    """Org-scoped fetch by primary key. `for_update` locks the row so a concurrent stock
+    adjustment cannot lose an update to `on_hand`."""
+    stmt = select(InventoryItem).where(
+        InventoryItem.id == item_id,
+        InventoryItem.organization_id == org_id,
+        InventoryItem.deleted_at.is_(None),
+    )
+    if for_update:
+        stmt = stmt.with_for_update()
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -283,6 +328,39 @@ async def all_inventory(session: AsyncSession, org_id: uuid.UUID) -> list[Invent
         InventoryItem.organization_id == org_id, InventoryItem.deleted_at.is_(None)
     )
     return list((await session.execute(stmt)).scalars().all())
+
+
+async def count_inventory_for_warehouse(
+    session: AsyncSession, org_id: uuid.UUID, warehouse_name: str
+) -> int:
+    """How many live inventory items still carry this warehouse's name — a delete guard."""
+    stmt = (
+        select(func.count())
+        .select_from(InventoryItem)
+        .where(
+            InventoryItem.organization_id == org_id,
+            InventoryItem.warehouse == warehouse_name,
+            InventoryItem.deleted_at.is_(None),
+        )
+    )
+    return (await session.execute(stmt)).scalar_one()
+
+
+# ------------------------------------------------------------------ stock movements
+
+
+def movements_stmt(
+    ctx: ScopeContext, item_id: uuid.UUID, *, kind: str | None = None
+) -> Select[Any]:
+    """One item's movement history, newest first. Not scope-narrowed — movement reads reuse
+    `operations.inventory.item.read`, which is org-wide, same as the item itself."""
+    stmt = select(StockMovement).where(
+        StockMovement.organization_id == ctx.organization_id,
+        StockMovement.inventory_item_id == item_id,
+    )
+    if kind:
+        stmt = stmt.where(StockMovement.kind == kind)
+    return stmt.order_by(StockMovement.created_at.desc())
 
 
 # ------------------------------------------------------------------ warehouses (reference)
@@ -298,6 +376,17 @@ def warehouses_stmt(org_id: uuid.UUID) -> Select[Any]:
     )
 
 
+async def get_warehouse(
+    session: AsyncSession, org_id: uuid.UUID, warehouse_id: uuid.UUID
+) -> Warehouse | None:
+    stmt = select(Warehouse).where(
+        Warehouse.id == warehouse_id,
+        Warehouse.organization_id == org_id,
+        Warehouse.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def get_warehouse_by_code(
     session: AsyncSession, org_id: uuid.UUID, code: str
 ) -> Warehouse | None:
@@ -307,6 +396,38 @@ async def get_warehouse_by_code(
         Warehouse.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_warehouse_by_name(
+    session: AsyncSession, org_id: uuid.UUID, name: str
+) -> Warehouse | None:
+    """Fetch by display name — the join key `inventory_items.warehouse` and
+    `purchase_orders.warehouse` carry, and what a create/patch payload's `warehouse` field is
+    validated against."""
+    stmt = select(Warehouse).where(
+        Warehouse.name == name,
+        Warehouse.organization_id == org_id,
+        Warehouse.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def count_open_purchase_orders_for_warehouse(
+    session: AsyncSession, org_id: uuid.UUID, warehouse_name: str
+) -> int:
+    """How many `draft`/`approved` purchase orders still target this warehouse — a delete
+    guard, alongside `count_inventory_for_warehouse`."""
+    stmt = (
+        select(func.count())
+        .select_from(PurchaseOrder)
+        .where(
+            PurchaseOrder.organization_id == org_id,
+            PurchaseOrder.warehouse == warehouse_name,
+            PurchaseOrder.deleted_at.is_(None),
+            PurchaseOrder.status.in_(("draft", "approved")),
+        )
+    )
+    return (await session.execute(stmt)).scalar_one()
 
 
 # ------------------------------------------------------------------ projections (ORM → wire)
@@ -386,4 +507,20 @@ def warehouse_out(warehouse: Warehouse) -> WarehouseOut:
         code=warehouse.code,
         name=warehouse.name,
         location=warehouse.location,
+    )
+
+
+def movement_out(movement: StockMovement) -> StockMovementOut:
+    return StockMovementOut(
+        id=str(movement.id),
+        kind=movement.kind,
+        reason=movement.reason,
+        quantity_delta=movement.quantity_delta,
+        on_hand_after=movement.on_hand_after,
+        reference_type=movement.reference_type,
+        reference_id=str(movement.reference_id) if movement.reference_id else None,
+        note=movement.note,
+        occurred_on=movement.occurred_on,
+        created_at=movement.created_at,
+        created_by=movement.created_by,
     )

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isoOf, mondayOf, weekFrom } from "./dates";
+import { addDays, addWeeks, isoOf, mondayOf, weekFrom } from "./dates";
 
 describe("isoOf", () => {
   it("formats a UTC date as YYYY-MM-DD", () => {
@@ -34,5 +34,25 @@ describe("weekFrom", () => {
       "2026-09-26",
       "2026-09-27",
     ]);
+  });
+});
+
+describe("addDays", () => {
+  it("walks forward", () => {
+    expect(addDays("2026-09-21", 3)).toBe("2026-09-24");
+  });
+
+  it("walks backward across a month boundary", () => {
+    expect(addDays("2026-10-01", -1)).toBe("2026-09-30");
+  });
+});
+
+describe("addWeeks", () => {
+  it("moves a Monday to the next Monday", () => {
+    expect(addWeeks("2026-09-21", 1)).toBe("2026-09-28");
+  });
+
+  it("moves a Monday to the previous Monday", () => {
+    expect(addWeeks("2026-09-21", -1)).toBe("2026-09-14");
   });
 });

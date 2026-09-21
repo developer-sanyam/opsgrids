@@ -9,6 +9,7 @@
 import type {
   BurndownPoint,
   BurndownRange,
+  MemberOut,
   MilestoneOut,
   Person,
   ProjectOut,
@@ -34,6 +35,10 @@ const PEOPLE = {
 } satisfies Record<string, Person>;
 
 export const TEAM: Person[] = Object.values(PEOPLE);
+
+/** The roster, as `GET /members` would return it — the source for every owner/assignee picker
+ *  and for the Team screen in fixture mode. */
+export const MEMBERS: MemberOut[] = TEAM.map((p) => ({ ...p, directory_id: null }));
 
 /* ------------------------------- projects ------------------------------- */
 

@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { listPurchaseOrders } from "@/api/client";
 import type { PoStatus, PurchaseOrderOut } from "@/api/types";
 import { CATEGORY_LABEL, poItemCount, poTotalMinor } from "@/data/derive";
-import { useAsync } from "@opsgrids/client";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { Can, problemMessage, useAsync } from "@opsgrids/client";
 import { formatDate, formatMoney } from "@/lib/format";
 import {
   Button,
@@ -13,14 +14,14 @@ import {
   EmptyState,
   ErrorState,
   PageHeader,
+  Pagination,
   Pill,
   PoStatusPill,
   SearchInput,
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { NewPurchaseOrderDialog } from "@/ui/NewPurchaseOrderDialog";
-import { Announcer, ClipboardListIcon, PlusIcon } from "@opsgrids/ui";
+import { ClipboardListIcon, PlusIcon } from "@opsgrids/ui";
 
 type StatusFilter = PoStatus | "all";
 
@@ -30,88 +31,34 @@ const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
   { value: "approved", label: "Approved" },
   { value: "received", label: "Received" },
   { value: "closed", label: "Closed" },
+  { value: "cancelled", label: "Cancelled" },
 ];
 
-type SortKey = "po_number" | "supplier_name" | "total" | "expected_date";
-interface Sort {
-  key: SortKey;
-  dir: "asc" | "desc";
-}
+type SortKey = "number" | "expected" | "created";
 
-const NO_ROWS: PurchaseOrderOut[] = [];
-
-/** A PO decorated with its derived total, so sorting and rendering share one number. */
-interface Row extends PurchaseOrderOut {
-  _total: number;
-  _items: number;
-}
-
-function PurchaseOrdersScreen() {
+export function PurchaseOrdersPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
+  const debouncedSearch = useDebouncedValue(search);
   const [status, setStatus] = useState<StatusFilter>("all");
-  const [sort, setSort] = useState<Sort>({ key: "expected_date", dir: "asc" });
-  const [creating, setCreating] = useState(false);
-  const [attempt, setAttempt] = useState(0);
+  const [sort, setSort] = useState<SortKey>("expected");
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(25);
 
   useEffect(() => {
     const q = searchParams.get("q");
     if (q !== null) setSearch(q);
   }, [searchParams]);
 
-  const state = useAsync(listPurchaseOrders, [attempt]);
-  const items = state.status === "success" ? state.data.items : NO_ROWS;
+  const loader = () => listPurchaseOrders({ q: debouncedSearch, status, sort, page, size });
+  const state = useAsync(loader, [debouncedSearch, status, sort, page, size]);
 
-  function handleCreated() {
-    setCreating(false);
-    setAttempt((current) => current + 1);
-  }
-
-  const rows: Row[] = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const enriched = items
-      .filter((po) => {
-        const matchesQuery =
-          q === "" ||
-          po.po_number.toLowerCase().includes(q) ||
-          po.supplier_name.toLowerCase().includes(q) ||
-          CATEGORY_LABEL[po.category].toLowerCase().includes(q);
-        const matchesStatus = status === "all" || po.status === status;
-        return matchesQuery && matchesStatus;
-      })
-      .map((po) => ({ ...po, _total: poTotalMinor(po), _items: poItemCount(po) }));
-
-    const dir = sort.dir === "asc" ? 1 : -1;
-    enriched.sort((a, b) => {
-      switch (sort.key) {
-        case "total":
-          return (a._total - b._total) * dir;
-        case "supplier_name":
-          return a.supplier_name.localeCompare(b.supplier_name) * dir;
-        case "expected_date":
-          return a.expected_date.localeCompare(b.expected_date) * dir;
-        case "po_number":
-        default:
-          return a.po_number.localeCompare(b.po_number) * dir;
-      }
-    });
-    return enriched;
-  }, [items, search, status, sort]);
-
-  function onSort(key: string) {
-    setSort((prev) =>
-      prev.key === key
-        ? { key: prev.key, dir: prev.dir === "asc" ? "desc" : "asc" }
-        : { key: key as SortKey, dir: "asc" },
-    );
-  }
-
-  const columns: Column<Row>[] = [
+  const columns: Column<PurchaseOrderOut>[] = [
     {
       key: "po_number",
       header: "PO Number",
-      sortKey: "po_number",
+      sortKey: "number",
       render: (po) => (
         <div className="flex flex-col leading-tight">
           <span className="font-semibold text-ink tnum">{po.po_number}</span>
@@ -122,7 +69,6 @@ function PurchaseOrdersScreen() {
     {
       key: "supplier",
       header: "Supplier",
-      sortKey: "supplier_name",
       render: (po) => <span className="text-ink-soft">{po.supplier_name}</span>,
     },
     {
@@ -131,14 +77,17 @@ function PurchaseOrdersScreen() {
       align: "right",
       cellClassName: "hidden md:table-cell",
       headerClassName: "hidden md:table-cell",
-      render: (po) => <span className="tnum text-muted">{po._items}</span>,
+      render: (po) => <span className="tnum text-muted">{poItemCount(po)}</span>,
     },
     {
       key: "total",
       header: "Total",
       align: "right",
-      sortKey: "total",
-      render: (po) => <span className="tnum font-semibold text-ink">{formatMoney(po._total)}</span>,
+      render: (po) => (
+        <span className="tnum font-semibold text-ink">
+          {formatMoney(poTotalMinor(po), po.currency)}
+        </span>
+      ),
     },
     {
       key: "status",
@@ -149,12 +98,14 @@ function PurchaseOrdersScreen() {
       key: "expected",
       header: "Expected",
       align: "right",
-      sortKey: "expected_date",
+      sortKey: "expected",
       cellClassName: "hidden sm:table-cell",
       headerClassName: "hidden sm:table-cell",
       render: (po) => <span className="tnum text-muted">{formatDate(po.expected_date)}</span>,
     },
   ];
+
+  const filtersActive = debouncedSearch !== "" || status !== "all";
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -162,16 +113,14 @@ function PurchaseOrdersScreen() {
         eyebrow="Procurement"
         title="Purchase Orders"
         actions={
-          <>
-            <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
-              <ClipboardListIcon className="size-4 text-muted" />
-              <span className="tnum">{items.length}</span>
-              <span className="text-muted font-medium">orders</span>
-            </span>
-            <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
-              New purchase order
+          <Can permission="operations.procurement.purchase_order.write" scope="OWN">
+            <Button
+              leadingIcon={<PlusIcon className="size-4" />}
+              onClick={() => navigate("/purchase-orders/new")}
+            >
+              New PO
             </Button>
-          </>
+          </Can>
         }
       />
 
@@ -179,14 +128,24 @@ function PurchaseOrdersScreen() {
         <div className="flex flex-col lg:flex-row lg:items-center gap-3">
           <SearchInput
             label="Search purchase orders"
-            placeholder="Search by PO number or supplier…"
+            placeholder="Search by PO number, supplier or warehouse…"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
             containerClassName="lg:max-w-sm"
           />
           <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
             {STATUS_FILTERS.map((f) => (
-              <Pill key={f.value} active={status === f.value} onClick={() => setStatus(f.value)}>
+              <Pill
+                key={f.value}
+                active={status === f.value}
+                onClick={() => {
+                  setStatus(f.value);
+                  setPage(1);
+                }}
+              >
                 {f.label}
               </Pill>
             ))}
@@ -201,41 +160,60 @@ function PurchaseOrdersScreen() {
               <Skeleton key={i} className="h-12 w-full rounded-tile" />
             ))}
           </div>
-        ) : state.status === "error" ? (
-          <ErrorState message={state.error.message} />
-        ) : (
-          <DataTable
-            columns={columns}
-            rows={rows}
-            rowKey={(po) => po.id}
-            caption="Purchase orders"
-            sort={sort}
-            onSort={onSort}
-            onRowClick={(po) => navigate(`/purchase-orders/${po.id}`)}
-            emptyState={
-              <EmptyState
-                icon={<ClipboardListIcon className="size-6" />}
-                title="No matching purchase orders"
-                description="No orders match these filters. Try a different status or clear the search."
-              />
-            }
+        ) : null}
+        {state.status === "error" ? (
+          <ErrorState
+            title="Couldn't load purchase orders"
+            message={problemMessage(state.error)}
+            onRetry={state.reload}
           />
-        )}
+        ) : null}
+        {state.status === "success" ? (
+          <>
+            <DataTable
+              columns={columns}
+              rows={state.data.items}
+              rowKey={(po) => po.id}
+              caption="Purchase orders"
+              sort={{ key: sort, dir: "asc" }}
+              onSort={(key) => setSort(key as SortKey)}
+              onRowClick={(po) => navigate(`/purchase-orders/${po.id}`)}
+              emptyState={
+                <EmptyState
+                  icon={<ClipboardListIcon className="size-6" />}
+                  title={filtersActive ? "No purchase orders match these filters" : "No purchase orders yet"}
+                  description={
+                    filtersActive
+                      ? "Try a different status, or clear the search."
+                      : "Raise the first one to start procurement."
+                  }
+                  action={
+                    filtersActive ? null : (
+                      <Can permission="operations.procurement.purchase_order.write" scope="OWN">
+                        <Button size="sm" onClick={() => navigate("/purchase-orders/new")}>
+                          New PO
+                        </Button>
+                      </Can>
+                    )
+                  }
+                />
+              }
+            />
+            <Pagination
+              page={state.data.page}
+              pages={state.data.pages}
+              total={state.data.total}
+              size={state.data.size}
+              noun="orders"
+              onPageChange={setPage}
+              onSizeChange={(n) => {
+                setSize(n);
+                setPage(1);
+              }}
+            />
+          </>
+        ) : null}
       </Card>
-
-      <NewPurchaseOrderDialog
-        open={creating}
-        onClose={() => setCreating(false)}
-        onCreated={handleCreated}
-      />
     </div>
-  );
-}
-
-export function PurchaseOrdersPage() {
-  return (
-    <Announcer>
-      <PurchaseOrdersScreen />
-    </Announcer>
   );
 }

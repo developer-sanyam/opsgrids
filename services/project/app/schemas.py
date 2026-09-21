@@ -36,9 +36,12 @@ class ServiceInfo(BaseModel):
 
 class PersonOut(BaseModel):
     """Mirrors the SPA's `Person`. `id` is the person's stable `ref` (`p01`) — the value every
-    `owner_id` / `assignee_id` / timesheet `person_id` on the wire joins against."""
+    `owner_id` / `assignee_id` / timesheet `person_id` on the wire joins against. `uuid` is the
+    roster person's opaque id — the value the timesheet and standup write endpoints require as
+    `person_id`, since nothing else on the wire carries it."""
 
     id: str
+    uuid: str
     name: str
     role: str
     location: str
@@ -46,20 +49,25 @@ class PersonOut(BaseModel):
 
 
 class PersonIn(BaseModel):
-    """Add someone to the delivery-team roster. `ref` (`p01`) is the stable handle every
-    `owner_ref` / `assignee_ref` on the wire joins against, unique within the organization.
-    `capacity_hours` is the weekly billable target — the utilization denominator.
-
-    The opaque primary key and the account-directory link are not on the wire: the seed sets a
-    deterministic `person_id` so sibling services share it, and `directory_id` is a platform
-    concern, not something a roster caller supplies.
-    """
+    """Add a roster person. `ref` (`p01`) is the stable handle the rest of the product joins
+    on — the timesheet and standup services carry it as a plain string, so it is immutable
+    once created."""
 
     ref: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
     name: str = Field(min_length=1, max_length=200)
     role: str = Field(default="", max_length=120)
     location: str = Field(default="", max_length=120)
     capacity_hours: int = Field(default=40, ge=0, le=168)
+
+
+class PersonPatch(BaseModel):
+    """Edit a roster person. Absent means "leave alone"; `ref` is immutable — it is the
+    cross-service join value."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    role: str | None = Field(default=None, max_length=120)
+    location: str | None = Field(default=None, max_length=120)
+    capacity_hours: int | None = Field(default=None, ge=0, le=168)
 
 
 # ------------------------------------------------------------------ projects
@@ -103,6 +111,24 @@ class ProjectIn(BaseModel):
     open_tasks: int = Field(default=0, ge=0)
 
 
+class ProjectUpdate(BaseModel):
+    """Edit an engagement. Absent means "leave alone". `code` is immutable — it is the URL key
+    and the timesheet `project_ref`, so a rename would silently orphan rows in another schema."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=300)
+    client: str | None = Field(default=None, max_length=200)
+    status: ProjectStatus | None = None
+    progress_pct: int | None = Field(default=None, ge=0, le=100)
+    budget_minor: int | None = Field(default=None, ge=0)
+    spent_minor: int | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    owner_ref: str | None = Field(default=None, max_length=40)
+    start_date: date | None = None
+    due_date: date | None = None
+    billable: bool | None = None
+    open_tasks: int | None = Field(default=None, ge=0)
+
+
 # ------------------------------------------------------------------ tasks
 
 
@@ -133,6 +159,20 @@ class TaskIn(BaseModel):
     estimate_hours: int = Field(default=0, ge=0)
     priority: Priority = "medium"
     tags: list[str] = Field(default_factory=list)
+    due_date: date | None = None
+
+
+class TaskUpdate(BaseModel):
+    """Move or edit a board card. Absent means "leave alone"; an explicit `null` on
+    `assignee_ref` or `due_date` clears it. `key` and `project_code` are immutable — a card
+    never changes engagement or human id through this route."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=300)
+    status: TaskStatus | None = None
+    assignee_ref: str | None = Field(default=None, max_length=40)
+    estimate_hours: int | None = Field(default=None, ge=0)
+    priority: Priority | None = None
+    tags: list[str] | None = None
     due_date: date | None = None
 
 

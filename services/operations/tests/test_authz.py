@@ -9,27 +9,14 @@ also be refused another's by id.
 
 from __future__ import annotations
 
-import contextlib
-from collections.abc import Iterator
-
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors
-from app.main import app
-from platform_core.auth import Principal, Scope, ScopeContext, get_principal
-from tests.helpers import ctx_for, principal_for
+from platform_core.auth import Scope, ScopeContext
+from tests.helpers import as_principal, ctx_for, principal_for
 
 pytestmark = pytest.mark.integration
-
-
-@contextlib.contextmanager
-def as_principal(principal: Principal) -> Iterator[None]:
-    app.dependency_overrides[get_principal] = lambda: principal
-    try:
-        yield
-    finally:
-        app.dependency_overrides.pop(get_principal, None)
 
 
 # --------------------------------------------------------------------- list scope

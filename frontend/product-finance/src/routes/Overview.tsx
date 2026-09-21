@@ -5,13 +5,11 @@ import { Link, useNavigate } from "react-router-dom";
 import { getOverview } from "@/api/client";
 import { getCustomerById } from "@/api/customers";
 import type { Customer, Invoice, OverviewKpi } from "@/api/types";
-import { useAuth } from "@opsgrids/client";
+import { Can, problemMessage, useAsync, useAuth } from "@opsgrids/client";
 import { customerName } from "@/data/customers";
 import { daysOverdue, outstandingMinor } from "@/data/derive";
-import { TODAY } from "@/api/fixtures";
-import { formatDate } from "@/lib/format";
+import { formatDate, today } from "@/lib/format";
 import { formatMoney, formatMoneyCompact } from "@/lib/money";
-import { useAsync } from "@opsgrids/client";
 import {
   AgingBreakdown,
   Avatar,
@@ -21,6 +19,7 @@ import {
   ComplianceCard,
   ErrorState,
   KpiCard,
+  SampleChip,
   SectionHeader,
   Skeleton,
 } from "@/ui";
@@ -61,13 +60,15 @@ function OverviewHeader({ orgName, period }: { orgName: string; period: string }
           <CalendarIcon className="size-4 text-muted" />
           <span className="tnum">{period}</span>
         </span>
-        <Button
-          size="md"
-          leadingIcon={<PlusIcon className="size-4" />}
-          onClick={() => navigate("/invoices")}
-        >
-          New invoice
-        </Button>
+        <Can permission="finance.billing.invoice.issue" scope="ORG">
+          <Button
+            size="md"
+            leadingIcon={<PlusIcon className="size-4" />}
+            onClick={() => navigate("/invoices/new")}
+          >
+            New invoice
+          </Button>
+        </Can>
       </div>
     </header>
   );
@@ -87,6 +88,7 @@ function KpiValue({ kpi }: { kpi: OverviewKpi }) {
       captionPlacement="label"
       figure="money"
       goodWhen={style.invert ? "down" : "up"}
+      sample={kpi.sample ? true : kpi.trend_sample ? { label: "Sample trend" } : false}
     />
   );
 }
@@ -100,7 +102,7 @@ function AttentionRow({
   customerById: ReadonlyMap<string, Customer> | undefined;
 }) {
   const name = customerName(customerById, invoice.customer_id);
-  const overdueDays = daysOverdue(invoice, TODAY);
+  const overdueDays = daysOverdue(invoice, today());
   return (
     <Link
       to={`/invoices/${invoice.id}`}
@@ -167,7 +169,7 @@ export function OverviewPage() {
           : null}
         {overview.status === "error" ? (
           <Card className="p-5 sm:col-span-2 xl:col-span-4">
-            <ErrorState message={overview.error.message} />
+            <ErrorState message={problemMessage(overview.error)} onRetry={overview.reload} />
           </Card>
         ) : null}
         {overview.status === "success"
@@ -182,11 +184,15 @@ export function OverviewPage() {
       {/* Row 2 — cashflow · aging */}
       <section aria-label="Cash and receivables" className="grid grid-cols-1 gap-5 xl:grid-cols-3">
         <Card className="flex flex-col gap-5 p-6 xl:col-span-2">
-          <SectionHeader title="Cashflow" subtitle="Money in and out, last six months" />
+          <SectionHeader
+            title="Cashflow"
+            subtitle="Money in and out, last six months"
+            action={overview.status === "success" && overview.data.cashflow_sample ? <SampleChip /> : undefined}
+          />
           {overview.status === "success" ? (
             <CashflowChart data={overview.data.cashflow} />
           ) : overview.status === "error" ? (
-            <ErrorState message={overview.error.message} />
+            <ErrorState message={problemMessage(overview.error)} onRetry={overview.reload} />
           ) : (
             <Skeleton className="h-56 w-full rounded-tile" />
           )}
@@ -197,7 +203,7 @@ export function OverviewPage() {
           {overview.status === "success" ? (
             <AgingBreakdown buckets={overview.data.aging} />
           ) : overview.status === "error" ? (
-            <ErrorState message={overview.error.message} />
+            <ErrorState message={problemMessage(overview.error)} onRetry={overview.reload} />
           ) : (
             <Skeleton className="h-56 w-full rounded-tile" />
           )}

@@ -8,6 +8,7 @@ import type {
   RequestStatus,
   SlaState,
 } from "@/api/types";
+import { now } from "./clock";
 
 /** "2026-08-24T09:24:00Z" -> "24 Aug, 9:24 AM". Rendered in UTC so a stored time shows as-is. */
 export function formatDateTime(iso: string | null): string {
@@ -36,14 +37,13 @@ export function formatDate(iso: string | null): string {
 }
 
 /**
- * A compact relative label against a fixed "now" (this app's demo clock is 2026-08-24T18:00Z).
- * "3h ago", "2d ago", "just now". Keeps the worklog and tables reading like a live desk.
+ * A compact relative label against the real clock (`@/lib/clock`'s `now()` — pinned only in
+ * fixture mode). "3h ago", "2d ago", "just now". Keeps the worklog and tables reading like a
+ * live desk instead of freezing the moment an incident is raised.
  */
-const NOW_MS = Date.parse("2026-08-24T18:00:00Z");
-
-export function relativeTime(iso: string): string {
+export function relativeTime(iso: string, nowMs: number = now().getTime()): string {
   const then = Date.parse(iso);
-  const diffMin = Math.round((NOW_MS - then) / 60000);
+  const diffMin = Math.round((nowMs - then) / 60000);
   if (diffMin < 1) return "just now";
   if (diffMin < 60) return `${diffMin}m ago`;
   const diffHr = Math.round(diffMin / 60);
@@ -83,7 +83,22 @@ export function formatMoney(minor: number, currency: string): string {
   }
 }
 
+/** Today, against the real clock: "Mon, 24 Aug 2026". */
+export function todayLabel(reference: Date = now()): string {
+  return reference.toLocaleDateString("en-IN", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
 
+/** Whole days from `reference` to a stored ISO date, negative once it has passed. */
+export function daysUntil(iso: string, reference: Date = now()): number {
+  const target = Date.parse(`${iso}T00:00:00Z`);
+  return Math.round((target - reference.getTime()) / 86_400_000);
+}
 
 /* ------------------------------- label maps ------------------------------- */
 
@@ -145,6 +160,7 @@ const REQUEST_STATUS_LABELS: Record<RequestStatus, string> = {
   approval: "Awaiting approval",
   in_progress: "In progress",
   fulfilled: "Fulfilled",
+  rejected: "Rejected",
 };
 export function requestStatusLabel(s: RequestStatus): string {
   return REQUEST_STATUS_LABELS[s];

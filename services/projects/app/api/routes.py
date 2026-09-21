@@ -21,10 +21,11 @@ another's by code.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
@@ -35,15 +36,19 @@ from app.schemas import (
     BoardOut,
     HealthSlice,
     MemberIn,
+    MemberOut,
+    MemberUpdate,
     MilestoneIn,
     MilestoneOut,
+    MilestoneUpdate,
     OverviewOut,
-    Person,
     ProjectIn,
     ProjectOut,
+    ProjectUpdate,
     ServiceInfo,
     TaskIn,
     TaskOut,
+    TaskUpdate,
     TimelineMilestone,
     TimelineOut,
     TimelineProject,
@@ -73,42 +78,13 @@ MilestoneRead = Annotated[ScopeContext, Depends(require("projects.delivery.miles
 MilestoneWrite = Annotated[ScopeContext, Depends(require("projects.delivery.milestone.write"))]
 TaskRead = Annotated[ScopeContext, Depends(require("projects.board.task.read"))]
 TaskWrite = Annotated[ScopeContext, Depends(require("projects.board.task.write"))]
-#: Staffing the roster. There is no OWN reading of "the people I am" — nobody owns the member
-#: they are adding — so the catalogue floors this permission at ORG.
+MemberRead = Annotated[ScopeContext, Depends(require("projects.team.member.read"))]
 MemberWrite = Annotated[ScopeContext, Depends(require("projects.team.member.write"))]
 
 
 @router.get("/projects-workspace/info", response_model=ServiceInfo, summary="What this service is")
 async def info() -> ServiceInfo:
     return ServiceInfo(service=settings().service_name, schema_name=SCHEMA)
-
-
-# ------------------------------------------------------------------ the delivery team
-
-
-@router.post(
-    "/projects-workspace/members",
-    response_model=Person,
-    status_code=status.HTTP_201_CREATED,
-    summary="Add a member to the delivery team",
-    dependencies=[Entitled],
-)
-async def create_member(payload: MemberIn, session: SessionDep, ctx: MemberWrite) -> Person:
-    """Create the roster row a project owner or task assignee is addressed by.
-
-    `services.create_member` refuses a `ref` already taken in this organization (409), which is
-    what makes the human handle safe to key on. It stages no event: a roster row is a local
-    directory entry, not a delivery fact another service reacts to.
-    """
-    member = await services.create_member(
-        session,
-        ctx,
-        ref=payload.ref,
-        name=payload.name,
-        role=payload.role,
-        directory_id=payload.directory_id,
-    )
-    return selectors.person_out(member)
 
 
 # ------------------------------------------------------------------ portfolio
@@ -127,7 +103,9 @@ async def list_projects(
     q: Annotated[str | None, Query(description="Name, code, client or summary")] = None,
     health: Annotated[str | None, Query()] = None,
     phase: Annotated[str | None, Query()] = None,
-    sort: Annotated[str | None, Query(description="code | progress | target")] = None,
+    sort: Annotated[str | None, Query(description="code | progress | target | name | health")] = (
+        None
+    ),
 ) -> Page[ProjectOut]:
     stmt = selectors.projects_stmt(ctx, q=q, health=health, phase=phase, sort=sort)
     rows, total = await paginate(session, stmt, params)
@@ -172,6 +150,43 @@ async def read_project(code: str, session: SessionDep, ctx: ProjectRead) -> Proj
     )
 
 
+@router.patch(
+    "/projects-workspace/projects/{code}",
+    response_model=ProjectOut,
+    summary="Edit a project",
+    dependencies=[Entitled],
+)
+async def update_project(
+    code: str, payload: ProjectUpdate, session: SessionDep, ctx: ProjectWrite, request: Request
+) -> ProjectOut:
+    project = await selectors.get_project(session, ctx.organization_id, code)
+    if project is None:
+        raise NotFoundProblem("That project is not part of this organization")
+    updated = await services.update_project(session, ctx, project, payload, request=request)
+    members = await selectors.members_by_id(session, ctx.organization_id)
+    counts = await selectors.milestone_count_map(session, ctx.organization_id)
+    return selectors.project_out(
+        updated, members=members, milestone_count=counts.get(updated.id, 0)
+    )
+
+
+@router.delete(
+    "/projects-workspace/projects/{code}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a project — its milestones and board cards go with it",
+    dependencies=[Entitled],
+)
+async def delete_project(
+    code: str, session: SessionDep, ctx: ProjectWrite, request: Request
+) -> Response:
+    project = await selectors.get_project(session, ctx.organization_id, code)
+    if project is None:
+        raise NotFoundProblem("That project is not part of this organization")
+    await services.delete_project(session, ctx, project, request=request)
+    await session.flush()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 # ------------------------------------------------------------------ milestones
 
 
@@ -186,8 +201,9 @@ async def list_milestones(
     ctx: MilestoneRead,
     params: PageQuery,
     milestone_status: Annotated[str | None, Query(alias="status")] = None,
+    project_code: Annotated[str | None, Query(description="Filter by project code")] = None,
 ) -> Page[MilestoneOut]:
-    stmt = selectors.milestones_stmt(ctx, status=milestone_status)
+    stmt = selectors.milestones_stmt(ctx, status=milestone_status, project_code=project_code)
     rows, total = await paginate(session, stmt, params)
     members = await selectors.members_by_id(session, ctx.organization_id)
     projects = await selectors.projects_by_id(session, ctx.organization_id)
@@ -211,6 +227,130 @@ async def create_milestone(
     return selectors.milestone_out(milestone, members=members, projects=projects)
 
 
+@router.get(
+    "/projects-workspace/milestones/{milestone_id}",
+    response_model=MilestoneOut,
+    summary="One milestone",
+    dependencies=[Entitled],
+)
+async def read_milestone(
+    milestone_id: uuid.UUID, session: SessionDep, ctx: MilestoneRead
+) -> MilestoneOut:
+    milestone = await selectors.get_milestone(session, ctx.organization_id, milestone_id)
+    if milestone is None:
+        raise NotFoundProblem("That milestone is not part of this organization")
+    ctx.assert_can_touch(owner_id=milestone.owner_id)
+    members = await selectors.members_by_id(session, ctx.organization_id)
+    projects = await selectors.projects_by_id(session, ctx.organization_id)
+    return selectors.milestone_out(milestone, members=members, projects=projects)
+
+
+@router.patch(
+    "/projects-workspace/milestones/{milestone_id}",
+    response_model=MilestoneOut,
+    summary="Edit a milestone",
+    dependencies=[Entitled],
+)
+async def update_milestone(
+    milestone_id: uuid.UUID,
+    payload: MilestoneUpdate,
+    session: SessionDep,
+    ctx: MilestoneWrite,
+    request: Request,
+) -> MilestoneOut:
+    milestone = await selectors.get_milestone(session, ctx.organization_id, milestone_id)
+    if milestone is None:
+        raise NotFoundProblem("That milestone is not part of this organization")
+    updated = await services.update_milestone(session, ctx, milestone, payload, request=request)
+    members = await selectors.members_by_id(session, ctx.organization_id)
+    projects = await selectors.projects_by_id(session, ctx.organization_id)
+    return selectors.milestone_out(updated, members=members, projects=projects)
+
+
+@router.delete(
+    "/projects-workspace/milestones/{milestone_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a milestone",
+    dependencies=[Entitled],
+)
+async def delete_milestone(
+    milestone_id: uuid.UUID, session: SessionDep, ctx: MilestoneWrite, request: Request
+) -> Response:
+    milestone = await selectors.get_milestone(session, ctx.organization_id, milestone_id)
+    if milestone is None:
+        raise NotFoundProblem("That milestone is not part of this organization")
+    await services.delete_milestone(session, ctx, milestone, request=request)
+    await session.flush()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ------------------------------------------------------------------ members
+
+
+@router.get(
+    "/projects-workspace/members",
+    response_model=Page[MemberOut],
+    summary="The delivery-org roster — every owner/assignee picker's source",
+    dependencies=[Entitled],
+)
+async def list_members(
+    session: SessionDep,
+    ctx: MemberRead,
+    params: PageQuery,
+    q: Annotated[str | None, Query(description="Name or ref")] = None,
+) -> Page[MemberOut]:
+    stmt = selectors.members_stmt(ctx, q=q)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([selectors.member_out(m) for m in rows], total=total, params=params)
+
+
+@router.post(
+    "/projects-workspace/members",
+    response_model=MemberOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a delivery-org member",
+    dependencies=[Entitled],
+)
+async def create_member(
+    payload: MemberIn, session: SessionDep, ctx: MemberWrite, request: Request
+) -> MemberOut:
+    member = await services.create_member_from(session, ctx, payload, request=request)
+    return selectors.member_out(member)
+
+
+@router.patch(
+    "/projects-workspace/members/{ref}",
+    response_model=MemberOut,
+    summary="Edit a delivery-org member",
+    dependencies=[Entitled],
+)
+async def update_member(
+    ref: str, payload: MemberUpdate, session: SessionDep, ctx: MemberWrite, request: Request
+) -> MemberOut:
+    member = await selectors.get_member_by_ref(session, ctx.organization_id, ref)
+    if member is None:
+        raise NotFoundProblem("That member is not part of this organization")
+    updated = await services.update_member(session, ctx, member, payload, request=request)
+    return selectors.member_out(updated)
+
+
+@router.delete(
+    "/projects-workspace/members/{ref}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove a delivery-org member — their owner/assignee rows fall back to Unassigned",
+    dependencies=[Entitled],
+)
+async def delete_member(
+    ref: str, session: SessionDep, ctx: MemberWrite, request: Request
+) -> Response:
+    member = await selectors.get_member_by_ref(session, ctx.organization_id, ref)
+    if member is None:
+        raise NotFoundProblem("That member is not part of this organization")
+    await services.delete_member(session, ctx, member, request=request)
+    await session.flush()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 # ------------------------------------------------------------------ board / tasks
 
 
@@ -225,8 +365,9 @@ async def list_tasks(
     ctx: TaskRead,
     params: PageQuery,
     stage: Annotated[str | None, Query()] = None,
+    project_code: Annotated[str | None, Query(description="Filter by project code")] = None,
 ) -> Page[TaskOut]:
-    stmt = selectors.tasks_stmt(ctx, stage=stage)
+    stmt = selectors.tasks_stmt(ctx, stage=stage, project_code=project_code)
     rows, total = await paginate(session, stmt, params)
     members = await selectors.members_by_id(session, ctx.organization_id)
     projects = await selectors.projects_by_id(session, ctx.organization_id)
@@ -248,6 +389,41 @@ async def create_task(
     members = await selectors.members_by_id(session, ctx.organization_id)
     projects = await selectors.projects_by_id(session, ctx.organization_id)
     return selectors.task_out(task, members=members, projects=projects)
+
+
+@router.patch(
+    "/projects-workspace/tasks/{task_id}",
+    response_model=TaskOut,
+    summary="Move or edit a board card",
+    dependencies=[Entitled],
+)
+async def update_task(
+    task_id: uuid.UUID, payload: TaskUpdate, session: SessionDep, ctx: TaskWrite, request: Request
+) -> TaskOut:
+    task = await selectors.get_task(session, ctx.organization_id, task_id)
+    if task is None:
+        raise NotFoundProblem("That task is not part of this organization")
+    updated = await services.update_task(session, ctx, task, payload, request=request)
+    members = await selectors.members_by_id(session, ctx.organization_id)
+    projects = await selectors.projects_by_id(session, ctx.organization_id)
+    return selectors.task_out(updated, members=members, projects=projects)
+
+
+@router.delete(
+    "/projects-workspace/tasks/{task_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a board card",
+    dependencies=[Entitled],
+)
+async def delete_task(
+    task_id: uuid.UUID, session: SessionDep, ctx: TaskWrite, request: Request
+) -> Response:
+    task = await selectors.get_task(session, ctx.organization_id, task_id)
+    if task is None:
+        raise NotFoundProblem("That task is not part of this organization")
+    await services.delete_task(session, ctx, task, request=request)
+    await session.flush()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(

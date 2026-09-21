@@ -123,6 +123,317 @@ class TestEndpointAuthorization:
         assert body["name"] == "In-market buyers"
         assert body["created_at"] == "2025-08-04"
 
+    async def test_a_reader_cannot_update_a_campaign(self, client, org_id, seeded) -> None:
+        target = seeded["campaigns"][0].id
+        with as_principal(principal_for(org_id, [f"{READ}:ORG"])):
+            response = await client.patch(
+                f"/api/v1/marketing/campaigns/{target}", json={"name": "Sneaky"}
+            )
+        assert response.status_code == 403
+
+    async def test_a_reader_cannot_delete_a_campaign(self, client, org_id, seeded) -> None:
+        target = seeded["campaigns"][0].id
+        with as_principal(principal_for(org_id, [f"{READ}:ORG"])):
+            response = await client.delete(f"/api/v1/marketing/campaigns/{target}")
+        assert response.status_code == 403
+
+    async def test_a_reader_cannot_update_an_audience(self, client, org_id, seeded) -> None:
+        target = seeded["audiences"][0].id
+        with as_principal(principal_for(org_id, [f"{READ}:ORG"])):
+            response = await client.patch(
+                f"/api/v1/marketing/audiences/{target}", json={"name": "Sneaky"}
+            )
+        assert response.status_code == 403
+
+    async def test_a_reader_cannot_delete_an_audience(self, client, org_id, seeded) -> None:
+        target = seeded["audiences"][1].id  # authz is checked before the in-use conflict
+        with as_principal(principal_for(org_id, [f"{READ}:ORG"])):
+            response = await client.delete(f"/api/v1/marketing/audiences/{target}")
+        assert response.status_code == 403
+
+
+# --------------------------------------------------------------------- OWN scope has no purchase
+
+
+class TestOwnScopeIsAlwaysRefused:
+    """Campaigns and audiences are org-wide analytics rows with no owner column — there is no
+    person a narrower-than-ORG grant could ever match. The permission catalogue only ever issues
+    ORG-scope grants for `campaign.read`/`campaign.write` today, but the dependency floor, not
+    the catalogue, is what must refuse a synthetic `:OWN` grant if one is ever issued."""
+
+    async def test_an_own_scope_reader_cannot_list_campaigns(self, client, org_id, seeded) -> None:
+        """`Reader` now floors at ORG the same way `Writer` always has, so this is refused at
+        the dependency before the route body — and before `selectors.campaigns_stmt`'s `ctx.
+        apply` would have had to fall back to its own "matches nothing" safety net."""
+        with as_principal(principal_for(org_id, [f"{READ}:OWN"])):
+            response = await client.get("/api/v1/marketing/campaigns")
+        assert response.status_code == 403
+
+    async def test_an_own_scope_reader_cannot_read_a_campaign(self, client, org_id, seeded) -> None:
+        target = seeded["campaigns"][0].id
+        with as_principal(principal_for(org_id, [f"{READ}:OWN"])):
+            response = await client.get(f"/api/v1/marketing/campaigns/{target}")
+        assert response.status_code == 403
+
+    async def test_an_own_scope_reader_cannot_read_campaign_performance(
+        self, client, org_id, seeded
+    ) -> None:
+        target = seeded["campaigns"][0].id
+        with as_principal(principal_for(org_id, [f"{READ}:OWN"])):
+            response = await client.get(f"/api/v1/marketing/campaigns/{target}/performance")
+        assert response.status_code == 403
+
+    async def test_an_own_scope_writer_cannot_update_a_campaign(
+        self, client, org_id, seeded
+    ) -> None:
+        target = seeded["campaigns"][0].id
+        with as_principal(principal_for(org_id, [f"{WRITE}:OWN"])):
+            response = await client.patch(
+                f"/api/v1/marketing/campaigns/{target}", json={"name": "Sneaky"}
+            )
+        assert response.status_code == 403
+
+    async def test_an_own_scope_writer_cannot_delete_a_campaign(
+        self, client, org_id, seeded
+    ) -> None:
+        target = seeded["campaigns"][0].id
+        with as_principal(principal_for(org_id, [f"{WRITE}:OWN"])):
+            response = await client.delete(f"/api/v1/marketing/campaigns/{target}")
+        assert response.status_code == 403
+
+    async def test_an_own_scope_writer_cannot_update_an_audience(
+        self, client, org_id, seeded
+    ) -> None:
+        target = seeded["audiences"][0].id
+        with as_principal(principal_for(org_id, [f"{WRITE}:OWN"])):
+            response = await client.patch(
+                f"/api/v1/marketing/audiences/{target}", json={"name": "Sneaky"}
+            )
+        assert response.status_code == 403
+
+    async def test_an_own_scope_writer_cannot_delete_an_audience(
+        self, client, org_id, seeded
+    ) -> None:
+        target = seeded["audiences"][1].id
+        with as_principal(principal_for(org_id, [f"{WRITE}:OWN"])):
+            response = await client.delete(f"/api/v1/marketing/audiences/{target}")
+        assert response.status_code == 403
+
+
+# --------------------------------------------------------------------- update / delete campaign
+
+
+class TestUpdateCampaign:
+    async def test_an_org_writer_may_edit_plain_fields(self, client, org_id, seeded) -> None:
+        target = seeded["campaigns"][0]
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.patch(
+                f"/api/v1/marketing/campaigns/{target.id}",
+                json={"name": "Diwali Enterprise Push v2", "goal": "Renewals"},
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["name"] == "Diwali Enterprise Push v2"
+        assert body["goal"] == "Renewals"
+        # Unset fields are untouched.
+        assert body["channel"] == target.channel
+
+    async def test_currency_is_not_a_field_on_the_patch(self, client, org_id, seeded) -> None:
+        """`currency` would silently re-denominate stored amounts, so it is not on the schema —
+        sending it is an unknown field, refused outright."""
+        target = seeded["campaigns"][0].id
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.patch(
+                f"/api/v1/marketing/campaigns/{target}", json={"currency": "USD"}
+            )
+        assert response.status_code == 422
+
+    async def test_end_date_before_start_date_is_refused(self, client, org_id, seeded) -> None:
+        target = seeded["campaigns"][0]  # start_date = 2026-06-01
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.patch(
+                f"/api/v1/marketing/campaigns/{target.id}",
+                json={"end_date": "2026-01-01"},
+            )
+        assert response.status_code == 422
+        assert response.json()["errors"][0]["field"] == "end_date"
+
+    async def test_status_moves_through_the_legal_transition(self, client, org_id, seeded) -> None:
+        # "Diwali Enterprise Push" is seeded as `live`.
+        target = seeded["campaigns"][0]
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.patch(
+                f"/api/v1/marketing/campaigns/{target.id}", json={"status": "paused"}
+            )
+        assert response.status_code == 200
+        assert response.json()["status"] == "paused"
+
+    async def test_an_illegal_status_move_is_a_conflict(self, client, org_id, seeded) -> None:
+        # "Reels Test" is seeded as `draft`; draft may only launch to `live`.
+        target = seeded["campaigns"][3]
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.patch(
+                f"/api/v1/marketing/campaigns/{target.id}", json={"status": "ended"}
+            )
+        assert response.status_code == 409
+
+    async def test_moving_to_an_audience_from_another_org_is_not_found(
+        self, client, session, org_id, seeded, admin_session
+    ) -> None:
+        from app.models import Audience
+
+        other_org = uuid.uuid4()
+        async with admin_session.begin():
+            await admin_session.execute(
+                Audience.__table__.insert().values(
+                    id=(stranger := uuid.uuid4()),
+                    organization_id=other_org,
+                    name="Foreign Segment 2",
+                    size=1,
+                    criteria="",
+                    defined_on=date(2026, 1, 1),
+                )
+            )
+        target = seeded["campaigns"][0].id
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.patch(
+                f"/api/v1/marketing/campaigns/{target}", json={"audience_id": str(stranger)}
+            )
+        assert response.status_code == 404
+
+    async def test_updating_a_missing_campaign_is_a_404(self, client, org_id, seeded) -> None:
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.patch(
+                f"/api/v1/marketing/campaigns/{uuid.uuid4()}", json={"name": "Nope"}
+            )
+        assert response.status_code == 404
+
+    async def test_cross_tenant_update_is_a_404_and_changes_nothing(
+        self, client, org_id, seeded
+    ) -> None:
+        target = seeded["campaigns"][0].id
+        other_org = uuid.uuid4()
+        with as_principal(principal_for(other_org, [f"{WRITE}:ORG"])):
+            response = await client.patch(
+                f"/api/v1/marketing/campaigns/{target}", json={"name": "Stolen"}
+            )
+        assert response.status_code == 404
+        with as_principal(principal_for(org_id, [f"{READ}:ORG"])):
+            check = await client.get(f"/api/v1/marketing/campaigns/{target}")
+        assert check.json()["name"] != "Stolen"
+
+
+class TestDeleteCampaign:
+    async def test_an_org_writer_may_delete_a_campaign(self, client, org_id, seeded) -> None:
+        target = seeded["campaigns"][0].id
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.delete(f"/api/v1/marketing/campaigns/{target}")
+        assert response.status_code == 204
+        with as_principal(principal_for(org_id, [f"{READ}:ORG"])):
+            check = await client.get(f"/api/v1/marketing/campaigns/{target}")
+        assert check.status_code == 404
+
+    async def test_deleting_a_missing_campaign_is_a_404(self, client, org_id, seeded) -> None:
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.delete(f"/api/v1/marketing/campaigns/{uuid.uuid4()}")
+        assert response.status_code == 404
+
+    async def test_cross_tenant_delete_is_a_404_and_deletes_nothing(
+        self, client, org_id, seeded
+    ) -> None:
+        target = seeded["campaigns"][0].id
+        other_org = uuid.uuid4()
+        with as_principal(principal_for(other_org, [f"{WRITE}:ORG"])):
+            response = await client.delete(f"/api/v1/marketing/campaigns/{target}")
+        assert response.status_code == 404
+        with as_principal(principal_for(org_id, [f"{READ}:ORG"])):
+            check = await client.get(f"/api/v1/marketing/campaigns/{target}")
+        assert check.status_code == 200
+
+
+# --------------------------------------------------------------------- update / delete audience
+
+
+class TestUpdateAudience:
+    async def test_an_org_writer_may_rename_an_audience(self, client, org_id, seeded) -> None:
+        target = seeded["audiences"][1].id
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.patch(
+                f"/api/v1/marketing/audiences/{target}", json={"name": "Growth SaaS v2"}
+            )
+        assert response.status_code == 200
+        assert response.json()["name"] == "Growth SaaS v2"
+
+    async def test_renaming_to_an_existing_name_is_a_conflict(self, client, org_id, seeded) -> None:
+        target = seeded["audiences"][1].id  # "Growth-stage SaaS"
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.patch(
+                f"/api/v1/marketing/audiences/{target}", json={"name": "Enterprise India"}
+            )
+        assert response.status_code == 409
+
+    async def test_renaming_to_its_own_current_name_is_not_a_conflict(
+        self, client, org_id, seeded
+    ) -> None:
+        target = seeded["audiences"][0]
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.patch(
+                f"/api/v1/marketing/audiences/{target.id}",
+                json={"name": target.name, "size": 5000},
+            )
+        assert response.status_code == 200
+        assert response.json()["size"] == 5000
+
+    async def test_updating_a_missing_audience_is_a_404(self, client, org_id, seeded) -> None:
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.patch(
+                f"/api/v1/marketing/audiences/{uuid.uuid4()}", json={"name": "Nope"}
+            )
+        assert response.status_code == 404
+
+
+class TestDeleteAudience:
+    async def test_an_unused_audience_may_be_deleted(self, client, org_id, seeded) -> None:
+        # "Growth-stage SaaS" is targeted by "Retargeting Trials" and "Reels Test" in the seed —
+        # use a freshly created, unused one instead.
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            created = await client.post(
+                "/api/v1/marketing/audiences",
+                json={"name": "Unused segment", "size": 1, "created_at": "2026-01-01"},
+            )
+            audience_id = created.json()["id"]
+            response = await client.delete(f"/api/v1/marketing/audiences/{audience_id}")
+        assert response.status_code == 204
+
+    async def test_deleting_a_name_frees_it_for_reuse(self, client, org_id, seeded) -> None:
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            created = await client.post(
+                "/api/v1/marketing/audiences",
+                json={"name": "Reusable name", "size": 1, "created_at": "2026-01-01"},
+            )
+            audience_id = created.json()["id"]
+            deleted = await client.delete(f"/api/v1/marketing/audiences/{audience_id}")
+            assert deleted.status_code == 204
+            recreated = await client.post(
+                "/api/v1/marketing/audiences",
+                json={"name": "Reusable name", "size": 2, "created_at": "2026-01-02"},
+            )
+        assert recreated.status_code == 201
+
+    async def test_an_audience_used_by_a_campaign_cannot_be_deleted(
+        self, client, org_id, seeded
+    ) -> None:
+        target = seeded["audiences"][0].id  # "Enterprise India" — used by two seeded campaigns
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.delete(f"/api/v1/marketing/audiences/{target}")
+        assert response.status_code == 409
+        assert "campaign" in response.json()["detail"]
+
+    async def test_deleting_a_missing_audience_is_a_404(self, client, org_id, seeded) -> None:
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.delete(f"/api/v1/marketing/audiences/{uuid.uuid4()}")
+        assert response.status_code == 404
+
 
 # --------------------------------------------------------------------- read shapes
 
@@ -308,3 +619,86 @@ class TestEvents:
         campaigns = (await session.execute(select(func.count()).select_from(Campaign))).scalar_one()
         assert campaigns == 4
         assert {c.channel for c in seeded["campaigns"]} == {"search", "social", "email"}
+
+    async def test_updating_a_campaign_stages_its_event_and_audit_row(
+        self, client, session, org_id, seeded
+    ) -> None:
+        target = seeded["campaigns"][0].id
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.patch(
+                f"/api/v1/marketing/campaigns/{target}", json={"goal": "New goal"}
+            )
+        assert response.status_code == 200
+
+        count = (
+            await session.execute(
+                select(func.count())
+                .select_from(OutboxEvent)
+                .where(OutboxEvent.event_type == services.EVT_CAMPAIGN_UPDATED)
+            )
+        ).scalar_one()
+        assert count == 1
+        audits = (
+            await session.execute(
+                select(func.count())
+                .select_from(AuditLog)
+                .where(AuditLog.action == "campaign.updated")
+            )
+        ).scalar_one()
+        assert audits == 1
+
+    async def test_deleting_a_campaign_stages_its_event(
+        self, client, session, org_id, seeded
+    ) -> None:
+        target = seeded["campaigns"][0].id
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            response = await client.delete(f"/api/v1/marketing/campaigns/{target}")
+        assert response.status_code == 204
+
+        count = (
+            await session.execute(
+                select(func.count())
+                .select_from(OutboxEvent)
+                .where(OutboxEvent.event_type == services.EVT_CAMPAIGN_DELETED)
+            )
+        ).scalar_one()
+        assert count == 1
+        audits = (
+            await session.execute(
+                select(func.count())
+                .select_from(AuditLog)
+                .where(AuditLog.action == "campaign.deleted")
+            )
+        ).scalar_one()
+        assert audits == 1
+
+    async def test_updating_and_deleting_an_audience_stage_their_events(
+        self, client, session, org_id, seeded
+    ) -> None:
+        with as_principal(principal_for(org_id, [f"{WRITE}:ORG"])):
+            created = await client.post(
+                "/api/v1/marketing/audiences",
+                json={"name": "Events fixture", "size": 1, "created_at": "2026-01-01"},
+            )
+            target = created.json()["id"]
+            updated = await client.patch(f"/api/v1/marketing/audiences/{target}", json={"size": 2})
+            deleted = await client.delete(f"/api/v1/marketing/audiences/{target}")
+        assert updated.status_code == 200
+        assert deleted.status_code == 204
+
+        updated_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(OutboxEvent)
+                .where(OutboxEvent.event_type == services.EVT_AUDIENCE_UPDATED)
+            )
+        ).scalar_one()
+        deleted_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(OutboxEvent)
+                .where(OutboxEvent.event_type == services.EVT_AUDIENCE_DELETED)
+            )
+        ).scalar_one()
+        assert updated_count == 1
+        assert deleted_count == 1

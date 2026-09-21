@@ -2,22 +2,13 @@ import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { getAllTickets, listAgents, TRENDS_ARE_SAMPLE } from "@/api/client";
-import type { Agent, Ticket } from "@/api/types";
-import { useAuth } from "@opsgrids/client";
-import {
-  agentById,
-  breachingCount,
-  csatPct,
-  medianFirstResponseMin,
-  needsAttentionList,
-  openCount,
-  priorityBreakdown,
-  statusBreakdown,
-} from "@/data/derive";
-import { KPI_DELTA, KPI_TREND, TICKET_VOLUME } from "@/data/samples";
-import { formatMinutes } from "@/lib/format";
-import { useAsync } from "@opsgrids/client";
+import { getOverview, listAgents, listTickets, TRENDS_ARE_SAMPLE } from "@/api/client";
+import type { Agent, Overview, Ticket } from "@/api/types";
+import { Can, useAsync, useAuth } from "@opsgrids/client";
+import { agentById, needsAttentionList } from "@/data/derive";
+import { KPI_DELTA, KPI_TREND } from "@/data/samples";
+import { now as clockNow } from "@/lib/clock";
+import { formatDate, formatMinutes } from "@/lib/format";
 import {
   Avatar,
   Button,
@@ -26,7 +17,6 @@ import {
   ErrorState,
   KpiCard,
   PriorityPill,
-  SampleChip,
   SectionHeader,
   Skeleton,
   SlaPill,
@@ -43,11 +33,12 @@ import {
   PlusIcon,
   SearchIcon,
 } from "@opsgrids/ui";
-import { SAMPLE_DATA, SAMPLE_TREND } from "@/ui/sampleCopy";
+import { SAMPLE_TREND } from "@/ui/sampleCopy";
+import { NewTicketDialog } from "@/ui/NewTicketDialog";
 
 /** A stable empty reference so derived-data memos don't churn while loading. */
-const EMPTY_TICKETS: Ticket[] = [];
 const EMPTY_AGENTS: Agent[] = [];
+const EMPTY_TICKETS: Ticket[] = [];
 
 /** Colour keys for the two breakdowns — each category keeps a stable, meaningful hue. */
 const PRIORITY_COLORS: Record<string, string> = {
@@ -65,7 +56,13 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 /** The Overview's top bar: breadcrumb + title, then search / date / new-ticket. */
-function OverviewHeader({ orgName }: { orgName: string }) {
+function OverviewHeader({
+  orgName,
+  onNewTicket,
+}: {
+  orgName: string;
+  onNewTicket: () => void;
+}) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
 
@@ -106,16 +103,14 @@ function OverviewHeader({ orgName }: { orgName: string }) {
 
         <span className="hidden h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold text-ink-soft shadow-card sm:inline-flex">
           <CalendarIcon className="size-4 text-muted" />
-          <span className="tnum">Last 7 days · to 24 Aug</span>
+          <span className="tnum">Last 7 days · to {formatDate(clockNow().toISOString())}</span>
         </span>
 
-        <Button
-          size="md"
-          leadingIcon={<PlusIcon className="size-4" />}
-          onClick={() => navigate("/queue")}
-        >
-          New ticket
-        </Button>
+        <Can permission="support.desk.ticket.write" scope="ORG">
+          <Button size="md" leadingIcon={<PlusIcon className="size-4" />} onClick={onNewTicket}>
+            New ticket
+          </Button>
+        </Can>
       </div>
     </header>
   );
@@ -132,13 +127,12 @@ interface KpiConfig {
   goodWhen: "up" | "down";
 }
 
-function buildKpis(tickets: Ticket[]): KpiConfig[] {
-  const csat = csatPct(tickets);
+function buildKpis(overview: Overview): KpiConfig[] {
   return [
     {
       key: "open",
       label: "Open tickets",
-      value: String(openCount(tickets)),
+      value: String(overview.open_tickets),
       deltaPct: KPI_DELTA.open,
       series: [...KPI_TREND.open],
       icon: <InboxIcon className="size-5" />,
@@ -148,7 +142,7 @@ function buildKpis(tickets: Ticket[]): KpiConfig[] {
     {
       key: "breaching",
       label: "Breaching SLA",
-      value: String(breachingCount(tickets)),
+      value: String(overview.breaching_sla),
       deltaPct: KPI_DELTA.breaching,
       series: [...KPI_TREND.breaching],
       icon: <AlertTriangleIcon className="size-5" />,
@@ -158,7 +152,7 @@ function buildKpis(tickets: Ticket[]): KpiConfig[] {
     {
       key: "frt",
       label: "First-response time",
-      value: formatMinutes(medianFirstResponseMin(tickets)),
+      value: formatMinutes(overview.first_response_median_min),
       deltaPct: KPI_DELTA.firstResponse,
       series: [...KPI_TREND.firstResponse],
       icon: <ClockIcon className="size-5" />,
@@ -168,7 +162,7 @@ function buildKpis(tickets: Ticket[]): KpiConfig[] {
     {
       key: "csat",
       label: "CSAT",
-      value: csat === null ? "—" : `${csat}%`,
+      value: overview.csat_pct === null ? "—" : `${overview.csat_pct}%`,
       deltaPct: KPI_DELTA.csat,
       series: [...KPI_TREND.csat],
       icon: <CheckCircleIcon className="size-5" />,
@@ -209,35 +203,44 @@ function AttentionRow({ ticket, agent }: { ticket: Ticket; agent: Agent | null }
 }
 
 export function OverviewPage() {
+  const navigate = useNavigate();
   const { user } = useAuth();
-  const ticketsState = useAsync(getAllTickets, []);
+  const overviewState = useAsync(getOverview, []);
   const agentsState = useAsync(listAgents, []);
+  // "Needs attention" has no rollup of its own on `GET /support/overview` — it names actual
+  // tickets, not a count. Bounded to the most severe 50, priority order, which is the best single
+  // request can offer without a dedicated backend query; it is a preview, not the full queue (see
+  // "Open queue" below for that), and never claims a count the KPI row above does not already own.
+  const attentionTicketsState = useAsync(() => listTickets({ sort: "priority", size: 50 }), []);
+  const [creating, setCreating] = useState(false);
 
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
     user?.organizations[0]?.name ??
     "OpsGrids";
 
-  const tickets = useMemo(
-    () => (ticketsState.status === "success" ? ticketsState.data.items : EMPTY_TICKETS),
-    [ticketsState],
-  );
   const agents = useMemo(
     () => (agentsState.status === "success" ? agentsState.data : EMPTY_AGENTS),
     [agentsState],
   );
+  const attentionSource = useMemo(
+    () => (attentionTicketsState.status === "success" ? attentionTicketsState.data.items : EMPTY_TICKETS),
+    [attentionTicketsState],
+  );
+  const attention = useMemo(
+    () => needsAttentionList(attentionSource).slice(0, 8),
+    [attentionSource],
+  );
 
-  const kpis = useMemo(() => buildKpis(tickets), [tickets]);
-  const priority = useMemo(() => priorityBreakdown(tickets), [tickets]);
-  const status = useMemo(() => statusBreakdown(tickets), [tickets]);
-  const attention = useMemo(() => needsAttentionList(tickets), [tickets]);
+  const overview = overviewState.status === "success" ? overviewState.data : null;
+  const kpis = useMemo(() => (overview ? buildKpis(overview) : []), [overview]);
 
-  const loading = ticketsState.status === "loading";
-  const errored = ticketsState.status === "error";
+  const loading = overviewState.status === "loading";
+  const errored = overviewState.status === "error";
 
   return (
     <div className="rise flex flex-col gap-5">
-      <OverviewHeader orgName={orgName} />
+      <OverviewHeader orgName={orgName} onNewTicket={() => setCreating(true)} />
 
       {/* Row 1 — KPI cards */}
       <section
@@ -258,10 +261,13 @@ export function OverviewPage() {
           : null}
         {errored ? (
           <Card className="p-5 sm:col-span-2 xl:col-span-4">
-            <ErrorState message={ticketsState.error.message} />
+            <ErrorState
+              message={overviewState.error.message}
+              action={<Button onClick={overviewState.reload}>Try again</Button>}
+            />
           </Card>
         ) : null}
-        {ticketsState.status === "success"
+        {overview
           ? kpis.map((kpi, i) => (
               <div key={kpi.key} style={{ "--i": i } as CSSProperties}>
                 <KpiCard
@@ -282,19 +288,19 @@ export function OverviewPage() {
       {/* Row 2 — volume · priority · status */}
       <section aria-label="Ticket trends" className="grid grid-cols-1 gap-5 xl:grid-cols-4">
         <Card className="flex flex-col gap-5 p-6 xl:col-span-2">
-          <SectionHeader
-            title="Ticket volume"
-            subtitle="Opened vs solved, last 7 days"
-            {...(TRENDS_ARE_SAMPLE ? { action: <SampleChip {...SAMPLE_DATA} /> } : {})}
-          />
-          <TicketVolumeChart data={TICKET_VOLUME} />
+          <SectionHeader title="Ticket volume" subtitle="Opened vs solved, last 7 days" />
+          {overview ? (
+            <TicketVolumeChart data={overview.volume} />
+          ) : (
+            <Skeleton className="h-56 w-full rounded-tile" />
+          )}
         </Card>
 
         <Card className="flex flex-col gap-5 p-6 xl:col-span-1">
           <SectionHeader title="By priority" subtitle="Open queue" />
-          {ticketsState.status === "success" ? (
+          {overview ? (
             <CategoryBreakdown
-              slices={priority}
+              slices={overview.priority_breakdown}
               colors={PRIORITY_COLORS}
               totalNoun="tickets in the open queue"
             />
@@ -305,9 +311,9 @@ export function OverviewPage() {
 
         <Card className="flex flex-col gap-5 p-6 xl:col-span-1">
           <SectionHeader title="By status" subtitle="All tickets" />
-          {ticketsState.status === "success" ? (
+          {overview ? (
             <CategoryBreakdown
-              slices={status}
+              slices={overview.status_breakdown}
               colors={STATUS_COLORS}
               totalNoun="tickets in total"
             />
@@ -322,7 +328,7 @@ export function OverviewPage() {
         <Card className="flex flex-col gap-4 p-6">
           <SectionHeader
             title="Needs attention"
-            subtitle="Breached, or due within the hour — work these first"
+            subtitle="Breached, or due within the hour, among the 50 highest-priority tickets — open the queue for the full list"
             action={
               <Link
                 to="/queue"
@@ -332,15 +338,20 @@ export function OverviewPage() {
               </Link>
             }
           />
-          {loading ? (
+          {attentionTicketsState.status === "loading" ? (
             <div className="flex flex-col gap-2">
               {Array.from({ length: 5 }).map((_, i) => (
                 <Skeleton key={i} className="h-14 w-full rounded-tile" />
               ))}
             </div>
           ) : null}
-          {errored ? <ErrorState message={ticketsState.error.message} /> : null}
-          {ticketsState.status === "success" ? (
+          {attentionTicketsState.status === "error" ? (
+            <ErrorState
+              message={attentionTicketsState.error.message}
+              action={<Button onClick={attentionTicketsState.reload}>Try again</Button>}
+            />
+          ) : null}
+          {attentionTicketsState.status === "success" ? (
             attention.length === 0 ? (
               <div className="flex flex-col items-center gap-2 py-10 text-center">
                 <span className="grid size-12 place-items-center rounded-full bg-present-soft text-present">
@@ -348,7 +359,7 @@ export function OverviewPage() {
                 </span>
                 <p className="text-base font-bold">Everything is within SLA</p>
                 <p className="text-sm text-muted">
-                  No open ticket is breached or due within the hour. Nice work.
+                  No ticket in the preview is breached or due within the hour. Nice work.
                 </p>
               </div>
             ) : (
@@ -363,6 +374,13 @@ export function OverviewPage() {
           ) : null}
         </Card>
       </section>
+
+      {creating ? (
+        <NewTicketDialog
+          onClose={() => setCreating(false)}
+          onCreated={(created) => navigate(`/queue/${created.id}`)}
+        />
+      ) : null}
     </div>
   );
 }

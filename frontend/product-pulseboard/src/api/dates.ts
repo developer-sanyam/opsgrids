@@ -25,3 +25,15 @@ export function weekFrom(mondayIso: string): string[] {
     return isoOf(d);
   });
 }
+
+/** `iso` shifted by `days` (negative walks backward). Used for week/day navigation controls. */
+export function addDays(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return isoOf(d);
+}
+
+/** The Monday `weeks` away from `mondayIso` — the week navigation's prev/next. */
+export function addWeeks(mondayIso: string, weeks: number): string {
+  return addDays(mondayIso, weeks * 7);
+}

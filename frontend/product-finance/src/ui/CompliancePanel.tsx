@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 import { listFilings } from "@/api/client";
 import type { EInvoiceFiling, EInvoiceState, Invoice } from "@/api/types";
@@ -11,7 +12,7 @@ import {
 import { readErrorMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
 import { formatMoney } from "@/lib/money";
-import { useAsync } from "@opsgrids/client";
+import { Can, useAsync } from "@opsgrids/client";
 import {
   AlertOctagonIcon,
   Button,
@@ -191,7 +192,13 @@ function FilingTimeline({ filings }: { filings: EInvoiceFiling[] }) {
  * by this screen.
  */
 function RemedyCard({ invoice, state }: { invoice: Invoice; state: EInvoiceState }) {
+  const navigate = useNavigate();
   const remedy = remedyView(state);
+  // The `credit_note` remedy is a real write (`POST /finance/invoices`, gap 3) and goes straight
+  // to that form — no local confirmation step here, since the form itself confirms before it
+  // issues. `cancel` (IRN withdrawal) has no route on this platform today (`internal.py` only;
+  // the tax-portal client is a stub) — it stays instructional, and never claims to have sent
+  // anything.
   const [step, setStep] = useState<"closed" | "confirming" | "confirmed">("closed");
   const [reasonCode, setReasonCode] = useState("");
 
@@ -199,6 +206,27 @@ function RemedyCard({ invoice, state }: { invoice: Invoice; state: EInvoiceState
   const deadline = state.cancellable_until ?? null;
   const reasonLabel =
     CANCELLATION_REASONS.find((r) => r.code === reasonCode)?.label ?? "";
+
+  if (remedy.key === "credit_note") {
+    return (
+      <div className="flex flex-col gap-3 rounded-tile border border-line p-4">
+        <div className="flex flex-col gap-1">
+          <h3 className="text-sm font-bold text-ink">{remedy.headline}</h3>
+        </div>
+        <p className="max-w-prose text-sm text-muted">{remedy.consequence}</p>
+        <Can permission="finance.billing.invoice.issue" scope="ORG">
+          <Button
+            variant="outline"
+            size="sm"
+            className="self-start"
+            onClick={() => navigate(`/invoices/new?corrects=${invoice.id}`)}
+          >
+            {remedy.action}
+          </Button>
+        </Can>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-3 rounded-tile border border-line p-4">
@@ -218,6 +246,10 @@ function RemedyCard({ invoice, state }: { invoice: Invoice; state: EInvoiceState
       {step === "closed" ? (
         <div className="flex flex-col gap-2">
           <p className="max-w-prose text-sm text-muted">{remedy.consequence}</p>
+          <p className="text-xs text-muted">
+            Not yet automated on this platform: withdrawal goes through the e-invoicing agent, not
+            a button here. This walks through what to quote and where.
+          </p>
           <Button
             variant="outline"
             size="sm"
@@ -238,39 +270,37 @@ function RemedyCard({ invoice, state }: { invoice: Invoice; state: EInvoiceState
           }}
         >
           <p className="max-w-prose text-sm text-ink-soft">{remedy.consequence}</p>
-          {remedy.key === "cancel" ? (
-            <div className="flex flex-col gap-1.5">
-              <label
-                htmlFor="cancel-reason"
-                className="text-xs font-semibold uppercase tracking-wide text-faint"
-              >
-                Reason for withdrawal
-              </label>
-              <select
-                id="cancel-reason"
-                required
-                value={reasonCode}
-                onChange={(event) => setReasonCode(event.target.value)}
-                className="h-11 max-w-xs rounded-tile bg-ground px-3 text-sm font-semibold text-ink focus:outline-none focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
-              >
-                <option value="">Choose one…</option>
-                {CANCELLATION_REASONS.map((reason) => (
-                  <option key={reason.code} value={reason.code}>
-                    {reason.code} · {reason.label}
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-muted">
-                The portal takes one of these four and no free text.
-              </p>
-            </div>
-          ) : null}
+          <div className="flex flex-col gap-1.5">
+            <label
+              htmlFor="cancel-reason"
+              className="text-xs font-semibold uppercase tracking-wide text-faint"
+            >
+              Reason for withdrawal
+            </label>
+            <select
+              id="cancel-reason"
+              required
+              value={reasonCode}
+              onChange={(event) => setReasonCode(event.target.value)}
+              className="h-11 max-w-xs rounded-tile bg-ground px-3 text-sm font-semibold text-ink focus:outline-none focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
+            >
+              <option value="">Choose one…</option>
+              {CANCELLATION_REASONS.map((reason) => (
+                <option key={reason.code} value={reason.code}>
+                  {reason.code} · {reason.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-muted">
+              The portal takes one of these four and no free text.
+            </p>
+          </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button type="submit" size="sm">
-              {remedy.key === "cancel" ? "Confirm withdrawal" : "Confirm the credit note"}
+            <Button type="submit" size="sm" disabled={reasonCode === ""}>
+              Show what to do next
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={() => setStep("closed")}>
-              {remedy.key === "cancel" ? "Keep the registration" : "Not now"}
+              Keep the registration
             </Button>
           </div>
         </form>
@@ -279,25 +309,12 @@ function RemedyCard({ invoice, state }: { invoice: Invoice; state: EInvoiceState
       {step === "confirmed" ? (
         <div className="flex flex-col gap-2 rounded-tile bg-ground p-3" role="status">
           <p className="text-sm font-bold text-ink">What happens next</p>
-          {remedy.key === "cancel" ? (
-            <>
-              <p className="max-w-prose text-sm text-ink-soft">
-                Withdrawals are filed with the portal by the platform's e-invoicing agent, not from
-                this screen. Quote the IRN below under reason {reasonCode} ({reasonLabel})
-                {deadline ? <> before {formatDateTime(deadline)}</> : null}.
-              </p>
-              {state.irn ? <CopyButton value={state.irn} label="Copy IRN" /> : null}
-            </>
-          ) : (
-            <>
-              <p className="max-w-prose text-sm text-ink-soft">
-                Raise a credit note against {invoice.number} for{" "}
-                {formatMoney(Math.abs(invoice.total_minor))}. The register is append-only, so this
-                invoice keeps its IRN and the correction is reported as its own document.
-              </p>
-              <CopyButton value={invoice.number} label="Copy invoice number" />
-            </>
-          )}
+          <p className="max-w-prose text-sm text-ink-soft">
+            Withdrawals are filed with the portal by the platform's e-invoicing agent, not from
+            this screen. Quote the IRN below under reason {reasonCode} ({reasonLabel})
+            {deadline ? <> before {formatDateTime(deadline)}</> : null}.
+          </p>
+          {state.irn ? <CopyButton value={state.irn} label="Copy IRN" /> : null}
           <Button
             type="button"
             variant="ghost"

@@ -61,6 +61,25 @@ def do_run_migrations(connection: Connection) -> None:
     # without them -- which is exactly what happened the first time this was left out.
     apply_schema_grants(connection, SCHEMA, cfg.db_app_role, outbox_role=cfg.db_outbox_role)
 
+    # `stock_movements` is append-only, enforced by a table privilege rather than a policy (the
+    # `stock movements ledger` migration). `apply_schema_grants` above re-grants UPDATE/DELETE on
+    # *every* table and only re-revokes `audit_logs`, so a revoke that lived solely in the
+    # migration would be undone on each later `alembic upgrade`. Re-applying it here, right after
+    # the grants, in exactly the shape `apply_schema_grants` uses for `audit_logs`, is what makes
+    # append-only hold across grant re-application — the pattern `console`/`metering` use for
+    # their own append-only tables. Guarded on the table existing so a downgrade-to-base (which
+    # drops it) does not fail.
+    if (
+        cfg.db_app_role
+        and connection.execute(
+            text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.stock_movements"}
+        ).scalar()
+    ):
+        connection.execute(
+            text(f'REVOKE UPDATE, DELETE ON {SCHEMA}.stock_movements FROM "{cfg.db_app_role}"')
+        )
+        connection.commit()
+
 
 async def run_async_migrations() -> None:
     connectable = async_engine_from_config(

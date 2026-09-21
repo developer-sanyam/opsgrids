@@ -2,10 +2,10 @@ import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { listInventory, listPurchaseOrders, listSuppliers, TRENDS_ARE_SAMPLE } from "@/api/client";
-import { TODAY, ON_TIME_SAMPLE } from "@/api/fixtures";
+import { FULL_PAGE, listInventory, listPurchaseOrders, listSuppliers, TRENDS_ARE_SAMPLE } from "@/api/client";
+import { ON_TIME_SAMPLE } from "@/api/fixtures";
 import type { InventoryItemOut, PurchaseOrderOut, SupplierOut } from "@/api/types";
-import { useAuth } from "@opsgrids/client";
+import { Can, useAuth } from "@opsgrids/client";
 import {
   attentionItems,
   inventoryValueMinor,
@@ -17,6 +17,7 @@ import {
   weightedOnTimePct,
 } from "@/data/derive";
 import { useAsync } from "@opsgrids/client";
+import { today } from "@/lib/now";
 import { formatMoneyCompact, formatNumber } from "@/lib/format";
 import {
   Button,
@@ -27,6 +28,7 @@ import {
   NeedsAttention,
   PoStatusPill,
   SampleChip,
+  SearchInput,
   SectionHeader,
   Skeleton,
   SpendTrend,
@@ -34,38 +36,20 @@ import {
   TopSuppliers,
 } from "@/ui";
 import type { KpiTone, MiniStat } from "@/ui";
-import {
-  AlertTriangleIcon,
-  BellIcon,
-  CalendarIcon,
-  ClipboardListIcon,
-  CoinsIcon,
-  PlusIcon,
-  SearchIcon,
-  TruckIcon,
-} from "@opsgrids/ui";
+import { AlertTriangleIcon, ClipboardListIcon, CoinsIcon, PlusIcon, TruckIcon } from "@opsgrids/ui";
 import { SAMPLE_DATA, SAMPLE_TREND } from "@/ui/sampleCopy";
-
-type Period = "weekly" | "monthly" | "quarterly";
-
-const PERIOD_RANGE: Record<Period, string> = {
-  weekly: "18 Aug – 24 Aug 2026",
-  monthly: "01 Aug – 24 Aug 2026",
-  quarterly: "Jul – Sep 2026",
-};
 
 const EMPTY_POS: PurchaseOrderOut[] = [];
 const EMPTY_INVENTORY: InventoryItemOut[] = [];
 const EMPTY_SUPPLIERS: SupplierOut[] = [];
 
-/** The Overview's top bar: breadcrumb + title, then search / notifications / period / New PO. */
+/** The Overview's top bar: breadcrumb + title, then a search that actually searches, and New PO. */
 function OverviewHeader({ orgName }: { orgName: string }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
-  const [period, setPeriod] = useState<Period>("monthly");
 
   return (
-    <header className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+    <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
       <div className="flex flex-col gap-1">
         <nav aria-label="Breadcrumb" className="text-sm font-medium text-muted">
           Workspace <span className="text-faint">/</span>{" "}
@@ -74,63 +58,32 @@ function OverviewHeader({ orgName }: { orgName: string }) {
         <h1 className="display text-3xl font-extrabold leading-tight sm:text-[2.1rem]">Overview</h1>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <form
           onSubmit={(e) => {
             e.preventDefault();
             const q = query.trim();
             navigate(q ? `/purchase-orders?q=${encodeURIComponent(q)}` : "/purchase-orders");
           }}
-          className="hidden h-11 min-w-0 items-center gap-2 rounded-full bg-surface px-4 shadow-card focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2 md:flex md:w-60"
+          className="sm:w-64"
         >
-          <SearchIcon className="size-[18px] shrink-0 text-faint" />
-          <label htmlFor="ovw-search" className="sr-only">
-            Search purchase orders
-          </label>
-          <input
-            id="ovw-search"
-            type="search"
+          <SearchInput
+            label="Search purchase orders"
+            placeholder="Search POs…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search POs…"
-            className="min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-faint focus:outline-none"
           />
         </form>
 
-        <Link
-          to="/purchase-orders"
-          aria-label="Notifications"
-          className="relative grid size-11 shrink-0 place-items-center rounded-full bg-surface text-ink-soft shadow-card hover:bg-ground transition-colors"
-        >
-          <BellIcon className="size-5" />
-          <span className="absolute right-2.5 top-2.5 size-2 rounded-full bg-accent ring-2 ring-surface" aria-hidden />
-        </Link>
-
-        <span className="hidden h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold text-ink-soft shadow-card sm:inline-flex">
-          <CalendarIcon className="size-4 text-muted" />
-          <span className="tnum">{PERIOD_RANGE[period]}</span>
-        </span>
-
-        <label className="inline-flex h-11 items-center rounded-full bg-surface px-2 shadow-card">
-          <span className="sr-only">Reporting period</span>
-          <select
-            value={period}
-            onChange={(e) => setPeriod(e.target.value as Period)}
-            className="h-full cursor-pointer rounded-full bg-transparent px-2 text-sm font-semibold text-ink focus:outline-none"
+        <Can permission="operations.procurement.purchase_order.write" scope="OWN">
+          <Button
+            size="md"
+            leadingIcon={<PlusIcon className="size-4" />}
+            onClick={() => navigate("/purchase-orders/new")}
           >
-            <option value="weekly">Weekly</option>
-            <option value="monthly">Monthly</option>
-            <option value="quarterly">Quarterly</option>
-          </select>
-        </label>
-
-        <Button
-          size="md"
-          leadingIcon={<PlusIcon className="size-4" />}
-          onClick={() => navigate("/purchase-orders")}
-        >
-          New PO
-        </Button>
+            New PO
+          </Button>
+        </Can>
       </div>
     </header>
   );
@@ -237,9 +190,9 @@ function RecentOrders({ pos }: { pos: PurchaseOrderOut[] }) {
 
 export function OverviewPage() {
   const { user } = useAuth();
-  const posState = useAsync(listPurchaseOrders, []);
-  const inventoryState = useAsync(listInventory, []);
-  const suppliersState = useAsync(listSuppliers, []);
+  const posState = useAsync(() => listPurchaseOrders({ size: FULL_PAGE }), []);
+  const inventoryState = useAsync(() => listInventory({ size: FULL_PAGE }), []);
+  const suppliersState = useAsync(() => listSuppliers({ size: FULL_PAGE }), []);
 
   const orgName =
     user?.organizations.find((o) => o.organization_id === user.organization_id)?.name ??
@@ -266,6 +219,12 @@ export function OverviewPage() {
     (suppliersState.status === "error" && suppliersState.error) ||
     null;
 
+  function retryAll() {
+    posState.reload();
+    inventoryState.reload();
+    suppliersState.reload();
+  }
+
   const kpis = useMemo(
     () => buildKpis(pos, inventory, suppliers),
     [pos, inventory, suppliers],
@@ -273,7 +232,7 @@ export function OverviewPage() {
   const categories = useMemo(() => spendByCategory(pos), [pos]);
   const statusMix = useMemo(() => poStatusMix(pos), [pos]);
   const attention = useMemo(
-    () => attentionItems(pos, inventory, TODAY),
+    () => attentionItems(pos, inventory, today()),
     [pos, inventory],
   );
   const topSuppliers = useMemo(
@@ -312,7 +271,7 @@ export function OverviewPage() {
           : null}
         {failed ? (
           <Card className="p-5 sm:col-span-2 xl:col-span-4">
-            <ErrorState message={firstError?.message ?? "Could not load the dashboard."} />
+            <ErrorState message={firstError?.message ?? "Could not load the dashboard."} onRetry={retryAll} />
           </Card>
         ) : null}
         {ready
@@ -340,7 +299,7 @@ export function OverviewPage() {
           {ready && categories.length > 0 ? (
             <CategoryBreakdown data={categories} />
           ) : failed ? (
-            <ErrorState message={firstError?.message ?? "Failed to load."} />
+            <ErrorState message={firstError?.message ?? "Failed to load."} onRetry={retryAll} />
           ) : (
             <Skeleton className="h-56 w-full rounded-tile" />
           )}
@@ -360,7 +319,7 @@ export function OverviewPage() {
           {ready && statusMix.length > 0 ? (
             <StatusMix slices={statusMix} total={pos.length} stats={miniStats} />
           ) : failed ? (
-            <ErrorState message={firstError?.message ?? "Failed to load."} />
+            <ErrorState message={firstError?.message ?? "Failed to load."} onRetry={retryAll} />
           ) : (
             <Skeleton className="h-56 w-full rounded-tile" />
           )}
@@ -389,7 +348,7 @@ export function OverviewPage() {
               ))}
             </div>
           ) : null}
-          {failed ? <ErrorState message={firstError?.message ?? "Failed to load."} /> : null}
+          {failed ? <ErrorState message={firstError?.message ?? "Failed to load."} onRetry={retryAll} /> : null}
           {ready ? <RecentOrders pos={pos} /> : null}
         </Card>
 

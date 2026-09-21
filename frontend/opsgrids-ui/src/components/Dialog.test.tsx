@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { openDialogCount } from "../lib/dialogStack";
 import { Button } from "./Button";
 import { Dialog } from "./Dialog";
 
@@ -70,6 +71,46 @@ function ControlledHarness() {
           value={comment}
           onChange={(event) => setComment(event.target.value)}
         />
+      </Dialog>
+    </>
+  );
+}
+
+/**
+ * The shape the bug was reported in: "add a team member" opened from inside an open create-deal
+ * form. Both dialogs listen on the document; the outer one registered first, so before the stack
+ * existed Escape closed the form under the dialog the user was actually looking at.
+ */
+function NestedHarness() {
+  const [dealOpen, setDealOpen] = useState(false);
+  const [memberOpen, setMemberOpen] = useState(false);
+  return (
+    <>
+      <Button onClick={() => setDealOpen(true)}>New deal</Button>
+      <Dialog
+        open={dealOpen}
+        onClose={() => setDealOpen(false)}
+        title="New deal"
+        footer={
+          <Button variant="ghost" onClick={() => setDealOpen(false)}>
+            Cancel deal
+          </Button>
+        }
+      >
+        <input aria-label="Deal name" />
+        <Button onClick={() => setMemberOpen(true)}>Add a team member</Button>
+        <Dialog
+          open={memberOpen}
+          onClose={() => setMemberOpen(false)}
+          title="Add a team member"
+          footer={
+            <Button variant="ghost" onClick={() => setMemberOpen(false)}>
+              Cancel member
+            </Button>
+          }
+        >
+          <input aria-label="Email" />
+        </Dialog>
       </Dialog>
     </>
   );
@@ -138,6 +179,59 @@ describe("Dialog", () => {
     await user.type(field, "Missing manager sign-off");
     expect(field.value).toBe("Missing manager sign-off");
     expect(document.activeElement).toBe(field);
+  });
+
+  it("gives Escape to the dialog on top, and only to it", async () => {
+    const user = userEvent.setup();
+    render(<NestedHarness />);
+    const opener = screen.getByRole("button", { name: "New deal" });
+    await user.click(opener);
+    const addMember = screen.getByRole("button", { name: "Add a team member" });
+    await user.click(addMember);
+    expect(screen.getAllByRole("dialog")).toHaveLength(2);
+    expect(openDialogCount()).toBe(2);
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Add a team member" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "New deal" })).toBeDefined();
+    // Focus comes back to the nested dialog's own opener, which is inside the dialog beneath.
+    expect(document.activeElement).toBe(addMember);
+
+    // The dialog beneath has the keyboard again, without an effect re-running.
+    await user.keyboard("{Escape}");
+    expect(screen.queryAllByRole("dialog")).toHaveLength(0);
+    expect(document.activeElement).toBe(opener);
+    // Nothing left on the stack: a leaked layer would make the next dialog think it is buried.
+    expect(openDialogCount()).toBe(0);
+  });
+
+  it("traps Tab inside the topmost dialog while one is open on top of another", async () => {
+    const user = userEvent.setup();
+    render(<NestedHarness />);
+    await user.click(screen.getByRole("button", { name: "New deal" }));
+    await user.click(screen.getByRole("button", { name: "Add a team member" }));
+    const inner = screen.getByRole("dialog", { name: "Add a team member" });
+
+    screen.getByRole("button", { name: "Cancel member" }).focus();
+    await user.tab();
+    expect(inner.contains(document.activeElement)).toBe(true);
+
+    screen.getByLabelText("Email").focus();
+    await user.tab();
+    expect(inner.contains(document.activeElement)).toBe(true);
+  });
+
+  it("closes the nested dialog without disturbing the one beneath", async () => {
+    const user = userEvent.setup();
+    render(<NestedHarness />);
+    await user.click(screen.getByRole("button", { name: "New deal" }));
+    await user.type(screen.getByLabelText("Deal name"), "Acme renewal");
+    await user.click(screen.getByRole("button", { name: "Add a team member" }));
+    await user.click(screen.getByRole("button", { name: "Cancel member" }));
+
+    expect(screen.queryByRole("dialog", { name: "Add a team member" })).toBeNull();
+    // The form under it kept what was typed into it — it never unmounted.
+    expect((screen.getByLabelText("Deal name") as HTMLInputElement).value).toBe("Acme renewal");
   });
 
   it("renders nothing at all when closed", () => {

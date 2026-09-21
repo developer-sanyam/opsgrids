@@ -23,28 +23,56 @@ import { createContext, useContext } from "react";
 import { hasPermission } from "./scope";
 import type { Scope } from "./scope";
 
+/** How the grants fetch itself is doing — distinct from what any one permission answers. */
+export type GrantsStatus = "loading" | "ready" | "error";
+
 export interface PermissionState {
   /**
-   * The caller's resolved grants as `name:SCOPE`, or `null` when the app has none to give.
-   *
-   * `null` is the ordinary state today and is not a bug: the access token deliberately carries no
-   * `perms` claim — the gateway resolves grants per request and passes them downstream as
-   * `X-Perms`, so no browser-visible response currently states them (`services/auth/app/tokens.py`).
-   * Until one does, feed this from whatever the app is given and treat `unknown` as `denied` for
-   * hiding purposes.
+   * The caller's resolved grants as `name:SCOPE`, from `GET /members/me/grants`, with the widest
+   * scope already won per code. `null` until they arrive, and `null` again if they could not be
+   * read — `status` says which.
    */
   grants: readonly string[] | null;
   /** The `ent` claim: the products this organization has activated. */
   entitlements: readonly string[] | null;
+  /**
+   * `loading` before the answer arrives, `ready` when it is exact, `error` when the fetch failed.
+   *
+   * A screen that renders *nothing* where a button should be owes the user a reason. An app shell
+   * that reads `error` here and says so turns a screen with no controls into a screen with an
+   * explanation — otherwise a transient failure is indistinguishable from a narrow role.
+   */
+  status: GrantsStatus;
+  /** The membership the grants belong to, as the service reported it. */
+  membershipId: string | null;
+  /** The organization's permission version at the time they were read. */
+  pv: number | null;
+  /** Why the fetch failed, when it did. */
+  error: Error | null;
+  /** Ask again — after a role change made elsewhere in the same session. */
+  reloadGrants: () => void;
 }
 
 export type PermissionStatus = "granted" | "denied" | "unknown";
 
 export const PermissionContext = createContext<PermissionState | null>(null);
 
-/** The raw state, for a screen that needs to tell "denied" from "not known". */
+const UNMOUNTED: PermissionState = {
+  grants: null,
+  entitlements: null,
+  status: "loading",
+  membershipId: null,
+  pv: null,
+  error: null,
+  reloadGrants: () => undefined,
+};
+
+/**
+ * The raw state, for a screen that needs to tell "denied" from "not known yet" — or to explain a
+ * `status: "error"` rather than silently render no controls.
+ */
 export function usePermissions(): PermissionState {
-  return useContext(PermissionContext) ?? { grants: null, entitlements: null };
+  return useContext(PermissionContext) ?? UNMOUNTED;
 }
 
 /**
@@ -69,6 +97,27 @@ export function usePermissionStatus(code: string, minimum: Scope = "OWN"): Permi
   const { grants } = usePermissions();
   if (grants === null) return "unknown";
   return hasPermission(grants, code, minimum) ? "granted" : "denied";
+}
+
+/**
+ * The gate every Create / Edit / Delete control uses.
+ *
+ * `true` only on a grant read from `GET /members/me/grants`. While they are loading, and if they
+ * could not be read at all, this is `false` and the control renders nothing — fail closed, and
+ * never a button that appears and then vanishes once the answer lands.
+ *
+ * Spelled to read as the sentence it is: `useCan("operations.procurement.supplier.write", "ORG")`.
+ * It is `usePermission` under a name a screen can be read aloud with; `usePermissionStatus` is
+ * the one to reach for when "not known yet" must render differently from "no".
+ *
+ * Pass the same `minimum` the endpoint's guard passes. Checking the name alone shows an org-wide
+ * control to every employee, because almost everyone holds something at `OWN`.
+ *
+ * It hides UI. It is not authorization (ADR-0003 §3) — the endpoint refuses the call regardless,
+ * so the screen must still handle the 403 it may get.
+ */
+export function useCan(code: string, minimum: Scope = "OWN"): boolean {
+  return usePermissionStatus(code, minimum) === "granted";
 }
 
 /**

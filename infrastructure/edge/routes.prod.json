@@ -63,6 +63,7 @@
     { "prefix": "/api/v1/employees", "upstream": "http://employee:8000", "product": "hrms" },
     { "prefix": "/api/v1/attendance", "upstream": "http://attendance:8000", "product": "hrms" },
     { "prefix": "/api/v1/shifts", "upstream": "http://attendance:8000", "product": "hrms" },
+    { "prefix": "/api/v1/geofences", "upstream": "http://attendance:8000", "product": "hrms" },
 
     { "prefix": "/api/v1/customers", "upstream": "http://customer:8000", "product": "crm" },
     { "prefix": "/api/v1/contacts", "upstream": "http://customer:8000", "product": "crm" },

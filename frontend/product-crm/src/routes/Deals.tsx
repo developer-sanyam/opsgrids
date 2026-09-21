@@ -1,30 +1,36 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
-import { listDeals } from "@/api/client";
+import { deleteDeal, listDeals } from "@/api/client";
 import type { Company, Deal, DealStage } from "@/api/types";
 import { dealsByStage } from "@/data/derive";
 import { useDirectory } from "@/data/directoryContext";
 import { companyName } from "@/data/lookups";
 import { STAGES } from "@/data/stages";
-import { HandshakeIcon, KanbanIcon, LayoutIcon, PlusIcon, cn } from "@opsgrids/ui";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { HandshakeIcon, KanbanIcon, LayoutIcon, PlusIcon, cn, useToast } from "@opsgrids/ui";
 import { formatDate, formatMoney } from "@/lib/format";
-import { useAsync } from "@opsgrids/client";
+import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
   Button,
   Card,
+  ConfirmDialog,
   DataTable,
   EmptyState,
   ErrorState,
   KanbanBoard,
   OwnerBadge,
   PageHeader,
+  Pagination,
   Pill,
+  RowActions,
   SearchInput,
+  Select,
   Skeleton,
   StagePill,
 } from "@/ui";
 import type { Column } from "@/ui";
+import { DealFormDialog } from "@/forms/DealFormDialog";
 
 type StageFilter = DealStage | "all";
 type View = "board" | "list";
@@ -35,80 +41,131 @@ const STAGE_FILTERS: { value: StageFilter; label: string }[] = [
 ];
 
 const NO_DEALS: Deal[] = [];
+const BOARD_PAGE_SIZE = 200;
+const LIST_PAGE_SIZE = 25;
 
-function buildListColumns(companies: Company[]): Column<Deal>[] {
+function buildListColumns(
+  companies: Company[],
+  canWrite: boolean,
+  onEdit: (d: Deal) => void,
+  onDelete: (d: Deal) => void,
+): Column<Deal>[] {
   return [
-  {
-    key: "name",
-    header: "Deal",
-    render: (d) => (
-      <div className="flex flex-col leading-tight">
-        <Link
-          to={`/deals/${d.id}`}
-          className="font-semibold text-ink hover:text-accent transition-colors"
-        >
-          {d.name}
-        </Link>
-        <span className="text-xs text-muted">{companyName(companies, d.company_id)}</span>
-      </div>
-    ),
-  },
-  { key: "stage", header: "Stage", render: (d) => <StagePill stage={d.stage} /> },
-  {
-    key: "value",
-    header: "Value",
-    align: "right",
-    render: (d) => <span className="tnum font-semibold text-ink">{formatMoney(d.value_minor, d.currency)}</span>,
-  },
-  {
-    key: "owner",
-    header: "Owner",
-    cellClassName: "hidden md:table-cell",
-    headerClassName: "hidden md:table-cell",
-    render: (d) => <OwnerBadge ownerId={d.owner_id} />,
-  },
-  {
-    key: "close",
-    header: "Close date",
-    cellClassName: "hidden sm:table-cell",
-    headerClassName: "hidden sm:table-cell",
-    render: (d) => <span className="tnum text-ink-soft">{formatDate(d.close_date)}</span>,
-  },
-  {
-    key: "prob",
-    header: "Prob.",
-    align: "right",
-    cellClassName: "hidden lg:table-cell",
-    headerClassName: "hidden lg:table-cell",
-    render: (d) => <span className="tnum text-muted">{d.probability}%</span>,
-  },
+    {
+      key: "name",
+      header: "Deal",
+      render: (d) => (
+        <div className="flex flex-col leading-tight">
+          <Link
+            to={`/deals/${d.id}`}
+            className="font-semibold text-ink hover:text-accent transition-colors"
+          >
+            {d.name}
+          </Link>
+          <span className="text-xs text-muted">{companyName(companies, d.company_id)}</span>
+        </div>
+      ),
+    },
+    { key: "stage", header: "Stage", render: (d) => <StagePill stage={d.stage} /> },
+    {
+      key: "value",
+      header: "Value",
+      align: "right",
+      render: (d) => <span className="tnum font-semibold text-ink">{formatMoney(d.value_minor, d.currency)}</span>,
+    },
+    {
+      key: "owner",
+      header: "Owner",
+      cellClassName: "hidden md:table-cell",
+      headerClassName: "hidden md:table-cell",
+      render: (d) => <OwnerBadge ownerId={d.owner_id} />,
+    },
+    {
+      key: "close",
+      header: "Close date",
+      cellClassName: "hidden sm:table-cell",
+      headerClassName: "hidden sm:table-cell",
+      render: (d) => <span className="tnum text-ink-soft">{formatDate(d.close_date)}</span>,
+    },
+    {
+      key: "prob",
+      header: "Prob.",
+      align: "right",
+      cellClassName: "hidden lg:table-cell",
+      headerClassName: "hidden lg:table-cell",
+      render: (d) => <span className="tnum text-muted">{d.probability}%</span>,
+    },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      render: (d) => (
+        <RowActions
+          label={d.name}
+          actions={[
+            { label: "Edit", onSelect: () => onEdit(d), hidden: !canWrite },
+            { label: "Delete", tone: "danger", onSelect: () => onDelete(d), hidden: !canWrite },
+          ]}
+        />
+      ),
+    },
   ];
 }
 
 export function DealsPage() {
+  const toast = useToast();
   const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
+  const debouncedSearch = useDebouncedValue(search);
   const [stage, setStage] = useState<StageFilter>("all");
   const [ownerId, setOwnerId] = useState<string | "all">("all");
   const [view, setView] = useState<View>("board");
-  const { owners: ownerOptions, companies } = useDirectory();
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(LIST_PAGE_SIZE);
+  const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<Deal | null>(null);
+  const [deleting, setDeleting] = useState<Deal | null>(null);
+  const directory = useDirectory();
+  const { owners: ownerOptions, companies, contacts } = directory;
+  const canWrite = useCan("crm.pipeline.deal.write", "OWN");
 
   useEffect(() => {
     const q = searchParams.get("q");
     if (q !== null) setSearch(q);
   }, [searchParams]);
 
-  const loader = useCallback(() => listDeals({ search, stage, ownerId }), [search, stage, ownerId]);
-  const deals = useAsync(loader, [search, stage, ownerId]);
+  const effectiveSize = view === "board" ? BOARD_PAGE_SIZE : size;
+  const effectivePage = view === "board" ? 1 : page;
+  const loader = useCallback(
+    () =>
+      listDeals({
+        search: debouncedSearch,
+        stage,
+        ownerId,
+        page: effectivePage,
+        size: effectiveSize,
+      }),
+    [debouncedSearch, stage, ownerId, effectivePage, effectiveSize],
+  );
+  const deals = useAsync(loader, [debouncedSearch, stage, ownerId, effectivePage, effectiveSize, view]);
+
+  const remove = useMutation((deal: Deal) => deleteDeal(deal.id), {
+    onSuccess: (_result, deal) => {
+      setDeleting(null);
+      toast.success(`${deal.name} deleted.`);
+      deals.reload();
+    },
+  });
 
   const items = useMemo(
     () => (deals.status === "success" ? deals.data.items : NO_DEALS),
     [deals],
   );
   const groups = useMemo(() => dealsByStage(items), [items]);
-  const listColumns = useMemo(() => buildListColumns(companies), [companies]);
-  const total = items.length;
+  const listColumns = useMemo(
+    () => buildListColumns(companies, canWrite, setEditing, setDeleting),
+    [companies, canWrite],
+  );
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -120,7 +177,7 @@ export function DealsPage() {
             <div
               role="tablist"
               aria-label="View"
-              className="hidden items-center rounded-full bg-surface p-0.5 shadow-card sm:flex"
+              className="flex items-center rounded-full bg-surface p-0.5 shadow-card"
             >
               <button
                 type="button"
@@ -133,7 +190,7 @@ export function DealsPage() {
                 )}
               >
                 <KanbanIcon className="size-4" />
-                Board
+                <span className="hidden sm:inline">Board</span>
               </button>
               <button
                 type="button"
@@ -146,12 +203,14 @@ export function DealsPage() {
                 )}
               >
                 <LayoutIcon className="size-4" />
-                List
+                <span className="hidden sm:inline">List</span>
               </button>
             </div>
-            <Button size="md" leadingIcon={<PlusIcon className="size-4" />} onClick={() => navigate("/deals")}>
-              New deal
-            </Button>
+            <Can permission="crm.pipeline.deal.write" scope="OWN">
+              <Button size="md" leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
+                New deal
+              </Button>
+            </Can>
           </>
         }
       />
@@ -163,31 +222,39 @@ export function DealsPage() {
             label="Search deals"
             placeholder="Search by deal name…"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
             containerClassName="lg:max-w-xs"
           />
           <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
             {STAGE_FILTERS.map((f) => (
-              <Pill key={f.value} active={stage === f.value} onClick={() => setStage(f.value)}>
+              <Pill
+                key={f.value}
+                active={stage === f.value}
+                onClick={() => {
+                  setStage(f.value);
+                  setPage(1);
+                }}
+              >
                 {f.label}
               </Pill>
             ))}
           </div>
-          <label className="ml-auto inline-flex h-11 shrink-0 items-center rounded-full bg-ground px-4">
-            <span className="sr-only">Filter by owner</span>
-            <select
-              value={ownerId}
-              onChange={(e) => setOwnerId(e.target.value)}
-              className="h-full cursor-pointer bg-transparent pr-1 text-sm font-semibold text-ink focus:outline-none"
-            >
-              <option value="all">All owners</option>
-              {ownerOptions.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.full_name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <Select
+            label="Filter by owner"
+            containerClassName="lg:ml-auto lg:w-56"
+            value={ownerId}
+            onChange={(e) => {
+              setOwnerId(e.target.value);
+              setPage(1);
+            }}
+            options={[
+              { value: "all", label: "All owners" },
+              ...ownerOptions.map((o) => ({ value: o.id, label: o.full_name })),
+            ]}
+          />
         </div>
       </Card>
 
@@ -205,32 +272,110 @@ export function DealsPage() {
 
       {deals.status === "error" ? (
         <Card className="p-6">
-          <ErrorState message={deals.error.message} />
+          <ErrorState
+            title="Couldn't load deals"
+            message={problemMessage(deals.error)}
+            onRetry={deals.reload}
+          />
         </Card>
       ) : null}
 
       {deals.status === "success" ? (
-        total === 0 ? (
+        items.length === 0 ? (
           <Card className="p-6">
             <EmptyState
               icon={<HandshakeIcon className="size-6" />}
               title="No matching deals"
               description="No deals match these filters. Try another stage, owner, or clear the search."
+              action={
+                <Can permission="crm.pipeline.deal.write" scope="OWN">
+                  <Button size="sm" onClick={() => setCreating(true)}>
+                    New deal
+                  </Button>
+                </Can>
+              }
             />
           </Card>
         ) : view === "board" ? (
-          <KanbanBoard groups={groups} />
+          <KanbanBoard
+            groups={groups}
+            canMove={canWrite}
+            onMoved={(message) => toast.success(message)}
+            onMoveFailed={(message) => toast.error(message)}
+            reload={deals.reload}
+          />
         ) : (
-          <Card className="p-2 sm:p-4">
-            <DataTable
-              caption="All deals in the pipeline"
-              columns={listColumns}
-              rows={items}
-              rowKey={(d) => d.id}
+          <>
+            <Card className="p-2 sm:p-4">
+              <DataTable
+                caption="All deals in the pipeline"
+                columns={listColumns}
+                rows={items}
+                rowKey={(d) => d.id}
+              />
+            </Card>
+            <Pagination
+              page={deals.data.page}
+              pages={deals.data.pages}
+              total={deals.data.total}
+              size={deals.data.size}
+              noun="deals"
+              onPageChange={setPage}
+              onSizeChange={(n) => {
+                setSize(n);
+                setPage(1);
+              }}
             />
-          </Card>
+          </>
         )
       ) : null}
+
+      {creating ? (
+        <DealFormDialog
+          deal={null}
+          companies={companies}
+          contacts={contacts}
+          owners={ownerOptions}
+          onOwnerCreated={() => directory.reload()}
+          onClose={() => setCreating(false)}
+          onSaved={(deal) => {
+            setCreating(false);
+            toast.success(`${deal.name} created.`);
+            deals.reload();
+          }}
+        />
+      ) : null}
+
+      {editing ? (
+        <DealFormDialog
+          deal={editing}
+          companies={companies}
+          contacts={contacts}
+          owners={ownerOptions}
+          onOwnerCreated={() => directory.reload()}
+          onClose={() => setEditing(null)}
+          onSaved={(deal) => {
+            setEditing(null);
+            toast.success(`${deal.name} saved.`);
+            deals.reload();
+          }}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onClose={() => {
+          setDeleting(null);
+          remove.reset();
+        }}
+        onConfirm={() => deleting && void remove.mutate(deleting)}
+        title="Delete this deal?"
+        body={`${deleting?.name} is removed from the pipeline. This can't be undone.`}
+        confirmLabel="Delete"
+        pendingLabel="Deleting…"
+        pending={remove.pending}
+        {...(remove.error ? { error: problemMessage(remove.error) } : {})}
+      />
     </div>
   );
 }
