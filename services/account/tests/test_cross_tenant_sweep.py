@@ -118,6 +118,7 @@ NO_BODY = Write(json=lambda _a: None)
 PATH_PARAMS: dict[str, Callable[[TenantA], uuid.UUID]] = {
     "membership_id": lambda a: a.membership_id,
     "unit_id": lambda a: a.unit_id,
+    "location_id": lambda a: a.location_id,
     "role_id": lambda a: a.role_id,
     "invitation_id": lambda a: a.invitation_id,
 }
@@ -132,7 +133,13 @@ BODIES: dict[Route, Write] = {
     ),
     # `parent_id` is optional, and the unit named in the path is what the route must not find.
     ("POST", f"{PREFIX}/org-units/{{unit_id}}/move"): NO_BODY,
+    ("PATCH", f"{PREFIX}/org-units/{{unit_id}}"): Write(
+        json=lambda _a: {"name": "Renamed by tenant B"}
+    ),
     ("POST", f"{PREFIX}/locations"): Write(json=lambda _a: {"name": "Pune", "code": "PNQ"}),
+    ("PATCH", f"{PREFIX}/locations/{{location_id}}"): Write(
+        json=lambda _a: {"name": "Renamed by tenant B"}
+    ),
     ("PATCH", f"{PREFIX}/members/{{membership_id}}"): Write(
         json=lambda _a: {"job_title": "Compromised"}
     ),
@@ -144,6 +151,7 @@ BODIES: dict[Route, Write] = {
     ("PUT", f"{PREFIX}/roles/{{role_id}}"): Write(
         json=lambda _a: {"code": "HIJACKED", "name": "Hijacked", "grants": []}
     ),
+    ("DELETE", f"{PREFIX}/roles/{{role_id}}"): NO_BODY,
     ("POST", f"{PREFIX}/invitations"): Write(
         json=lambda _a: {"email": "newcomer@example.com", "role_codes": [A_ROLE_CODE]},
         names_a=True,

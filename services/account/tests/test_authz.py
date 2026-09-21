@@ -288,7 +288,9 @@ class TestRoleGrants:
             async with session.begin():
                 member_role = await selectors.get_role_by_code(session, org.id, "MEMBER")
                 assert member_role is not None
-                await services.replace_role_grants(session, ctx, member_role, [])
+                await services.replace_role_grants(
+                    session, ctx, member_role, RoleIn(code="MEMBER", name="Member", grants=[])
+                )
 
     async def test_resolved_grants_take_the_widest_scope(
         self, session: AsyncSession, org: Organization, people: dict[str, Membership]

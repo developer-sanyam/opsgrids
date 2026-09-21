@@ -22,7 +22,7 @@ from typing import Any, cast
 
 from sqlalchemy import Select, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import contains_eager
+from sqlalchemy.orm import contains_eager, selectinload
 
 from app.models import (
     Invitation,
@@ -328,6 +328,44 @@ async def get_org_unit(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def org_unit_has_active_children(
+    session: AsyncSession, org_id: uuid.UUID, unit_id: uuid.UUID
+) -> bool:
+    """Whether another, still-active department reports to this one.
+
+    Deactivating a department that still has live sub-departments would leave them pointing
+    at a parent nobody administers any more — `move_org_unit` refuses a cycle for the same
+    reason: an org chart has to stay something a person can act on.
+    """
+    stmt = (
+        select(OrgUnit.id)
+        .where(
+            OrgUnit.organization_id == org_id,
+            OrgUnit.parent_id == unit_id,
+            OrgUnit.deleted_at.is_(None),
+            OrgUnit.is_active.is_(True),
+        )
+        .limit(1)
+    )
+    return (await session.execute(stmt)).first() is not None
+
+
+async def org_unit_has_active_members(
+    session: AsyncSession, org_id: uuid.UUID, unit_id: uuid.UUID
+) -> bool:
+    """Whether anybody still active is assigned to this department."""
+    stmt = (
+        select(Membership.id)
+        .where(
+            Membership.organization_id == org_id,
+            Membership.org_unit_id == unit_id,
+            Membership.status == "active",
+        )
+        .limit(1)
+    )
+    return (await session.execute(stmt)).first() is not None
+
+
 async def descendant_ids(
     session: AsyncSession, org_id: uuid.UUID, root: uuid.UUID
 ) -> set[uuid.UUID]:
@@ -398,6 +436,41 @@ async def get_role_by_code(session: AsyncSession, org_id: uuid.UUID, code: str) 
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def role_held_by_a_membership(
+    session: AsyncSession, org_id: uuid.UUID, role_id: uuid.UUID
+) -> bool:
+    """Whether any membership — active or not — still holds this role.
+
+    Explicit, rather than trusting `ON DELETE CASCADE` on `membership_roles.role_id`: the
+    cascade would strip the row silently, which is exactly how a colleague loses access with
+    no audit line explaining why (the audit's "do NOT rely on ON DELETE CASCADE").
+    """
+    stmt = (
+        select(MembershipRole.id)
+        .join(Membership, Membership.id == MembershipRole.membership_id)
+        .where(MembershipRole.role_id == role_id, Membership.organization_id == org_id)
+        .limit(1)
+    )
+    return (await session.execute(stmt)).first() is not None
+
+
+async def role_named_by_a_pending_invitation(
+    session: AsyncSession, org_id: uuid.UUID, role_code: str
+) -> bool:
+    """Whether an outstanding invitation still promises this role on acceptance."""
+    stmt = (
+        select(Invitation.id)
+        .where(
+            Invitation.organization_id == org_id,
+            Invitation.accepted_at.is_(None),
+            Invitation.revoked_at.is_(None),
+            Invitation.role_codes.contains([role_code]),
+        )
+        .limit(1)
+    )
+    return (await session.execute(stmt)).first() is not None
+
+
 def to_role_out(role: Role) -> RoleOut:
     return RoleOut(
         id=role.id,
@@ -447,6 +520,50 @@ async def resolve_grants(session: AsyncSession, membership_id: uuid.UUID) -> lis
         if code not in widest or rank[scope] > rank[widest[code]]:
             widest[code] = scope
     return sorted(f"{code}:{scope}" for code, scope in widest.items())
+
+
+_GRANT_SCOPE_RANK = {"OWN": 0, "TEAM": 1, "LOCATION": 2, "ORG": 3}
+
+
+async def get_membership_grants(
+    session: AsyncSession, membership_id: uuid.UUID
+) -> tuple[Membership | None, list[str]]:
+    """The one query behind both `GET /internal/v1/memberships/{id}/grants` (auth's directory
+    read) and `GET /api/v1/members/me/grants` (a member reading their own).
+
+    Two callers computing "everything this membership may do" independently is how they drift
+    — one forgets a role a person was just given, the other still shows a permission that was
+    revoked five minutes ago, and nobody can say which is right because neither is wrong on its
+    own terms. This is the single place "widest scope wins" is decided.
+
+    Returns `(None, [])` for a membership that does not exist and `(membership, [])` for one
+    that is not active — never a 404 for the second case: a caller reading their own grants
+    while suspended gets the honest empty list its status implies, not an error.
+    """
+    membership = (
+        await session.execute(
+            select(Membership)
+            .where(Membership.id == membership_id)
+            .options(
+                selectinload(Membership.roles)
+                .selectinload(MembershipRole.role)
+                .selectinload(Role.grants)
+            )
+        )
+    ).scalar_one_or_none()
+
+    if membership is None or membership.status != "active":
+        return membership, []
+
+    widest: dict[str, str] = {}
+    for link in membership.roles:
+        for grant in link.role.grants:
+            code = grant.permission.code
+            rank = _GRANT_SCOPE_RANK[grant.scope]
+            if code not in widest or rank > _GRANT_SCOPE_RANK[widest[code]]:
+                widest[code] = grant.scope
+
+    return membership, sorted(f"{code}:{scope}" for code, scope in widest.items())
 
 
 # --------------------------------------------------------------------- invitations

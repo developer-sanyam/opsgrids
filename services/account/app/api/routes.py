@@ -27,13 +27,16 @@ from app.schemas import (
     InvitationOut,
     LocationIn,
     LocationOut,
+    LocationPatch,
     MemberOut,
     MemberPatch,
+    MyGrantsOut,
     OrganizationOut,
     OrganizationPatch,
     OrgUnitIn,
     OrgUnitNode,
     OrgUnitOut,
+    OrgUnitPatch,
     PermissionOut,
     RoleAssignment,
     RoleIn,
@@ -42,7 +45,8 @@ from app.schemas import (
     SignupIn,
     SignupOut,
 )
-from platform_core.auth import Scope, ScopeContext, require
+from platform_core.auth import CurrentPrincipal, Scope, ScopeContext, require
+from platform_core.cache import current_permission_version
 from platform_core.db import get_directory_session, get_tenant_session, session_scope
 from platform_core.errors import ConflictProblem, NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
@@ -186,6 +190,19 @@ async def move_org_unit(
     return OrgUnitOut.model_validate(moved)
 
 
+@router.patch(
+    "/org-units/{unit_id}", response_model=OrgUnitOut, summary="Rename or deactivate a department"
+)
+async def update_org_unit(
+    unit_id: uuid.UUID, payload: OrgUnitPatch, session: SessionDep, ctx: UnitWrite
+) -> OrgUnitOut:
+    unit = await selectors.get_org_unit(session, ctx.organization_id, unit_id)
+    if unit is None:
+        raise NotFoundProblem("Department not found")
+    updated = await services.update_org_unit(session, ctx, unit, payload)
+    return OrgUnitOut.model_validate(updated)
+
+
 @router.get("/locations", response_model=list[LocationOut], summary="Sites")
 async def list_locations(session: SessionDep, ctx: LocationRead) -> list[LocationOut]:
     rows = await selectors.list_locations(session, ctx.organization_id)
@@ -203,6 +220,19 @@ async def create_location(
 ) -> LocationOut:
     location = await services.create_location(session, ctx, payload)
     return LocationOut.model_validate(location)
+
+
+@router.patch(
+    "/locations/{location_id}", response_model=LocationOut, summary="Rename or deactivate a site"
+)
+async def update_location(
+    location_id: uuid.UUID, payload: LocationPatch, session: SessionDep, ctx: LocationWrite
+) -> LocationOut:
+    location = await selectors.get_location(session, ctx.organization_id, location_id)
+    if location is None:
+        raise NotFoundProblem("Location not found")
+    updated = await services.update_location(session, ctx, location, payload)
+    return LocationOut.model_validate(updated)
 
 
 # --------------------------------------------------------------------- members
@@ -232,6 +262,37 @@ async def list_members(
     rows, total = await paginate(session, stmt, params)
     items = [selectors.to_member_out(m, m.user) for m in rows]
     return Page.build(items, total=total, params=params)
+
+
+@router.get(
+    "/members/me/grants",
+    response_model=MyGrantsOut,
+    response_model_exclude_none=True,
+    summary="The caller's own grants",
+)
+async def read_my_grants(session: SessionDep, principal: CurrentPrincipal) -> MyGrantsOut:
+    """What the caller may do, so the front end can hide controls it holds no grant for.
+
+    Declared **before** `/members/{membership_id}` so `me` is never captured as a UUID
+    path parameter. No permission is required — every authenticated member may read their
+    own grants — and there is no id to ask for somebody else's: the membership looked up is
+    always `principal.membership_id`, the one the caller's own token names.
+
+    Computed by `selectors.get_membership_grants`, the same selector
+    `GET /internal/v1/memberships/{id}/grants` uses, so the two can never disagree about
+    what "the widest scope wins" means. This is a convenience for the browser only — every
+    write still checks the permission itself, server-side, regardless of what this says.
+    """
+    if principal.membership_id is None:
+        raise NotFoundProblem("No active membership")
+    membership, grants = await selectors.get_membership_grants(session, principal.membership_id)
+    # `SessionDep` already bound this transaction to `principal.organization_id`, so a
+    # membership id from another tenant is not there to find — RLS, not this check, is the
+    # chokepoint. The comparison is defense in depth, not the enforcement.
+    if membership is None or membership.organization_id != principal.organization_id:
+        raise NotFoundProblem("No active membership")
+    pv = await current_permission_version(str(principal.organization_id))
+    return MyGrantsOut(membership_id=membership.id, pv=pv, grants=grants)
 
 
 @router.get("/members/{membership_id}", response_model=MemberOut, summary="One person")
@@ -313,16 +374,31 @@ async def create_role(payload: RoleIn, session: SessionDep, ctx: RoleWrite) -> R
     return selectors.to_role_out(role)
 
 
-@router.put("/roles/{role_id}", response_model=RoleOut, summary="Replace a role's permissions")
+@router.put(
+    "/roles/{role_id}", response_model=RoleOut, summary="Rename a role, or replace its grants"
+)
 async def replace_role_grants(
     role_id: uuid.UUID, payload: RoleIn, session: SessionDep, ctx: RoleWrite
 ) -> RoleOut:
     role = await selectors.get_role(session, ctx.organization_id, role_id)
     if role is None:
         raise NotFoundProblem("Role not found")
-    updated = await services.replace_role_grants(session, ctx, role, payload.grants)
+    updated = await services.replace_role_grants(session, ctx, role, payload)
     await session.flush()
     return selectors.to_role_out(updated)
+
+
+@router.delete(
+    "/roles/{role_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a custom role",
+)
+async def delete_role(role_id: uuid.UUID, session: SessionDep, ctx: RoleWrite) -> Response:
+    role = await selectors.get_role(session, ctx.organization_id, role_id)
+    if role is None:
+        raise NotFoundProblem("Role not found")
+    await services.delete_role(session, ctx, role)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/permissions", response_model=list[PermissionOut], summary="Permission catalogue")

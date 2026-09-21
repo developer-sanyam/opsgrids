@@ -40,7 +40,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Membership, MembershipRole, Organization, OrgDomain, Role, User
+from app import selectors
+from app.models import Membership, MembershipRole, Organization, OrgDomain, User
 from platform_core.auth import require_service_token
 from platform_core.cache import current_permission_version
 from platform_core.db import get_directory_session
@@ -204,39 +205,14 @@ async def membership_grants(session: SessionDep, membership_id: uuid.UUID) -> di
     Where the same permission arrives through two roles at different scopes, the widest
     wins — a role that grants ORG is not narrowed by another that grants OWN.
     """
-    membership = (
-        await session.execute(
-            select(Membership)
-            .where(Membership.id == membership_id)
-            .options(
-                selectinload(Membership.roles)
-                .selectinload(MembershipRole.role)
-                .selectinload(Role.grants)
-            )
-        )
-    ).scalar_one_or_none()
-
+    membership, grants = await selectors.get_membership_grants(session, membership_id)
     if membership is None:
         raise NotFoundProblem("No such membership")
     if membership.status != "active":
         return {"grants": [], "permission_version": 0}
 
-    widest: dict[str, str] = {}
-    for link in membership.roles:
-        for grant in link.role.grants:
-            code = grant.permission.code
-            if code not in widest or _rank(grant.scope) > _rank(widest[code]):
-                widest[code] = grant.scope
-
     version = await current_permission_version(str(membership.organization_id))
-    return {
-        "grants": sorted(f"{code}:{scope}" for code, scope in widest.items()),
-        "permission_version": version or 0,
-    }
-
-
-def _rank(scope: str) -> int:
-    return {"OWN": 0, "TEAM": 1, "LOCATION": 2, "ORG": 3}.get(scope, 0)
+    return {"grants": grants, "permission_version": version or 0}
 
 
 def _trace_directory_read(request: Request, user: User, how: str) -> None:

@@ -83,6 +83,8 @@ class OrganizationOut(BaseModel):
     locale: str
     fiscal_year_start_month: int
     tax_ids: dict[str, Any]
+    registered_address: dict[str, Any] | None
+    primary_contact_email: str | None
     settings: dict[str, Any]
     parent_org_id: uuid.UUID | None
     trial_ends_at: datetime | None
@@ -140,6 +142,15 @@ class OrgUnitNode(OrgUnitOut):
     children: list[OrgUnitNode] = Field(default_factory=list)
 
 
+class OrgUnitPatch(BaseModel):
+    """Partial update. `code` is immutable — other services and tokens key on it."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    kind: str | None = Field(default=None, max_length=24)
+    head_membership_id: uuid.UUID | None = None
+    is_active: bool | None = None
+
+
 class LocationIn(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     code: Code
@@ -156,7 +167,19 @@ class LocationOut(BaseModel):
     code: str
     timezone: str
     country: str | None
+    address: dict[str, Any] | None
     is_active: bool
+
+
+class LocationPatch(BaseModel):
+    """Partial update. `code` is immutable — it is embedded in members' `location_codes`
+    and in tokens."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    timezone: str | None = None
+    country: str | None = Field(default=None, min_length=2, max_length=2)
+    address: dict[str, Any] | None = None
+    is_active: bool | None = None
 
 
 # --------------------------------------------------------------------- members
@@ -203,6 +226,21 @@ class MemberPatch(BaseModel):
     #: synchronous cross-service check on an interactive write is what ADR-0008 §4
     #: refuses; a mistyped id is accepted and found by `tools/reconcile_membership_links.py`.
     employee_id: uuid.UUID | None = None
+
+
+class MyGrantsOut(BaseModel):
+    """What the caller may do, for the browser to hide controls with.
+
+    Never the enforcement itself — every write still checks the permission server-side —
+    but the one call every product's front end shares rather than re-deriving.
+    """
+
+    membership_id: uuid.UUID
+    #: The permission version, when Redis has one to give. Omitted rather than defaulted to
+    #: zero: a cache that has never been bumped is a different fact from a cache that is down,
+    #: and a client cannot tell a stale `pv: 0` from a live one.
+    pv: int | None = None
+    grants: list[str]
 
 
 class InvitationIn(BaseModel):
