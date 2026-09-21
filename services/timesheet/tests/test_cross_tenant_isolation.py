@@ -172,3 +172,31 @@ class TestCrossTenantOverHttp:
         assert rollup.status_code == 200
         assert rollup.json()["billable_hours"] == 0.0
         assert rollup.json()["capacity_hours"] == 0.0
+
+    async def test_org_b_cannot_change_status_on_org_a_week(self, client, org_id, data) -> None:
+        other_org = uuid.uuid4()
+        principal = principal_for(
+            other_org, ["pulseboard.time.timesheet.write:ORG"], subject_ref=uuid.uuid4()
+        )
+        app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            response = await client.post(
+                "/api/v1/timesheets/status",
+                json={
+                    "person_ref": "p02",
+                    "week_start": WEEK_START.isoformat(),
+                    "status": "submitted",
+                },
+            )
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+        assert response.status_code == 404
+
+        owner = principal_for(org_id, ["pulseboard.time.timesheet.read:ORG"])
+        app.dependency_overrides[get_principal] = lambda: owner
+        try:
+            still_draft = await client.get(f"/api/v1/timesheets?week={WEEK_START.isoformat()}")
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+        row = next(r for r in still_draft.json()["items"] if r["person_id"] == "p02")
+        assert row["status"] == "draft"

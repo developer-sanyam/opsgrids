@@ -30,12 +30,14 @@ from app.models import SCHEMA
 from app.schemas import (
     ServiceInfo,
     TimesheetRowOut,
+    TimesheetStatusIn,
     TimesheetSummaryOut,
     TimesheetWeekIn,
     TrendPoint,
 )
 from platform_core.auth import ScopeContext, require, require_product
 from platform_core.db import get_tenant_session
+from platform_core.errors import NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
 # Registering the pulseboard scope resolver at import of the api module ties it to the product
@@ -151,3 +153,22 @@ async def record_week(
     sheet = await services.record_week_from(session, ctx, payload, request=request)
     entries = await selectors.entries_by_sheet(session, ctx.organization_id, [sheet.id])
     return selectors.row_out(sheet, entries.get(sheet.id, []))
+
+
+@router.post(
+    "/timesheets/status",
+    response_model=TimesheetRowOut,
+    summary="Submit or approve one person's week",
+    dependencies=[Entitled],
+)
+async def set_status(
+    payload: TimesheetStatusIn, session: SessionDep, ctx: TimesheetWrite, request: Request
+) -> TimesheetRowOut:
+    sheet = await selectors.get_week(
+        session, ctx.organization_id, payload.person_ref, payload.week_start
+    )
+    if sheet is None:
+        raise NotFoundProblem("No timesheet for that person and week")
+    updated = await services.set_status(session, ctx, sheet, payload.status, request=request)
+    entries = await selectors.entries_by_sheet(session, ctx.organization_id, [updated.id])
+    return selectors.row_out(updated, entries.get(updated.id, []))

@@ -10,6 +10,7 @@ refused another's by code.
 from __future__ import annotations
 
 import contextlib
+import uuid
 from collections.abc import Iterator
 
 import pytest
@@ -247,6 +248,7 @@ class TestEndpointAuthorization:
         assert [p["id"] for p in items] == ["p01", "p02"]
         assert items[0] == {
             "id": "p01",
+            "uuid": str(data["person_a"].id),
             "name": "Nadia Rahman",
             "role": "Head of Delivery",
             "location": "Bengaluru",
@@ -279,6 +281,35 @@ class TestValidation:
         with pytest.raises(ConflictProblem, match="already exists"):
             async with session.begin():
                 await services.create_project(session, ctx, code="PB-01", name="clash")
+
+    async def test_a_soft_deleted_project_code_still_conflicts(self, session, org_id, data) -> None:
+        """`uq_projects_org_code` is not a partial index, so a soft-deleted row still occupies
+        the code — the duplicate check must see it and answer 409, not fall through to an
+        unhandled `IntegrityError`."""
+        ctx = ctx_for(org_id, "pulseboard.engagements.project.write", Scope.ORG)
+        async with session.begin():
+            await services.delete_project(session, ctx, data["project_a"])
+        with pytest.raises(ConflictProblem, match="already exists"):
+            async with session.begin():
+                await services.create_project(session, ctx, code="PB-01", name="reused code")
+
+    async def test_a_soft_deleted_task_key_still_conflicts(self, session, org_id, data) -> None:
+        ctx = ctx_for(org_id, "pulseboard.board.task.write", Scope.ORG)
+        async with session.begin():
+            await services.delete_task(session, ctx, data["task_a"])
+        with pytest.raises(ConflictProblem, match="already exists"):
+            async with session.begin():
+                await services.create_task(
+                    session, ctx, project_id=data["project_b"].id, key="PB-210", title="reused key"
+                )
+
+    async def test_a_soft_deleted_person_ref_still_conflicts(self, session, org_id, data) -> None:
+        write = ctx_for(org_id, "pulseboard.engagements.project.write", Scope.ORG)
+        async with session.begin():
+            await services.delete_person(session, write, data["person_a"])
+        with pytest.raises(ConflictProblem, match="already exists"):
+            async with session.begin():
+                await services.create_person(session, write, ref="p01", name="reused ref")
 
     async def test_a_task_against_an_unknown_project_is_refused(
         self, session, org_id, data
@@ -331,3 +362,330 @@ class TestValidation:
         assert len(events) == 1
         assert events[0].event_type == "pulseboard.engagements.project.created"
         assert events[0].published_at is None
+
+
+# --------------------------------------------------------------------- task mutations
+
+
+class TestTaskMutations:
+    async def test_a_writer_can_move_a_card(self, client, org_id, data) -> None:
+        """Persisting a board move is the headline gap this slice closes."""
+        principal = principal_for(
+            org_id, ["pulseboard.board.task.write:ORG", "pulseboard.board.task.read:ORG"]
+        )
+        with as_principal(principal):
+            response = await client.patch(
+                "/api/v1/projects/tasks/PB-210", json={"status": "review"}
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "review"
+        assert body["key"] == "PB-210"
+
+        with as_principal(principal):
+            reread = await client.get("/api/v1/projects/tasks")
+        moved = next(t for t in reread.json()["items"] if t["key"] == "PB-210")
+        assert moved["status"] == "review"
+
+    async def test_explicit_null_clears_assignee_and_due_date(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.board.task.write:ORG"])
+        with as_principal(principal):
+            response = await client.patch(
+                "/api/v1/projects/tasks/PB-210",
+                json={"assignee_ref": None, "due_date": None},
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["assignee_id"] is None
+        assert body["due_date"] is None
+
+    async def test_moving_to_an_unknown_assignee_is_not_found(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.board.task.write:ORG"])
+        with as_principal(principal):
+            response = await client.patch(
+                "/api/v1/projects/tasks/PB-210", json={"assignee_ref": "p99"}
+            )
+        assert response.status_code == 404
+
+    async def test_updating_an_unknown_task_is_not_found(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.board.task.write:ORG"])
+        with as_principal(principal):
+            response = await client.patch("/api/v1/projects/tasks/PB-NOPE", json={"status": "done"})
+        assert response.status_code == 404
+
+    async def test_a_reader_cannot_move_a_card(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.board.task.read:ORG"])
+        with as_principal(principal):
+            response = await client.patch("/api/v1/projects/tasks/PB-210", json={"status": "done"})
+        assert response.status_code == 403
+
+    async def test_own_scope_cannot_move_someone_elses_card(self, client, org_id, data) -> None:
+        """Filtering the board and forgetting the object is the named vulnerability."""
+        principal = principal_for(
+            org_id, ["pulseboard.board.task.write:OWN"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            refused = await client.patch(
+                "/api/v1/projects/tasks/PB-215",
+                json={"status": "done"},  # subject_b's card
+            )
+            allowed = await client.patch(
+                "/api/v1/projects/tasks/PB-210",
+                json={"status": "done"},  # subject_a's card
+            )
+        assert refused.status_code == 403
+        assert allowed.status_code == 200
+
+    async def test_moving_a_card_stages_an_audit_row_and_an_event(
+        self, session, org_id, data
+    ) -> None:
+        from sqlalchemy import func, select
+
+        from app.models import AuditLog, OutboxEvent
+        from app.schemas import TaskUpdate
+
+        ctx = ctx_for(org_id, "pulseboard.board.task.write", Scope.ORG)
+        async with session.begin():
+            await services.update_task(session, ctx, data["task_a"], TaskUpdate(status="review"))
+        audits = (
+            await session.execute(
+                select(func.count())
+                .select_from(AuditLog)
+                .where(AuditLog.action == "task.updated", AuditLog.entity_id == data["task_a"].id)
+            )
+        ).scalar_one()
+        events = (
+            (
+                await session.execute(
+                    select(OutboxEvent).where(
+                        OutboxEvent.aggregate_id == data["task_a"].id,
+                        OutboxEvent.event_type == "pulseboard.board.task.updated",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert audits == 1
+        assert len(events) == 1
+
+    async def test_a_writer_can_delete_a_card(self, client, org_id, data) -> None:
+        principal = principal_for(
+            org_id, ["pulseboard.board.task.write:ORG", "pulseboard.board.task.read:ORG"]
+        )
+        with as_principal(principal):
+            response = await client.delete("/api/v1/projects/tasks/PB-215")
+        assert response.status_code == 204
+        with as_principal(principal):
+            listed = await client.get("/api/v1/projects/tasks")
+        assert "PB-215" not in {t["key"] for t in listed.json()["items"]}
+
+    async def test_deleting_an_already_deleted_card_is_not_found(
+        self, client, org_id, data
+    ) -> None:
+        principal = principal_for(org_id, ["pulseboard.board.task.write:ORG"])
+        with as_principal(principal):
+            first = await client.delete("/api/v1/projects/tasks/PB-215")
+            second = await client.delete("/api/v1/projects/tasks/PB-215")
+        assert first.status_code == 204
+        assert second.status_code == 404
+
+    async def test_a_reader_cannot_delete_a_card(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.board.task.read:ORG"])
+        with as_principal(principal):
+            response = await client.delete("/api/v1/projects/tasks/PB-210")
+        assert response.status_code == 403
+
+
+# --------------------------------------------------------------------- project mutations
+
+
+class TestProjectMutations:
+    async def test_a_writer_can_edit_an_engagement(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.engagements.project.write:ORG"])
+        with as_principal(principal):
+            response = await client.patch(
+                "/api/v1/projects/PB-03", json={"status": "at_risk", "progress_pct": 40}
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "at_risk"
+        assert body["progress_pct"] == 40
+        assert body["code"] == "PB-03"
+
+    async def test_code_cannot_be_changed_through_patch(self, client, org_id, data) -> None:
+        """`code` is not even a field on `ProjectUpdate` — an attempt is silently ignored."""
+        principal = principal_for(org_id, ["pulseboard.engagements.project.write:ORG"])
+        with as_principal(principal):
+            response = await client.patch(
+                "/api/v1/projects/PB-03", json={"code": "PB-99", "name": "Renamed"}
+            )
+        assert response.status_code == 200
+        assert response.json()["code"] == "PB-03"
+
+    async def test_editing_an_unknown_project_is_not_found(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.engagements.project.write:ORG"])
+        with as_principal(principal):
+            response = await client.patch("/api/v1/projects/PB-NOPE", json={"status": "done"})
+        assert response.status_code == 404
+
+    async def test_a_reader_cannot_edit_an_engagement(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.engagements.project.read:ORG"])
+        with as_principal(principal):
+            response = await client.patch("/api/v1/projects/PB-01", json={"status": "done"})
+        assert response.status_code == 403
+
+    async def test_own_scope_cannot_edit_someone_elses_engagement(
+        self, client, org_id, data
+    ) -> None:
+        principal = principal_for(
+            org_id, ["pulseboard.engagements.project.write:OWN"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            refused = await client.patch(
+                "/api/v1/projects/PB-03",
+                json={"status": "done"},  # subject_b's engagement
+            )
+            allowed = await client.patch(
+                "/api/v1/projects/PB-01",
+                json={"status": "at_risk"},  # subject_a's engagement
+            )
+        assert refused.status_code == 403
+        assert allowed.status_code == 200
+
+    async def test_a_writer_can_delete_an_engagement_and_its_tasks_cascade(
+        self, client, org_id, data
+    ) -> None:
+        """A soft-deleted engagement takes its own board cards with it in the same transaction,
+        so an orphan card never renders its project as "—"."""
+        principal = principal_for(
+            org_id,
+            [
+                "pulseboard.engagements.project.write:ORG",
+                "pulseboard.engagements.project.read:ORG",
+                "pulseboard.board.task.read:ORG",
+            ],
+        )
+        with as_principal(principal):
+            response = await client.delete("/api/v1/projects/PB-03")
+        assert response.status_code == 204
+        with as_principal(principal):
+            projects = await client.get("/api/v1/projects")
+            tasks = await client.get("/api/v1/projects/tasks")
+        assert "PB-03" not in {p["code"] for p in projects.json()["items"]}
+        assert "PB-215" not in {t["key"] for t in tasks.json()["items"]}  # PB-03's card
+
+    async def test_deleting_an_already_deleted_engagement_is_not_found(
+        self, client, org_id, data
+    ) -> None:
+        principal = principal_for(org_id, ["pulseboard.engagements.project.write:ORG"])
+        with as_principal(principal):
+            first = await client.delete("/api/v1/projects/PB-03")
+            second = await client.delete("/api/v1/projects/PB-03")
+        assert first.status_code == 204
+        assert second.status_code == 404
+
+    async def test_a_reader_cannot_delete_an_engagement(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.engagements.project.read:ORG"])
+        with as_principal(principal):
+            response = await client.delete("/api/v1/projects/PB-01")
+        assert response.status_code == 403
+
+
+# --------------------------------------------------------------------- roster mutations
+
+
+class TestRosterMutations:
+    async def test_a_writer_can_add_a_person(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.team.person.write:ORG"])
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/projects/people",
+                json={"ref": "p05", "name": "Priya Nair", "role": "Analyst", "capacity_hours": 35},
+            )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["id"] == "p05"
+        assert body["name"] == "Priya Nair"
+        assert body["capacity_hours"] == 35
+        assert uuid.UUID(body["uuid"])  # the timesheet/standup write id
+
+    async def test_a_duplicate_ref_is_refused(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.team.person.write:ORG"])
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/projects/people", json={"ref": "p01", "name": "Someone Else"}
+            )
+        assert response.status_code == 409
+
+    async def test_a_reader_cannot_add_a_person(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.team.person.read:ORG"])
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/projects/people", json={"ref": "p06", "name": "Refused"}
+            )
+        assert response.status_code == 403
+
+    async def test_a_member_role_has_no_person_write_by_default(self) -> None:
+        """The catalogue guard, restated as a wire-level fact: `PULSEBOARD_MEMBER` never picks
+        `team.person.write`, so the People screen's create action is admin-only."""
+        from app.catalogue import PULSEBOARD_ROLE_TEMPLATES
+
+        member = next(t for t in PULSEBOARD_ROLE_TEMPLATES if t.code == "PULSEBOARD_MEMBER")
+        assert "pulseboard.team.person.write" not in {g.code for g in member.grants}
+
+    async def test_a_writer_can_edit_a_person(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.team.person.write:ORG"])
+        with as_principal(principal):
+            response = await client.patch(
+                "/api/v1/projects/people/p01", json={"capacity_hours": 25}
+            )
+        assert response.status_code == 200
+        assert response.json()["capacity_hours"] == 25
+        assert response.json()["id"] == "p01"
+
+    async def test_a_reader_cannot_edit_a_person(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.team.person.read:ORG"])
+        with as_principal(principal):
+            response = await client.patch("/api/v1/projects/people/p01", json={"capacity_hours": 1})
+        assert response.status_code == 403
+
+    async def test_editing_an_unknown_person_is_not_found(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.team.person.write:ORG"])
+        with as_principal(principal):
+            response = await client.patch(
+                "/api/v1/projects/people/p99", json={"capacity_hours": 25}
+            )
+        assert response.status_code == 404
+
+    async def test_deleting_a_person_nulls_their_assignments(self, client, org_id, data) -> None:
+        """Deleting the roster entry does not orphan the engagement/card it owned — they keep
+        rendering "Unassigned" instead of joining to a person the roster no longer lists."""
+        principal = principal_for(org_id, ["pulseboard.team.person.write:ORG"])
+        with as_principal(principal):
+            response = await client.delete("/api/v1/projects/people/p01")
+        assert response.status_code == 204
+
+        reader = principal_for(
+            org_id,
+            [
+                "pulseboard.engagements.project.read:ORG",
+                "pulseboard.board.task.read:ORG",
+                "pulseboard.team.person.read:ORG",
+            ],
+        )
+        with as_principal(reader):
+            projects = await client.get("/api/v1/projects")
+            tasks = await client.get("/api/v1/projects/tasks")
+            people = await client.get("/api/v1/projects/people")
+        project_a = next(p for p in projects.json()["items"] if p["code"] == "PB-01")
+        task_a = next(t for t in tasks.json()["items"] if t["key"] == "PB-210")
+        assert project_a["owner_id"] is None
+        assert task_a["assignee_id"] is None
+        assert "p01" not in {p["id"] for p in people.json()["items"]}
+
+    async def test_a_reader_cannot_delete_a_person(self, client, org_id, data) -> None:
+        principal = principal_for(org_id, ["pulseboard.team.person.read:ORG"])
+        with as_principal(principal):
+            response = await client.delete("/api/v1/projects/people/p02")
+        assert response.status_code == 403

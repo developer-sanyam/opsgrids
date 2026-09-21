@@ -171,3 +171,50 @@ class TestCrossTenantOverHttp:
         assert listed.json()["items"] == []
         assert "PB-01" not in listed.text
         assert board.json()["items"] == []
+
+    async def test_org_b_cannot_mutate_org_a_engagements_or_cards(
+        self, client, org_id, data
+    ) -> None:
+        """Naming another tenant's row by its human code/key must 404 and change nothing —
+        not merely be hidden from a list."""
+        other_org = uuid.uuid4()
+        principal = principal_for(
+            other_org,
+            [
+                "pulseboard.engagements.project.write:ORG",
+                "pulseboard.board.task.write:ORG",
+                "pulseboard.team.person.write:ORG",
+            ],
+            subject_ref=uuid.uuid4(),
+        )
+        app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            patch_project = await client.patch("/api/v1/projects/PB-01", json={"status": "done"})
+            delete_project = await client.delete("/api/v1/projects/PB-01")
+            patch_task = await client.patch(
+                "/api/v1/projects/tasks/PB-210", json={"status": "done"}
+            )
+            delete_task = await client.delete("/api/v1/projects/tasks/PB-210")
+            patch_person = await client.patch(
+                "/api/v1/projects/people/p01", json={"capacity_hours": 1}
+            )
+            delete_person = await client.delete("/api/v1/projects/people/p01")
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+
+        assert patch_project.status_code == 404
+        assert delete_project.status_code == 404
+        assert patch_task.status_code == 404
+        assert delete_task.status_code == 404
+        assert patch_person.status_code == 404
+        assert delete_person.status_code == 404
+
+        # Untouched: org A's own view of its project still shows the original status.
+        owner = principal_for(org_id, ["pulseboard.engagements.project.read:ORG"])
+        app.dependency_overrides[get_principal] = lambda: owner
+        try:
+            still_there = await client.get("/api/v1/projects/PB-01")
+        finally:
+            app.dependency_overrides.pop(get_principal, None)
+        assert still_there.status_code == 200
+        assert still_there.json()["status"] == "on_track"

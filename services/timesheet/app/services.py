@@ -28,11 +28,12 @@ from app.models import AuditLog, OutboxEvent, Timesheet, TimesheetEntry
 from app.schemas import TimesheetWeekIn
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
-from platform_core.errors import ValidationProblem
+from platform_core.errors import ConflictProblem, ForbiddenProblem, ValidationProblem
 from platform_core.events import publish_event
 
 # Event names. `pulseboard.*` because these are the product's own, not the platform's.
 EVT_WEEK_RECORDED = "pulseboard.time.timesheet.recorded"
+EVT_STATUS_CHANGED = "pulseboard.time.timesheet.status_changed"
 
 
 def _actor(ctx: ScopeContext) -> dict[str, Any]:
@@ -185,3 +186,61 @@ async def record_week_from(
         ],
         request=request,
     )
+
+
+async def set_status(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    sheet: Timesheet,
+    target_status: str,
+    *,
+    request: Request | None = None,
+) -> Timesheet:
+    """Submit or approve one person's week — only `status` moves, the entries are untouched.
+
+    The move must follow `domain.can_transition` (forward-only, plus a reopen back to
+    `draft`); anything else is a 409. Approving your own sheet is refused separately, and
+    always — holding `time.timesheet.write` on your own row lets you submit it, but never
+    approve it, whatever scope that write was granted at.
+    """
+    ctx.assert_can_touch(owner_id=sheet.person_id)
+    if not domain.can_transition(sheet.status, target_status):
+        raise ConflictProblem(f"Cannot move a timesheet from {sheet.status!r} to {target_status!r}")
+    if target_status == "approved" and sheet.person_id == ctx.principal.subject_ref:
+        raise ForbiddenProblem("You cannot approve your own timesheet")
+
+    before_status = sheet.status
+    sheet.status = target_status
+    sheet.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="timesheet.status_changed",
+        entity="timesheet",
+        entity_id=sheet.id,
+        before={"status": before_status},
+        after={"status": target_status},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_STATUS_CHANGED,
+        aggregate_type="timesheet",
+        aggregate_id=sheet.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "timesheet_id": str(sheet.id),
+            "person_id": str(sheet.person_id),
+            "person_ref": sheet.person_ref,
+            "week_start": sheet.week_start.isoformat(),
+            "status": target_status,
+        },
+        actor=_actor(ctx),
+    )
+    return sheet
