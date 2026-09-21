@@ -184,7 +184,17 @@ async def client(
     # rather than an open door is itself asserted, in `test_resolution_fails_closed`.
     from app import main as gateway_main
 
-    async def _grants(membership_id: str, org_id: str, version: int) -> list[str]:
+    async def _grants(
+        membership_id: str,
+        org_id: str,
+        version: int,
+        *,
+        fresh: bool = False,
+        product: str | None = None,
+    ) -> list[str]:
+        # `fresh`/`product` only exist so this stub keeps `PermissionResolver.resolve`'s
+        # real signature — the gateway's activation-race re-check calls them by keyword —
+        # and are otherwise unused: this fixture is not about that race.
         return ["core.profile.self.read:OWN", "hrms.profile.employee.read:TEAM"]
 
     monkeypatch.setattr(gateway_main.resolver, "resolve", _grants)
