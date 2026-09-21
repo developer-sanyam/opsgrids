@@ -21,7 +21,7 @@ import { ConnectionWizard } from "./ConnectionWizard";
  */
 
 /** Long and distinctive, so finding it anywhere in the DOM is a real finding and not a collision. */
-const SECRET = "wqkz-hxtp-bnre-4f81";
+const SECRET = "wqkz-hxtp-bnre-4f81";  // pragma: allowlist secret
 
 const CONNECTED: ConnectionOut = {
   kind: "smtp",

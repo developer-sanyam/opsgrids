@@ -17,7 +17,7 @@ import { DomainRecordsTable } from "./DomainRecords";
 
 const DKIM_VALUE =
   "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAu1xK0Yb7VqJ8mQ3pN2fR" +
-  "wZ6tD9sXcL4hVgB1yPoE5aTnUmK7jH0dSfCvA3rXqW8ZbN6MlGyIuOpQ2eRtF4xDkJ9vS1cHnA7mB3gYwP";
+  "wZ6tD9sXcL4hVgB1yPoE5aTnUmK7jH0dSfCvA3rXqW8ZbN6MlGyIuOpQ2eRtF4xDkJ9vS1cHnA7mB3gYwP";  // pragma: allowlist secret
 
 /** SPF and the return path are up, DKIM and tracking are not, DMARC is unpublished and optional —
  *  the mid-setup shape the service produces most often. */

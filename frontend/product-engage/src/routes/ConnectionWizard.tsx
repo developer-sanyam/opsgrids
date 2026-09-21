@@ -96,7 +96,7 @@ function validate(kind: SelectableKind, values: Values): Errors {
     errors.username = "Which account does Engage sign in as?";
   }
   if (values.secret === "") {
-    errors.secret = "Paste the app password you generated for Engage.";
+    errors.secret = "Paste the app password you generated for Engage.";  // pragma: allowlist secret
   }
   if (kind === "smtp" && values.host.trim() === "") {
     // The service's own sentence for this case, so the two agree if it ever gets there.

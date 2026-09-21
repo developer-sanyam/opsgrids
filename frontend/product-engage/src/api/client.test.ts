@@ -59,7 +59,7 @@ describe("the engage paths", () => {
     await connectProvider({
       kind: "smtp",
       username: "mailer@vaayu-logistics.example.com",
-      secret: "an-app-password",
+      secret: "an-app-password", // pragma: allowlist secret
       host: "smtp.vaayu-logistics.example.com",
       port: 587,
     });
@@ -127,14 +127,14 @@ describe("the credential", () => {
     await connectProvider({
       kind: "google",
       username: "notifications@vaayu-logistics.example.com",
-      secret: "the-app-password",
+      secret: "the-app-password", // pragma: allowlist secret
     });
     const [, init] = call(fetchMock);
     expect(init.body).toBe(
       JSON.stringify({
         kind: "google",
         username: "notifications@vaayu-logistics.example.com",
-        secret: "the-app-password",
+        secret: "the-app-password", // pragma: allowlist secret
       }),
     );
 

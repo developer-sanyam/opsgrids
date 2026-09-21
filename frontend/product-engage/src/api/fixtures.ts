@@ -46,7 +46,7 @@ const VERIFIED_RECORDS: DnsRecordOut[] = [
     host: "og4f1c9ad83b27._domainkey.vaayu-logistics.example.com",
     value:
       "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAu1xK0Yb7VqJ8mQ3pN2fR" +
-      "wZ6tD9sXcL4hVgB1yPoE5aTnUmK7jH0dSfCvA3rXqW8ZbN6MlGyIuOpQ2eRtF4xDkJ9vS1cHnA7mB3gYwP",
+      "wZ6tD9sXcL4hVgB1yPoE5aTnUmK7jH0dSfCvA3rXqW8ZbN6MlGyIuOpQ2eRtF4xDkJ9vS1cHnA7mB3gYwP",  // pragma: allowlist secret
     required: true,
     verified: true,
   },
@@ -92,7 +92,7 @@ const PENDING_RECORDS: DnsRecordOut[] = [
     host: "og8b30e57c14da._domainkey.vaayu-freight.example.com",
     value:
       "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAq7ZmT3wXyR0nE8cVdH2p" +
-      "LkAoS5jB9fUgQ6tYzNxCrM1vJhW4KePbD7saG0iOl3RuXn2FmZqYtA8eCcV5BdLwI6pKjS9gHoN4TfE1xU",
+      "LkAoS5jB9fUgQ6tYzNxCrM1vJhW4KePbD7saG0iOl3RuXn2FmZqYtA8eCcV5BdLwI6pKjS9gHoN4TfE1xU",  // pragma: allowlist secret
     required: true,
     verified: false,
   },

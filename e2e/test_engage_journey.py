@@ -448,7 +448,7 @@ class TestEngageJourney:
             "split this test exists to prove would be meaningless"
         )
 
-        viewer_password = "viewer-Sufficiently-Long-Passw0rd!"
+        viewer_password = "viewer-Sufficiently-Long-Passw0rd!"  # pragma: allowlist secret
         seed_password(member["user_id"], viewer_password)
         viewer_token = login(client, invitee_email, viewer_password, alpha["org_id"])
 
