@@ -1,7 +1,12 @@
 import { Tag } from "@opsgrids/ui";
 import type { TagTone } from "@opsgrids/ui";
 
-import type { ConnectionStatus, DomainStatus, TemplateStatus } from "@/api/types";
+import type {
+  ConnectionStatus,
+  DomainStatus,
+  SuppressionReason,
+  TemplateStatus,
+} from "@/api/types";
 
 /**
  * The three status vocabularies this product renders, each translated in exactly one place.
@@ -65,5 +70,23 @@ const TEMPLATE_LABELS: Record<TemplateStatus, { label: string; tone: TagTone }> 
 
 export function TemplateStatusTag({ status }: { status: TemplateStatus }) {
   const { label, tone } = TEMPLATE_LABELS[status];
+  return <Tag tone={tone}>{label}</Tag>;
+}
+
+/**
+ * Why a contact is on the suppression list. `unsubscribed` and `bounced`/`complained` are what
+ * the public link and (later) provider feedback record; `manual` is the only reason a form on
+ * this screen can ever post, and it gets the same neutral tone as the others — a manual
+ * suppression is not a lesser or a stronger fact than an automatic one, it is a different origin.
+ */
+const SUPPRESSION_LABELS: Record<SuppressionReason, { label: string; tone: TagTone }> = {
+  unsubscribed: { label: "Unsubscribed", tone: "neutral" },
+  bounced: { label: "Bounced", tone: "negative" },
+  complained: { label: "Complained", tone: "negative" },
+  manual: { label: "Manually suppressed", tone: "neutral" },
+};
+
+export function SuppressionReasonTag({ reason }: { reason: SuppressionReason }) {
+  const { label, tone } = SUPPRESSION_LABELS[reason];
   return <Tag tone={tone}>{label}</Tag>;
 }

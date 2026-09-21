@@ -1,9 +1,11 @@
 import { useAuth } from "@opsgrids/client";
 import {
+  ClipboardListIcon,
   FileTextIcon,
   GlobeIcon,
   HomeIcon,
   MessageSquareIcon,
+  OctagonIcon,
   PlugIcon,
   Sidebar as SidebarShell,
   UsersIcon,
@@ -13,17 +15,20 @@ import type { NavEntry, NavGroup } from "@opsgrids/ui";
 import { LogoMark } from "./LogoMark";
 
 /**
- * Phase 1 of Engage is the sending identity and nothing else: the provider connections, the
- * domains an organization has proven, the named senders mail may go out as, and — for WhatsApp —
- * the Cloud API account and its templates. Campaigns, lists and reporting are later phases and
- * **are deliberately absent from this navigation** — an entry that routes to a "coming soon"
- * panel teaches people the rail lies, and this codebase already has that bug elsewhere. They
- * arrive here when their screens do.
+ * Phase 1 of Engage is the sending identity, WhatsApp, and the audience both send to: the
+ * provider connections, the domains an organization has proven, the named senders mail may go
+ * out as, the WhatsApp Cloud API account and its templates, and — separately from any one
+ * channel — the contacts, lists and suppressions a campaign on either channel targets. Campaigns
+ * and reporting are later phases and **are deliberately absent from this navigation** — an entry
+ * that routes to a "coming soon" panel teaches people the rail lies, and this codebase already
+ * has that bug elsewhere. They arrive here when their screens do.
  *
  * The three Email entries are the three setup steps in the order they have to happen: there is
  * nothing to prove without a connection, and no sender to name without a proven domain. WhatsApp
  * has no domain to prove, so it is two steps: connect the account, then track what Meta has
- * approved to send through it.
+ * approved to send through it. The three Audience entries have no such order — a contact can be
+ * added, grouped and suppressed in any sequence — so they are listed in the order a customer is
+ * most likely to reach for them.
  */
 const GROUPS: NavGroup[] = [
   {
@@ -43,6 +48,14 @@ const GROUPS: NavGroup[] = [
     items: [
       { to: "/whatsapp/connection", label: "Connection", icon: MessageSquareIcon },
       { to: "/whatsapp/templates", label: "Templates", icon: FileTextIcon },
+    ],
+  },
+  {
+    title: "Audience",
+    items: [
+      { to: "/contacts", label: "Contacts", icon: UsersIcon },
+      { to: "/lists", label: "Lists", icon: ClipboardListIcon },
+      { to: "/suppressions", label: "Suppressions", icon: OctagonIcon },
     ],
   },
 ];

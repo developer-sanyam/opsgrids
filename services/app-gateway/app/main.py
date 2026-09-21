@@ -78,6 +78,13 @@ STOREFRONT_PUBLIC_PATHS = frozenset(
 #: `password/forgot`, which is already public above.
 ACCOUNT_PUBLIC_PATHS = frozenset({"/api/v1/account/signup"})
 
+#: Engage's one-click unsubscribe link. Same terms as the pair above: an exact path, no path
+#: variable — `token` carries the organization and contact instead, verified by the service's
+#: own HMAC signature (`services/notification/app/unsubscribe.py`) rather than by anything this
+#: gateway checks. No entitlement gate either: a recipient clicking a link in an email they
+#: already received has not bought Engage and should not need to.
+ENGAGE_PUBLIC_PATHS = frozenset({"/api/v1/engage/public/unsubscribe"})
+
 # Resolved relative to the service directory so `make run` and the container image agree.
 _routes_path = Path(cfg.routes_file)
 if not _routes_path.is_absolute():
@@ -87,7 +94,9 @@ routes = RouteTable.from_file(_routes_path)
 
 policy = GatewayPolicy(
     audience=cfg.audience,
-    public_paths=DEFAULT_PUBLIC_PATHS | STOREFRONT_PUBLIC_PATHS | ACCOUNT_PUBLIC_PATHS,
+    public_paths=(
+        DEFAULT_PUBLIC_PATHS | STOREFRONT_PUBLIC_PATHS | ACCOUNT_PUBLIC_PATHS | ENGAGE_PUBLIC_PATHS
+    ),
     rate_limit=cfg.rate_limit_per_minute,
     anonymous_rate_limit=cfg.anonymous_rate_limit_per_minute,
     upstream_timeout=cfg.upstream_timeout_seconds,

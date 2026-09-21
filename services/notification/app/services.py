@@ -30,6 +30,9 @@ from app import dns_check, domain, selectors
 from app.config import settings
 from app.models import (
     AuditLog,
+    Contact,
+    ContactList,
+    ContactListMember,
     Delivery,
     EmailConnection,
     EmailDomain,
@@ -40,6 +43,7 @@ from app.models import (
     ProviderTemplate,
     Rule,
     Sender,
+    Suppression,
     Template,
 )
 from app.targets import TargetResolver
@@ -58,6 +62,7 @@ from platform_core.errors import (
     BusinessRuleProblem,
     ConflictProblem,
     NotFoundProblem,
+    PayloadTooLargeProblem,
     UpstreamUnavailableProblem,
     ValidationProblem,
 )
@@ -1953,3 +1958,551 @@ async def send_test(
         actor=_actor(ctx),
     )
     return sender
+
+
+# --------------------------------------------------------------------- engage audience
+#
+# Who a campaign may target: contacts, the lists they are grouped into, and the suppression
+# list nothing may be sent to. `services.sendable_contacts` — actually `selectors.sendable_
+# contacts` — is what a campaign send reads later; every writer here exists to keep that
+# selector honest.
+
+EVT_CONTACT_CREATED = "engage.audience.contact.created"
+EVT_CONTACT_UPDATED = "engage.audience.contact.updated"
+EVT_CONTACT_DELETED = "engage.audience.contact.deleted"
+EVT_CONTACTS_IMPORTED = "engage.audience.contact.imported"
+EVT_LIST_CREATED = "engage.audience.list.created"
+EVT_LIST_MEMBERS_ADDED = "engage.audience.list.members_added"
+EVT_LIST_MEMBERS_REMOVED = "engage.audience.list.members_removed"
+EVT_CONTACT_SUPPRESSED = "engage.audience.suppression.created"
+
+#: What `unsubscribe_public` stamps on the row it writes. A suppression recorded from the public
+#: link was not authored by any of this organization's own people, and recording one would be a
+#: lie in the audit trail — the same reasoning `SYSTEM_ACTOR` already carries at the top of this
+#: module for the consumer's writes.
+UNSUBSCRIBE_ACTOR = "system:engage-unsubscribe"
+
+
+async def create_contact(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    email: str,
+    name: str,
+    attributes: dict[str, Any],
+    request: Request | None = None,
+) -> Contact:
+    """Add one person to the audience. Refused, not upserted, on a duplicate address — that is
+    what `bulk_import_contacts` is for, and a single `POST` that sometimes updates a different
+    row than it created is a route that lies about what it did."""
+    normalized = domain.normalize_email(email)
+    existing = await selectors.get_contact_by_email(session, ctx.organization_id, normalized)
+    if existing is not None:
+        raise ConflictProblem(f"A contact already exists for {normalized}")
+
+    contact = Contact(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        email=normalized,
+        name=name,
+        attributes=attributes,
+    )
+    session.add(contact)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.contact.created",
+        entity="contact",
+        entity_id=contact.id,
+        after={"email": contact.email, "name": contact.name},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_CONTACT_CREATED,
+        aggregate_type="contact",
+        aggregate_id=contact.id,
+        payload={"organization_id": str(ctx.organization_id), "contact_id": str(contact.id)},
+        actor=_actor(ctx),
+    )
+    return contact
+
+
+async def update_contact(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    contact_id: uuid.UUID,
+    name: str | None,
+    attributes: dict[str, Any] | None,
+    request: Request | None = None,
+) -> Contact:
+    contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+    if contact is None:
+        raise NotFoundProblem("Contact not found")
+
+    before = {"name": contact.name, "attributes": contact.attributes}
+    if name is not None:
+        contact.name = name
+    if attributes is not None:
+        contact.attributes = attributes
+    contact.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.contact.updated",
+        entity="contact",
+        entity_id=contact.id,
+        before=before,
+        after={"name": contact.name, "attributes": contact.attributes},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_CONTACT_UPDATED,
+        aggregate_type="contact",
+        aggregate_id=contact.id,
+        payload={"organization_id": str(ctx.organization_id), "contact_id": str(contact.id)},
+        actor=_actor(ctx),
+    )
+    return contact
+
+
+async def delete_contact(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    contact_id: uuid.UUID,
+    request: Request | None = None,
+) -> None:
+    """Soft delete. `deleted_at` is what every selector here already filters on, the same as
+    every other table in this schema — a contact removed from the audience stays in the row for
+    the audit trail, not visible to a list or a campaign."""
+    contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+    if contact is None:
+        raise NotFoundProblem("Contact not found")
+
+    contact.deleted_at = datetime.now(UTC)
+    contact.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.contact.deleted",
+        entity="contact",
+        entity_id=contact.id,
+        before={"email": contact.email},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_CONTACT_DELETED,
+        aggregate_type="contact",
+        aggregate_id=contact.id,
+        payload={"organization_id": str(ctx.organization_id), "contact_id": str(contact.id)},
+        actor=_actor(ctx),
+    )
+
+
+async def bulk_import_contacts(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    rows: list[dict[str, Any]],
+    request: Request | None = None,
+) -> list[dict[str, Any]]:
+    """Import many contacts in one call. **Idempotent on email**: a row whose address already
+    exists in this organization updates the name and attributes rather than duplicating the row,
+    so retrying an import that partly failed (a timeout, a client that resent the same file)
+    never creates a second contact for the same address.
+
+    One report row per input row, in order, so a caller can show exactly which lines of their
+    CSV failed and why without re-deriving row numbers from a diff. A row that fails validation
+    does not stop the rows around it — that is the whole point of a per-row report over a single
+    all-or-nothing 422.
+    """
+    if len(rows) > domain.MAX_BULK_IMPORT_ROWS:
+        raise PayloadTooLargeProblem(
+            f"A bulk import accepts at most {domain.MAX_BULK_IMPORT_ROWS} rows; got {len(rows)}."
+        )
+
+    report: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        raw_email = str(row.get("email") or "").strip()
+        if not raw_email or not domain.is_valid_email(raw_email):
+            report.append(
+                {"row": index, "email": raw_email, "status": "error", "error": "invalid email"}
+            )
+            continue
+
+        email = domain.normalize_email(raw_email)
+        name = str(row.get("name") or "")
+        attributes = row.get("attributes") or {}
+        if not isinstance(attributes, dict):
+            report.append(
+                {
+                    "row": index,
+                    "email": email,
+                    "status": "error",
+                    "error": "attributes must be an object",
+                }
+            )
+            continue
+
+        existing = await selectors.get_contact_by_email(session, ctx.organization_id, email)
+        if existing is not None:
+            existing.name = name or existing.name
+            existing.attributes = {**existing.attributes, **attributes}
+            existing.updated_by = str(ctx.principal.sub)
+            await session.flush()
+            report.append({"row": index, "email": email, "status": "updated", "error": None})
+            continue
+
+        contact = Contact(
+            organization_id=ctx.organization_id,
+            created_by=str(ctx.principal.sub),
+            email=email,
+            name=name,
+            attributes=attributes,
+        )
+        session.add(contact)
+        await session.flush()
+        report.append({"row": index, "email": email, "status": "created", "error": None})
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.contact.imported",
+        entity="contact",
+        after={
+            "rows": len(rows),
+            "created": sum(1 for r in report if r["status"] == "created"),
+            "updated": sum(1 for r in report if r["status"] == "updated"),
+            "errors": sum(1 for r in report if r["status"] == "error"),
+        },
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_CONTACTS_IMPORTED,
+        aggregate_type="contact_import",
+        aggregate_id=uuid.uuid4(),
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "rows": len(rows),
+            "created": sum(1 for r in report if r["status"] == "created"),
+            "updated": sum(1 for r in report if r["status"] == "updated"),
+        },
+        actor=_actor(ctx),
+    )
+    return report
+
+
+async def create_contact_list(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    name: str,
+    description: str,
+    request: Request | None = None,
+) -> ContactList:
+    existing_stmt = selectors.contact_lists_stmt(ctx)
+    existing_rows = (await session.execute(existing_stmt)).scalars().all()
+    if any(row.name == name for row in existing_rows):
+        raise ConflictProblem(f"A list named {name!r} already exists")
+
+    contact_list = ContactList(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        name=name,
+        description=description,
+    )
+    session.add(contact_list)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.list.created",
+        entity="contact_list",
+        entity_id=contact_list.id,
+        after={"name": name},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_LIST_CREATED,
+        aggregate_type="contact_list",
+        aggregate_id=contact_list.id,
+        payload={"organization_id": str(ctx.organization_id), "list_id": str(contact_list.id)},
+        actor=_actor(ctx),
+    )
+    return contact_list
+
+
+async def add_list_members(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    list_id: uuid.UUID,
+    contact_ids: list[uuid.UUID],
+    request: Request | None = None,
+) -> list[uuid.UUID]:
+    """Add contacts to a list. Idempotent per contact — a contact already on the list is skipped
+    rather than raising, so a caller can resubmit the same batch after a partial failure without
+    first working out which half already landed."""
+    contact_list = await selectors.get_contact_list(session, ctx.organization_id, list_id)
+    if contact_list is None:
+        raise NotFoundProblem("List not found")
+
+    added: list[uuid.UUID] = []
+    for contact_id in contact_ids:
+        contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+        if contact is None:
+            raise NotFoundProblem(f"Contact {contact_id} not found")
+        already = await selectors.get_list_member(session, ctx.organization_id, list_id, contact_id)
+        if already is not None:
+            continue
+        session.add(
+            ContactListMember(
+                organization_id=ctx.organization_id,
+                created_by=str(ctx.principal.sub),
+                list_id=list_id,
+                contact_id=contact_id,
+            )
+        )
+        added.append(contact_id)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.list.members_added",
+        entity="contact_list",
+        entity_id=list_id,
+        after={"added": [str(c) for c in added]},
+        request=request,
+    )
+    if added:
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=ctx.organization_id,
+            event_type=EVT_LIST_MEMBERS_ADDED,
+            aggregate_type="contact_list",
+            aggregate_id=list_id,
+            payload={
+                "organization_id": str(ctx.organization_id),
+                "list_id": str(list_id),
+                "contact_ids": [str(c) for c in added],
+            },
+            actor=_actor(ctx),
+        )
+    return added
+
+
+async def remove_list_members(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    list_id: uuid.UUID,
+    contact_ids: list[uuid.UUID],
+    request: Request | None = None,
+) -> list[uuid.UUID]:
+    contact_list = await selectors.get_contact_list(session, ctx.organization_id, list_id)
+    if contact_list is None:
+        raise NotFoundProblem("List not found")
+
+    removed: list[uuid.UUID] = []
+    for contact_id in contact_ids:
+        member = await selectors.get_list_member(session, ctx.organization_id, list_id, contact_id)
+        if member is None:
+            continue
+        member.deleted_at = datetime.now(UTC)
+        member.updated_by = str(ctx.principal.sub)
+        removed.append(contact_id)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.list.members_removed",
+        entity="contact_list",
+        entity_id=list_id,
+        after={"removed": [str(c) for c in removed]},
+        request=request,
+    )
+    if removed:
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=ctx.organization_id,
+            event_type=EVT_LIST_MEMBERS_REMOVED,
+            aggregate_type="contact_list",
+            aggregate_id=list_id,
+            payload={
+                "organization_id": str(ctx.organization_id),
+                "list_id": str(list_id),
+                "contact_ids": [str(c) for c in removed],
+            },
+            actor=_actor(ctx),
+        )
+    return removed
+
+
+async def suppress_contact(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    contact_id: uuid.UUID,
+    reason: str,
+    note: str = "",
+    request: Request | None = None,
+) -> Suppression:
+    """An operator adding a contact to the suppression list directly. Idempotent: a contact
+    already suppressed is returned as-is — the first reason stands, the same rule
+    `unsubscribe_public` and a future bounce/complaint webhook will all share."""
+    if reason not in domain.SUPPRESSION_REASONS:
+        raise ValidationProblem(f"reason must be one of {sorted(domain.SUPPRESSION_REASONS)}")
+
+    contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+    if contact is None:
+        raise NotFoundProblem("Contact not found")
+
+    existing = await selectors.get_suppression(session, ctx.organization_id, contact_id)
+    if existing is not None:
+        return existing
+
+    suppression = Suppression(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        contact_id=contact_id,
+        reason=reason,
+        note=note,
+    )
+    session.add(suppression)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.suppression.created",
+        entity="suppression",
+        entity_id=suppression.id,
+        after={"contact_id": str(contact_id), "reason": reason},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_CONTACT_SUPPRESSED,
+        aggregate_type="suppression",
+        aggregate_id=suppression.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "contact_id": str(contact_id),
+            "reason": reason,
+        },
+        actor=_actor(ctx),
+    )
+    return suppression
+
+
+async def unsubscribe_public(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    contact_id: uuid.UUID,
+    request: Request | None = None,
+) -> tuple[Suppression, bool] | None:
+    """Record a self-service unsubscribe. No `ScopeContext`: the caller is a stranger with a
+    signed link, not a principal — the same shape `fold_status` uses for a webhook's write.
+
+    Returns `None`, not a 404, when the contact does not exist in this organization: a token
+    signed for a contact later deleted must still look like success to whoever clicked the link,
+    or a stale bookmark becomes a way to probe which contacts still exist.
+
+    Idempotent: a second click records nothing new and still answers success — see the class
+    docstring on `models.Suppression` for why the first reason stands rather than this one
+    overwriting it.
+    """
+    contact = await session.get(Contact, contact_id)
+    if (
+        contact is None
+        or contact.organization_id != organization_id
+        or contact.deleted_at is not None
+    ):
+        return None
+
+    existing = await selectors.get_suppression(session, organization_id, contact_id)
+    if existing is not None:
+        return existing, True
+
+    suppression = Suppression(
+        organization_id=organization_id,
+        created_by=UNSUBSCRIBE_ACTOR,
+        contact_id=contact_id,
+        reason="unsubscribed",
+    )
+    session.add(suppression)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        acting_as=UNSUBSCRIBE_ACTOR,
+        action="engage.suppression.created",
+        entity="suppression",
+        entity_id=suppression.id,
+        after={"contact_id": str(contact_id), "reason": "unsubscribed"},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=organization_id,
+        event_type=EVT_CONTACT_SUPPRESSED,
+        aggregate_type="suppression",
+        aggregate_id=suppression.id,
+        payload={
+            "organization_id": str(organization_id),
+            "contact_id": str(contact_id),
+            "reason": "unsubscribed",
+        },
+        actor={"type": "system", "id": UNSUBSCRIBE_ACTOR},
+    )
+    return suppression, False

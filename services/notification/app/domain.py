@@ -804,3 +804,42 @@ def fold_domain_status(records: list[dict[str, Any]]) -> str:
     if required and all(r.get("verified") for r in required):
         return "verified"
     return "pending"
+
+
+# --------------------------------------------------------------------- engage audience
+
+#: The suppression reasons Engage records. `unsubscribed` comes from the public link;
+#: `bounced` and `complained` are provider feedback wired up when campaigns start sending;
+#: `manual` is an operator adding someone directly.
+SUPPRESSION_REASONS: Final[tuple[str, ...]] = (
+    "unsubscribed",
+    "bounced",
+    "complained",
+    "manual",
+)
+
+#: A bulk import request larger than this is refused outright rather than accepted and left to
+#: time out — the per-row validation loop and the audit/outbox writes it produces are real work
+#: per row, and an unbounded body is an unbounded transaction.
+MAX_BULK_IMPORT_ROWS: Final = 2000
+
+
+def normalize_email(raw: str) -> str:
+    """The one email an org's contact book ever compares against: trimmed and lowercased.
+
+    Contacts, the bulk import and the unsubscribe token all funnel through this before a lookup
+    or a write, so `a@Example.com` and `a@example.com ` are never two rows.
+    """
+    return raw.strip().lower()
+
+
+#: Deliberately loose — this is a shape check, not an RFC 5322 parser. The ordinary create route
+#: rejects a bad address with pydantic's `EmailStr` before this is ever consulted; this exists
+#: for the bulk import, where one malformed row must become one entry in the report rather than
+#: a 422 that discards every row beside it.
+_EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def is_valid_email(value: str) -> bool:
+    """Loose shape check for the bulk import's per-row report. See `_EMAIL_SHAPE`."""
+    return bool(_EMAIL_SHAPE.match(value))

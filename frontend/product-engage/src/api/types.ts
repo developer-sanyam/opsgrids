@@ -195,3 +195,110 @@ export interface Page<T> {
   size: number;
   pages: number;
 }
+
+/* ------------------------------ audience: contacts ------------------------------ */
+
+/** `POST /engage/contacts`. Rejected outright on a duplicate address — `POST /engage/contacts/
+ *  import` is the idempotent path, and a create that sometimes updates a different row than it
+ *  made would be a route that lies about what it did. */
+export interface ContactIn {
+  email: string;
+  name?: string;
+  attributes?: Record<string, unknown>;
+}
+
+/** `PUT /engage/contacts/{id}`. No `email` — an address is the contact's identity, and changing
+ *  it is deleting one contact and creating another, not an edit. */
+export interface ContactUpdateIn {
+  name?: string;
+  attributes?: Record<string, unknown>;
+}
+
+export interface ContactOut {
+  id: string;
+  /** Already normalized (trimmed, lowercased) by the service — shown exactly as stored. */
+  email: string;
+  name: string;
+  attributes: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One row of `POST /engage/contacts/import`'s body. `email` is a plain string on the wire, not
+ *  validated client-side beyond "non-empty" — a malformed row becomes one `error` entry in the
+ *  report rather than blocking the rows around it. */
+export interface ContactBulkRowIn {
+  email: string;
+  name?: string;
+  attributes?: Record<string, unknown>;
+}
+
+export interface ContactBulkImportIn {
+  rows: ContactBulkRowIn[];
+}
+
+export type BulkImportRowStatus = "created" | "updated" | "error";
+
+export interface ContactBulkImportRowOut {
+  row: number;
+  email: string;
+  status: BulkImportRowStatus;
+  error: string | null;
+}
+
+/** The full per-row report `POST /engage/contacts/import` returns — every input row gets exactly
+ *  one entry, in order, so a screen can show which line of a CSV failed and why. */
+export interface ContactBulkImportOut {
+  total: number;
+  created: number;
+  updated: number;
+  errors: number;
+  rows: ContactBulkImportRowOut[];
+}
+
+/* -------------------------------- audience: lists -------------------------------- */
+
+export interface ContactListIn {
+  name: string;
+  description?: string;
+}
+
+export interface ContactListOut {
+  id: string;
+  name: string;
+  description: string;
+  created_at: string;
+}
+
+/** `POST /engage/lists/{id}/members` and `.../members/remove`. Idempotent per contact — a
+ *  contact already on (or already off) the list is skipped rather than erroring. */
+export interface ListMembershipIn {
+  contact_ids: string[];
+}
+
+/** The contacts the request actually changed. Already-members on an add, or already-absent
+ *  contacts on a remove, are silently skipped and so are absent from this list. */
+export interface ListMembershipOut {
+  contact_ids: string[];
+}
+
+/* ----------------------------- audience: suppression ----------------------------- */
+
+export type SuppressionReason = "unsubscribed" | "bounced" | "complained" | "manual";
+
+/** `POST /engage/suppressions` — an operator adding a contact directly. `unsubscribed` and
+ *  `bounced`/`complained` are recorded by the public link and (later) provider feedback; a form
+ *  posting this only ever sends `manual`. */
+export interface SuppressionIn {
+  contact_id: string;
+  reason?: SuppressionReason;
+  note?: string;
+}
+
+export interface SuppressionOut {
+  id: string;
+  contact_id: string;
+  reason: SuppressionReason;
+  note: string;
+  created_at: string;
+}

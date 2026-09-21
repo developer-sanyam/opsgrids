@@ -8,20 +8,24 @@ export {
   Announcer,
   Button,
   Card,
+  CheckboxGroup,
+  ConfirmDialog,
   Dialog,
   EmptyState,
   ErrorState,
   InlineAlert,
   PageHeader,
   RadioGroup,
+  SearchInput,
   SectionHeader,
   Select,
   Skeleton,
   Tag,
+  TextArea,
   TextField,
   useAnnounce,
 } from "@opsgrids/ui";
-export type { RadioOption, SelectOption, TagTone } from "@opsgrids/ui";
+export type { CheckboxOption, RadioOption, SelectOption, TagTone } from "@opsgrids/ui";
 
 export { Sidebar } from "./Sidebar";
 export { LogoMark } from "./LogoMark";
@@ -29,6 +33,7 @@ export {
   ConnectionStatusTag,
   DomainStatusTag,
   SenderStatusTag,
+  SuppressionReasonTag,
   TemplateStatusTag,
 } from "./StatusTags";
 export { EngageNotActive, LoadFailure, NotificationNotActive } from "./LoadFailure";

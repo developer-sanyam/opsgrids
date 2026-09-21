@@ -8,18 +8,21 @@ import { ApiError } from "@opsgrids/client";
 import * as client from "@/api/client";
 import { isNotActivated } from "@/lib/errors";
 import { ConnectionPage } from "./Connection";
+import { ContactsPage } from "./Contacts";
 import { DomainsPage } from "./Domains";
+import { ListsPage } from "./Lists";
 import { OverviewPage } from "./Overview";
 import { SendersPage } from "./Senders";
+import { SuppressionsPage } from "./Suppressions";
 
 /**
  * The gateway answers every `/engage` read with a `402` until the organization has Engage, and
  * that reached production as a red "Couldn't load your sending identity — engage is not active
  * for this organization" on the Overview of an owner who had done nothing wrong.
  *
- * What is pinned here: a `402` on any of the four screens is the not-active state, with the way
- * to turn Engage on and none of the error's dress; and everything that is not a `402` — a `500`,
- * a `403`, a request that never reached the gateway — is still the error it always was.
+ * What is pinned here: a `402` on any screen is the not-active state, with the way to turn
+ * Engage on and none of the error's dress; and everything that is not a `402` — a `500`, a
+ * `403`, a request that never reached the gateway — is still the error it always was.
  */
 
 /** The gateway's own answer, as `PaymentRequiredProblem` puts it on the wire. */
@@ -36,11 +39,14 @@ const NOT_ACTIVE_TITLE = "Engage isn't active for this organization yet";
  *  rather than imported, so a change to the constant has to change this line too. */
 const PRODUCTS_URL = "https://app.opsgrids.com/";
 
-/** Every read the four screens make fails the same way; each screen calls its own subset. */
+/** Every read any screen makes fails the same way; each screen calls its own subset. */
 function failEveryRead(error: Error) {
   vi.spyOn(client, "getConnection").mockRejectedValue(error);
   vi.spyOn(client, "listDomains").mockRejectedValue(error);
   vi.spyOn(client, "listSenders").mockRejectedValue(error);
+  vi.spyOn(client, "listContacts").mockRejectedValue(error);
+  vi.spyOn(client, "listContactLists").mockRejectedValue(error);
+  vi.spyOn(client, "listSuppressions").mockRejectedValue(error);
 }
 
 const SCREENS: { name: string; page: () => ReactElement; errorTitle: string }[] = [
@@ -48,6 +54,13 @@ const SCREENS: { name: string; page: () => ReactElement; errorTitle: string }[] 
   { name: "Connections", page: () => <ConnectionPage />, errorTitle: "Couldn't load the connection" },
   { name: "Domains", page: () => <DomainsPage />, errorTitle: "Couldn't load your domains" },
   { name: "Senders", page: () => <SendersPage />, errorTitle: "Couldn't load your senders" },
+  { name: "Contacts", page: () => <ContactsPage />, errorTitle: "Couldn't load your contacts" },
+  { name: "Lists", page: () => <ListsPage />, errorTitle: "Couldn't load your lists" },
+  {
+    name: "Suppressions",
+    page: () => <SuppressionsPage />,
+    errorTitle: "Couldn't load your suppression list",
+  },
 ];
 
 function mount(page: ReactElement) {

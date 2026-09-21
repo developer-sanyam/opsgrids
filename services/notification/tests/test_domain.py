@@ -280,3 +280,19 @@ def test_retry_is_bounded() -> None:
 
 def test_attempts_are_numbered_from_one() -> None:
     assert domain.next_attempt_no(0) == 1
+
+
+# --------------------------------------------------------------------- engage audience
+
+
+def test_normalize_email_trims_and_lowercases() -> None:
+    assert domain.normalize_email(" Jane@Example.com ") == "jane@example.com"
+
+
+def test_is_valid_email_accepts_an_ordinary_address() -> None:
+    assert domain.is_valid_email("jane@example.com")
+
+
+@pytest.mark.parametrize("value", ["", "not-an-email", "jane@", "@example.com", "jane example.com"])
+def test_is_valid_email_rejects_malformed_addresses(value: str) -> None:
+    assert not domain.is_valid_email(value)

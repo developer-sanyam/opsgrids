@@ -4,6 +4,42 @@
     {
       "action": "read",
       "default_scope": "ORG",
+      "description": "See the contact book and its lists",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "audience",
+      "resource": "contact"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Add, edit, remove and bulk-import contacts, and manage lists",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "audience",
+      "resource": "contact"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See who has been suppressed and why",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "audience",
+      "resource": "suppression"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Manually suppress a contact",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "audience",
+      "resource": "suppression"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
       "description": "See how the organization sends email",
       "is_dangerous": false,
       "max_scope": "ORG",
@@ -82,6 +118,22 @@
       "description": "Owns how the organization sends: the provider connection, its domains and its senders. Built from the Engage catalogue alone.",
       "grants": [
         {
+          "code": "engage.audience.contact.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.audience.contact.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.audience.suppression.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.audience.suppression.write",
+          "scope": "ORG"
+        },
+        {
           "code": "engage.setup.connection.read",
           "scope": "ORG"
         },
@@ -124,6 +176,14 @@
       "description": "Every person with an Engage seat. Reads the sending setup without being able to change it \u2014 a new seat should not be able to repoint the organization's mail.",
       "grants": [
         {
+          "code": "engage.audience.contact.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.audience.suppression.read",
+          "scope": "ORG"
+        },
+        {
           "code": "engage.setup.connection.read",
           "scope": "ORG"
         },
@@ -143,6 +203,32 @@
       "is_admin": false,
       "is_default": true,
       "name": "Engage viewer"
+    },
+    {
+      "code": "ENGAGE_AUDIENCE_MANAGER",
+      "cross_product": false,
+      "description": "Builds and maintains the contact book, its lists and the suppression list, without touching how the organization sends.",
+      "grants": [
+        {
+          "code": "engage.audience.contact.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.audience.contact.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.audience.suppression.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.audience.suppression.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "Engage audience manager"
     }
   ],
   "sources": [

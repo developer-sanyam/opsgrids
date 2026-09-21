@@ -24,6 +24,10 @@ organization sends as itself. They live in this schema rather than a new service
 everything Engage reports on is a local join against `messages` and `deliveries`, and no service
 may read another's tables. One schema, two product catalogues; a product is an entitlement and a
 vocabulary, not a process.
+
+`Contact`, `ContactList`, `ContactListMember` and `Suppression` are Engage's **audience**: who a
+campaign may target and who it may not. Same reasoning as the sending identity above — a
+campaign's targeting is a local join against these tables and nothing outside this schema.
 """
 
 from __future__ import annotations
@@ -516,6 +520,114 @@ class Sender(Base, TenantBase):
     def usable(self) -> bool:
         """Whether a campaign may send as this sender."""
         return self.verified_at is not None
+
+
+class Contact(Base, TenantBase):
+    """One person in an organization's Engage audience.
+
+    `email` is stored in **plaintext**, following the precedent customer-service already set for
+    a work contact address (`customer.Contact` docstring): a business email is the record's
+    display identity, not a secret to seal behind a mask, and campaigns need to search and
+    deduplicate on it constantly. `phone`, when this table grows one, would take the sealed
+    envelope customer-service uses for a raw number — the two fields are not equally sensitive
+    and the platform's PII rule does not require treating them alike.
+
+    `email` is normalized lowercase at the write boundary (`domain.normalize_email`) before it
+    ever reaches this column, so the unique constraint and every lookup compare like for like.
+
+    `attributes` is free-form JSONB — whatever a CSV import or an integration brings along
+    (first name, company, custom fields) that a campaign may template into a send later.
+    """
+
+    __tablename__ = "contacts"
+
+    email: Mapped[str] = mapped_column(String(254), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    attributes: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "email", name="uq_contacts_org_email"),
+        Index("ix_contacts_org_email", "organization_id", "email"),
+    )
+
+
+class ContactList(Base, TenantBase):
+    """A named grouping of contacts a campaign may target.
+
+    Membership lives in `ContactListMember` rather than an array column on either side: a
+    contact belongs to many lists and a list holds many contacts, and an array column can index
+    one direction only.
+    """
+
+    __tablename__ = "contact_lists"
+
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "name", name="uq_contact_lists_org_name"),
+    )
+
+
+class ContactListMember(Base, TenantBase):
+    """One contact's membership in one list.
+
+    A real foreign key to both sides — same schema, so allowed (ADR-0000 §10) — with `CASCADE`
+    on each: deleting the list or the contact is what "not a member anymore" means, and there is
+    no membership row worth keeping once either half of it is gone.
+    """
+
+    __tablename__ = "contact_list_members"
+
+    list_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("notification.contact_lists.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    contact_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("notification.contacts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("list_id", "contact_id", name="uq_contact_list_members_list_contact"),
+        Index("ix_contact_list_members_org_list", "organization_id", "list_id"),
+        Index("ix_contact_list_members_org_contact", "organization_id", "contact_id"),
+    )
+
+
+class Suppression(Base, TenantBase):
+    """One contact this organization may not send Engage campaigns to.
+
+    One row per contact — `unique(organization_id, contact_id)` — rather than an append-only
+    ledger like `Delivery`: what a campaign needs to ask is "is this contact suppressed right
+    now", and a single current-state row answers that with an index instead of a `MAX(at)`
+    subquery over history. Nothing here is ever corrected by editing the reason in place after
+    the fact, since recording a *different* reason for an already-suppressed contact is refused
+    by `services.suppress_contact` — the first reason a contact was suppressed for stays the
+    reason, because a bounce that arrives after a complaint does not un-complain them.
+
+    `reason` is `unsubscribed` (self-service, via the public link), `bounced` or `complained`
+    (provider feedback, wired up when campaigns start sending), or `manual` (an operator added
+    them here directly).
+    """
+
+    __tablename__ = "suppressions"
+
+    contact_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("notification.contacts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: unsubscribed | bounced | complained | manual.
+    reason: Mapped[str] = mapped_column(String(20), nullable=False)
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "contact_id", name="uq_suppressions_org_contact"),
+        Index("ix_suppressions_org_contact", "organization_id", "contact_id"),
+    )
 
 
 class OutboxEvent(Base, OutboxMixin):

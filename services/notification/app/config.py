@@ -77,6 +77,15 @@ class Settings(ServiceSettings):
     #: takes an arbitrary `to_address` and opens a real SMTP handshake on every call.
     engage_test_send_rate_limit_per_minute: int = 5
 
+    # ----------------------------------------------------------------- engage audience
+    #: Signs the one-click unsubscribe link (`app/unsubscribe.py`). A **platform** secret, not a
+    #: per-organization one: every tenant's suppression link is verified against the same key,
+    #: the same way `pii_encryption_key` is one passphrase for every sealed column rather than
+    #: one per organization. Rotate by moving this value elsewhere and minting new links; an
+    #: outstanding link signed under the old key simply stops verifying, which is the same
+    #: trade every "log out everyone" secret rotation makes.
+    engage_unsubscribe_secret: SecretStr = SecretStr("dev-only-engage-unsubscribe-secret-change-me")
+
     # ----------------------------------------------------------------- dispatcher
     #: Rows claimed per dispatcher pass.
     dispatch_batch_size: int = 50

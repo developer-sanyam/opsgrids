@@ -271,6 +271,42 @@ ENGAGE = PermissionCatalogue(
             "ORG",
             is_dangerous=True,
         ),
+        # The audience a campaign may target: contacts, the lists they are grouped into, and
+        # who is suppressed. Top out at ORG like the rest of the Engage catalogue — an
+        # organization's audience is not any one person's, and there is no "my own contacts"
+        # reading to protect.
+        PermissionSpec(
+            "audience",
+            "contact",
+            "read",
+            "See the contact book and its lists",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "audience",
+            "contact",
+            "write",
+            "Add, edit, remove and bulk-import contacts, and manage lists",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "audience",
+            "suppression",
+            "read",
+            "See who has been suppressed and why",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "audience",
+            "suppression",
+            "write",
+            "Manually suppress a contact",
+            "ORG",
+            "ORG",
+        ),
     ],
 )
 
@@ -300,6 +336,23 @@ ENGAGE_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("engage.setup.domain.read", "ORG"),
             ("engage.setup.sender.read", "ORG"),
             ("engage.setup.whatsapp.read", "ORG"),
+            ("engage.audience.contact.read", "ORG"),
+            ("engage.audience.suppression.read", "ORG"),
+        ),
+    ),
+    RoleTemplate(
+        code="ENGAGE_AUDIENCE_MANAGER",
+        name="Engage audience manager",
+        product=ENGAGE_PRODUCT,
+        description=(
+            "Builds and maintains the contact book, its lists and the suppression list, "
+            "without touching how the organization sends."
+        ),
+        grants=ENGAGE.pick(
+            ("engage.audience.contact.read", "ORG"),
+            ("engage.audience.contact.write", "ORG"),
+            ("engage.audience.suppression.read", "ORG"),
+            ("engage.audience.suppression.write", "ORG"),
         ),
     ),
 ]

@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 Channel = Literal["email", "whatsapp"]
 TemplateCategory = Literal["utility", "marketing", "authentication"]
@@ -403,3 +403,124 @@ class TestSendIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     to_address: str = Field(min_length=3, max_length=254)
+
+
+# --------------------------------------------------------------------- engage audience
+
+SuppressionReason = Literal["unsubscribed", "bounced", "complained", "manual"]
+BulkImportRowStatus = Literal["created", "updated", "error"]
+
+
+class ContactIn(BaseModel):
+    """Add one person to the audience. `EmailStr` rejects a malformed address outright — the
+    ordinary create route has one row to get right, unlike the bulk import below."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr = Field(max_length=254)
+    name: str = Field(default="", max_length=160)
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContactUpdateIn(BaseModel):
+    """Edit a contact. Email is absent on purpose — an address is the contact's identity and
+    changing it is deleting one contact and creating another, not an edit."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=160)
+    attributes: dict[str, Any] | None = None
+
+
+class ContactOut(BaseModel):
+    id: str
+    email: str
+    name: str
+    attributes: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class ContactBulkRowIn(BaseModel):
+    """One row of a bulk import. `email` is a plain string, not `EmailStr` — a malformed row
+    here becomes one `error` entry in the report rather than a 422 for the whole request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(min_length=1, max_length=254)
+    name: str = Field(default="", max_length=160)
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContactBulkImportIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rows: list[ContactBulkRowIn] = Field(min_length=1)
+
+
+class ContactBulkImportRowOut(BaseModel):
+    row: int
+    email: str
+    status: BulkImportRowStatus
+    error: str | None = None
+
+
+class ContactBulkImportOut(BaseModel):
+    total: int
+    created: int
+    updated: int
+    errors: int
+    rows: list[ContactBulkImportRowOut]
+
+
+class ContactListIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
+
+
+class ContactListOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    created_at: datetime
+
+
+class ListMembershipIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contact_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+
+
+class ListMembershipOut(BaseModel):
+    #: The contacts the request actually changed — already-members on an add, or
+    #: already-absent contacts on a remove, are silently skipped rather than erroring.
+    contact_ids: list[str]
+
+
+class SuppressionIn(BaseModel):
+    """Manually add a contact to the suppression list."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    contact_id: uuid.UUID
+    reason: SuppressionReason = "manual"
+    note: str = Field(default="", max_length=2000)
+
+
+class SuppressionOut(BaseModel):
+    id: str
+    contact_id: str
+    reason: SuppressionReason
+    note: str
+    created_at: datetime
+
+
+class UnsubscribeOut(BaseModel):
+    """What the public unsubscribe link renders. `already` distinguishes "you're now off the
+    list" from "you already were" without implying the second click did anything — both are
+    idempotent, so both return 200, but the copy on the confirmation page can still read right."""
+
+    status: Literal["unsubscribed"]
+    already: bool

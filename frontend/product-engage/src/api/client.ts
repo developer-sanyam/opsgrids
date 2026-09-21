@@ -15,18 +15,39 @@
 
 import { apiRequest } from "@opsgrids/client";
 
-import { CONNECTION, DOMAINS, SENDERS, WHATSAPP_CONNECTION, WHATSAPP_TEMPLATES } from "./fixtures";
+import {
+  CONNECTION,
+  CONTACT_LIST_MEMBERS,
+  CONTACT_LISTS,
+  CONTACTS,
+  DOMAINS,
+  SENDERS,
+  SUPPRESSIONS,
+  WHATSAPP_CONNECTION,
+  WHATSAPP_TEMPLATES,
+} from "./fixtures";
 import type {
   ConnectionIn,
   ConnectionOut,
+  ContactBulkImportIn,
+  ContactBulkImportOut,
+  ContactIn,
+  ContactListIn,
+  ContactListOut,
+  ContactOut,
+  ContactUpdateIn,
   DomainIn,
   DomainOut,
   DomainStatus,
+  ListMembershipIn,
+  ListMembershipOut,
   Page,
   ProviderTemplateIn,
   ProviderTemplateOut,
   SenderIn,
   SenderOut,
+  SuppressionIn,
+  SuppressionOut,
   TestSendIn,
   WhatsAppConnectionIn,
   WhatsAppConnectionOut,
@@ -269,7 +290,9 @@ export async function replaceWhatsApp(
 export async function listWhatsAppTemplates(): Promise<Page<ProviderTemplateOut>> {
   if (USE_FIXTURES) return settle(fixturePage(WHATSAPP_TEMPLATES));
   const query = new URLSearchParams({ channel: "whatsapp", size: String(FULL_PAGE) });
-  return apiRequest<Page<ProviderTemplateOut>>(`/notifications/provider-templates?${query.toString()}`);
+  return apiRequest<Page<ProviderTemplateOut>>(
+    `/notifications/provider-templates?${query.toString()}`,
+  );
 }
 
 /**
@@ -287,4 +310,130 @@ export async function submitWhatsAppTemplate(
     method: "PUT",
     body: input,
   });
+}
+
+/* --------------------------------- contacts -------------------------------- */
+
+/** The contact book — `GET /engage/contacts`, optionally filtered by `q` against email or name,
+ *  matching the server's own search. */
+export async function listContacts(options: { q?: string } = {}): Promise<Page<ContactOut>> {
+  const { q } = options;
+  if (USE_FIXTURES) {
+    const needle = q?.trim().toLowerCase() ?? "";
+    const rows =
+      needle === ""
+        ? CONTACTS
+        : CONTACTS.filter(
+            (c) => c.email.toLowerCase().includes(needle) || c.name.toLowerCase().includes(needle),
+          );
+    return settle(fixturePage(rows));
+  }
+  const query = new URLSearchParams({ size: String(FULL_PAGE) });
+  if (q !== undefined && q !== "") query.set("q", q);
+  return apiRequest<Page<ContactOut>>(`/engage/contacts?${query.toString()}`);
+}
+
+/** Add one contact — `POST /engage/contacts`. Refused with a 409 on a duplicate address; bulk
+ *  import (`importContacts`) is the idempotent path for that case. */
+export async function addContact(input: ContactIn): Promise<ContactOut> {
+  if (USE_FIXTURES) refuseWithoutService("Adding a contact");
+  return apiRequest<ContactOut>("/engage/contacts", { method: "POST", body: input });
+}
+
+/** Edit a contact's name or attributes — `PUT /engage/contacts/{id}`. */
+export async function updateContact(
+  contactId: string,
+  input: ContactUpdateIn,
+): Promise<ContactOut> {
+  if (USE_FIXTURES) refuseWithoutService("Editing a contact");
+  return apiRequest<ContactOut>(`/engage/contacts/${encodeURIComponent(contactId)}`, {
+    method: "PUT",
+    body: input,
+  });
+}
+
+/** Remove a contact (soft delete) — `DELETE /engage/contacts/{id}`. */
+export async function deleteContact(contactId: string): Promise<void> {
+  if (USE_FIXTURES) refuseWithoutService("Removing a contact");
+  await apiRequest<void>(`/engage/contacts/${encodeURIComponent(contactId)}`, {
+    method: "DELETE",
+  });
+}
+
+/**
+ * Bulk-import contacts, idempotent on email — `POST /engage/contacts/import`.
+ *
+ * Returns one report row per input row, in the order submitted, so the screen can show exactly
+ * which line failed and why without re-deriving row numbers from a diff.
+ */
+export async function importContacts(input: ContactBulkImportIn): Promise<ContactBulkImportOut> {
+  if (USE_FIXTURES) refuseWithoutService("Importing contacts");
+  return apiRequest<ContactBulkImportOut>("/engage/contacts/import", {
+    method: "POST",
+    body: input,
+  });
+}
+
+/* ----------------------------------- lists ---------------------------------- */
+
+export async function listContactLists(): Promise<Page<ContactListOut>> {
+  if (USE_FIXTURES) return settle(fixturePage(CONTACT_LISTS));
+  return apiRequest<Page<ContactListOut>>(`/engage/lists?size=${FULL_PAGE}`);
+}
+
+export async function addContactList(input: ContactListIn): Promise<ContactListOut> {
+  if (USE_FIXTURES) refuseWithoutService("Creating a list");
+  return apiRequest<ContactListOut>("/engage/lists", { method: "POST", body: input });
+}
+
+/** Who is on a list — `GET /engage/lists/{id}/members`. */
+export async function listListMembers(listId: string): Promise<Page<ContactOut>> {
+  if (USE_FIXTURES) {
+    const ids = new Set(CONTACT_LIST_MEMBERS[listId] ?? []);
+    return settle(fixturePage(CONTACTS.filter((c) => ids.has(c.id))));
+  }
+  return apiRequest<Page<ContactOut>>(
+    `/engage/lists/${encodeURIComponent(listId)}/members?size=${FULL_PAGE}`,
+  );
+}
+
+/** Add contacts to a list — `POST /engage/lists/{id}/members`. Idempotent per contact. */
+export async function addListMembers(
+  listId: string,
+  input: ListMembershipIn,
+): Promise<ListMembershipOut> {
+  if (USE_FIXTURES) refuseWithoutService("Adding contacts to a list");
+  return apiRequest<ListMembershipOut>(`/engage/lists/${encodeURIComponent(listId)}/members`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** Remove contacts from a list — `POST /engage/lists/{id}/members/remove`. A `POST` rather than
+ *  `DELETE` because the service needs a body to name which contacts, and `DELETE` with a body is
+ *  unreliable enough across clients and proxies that the route does not rely on it. */
+export async function removeListMembers(
+  listId: string,
+  input: ListMembershipIn,
+): Promise<ListMembershipOut> {
+  if (USE_FIXTURES) refuseWithoutService("Removing contacts from a list");
+  return apiRequest<ListMembershipOut>(
+    `/engage/lists/${encodeURIComponent(listId)}/members/remove`,
+    { method: "POST", body: input },
+  );
+}
+
+/* -------------------------------- suppressions ------------------------------- */
+
+export async function listSuppressions(): Promise<Page<SuppressionOut>> {
+  if (USE_FIXTURES) return settle(fixturePage(SUPPRESSIONS));
+  return apiRequest<Page<SuppressionOut>>(`/engage/suppressions?size=${FULL_PAGE}`);
+}
+
+/** Manually suppress a contact — `POST /engage/suppressions`. Idempotent: suppressing an
+ *  already-suppressed contact returns the existing row rather than erroring, and the first
+ *  reason a contact was suppressed for is the one that survives. */
+export async function addSuppression(input: SuppressionIn): Promise<SuppressionOut> {
+  if (USE_FIXTURES) refuseWithoutService("Suppressing a contact");
+  return apiRequest<SuppressionOut>("/engage/suppressions", { method: "POST", body: input });
 }

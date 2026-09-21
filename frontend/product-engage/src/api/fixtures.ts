@@ -13,10 +13,13 @@
 
 import type {
   ConnectionOut,
+  ContactListOut,
+  ContactOut,
   DnsRecordOut,
   DomainOut,
   ProviderTemplateOut,
   SenderOut,
+  SuppressionOut,
   WhatsAppConnectionOut,
 } from "./types";
 
@@ -259,5 +262,68 @@ export const WHATSAPP_TEMPLATES: ProviderTemplateOut[] = [
     sendable: false,
     created_at: "2026-09-10T10:00:00Z",
     updated_at: "2026-09-15T07:22:51Z",
+  },
+];
+
+/* -------------------------------- audience -------------------------------- */
+
+/** Three contacts: one ordinary, one suppressed (so the suppression list is not empty in
+ *  fixture mode either), one whose only distinguishing fact is being on a list. */
+export const CONTACTS: ContactOut[] = [
+  {
+    id: "8d3f0a11-6b2e-4c7a-9d51-2f8e6a0c4b17",
+    email: "priya.raghavan@vaayu-logistics.example.com",
+    name: "Priya Raghavan",
+    attributes: { company: "Vaayu Logistics", title: "Ops Lead" },
+    created_at: "2026-09-01T09:00:00Z",
+    updated_at: "2026-09-01T09:00:00Z",
+  },
+  {
+    id: "b6f1c4d8-9e22-4a6f-8b3d-1a7c5e0f9d24",
+    email: "arjun.mehta@vaayu-freight.example.com",
+    name: "Arjun Mehta",
+    attributes: { company: "Vaayu Freight" },
+    created_at: "2026-09-05T11:30:00Z",
+    updated_at: "2026-09-05T11:30:00Z",
+  },
+  {
+    id: "f2a9d7e3-4c1b-4f88-9a06-3e5d8c1b7a90",
+    email: "bounced@unreachable.example.com",
+    name: "Bounced Address",
+    attributes: {},
+    created_at: "2026-08-20T08:15:00Z",
+    updated_at: "2026-09-10T14:00:00Z",
+  },
+];
+
+export const CONTACT_LISTS: ContactListOut[] = [
+  {
+    id: "1c9e6b4a-7d2f-4a83-b0e5-6f2a1d9c8b34",
+    name: "Newsletter",
+    description: "Monthly product updates.",
+    created_at: "2026-08-15T10:00:00Z",
+  },
+  {
+    id: "9a4d2f7c-3b1e-4d95-8c6a-0e7b3f2d1a56",
+    name: "VIP customers",
+    description: "",
+    created_at: "2026-09-02T13:20:00Z",
+  },
+];
+
+/** Which contacts (by id) each list holds — kept beside the fixtures rather than on `ContactOut`
+ *  itself, matching the service's own shape: membership is a join table, not a column. */
+export const CONTACT_LIST_MEMBERS: Record<string, string[]> = {
+  [CONTACT_LISTS[0]!.id]: [CONTACTS[0]!.id, CONTACTS[1]!.id],
+  [CONTACT_LISTS[1]!.id]: [CONTACTS[0]!.id],
+};
+
+export const SUPPRESSIONS: SuppressionOut[] = [
+  {
+    id: "5e8b1d4a-2f6c-4a97-b3d0-8c1e7a4f9b62",
+    contact_id: CONTACTS[2]!.id,
+    reason: "bounced",
+    note: "",
+    created_at: "2026-09-10T14:00:00Z",
   },
 ];

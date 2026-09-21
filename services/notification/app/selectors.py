@@ -17,6 +17,9 @@ from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    Contact,
+    ContactList,
+    ContactListMember,
     Delivery,
     EmailConnection,
     EmailDomain,
@@ -26,6 +29,7 @@ from app.models import (
     ProviderTemplate,
     Rule,
     Sender,
+    Suppression,
     Template,
 )
 from platform_core.auth import ScopeContext
@@ -395,3 +399,149 @@ async def get_sender_by_address(
         Sender.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+# --------------------------------------------------------------------- engage audience
+
+
+def contacts_stmt(ctx: ScopeContext, *, q: str | None = None) -> Select[Any]:
+    """Scope-filtered contact list, newest first — a contact book is browsed most-recent-first
+    the same way the message log is."""
+    stmt = select(Contact).where(
+        Contact.organization_id == ctx.organization_id,
+        Contact.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=Contact.created_by)
+    if q:
+        needle = f"%{q.lower()}%"
+        stmt = stmt.where(or_(Contact.email.ilike(needle), Contact.name.ilike(needle)))
+    return stmt.order_by(Contact.created_at.desc())
+
+
+async def get_contact(
+    session: AsyncSession, org_id: uuid.UUID, contact_id: uuid.UUID
+) -> Contact | None:
+    stmt = select(Contact).where(
+        Contact.id == contact_id,
+        Contact.organization_id == org_id,
+        Contact.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_contact_by_email(
+    session: AsyncSession, org_id: uuid.UUID, email: str
+) -> Contact | None:
+    """Org-scoped fetch by the normalized email — the idempotency key the bulk import and the
+    ordinary create route both upsert against."""
+    stmt = select(Contact).where(
+        Contact.email == email,
+        Contact.organization_id == org_id,
+        Contact.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def contact_lists_stmt(ctx: ScopeContext) -> Select[Any]:
+    stmt = select(ContactList).where(
+        ContactList.organization_id == ctx.organization_id,
+        ContactList.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=ContactList.created_by)
+    return stmt.order_by(ContactList.name.asc())
+
+
+async def get_contact_list(
+    session: AsyncSession, org_id: uuid.UUID, list_id: uuid.UUID
+) -> ContactList | None:
+    stmt = select(ContactList).where(
+        ContactList.id == list_id,
+        ContactList.organization_id == org_id,
+        ContactList.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_list_member(
+    session: AsyncSession, org_id: uuid.UUID, list_id: uuid.UUID, contact_id: uuid.UUID
+) -> ContactListMember | None:
+    stmt = select(ContactListMember).where(
+        ContactListMember.list_id == list_id,
+        ContactListMember.contact_id == contact_id,
+        ContactListMember.organization_id == org_id,
+        ContactListMember.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def list_members_stmt(ctx: ScopeContext, *, list_id: uuid.UUID) -> Select[Any]:
+    """The contacts belonging to one list — a join, not the membership rows, because a caller
+    asking "who is in this list" wants the contacts, not the join table."""
+    stmt = (
+        select(Contact)
+        .join(ContactListMember, ContactListMember.contact_id == Contact.id)
+        .where(
+            ContactListMember.list_id == list_id,
+            ContactListMember.organization_id == ctx.organization_id,
+            ContactListMember.deleted_at.is_(None),
+            Contact.organization_id == ctx.organization_id,
+            Contact.deleted_at.is_(None),
+        )
+    )
+    stmt = ctx.apply(stmt, owner_col=Contact.created_by)
+    return stmt.order_by(Contact.email.asc())
+
+
+def suppressions_stmt(ctx: ScopeContext, *, reason: str | None = None) -> Select[Any]:
+    stmt = select(Suppression).where(
+        Suppression.organization_id == ctx.organization_id,
+        Suppression.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=Suppression.created_by)
+    if reason:
+        stmt = stmt.where(Suppression.reason == reason)
+    return stmt.order_by(Suppression.created_at.desc())
+
+
+async def get_suppression(
+    session: AsyncSession, org_id: uuid.UUID, contact_id: uuid.UUID
+) -> Suppression | None:
+    stmt = select(Suppression).where(
+        Suppression.contact_id == contact_id,
+        Suppression.organization_id == org_id,
+        Suppression.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def sendable_contacts(ctx: ScopeContext, *, list_id: uuid.UUID | None = None) -> Select[Any]:
+    """Every contact a campaign may send to: this organization's, not soft-deleted, and not on
+    the suppression list. The chokepoint every campaign send is built to read through later —
+    built and tested now so the rule cannot be forgotten when campaigns land.
+
+    A `LEFT JOIN ... IS NULL` against `suppressions` rather than a `NOT IN` subquery: it reads
+    the same but stays a single index-backed join plan instead of an anti-join Postgres has to
+    prove is equivalent, and it composes cleanly with the optional list filter below.
+    """
+    stmt = (
+        select(Contact)
+        .outerjoin(
+            Suppression,
+            (Suppression.contact_id == Contact.id)
+            & (Suppression.organization_id == Contact.organization_id)
+            & (Suppression.deleted_at.is_(None)),
+        )
+        .where(
+            Contact.organization_id == ctx.organization_id,
+            Contact.deleted_at.is_(None),
+            Suppression.id.is_(None),
+        )
+    )
+    stmt = ctx.apply(stmt, owner_col=Contact.created_by)
+    if list_id is not None:
+        stmt = stmt.join(ContactListMember, ContactListMember.contact_id == Contact.id).where(
+            ContactListMember.list_id == list_id,
+            ContactListMember.organization_id == ctx.organization_id,
+            ContactListMember.deleted_at.is_(None),
+        )
+    return stmt.order_by(Contact.email.asc())
