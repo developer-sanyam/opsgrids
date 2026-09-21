@@ -38,6 +38,9 @@ from platform_core.db import TENANT_GUC, get_session
 
 #: Every table here is tenant-scoped or global-and-empty, so all are safe to truncate.
 TENANT_TABLES = (
+    # Engage's audience.
+    "contacts",
+    "suppressions",
     # Engage's sending identity. Senders before domains: senders carry domain_id, and while
     # there is no foreign key to enforce it, truncating in dependency order keeps the intent
     # readable for anyone adding the next table.

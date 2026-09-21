@@ -88,7 +88,7 @@ def test_the_registration_validates_itself() -> None:
 # to guard: nothing in `engage` may be granted by a `notification` role or the other way round.
 
 
-def test_engage_catalogue_declares_setup_permissions() -> None:
+def test_engage_catalogue_declares_setup_and_audience_permissions() -> None:
     assert set(ENGAGE.codes()) == {
         "engage.setup.connection.read",
         "engage.setup.connection.write",
@@ -96,6 +96,10 @@ def test_engage_catalogue_declares_setup_permissions() -> None:
         "engage.setup.domain.write",
         "engage.setup.sender.read",
         "engage.setup.sender.write",
+        "engage.audience.contact.read",
+        "engage.audience.contact.write",
+        "engage.audience.suppression.read",
+        "engage.audience.suppression.write",
     }
 
 

@@ -13,10 +13,12 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import Select, or_, select
+from sqlalchemy import Select, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models import (
+    Contact,
     Delivery,
     EmailConnection,
     EmailDomain,
@@ -26,8 +28,10 @@ from app.models import (
     ProviderTemplate,
     Rule,
     Sender,
+    Suppression,
     Template,
 )
+from platform_core import pii
 from platform_core.auth import ScopeContext
 
 
@@ -369,3 +373,136 @@ async def get_sender_by_address(
         Sender.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+# --------------------------------------------------------------------- engage audience
+
+
+def email_index(email: str) -> str:
+    """The blind index a normalised address is stored and found under. One definition, so the
+    writer that stores it and every reader that looks it up cannot drift apart."""
+    return pii.blind_index(email, kind="email", settings=settings())
+
+
+def _like_escape(term: str) -> str:
+    """A user's search term as a literal ILIKE fragment. Backslash first, or escaping `%` as
+    `\\%` would itself introduce a second escape sequence."""
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def contacts_stmt(ctx: ScopeContext, *, search: str | None = None) -> Select[Any]:
+    """Scope-filtered contact list, newest first.
+
+    `search` matches the name as a substring, and the address **exactly** (case-insensitively):
+    the address is sealed, so a substring of it is not something the database can be asked
+    about — only equality, through the blind index. A term that is a whole address finds that
+    contact; a fragment of one finds nothing by address, which is the honest cost of not
+    storing the address in the clear.
+    """
+    stmt = select(Contact).where(
+        Contact.organization_id == ctx.organization_id,
+        Contact.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=Contact.created_by)
+    term = (search or "").strip()
+    if term:
+        needle = f"%{_like_escape(term)}%"
+        stmt = stmt.where(
+            or_(
+                Contact.name.ilike(needle, escape="\\"),
+                Contact.email_index == email_index(term.lower()),
+            )
+        )
+    return stmt.order_by(Contact.created_at.desc(), Contact.id.desc())
+
+
+async def get_contact(
+    session: AsyncSession, org_id: uuid.UUID, contact_id: uuid.UUID
+) -> Contact | None:
+    stmt = select(Contact).where(
+        Contact.id == contact_id,
+        Contact.organization_id == org_id,
+        Contact.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def contacts_by_index(
+    session: AsyncSession, org_id: uuid.UUID, indexes: list[str]
+) -> dict[str, Contact]:
+    """Existing contacts for a batch of blind indexes, keyed by index — one query for a bulk
+    import rather than one per row."""
+    if not indexes:
+        return {}
+    stmt = select(Contact).where(
+        Contact.organization_id == org_id,
+        Contact.email_index.in_(indexes),
+        Contact.deleted_at.is_(None),
+    )
+    return {c.email_index: c for c in (await session.execute(stmt)).scalars()}
+
+
+def suppressions_stmt(ctx: ScopeContext, *, reason: str | None = None) -> Select[Any]:
+    """Scope-filtered suppression list, newest first."""
+    stmt = select(Suppression).where(
+        Suppression.organization_id == ctx.organization_id,
+        Suppression.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=Suppression.created_by)
+    if reason:
+        stmt = stmt.where(Suppression.reason == reason)
+    return stmt.order_by(Suppression.created_at.desc(), Suppression.id.desc())
+
+
+async def get_suppression(
+    session: AsyncSession, org_id: uuid.UUID, suppression_id: uuid.UUID
+) -> Suppression | None:
+    stmt = select(Suppression).where(
+        Suppression.id == suppression_id,
+        Suppression.organization_id == org_id,
+        Suppression.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_suppression_by_index(
+    session: AsyncSession, org_id: uuid.UUID, index: str
+) -> Suppression | None:
+    stmt = select(Suppression).where(
+        Suppression.email_index == index,
+        Suppression.organization_id == org_id,
+        Suppression.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def sendable_contacts(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    limit: int = 1000,
+    after_id: uuid.UUID | None = None,
+) -> list[Contact]:
+    """Contacts a campaign may send to: the organization's contacts minus every suppressed
+    address, whatever the reason.
+
+    The exclusion is an anti-join on the blind index, so it holds for a suppression written
+    before the contact existed and for one written after — a re-imported address that once
+    unsubscribed stays unreachable. Keyset-paged by id (`after_id`) so a sender can walk a large
+    audience without an OFFSET that shifts under concurrent writes.
+    """
+    suppressed = exists().where(
+        Suppression.organization_id == Contact.organization_id,
+        Suppression.email_index == Contact.email_index,
+        Suppression.deleted_at.is_(None),
+    )
+    stmt = select(Contact).where(
+        Contact.organization_id == ctx.organization_id,
+        Contact.deleted_at.is_(None),
+        ~suppressed,
+    )
+    stmt = ctx.apply(stmt, owner_col=Contact.created_by)
+    if after_id is not None:
+        stmt = stmt.where(Contact.id > after_id)
+    stmt = stmt.order_by(Contact.id.asc()).limit(limit)
+    return list((await session.execute(stmt)).scalars())

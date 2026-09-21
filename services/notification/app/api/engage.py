@@ -21,23 +21,35 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
-from app.models import EmailConnection, EmailDomain, Sender
+from app.domain import verify_unsubscribe_token
+from app.models import Contact, EmailConnection, EmailDomain, Sender, Suppression
 from app.schemas import (
     ConnectionIn,
     ConnectionOut,
+    ContactImportIn,
+    ContactImportOut,
+    ContactImportResult,
+    ContactIn,
+    ContactOut,
+    ContactPatch,
     DnsRecordOut,
     DomainIn,
     DomainOut,
     SenderIn,
     SenderOut,
+    SuppressionIn,
+    SuppressionOut,
+    SuppressionReason,
     TestSendIn,
+    UnsubscribeOut,
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
-from platform_core.db import get_tenant_session
+from platform_core.db import get_session, get_tenant_session, set_tenant
+from platform_core.errors import NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
 router = APIRouter(tags=["engage"])
@@ -73,6 +85,18 @@ SenderRead = Annotated[
 #: That is an edit to the sender, not a read of it, so it takes the write permission.
 SenderWrite = Annotated[
     ScopeContext, Depends(require("engage.setup.sender.write", minimum=Scope.ORG))
+]
+ContactRead = Annotated[
+    ScopeContext, Depends(require("engage.audience.contact.read", minimum=Scope.ORG))
+]
+ContactWrite = Annotated[
+    ScopeContext, Depends(require("engage.audience.contact.write", minimum=Scope.ORG))
+]
+SuppressionRead = Annotated[
+    ScopeContext, Depends(require("engage.audience.suppression.read", minimum=Scope.ORG))
+]
+SuppressionWrite = Annotated[
+    ScopeContext, Depends(require("engage.audience.suppression.write", minimum=Scope.ORG))
 ]
 
 
@@ -117,6 +141,27 @@ def _sender_out(row: Sender) -> SenderOut:
         department=row.department,
         usable=row.usable,
         verified_at=row.verified_at,
+        created_at=row.created_at,
+    )
+
+
+def _contact_out(row: Contact) -> ContactOut:
+    """The mask, never the address. `email_enc` has no field here at all."""
+    return ContactOut(
+        id=str(row.id),
+        email=row.email_masked,
+        name=row.name,
+        attributes=row.attributes,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _suppression_out(row: Suppression) -> SuppressionOut:
+    return SuppressionOut(
+        id=str(row.id),
+        email=row.email_masked,
+        reason=row.reason,
         created_at=row.created_at,
     )
 
@@ -318,3 +363,234 @@ async def send_test_message(
         request=request,
     )
     return _sender_out(row)
+
+
+# --------------------------------------------------------------------- contacts
+
+
+@router.get(
+    "/engage/contacts",
+    response_model=Page[ContactOut],
+    summary="The organization's contacts, addresses masked",
+    dependencies=[Entitled],
+)
+async def list_contacts(
+    session: SessionDep,
+    ctx: ContactRead,
+    params: PageQuery,
+    search: Annotated[
+        str | None,
+        Query(max_length=254, description="Name substring, or an exact email address"),
+    ] = None,
+) -> Page[ContactOut]:
+    stmt = selectors.contacts_stmt(ctx, search=search)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([_contact_out(r) for r in rows], total=total, params=params)
+
+
+@router.post(
+    "/engage/contacts",
+    response_model=ContactOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a contact",
+    dependencies=[Entitled],
+)
+async def add_contact(
+    body: ContactIn, session: SessionDep, ctx: ContactWrite, request: Request
+) -> ContactOut:
+    row = await services.create_contact(
+        session,
+        ctx,
+        email=body.email,
+        name=body.name,
+        attributes=body.attributes,
+        request=request,
+    )
+    return _contact_out(row)
+
+
+@router.post(
+    "/engage/contacts/import",
+    response_model=ContactImportOut,
+    summary="Upsert up to 1000 contacts by address, reporting each row",
+    dependencies=[Entitled],
+)
+async def import_contacts(
+    body: Annotated[ContactImportIn, Body()],
+    session: SessionDep,
+    ctx: ContactWrite,
+    request: Request,
+) -> ContactImportOut:
+    """200 even when some rows are invalid: the per-row `status` is the answer, and one bad
+    address in a pasted spreadsheet should not throw away the other 999."""
+    outcomes = await services.import_contacts(
+        session,
+        ctx,
+        rows=[(r.email, r.name, r.attributes) for r in body],
+        request=request,
+    )
+    results = [
+        ContactImportResult(
+            index=i,
+            status=outcome,
+            id=str(contact.id) if contact is not None else None,
+            error=error,
+        )
+        for i, (outcome, contact, error) in enumerate(outcomes)
+    ]
+    return ContactImportOut(
+        created=sum(r.status == "created" for r in results),
+        updated=sum(r.status == "updated" for r in results),
+        invalid=sum(r.status == "invalid" for r in results),
+        results=results,
+    )
+
+
+@router.get(
+    "/engage/contacts/{contact_id}",
+    response_model=ContactOut,
+    summary="One contact",
+    dependencies=[Entitled],
+)
+async def get_contact(contact_id: uuid.UUID, session: SessionDep, ctx: ContactRead) -> ContactOut:
+    row = await selectors.get_contact(session, ctx.organization_id, contact_id)
+    if row is None:
+        raise NotFoundProblem("No such contact")
+    return _contact_out(row)
+
+
+@router.patch(
+    "/engage/contacts/{contact_id}",
+    response_model=ContactOut,
+    summary="Edit a contact",
+    dependencies=[Entitled],
+)
+async def edit_contact(
+    contact_id: uuid.UUID,
+    body: ContactPatch,
+    session: SessionDep,
+    ctx: ContactWrite,
+    request: Request,
+) -> ContactOut:
+    row = await services.update_contact(
+        session,
+        ctx,
+        contact_id=contact_id,
+        email=body.email,
+        name=body.name,
+        attributes=body.attributes,
+        request=request,
+    )
+    return _contact_out(row)
+
+
+@router.delete(
+    "/engage/contacts/{contact_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Delete a contact (any suppression of the address stays)",
+    dependencies=[Entitled],
+)
+async def remove_contact(
+    contact_id: uuid.UUID, session: SessionDep, ctx: ContactWrite, request: Request
+) -> Response:
+    await services.delete_contact(session, ctx, contact_id=contact_id, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --------------------------------------------------------------------- suppressions
+
+
+@router.get(
+    "/engage/suppressions",
+    response_model=Page[SuppressionOut],
+    summary="Addresses that may not be mailed, and why",
+    dependencies=[Entitled],
+)
+async def list_suppressions(
+    session: SessionDep,
+    ctx: SuppressionRead,
+    params: PageQuery,
+    reason: SuppressionReason | None = None,
+) -> Page[SuppressionOut]:
+    stmt = selectors.suppressions_stmt(ctx, reason=reason)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([_suppression_out(r) for r in rows], total=total, params=params)
+
+
+@router.post(
+    "/engage/suppressions",
+    response_model=SuppressionOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Suppress an address by hand",
+    dependencies=[Entitled],
+)
+async def add_suppression(
+    body: SuppressionIn, session: SessionDep, ctx: SuppressionWrite, request: Request
+) -> SuppressionOut:
+    row = await services.add_suppression(session, ctx, email=body.email, request=request)
+    return _suppression_out(row)
+
+
+@router.delete(
+    "/engage/suppressions/{suppression_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Lift a manual suppression",
+    dependencies=[Entitled],
+)
+async def remove_suppression(
+    suppression_id: uuid.UUID, session: SessionDep, ctx: SuppressionWrite, request: Request
+) -> Response:
+    await services.remove_suppression(session, ctx, suppression_id=suppression_id, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --------------------------------------------------------------------- public unsubscribe
+
+#: The one Engage surface with no principal: the recipient of a campaign clicking the link in
+#: it. A separate router because every route on `router` is entitlement-gated and permissioned,
+#: and this one cannot be — the token is the whole of its authority. It never uses
+#: `get_tenant_session` (there is no caller organization); it opens the transaction itself and
+#: binds the GUC to the organization the *verified token* names, before touching a tenant table.
+public_router = APIRouter(tags=["engage-public"])
+
+PlainSessionDep = Annotated[AsyncSession, Depends(get_session)]
+
+
+async def _unsubscribe(token: str, session: AsyncSession, request: Request) -> UnsubscribeOut:
+    key = services.unsubscribe_key()
+    verified = verify_unsubscribe_token(token, key) if key is not None else None
+    if verified is None:
+        # Same answer for malformed, forged, and "unsubscribe is not configured": none of them
+        # may learn anything, and none of them touches a row.
+        raise NotFoundProblem("This unsubscribe link is not valid")
+    organization_id, email = verified
+    async with session.begin():
+        await set_tenant(session, organization_id)
+        await services.unsubscribe(
+            session, organization_id=organization_id, email=email, request=request
+        )
+    return UnsubscribeOut(unsubscribed=True)
+
+
+@public_router.get(
+    "/engage/unsubscribe/{token}",
+    response_model=UnsubscribeOut,
+    summary="Unsubscribe the address a signed link names (no sign-in)",
+)
+async def unsubscribe_via_link(
+    token: str, session: PlainSessionDep, request: Request
+) -> UnsubscribeOut:
+    return await _unsubscribe(token, session, request)
+
+
+@public_router.post(
+    "/engage/unsubscribe/{token}",
+    response_model=UnsubscribeOut,
+    summary="One-click unsubscribe (RFC 8058) for the address a signed link names",
+)
+async def unsubscribe_one_click(
+    token: str, session: PlainSessionDep, request: Request
+) -> UnsubscribeOut:
+    return await _unsubscribe(token, session, request)

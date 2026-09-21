@@ -23,6 +23,7 @@ from typing import Any, Final
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy import update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -30,6 +31,7 @@ from app import dns_check, domain, selectors
 from app.config import settings
 from app.models import (
     AuditLog,
+    Contact,
     Delivery,
     EmailConnection,
     EmailDomain,
@@ -39,6 +41,7 @@ from app.models import (
     ProviderTemplate,
     Rule,
     Sender,
+    Suppression,
     Template,
 )
 from app.targets import TargetResolver
@@ -1799,3 +1802,355 @@ async def send_test(
         actor=_actor(ctx),
     )
     return sender
+
+
+# --------------------------------------------------------------------- engage audience
+#
+# Contacts and suppressions. The address is PII and is handled the platform's way: normalised,
+# then sealed (`email_enc`), masked (`email_masked`) and blind-indexed (`email_index`). Nothing
+# here writes the plaintext anywhere but the sealed column — audit rows carry the mask.
+
+#: The environments `ServiceSettings` already refuses development secrets in. There the
+#: `dev-only-` unsubscribe key is publicly known, and a link signed with it anyone could forge.
+_REAL_ENVIRONMENTS: Final[frozenset[str]] = frozenset({"production", "staging", "uat"})
+
+
+def _normalize_email(raw: str) -> str:
+    try:
+        return _rules.normalize_recipient("email", raw)
+    except _rules.RuleError as exc:
+        raise ValidationProblem(str(exc)) from exc
+
+
+def _sealed_email(email: str) -> tuple[bytes, str, str]:
+    """`(sealed, masked, index)` for a normalised address."""
+    sealed, masked = pii.seal(email, kind="email", settings=settings())
+    return sealed, masked, selectors.email_index(email)
+
+
+def unsubscribe_key() -> bytes | None:
+    """The key unsubscribe links are signed with, or None where it must not be used.
+
+    None — not an exception — when a real environment is still on the `dev-only-` placeholder,
+    so a misconfigured deploy refuses every link (issuing and verifying alike) instead of
+    honouring forgeries. The service keeps running; only this feature is off.
+    """
+    cfg = settings()
+    secret = cfg.engage_unsubscribe_secret.get_secret_value()
+    if secret.startswith(("dev-only-", "ci-only-")) and cfg.environment in _REAL_ENVIRONMENTS:
+        return None
+    return secret.encode()
+
+
+def unsubscribe_token(organization_id: uuid.UUID, email: str) -> str:
+    """The token that goes into the unsubscribe link of mail sent to `email`."""
+    key = unsubscribe_key()
+    if key is None:
+        raise UpstreamUnavailableProblem("Unsubscribe links are not configured")
+    return _rules.make_unsubscribe_token(organization_id, _normalize_email(email), key)
+
+
+async def create_contact(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    email: str,
+    name: str = "",
+    attributes: dict[str, Any] | None = None,
+    request: Request | None = None,
+) -> Contact:
+    normalized = _normalize_email(email)
+    sealed, masked, index = _sealed_email(normalized)
+    if await selectors.contacts_by_index(session, ctx.organization_id, [index]):
+        raise ConflictProblem(f"{masked} is already a contact")
+
+    contact = Contact(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        email_enc=sealed,
+        email_masked=masked,
+        email_index=index,
+        name=name,
+        attributes=attributes or {},
+    )
+    session.add(contact)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.contact.created",
+        entity="contact",
+        entity_id=contact.id,
+        after={"email": masked, "name": name},
+        request=request,
+    )
+    return contact
+
+
+async def update_contact(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    contact_id: uuid.UUID,
+    email: str | None = None,
+    name: str | None = None,
+    attributes: dict[str, Any] | None = None,
+    request: Request | None = None,
+) -> Contact:
+    contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+    if contact is None:
+        raise NotFoundProblem("No such contact")
+
+    before = {"email": contact.email_masked, "name": contact.name}
+    if email is not None:
+        normalized = _normalize_email(email)
+        index = selectors.email_index(normalized)
+        if index != contact.email_index:
+            if await selectors.contacts_by_index(session, ctx.organization_id, [index]):
+                raise ConflictProblem("Another contact already has that address")
+            contact.email_enc, contact.email_masked, contact.email_index = _sealed_email(normalized)
+    if name is not None:
+        contact.name = name
+    if attributes is not None:
+        contact.attributes = attributes
+    contact.updated_by = str(ctx.principal.sub)
+    contact.updated_at = datetime.now(UTC)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.contact.updated",
+        entity="contact",
+        entity_id=contact.id,
+        before=before,
+        after={"email": contact.email_masked, "name": contact.name},
+        request=request,
+    )
+    return contact
+
+
+async def delete_contact(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    contact_id: uuid.UUID,
+    request: Request | None = None,
+) -> None:
+    """Deletes the row outright. A suppression for the same address is untouched: removing
+    someone from the audience must never make them mailable again on re-import."""
+    contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+    if contact is None:
+        raise NotFoundProblem("No such contact")
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.contact.deleted",
+        entity="contact",
+        entity_id=contact.id,
+        before={"email": contact.email_masked, "name": contact.name},
+        request=request,
+    )
+    await session.delete(contact)
+    await session.flush()
+
+
+async def import_contacts(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    rows: list[tuple[str, str, dict[str, Any]]],
+    request: Request | None = None,
+) -> list[tuple[str, Contact | None, str | None]]:
+    """Upsert a batch of `(email, name, attributes)` keyed on the normalised address.
+
+    Returns one `(status, contact, error)` per input row, in order. Idempotent: replaying the
+    same batch creates nothing new and reports every valid row `updated`. A row repeating an
+    earlier row's address updates the contact that row created. One audit row for the batch,
+    counts only — a thousand masked addresses in one audit entry would be noise, not evidence.
+    """
+    prepared: list[tuple[str, str, dict[str, Any], str] | str] = []
+    for email, name, attributes in rows:
+        try:
+            normalized = _rules.normalize_recipient("email", email)
+        except _rules.RuleError as exc:
+            prepared.append(str(exc))
+            continue
+        if len(normalized) > 254:
+            prepared.append("Address is longer than 254 characters")
+            continue
+        if len(name) > 200:
+            prepared.append("Name is longer than 200 characters")
+            continue
+        prepared.append((normalized, name, attributes, selectors.email_index(normalized)))
+
+    indexes = [p[3] for p in prepared if isinstance(p, tuple)]
+    existing = await selectors.contacts_by_index(session, ctx.organization_id, indexes)
+
+    results: list[tuple[str, Contact | None, str | None]] = []
+    created = updated = 0
+    actor = str(ctx.principal.sub)
+    for item in prepared:
+        if isinstance(item, str):
+            results.append(("invalid", None, item))
+            continue
+        normalized, name, attributes, index = item
+        contact = existing.get(index)
+        if contact is None:
+            sealed, masked = pii.seal(normalized, kind="email", settings=settings())
+            contact = Contact(
+                organization_id=ctx.organization_id,
+                created_by=actor,
+                email_enc=sealed,
+                email_masked=masked,
+                email_index=index,
+                name=name,
+                attributes=attributes,
+            )
+            session.add(contact)
+            existing[index] = contact
+            created += 1
+            results.append(("created", contact, None))
+        else:
+            contact.name = name
+            contact.attributes = attributes
+            contact.updated_by = actor
+            contact.updated_at = datetime.now(UTC)
+            updated += 1
+            results.append(("updated", contact, None))
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.contact.imported",
+        entity="contact",
+        after={"created": created, "updated": updated, "invalid": len(rows) - created - updated},
+        request=request,
+    )
+    return results
+
+
+async def add_suppression(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    email: str,
+    request: Request | None = None,
+) -> Suppression:
+    """A person's manual suppression. Refused if the address is already suppressed for any
+    reason: overwriting `complained` with `manual` would make it liftable."""
+    normalized = _normalize_email(email)
+    sealed, masked, index = _sealed_email(normalized)
+    if await selectors.get_suppression_by_index(session, ctx.organization_id, index):
+        raise ConflictProblem(f"{masked} is already suppressed")
+
+    row = Suppression(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        email_enc=sealed,
+        email_masked=masked,
+        email_index=index,
+        reason="manual",
+    )
+    session.add(row)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.suppression.added",
+        entity="suppression",
+        entity_id=row.id,
+        after={"email": masked, "reason": "manual"},
+        request=request,
+    )
+    return row
+
+
+async def remove_suppression(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    suppression_id: uuid.UUID,
+    request: Request | None = None,
+) -> None:
+    """Lift a manual suppression. Any other reason is the recipient's or their provider's
+    decision, not the organization's to reverse."""
+    row = await selectors.get_suppression(session, ctx.organization_id, suppression_id)
+    if row is None:
+        raise NotFoundProblem("No such suppression")
+    if row.reason != "manual":
+        raise BusinessRuleProblem(
+            f"Only manual suppressions can be removed; this one is {row.reason}"
+        )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.suppression.removed",
+        entity="suppression",
+        entity_id=row.id,
+        before={"email": row.email_masked, "reason": row.reason},
+        request=request,
+    )
+    await session.delete(row)
+    await session.flush()
+
+
+async def unsubscribe(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    email: str,
+    request: Request | None = None,
+) -> bool:
+    """Record a recipient's unsubscribe. Returns whether a new suppression was written.
+
+    The caller has already verified the token and bound the tenant GUC to `organization_id`.
+    `ON CONFLICT DO NOTHING` makes a repeat click, a mail scanner prefetching the link, and two
+    clicks racing each other all the same single row; an existing suppression of any reason is
+    left as it is. Audited only when it wrote, with no actor — the recipient has no principal.
+    """
+    sealed, masked, index = _sealed_email(email)
+    stmt = (
+        pg_insert(Suppression)
+        .values(
+            id=uuid.uuid4(),
+            organization_id=organization_id,
+            created_by="recipient:unsubscribe",
+            email_enc=sealed,
+            email_masked=masked,
+            email_index=index,
+            reason="unsubscribed",
+        )
+        .on_conflict_do_nothing(constraint="uq_suppression_org_email")
+        .returning(Suppression.id)
+    )
+    inserted = (await session.execute(stmt)).scalar_one_or_none()
+    if inserted is None:
+        return False
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        action="engage.suppression.unsubscribed",
+        entity="suppression",
+        entity_id=inserted,
+        after={"email": masked, "reason": "unsubscribed"},
+        request=request,
+    )
+    return True
