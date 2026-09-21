@@ -1,13 +1,29 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { getTicket, listAgents } from "@/api/client";
-import type { Agent, Message, Ticket } from "@/api/types";
-import { useAuth } from "@opsgrids/client";
+import { assignTicket, changeTicketStatus, getTicket, listAgents, replyToTicket } from "@/api/client";
+import type { Agent, Message, Ticket, TicketStatus } from "@/api/types";
+import { Can, problemMessage, useAsync, useAuth, useCan, useMutation } from "@opsgrids/client";
 import { agentById } from "@/data/derive";
-import { ChevronRightIcon, MailIcon, PaperclipIcon, ReplyIcon, cn } from "@opsgrids/ui";
-import { channelLabel, formatDateTime, initials } from "@/lib/format";
-import { useAsync } from "@opsgrids/client";
+import { errorProp } from "@/lib/optionalProp";
+import { ALLOWED_TRANSITIONS } from "@/lib/ticketLifecycle";
+import {
+  ChevronRightIcon,
+  CodeIcon,
+  GlobeIcon,
+  InlineAlert,
+  MailIcon,
+  MessageSquareIcon,
+  PhoneIcon,
+  ReplyIcon,
+  Select,
+  Switch,
+  TextArea,
+  cn,
+  useToast,
+} from "@opsgrids/ui";
+import { channelLabel, formatDateTime, initials, statusLabel } from "@/lib/format";
 import {
   Avatar,
   Button,
@@ -20,6 +36,17 @@ import {
   Tag,
   TicketStatusPill,
 } from "@/ui";
+import { EditTicketDialog } from "@/ui/EditTicketDialog";
+
+const CAN_WRITE = "support.desk.ticket.write";
+
+const CHANNEL_ICON: Record<Ticket["channel"], typeof MailIcon> = {
+  email: MailIcon,
+  chat: MessageSquareIcon,
+  web: GlobeIcon,
+  phone: PhoneIcon,
+  api: CodeIcon,
+};
 
 /** One message in the thread — styled by who wrote it, with internal notes clearly set apart. */
 function MessageBubble({ message }: { message: Message }) {
@@ -72,7 +99,7 @@ function MessageBubble({ message }: { message: Message }) {
 }
 
 /** A labelled property row in the sidebar. */
-function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
+function PropertyRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-3 py-2.5">
       <span className="text-sm text-muted">{label}</span>
@@ -81,7 +108,117 @@ function PropertyRow({ label, children }: { label: string; children: React.React
   );
 }
 
-function TicketProperties({ ticket, assignee }: { ticket: Ticket; assignee: Agent | null }) {
+function AssigneeControl({
+  ticket,
+  agents,
+  canWrite,
+  onChanged,
+}: {
+  ticket: Ticket;
+  agents: Agent[];
+  canWrite: boolean;
+  onChanged: (ticket: Ticket) => void;
+}) {
+  const toast = useToast();
+  const assign = useMutation((assigneeId: string | null) => assignTicket(ticket.id, assigneeId), {
+    onSuccess: (updated, assigneeId) => {
+      onChanged(updated);
+      const agent = assigneeId ? agentById(agents, assigneeId) : null;
+      toast.success(agent ? `Assigned to ${agent.name}.` : "Unassigned.");
+    },
+  });
+
+  if (!canWrite) {
+    const assignee = agentById(agents, ticket.assignee_id);
+    return assignee ? (
+      <span className="inline-flex items-center gap-2">
+        <Avatar name={assignee.name} size="sm" />
+        <span className="text-sm font-semibold text-ink">{assignee.name}</span>
+      </span>
+    ) : (
+      <span className="text-sm font-medium text-faint">Unassigned</span>
+    );
+  }
+
+  return (
+    <div className="flex w-40 flex-col items-end gap-1.5">
+      <Select
+        label="Assignee"
+        containerClassName="w-full"
+        value={ticket.assignee_id ?? ""}
+        onChange={(e) => void assign.mutate(e.target.value === "" ? null : e.target.value)}
+        disabled={assign.pending}
+        // "Unassigned" is a real, selectable option here (not the placeholder) — this control
+        // both assigns and unassigns an already-assigned ticket, unlike the create form's
+        // "leave it unset" default.
+        options={[
+          { value: "", label: "Unassigned" },
+          ...agents.map((a) => ({ value: a.id, label: a.name })),
+        ]}
+      />
+      {assign.error ? (
+        <InlineAlert tone="danger" title={problemMessage(assign.error)} className="w-full" />
+      ) : null}
+    </div>
+  );
+}
+
+function StatusControl({
+  ticket,
+  canWrite,
+  onChanged,
+}: {
+  ticket: Ticket;
+  canWrite: boolean;
+  onChanged: (ticket: Ticket) => void;
+}) {
+  const toast = useToast();
+  const options = ALLOWED_TRANSITIONS[ticket.status];
+  const change = useMutation((target: TicketStatus) => changeTicketStatus(ticket.id, target), {
+    onSuccess: (updated) => {
+      onChanged(updated);
+      toast.success(`Status changed to ${statusLabel(updated.status)}.`);
+    },
+  });
+
+  if (!canWrite || options.length === 0) {
+    return <TicketStatusPill status={ticket.status} />;
+  }
+
+  return (
+    <div className="flex w-40 flex-col items-end gap-1.5">
+      <TicketStatusPill status={ticket.status} />
+      <Select
+        label="Move ticket to"
+        containerClassName="w-full"
+        value=""
+        onChange={(e) => {
+          const value = e.target.value as TicketStatus | "";
+          if (value) void change.mutate(value);
+        }}
+        placeholder="Change status…"
+        disabled={change.pending}
+        options={options.map((s) => ({ value: s, label: statusLabel(s) }))}
+      />
+      {change.error ? (
+        <InlineAlert tone="danger" title={problemMessage(change.error)} className="w-full" />
+      ) : null}
+    </div>
+  );
+}
+
+function TicketProperties({
+  ticket,
+  agents,
+  canWrite,
+  onChanged,
+}: {
+  ticket: Ticket;
+  agents: Agent[];
+  canWrite: boolean;
+  onChanged: (ticket: Ticket) => void;
+}) {
+  const ChannelIcon = CHANNEL_ICON[ticket.channel];
   return (
     <Card className="flex flex-col gap-1 p-6">
       <SectionHeader title="Properties" />
@@ -110,7 +247,7 @@ function TicketProperties({ ticket, assignee }: { ticket: Ticket; assignee: Agen
         </PropertyRow>
         <PropertyRow label="Channel">
           <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-ink-soft">
-            <MailIcon className="size-4 text-faint" />
+            <ChannelIcon className="size-4 text-faint" />
             {channelLabel(ticket.channel)}
           </span>
         </PropertyRow>
@@ -118,17 +255,15 @@ function TicketProperties({ ticket, assignee }: { ticket: Ticket; assignee: Agen
           <PriorityPill priority={ticket.priority} />
         </PropertyRow>
         <PropertyRow label="Status">
-          <TicketStatusPill status={ticket.status} />
+          <StatusControl ticket={ticket} canWrite={canWrite} onChanged={onChanged} />
         </PropertyRow>
         <PropertyRow label="Assignee">
-          {assignee ? (
-            <span className="inline-flex items-center gap-2">
-              <Avatar name={assignee.name} size="sm" />
-              <span className="text-sm font-semibold text-ink">{assignee.name}</span>
-            </span>
-          ) : (
-            <span className="text-sm font-medium text-faint">Unassigned</span>
-          )}
+          <AssigneeControl
+            ticket={ticket}
+            agents={agents}
+            canWrite={canWrite}
+            onChanged={onChanged}
+          />
         </PropertyRow>
         <PropertyRow label="SLA">
           <SlaPill ticket={ticket} />
@@ -146,83 +281,101 @@ function TicketProperties({ ticket, assignee }: { ticket: Ticket; assignee: Agen
       <div className="mt-2 flex flex-col gap-2 border-t border-line pt-4">
         <span className="text-xs font-semibold uppercase tracking-wide text-faint">Tags</span>
         <div className="flex flex-wrap gap-1.5">
-          {ticket.tags.map((tag) => (
-            <Tag key={tag}>{tag}</Tag>
-          ))}
+          {ticket.tags.length === 0 ? (
+            <span className="text-sm text-faint">No tags</span>
+          ) : (
+            ticket.tags.map((tag) => <Tag key={tag}>{tag}</Tag>)
+          )}
         </div>
       </div>
     </Card>
   );
 }
 
-/** The reply box — a real affordance: it appends to the thread (fixtures have no backend). */
 function ReplyBox({
+  ticketId,
   authorName,
-  onSend,
+  canWrite,
+  onSent,
 }: {
-  authorName: string;
-  onSend: (body: string, internal: boolean) => void;
+  ticketId: string;
+  authorName: string | null;
+  canWrite: boolean;
+  onSent: (ticket: Ticket) => void;
 }) {
+  const toast = useToast();
   const [body, setBody] = useState("");
   const [internal, setInternal] = useState(false);
-  const trimmed = body.trim();
+  const [bodyError, setBodyError] = useState<string | undefined>(undefined);
+
+  const send = useMutation(
+    (input: { body: string; internal: boolean }) =>
+      replyToTicket(ticketId, {
+        body: input.body,
+        author_name: authorName ?? "",
+        internal: input.internal,
+      }),
+    {
+      onSuccess: (updated, input) => {
+        setBody("");
+        setInternal(false);
+        setBodyError(undefined);
+        onSent(updated);
+        toast.success(input.internal ? "Internal note added." : "Reply sent.");
+      },
+    },
+  );
+
+  if (!canWrite) return null;
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!trimmed) return;
-    onSend(trimmed, internal);
-    setBody("");
-    setInternal(false);
+    setBodyError(undefined);
+    const trimmed = body.trim();
+    if (trimmed.length < 1) {
+      setBodyError("Write something before sending.");
+      return;
+    }
+    void send.mutate({ body: trimmed, internal });
   }
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-3">
-      <label htmlFor="reply-body" className="sr-only">
-        Write a reply
-      </label>
-      <textarea
-        id="reply-body"
+      {authorName === null ? (
+        <InlineAlert tone="warning" title="Your account has no display name set.">
+          Ask an admin to add one before you can reply — the thread needs a name to attribute the
+          message to.
+        </InlineAlert>
+      ) : null}
+      <TextArea
+        label="Reply"
         value={body}
         onChange={(e) => setBody(e.target.value)}
         rows={3}
-        placeholder={
-          internal
-            ? "Add an internal note — visible to agents only…"
-            : `Reply as ${authorName}…`
-        }
-        className={cn(
-          "w-full resize-y rounded-tile border bg-surface px-4 py-3 text-sm text-ink placeholder:text-faint",
-          "focus:outline-none focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2",
-          internal ? "border-late/40 bg-late-soft/30" : "border-line",
-        )}
+        placeholder={internal ? "Add an internal note — visible to agents only…" : `Reply as ${authorName ?? "…"}…`}
+        {...errorProp(bodyError)}
+        disabled={authorName === null || send.pending}
       />
-      <div className="flex flex-wrap items-center gap-2">
-        <label className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-line bg-surface px-3 h-9 text-sm font-semibold text-ink-soft">
-          <input
-            type="checkbox"
-            checked={internal}
-            onChange={(e) => setInternal(e.target.checked)}
-            className="size-4 accent-accent"
-          />
-          Internal note
-        </label>
-        <button
-          type="button"
-          className="inline-flex h-9 items-center gap-1.5 rounded-full border border-line bg-surface px-3 text-sm font-semibold text-ink-soft hover:bg-ground transition-colors"
-        >
-          <PaperclipIcon className="size-4" />
-          Attach
-        </button>
+      <div className="flex flex-wrap items-center gap-3">
+        <Switch
+          checked={internal}
+          onChange={setInternal}
+          label="Internal note"
+          description="Visible to agents only, never the requester."
+          disabled={send.pending}
+        />
         <Button
           type="submit"
           size="sm"
-          disabled={!trimmed}
+          loading={send.pending}
+          disabled={authorName === null || body.trim().length === 0}
           leadingIcon={<ReplyIcon className="size-4" />}
           className="ml-auto"
         >
-          {internal ? "Add note" : "Send reply"}
+          {send.pending ? "Sending…" : internal ? "Add note" : "Send reply"}
         </Button>
       </div>
+      {send.error ? <InlineAlert tone="danger" title={problemMessage(send.error)} /> : null}
     </form>
   );
 }
@@ -230,34 +383,41 @@ function ReplyBox({
 export function TicketDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
+  const toast = useToast();
+  const canWrite = useCan(CAN_WRITE, "ORG");
   const loader = useCallback(() => getTicket(id ?? ""), [id]);
   const ticketState = useAsync(loader, [id]);
   const agentsState = useAsync(listAgents, []);
 
-  const [appended, setAppended] = useState<Message[]>([]);
+  // Every write here (`assign`, `status`, `reply`) returns the full updated ticket, so a
+  // successful mutation replaces the screen's copy directly rather than triggering a refetch
+  // (`ticketState.reload()` would drop straight back to the loading skeleton). `override` resets
+  // whenever the id changes, so navigating from one ticket to the next never shows a stale one.
+  const [override, setOverride] = useState<Ticket | null>(null);
+  useEffect(() => {
+    setOverride(null);
+  }, [id]);
+  const ticket = override ?? (ticketState.status === "success" ? ticketState.data : null);
+  const setTicket = setOverride;
+
+  const [editing, setEditing] = useState(false);
 
   const agents = agentsState.status === "success" ? agentsState.data : [];
-  const ticket = ticketState.status === "success" ? ticketState.data : null;
 
-  const thread = useMemo(
-    () => (ticket ? [...ticket.messages, ...appended] : []),
-    [ticket, appended],
-  );
-
-  const handleSend = useCallback(
-    (body: string, internal: boolean) => {
-      const message: Message = {
-        id: `local-${appended.length + 1}`,
-        author_type: "agent",
-        author_name: user?.full_name ?? "You",
-        at: new Date().toISOString(),
-        body,
-        ...(internal ? { internal: true } : {}),
-      };
-      setAppended((prev) => [...prev, message]);
+  const statusMutation = useMutation(
+    (target: TicketStatus) => changeTicketStatus(ticket?.id ?? "", target),
+    {
+      onSuccess: (updated) => {
+        setTicket(updated);
+        toast.success(`Status changed to ${statusLabel(updated.status)}.`);
+      },
     },
-    [appended.length, user],
   );
+
+  const canSolve = ticket ? ALLOWED_TRANSITIONS[ticket.status].includes("solved") : false;
+  const canReopen = ticket ? ticket.status === "solved" : false;
+
+  const thread = useMemo(() => ticket?.messages ?? [], [ticket]);
 
   return (
     <div className="rise flex flex-col gap-5">
@@ -286,7 +446,10 @@ export function TicketDetailPage() {
 
       {ticketState.status === "error" ? (
         <Card className="p-6">
-          <ErrorState message={ticketState.error.message} />
+          <ErrorState
+            message={ticketState.error.message}
+            action={<Button onClick={ticketState.reload}>Try again</Button>}
+          />
           <div className="mt-4 flex justify-center">
             <Link
               to="/queue"
@@ -313,7 +476,34 @@ export function TicketDetailPage() {
                 <SlaPill ticket={ticket} />
               </div>
             </div>
+            <Can permission={CAN_WRITE} scope="ORG">
+              <div className="flex items-center gap-2">
+                <Button variant="outline" onClick={() => setEditing(true)}>
+                  Edit
+                </Button>
+                {canReopen ? (
+                  <Button
+                    variant="outline"
+                    loading={statusMutation.pending}
+                    onClick={() => void statusMutation.mutate("open")}
+                  >
+                    Reopen
+                  </Button>
+                ) : null}
+                {canSolve ? (
+                  <Button
+                    loading={statusMutation.pending}
+                    onClick={() => void statusMutation.mutate("solved")}
+                  >
+                    Mark solved
+                  </Button>
+                ) : null}
+              </div>
+            </Can>
           </header>
+          {statusMutation.error ? (
+            <InlineAlert tone="danger" title={problemMessage(statusMutation.error)} />
+          ) : null}
 
           <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-3">
             {/* Conversation */}
@@ -328,14 +518,35 @@ export function TicketDetailPage() {
                 ))}
               </ul>
               <div className="border-t border-line pt-5">
-                <ReplyBox authorName={user?.full_name ?? "You"} onSend={handleSend} />
+                <ReplyBox
+                  ticketId={ticket.id}
+                  authorName={user?.full_name ?? null}
+                  canWrite={canWrite}
+                  onSent={setTicket}
+                />
               </div>
             </Card>
 
             {/* Properties */}
-            <TicketProperties ticket={ticket} assignee={agentById(agents, ticket.assignee_id)} />
+            <TicketProperties
+              ticket={ticket}
+              agents={agents}
+              canWrite={canWrite}
+              onChanged={setTicket}
+            />
           </div>
         </>
+      ) : null}
+
+      {editing && ticket ? (
+        <EditTicketDialog
+          ticket={ticket}
+          onClose={() => setEditing(false)}
+          onSaved={(updated) => {
+            setTicket(updated);
+            toast.success("Ticket updated.");
+          }}
+        />
       ) : null}
     </div>
   );
