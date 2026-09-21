@@ -1,10 +1,12 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
-import { getAllProjects, listMilestones } from "@/api/client";
-import type { MilestoneOut, ProjectHealth, ProjectOut } from "@/api/types";
+import { getAllMilestones, getAllProjects } from "@/api/client";
+import type { ProjectHealth } from "@/api/types";
 import { HEALTH_LABEL } from "@/data/labels";
-import { useAsync } from "@opsgrids/client";
+import { today } from "@/lib/format";
+import { problemMessage, useAsync } from "@opsgrids/client";
 import {
+  Button,
   Card,
   EmptyState,
   ErrorState,
@@ -14,9 +16,6 @@ import {
   Skeleton,
 } from "@/ui";
 import { GanttIcon } from "@opsgrids/ui";
-
-const EMPTY_PROJECTS: ProjectOut[] = [];
-const EMPTY_MILESTONES: MilestoneOut[] = [];
 
 type HealthFilter = ProjectHealth | "all";
 
@@ -28,16 +27,17 @@ const FILTERS: { value: HealthFilter; label: string }[] = [
 ];
 
 export function TimelinePage() {
-  const projectsState = useAsync(getAllProjects, []);
-  const milestonesState = useAsync(listMilestones, []);
+  const now = today();
+  const projectsState = useAsync(useCallback(getAllProjects, []), []);
+  const milestonesState = useAsync(useCallback(() => getAllMilestones(), []), []);
   const [filter, setFilter] = useState<HealthFilter>("all");
 
   const projects = useMemo(
-    () => (projectsState.status === "success" ? projectsState.data.items : EMPTY_PROJECTS),
+    () => (projectsState.status === "success" ? projectsState.data : []),
     [projectsState],
   );
   const milestones = useMemo(
-    () => (milestonesState.status === "success" ? milestonesState.data.items : EMPTY_MILESTONES),
+    () => (milestonesState.status === "success" ? milestonesState.data : []),
     [milestonesState],
   );
 
@@ -49,9 +49,13 @@ export function TimelinePage() {
   const ready = projectsState.status === "success" && milestonesState.status === "success";
   const failed = projectsState.status === "error" || milestonesState.status === "error";
   const errorMessage =
-    (projectsState.status === "error" && projectsState.error.message) ||
-    (milestonesState.status === "error" && milestonesState.error.message) ||
+    (projectsState.status === "error" && problemMessage(projectsState.error)) ||
+    (milestonesState.status === "error" && problemMessage(milestonesState.error)) ||
     "Couldn't load the timeline.";
+  const reload = () => {
+    projectsState.reload();
+    milestonesState.reload();
+  };
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -77,16 +81,29 @@ export function TimelinePage() {
         </div>
 
         {!ready && !failed ? <Skeleton className="h-96 w-full rounded-tile" /> : null}
-        {failed ? <ErrorState message={errorMessage} /> : null}
+        {failed ? (
+          <ErrorState
+            title="Couldn't load the timeline"
+            message={errorMessage}
+            action={<Button onClick={reload}>Try again</Button>}
+          />
+        ) : null}
         {ready ? (
           shown.length === 0 ? (
             <EmptyState
               icon={<GanttIcon className="size-6" />}
               title="No projects in this view"
               description="No projects match that health filter. Switch back to all health to see the full plan."
+              action={
+                filter !== "all" ? (
+                  <Button variant="outline" onClick={() => setFilter("all")}>
+                    Clear filter
+                  </Button>
+                ) : null
+              }
             />
           ) : (
-            <GanttTimeline projects={shown} milestones={milestones} />
+            <GanttTimeline projects={shown} milestones={milestones} now={now} />
           )
         ) : null}
       </Card>
