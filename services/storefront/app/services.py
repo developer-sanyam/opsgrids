@@ -365,7 +365,10 @@ async def put_storefront(
         store.logo_text = logo_text
         store.currency = payload.currency
         store.timezone = payload.timezone
-        if custom_domain != store.custom_domain:
+        # Omitted means unchanged. The console's identity form no longer sends the domain — the
+        # domain screen owns it, through `/store/domain` — and a form holding a stale value must
+        # not be able to release a claim that screen just verified.
+        if "custom_domain" in payload.model_fields_set and custom_domain != store.custom_domain:
             store.custom_domain = custom_domain
             # A verification attaches to a value, not to a row. The day one exists, keeping it
             # across a change of domain would mean a merchant verifying one name and serving

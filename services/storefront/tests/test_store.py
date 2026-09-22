@@ -325,6 +325,19 @@ class TestTheCustomDomainIsAnIntentionAndNotAnAddress:
         assert cleared.json()["custom_domain"] is None
         assert cleared.json()["custom_domain_status"] is None
 
+    async def test_omitting_it_leaves_the_claim_alone(
+        self, client, as_principal, org_id: uuid.UUID, slug: str
+    ) -> None:
+        """The identity form no longer carries the domain; the domain screen owns it. A save of
+        the name must not release a claim that screen made."""
+        with as_principal(all_perms(org_id)):
+            await client.put(STORE, json=store_payload(slug, custom_domain="shop.example.com"))
+            renamed = await client.put(STORE, json=store_payload(slug, name="Verma & Sons"))
+
+        assert renamed.json()["name"] == "Verma & Sons"
+        assert renamed.json()["custom_domain"] == "shop.example.com"
+        assert renamed.json()["custom_domain_status"] == "unverified"
+
     async def test_a_released_domain_can_then_be_claimed_by_another_organization(
         self,
         client,
