@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 // Aliased: `useRowEscape` below listens on `window` and needs the DOM's `KeyboardEvent`, which
 // React's same-named type would shadow.
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
@@ -137,20 +136,7 @@ export function PageManager({
       : null;
   }, [open, canEdit]);
 
-  /*
-   * Portalled to `<body>`, and it has to be.
-   *
-   * `Dialog` positions itself with `position: fixed`, which is relative to the viewport only while
-   * no ancestor is transformed. The editor screen carries `.rise`, whose animation is
-   * `animation-fill-mode: both` — so `transform: translateY(0)` stays on the element for good and
-   * makes it the containing block. Measured in Chrome at a 390×844 viewport before this: the
-   * dialog rendered at x=12, 366px wide and 844px tall with its bottom 217px below the fold, which
-   * put Done and the delete confirmation somewhere no one could reach.
-   *
-   * The right long-term home for this is `Dialog` itself — every app has a `.rise` screen. Local
-   * here rather than a fork of the component, which ADR-0001 forbids.
-   */
-  return createPortal(
+  return (
     <Dialog
       open={open}
       onClose={onClose}
@@ -218,8 +204,7 @@ export function PageManager({
           </ol>
         </section>
       </div>
-    </Dialog>,
-    document.body,
+    </Dialog>
   );
 }
 
