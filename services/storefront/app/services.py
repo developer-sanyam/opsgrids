@@ -43,6 +43,7 @@ from app.config import settings
 from app.models import (
     AuditLog,
     Category,
+    CustomDomainClaim,
     DeliveryZone,
     Enquiry,
     OutboxEvent,
@@ -53,9 +54,11 @@ from app.models import (
     ThemeDocument,
     ZonePostalCode,
 )
+from app.probes import ProbeSet, default_probe_set
 from app.schemas import (
     CategoryCreate,
     CategoryPatch,
+    DomainClaimIn,
     EnquiryCreate,
     EnquiryPatch,
     ProductCreate,
@@ -71,7 +74,7 @@ from platform_core.audit import record_audit, record_sensitive_read
 from platform_core.auth import ScopeContext
 from platform_core.cache import cache_delete
 from platform_core.db import session_scope
-from platform_core.errors import BusinessRuleProblem, ConflictProblem
+from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
 from platform_core.events import publish_event
 from platform_core.logging import get_logger
 from platform_core.models import utcnow
@@ -412,6 +415,24 @@ async def put_storefront(
         )
 
     async with _conflicts_are_named(session):
+        if domain_changed:
+            # **The seam between this route and ADR-0012's dedicated domain route.** A claim
+            # row (`custom_domain_claims`) is evidence for *one specific* domain string — a
+            # token minted for `merchant.com`, an `ownership_state` that says its TXT record
+            # was seen. None of that survives this field changing to a different string
+            # through this older, evidence-free path: without clearing it, a claim already
+            # `verified` for one domain would silently keep answering `verified` for whatever
+            # this route just set the column to, for a domain nobody has ever proved.
+            # `custom_domain_status` is already reset to `unverified` above for the same
+            # reason; this is that reset's other half. Inside the savepoint, alongside the
+            # flush, so a collision on the store's own write is still what names the 409 —
+            # `session.execute` autoflushes, and a flush outside this context would raise the
+            # collision before `_conflicts_are_named`'s `except` could see it.
+            await session.execute(
+                delete(CustomDomainClaim).where(
+                    CustomDomainClaim.organization_id == ctx.organization_id
+                )
+            )
         await session.flush()
 
     await _forget_slug(store.slug)
@@ -492,6 +513,290 @@ async def set_store_status(
         status=store.status,
     )
     return store
+
+
+# --------------------------------------------------------------------- the custom domain claim
+
+
+async def custom_domain_claimed_by_other_org(
+    directory_session: AsyncSession, host: str, *, excluding_organization_id: uuid.UUID
+) -> bool:
+    """Whether **some other organization** already holds `host` (ADR-0012 §3's `www`-partner
+    refusal). Runs on the BYPASSRLS SELECT-only directory reader — the exact value's own
+    collision is already enforced by `uq_storefronts_custom_domain`; this is the one collision
+    no unique index can express, because the apex and its `www` sibling are two different
+    strings. Uncached, deliberately: this runs once per write, never on the buyer's path, and a
+    cached negative here would let a just-claimed `www` partner slip through for a TTL.
+    """
+    row = (
+        await directory_session.execute(
+            select(Storefront.id).where(
+                Storefront.custom_domain == host,
+                Storefront.organization_id != excluding_organization_id,
+                Storefront.deleted_at.is_(None),
+            )
+        )
+    ).first()
+    return row is not None
+
+
+async def claim_custom_domain(
+    session: AsyncSession,
+    directory_session: AsyncSession,
+    ctx: ScopeContext,
+    payload: DomainClaimIn,
+    *,
+    request: Request | None = None,
+) -> tuple[Storefront, CustomDomainClaim]:
+    """`PUT /storefront/store/domain` (ADR-0012 §3, §11). Mints a fresh token, replaces any
+    existing claim row, and leaves `storefronts.custom_domain_status` at `unverified` — exactly
+    where a fresh claim through `StorePut` leaves it, so the two write paths cannot disagree
+    about what a brand-new claim looks like.
+
+    **Replacing an existing claim releases the old one and mints a new token** (ADR-0012 §11):
+    a verification proves control of the value claimed, and must not survive that value
+    changing — the same rule `put_storefront` enforces for the older path.
+    """
+    host = domain.normalise_custom_domain(payload.custom_domain)
+    if host is None:
+        raise domain.Rejected(
+            "custom_domain_required", "Enter a domain to claim.", field="custom_domain"
+        )
+
+    store = await selectors.get_storefront(session, ctx)
+    if store is None:
+        raise NotFoundProblem("This organization has no storefront yet. Create the store first.")
+
+    partner = domain.www_partner(host)
+    if await custom_domain_claimed_by_other_org(
+        directory_session, partner, excluding_organization_id=ctx.organization_id
+    ):
+        raise domain.Conflicted(
+            "custom_domain_taken",
+            f"{partner} is already connected to another OpsGrids store, and {host} is served "
+            "as its `www` pair. If it is yours, disconnect it there first, or contact support.",
+            field="custom_domain",
+        )
+
+    before_domain = store.custom_domain
+    now = utcnow()
+    token = domain.mint_verification_token()
+
+    async with _conflicts_are_named(session):
+        store.custom_domain = host
+        store.custom_domain_status = "unverified"
+        # Its own row, so a re-claim of the same string is still a fresh token and a fresh
+        # evidence row — whatever the previous claim (of this domain, or of a domain since
+        # changed away from) had accumulated does not survive.
+        await session.execute(
+            delete(CustomDomainClaim).where(
+                CustomDomainClaim.organization_id == ctx.organization_id
+            )
+        )
+        claim = CustomDomainClaim(
+            organization_id=ctx.organization_id,
+            storefront_id=store.id,
+            verification_token=token,
+            token_issued_at=now,
+            claim_expires_at=domain.claim_expires_at(now),
+            # Due immediately: the sweep's own poll interval is the only delay before the first
+            # real check, rather than this claim also waiting out its own first backoff step.
+            next_check_at=now,
+        )
+        session.add(claim)
+        await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="storefront.domain.claimed",
+        entity="storefront",
+        entity_id=store.id,
+        # The token is not in the row (ADR-0012 §15).
+        before={"custom_domain": before_domain},
+        after={"custom_domain": host},
+        request=request,
+    )
+    await _forget_host(host, before_domain)
+    log.info(
+        "storefront.domain.claimed",
+        organization_id=str(ctx.organization_id),
+        storefront_id=str(store.id),
+    )
+    return store, claim
+
+
+async def release_custom_domain(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    store: Storefront,
+    *,
+    request: Request | None = None,
+) -> None:
+    """`DELETE /storefront/store/domain` (ADR-0012 §7, §11). **Idempotent**: releasing an
+    already-unclaimed store is a no-op, because a client that retries a 204 must see another
+    204, not a 404 for something that is not there to be missing.
+
+    Clears the identity row, deletes the evidence row, invalidates the cache and audits — in
+    one transaction, so a reader never sees a domain with a status and no evidence, or evidence
+    for a domain that is already gone.
+    """
+    if store.custom_domain is None:
+        return
+
+    before_domain = store.custom_domain
+    store.custom_domain = None
+    store.custom_domain_status = None
+    await session.execute(
+        delete(CustomDomainClaim).where(CustomDomainClaim.organization_id == ctx.organization_id)
+    )
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="storefront.domain.released",
+        entity="storefront",
+        entity_id=store.id,
+        before={"custom_domain": before_domain},
+        after={"custom_domain": None},
+        request=request,
+    )
+    await _forget_host(before_domain)
+    log.info(
+        "storefront.domain.released",
+        organization_id=str(ctx.organization_id),
+        storefront_id=str(store.id),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimAdvanceOutcome:
+    """What one probe pass did to a claim, returned so the caller decides what to audit — the
+    merchant's "Check now" audits every call; the sweep audits only an actual transition."""
+
+    old_status: str
+    new_status: str
+
+
+async def advance_domain_claim(
+    store: Storefront,
+    claim: CustomDomainClaim,
+    *,
+    probes: ProbeSet,
+    now: dt.datetime,
+) -> ClaimAdvanceOutcome:
+    """Run the probes this claim's current status calls for, and mutate `store` and `claim` in
+    place. **Never commits, never audits, never touches the cache** — those are the caller's,
+    because a synchronous "Check now" and a sweep tick need different amounts of each (ADR-0012
+    §6, §15).
+
+    While `unverified`, only the ownership probe runs: the certificate cannot be authorized
+    before ownership is proved, and a routing check that cannot yet matter to a merchant tells
+    them nothing they can act on (§6's wire example shows routing and certificate `pending` for
+    the whole of that state). Once past `unverified`, every probe runs and the row's own
+    per-probe error is whichever failed first, in ownership → routing → certificate order.
+    """
+    old_status = store.custom_domain_status
+    host = store.custom_domain
+    if old_status is None or host is None:  # pragma: no cover - callers already guard this
+        raise RuntimeError("advance_domain_claim called on a store with no claim")
+
+    claim.last_checked_at = now
+
+    if old_status == "unverified":
+        ownership = await probes.ownership.check(host, token=claim.verification_token)
+        claim.ownership_state = "ok" if ownership.ok else "failing"
+        if ownership.ok:
+            claim.verified_at = claim.verified_at or now
+            claim.last_error_code = None
+            claim.last_error_detail = None
+            new_status = "verified"
+            claim.next_check_at = now + domain.VERIFIED_CHECK_INTERVAL
+        else:
+            claim.last_error_code = ownership.code
+            claim.last_error_detail = ownership.detail
+            new_status = "unverified"
+            claim.next_check_at = now + domain.unverified_check_interval(
+                now - claim.token_issued_at
+            )
+        store.custom_domain_status = new_status
+        return ClaimAdvanceOutcome(old_status=old_status, new_status=new_status)
+
+    ownership = await probes.ownership.check(host, token=claim.verification_token)
+    routing = await probes.routing.check(host)
+    certificate = await probes.certificate.check(host)
+
+    claim.ownership_state = "ok" if ownership.ok else "failing"
+    claim.routing_state = "ok" if routing.ok else "failing"
+    claim.certificate_state = "ok" if certificate.ok else "failing"
+    if certificate.ok and certificate.not_after is not None:
+        claim.tls_not_after = certificate.not_after
+        claim.tls_last_ok_at = now
+
+    failing = next((r for r in (ownership, routing, certificate) if not r.ok), None)
+    claim.last_error_code = failing.code if failing else None
+    claim.last_error_detail = failing.detail if failing else None
+
+    advance = domain.advance_verified_or_later(
+        store_published=store.status == "published",
+        ownership_ok=ownership.ok,
+        routing_ok=routing.ok,
+        certificate_ok=certificate.ok,
+        consecutive_failures=claim.consecutive_failures,
+    )
+    claim.consecutive_failures = advance.consecutive_failures
+    if advance.status == "live" and old_status != "live":
+        claim.live_since = now
+    store.custom_domain_status = advance.status
+    claim.next_check_at = now + domain.VERIFIED_CHECK_INTERVAL
+    return ClaimAdvanceOutcome(old_status=old_status, new_status=advance.status)
+
+
+async def run_domain_check(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    store: Storefront,
+    claim: CustomDomainClaim,
+    *,
+    probes: ProbeSet | None = None,
+    request: Request | None = None,
+) -> CustomDomainClaim:
+    """`POST /storefront/store/domain/check` (ADR-0012 §6). Runs all three probes synchronously
+    and audits the call itself — `storefront.domain.checked`, the one probe run this ADR audits
+    (§15), because a rate-limited "Check now" is a human act and 150 unattended probes a day of
+    a published fact is not.
+    """
+    now = utcnow()
+    outcome = await advance_domain_claim(
+        store, claim, probes=probes or default_probe_set(), now=now
+    )
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="storefront.domain.checked",
+        entity="storefront",
+        entity_id=store.id,
+        after={"status": outcome.new_status, "last_error_code": claim.last_error_code},
+        request=request,
+    )
+    if outcome.old_status != outcome.new_status:
+        await _forget_host(store.custom_domain)
+    log.info(
+        "storefront.domain.checked",
+        organization_id=str(ctx.organization_id),
+        storefront_id=str(store.id),
+        status=outcome.new_status,
+    )
+    return claim
 
 
 # --------------------------------------------------------------------- zones

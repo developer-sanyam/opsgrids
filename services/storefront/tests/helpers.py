@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     Category,
+    CustomDomainClaim,
     DeliveryZone,
     Enquiry,
     Product,
@@ -123,6 +124,49 @@ async def seed_store(
     admin_session.add(store)
     await admin_session.commit()
     return store
+
+
+async def seed_custom_domain_claim(
+    admin_session: AsyncSession,
+    org_id: uuid.UUID,
+    storefront_id: uuid.UUID,
+    *,
+    verification_token: str = "a" * 32,
+    token_issued_at: dt.datetime | None = None,
+    claim_expires_at: dt.datetime | None = None,
+    next_check_at: dt.datetime | None = None,
+    consecutive_failures: int = 0,
+    ownership_state: str = "pending",
+    routing_state: str = "pending",
+    certificate_state: str = "pending",
+    verified_at: dt.datetime | None = None,
+    live_since: dt.datetime | None = None,
+    last_error_code: str | None = None,
+    last_error_detail: str | None = None,
+) -> CustomDomainClaim:
+    """The evidence row behind a `storefronts.custom_domain_status` that is past `unverified`
+    — most tests reach this through the API, but the sweep's and the reader's own tests need to
+    seed a claim in whatever state a probe would have left it."""
+    now = dt.datetime.now(dt.UTC)
+    claim = CustomDomainClaim(
+        organization_id=org_id,
+        storefront_id=storefront_id,
+        verification_token=verification_token,
+        token_issued_at=token_issued_at or now,
+        claim_expires_at=claim_expires_at or (now + dt.timedelta(days=14)),
+        next_check_at=next_check_at or now,
+        consecutive_failures=consecutive_failures,
+        ownership_state=ownership_state,
+        routing_state=routing_state,
+        certificate_state=certificate_state,
+        verified_at=verified_at,
+        live_since=live_since,
+        last_error_code=last_error_code,
+        last_error_detail=last_error_detail,
+    )
+    admin_session.add(claim)
+    await admin_session.commit()
+    return claim
 
 
 def store_payload(slug: str, **overrides: object) -> dict[str, object]:

@@ -33,13 +33,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import domain, selectors, services
 from app.api.public import answer_out
 from app.config import settings
-from app.models import SCHEMA
+from app.models import SCHEMA, CustomDomainClaim, Storefront
 from app.schemas import (
     CategoryCreate,
     CategoryOut,
     CategoryPatch,
     DeliveryCheckIn,
     DemandRowOut,
+    DnsRecordOut,
+    DomainChecksOut,
+    DomainCheckStateOut,
+    DomainClaimIn,
+    DomainDnsOut,
+    DomainOut,
+    DomainVerificationOut,
     EnquiryOut,
     EnquiryPatch,
     EnquiryRevealed,
@@ -61,7 +68,8 @@ from app.schemas import (
     ZonePostalCodesPut,
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
-from platform_core.db import get_tenant_session
+from platform_core.cache import enforce_rate_limit
+from platform_core.db import get_directory_session, get_tenant_session
 from platform_core.errors import NotFoundProblem, PayloadTooLargeProblem
 from platform_core.models import utcnow
 from platform_core.pagination import Page, PageQuery
@@ -74,6 +82,12 @@ SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
 
 #: The `storefront` entitlement gate, applied to every principal route as well as at the gateway.
 Entitled = Depends(require_product("storefront"))
+
+#: The BYPASSRLS, SELECT-only directory reader — needed by `PUT /store/domain` for the one
+#: cross-tenant read this service ever does on an authenticated route: whether another
+#: organization already holds the domain's `www` partner (ADR-0012 §3). Every other route in
+#: this file reads and writes tenant-bound only.
+DirectorySession = Annotated[AsyncSession, Depends(get_directory_session)]
 
 StoreRead = Annotated[
     ScopeContext, Depends(require("storefront.store.settings.read", minimum=Scope.ORG))
@@ -269,6 +283,302 @@ async def unpublish_store(session: SessionDep, ctx: StoreWrite, request: Request
     direction. Idempotent.
     """
     return await _transition(session, ctx, target="draft", request=request)
+
+
+# ------------------------------------------------------------------ the custom domain (ADR-0012)
+
+_DOMAIN_WRITE_ERRORS: dict[int | str, dict[str, Any]] = {
+    404: {"description": "This organization has no storefront yet."},
+    409: {
+        "description": (
+            "`errors[0].code` is `custom_domain_taken` — another organization already holds "
+            "this domain or its `www` partner. Nothing about that organization is disclosed."
+        )
+    },
+    422: {
+        "description": (
+            "`errors[0].code` is one of `custom_domain_required`, `custom_domain_invalid`, "
+            "`custom_domain_too_long` or `custom_domain_reserved`."
+        )
+    },
+}
+
+
+def _check_out(
+    state: str,
+    *,
+    claim: CustomDomainClaim | None,
+    ok_detail: str | None,
+    is_primary_failure: bool,
+    not_after: dt.datetime | None = None,
+) -> DomainCheckStateOut:
+    """One probe's row in the `checks` block. `claim` is `None` exactly when `state` is
+    `pending` and nothing has ever run — see `_domain_out`.
+
+    **Only the claim's single stored `last_error_code`/`last_error_detail` pair is shown, and
+    only for the probe currently identified as the primary failure** (the first of ownership,
+    routing, certificate that is `failing`, recomputed here from the three state columns rather
+    than stored a second time). A second, simultaneously-failing probe still reports its own
+    `state`, but not its own reason — the schema (ADR-0012 §9) budgets one error pair per claim,
+    not one per probe, and a fabricated second reason would be worse than none. Named here
+    rather than smoothed over.
+    """
+    if state == "pending" or claim is None:
+        return DomainCheckStateOut(
+            state="pending", last_checked_at=None, next_check_at=None, code=None, detail=None
+        )
+    if state == "ok":
+        return DomainCheckStateOut(
+            state="ok",
+            last_checked_at=claim.last_checked_at,
+            next_check_at=claim.next_check_at,
+            code=None,
+            detail=ok_detail,
+            not_after=not_after,
+        )
+    return DomainCheckStateOut(
+        state="failing",
+        last_checked_at=claim.last_checked_at,
+        next_check_at=claim.next_check_at,
+        code=claim.last_error_code if is_primary_failure else None,
+        detail=claim.last_error_detail if is_primary_failure else None,
+        not_after=not_after,
+    )
+
+
+def _domain_dns_out(host: str, cfg: Any) -> DomainDnsOut:
+    """The record table a merchant is told to publish (ADR-0012 §4). `apex` is exactly two
+    labels — the same simple, deliberately PSL-free rule `domain.www_partner` uses, because a
+    Public Suffix List is a bundled dependency that goes stale on somebody else's schedule."""
+    apex = host.count(".") == 1
+    if apex:
+        preferred = DnsRecordOut(
+            record_type="ALIAS",
+            name=host,
+            value=cfg.edge_host,
+            note=(
+                "If your DNS provider offers ALIAS, ANAME or CNAME flattening, use this. It "
+                "keeps working if our address changes."
+            ),
+        )
+        fallback = [
+            DnsRecordOut(record_type="A", name=host, value=cfg.edge_reserved_ip or "(ask support)"),
+            DnsRecordOut(
+                record_type="A",
+                name=domain.www_partner(host),
+                value=cfg.edge_reserved_ip or "(ask support)",
+            ),
+        ]
+    else:
+        preferred = DnsRecordOut(record_type="CNAME", name=host, value=cfg.edge_host, note=None)
+        fallback = []
+    return DomainDnsOut(
+        apex=apex,
+        preferred=preferred,
+        fallback=fallback,
+        proxy_warning=(
+            "If you use Cloudflare, set these records to DNS only (grey cloud). A proxied "
+            "record stops us issuing your certificate."
+        ),
+        also_served=[domain.www_partner(host)],
+    )
+
+
+def _domain_out(store: Storefront, claim: CustomDomainClaim | None, cfg: Any) -> DomainOut:
+    platform_host = domain.platform_host_for(store.slug, suffix=cfg.platform_host_suffix)
+    canonical = domain.canonical_host(
+        slug=store.slug,
+        custom_domain=store.custom_domain,
+        custom_domain_status=store.custom_domain_status,
+        suffix=cfg.platform_host_suffix,
+    )
+    if store.custom_domain is None:
+        return DomainOut(
+            custom_domain=None,
+            status=None,
+            platform_host=platform_host,
+            canonical_host=canonical,
+            verification=None,
+            dns=None,
+            checks=None,
+        )
+
+    verification = (
+        DomainVerificationOut(
+            name=domain.verification_txt_name(store.custom_domain),
+            value=domain.verification_txt_value(claim.verification_token),
+            issued_at=claim.token_issued_at,
+            claim_expires_at=claim.claim_expires_at,
+        )
+        if claim is not None
+        else None
+    )
+    dns = _domain_dns_out(store.custom_domain, cfg)
+
+    checks: DomainChecksOut | None = None
+    if claim is not None:
+        first_failing = next(
+            (
+                name
+                for name, state in (
+                    ("ownership", claim.ownership_state),
+                    ("routing", claim.routing_state),
+                    ("certificate", claim.certificate_state),
+                )
+                if state == "failing"
+            ),
+            None,
+        )
+        checks = DomainChecksOut(
+            ownership=_check_out(
+                claim.ownership_state,
+                claim=claim,
+                ok_detail=f"Found {domain.verification_txt_value(claim.verification_token)}",
+                is_primary_failure=first_failing == "ownership",
+            ),
+            routing=_check_out(
+                claim.routing_state,
+                claim=claim,
+                ok_detail=(
+                    f"{store.custom_domain} resolves to {cfg.edge_reserved_ip}"
+                    if cfg.edge_reserved_ip
+                    else f"{store.custom_domain} resolves to the platform address"
+                ),
+                is_primary_failure=first_failing == "routing",
+            ),
+            certificate=_check_out(
+                claim.certificate_state,
+                claim=claim,
+                ok_detail=(
+                    f"Valid until {claim.tls_not_after.isoformat()}"
+                    if claim.tls_not_after is not None
+                    else "The certificate is valid."
+                ),
+                is_primary_failure=first_failing == "certificate",
+                not_after=claim.tls_not_after,
+            ),
+        )
+
+    return DomainOut(
+        custom_domain=store.custom_domain,
+        status=store.custom_domain_status,
+        platform_host=platform_host,
+        canonical_host=canonical,
+        verification=verification,
+        dns=dns,
+        checks=checks,
+    )
+
+
+@router.get(
+    "/storefront/store/domain",
+    response_model=DomainOut,
+    summary="The store's custom domain, its verification record and its three checks",
+    dependencies=[Entitled],
+)
+async def read_domain(session: SessionDep, ctx: StoreRead) -> DomainOut:
+    """`storefront.store.settings.read`, floored at ORG.
+
+    No claim — every field but `platform_host` and `canonical_host` is `null`. Claimed — the
+    verification record, the DNS table to publish, and the three probes' last results, each
+    with its own `next_check_at` so "pending" always has a clock on it (ADR-0012 §6, §11).
+    """
+    store = await selectors.get_storefront(session, ctx)
+    if store is None:
+        raise NotFoundProblem("This organization has no storefront yet.")
+    claim = await selectors.get_domain_claim(session, ctx)
+    return _domain_out(store, claim, settings())
+
+
+@router.put(
+    "/storefront/store/domain",
+    response_model=DomainOut,
+    summary="Claim a custom domain — mints a fresh verification token",
+    dependencies=[Entitled],
+    responses=_DOMAIN_WRITE_ERRORS,
+)
+async def put_domain(
+    payload: DomainClaimIn,
+    session: SessionDep,
+    directory: DirectorySession,
+    ctx: StoreWrite,
+    request: Request,
+) -> DomainOut:
+    """`storefront.store.settings.write`, floored at ORG.
+
+    Replacing an existing claim releases the old one and mints a new token — a verification
+    proves control of the value claimed, and must not survive that value changing. The response
+    is the `GET` body, freshly `unverified`.
+    """
+    store, claim = await services.claim_custom_domain(
+        session, directory, ctx, payload, request=request
+    )
+    await session.refresh(store)
+    await session.refresh(claim)
+    return _domain_out(store, claim, settings())
+
+
+@router.delete(
+    "/storefront/store/domain",
+    status_code=204,
+    summary="Disconnect the custom domain",
+    dependencies=[Entitled],
+)
+async def delete_domain(session: SessionDep, ctx: StoreWrite, request: Request) -> Response:
+    """`storefront.store.settings.write`, floored at ORG. **Idempotent**: deleting when there
+    is no claim is also a 204 (ADR-0012 §7, §11). From the next request the host 410s; the
+    certificate stays in Caddy's storage until it expires."""
+    store = await selectors.get_storefront(session, ctx)
+    if store is None:
+        raise NotFoundProblem("This organization has no storefront yet.")
+    await services.release_custom_domain(session, ctx, store, request=request)
+    return Response(status_code=204)
+
+
+@router.post(
+    "/storefront/store/domain/check",
+    response_model=DomainOut,
+    summary='The "Check now" button — runs all three probes synchronously',
+    dependencies=[Entitled],
+    responses={
+        404: {"description": "This organization has no storefront, or no domain is claimed."},
+        429: {
+            "description": (
+                "Checks are limited to one every `domain_check_rate_limit_window_seconds` "
+                "(30 by default) per organization."
+            )
+        },
+    },
+)
+async def check_domain(session: SessionDep, ctx: StoreWrite, request: Request) -> DomainOut:
+    """`storefront.store.settings.write`, floored at ORG.
+
+    Rate-limited to one call per organization every
+    `domain_check_rate_limit_window_seconds` (30 by default) — the merchant has just pasted a
+    record and wants an answer now (ADR-0012 §6). Runs synchronously, against the live network,
+    so it is not fast; it is not meant to be polled.
+    """
+    cfg = settings()
+    await enforce_rate_limit(
+        f"storefront.domain.check:{ctx.organization_id}",
+        limit=1,
+        window_seconds=cfg.domain_check_rate_limit_window_seconds,
+    )
+
+    store = await selectors.get_storefront(session, ctx)
+    if store is None:
+        raise NotFoundProblem("This organization has no storefront yet.")
+    claim = await selectors.get_domain_claim(session, ctx)
+    if store.custom_domain is None or claim is None:
+        raise NotFoundProblem(
+            "No domain is claimed for this store yet — connect one with "
+            "PUT /storefront/store/domain first."
+        )
+
+    await services.run_domain_check(session, ctx, store, claim, request=request)
+    await session.refresh(store)
+    await session.refresh(claim)
+    return _domain_out(store, claim, cfg)
 
 
 # ------------------------------------------------------------------ zones

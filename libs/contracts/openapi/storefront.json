@@ -302,6 +302,322 @@
         "title": "DemandRowOut",
         "type": "object"
       },
+      "DnsRecordOut": {
+        "description": "One DNS record row the merchant is told to publish, exactly as ADR-0012 \u00a711 prints it.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "record_type": {
+            "title": "Record Type",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_type",
+          "name",
+          "value"
+        ],
+        "title": "DnsRecordOut",
+        "type": "object"
+      },
+      "DomainCheckStateOut": {
+        "description": "One probe's last result (ADR-0012 \u00a76). `state` is `pending` until the probe has ever\nrun \u2014 routing and certificate stay `pending` for the whole time a claim is `unverified`,\nbecause neither is checked before ownership is proved. `not_after` is only ever set by the\ncertificate probe; `null` on the other two.",
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "last_checked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Checked At"
+          },
+          "next_check_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Check At"
+          },
+          "not_after": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Not After"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "ok",
+              "failing"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "last_checked_at",
+          "next_check_at",
+          "code",
+          "detail"
+        ],
+        "title": "DomainCheckStateOut",
+        "type": "object"
+      },
+      "DomainChecksOut": {
+        "properties": {
+          "certificate": {
+            "$ref": "#/components/schemas/DomainCheckStateOut"
+          },
+          "ownership": {
+            "$ref": "#/components/schemas/DomainCheckStateOut"
+          },
+          "routing": {
+            "$ref": "#/components/schemas/DomainCheckStateOut"
+          }
+        },
+        "required": [
+          "ownership",
+          "routing",
+          "certificate"
+        ],
+        "title": "DomainChecksOut",
+        "type": "object"
+      },
+      "DomainClaimIn": {
+        "additionalProperties": false,
+        "description": "`PUT /storefront/store/domain` \u2014 the merchant's request to put the store on a domain\nthey own. A separate resource from `StorePut`, deliberately: this route mints a\nverification token and creates the evidence row `GET` reads back; `StorePut.custom_domain`\nis the older, evidence-free intention field ADR-0011 shipped first.",
+        "properties": {
+          "custom_domain": {
+            "description": "The domain to claim, e.g. `shop.example.com`. Replacing an existing claim releases the old one and mints a new token \u2014 a verification proves control of the value claimed, and must not survive that value changing.",
+            "examples": [
+              "shop.example.com"
+            ],
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Custom Domain",
+            "type": "string"
+          }
+        },
+        "required": [
+          "custom_domain"
+        ],
+        "title": "DomainClaimIn",
+        "type": "object"
+      },
+      "DomainDnsOut": {
+        "description": "What the merchant is told to publish, and how (ADR-0012 \u00a74). `apex` decides which of\n`preferred` / `fallback` a UI leads with \u2014 an ALIAS is offered first everywhere it works,\nthe literal A records are the \"works everywhere\" fallback.",
+        "properties": {
+          "also_served": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Also Served",
+            "type": "array"
+          },
+          "apex": {
+            "title": "Apex",
+            "type": "boolean"
+          },
+          "fallback": {
+            "items": {
+              "$ref": "#/components/schemas/DnsRecordOut"
+            },
+            "title": "Fallback",
+            "type": "array"
+          },
+          "preferred": {
+            "$ref": "#/components/schemas/DnsRecordOut"
+          },
+          "proxy_warning": {
+            "title": "Proxy Warning",
+            "type": "string"
+          }
+        },
+        "required": [
+          "apex",
+          "preferred",
+          "fallback",
+          "proxy_warning",
+          "also_served"
+        ],
+        "title": "DomainDnsOut",
+        "type": "object"
+      },
+      "DomainOut": {
+        "description": "`GET /storefront/store/domain` \u2014 the whole of what a merchant sees about their custom\ndomain, per ADR-0012 \u00a711's printed wire format.\n\nEvery field is present on every response; `verification`, `dns` and `checks` are `null`\ntogether, exactly once \u2014 when there is no claim at all. **`status` reads the same column\n`StoreOut.custom_domain_status` does**, so the settings screen and this one cannot disagree.",
+        "properties": {
+          "canonical_host": {
+            "title": "Canonical Host",
+            "type": "string"
+          },
+          "checks": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DomainChecksOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "custom_domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Domain"
+          },
+          "dns": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DomainDnsOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "platform_host": {
+            "title": "Platform Host",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unverified",
+                  "verified",
+                  "live",
+                  "failing",
+                  "suspended"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "verification": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DomainVerificationOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "custom_domain",
+          "status",
+          "platform_host",
+          "canonical_host",
+          "verification",
+          "dns",
+          "checks"
+        ],
+        "title": "DomainOut",
+        "type": "object"
+      },
+      "DomainVerificationOut": {
+        "description": "The TXT record that proves ownership (ADR-0012 \u00a73). `value` carries the token in the\nclear \u2014 it is returned only over this tenant-bound, permission-gated route, and it is never\nlogged.",
+        "properties": {
+          "claim_expires_at": {
+            "format": "date-time",
+            "title": "Claim Expires At",
+            "type": "string"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "record_type": {
+            "const": "TXT",
+            "default": "TXT",
+            "title": "Record Type",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value",
+          "issued_at",
+          "claim_expires_at"
+        ],
+        "title": "DomainVerificationOut",
+        "type": "object"
+      },
       "EnquiryCreate": {
         "additionalProperties": false,
         "description": "The public body. `store` names the tenant the same way every other public endpoint's\nbody does; `email` and `phone` are sealed rather than stored, `phone` optional because the\nfront end's own form only requires an email (`EnquiryForm.tsx`).",
@@ -2210,7 +2526,10 @@
               {
                 "enum": [
                   "unverified",
-                  "verified"
+                  "verified",
+                  "live",
+                  "failing",
+                  "suspended"
                 ],
                 "type": "string"
               },
@@ -2218,7 +2537,7 @@
                 "type": "null"
               }
             ],
-            "description": "`unverified` whenever `custom_domain` is set, `null` when it is not. **Nothing can move it off `unverified` today**: verifying that a merchant owns a domain is DNS work nobody has done, and it is a precondition of ever serving one \u2014 serving a domain on the strength of a form submission is how one merchant takes another's traffic.",
+            "description": "`unverified` whenever `custom_domain` is set and never yet proved; `null` when there is no claim. `verified`, `live`, `failing` and `suspended` are the domain-hosting state machine's (ADR-0012 \u00a76) \u2014 this is the same column `GET /storefront/store/domain`'s `status` reads, so the two screens cannot disagree. See that route for the verification token, the DNS records to publish, and each probe's own state.",
             "title": "Custom Domain Status"
           },
           "id": {
@@ -2306,7 +2625,7 @@
           "custom_domain": {
             "anyOf": [
               {
-                "description": "The domain the merchant **intends** to use, stored lower-cased with no scheme, path or port. **Setting it records an intention and changes nothing about reachability**: no request is served on it, nothing here checks that the merchant owns it, and the stored status is `unverified` with no path off it. `null` or an empty string releases the claim. A domain another organization has already claimed is a 409 `custom_domain_taken`.",
+                "description": "The domain the merchant intends to use, stored lower-cased with no scheme, path or port. Setting it here always lands the store on `unverified` \u2014 the same value a fresh `PUT /storefront/store/domain` leaves it at. **That dedicated route is what mints a verification token and runs the checks**; a domain set through this identity form has no token until it is claimed there too. `null` or an empty string releases the claim (and any verification progress with it). A domain another organization has already claimed is a 409 `custom_domain_taken`.",
                 "examples": [
                   "shop.example.com"
                 ],
@@ -4639,6 +4958,108 @@
           }
         },
         "summary": "Create or update the store's identity and brand",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/store/domain": {
+      "delete": {
+        "description": "`storefront.store.settings.write`, floored at ORG. **Idempotent**: deleting when there\nis no claim is also a 204 (ADR-0012 \u00a77, \u00a711). From the next request the host 410s; the\ncertificate stays in Caddy's storage until it expires.",
+        "operationId": "delete_domain_api_v1_storefront_store_domain_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Disconnect the custom domain",
+        "tags": [
+          "storefront"
+        ]
+      },
+      "get": {
+        "description": "`storefront.store.settings.read`, floored at ORG.\n\nNo claim \u2014 every field but `platform_host` and `canonical_host` is `null`. Claimed \u2014 the\nverification record, the DNS table to publish, and the three probes' last results, each\nwith its own `next_check_at` so \"pending\" always has a clock on it (ADR-0012 \u00a76, \u00a711).",
+        "operationId": "read_domain_api_v1_storefront_store_domain_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The store's custom domain, its verification record and its three checks",
+        "tags": [
+          "storefront"
+        ]
+      },
+      "put": {
+        "description": "`storefront.store.settings.write`, floored at ORG.\n\nReplacing an existing claim releases the old one and mints a new token \u2014 a verification\nproves control of the value claimed, and must not survive that value changing. The response\nis the `GET` body, freshly `unverified`.",
+        "operationId": "put_domain_api_v1_storefront_store_domain_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DomainClaimIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "This organization has no storefront yet."
+          },
+          "409": {
+            "description": "`errors[0].code` is `custom_domain_taken` \u2014 another organization already holds this domain or its `www` partner. Nothing about that organization is disclosed."
+          },
+          "422": {
+            "description": "`errors[0].code` is one of `custom_domain_required`, `custom_domain_invalid`, `custom_domain_too_long` or `custom_domain_reserved`."
+          }
+        },
+        "summary": "Claim a custom domain \u2014 mints a fresh verification token",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/store/domain/check": {
+      "post": {
+        "description": "`storefront.store.settings.write`, floored at ORG.\n\nRate-limited to one call per organization every\n`domain_check_rate_limit_window_seconds` (30 by default) \u2014 the merchant has just pasted a\nrecord and wants an answer now (ADR-0012 \u00a76). Runs synchronously, against the live network,\nso it is not fast; it is not meant to be polled.",
+        "operationId": "check_domain_api_v1_storefront_store_domain_check_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "This organization has no storefront, or no domain is claimed."
+          },
+          "429": {
+            "description": "Checks are limited to one every `domain_check_rate_limit_window_seconds` (30 by default) per organization."
+          }
+        },
+        "summary": "The \"Check now\" button \u2014 runs all three probes synchronously",
         "tags": [
           "storefront"
         ]
