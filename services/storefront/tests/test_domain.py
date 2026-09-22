@@ -9,6 +9,8 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from app import domain
 
@@ -376,3 +378,184 @@ class TestWhichAddressIsCanonical:
         entry: a claim is stored on the word of whoever typed it."""
         assert "unverified" not in domain.SERVING_DOMAIN_STATUSES
         assert "verified" in domain.SERVING_DOMAIN_STATUSES
+
+
+# --------------------------------------------------------------------- the domain claim state
+
+
+class TestVerificationTexts:
+    def test_the_token_is_32_hex_characters(self) -> None:
+        """`secrets.token_hex(16)` — 128 bits (ADR-0012 §3)."""
+        token = domain.mint_verification_token()
+        assert len(token) == 32
+        int(token, 16)  # does not raise
+
+    def test_two_mints_never_collide_in_a_reasonable_sample(self) -> None:
+        assert len({domain.mint_verification_token() for _ in range(1000)}) == 1000
+
+    def test_the_txt_name_and_value_are_what_the_probe_looks_for(self) -> None:
+        assert domain.verification_txt_name("merchant.com") == "_opsgrids-challenge.merchant.com"
+        assert domain.verification_txt_value("abc123") == "opsgrids-domain-verification=abc123"
+
+
+class TestTheUnverifiedBackoff:
+    """ADR-0012 §6: 60s for 15 minutes, then 5 minutes, then 30 minutes, then hourly, until the
+    14-day expiry."""
+
+    def test_the_first_fifteen_minutes_are_checked_every_sixty_seconds(self) -> None:
+        assert domain.unverified_check_interval(dt.timedelta(0)) == dt.timedelta(seconds=60)
+        assert domain.unverified_check_interval(
+            dt.timedelta(minutes=14, seconds=59)
+        ) == dt.timedelta(seconds=60)
+
+    def test_the_next_stage_is_five_minutes(self) -> None:
+        assert domain.unverified_check_interval(dt.timedelta(minutes=15)) == dt.timedelta(minutes=5)
+        assert domain.unverified_check_interval(dt.timedelta(minutes=45)) == dt.timedelta(minutes=5)
+
+    def test_the_next_stage_is_thirty_minutes(self) -> None:
+        assert domain.unverified_check_interval(dt.timedelta(hours=1, minutes=15)) == dt.timedelta(
+            minutes=30
+        )
+
+    def test_it_settles_at_hourly_and_stays_there(self) -> None:
+        assert domain.unverified_check_interval(dt.timedelta(hours=26)) == dt.timedelta(hours=1)
+        assert domain.unverified_check_interval(dt.timedelta(days=13, hours=23)) == dt.timedelta(
+            hours=1
+        )
+
+    @given(
+        st.floats(min_value=0, max_value=domain.CLAIM_EXPIRY.total_seconds() * 2, allow_nan=False)
+    )
+    def test_the_schedule_never_gets_shorter_as_time_passes(self, later_offset: float) -> None:
+        """A property, not a table of examples: for any two elapsed durations where the second
+        is later than the first, the interval the later one gets is never shorter — "the
+        schedule only ever relaxes", the sentence the docstring promises rather than merely
+        asserts."""
+        earlier = dt.timedelta(seconds=0)
+        later = earlier + dt.timedelta(seconds=later_offset)
+        assert domain.unverified_check_interval(later) >= domain.unverified_check_interval(earlier)
+
+
+class TestClaimExpiry:
+    def test_a_claim_expires_fourteen_days_after_its_token_was_issued(self) -> None:
+        issued = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
+        assert domain.claim_expires_at(issued) == dt.datetime(2026, 1, 15, tzinfo=dt.UTC)
+
+    def test_expiry_is_a_closed_boundary(self) -> None:
+        expires = dt.datetime(2026, 1, 15, tzinfo=dt.UTC)
+        assert domain.is_claim_expired(expires, now=expires) is True
+        assert domain.is_claim_expired(expires, now=expires - dt.timedelta(seconds=1)) is False
+
+
+class TestPromotionFromUnverified:
+    def test_a_successful_ownership_check_promotes_to_verified(self) -> None:
+        assert domain.promote_from_unverified(ownership_ok=True) == "verified"
+
+    def test_a_failed_one_leaves_it_unverified(self) -> None:
+        assert domain.promote_from_unverified(ownership_ok=False) == "unverified"
+
+
+class TestAdvanceVerifiedOrLater:
+    """ADR-0012 §6, §7. `store_published=False` is the manual kill switch and is checked before
+    anything else; every other failure gets the seven-day tolerance."""
+
+    def test_all_three_probes_ok_reaches_live_and_resets_the_counter(self) -> None:
+        result = domain.advance_verified_or_later(
+            store_published=True,
+            ownership_ok=True,
+            routing_ok=True,
+            certificate_ok=True,
+            consecutive_failures=5,
+        )
+        assert result.status == "live"
+        assert result.consecutive_failures == 0
+
+    @pytest.mark.parametrize(
+        ("ownership_ok", "routing_ok", "certificate_ok"),
+        [(False, True, True), (True, False, True), (True, True, False)],
+    )
+    def test_any_single_probe_failing_is_failing_not_suspended(
+        self, ownership_ok: bool, routing_ok: bool, certificate_ok: bool
+    ) -> None:
+        result = domain.advance_verified_or_later(
+            store_published=True,
+            ownership_ok=ownership_ok,
+            routing_ok=routing_ok,
+            certificate_ok=certificate_ok,
+            consecutive_failures=0,
+        )
+        assert result.status == "failing"
+        assert result.consecutive_failures == 1
+
+    def test_the_seventh_consecutive_failure_suspends(self) -> None:
+        result = domain.advance_verified_or_later(
+            store_published=True,
+            ownership_ok=False,
+            routing_ok=True,
+            certificate_ok=True,
+            consecutive_failures=domain.SUSPEND_AFTER_CONSECUTIVE_FAILURES - 1,
+        )
+        assert result.status == "suspended"
+        assert result.consecutive_failures == domain.SUSPEND_AFTER_CONSECUTIVE_FAILURES
+
+    def test_the_sixth_consecutive_failure_is_still_only_failing(self) -> None:
+        """Generous on purpose (ADR-0012 §6): a DNS provider's bad day must not take a
+        merchant's shop off the air before the seventh day."""
+        result = domain.advance_verified_or_later(
+            store_published=True,
+            ownership_ok=False,
+            routing_ok=True,
+            certificate_ok=True,
+            consecutive_failures=domain.SUSPEND_AFTER_CONSECUTIVE_FAILURES - 2,
+        )
+        assert result.status == "failing"
+
+    def test_an_unpublished_store_suspends_immediately_regardless_of_the_failure_count(
+        self,
+    ) -> None:
+        """ADR-0011's `unpublish` is the manual kill switch (ADR-0012 §7) — a merchant who
+        switched their own shop off must not wait seven days for the domain to follow it."""
+        result = domain.advance_verified_or_later(
+            store_published=False,
+            ownership_ok=True,
+            routing_ok=True,
+            certificate_ok=True,
+            consecutive_failures=0,
+        )
+        assert result.status == "suspended"
+
+    def test_recovery_resets_the_counter_rather_than_carrying_it_forward(self) -> None:
+        """A domain that failed for six days and then answers cleanly is not one failure away
+        from suspension the next time something hiccups."""
+        result = domain.advance_verified_or_later(
+            store_published=True,
+            ownership_ok=True,
+            routing_ok=True,
+            certificate_ok=True,
+            consecutive_failures=6,
+        )
+        assert result.consecutive_failures == 0
+
+
+class TestAuditActionForTransition:
+    def test_no_change_is_not_audited(self) -> None:
+        assert domain.audit_action_for_transition("live", "live") is None
+
+    @pytest.mark.parametrize(
+        ("new_status", "action"),
+        [
+            ("verified", "storefront.domain.verified"),
+            ("live", "storefront.domain.activated"),
+            ("failing", "storefront.domain.failing"),
+            ("suspended", "storefront.domain.suspended"),
+        ],
+    )
+    def test_every_reachable_transition_has_a_named_action(
+        self, new_status: str, action: str
+    ) -> None:
+        assert domain.audit_action_for_transition("unverified", new_status) == action
+
+    def test_unverified_has_no_action_of_its_own(self) -> None:
+        """The claim itself is audited as `storefront.domain.claimed` when it is written, not
+        as a transition into a state that existed before anything did."""
+        assert domain.audit_action_for_transition("live", "unverified") is None
