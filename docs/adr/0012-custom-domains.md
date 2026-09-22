@@ -1532,6 +1532,24 @@ stated for the record: **no merchant custom domain can reach `verified` on this 
 slice 1 as deployed delivers the platform subdomain only. That is the next slice, and it is the
 one this ADR was written for.
 
+*Resolved, 2026-09-22.* `app/cron.py` exists: `custom_domain_claims` (one migration, one
+index, RLS the same shape as every other table in the schema), `app/domain.py`'s pure state
+machine and backoff cadence, the three probes behind a `Protocol` in `app/probes.py` (real
+implementations on `dnspython` and a raw `ssl.SSLContext`, a fake for tests), and
+`PUT/GET/DELETE /storefront/store/domain` plus `POST .../domain/check`, each with a
+negative-authz test, on the existing `store.settings.*` permissions. The sweep discovers
+organizations on `opsgrids_storefront_directory` — the same BYPASSRLS reader `tls-authorize`
+and the buyer's bootstrap already use, no new grant — and advances each under
+`session_scope`, one transaction per tenant, with a system actor on every audited transition.
+`storefront-cron` now runs under the `storefront` compose profile rather than its own `sweep`
+profile: a box that sells the storefront product always needs the sweep, and one that does not
+never needs a cron container with nothing to check. The known gap this leaves: `StorePut`'s
+older `custom_domain` field (ADR-0011) still writes `storefronts.custom_domain` directly and
+creates no claim row, so a domain set that way sits at `unverified` with no token until the
+merchant reaches the new route — deliberately left as-is; the front end is expected to retire
+that field from the settings form rather than this service silently redirecting one write path
+into the other.
+
 **16. The Caddyfile had never been through `caddy validate` (§17).** It has now, on
 `caddy:2.10.0-alpine`: valid, with two warnings — an unnecessary `header_up X-Forwarded-Host`
 (removed) and `caddy fmt` formatting (applied).
