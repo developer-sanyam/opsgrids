@@ -32,6 +32,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+import idna
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -457,6 +458,7 @@ async def switch_organization(
     `sid`. That is what makes a single back-channel logout end all of it.
     """
     auth_session = await _live_session(session, session_id, user_id)
+    _assert_organization_unpinned_or_matches(auth_session, organization_id)
     user = await directory.get(user_id)
     if user is None:
         raise UnauthorizedProblem(INVALID)
@@ -541,6 +543,20 @@ async def rotate_refresh(
         raise UnauthorizedProblem("That session is no longer valid.")
 
     org_id = stored.organization_id or auth_session.active_org_id
+    pinned = _federated_organization_pin(auth_session)
+    if pinned is not None and org_id is not None and pinned != org_id:
+        # Defence in depth: `switch_organization` is the path that would normally let this
+        # diverge, and it already refuses to move a federated session anywhere but its own
+        # pin. Reaching here means something else changed `active_org_id`, or minted a refresh
+        # token for the wrong organization — treated the same as a stolen token, since a
+        # refresh that could cross into an organization the identity provider never vouched
+        # for is exactly the takeover this pin exists to close.
+        await _revoke_family(session, stored.family, reason="sso_pin_violation")
+        log.warning(
+            "auth.refresh_pin_violation", session_id=str(auth_session.id), family=stored.family
+        )
+        await session.commit()
+        raise UnauthorizedProblem("That session has expired. Please sign in again.")
     membership = user.membership_for(org_id) if org_id else None
     if membership is None:
         # They were removed from the organization while signed in. Ending the session is
@@ -630,6 +646,47 @@ async def _live_session(
     if row.expires_at <= datetime.now(UTC):
         raise UnauthorizedProblem("That session has expired. Please sign in again.")
     return row
+
+
+def _federated_organization_pin(auth_session: Session) -> uuid.UUID | None:
+    """The one organization a federated session may ever act for, or `None` for a password
+    session, which may move between every organization the person belongs to.
+
+    `auth_session.idp` carries `"oidc:<organization_id>"` (`sso_callback`, below) the moment a
+    sign-in was asserted by an external identity provider **for that organization's own
+    verified domain**. That assertion proves nothing about any *other* organization the same
+    person happens to belong to — the provider that vouched for them in organization A never
+    proved anything about organization B — so a session minted that way must not be movable to
+    B on the strength of a token minted for A. `saml:` is recognised for the same reason,
+    ahead of SAML itself shipping (docs/backlog.md): the prefix is deliberately future-proof.
+    """
+    prefix, sep, rest = auth_session.idp.partition(":")
+    if not sep or prefix not in ("oidc", "saml"):
+        return None
+    try:
+        return uuid.UUID(rest)
+    except ValueError:
+        return None
+
+
+def _assert_organization_unpinned_or_matches(
+    auth_session: Session, organization_id: uuid.UUID
+) -> None:
+    """Refuse `switch_organization`/`rotate_refresh` from moving a federated session to any
+    organization other than the one it was asserted for. See `_federated_organization_pin`.
+
+    A fresh primary sign-in is the only way into a different organization from here — this
+    never tells the caller which organization it is pinned to, or that pinning is even why it
+    was refused, for the same reason `switch_organization`'s own membership check does not say
+    "no such organization": the answer must not double as an oracle for what a session can
+    reach.
+    """
+    pinned = _federated_organization_pin(auth_session)
+    if pinned is not None and pinned != organization_id:
+        raise ForbiddenProblem(
+            "This session was started through single sign-on and is bound to one "
+            "organization. Sign in again to reach a different one."
+        )
 
 
 def _decode_pre_auth(
@@ -1213,6 +1270,29 @@ def domain_of(email: str) -> str:
     return domain if sep else ""
 
 
+def normalise_sso_domain(raw: str) -> str:
+    """Lower-cased, every trailing dot stripped, IDNA/UTS-46 A-label — the same normalisation
+    account-service applies to a domain it claims (`services/account/app/domain.py`), so a
+    Unicode email domain and the ASCII form account-service verified and stored compare equal
+    no matter which side of the request it arrives on: `sso_start`'s own target, the value
+    handed to `directory.resolve_domain`, and the domain half of the ID token's `email` in
+    `sso_callback` all go through this one function.
+
+    Never raises: a string that fails to encode is returned lower-cased and de-dotted exactly
+    as given rather than blown up here, so the failure surfaces a moment later as an honest
+    "not configured" / "no access" refusal instead of a 500 on a request nobody can retry their
+    way out of.
+    """
+    value = raw.strip().lower().rstrip(".")
+    if not value:
+        return ""
+    try:
+        encoded = idna.encode(value, uts46=True).decode("ascii")
+    except (idna.IDNAError, UnicodeError):
+        return value
+    return encoded.rstrip(".")
+
+
 async def _config_for_domain(
     session: AsyncSession, organization_id: uuid.UUID, domain: str
 ) -> OrgIdpConfig | None:
@@ -1287,7 +1367,7 @@ async def sso_start(
     domain answering differently from an unknown one turns this endpoint into a map of which
     customers exist and which are mid-onboarding.
     """
-    target = (domain or (domain_of(email) if email else "")).strip().lower()
+    target = normalise_sso_domain(domain or (domain_of(email) if email else ""))
     refuse = oidc.SsoNotConfiguredProblem("Single sign-on is not set up for that address")
     if not target:
         raise refuse
@@ -1387,9 +1467,14 @@ async def sso_callback(
     3. **Exchange the code** with the PKCE verifier that never left this service.
     4. **Verify the ID token** — signature against the provider's JWKS, issuer, audience,
        expiry, nonce, and a *verified* email.
-    5. **Map to a member.** An address the directory does not know, or knows without an
+    5. **The asserted email's domain must be the domain this flow proved, re-resolved as
+       still verified to this organization.** An ID token that is otherwise entirely valid
+       but asserts an address at some *other* domain is refused here — a provider proving
+       ownership of one domain is not a provider anyone should trust to vouch for identities
+       at any other. See the check's own comment for the takeover this closes.
+    6. **Map to a member.** An address the directory does not know, or knows without an
        active membership in this organization, is refused with one message either way.
-    6. **Mint through `issue_for`**, the same call sign-in, org selection, org switching and
+    7. **Mint through `issue_for`**, the same call sign-in, org selection, org switching and
        refresh all use.
     """
     pending = await store.consume(state)
@@ -1449,6 +1534,47 @@ async def sso_callback(
     no_access = oidc.SsoNoAccessProblem(
         "That account cannot sign in to this organization. Ask an administrator to invite it."
     )
+
+    # **The identity provider's own email must belong to the domain this flow proved, not
+    # merely to some domain or other.** `verify_id_token` already refuses an email the
+    # provider itself does not claim is verified — but "verified by the provider" says
+    # nothing about *which* domain the provider is trusted for. Without this check, an
+    # organization that configures its own OIDC provider for a domain it controls (proving
+    # ownership honestly) can then have that same provider assert *any* address — including
+    # one belonging to a real user who is a member of this organization through a completely
+    # different, unrelated domain — and mint a session as that person. Requiring the
+    # asserted email's domain to equal `pending.domain` closes it: the provider can only ever
+    # vouch for identities under the one domain this organization actually proved.
+    identity_domain = normalise_sso_domain(domain_of(identity.email))
+    if identity_domain != pending.domain:
+        log.warning(
+            "sso.callback_refused",
+            reason="email_domain_mismatch",
+            organization_id=str(organization_id),
+            expected_domain=pending.domain,
+        )
+        raise no_access
+
+    # **Re-resolved, not merely trusted from the redirect.** `pending.domain` was proved
+    # verified for this organization when the flow *started* — seconds, or a slow browser's
+    # worth of minutes, ago. Revoking a domain (`DELETE /domains/{id}` in account-service),
+    # or another organization winning the verification race for it in the meantime, must take
+    # effect immediately rather than after this in-flight callback still completes on stale
+    # information.
+    reresolved = await directory.resolve_domain(pending.domain)
+    if (
+        reresolved is None
+        or not reresolved.verified
+        or reresolved.organization_id != organization_id
+    ):
+        log.warning(
+            "sso.callback_refused",
+            reason="domain_no_longer_verified",
+            organization_id=str(organization_id),
+            domain=pending.domain,
+        )
+        raise no_access
+
     user = await directory.find_by_email(identity.email)
     if user is None or not user.is_active:
         # Unknown, or deactivated — one answer. `jit_provisioning` is recorded as asked-for

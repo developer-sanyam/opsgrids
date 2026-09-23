@@ -67,6 +67,24 @@ PLATFORM_DOMAIN_SUFFIXES: Final = (
     "stores.opsgrids.com",
 )
 
+#: RFC 6761 / IANA special-use names. None of these can ever resolve on the public internet by
+#: definition — `.arpa` is infrastructure, `.onion` is Tor-only, and `local`/`internal`/`test`/
+#: `example`/`invalid`/`localhost`/`home.arpa` are reserved precisely so nobody's real DNS ever
+#: answers for them. A TXT record "published" at `_opsgrids-verify.acme.internal` cannot mean
+#: anything a public resolver would ever see, so a claim on one is not a claim this platform can
+#: ever honestly verify — refused at the door rather than left to fail every check forever.
+SPECIAL_USE_SUFFIXES: Final = (
+    "local",
+    "internal",
+    "test",
+    "example",
+    "invalid",
+    "onion",
+    "localhost",
+    "home.arpa",
+    "arpa",
+)
+
 
 def is_public_suffix(host: str) -> bool:
     """Whether `host` (already an ASCII A-label) is itself a full entry on the Public Suffix
@@ -84,13 +102,26 @@ def is_public_suffix(host: str) -> bool:
     return bool(_PSL.is_public(host))
 
 
-MAX_DOMAIN_LENGTH: Final = 253
+#: 253 is the wire limit for a whole FQDN, but the domain half alone has to leave room for the
+#: label this service prepends to check it: `_opsgrids-verify.` is 17 characters, and
+#: `253 - 17 = 236`. A domain right at the old 253-character ceiling could never actually be
+#: verified — the TXT record's own name would be rejected by every resolver before DNS was
+#: ever asked — so the claim is refused up front instead of accepted and left permanently
+#: unverifiable.
+MAX_DOMAIN_LENGTH: Final = 236
+
+#: How many domains one organization may claim at once, pending or verified together. Not a
+#: security boundary — claiming costs nothing on its own — but an unbounded claim table is an
+#: unbounded row count for `due_for_recheck` to walk forever and an unbounded list for
+#: `GET /domains` to page, for an organization that has, realistically, a handful of real
+#: domains. Raised on request if a legitimate customer ever needs more; nobody has yet.
+MAX_DOMAINS_PER_ORGANIZATION: Final = 50
 
 
 def normalise_domain(raw: str) -> str:
     """A hostname stored as an ASCII A-label, or `DomainRejected`.
 
-    The steps, in order: strip whitespace, lower-case, drop a trailing root dot, IDNA/UTS-46
+    The steps, in order: strip whitespace, lower-case, strip every trailing dot, IDNA/UTS-46
     encode. **IDNA2008 with UTS-46 (via the `idna` package), not the standard library's
     IDNA2003 `encodings.idna` codec** — the same choice `services/storefront/app/domain.py`
     makes and for the same reason (`pyproject.toml`'s own comment on the dependency): UTS-46
@@ -102,30 +133,32 @@ def normalise_domain(raw: str) -> str:
 
     Refused, as a 422 naming `field: "domain"`:
 
-    * empty, or longer than 253 octets either before or after encoding;
+    * empty (including a string of nothing but dots), or longer than `MAX_DOMAIN_LENGTH`
+      octets either before or after encoding;
     * a scheme, path, port, credentials, wildcard or whitespace — the marks of a pasted URL or
       an email address rather than a bare domain;
     * a single label (`localhost`) or an all-digit last label (an IP address, or close enough
       to one that no registrar would issue it);
     * anything `idna` itself refuses: an over-long label, an empty label, a leading or trailing
       hyphen, a codepoint with no A-label;
-    * a platform domain (`PLATFORM_DOMAIN_SUFFIXES`) or a bare public suffix
-      (`is_public_suffix`, the real Public Suffix List) — nothing proves ownership of either,
-      ever.
+    * a domain that still carries a trailing dot after encoding — defensive: nothing observed
+      produces one, and a name DNS would read as absolute is refused rather than trusted;
+    * a platform domain (`PLATFORM_DOMAIN_SUFFIXES`), an RFC 6761 special-use name
+      (`SPECIAL_USE_SUFFIXES` — nothing public can ever resolve one) or a bare public suffix
+      (`is_public_suffix`, the real Public Suffix List) — nothing proves ownership of any of
+      the three, ever.
     """
     value = raw.strip()
+    if not value:
+        raise DomainRejected("domain_required", "Enter a domain to claim.")
+
+    value = value.lower().rstrip(".")
     if not value:
         raise DomainRejected("domain_required", "Enter a domain to claim.")
     if len(value) > MAX_DOMAIN_LENGTH:
         raise DomainRejected(
             "domain_too_long", f"A domain name is at most {MAX_DOMAIN_LENGTH} characters."
         )
-
-    value = value.lower()
-    if value.endswith("."):
-        value = value[:-1]  # the root dot a fully-qualified name may carry
-    if not value:
-        raise DomainRejected("domain_required", "Enter a domain to claim.")
     if any(ch in value for ch in _NOT_IN_A_DOMAIN):
         raise DomainRejected(
             "domain_invalid",
@@ -137,6 +170,8 @@ def normalise_domain(raw: str) -> str:
     except (idna.IDNAError, UnicodeError) as exc:
         raise DomainRejected("domain_invalid", "That does not look like a domain name.") from exc
 
+    if host.endswith("."):
+        raise DomainRejected("domain_invalid", "That does not look like a domain name.")
     if len(host) > MAX_DOMAIN_LENGTH:
         raise DomainRejected(
             "domain_too_long", f"A domain name is at most {MAX_DOMAIN_LENGTH} characters."
@@ -155,6 +190,12 @@ def normalise_domain(raw: str) -> str:
     if any(host == s or host.endswith(f".{s}") for s in PLATFORM_DOMAIN_SUFFIXES):
         raise DomainRejected(
             "domain_reserved", "That domain belongs to the platform and cannot be claimed."
+        )
+    if any(host == s or host.endswith(f".{s}") for s in SPECIAL_USE_SUFFIXES):
+        raise DomainRejected(
+            "domain_reserved",
+            "That is a reserved name (RFC 6761) and can never resolve publicly, so it can "
+            "never be verified.",
         )
 
     labels = host.split(".")
@@ -203,3 +244,45 @@ def claim_expires_at(claimed_at: datetime) -> datetime:
 def is_claim_expired(claimed_at: datetime, *, now: datetime | None = None) -> bool:
     """Only meaningful while unverified — a verified claim's clock is never read again."""
     return (now or datetime.now(UTC)) >= claim_expires_at(claimed_at)
+
+
+# --------------------------------------------------------------------- re-verification and demotion
+#
+# Verifying a domain once, at claim time, proves ownership *then*. It says nothing about a
+# year later — a DNS migration, an expired zone, a deliberately removed record — and until
+# this policy existed nothing here ever checked again. `services.recheck_domain` re-asks DNS
+# on a schedule (`app/cron.py`); this section is the *policy* for what a sustained run of
+# failures means, kept here, pure, so the threshold is one place to read and one place to
+# change rather than a number buried in the sweep.
+#
+# **Demotion, not silence.** A single missed check is almost always transient — a registrar
+# hiccup, a zone edit mid-flight — and revoking single sign-on for an entire organization on
+# the first one would fail far more often than it protects anything. So failures accumulate
+# (`OrgDomain.consecutive_failures`, reset to zero the moment a check passes) and only a
+# *sustained* run — both long in wall-clock time and repeated on distinct checks — clears
+# `verified_at`. Both conditions, not either: a sweep run every few minutes during an incident
+# should not demote a domain by lunchtime on failure count alone, and a domain that fails
+# once, recovers, and fails again once a month for over two weeks should not demote on
+# elapsed time alone. Demotion is recorded (`OrgDomain.demoted_at`, an audit row, and
+# `core.identity.domain.demoted`) precisely because it is consequential: the internal SSO
+# lookup (`api/internal.py`) filters on `verified_at IS NOT NULL`, so a demoted domain stops
+# routing sign-in the instant it happens, silently to the browser but never silently to the
+# organization — the event and the audit row exist so an administrator finds out. Re-earning
+# `verified_at` after a demotion is an ordinary re-claim and re-verify; nothing here does it
+# for them. See docs/adr/0017-domain-verification-lifecycle.md for the decision record and
+# infrastructure/edge/RUNBOOK.md for what an operator does when this fires.
+DEMOTION_FAILING_FOR: Final = timedelta(days=14)
+DEMOTION_MIN_CONSECUTIVE_FAILURES: Final = 3
+
+
+def should_demote(
+    *, failing_since: datetime | None, consecutive_failures: int, now: datetime | None = None
+) -> bool:
+    """Whether a verified domain has failed for long enough, and often enough, to demote."""
+    if failing_since is None:
+        return False
+    at = now or datetime.now(UTC)
+    return (
+        at - failing_since >= DEMOTION_FAILING_FOR
+        and consecutive_failures >= DEMOTION_MIN_CONSECUTIVE_FAILURES
+    )

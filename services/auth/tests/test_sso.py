@@ -46,7 +46,7 @@ from app.models import AuditLog, ExternalIdentity, OrgIdpConfig, OutboxEvent, Se
 from platform_core import pii
 from platform_core.auth import Principal, get_principal
 from platform_core.db import set_tenant
-from platform_core.errors import BusinessRuleProblem, UpstreamUnavailableProblem
+from platform_core.errors import BusinessRuleProblem, ForbiddenProblem, UpstreamUnavailableProblem
 from tests.conftest import (
     MEMBERSHIP_A,
     ORG_A,
@@ -57,6 +57,7 @@ from tests.conftest import (
     FakeEntitlements,
     FakeRedis,
     user_in_one_org,
+    user_in_two_orgs,
 )
 from tests.fake_idp import (
     AUTHORIZE,
@@ -580,6 +581,138 @@ class TestMembership:
         links = (await session.execute(select(ExternalIdentity))).scalars().all()
         await session.rollback()
         assert len(links) == 1
+
+
+class TestCrossDomainTakeover:
+    """The attack this class exists to close: an organization proves ownership of a domain it
+    genuinely controls, configures OIDC for it, and then has that same (fully self-controlled)
+    provider assert the email of a real user who belongs to the organization through some
+    *other*, unrelated domain — minting a session as that person with no action of theirs at
+    all. Every test here reproduces one step of the chain and proves it now fails there.
+    """
+
+    ATTACKER_DOMAIN = "attacker.test"
+
+    async def test_the_full_attack_chain_is_refused_at_the_domain_check(
+        self, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        """`configured` installs one OIDC provider for ORG_A with no `allowed_domains`
+        (a catch-all), so it answers for *any* domain verified to ORG_A — including one the
+        organization itself just added. `sam@example.com` is a real, existing member of
+        ORG_A, reached here through `attacker.test`, a domain that has nothing to do with
+        them. Before the fix this minted a session as Sam; now it must not.
+        """
+        directory.domains.append(_domain(self.ATTACKER_DOMAIN, ORG_A, "acme"))
+
+        redirect = await _start(
+            session, cfg, directory, store, email=None, domain=self.ATTACKER_DOMAIN
+        )
+        idp.next_id_token = idp.issue_id_token(
+            nonce=_query(redirect.authorization_url)["nonce"], email=EMAIL
+        )
+        with pytest.raises(oidc.SsoNoAccessProblem):
+            await _callback(session, cfg, pair, directory, idp, store, state=redirect.state)
+
+        # Nothing was minted: no session, no external identity link, for anyone.
+        sessions = (await session.execute(select(Session))).scalars().all()
+        links = (await session.execute(select(ExternalIdentity))).scalars().all()
+        await session.rollback()
+        assert sessions == []
+        assert links == []
+
+    async def test_a_same_domain_assertion_still_works(
+        self, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        """The control: the fix must refuse the mismatch above without breaking the ordinary
+        case of the asserted email actually belonging to the domain the flow started for."""
+        issued = await _sign_in(session, cfg, pair, directory, idp, store)
+        assert issued.access_token
+
+    async def test_a_domain_revoked_between_start_and_callback_is_refused(
+        self, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        """The re-resolve. `pending.domain` was verified when the flow *started* — a release
+        or an expiry landing before the callback returns must take effect immediately rather
+        than let an in-flight login finish on stale information."""
+        redirect = await _start(session, cfg, directory, store)
+        idp.next_id_token = idp.issue_id_token(nonce=_query(redirect.authorization_url)["nonce"])
+
+        # The domain stops being verified in the moment between the redirect and the return —
+        # released, or its own periodic re-check finally demoting it.
+        directory.domains = [d for d in directory.domains if d.domain != VERIFIED_DOMAIN]
+
+        with pytest.raises(oidc.SsoNoAccessProblem):
+            await _callback(session, cfg, pair, directory, idp, store, state=redirect.state)
+
+    async def test_a_domain_reassigned_to_another_organization_mid_flow_is_refused(
+        self, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        """The domain is re-verified elsewhere (a race won by a different organization,
+        `services/account`'s own takeover-safety mechanism) while this callback is in flight.
+        `resolved.organization_id` no longer matches the organization this state was bound to,
+        and that must refuse rather than mint a session for the organization the state named."""
+        redirect = await _start(session, cfg, directory, store)
+        idp.next_id_token = idp.issue_id_token(nonce=_query(redirect.authorization_url)["nonce"])
+
+        directory.domains = [
+            _domain(VERIFIED_DOMAIN, ORG_B, "beta") if d.domain == VERIFIED_DOMAIN else d
+            for d in directory.domains
+        ]
+
+        with pytest.raises(oidc.SsoNoAccessProblem):
+            await _callback(session, cfg, pair, directory, idp, store, state=redirect.state)
+
+
+class TestOrganizationPinning:
+    """A session minted through SSO is bound to the one organization the identity provider
+    was actually trusted for — see `_federated_organization_pin`'s own docstring for why.
+
+    The control — a password session may still move freely between every organization the
+    person belongs to — is `test_signin.py::TestOrgSwitching`, unchanged by this fix and
+    still green; not duplicated here.
+    """
+
+    async def test_switching_organizations_is_refused_after_an_sso_sign_in(
+        self, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        """Sam signed in through ORG_A's provider, for ORG_A's own verified domain. Sam is
+        also, quite legitimately, a member of ORG_B — and that membership must still not be
+        reachable from this session: the provider that vouched for Sam in ORG_A proved
+        nothing at all about ORG_B."""
+        directory.users = [user_in_two_orgs()]
+        issued = await _sign_in(session, cfg, pair, directory, idp, store)
+
+        with pytest.raises(ForbiddenProblem):
+            await services.switch_organization(
+                session,
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                entitlements=FakeEntitlements(),
+                session_id=issued.session_id,
+                user_id=USER,
+                organization_id=ORG_B,
+            )
+
+    async def test_switching_back_into_the_ssos_own_organization_still_works(
+        self, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        """The pin refuses a *different* organization — it is not a blanket refusal of
+        `switch_organization` for every federated session."""
+        directory.users = [user_in_two_orgs()]
+        issued = await _sign_in(session, cfg, pair, directory, idp, store)
+
+        second = await services.switch_organization(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            entitlements=FakeEntitlements(),
+            session_id=issued.session_id,
+            user_id=USER,
+            organization_id=ORG_A,
+        )
+        assert second.organization_id == ORG_A
 
 
 # --------------------------------------------------------------------- what comes out

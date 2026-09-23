@@ -28,13 +28,19 @@ log = get_logger("account.dns_check")
 
 #: Every way a lookup ends with nothing to compare against. `NXDOMAIN` and `NoAnswer` are the
 #: ordinary "not published (yet)"; `NoNameservers` and `Timeout` are the zone's or our own
-#: network's problem. All four mean the same thing to a caller asking whether a record is live:
-#: no — never "verified", never a 500.
+#: network's problem. `dns.exception.DNSException` — dnspython's own common base for every
+#: exception the resolver can raise, including ones the three named above do not cover
+#: (`LifetimeTimeout`, a malformed response, an unreachable resolver) — is caught last and
+#: broadest, deliberately: a customer's claim must never 500 because a DNS library the
+#: verification depends on raised something this module's author did not enumerate by name.
+#: All of it means the same thing to a caller asking whether a record is live: no — never
+#: "verified", never an unhandled exception either.
 _NO_ANSWER = (
     dns.resolver.NXDOMAIN,
     dns.resolver.NoAnswer,
     dns.resolver.NoNameservers,
     dns.exception.Timeout,
+    dns.exception.DNSException,
 )
 
 

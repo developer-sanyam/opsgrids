@@ -171,9 +171,23 @@ class OrgDomain(Base):
     #: When the record was first found missing on a re-check that had previously succeeded (or
     #: on the first re-check ever, for a domain verified before the sweep existed). Cleared the
     #: moment a re-check finds the record again. A domain failing for a week reads as `now() -
-    #: failing_since`, which is the number an administrator acts on — this policy deliberately
-    #: never revokes `verified_at` on its own; see `services.py`'s re-verification section.
+    #: failing_since`, which is the number an administrator acts on. A single failure, or even
+    #: several, never revokes `verified_at` on its own — only a *sustained* run does
+    #: (`app.domain.should_demote`; see `demoted_at` below and `services.recheck_domain`).
     failing_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Consecutive failed checks — reset to zero the instant one passes, so this is never a
+    #: lifetime count. Read alongside `failing_since` by `app.domain.should_demote`: both a
+    #: long enough run in wall-clock time *and* enough distinct failed checks have to hold,
+    #: so an incident that fails one check every few minutes for an hour cannot demote a
+    #: domain on elapsed time alone, and a check that fails once a month for over two weeks
+    #: cannot demote on failure count alone.
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: Set the moment `should_demote` first returns `True` for this row, in the same
+    #: transaction that clears `verified_at`. `None` means never demoted. Kept forever once
+    #: set — even across a later re-claim and re-verify — as the historical record that this
+    #: domain's proof lapsed once; nothing reads it to decide anything, the same way
+    #: `Organization.suspended_reason` survives an unsuspension.
+    demoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         UniqueConstraint("organization_id", "domain", name="uq_org_domains_org_domain"),

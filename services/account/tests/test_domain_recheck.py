@@ -15,9 +15,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
+from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import domain as domain_module
 from app import selectors, services
 from app.config import settings
 from app.cron import DomainRecheckSweep
@@ -30,6 +32,7 @@ from platform_core.db import (
     init_directory_engine,
     session_scope,
 )
+from platform_core.internal_auth import mint_service_token
 from tests.helpers import ctx_for as _ctx_for
 from tests.test_domains import StubResolver
 
@@ -84,7 +87,7 @@ class TestRecheckDomain:
         self, session: AsyncSession, org: Organization, people: dict[str, Membership]
     ) -> None:
         ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
-        row = await _verified_domain(session, ctx, "acme.example")
+        row = await _verified_domain(session, ctx, "acme.example.com")
         resolver = StubResolverFactory(row)
 
         async with session.begin():
@@ -105,7 +108,7 @@ class TestRecheckDomain:
         people: dict[str, Membership],
     ) -> None:
         ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
-        row = await _verified_domain(session, ctx, "acme.example")
+        row = await _verified_domain(session, ctx, "acme.example.com")
         now = datetime.now(UTC)
 
         async with session.begin():
@@ -151,7 +154,7 @@ class TestRecheckDomain:
         people: dict[str, Membership],
     ) -> None:
         ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
-        row = await _verified_domain(session, ctx, "acme.example")
+        row = await _verified_domain(session, ctx, "acme.example.com")
         resolver = StubResolverFactory(row)
 
         async with session.begin():
@@ -182,6 +185,150 @@ class TestRecheckDomain:
         assert len(recovered_rows) == 1
 
 
+class TestDemotion:
+    """MAJOR2: a sustained run of failures — long in wall-clock time *and* repeated on
+    distinct checks — clears `verified_at` on its own. See `app.domain.should_demote`'s own
+    docstring for why both conditions are required."""
+
+    async def test_a_long_failing_streak_with_enough_checks_demotes(
+        self,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+    ) -> None:
+        ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
+        row = await _verified_domain(session, ctx, "acme.example.com")
+        domain_id = row.id
+
+        start = datetime.now(UTC) - timedelta(days=20)
+        for i in range(domain_module.DEMOTION_MIN_CONSECUTIVE_FAILURES):
+            async with session.begin():
+                fresh = await selectors.get_domain(session, org.id, domain_id)
+                assert fresh is not None
+                checked = await services.recheck_domain(
+                    session, fresh, resolver=StubResolver({}), now=start + timedelta(hours=i)
+                )
+        assert checked.verified_at is not None, "not demoted yet — the streak is not old enough"
+
+        # The streak is now both long enough (well past 14 days) and has enough distinct
+        # failures. One more failing check should demote.
+        async with session.begin():
+            fresh = await selectors.get_domain(session, org.id, domain_id)
+            assert fresh is not None
+            demoted = await services.recheck_domain(
+                session,
+                fresh,
+                resolver=StubResolver({}),
+                now=datetime.now(UTC),
+            )
+        assert demoted.verified_at is None
+        assert demoted.demoted_at is not None
+
+        async with admin_session.begin():
+            demotion_rows = (
+                (
+                    await admin_session.execute(
+                        select(AuditLog).where(
+                            AuditLog.organization_id == org.id,
+                            AuditLog.action == "domain.demoted",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(demotion_rows) == 1
+
+    async def test_a_long_streak_with_too_few_distinct_checks_does_not_demote(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        """Old in wall-clock time is not enough on its own — a domain checked only rarely,
+        failing each time, must not demote on elapsed time alone before enough distinct
+        checks have actually seen it fail."""
+        ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
+        row = await _verified_domain(session, ctx, "acme.example.com")
+        domain_id = row.id
+        long_ago = datetime.now(UTC) - timedelta(days=30)
+
+        # The first failure, a long time ago — sets `failing_since`.
+        async with session.begin():
+            fresh = await selectors.get_domain(session, org.id, domain_id)
+            assert fresh is not None
+            await services.recheck_domain(session, fresh, resolver=StubResolver({}), now=long_ago)
+
+        # A second failure, "now" — `failing_since` is 30 days old (well past the 14-day
+        # bar), but this is only the *second* distinct failed check.
+        async with session.begin():
+            fresh = await selectors.get_domain(session, org.id, domain_id)
+            assert fresh is not None
+            checked = await services.recheck_domain(
+                session, fresh, resolver=StubResolver({}), now=datetime.now(UTC)
+            )
+        assert checked.consecutive_failures < domain_module.DEMOTION_MIN_CONSECUTIVE_FAILURES
+        assert checked.verified_at is not None
+
+    async def test_frequent_failures_over_too_short_a_span_do_not_demote(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        """Many failures is not enough on its own either — an incident that fails every check
+        for an hour must not demote a domain by lunchtime on failure count alone."""
+        ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
+        row = await _verified_domain(session, ctx, "acme.example.com")
+        domain_id = row.id
+        start = datetime.now(UTC)
+
+        for i in range(domain_module.DEMOTION_MIN_CONSECUTIVE_FAILURES + 5):
+            async with session.begin():
+                fresh = await selectors.get_domain(session, org.id, domain_id)
+                assert fresh is not None
+                checked = await services.recheck_domain(
+                    session, fresh, resolver=StubResolver({}), now=start + timedelta(minutes=i)
+                )
+        assert checked.consecutive_failures >= domain_module.DEMOTION_MIN_CONSECUTIVE_FAILURES
+        assert checked.verified_at is not None, (
+            "too recent a streak to demote, however many failures"
+        )
+
+    async def test_a_demoted_domain_is_no_longer_returned_by_the_internal_sso_lookup(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+    ) -> None:
+        """The whole point: `api/internal.py`'s `verified_at IS NOT NULL` filter means a
+        demoted domain stops routing sign-in the instant this commits."""
+        ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
+        row = await _verified_domain(session, ctx, "acme.example.com")
+        domain_id = row.id
+        start = datetime.now(UTC) - timedelta(days=20)
+
+        # Enough distinct failures, shortly after `start`, to clear the count bar...
+        for i in range(domain_module.DEMOTION_MIN_CONSECUTIVE_FAILURES - 1):
+            async with session.begin():
+                fresh = await selectors.get_domain(session, org.id, domain_id)
+                assert fresh is not None
+                await services.recheck_domain(
+                    session, fresh, resolver=StubResolver({}), now=start + timedelta(hours=i)
+                )
+        # ...and one more, now — 20 days after the first, clearing the elapsed-time bar too.
+        async with session.begin():
+            fresh = await selectors.get_domain(session, org.id, domain_id)
+            assert fresh is not None
+            await services.recheck_domain(
+                session, fresh, resolver=StubResolver({}), now=datetime.now(UTC)
+            )
+
+        internal_headers = {
+            "X-Internal-Token": mint_service_token(settings(), audience="account", caller="tests")
+        }
+        looked_up = await client.get(
+            "/internal/v1/domains/acme.example.com", headers=internal_headers
+        )
+        assert looked_up.status_code == 404
+
+
 class TestDomainRecheckSweep:
     @pytest.fixture
     def sweep(self, directory_engine: None) -> DomainRecheckSweep:
@@ -200,9 +347,9 @@ class TestDomainRecheckSweep:
         people: dict[str, Membership],
     ) -> None:
         ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
-        verified = await _verified_domain(session, ctx, "verified.example")
+        verified = await _verified_domain(session, ctx, "verified.example.com")
         async with session.begin():
-            await services.claim_domain(session, ctx, DomainIn(domain="pending.example"))
+            await services.claim_domain(session, ctx, DomainIn(domain="pending.example.com"))
         # Already checked recently — not due again inside the 60s interval.
         async with session.begin():
             fresh = await selectors.get_domain(session, org.id, verified.id)
@@ -221,7 +368,7 @@ class TestDomainRecheckSweep:
         people: dict[str, Membership],
     ) -> None:
         ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
-        row = await _verified_domain(session, ctx, "verified.example")
+        row = await _verified_domain(session, ctx, "verified.example.com")
 
         # The sweep's own `_recheck_one` never takes a resolver — it always asks
         # `dns_check`'s own default. Patched here so this test never opens a socket, the same
@@ -260,8 +407,8 @@ class TestDomainRecheckSweep:
         """A resolver that raises for one host must not stop the tick from advancing the
         others — the poisoned-step guard."""
         ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
-        broken = await _verified_domain(session, ctx, "broken.example")
-        healthy = await _verified_domain(session, ctx, "healthy.example")
+        broken = await _verified_domain(session, ctx, "broken.example.com")
+        healthy = await _verified_domain(session, ctx, "healthy.example.com")
 
         class _ExplodingResolver:
             async def resolve(self, host: str, rtype: str) -> list[str]:
@@ -301,6 +448,14 @@ class TestDomainRecheckSweep:
             assert healthy_row.last_checked_at is not None
             broken_row = await selectors.get_domain(admin_session, org.id, broken.id)
             assert broken_row is not None
-            # Untouched: the exception happened before any write in that domain's own
-            # transaction, so nothing about it should have changed.
-            assert broken_row.last_checked_at is None
+            # The domain whose own check raised is *not* left untouched: `_record_check_error`
+            # bumps `last_checked_at`/`consecutive_failures` in a fresh transaction precisely
+            # so this domain rotates out of "due" instead of being retried, and failing, every
+            # single tick forever. Its own DNS-answer-driven fields (`failing_since`, an audit
+            # row, an event) are untouched — this path never had a real answer to record one
+            # from.
+            assert broken_row.last_checked_at is not None
+            assert broken_row.last_check_ok is False
+            assert broken_row.consecutive_failures == 1
+            assert broken_row.failing_since is None
+            assert broken_row.verified_at is not None

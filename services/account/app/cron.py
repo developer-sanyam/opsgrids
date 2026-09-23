@@ -41,10 +41,12 @@ from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import selectors, services
 from app.config import settings
+from app.models import OrgDomain
 from platform_core.db import (
     assert_app_role,
     dispose_directory_engine,
@@ -152,6 +154,14 @@ class DomainRecheckSweep:
                 domain_id=str(domain_id),
             )
             report.failed += 1
+            # The transaction above rolled back with the exception, so this domain's own
+            # `last_checked_at` never moved — it would look exactly as due next tick as it
+            # does right now, and a bug that reliably raises for one specific domain (a bad
+            # character in its own stored value, say) would retry that same domain every
+            # single tick forever, forever failing, forever first in line. Recorded here, in
+            # a fresh transaction of its own (the one above is already gone), so a domain that
+            # cannot be checked still rotates out of "due" like any other.
+            await self._record_check_error(organization_id, domain_id, at)
             return
 
         report.checked += 1
@@ -159,6 +169,37 @@ class DomainRecheckSweep:
             report.transitioned_to_failing += 1
         elif row.last_check_ok is True and was_failing:
             report.recovered += 1
+
+    async def _record_check_error(
+        self, organization_id: uuid.UUID, domain_id: uuid.UUID, at: datetime
+    ) -> None:
+        """Bump `last_checked_at`/`consecutive_failures` for a domain whose own re-check
+        raised, in a transaction separate from the one that just rolled back.
+
+        Deliberately narrow: no `failing_since` transition, no audit row, no event, and no
+        demotion consideration here — those all belong to `services.recheck_domain`'s own,
+        already-tested handling of an actual DNS answer, and this path does not have one. All
+        this does is make sure the domain is not retried again the instant this tick ends.
+        A second failure here (the work scope itself is down) is caught and counted the same
+        way the outer call already does — this must never raise past the sweep.
+        """
+        try:
+            async with self._work_scope(organization_id) as session:
+                await session.execute(
+                    update(OrgDomain)
+                    .where(OrgDomain.id == domain_id, OrgDomain.organization_id == organization_id)
+                    .values(
+                        last_checked_at=at,
+                        last_check_ok=False,
+                        consecutive_failures=OrgDomain.consecutive_failures + 1,
+                    )
+                )
+        except Exception:
+            log.exception(
+                "account.cron.domain_recheck_error_record_failed",
+                organization_id=str(organization_id),
+                domain_id=str(domain_id),
+            )
 
 
 async def main() -> None:

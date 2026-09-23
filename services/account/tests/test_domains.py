@@ -22,6 +22,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import delete
 from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +35,7 @@ from platform_core.auth import Scope, get_principal
 from platform_core.errors import (
     BusinessRuleProblem,
     ConflictProblem,
+    NotFoundProblem,
     ValidationProblem,
 )
 from tests.helpers import ctx_for as _ctx_for
@@ -133,6 +135,51 @@ class TestNormaliseDomain:
         # A real domain registered under that same suffix is unaffected.
         assert domain_module.normalise_domain("acme.github.io") == "acme.github.io"
 
+    def test_strips_every_trailing_dot_not_just_one(self) -> None:
+        assert domain_module.normalise_domain("acme.com...") == "acme.com"
+
+    def test_a_string_of_nothing_but_dots_is_required_not_invalid(self) -> None:
+        with pytest.raises(domain_module.DomainRejected) as excinfo:
+            domain_module.normalise_domain("...")
+        assert excinfo.value.code == "domain_required"
+
+    def test_a_domain_at_the_236_character_ceiling_is_accepted(self) -> None:
+        # 236 = 253 - len("_opsgrids-verify.") — right at the ceiling the TXT host itself can
+        # still fit under DNS's 253-octet FQDN limit.
+        label = "a" * 59
+        domain = ".".join([label, label, label, "a" * 52 + ".com"])
+        assert len(domain) == domain_module.MAX_DOMAIN_LENGTH
+        assert domain_module.normalise_domain(domain) == domain
+        assert len(domain_module.verification_txt_host(domain)) <= 253
+
+    def test_a_domain_one_over_the_236_character_ceiling_is_refused(self) -> None:
+        label = "a" * 59
+        domain = ".".join([label, label, label, "a" * 53 + ".com"])
+        assert len(domain) == domain_module.MAX_DOMAIN_LENGTH + 1
+        with pytest.raises(domain_module.DomainRejected) as excinfo:
+            domain_module.normalise_domain(domain)
+        assert excinfo.value.code == "domain_too_long"
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "acme.local",
+            "acme.internal",
+            "acme.test",
+            "corp.example",
+            "acme.invalid",
+            "service.onion",
+            "printer.home.arpa",
+            "reverse.arpa",
+        ],
+    )
+    def test_rejects_rfc_6761_special_use_names(self, raw: str) -> None:
+        """None of these can ever resolve on the public internet, so a TXT record
+        "published" under one can never mean anything a real resolver would see."""
+        with pytest.raises(domain_module.DomainRejected) as excinfo:
+            domain_module.normalise_domain(raw)
+        assert excinfo.value.code in ("domain_reserved", "domain_public_suffix")
+
 
 class TestVerificationRecord:
     def test_token_is_hex_and_unique(self) -> None:
@@ -167,13 +214,13 @@ class TestClaimDomain:
             row = await services.claim_domain(
                 session,
                 ctx_for(org, people["manager"], "core.identity.domain.write"),
-                DomainIn(domain="Acme.example."),
+                DomainIn(domain="Acme.example.com."),
             )
-        assert row.domain == "acme.example"
+        assert row.domain == "acme.example.com"
         assert row.verified_at is None
         assert row.is_primary is True
         out = selectors.to_domain_out(row)
-        assert out.verification_host == "_opsgrids-verify.acme.example"
+        assert out.verification_host == "_opsgrids-verify.acme.example.com"
         assert out.verification_value == f"opsgrids-verify={row.verification_token}"
         assert out.expires_at is not None
 
@@ -184,13 +231,13 @@ class TestClaimDomain:
             await services.claim_domain(
                 session,
                 ctx_for(org, people["manager"], "core.identity.domain.write"),
-                DomainIn(domain="first.example"),
+                DomainIn(domain="first.example.com"),
             )
         async with session.begin():
             second = await services.claim_domain(
                 session,
                 ctx_for(org, people["manager"], "core.identity.domain.write"),
-                DomainIn(domain="second.example"),
+                DomainIn(domain="second.example.com"),
             )
         assert second.is_primary is False
 
@@ -198,7 +245,7 @@ class TestClaimDomain:
         self, session: AsyncSession, org: Organization, people: dict[str, Membership]
     ) -> None:
         write_ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
-        payload = DomainIn(domain="acme.example")
+        payload = DomainIn(domain="acme.example.com")
         async with session.begin():
             first = await services.claim_domain(session, write_ctx, payload)
             first_token, first_id = first.verification_token, first.id
@@ -213,7 +260,9 @@ class TestClaimDomain:
         write_ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
         resolver = StubResolver({})
         async with session.begin():
-            row = await services.claim_domain(session, write_ctx, DomainIn(domain="acme.example"))
+            row = await services.claim_domain(
+                session, write_ctx, DomainIn(domain="acme.example.com")
+            )
             resolver.answers[(domain_module.verification_txt_host(row.domain), "TXT")] = [
                 domain_module.verification_txt_value(row.verification_token)
             ]
@@ -227,7 +276,7 @@ class TestClaimDomain:
             row = await selectors.get_domain(session, org.id, row.id)
             assert row is not None
             reclaimed = await services.claim_domain(
-                session, write_ctx, DomainIn(domain="acme.example")
+                session, write_ctx, DomainIn(domain="acme.example.com")
             )
         assert reclaimed.verification_token == token_after_verify
         assert reclaimed.verified_at is not None
@@ -238,10 +287,12 @@ class TestClaimDomain:
         write_ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
         async with session.begin():
             first = await services.claim_domain(
-                session, write_ctx, DomainIn(domain="Acme.Example.")
+                session, write_ctx, DomainIn(domain="Acme.Example.com.")
             )
         async with session.begin():
-            same = await services.claim_domain(session, write_ctx, DomainIn(domain="acme.example"))
+            same = await services.claim_domain(
+                session, write_ctx, DomainIn(domain="acme.example.com")
+            )
         assert same.id == first.id, (
             "differently-cased/dotted input for the same domain must resolve to the one row"
         )
@@ -256,6 +307,40 @@ class TestClaimDomain:
                     ctx_for(org, people["manager"], "core.identity.domain.write"),
                     DomainIn(domain="sso.opsgrids.com"),
                 )
+
+    async def test_an_organization_cannot_claim_past_the_cap(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        write_ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
+        for i in range(domain_module.MAX_DOMAINS_PER_ORGANIZATION):
+            async with session.begin():
+                await services.claim_domain(
+                    session, write_ctx, DomainIn(domain=f"acme-{i}.example.com")
+                )
+
+        with pytest.raises(ValidationProblem):
+            async with session.begin():
+                await services.claim_domain(
+                    session, write_ctx, DomainIn(domain="one-too-many.example.com")
+                )
+
+    async def test_the_cap_does_not_count_re_claiming_an_existing_domain(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        """Re-claiming a domain this organization already holds must not itself be refused by
+        a cap meant to bound how many *distinct* domains an organization accumulates."""
+        write_ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
+        for i in range(domain_module.MAX_DOMAINS_PER_ORGANIZATION):
+            async with session.begin():
+                await services.claim_domain(
+                    session, write_ctx, DomainIn(domain=f"acme-{i}.example.com")
+                )
+
+        async with session.begin():
+            reclaimed = await services.claim_domain(
+                session, write_ctx, DomainIn(domain="acme-0.example.com")
+            )
+        assert reclaimed.domain == "acme-0.example.com"
 
 
 class TestTakeoverSafety:
@@ -276,7 +361,7 @@ class TestTakeoverSafety:
             owner = await services.add_member(
                 admin_session,
                 org_id=other.id,
-                email=f"owner@{slug}.example",
+                email=f"owner@{slug}.example.com",
                 full_name="Holder Owner",
                 actor_user_id=None,
                 role_codes=["ORG_OWNER"],
@@ -307,15 +392,15 @@ class TestTakeoverSafety:
         """A pending claim proves nothing, so it is never blocked by another organization's
         claim — verified or not. It just cannot ever be verified while that holds (the next
         test)."""
-        await self._claim_as_other_org(admin_session, "contested.example", verified=True)
+        await self._claim_as_other_org(admin_session, "contested.example.com", verified=True)
 
         async with session.begin():
             row = await services.claim_domain(
                 session,
                 ctx_for(org, people["manager"], "core.identity.domain.write"),
-                DomainIn(domain="contested.example"),
+                DomainIn(domain="contested.example.com"),
             )
-        assert row.domain == "contested.example"
+        assert row.domain == "contested.example.com"
         assert row.verified_at is None
 
     async def test_a_pending_claim_by_one_org_never_blocks_another(
@@ -325,13 +410,15 @@ class TestTakeoverSafety:
         org: Organization,
         people: dict[str, Membership],
     ) -> None:
-        await self._claim_as_other_org(admin_session, "pending-elsewhere.example", verified=False)
+        await self._claim_as_other_org(
+            admin_session, "pending-elsewhere.example.com", verified=False
+        )
 
         async with session.begin():
             row = await services.claim_domain(
                 session,
                 ctx_for(org, people["manager"], "core.identity.domain.write"),
-                DomainIn(domain="pending-elsewhere.example"),
+                DomainIn(domain="pending-elsewhere.example.com"),
             )
         assert row.verified_at is None
 
@@ -352,13 +439,13 @@ class TestTakeoverSafety:
         # runs in a sync callback). Plain values sidestep it entirely.
         org_id = org.id
         holder = await self._claim_as_other_org(
-            admin_session, "quiet-conflict.example", verified=True
+            admin_session, "quiet-conflict.example.com", verified=True
         )
 
         write_ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
         async with session.begin():
             mine = await services.claim_domain(
-                session, write_ctx, DomainIn(domain="quiet-conflict.example")
+                session, write_ctx, DomainIn(domain="quiet-conflict.example.com")
             )
         mine_id = mine.id
         resolver = StubResolver(
@@ -397,7 +484,7 @@ class TestTakeoverSafety:
         from platform_core.db import TENANT_GUC
 
         other, owner = await self._other_org(admin_session, name="Racer Inc", slug="racer")
-        domain = "race.example"
+        domain = "race.example.com"
 
         a_ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
         b_ctx = ctx_for(other, owner, "core.identity.domain.write")
@@ -468,7 +555,7 @@ class TestVerifyDomain:
         self, session: AsyncSession, org: Organization, people: dict[str, Membership]
     ) -> None:
         ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
-        row = await self._claim(session, ctx, "acme.example")
+        row = await self._claim(session, ctx, "acme.example.com")
         resolver = StubResolver(
             {
                 (domain_module.verification_txt_host(row.domain), "TXT"): [
@@ -486,7 +573,7 @@ class TestVerifyDomain:
         self, session: AsyncSession, org: Organization, people: dict[str, Membership]
     ) -> None:
         ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
-        row = await self._claim(session, ctx, "acme.example")
+        row = await self._claim(session, ctx, "acme.example.com")
         with pytest.raises(BusinessRuleProblem, match="No matching TXT record"):
             async with session.begin():
                 row = await selectors.get_domain(session, org.id, row.id)
@@ -497,7 +584,7 @@ class TestVerifyDomain:
         self, session: AsyncSession, org: Organization, people: dict[str, Membership]
     ) -> None:
         ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
-        row = await self._claim(session, ctx, "acme.example")
+        row = await self._claim(session, ctx, "acme.example.com")
         resolver = StubResolver(
             {
                 (domain_module.verification_txt_host(row.domain), "TXT"): [
@@ -524,7 +611,7 @@ class TestVerifyDomain:
         self, session: AsyncSession, org: Organization, people: dict[str, Membership]
     ) -> None:
         ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
-        row = await self._claim(session, ctx, "acme.example")
+        row = await self._claim(session, ctx, "acme.example.com")
         async with session.begin():
             row = await selectors.get_domain(session, org.id, row.id)
             assert row is not None
@@ -542,6 +629,74 @@ class TestVerifyDomain:
                 )
                 await services.verify_domain(session, ctx, row, resolver=resolver)
 
+    async def test_verify_refuses_when_a_concurrent_reclaim_rotated_the_token(
+        self,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+    ) -> None:
+        """The conditional `UPDATE`'s own `verification_token` guard (MINOR5): a DNS answer
+        checked against the token this `row` was read with must not silently verify a *new*
+        token a concurrent re-claim already rotated in, even though the domain and the
+        organization are both still exactly right."""
+        ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
+        row = await self._claim(session, ctx, "acme.example.com")
+        stale_token = row.verification_token
+        # Captured before the transaction that raises below rolls back the shared `session`
+        # fixture and expires every attribute on every ORM object bound to it, `org` included
+        # — see `test_verifying_after_another_org_already_verified_is_a_generic_409`'s own
+        # comment for why a plain value sidesteps it.
+        org_id, domain_id = org.id, row.id
+
+        # A concurrent re-claim, for real, on a separate connection — rotates the token in
+        # the database while this test's own `row` object still remembers the old one.
+        async with admin_session.begin():
+            await services.claim_domain(
+                session=admin_session, ctx=ctx, payload=DomainIn(domain="acme.example.com")
+            )
+
+        resolver = StubResolver(
+            {
+                (domain_module.verification_txt_host(row.domain), "TXT"): [
+                    domain_module.verification_txt_value(stale_token)
+                ]
+            }
+        )
+        with pytest.raises(ConflictProblem):
+            async with session.begin():
+                await services.verify_domain(session, ctx, row, resolver=resolver)
+
+        admin_session.expire_all()
+        async with admin_session.begin():
+            fresh = await selectors.get_domain(admin_session, org_id, domain_id)
+            assert fresh is not None
+            assert fresh.verified_at is None
+            assert fresh.verification_token != stale_token
+
+    async def test_verify_answers_not_found_when_the_domain_is_gone(
+        self,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+    ) -> None:
+        ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
+        row = await self._claim(session, ctx, "acme.example.com")
+        resolver = StubResolver(
+            {
+                (domain_module.verification_txt_host(row.domain), "TXT"): [
+                    domain_module.verification_txt_value(row.verification_token)
+                ]
+            }
+        )
+        async with admin_session.begin():
+            await admin_session.execute(delete(OrgDomain).where(OrgDomain.id == row.id))
+
+        with pytest.raises(NotFoundProblem):
+            async with session.begin():
+                await services.verify_domain(session, ctx, row, resolver=resolver)
+
 
 class TestReleaseDomain:
     async def test_release_deletes_the_row(
@@ -549,7 +704,7 @@ class TestReleaseDomain:
     ) -> None:
         ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
         async with session.begin():
-            row = await services.claim_domain(session, ctx, DomainIn(domain="acme.example"))
+            row = await services.claim_domain(session, ctx, DomainIn(domain="acme.example.com"))
             domain_id = row.id
         async with session.begin():
             row = await selectors.get_domain(session, org.id, domain_id)
@@ -576,7 +731,7 @@ class TestDomainRoutesAuthz:
     ) -> None:
         principal = principal_for(org.id, people["manager"], ["core.identity.domain.read:ORG"])
         async with _AsPrincipal(principal):
-            response = await client.post("/api/v1/domains", json={"domain": "acme.example"})
+            response = await client.post("/api/v1/domains", json={"domain": "acme.example.com"})
         assert response.status_code == 403
 
     async def test_verify_requires_the_write_permission(
@@ -588,7 +743,9 @@ class TestDomainRoutesAuthz:
     ) -> None:
         write_ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
         async with session.begin():
-            row = await services.claim_domain(session, write_ctx, DomainIn(domain="acme.example"))
+            row = await services.claim_domain(
+                session, write_ctx, DomainIn(domain="acme.example.com")
+            )
             domain_id = row.id
 
         principal = principal_for(org.id, people["manager"], ["core.identity.domain.read:ORG"])
@@ -605,7 +762,9 @@ class TestDomainRoutesAuthz:
     ) -> None:
         write_ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
         async with session.begin():
-            row = await services.claim_domain(session, write_ctx, DomainIn(domain="acme.example"))
+            row = await services.claim_domain(
+                session, write_ctx, DomainIn(domain="acme.example.com")
+            )
             domain_id = row.id
 
         principal = principal_for(org.id, people["manager"], [])
@@ -620,7 +779,7 @@ class TestDomainRoutesAuthz:
         "own domain" reading, so every scope narrower than ORG is refused."""
         principal = principal_for(org.id, people["report"], ["core.identity.domain.write:OWN"])
         async with _AsPrincipal(principal):
-            response = await client.post("/api/v1/domains", json={"domain": "acme.example"})
+            response = await client.post("/api/v1/domains", json={"domain": "acme.example.com"})
         assert response.status_code == 403
 
 
@@ -636,12 +795,12 @@ class TestDomainRoutesHTTP:
         self, client: AsyncClient, org: Organization, people: dict[str, Membership]
     ) -> None:
         async with _AsPrincipal(await self._writer(org, people)):
-            created = await client.post("/api/v1/domains", json={"domain": "Acme.Example."})
+            created = await client.post("/api/v1/domains", json={"domain": "Acme.Example.com."})
             assert created.status_code == 201, created.text
             body = created.json()
-            assert body["domain"] == "acme.example"
+            assert body["domain"] == "acme.example.com"
             assert body["verified_at"] is None
-            assert body["verification_host"] == "_opsgrids-verify.acme.example"
+            assert body["verification_host"] == "_opsgrids-verify.acme.example.com"
 
             listed = await client.get("/api/v1/domains")
             assert listed.status_code == 200
@@ -649,14 +808,14 @@ class TestDomainRoutesHTTP:
 
             fetched = await client.get(f"/api/v1/domains/{body['id']}")
             assert fetched.status_code == 200
-            assert fetched.json()["domain"] == "acme.example"
+            assert fetched.json()["domain"] == "acme.example.com"
 
     async def test_claim_rejects_unknown_fields(
         self, client: AsyncClient, org: Organization, people: dict[str, Membership]
     ) -> None:
         async with _AsPrincipal(await self._writer(org, people)):
             response = await client.post(
-                "/api/v1/domains", json={"domain": "acme.example", "auto_join": True}
+                "/api/v1/domains", json={"domain": "acme.example.com", "auto_join": True}
             )
         assert response.status_code == 422
 
@@ -684,7 +843,7 @@ class TestDomainRoutesHTTP:
     ) -> None:
         writer = await self._writer(org, people)
         async with _AsPrincipal(writer):
-            created = await client.post("/api/v1/domains", json={"domain": "acme.example"})
+            created = await client.post("/api/v1/domains", json={"domain": "acme.example.com"})
         body = created.json()
 
         resolver = StubResolver(
@@ -708,7 +867,7 @@ class TestDomainRoutesHTTP:
     ) -> None:
         writer = await self._writer(org, people)
         async with _AsPrincipal(writer):
-            created = await client.post("/api/v1/domains", json={"domain": "acme.example"})
+            created = await client.post("/api/v1/domains", json={"domain": "acme.example.com"})
         domain_id = created.json()["id"]
 
         monkeypatch.setattr(dns_check, "_default_resolver", lambda: StubResolver({}))
@@ -733,7 +892,7 @@ class TestDomainRoutesHTTP:
 
         writer = await self._writer(org, people)
         async with _AsPrincipal(writer):
-            created = await client.post("/api/v1/domains", json={"domain": "acme.example"})
+            created = await client.post("/api/v1/domains", json={"domain": "acme.example.com"})
             domain_id = created.json()["id"]
 
             deleted = await client.delete(f"/api/v1/domains/{domain_id}")
@@ -742,5 +901,7 @@ class TestDomainRoutesHTTP:
         internal_headers = {
             "X-Internal-Token": mint_service_token(settings(), audience="account", caller="tests")
         }
-        looked_up = await client.get("/internal/v1/domains/acme.example", headers=internal_headers)
+        looked_up = await client.get(
+            "/internal/v1/domains/acme.example.com", headers=internal_headers
+        )
         assert looked_up.status_code == 404
