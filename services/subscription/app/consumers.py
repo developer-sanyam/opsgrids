@@ -54,6 +54,7 @@ def _outcome(payload: dict[str, Any]) -> PaymentOutcome:
         invoice_id=uuid.UUID(payload["invoice_id"]) if payload.get("invoice_id") else None,
         amount_minor=payload.get("amount_minor"),
         currency=payload.get("currency"),
+        failure_reason=(payload.get("failure_reason") or None),
     )
 
 
@@ -130,7 +131,9 @@ async def recover_on_payment_captured(envelope: dict[str, Any]) -> None:
         if raw_subscription_id:
             subscription = await selectors.get_subscription(session, uuid.UUID(raw_subscription_id))
             if subscription is not None:
-                subscription = await services.record_payment_captured(session, subscription)
+                subscription = await services.record_payment_captured(
+                    session, subscription, _outcome(payload)
+                )
                 state = subscription.state
         mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
 

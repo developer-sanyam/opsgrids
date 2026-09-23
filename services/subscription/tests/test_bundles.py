@@ -261,15 +261,21 @@ class TestChangePlan:
         assert rows[-1].event_type == "commerce.subscription.upgraded"
         assert rows[-1].payload["entitled_products"] == TRIO
 
-        # And back down: the downgrade event names the duo only.
+        # And back down: a paid downgrade waits for the next period (ADR-0005 addendum §4). The
+        # trio stays entitled until then, and the duo's members are what the roll will apply.
         async with session.begin():
             sub = await services.require_subscription(session, sub_id)
             await services.change_plan_as_operator(
                 session, catalog, FakeRegistry(), sub, _repin(org_id, duo)
             )
+        async with session.begin():
+            sub = await services.require_subscription(session, sub_id)
+        assert sub.entitled_products == TRIO
+        assert sub.pending_plan_version_id == duo.id
+        assert sub.pending_change is not None
+        assert sub.pending_change["entitled_products"] == DUO
         rows = await _outbox(admin_session, org_id)
-        assert rows[-1].event_type == "commerce.subscription.downgraded"
-        assert rows[-1].payload["entitled_products"] == DUO
+        assert rows[-1].event_type == "commerce.subscription.upgraded"
 
     async def test_a_change_plan_cannot_hop_to_another_products_version(
         self, session: AsyncSession, catalog: FakeCatalog, org_id: uuid.UUID

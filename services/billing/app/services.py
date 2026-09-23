@@ -23,6 +23,8 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -32,6 +34,7 @@ from app.models import (
     CREDIT_CONSUME,
     CREDIT_GRANT,
     CREDIT_REVERSAL,
+    INVOICE_DRAFT,
     INVOICE_FINALIZED,
     INVOICE_VOID,
     AuditLog,
@@ -142,10 +145,25 @@ async def finalize_invoice(
         )
     await session.flush()
 
+    _stage_finalized(session, invoice, line_count=len(assembled), request=request)
+    return invoice
+
+
+def _stage_finalized(
+    session: AsyncSession,
+    invoice: Invoice,
+    *,
+    line_count: int,
+    request: Request | None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """The audit row and the `commerce.invoice.finalized` event, staged in the invoice's own
+    transaction — one path for a hand-finalized invoice and a billing-run one, so payment sees
+    the same event whichever produced it."""
     record_audit(
         session,
         AuditLog,
-        organization_id=payload.organization_id,
+        organization_id=invoice.organization_id,
         actor_id=None,
         action="billing.invoice.finalized",
         entity="invoice",
@@ -154,30 +172,246 @@ async def finalize_invoice(
             "number": invoice.number,
             "currency": invoice.currency,
             "total_minor": invoice.total_minor,
-            "lines": len(assembled),
+            "lines": line_count,
+            **({"idempotency_key": invoice.idempotency_key} if invoice.idempotency_key else {}),
         },
         request=request,
     )
+    payload: dict[str, Any] = {
+        "invoice_id": str(invoice.id),
+        "organization_id": str(invoice.organization_id),
+        "subscription_id": str(invoice.subscription_id) if invoice.subscription_id else None,
+        "number": invoice.number,
+        "currency": invoice.currency,
+        "total_minor": invoice.total_minor,
+        "period_start": invoice.period_start.astimezone(UTC).isoformat(),
+        "period_end": invoice.period_end.astimezone(UTC).isoformat(),
+    }
+    if extra:
+        payload.update(extra)
     publish_event(
         session,
         OutboxEvent,
-        organization_id=payload.organization_id,
+        organization_id=invoice.organization_id,
         event_type=EVT_INVOICE_FINALIZED,
         aggregate_type="invoice",
         aggregate_id=invoice.id,
-        payload={
-            "invoice_id": str(invoice.id),
-            "organization_id": str(invoice.organization_id),
-            "subscription_id": str(invoice.subscription_id) if invoice.subscription_id else None,
-            "number": invoice.number,
-            "currency": invoice.currency,
-            "total_minor": invoice.total_minor,
-            "period_start": invoice.period_start.astimezone(UTC).isoformat(),
-            "period_end": invoice.period_end.astimezone(UTC).isoformat(),
-        },
+        payload=payload,
         actor=_ACTOR,
     )
-    return invoice
+
+
+#: How many numbers to try when a hand-finalized invoice already holds the derived one.
+_NUMBER_ATTEMPTS = 5
+
+
+async def record_subscription_invoice(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    subscription_id: uuid.UUID,
+    product_key: str,
+    currency: str,
+    key: str,
+    period: domain.Period,
+    lines: list[domain.LineDraft],
+    kind: str = "period",
+    request: Request | None = None,
+) -> tuple[Invoice, bool]:
+    """Write the billing run's invoice for one claim, as a **draft** — once. `(invoice, created)`.
+
+    A draft announces nothing: no `commerce.invoice.finalized`, so payment cannot charge it
+    (review round 2, fix M5). Subscription records the claim first and only then asks for
+    `finalize_subscription_invoice`, so a period superseded in between is a draft voided before
+    anyone could act on it. Lines are written now; the draft → finalized move freezes them.
+
+    The **record** step of claim → call → record: every price, usage count and tax rate has
+    already been read, outside any transaction, and this function only writes. The insert is
+    `ON CONFLICT DO NOTHING` against `uq_invoices_org_idempotency_key`, so the loser of two racing
+    requests for the same claim reads the winner's invoice back and stages **no** second event —
+    a second `commerce.invoice.finalized` would be a second charge.
+
+    The number is derived from the key; if a hand-finalized invoice already holds it, the next
+    suffix is used rather than failing the claim for good (review fix 12) — a number clash is not
+    a reason a period can never be invoiced.
+    """
+    currency = currency.upper()
+    try:
+        total = domain.sum_lines(lines, currency)
+    except CurrencyMismatch as exc:  # pragma: no cover - the pricer already refused it
+        raise BusinessRuleProblem(f"every line must be in {currency}: {exc}") from exc
+
+    # The number: the key's derived one, or the first suffix no invoice holds. Checked up front,
+    # not by catching the unique violation under a savepoint — the frozen-lines trigger lets
+    # lines in only under the transaction (not a subtransaction) that created the invoice. A
+    # hand-finalized invoice taking the number between this read and the insert fails this one
+    # attempt; the run retries and this read then finds the next suffix.
+    taken = await selectors.invoice_numbers_like(
+        session, organization_id, domain.subscription_invoice_number(key, period.start)
+    )
+    number = next(
+        (
+            candidate
+            for attempt in range(_NUMBER_ATTEMPTS)
+            if (candidate := domain.subscription_invoice_number(key, period.start, attempt))
+            not in taken
+        ),
+        None,
+    )
+    if number is None:
+        raise ConflictProblem("no free invoice number for this billing-run invoice")
+
+    invoice_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    stmt = (
+        pg_insert(Invoice)
+        .values(
+            id=invoice_id,
+            organization_id=organization_id,
+            subscription_id=subscription_id,
+            number=number,
+            state=INVOICE_DRAFT,
+            currency=currency,
+            total_minor=total.minor,
+            period_start=period.start,
+            period_end=period.end,
+            finalized_at=None,
+            idempotency_key=key,
+        )
+        .on_conflict_do_nothing(
+            index_elements=["organization_id", "idempotency_key"],
+            index_where=text("idempotency_key IS NOT NULL"),
+        )
+        .returning(Invoice.id)
+    )
+    inserted = (await session.execute(stmt)).scalar_one_or_none()
+    if inserted is None:
+        existing = await selectors.get_invoice_by_key(session, organization_id, key)
+        if existing is None:  # pragma: no cover - the conflict proves the row exists
+            raise ConflictProblem("invoice idempotency conflict with no visible row")
+        return existing, False
+
+    for draft in lines:
+        session.add(
+            InvoiceLine(
+                organization_id=organization_id,
+                invoice_id=invoice_id,
+                description=draft.description,
+                quantity=draft.quantity,
+                unit_price_micros=draft.unit_price_micros,
+                amount_minor=draft.amount_minor,
+                plan_version_id=draft.plan_version_id,
+            )
+        )
+    await session.flush()
+
+    invoice = await require_invoice(session, invoice_id)
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        action="billing.invoice.drafted",
+        entity="invoice",
+        entity_id=invoice.id,
+        after={
+            "number": invoice.number,
+            "total_minor": invoice.total_minor,
+            "idempotency_key": key,
+            "kind": kind,
+            "product_key": product_key,
+            "created_at": now.isoformat(),
+        },
+        request=request,
+    )
+    await session.flush()
+    return invoice, True
+
+
+async def finalize_subscription_invoice(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    key: str,
+    product_key: str | None,
+    kind: str,
+    request: Request | None = None,
+) -> tuple[Invoice, bool]:
+    """Finalize the billing run's draft under `key` — once. `(invoice, finalized_by_this_call)`.
+
+    `draft -> finalized` freezes the invoice (the freeze trigger refuses everything but a void from
+    here) and stages `commerce.invoice.finalized`, which payment charges. Idempotent: a finalized
+    invoice answers `(invoice, False)` and stages nothing, so a crash between this commit and the
+    run's record of it re-asks and changes nothing. A void invoice is refused — the run voids only
+    a period it has superseded, which it never then finalizes.
+    """
+    invoice = await selectors.get_invoice_by_key(session, organization_id, key, for_update=True)
+    if invoice is None:
+        raise NotFoundProblem("No billing-run invoice under that key")
+    if invoice.state == INVOICE_FINALIZED:
+        return invoice, False
+    if invoice.state == INVOICE_VOID:
+        raise ConflictProblem("that billing-run invoice is void and cannot be finalized")
+    invoice.state = INVOICE_FINALIZED
+    invoice.finalized_at = datetime.now(UTC)
+    await session.flush()
+    _stage_finalized(
+        session,
+        invoice,
+        line_count=len(invoice.lines),
+        request=request,
+        extra={"product_key": product_key, "source": "billing_run", "kind": kind},
+    )
+    await session.flush()
+    return invoice, True
+
+
+async def void_subscription_invoice(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    key: str,
+    reason: str,
+    request: Request | None = None,
+) -> tuple[bool, uuid.UUID | None]:
+    """Void the billing-run invoice standing under `key`, if there is one. `(voided, id)`.
+
+    For a period the subscription moved past between the run's claim and its record (review fix
+    11): the invoice must not stand. Void is the one legal post-finalize transition — a state,
+    never a delete, and it stages `commerce.invoice.voided`. Idempotent: an already void invoice
+    answers `(True, id)`; no invoice under the key answers `(False, None)`.
+    """
+    invoice = await selectors.get_invoice_by_key(session, organization_id, key, for_update=True)
+    if invoice is None:
+        return False, None
+    if invoice.state == INVOICE_VOID:
+        return True, invoice.id
+    if invoice.state == INVOICE_DRAFT:
+        # Never announced, so never charged: void it as a state, with an audit row and no event
+        # — nothing downstream ever learned it existed (review round 2, fix M5).
+        invoice.state = INVOICE_VOID
+        invoice.voided_at = datetime.now(UTC)
+        invoice.void_reason = reason
+        await session.flush()
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=organization_id,
+            actor_id=None,
+            action="billing.invoice.draft_voided",
+            entity="invoice",
+            entity_id=invoice.id,
+            after={"number": invoice.number, "reason": reason},
+            request=request,
+        )
+        return True, invoice.id
+    await void_invoice(
+        session,
+        invoice,
+        VoidInvoiceIn(organization_id=organization_id, reason=reason),
+        request=request,
+    )
+    return True, invoice.id
 
 
 async def require_invoice(session: AsyncSession, invoice_id: Any) -> Invoice:

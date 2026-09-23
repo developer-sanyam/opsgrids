@@ -13,8 +13,9 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ServiceInfo(BaseModel):
@@ -150,6 +151,123 @@ class CreditReverseIn(BaseModel):
     organization_id: uuid.UUID
     reversal_of: uuid.UUID
     reason: str = Field(min_length=1, max_length=200)
+
+
+class SubscriptionItemIn(BaseModel):
+    """One item of the subscription being billed: the catalog price it names and its quantity."""
+
+    price_id: uuid.UUID
+    quantity: int = Field(ge=0)
+
+
+#: What a billing-run invoice is for (ADR-0005 addendum and its review fixes). `period` is a
+#: trial conversion or a renewal; `proration` an upgrade's prorated difference for the rest of the
+#: current period; `close` the usage-only closing period a cancellation or suspension leaves.
+BillingRunKind = Literal["period", "proration", "close"]
+
+
+class SubscriptionInvoiceKeyIn(BaseModel):
+    """The fields a billing-run invoice's idempotency key is built from — by billing, never taken
+    from the caller as a string: `subscription:{id}:{period_start}` for a period,
+    `subscription:{id}:proration:{change_id}` for a proration, and
+    `subscription:{id}:{period_start}:close` for a closing period."""
+
+    organization_id: uuid.UUID
+    subscription_id: uuid.UUID
+    kind: BillingRunKind = "period"
+    period_start: datetime
+    change_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def _proration_names_its_change(self) -> SubscriptionInvoiceKeyIn:
+        if self.kind == "proration" and self.change_id is None:
+            raise ValueError("a proration is keyed on its change_id")
+        return self
+
+
+class BillSubscriptionPeriodIn(SubscriptionInvoiceKeyIn):
+    """Invoice one subscription claim — the billing run's request (ADR-0005 addendum).
+
+    The caller names *what* is owed for — the pin, the items, the period — and never a price or
+    an amount: billing reads the prices off the pinned catalog version itself (both versions, for
+    a proration) and the usage off metering, and computes every minor unit. Idempotent on the
+    claim's key: asking twice, or from two replicas at once, returns the one invoice.
+
+    * `period`: recurring prices in advance for `[period_start, period_end)`; usage in arrears for
+      `usage_period_*`, the period that just closed (absent after a trial — trial usage is free).
+    * `proration`: `[period_start, period_end)` is the rest of the current period from the
+      upgrade, a fraction of `[full_period_start, period_end)`; billed is the positive difference
+      between the new pin's recurring price and `from_plan_version_id`'s, prorated.
+    * `close`: usage only, for the usage window, which is the period itself.
+    """
+
+    product_key: str = Field(min_length=1, max_length=40)
+    plan_version_id: uuid.UUID
+    currency: str = Field(min_length=3, max_length=3)
+    period_end: datetime
+    usage_period_start: datetime | None = None
+    usage_period_end: datetime | None = None
+    items: list[SubscriptionItemIn] = Field(default_factory=list)
+    from_plan_version_id: uuid.UUID | None = None
+    from_items: list[SubscriptionItemIn] = Field(default_factory=list)
+    full_period_start: datetime | None = None
+
+    @model_validator(mode="after")
+    def _periods_are_ordered(self) -> BillSubscriptionPeriodIn:
+        if self.period_end <= self.period_start:
+            raise ValueError("period_end must be after period_start")
+        if (self.usage_period_start is None) != (self.usage_period_end is None):
+            raise ValueError("usage_period_start and usage_period_end come together or not at all")
+        if self.usage_period_start is not None and self.usage_period_end is not None:
+            if self.usage_period_end <= self.usage_period_start:
+                raise ValueError("usage_period_end must be after usage_period_start")
+            if self.kind == "period" and self.usage_period_end > self.period_start:
+                # Usage is billed in arrears for a period that has *closed*; a window reaching
+                # into the period being billed in advance would bill usage not yet complete.
+                raise ValueError("the usage period must close by the billed period's start")
+        if self.kind == "close" and self.usage_period_start is None:
+            raise ValueError("a closing period bills usage, so it needs its usage window")
+        if self.kind == "proration":
+            if self.from_plan_version_id is None or self.full_period_start is None:
+                raise ValueError("a proration needs from_plan_version_id and full_period_start")
+            if self.full_period_start > self.period_start:
+                raise ValueError("full_period_start must not be after the proration's start")
+        return self
+
+
+class SubscriptionInvoiceFinalizeIn(SubscriptionInvoiceKeyIn):
+    """Finalize the run's draft under a claim's key, after subscription recorded the claim."""
+
+    product_key: str | None = Field(default=None, max_length=40)
+
+
+class SubscriptionInvoiceVoidIn(SubscriptionInvoiceKeyIn):
+    """Void whatever billing-run invoice stands under a claim's key — the superseded-period fix."""
+
+    reason: str = Field(min_length=1, max_length=200)
+
+
+class SubscriptionInvoiceVoidOut(BaseModel):
+    """`voided` is true when an invoice under the key is void now (this call or an earlier one);
+    false when no invoice was ever raised under it."""
+
+    voided: bool
+    invoice_id: uuid.UUID | None = None
+
+
+class BilledPeriodOut(BaseModel):
+    """The draft invoice for one claim, and whether this call created it. `invoice` is null only
+    for a proration that nets to nothing — no zero-line invoice is ever written for one."""
+
+    created: bool
+    invoice: InvoiceOut | None = None
+
+
+class FinalizedPeriodOut(BaseModel):
+    """The claim's invoice after finalize, and whether this call finalized it."""
+
+    finalized: bool
+    invoice: InvoiceOut
 
 
 class VoidInvoiceIn(BaseModel):

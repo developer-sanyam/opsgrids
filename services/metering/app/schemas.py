@@ -71,6 +71,20 @@ class UsageLineOut(BaseModel):
     event_count: int
 
 
+class OrganizationUsageOut(BaseModel):
+    """One organization's usage over a closed period, per meter — what the billing run prices.
+
+    Summed straight off the append-only `usage_events` (never the rollup cache), so the count a
+    billing-run invoice is built on is the log's own truth for `[period_start, period_end)`.
+    Served only on the internal API, to billing.
+    """
+
+    organization_id: uuid.UUID
+    period_start: datetime
+    period_end: datetime
+    meters: list[UsageLineOut]
+
+
 class UsageSummaryOut(BaseModel):
     """A customer's usage for the current period, one line per meter."""
 

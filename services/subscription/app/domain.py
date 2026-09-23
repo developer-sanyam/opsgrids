@@ -37,6 +37,11 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from app.models import (
+    PERIOD_KIND_CLOSE,
+    PERIOD_KIND_OPENING,
+    PERIOD_KIND_PRORATION,
+    PERIOD_KIND_RENEWAL,
+    PERIOD_KIND_TRIAL_CONVERSION,
     STATE_ACTIVE,
     STATE_CANCELLED,
     STATE_PAST_DUE,
@@ -79,14 +84,48 @@ REASON_PAYMENT_FAILED = "payment_failed"
 REASON_DUNNING_EXHAUSTED = "dunning_exhausted"
 REASON_DUNNING_RECOVERED = "dunning_recovered"
 
+#: The billing run's reasons (ADR-0005 addendum, 2026-09-23). A trial that ends and is
+#: collectable converts; one that ends with nothing to debit opens a grace window instead
+#: (ADR-0013 §6) — a different reason on a different edge, so trial-conversion reporting
+#: (`trial -> active` over trial starts, ADR-0004 §4) never counts an unpaid trial as converted.
+REASON_TRIAL_CONVERT = "trial_convert"
+REASON_TRIAL_UNPAID = "trial_ended_unpaid"
+
+#: Reasons only the machinery writes. An operator's free-text reason may not borrow one: the
+#: transition stream would then say "dunning suspended this" of a person's hold (final money
+#: review). Which suspension is in force is decided by the transition's **actor**, not its reason
+#: — this keeps the stream honest for the humans who read it.
+RESERVED_REASONS = frozenset(
+    {
+        REASON_RENEW,
+        REASON_UPGRADE,
+        REASON_DOWNGRADE,
+        REASON_PAYMENT_FAILED,
+        REASON_DUNNING_EXHAUSTED,
+        REASON_DUNNING_RECOVERED,
+        REASON_TRIAL_CONVERT,
+        REASON_TRIAL_UNPAID,
+        "grace_expired",
+        "payment_captured",
+        "pre_cutover",
+    }
+)
+
 #: The legal edges. A key of `None` is birth — a subscription that does not exist yet. `cancelled`
 #: is terminal: it maps to nothing, which is what makes `cancel -> active` refused. Self-edges on
 #: `trial`/`active` are the renewals and plan changes that keep the state and move only the pin.
+#:
+#: Two edges arrived with the billing run. `trial -> past_due` is a trial that ended with no
+#: usable mandate (ADR-0013 §6): the grace window opens exactly as for a failed renewal. And
+#: `past_due -> past_due` is a renewal while a window is open — the period rolls and is invoiced,
+#: the window keeps its own schedule, and nothing about entitlement changes.
 ALLOWED: dict[str | None, frozenset[str]] = {
     None: frozenset({STATE_TRIAL, STATE_ACTIVE}),
-    STATE_TRIAL: frozenset({STATE_TRIAL, STATE_ACTIVE, STATE_SUSPENDED, STATE_CANCELLED}),
+    STATE_TRIAL: frozenset(
+        {STATE_TRIAL, STATE_ACTIVE, STATE_PAST_DUE, STATE_SUSPENDED, STATE_CANCELLED}
+    ),
     STATE_ACTIVE: frozenset({STATE_ACTIVE, STATE_PAST_DUE, STATE_SUSPENDED, STATE_CANCELLED}),
-    STATE_PAST_DUE: frozenset({STATE_ACTIVE, STATE_SUSPENDED, STATE_CANCELLED}),
+    STATE_PAST_DUE: frozenset({STATE_ACTIVE, STATE_PAST_DUE, STATE_SUSPENDED, STATE_CANCELLED}),
     STATE_SUSPENDED: frozenset({STATE_ACTIVE, STATE_CANCELLED}),
     STATE_CANCELLED: frozenset(),
 }
@@ -385,3 +424,285 @@ def retry_idempotency_key(cycle_id: object, attempt_no: int) -> str:
     cycle so it is stable under redelivery and reconstructable from the event stream.
     """
     return f"dunning:{cycle_id}:{attempt_no}"
+
+
+# ------------------------------------------------------ the billing run (ADR-0005 addendum)
+
+#: Catalog's recurring cadences. `one_time` has no period to roll and is not billed by the run.
+INTERVAL_MONTH = "month"
+INTERVAL_YEAR = "year"
+INTERVAL_ONE_TIME = "one_time"
+
+#: The period lengths this service has always used (`current_period_end` at subscribe): thirty
+#: days for a month, 365 for a year. Kept exactly, so the first period the run rolls is the same
+#: length as the one subscribe opened. Calendar-month anchoring is a separate decision.
+_PERIOD_LENGTH: dict[str, timedelta] = {
+    INTERVAL_MONTH: timedelta(days=30),
+    INTERVAL_YEAR: timedelta(days=365),
+}
+
+#: How long a claimed period is held against other replicas while its billing call is out. Long
+#: enough for a slow catalog, short enough that a crashed sweep's claim is retried the same hour.
+BILLING_LEASE = timedelta(minutes=10)
+#: Backoff after a failed attempt: 5 minutes, doubling, capped at six hours — a data defect (an
+#: item off the pin, a missing tax rate) should not be retried every pass, and a sibling outage
+#: should be retried soon after it ends.
+_BACKOFF_BASE = timedelta(minutes=5)
+_BACKOFF_CAP = timedelta(hours=6)
+
+
+def period_end(start: datetime, billing_interval: str | None) -> datetime | None:
+    """The end of the period that opens at `start`, or None for a cadence with no period."""
+    length = _PERIOD_LENGTH.get(billing_interval or "")
+    return start + length if length is not None else None
+
+
+def infer_interval(period_start: datetime | None, period_end_at: datetime | None) -> str | None:
+    """The cadence of a subscription written before it recorded one, from its period's length.
+
+    Every such row was opened by `subscribe` with exactly 30 or 365 days, so the length names the
+    interval; anything else is not a period this service opened and is not guessed at.
+    """
+    if period_start is None or period_end_at is None:
+        return None
+    length = period_end_at - period_start
+    for interval, expected in _PERIOD_LENGTH.items():
+        if length == expected:
+            return interval
+    return None
+
+
+def retry_backoff(attempts: int) -> timedelta:
+    """The wait before retrying a period that has failed `attempts` times (1-based)."""
+    exponent: int = max(0, min(attempts - 1, 12))
+    step: timedelta = _BACKOFF_BASE * (1 << exponent)
+    return step if step < _BACKOFF_CAP else _BACKOFF_CAP
+
+
+@dataclass(frozen=True)
+class DuePeriod:
+    """The period the billing run owes an invoice for, decided from stored timestamps alone.
+
+    `start`/`end` bill recurring prices in advance; `usage_start`/`usage_end` is the period that
+    has just closed, billed in arrears — None on a trial conversion, because trial usage is free.
+    """
+
+    kind: str
+    start: datetime
+    #: None when the cadence has no period (`one_time`): the period is due and cannot be priced —
+    #: the run records a permanent failure for it rather than guessing an end.
+    end: datetime | None
+    usage_start: datetime | None
+    usage_end: datetime | None
+    error: str | None = None
+
+    @property
+    def billable(self) -> bool:
+        return self.end is not None
+
+
+KIND_TRIAL_CONVERSION = PERIOD_KIND_TRIAL_CONVERSION
+KIND_RENEWAL = PERIOD_KIND_RENEWAL
+KIND_PRORATION = PERIOD_KIND_PRORATION
+KIND_CLOSE = PERIOD_KIND_CLOSE
+KIND_OPENING = PERIOD_KIND_OPENING
+
+#: A pending lifecycle claim that has failed this often is reported as permanently failing by the
+#: health probe even if each failure looked transient.
+PERMANENT_AFTER_ATTEMPTS = 5
+
+#: States whose period rolls. `suspended` rolls too — but is not invoiced (see `bills_period`).
+_ROLLING_STATES = frozenset({STATE_ACTIVE, STATE_PAST_DUE, STATE_SUSPENDED})
+
+
+class NotBillable(BusinessRuleProblem):
+    """A due subscription the run cannot price a period for — a `one_time` cadence, or a row
+    with no period at all. Recorded as a failure a person looks at, never invoiced by guess."""
+
+
+def due_period(
+    *,
+    state: str,
+    trial_ends_at: datetime | None,
+    current_period_start: datetime | None,
+    current_period_end: datetime | None,
+    billing_interval: str | None,
+    now: datetime,
+    usage_billed_through: datetime | None = None,
+) -> DuePeriod | None:
+    """What, if anything, the billing run owes this subscription at `now`.
+
+    * **A trial whose end has passed** converts: the first paid period opens *at the trial's
+      end*, not at `now` — a sweep that runs six hours late must not shift every later period by
+      six hours (the ADR-0005 rule: boundaries come from stored timestamps).
+    * **An active, past-due or suspended subscription whose period has closed** rolls: the next
+      period opens *at the old one's end*, and the closed period is the usage window — from
+      `usage_billed_through` instead of the period start when a closing period (a suspension's)
+      already billed the first part of it.
+    * **Anything else** — cancelled, a trial still running, a period still open — owes nothing.
+
+    A due period whose cadence has no period at all comes back with `end=None` and an `error`,
+    for the run to record as a failure rather than invoice by guess. One period per call: a sweep
+    that was down for three months catches up one period per pass, each with its own key.
+    """
+    interval = billing_interval or infer_interval(current_period_start, current_period_end)
+    unbillable = f"a {interval or 'unknown'} cadence has no period to bill"
+    if state == STATE_TRIAL:
+        if trial_ends_at is None or trial_ends_at > now:
+            return None
+        end = period_end(trial_ends_at, interval)
+        return DuePeriod(
+            KIND_TRIAL_CONVERSION,
+            trial_ends_at,
+            end,
+            None,
+            None,
+            None if end else unbillable,
+        )
+    if state in _ROLLING_STATES:
+        if current_period_end is None or current_period_end > now:
+            return None
+        end = period_end(current_period_end, interval)
+        usage_start = current_period_start
+        if (
+            usage_billed_through is not None
+            and usage_start is not None
+            and usage_billed_through > usage_start
+        ):
+            usage_start = usage_billed_through
+        usage_end: datetime | None = current_period_end
+        if usage_start is None or usage_start >= current_period_end:
+            usage_start, usage_end = None, None
+        return DuePeriod(
+            KIND_RENEWAL,
+            current_period_end,
+            end,
+            usage_start,
+            usage_end,
+            None if end else unbillable,
+        )
+    return None
+
+
+#: What the cutover does to a row the run is about to bill (final review, fix 3).
+CUTOVER_SKIP = "skip"
+CUTOVER_CLAMP = "clamp"
+OUTCOME_PRE_CUTOVER = "pre_cutover"
+
+
+def cutover_action(
+    *,
+    kind: str,
+    period_start: datetime,
+    usage_start: datetime | None,
+    usage_end: datetime | None,
+    not_before: datetime | None,
+) -> str | None:
+    """`skip`, `clamp` or None: how the billing cutover treats one row before it is billed.
+
+    * Recurring money — a renewal, a trial conversion, a proration, an opening — is **skipped**
+      when its period began before the cutover: an existing subscription starts paying at its
+      first period after it, and nothing billed in advance is back-charged.
+    * Usage — a closing window — is skipped when it ended by the cutover, and **clamped** to
+      start at the cutover when it straddles it: usage from before billing went live is never
+      billed, usage after it is. (A renewal's usage window is clamped where it is computed.)
+    """
+    if not_before is None:
+        return None
+    if kind == KIND_CLOSE:
+        if usage_end is not None and usage_end <= not_before:
+            return CUTOVER_SKIP
+        if usage_start is not None and usage_start < not_before:
+            return CUTOVER_CLAMP
+        return None
+    return CUTOVER_SKIP if period_start < not_before else None
+
+
+def usage_floor(
+    usage_billed_through: datetime | None, not_before: datetime | None
+) -> datetime | None:
+    """The earliest instant a renewal's usage window may start: what is already billed, and never
+    before the cutover."""
+    if not_before is None:
+        return usage_billed_through
+    if usage_billed_through is None:
+        return not_before
+    return max(usage_billed_through, not_before)
+
+
+def closing_usage_window(
+    *,
+    state: str,
+    current_period_start: datetime | None,
+    usage_billed_through: datetime | None,
+    at: datetime,
+    claimed_usage_end: datetime | None = None,
+) -> tuple[datetime, datetime] | None:
+    """The usage-only window a stop (a cancellation, a suspension) or a pin change at `at` leaves
+    unbilled, if any.
+
+    Usage bills in arrears at the next roll — which never comes for a cancelled subscription, and
+    is priced at the *new* pin after a plan change. So the event claims its own window. It starts
+    at the **latest** of what is already covered (review round 2, fix M4): the period start, where
+    the last close stopped (`usage_billed_through`), and the end of the usage window of any
+    lifecycle claim already made (`claimed_usage_end`) — a renewal claimed but not yet recorded
+    covers the previous period's usage, and billing it again here would bill it twice. Only a
+    served state has usage to bill: a trial's is free; a suspended one's was closed when it was
+    suspended.
+    """
+    if state not in (STATE_ACTIVE, STATE_PAST_DUE) or current_period_start is None:
+        return None
+    start = current_period_start
+    for floor in (usage_billed_through, claimed_usage_end):
+        if floor is not None and floor > start:
+            start = floor
+    if at <= start:
+        return None
+    return start, at
+
+
+#: A period's length in days, for comparing prices across cadences without a float.
+_INTERVAL_DAYS: dict[str, int] = {INTERVAL_MONTH: 30, INTERVAL_YEAR: 365}
+
+
+class CadenceChangeRefused(BusinessRuleProblem):
+    """A plan change to a different billing cadence, or to `one_time` (review round 2, B1).
+
+    A monthly period and a yearly one are not two prices for one thing a proration can net: the
+    periods do not line up, and pricing one against the other mis-bills one side. The path is
+    cancel and subscribe again.
+    """
+
+
+def assert_same_cadence(current: str | None, target: str | None) -> None:
+    if target == INTERVAL_ONE_TIME or target not in _INTERVAL_DAYS:
+        raise CadenceChangeRefused(
+            f"cannot change to a {target or 'unknown'} plan: cancel and subscribe to it instead"
+        )
+    if current != target:
+        raise CadenceChangeRefused(
+            f"cannot change from a {current or 'unknown'} plan to a {target} one mid-subscription:"
+            " cancel and subscribe to the new plan instead"
+        )
+
+
+def plan_change_direction(
+    new_minor: int, new_interval: str, old_minor: int, old_interval: str
+) -> int:
+    """+1 an upgrade, -1 a downgrade, 0 a change that moves no money (addendum §4, round 2 B1).
+
+    Prices are compared **per day** by cross-multiplying with each cadence's length in days —
+    `new * old_days` against `old * new_days`, integers only — so the comparison is right even
+    where the cadences differ (which the change-plan path now refuses anyway). Equal is its own
+    answer: an equal-price switch re-pins and closes usage at the old pin but raises no proration.
+    """
+    left = new_minor * _INTERVAL_DAYS[old_interval]
+    right = old_minor * _INTERVAL_DAYS[new_interval]
+    return (left > right) - (left < right)
+
+
+def bills_period(state: str) -> bool:
+    """Whether a rolling period is invoiced. A suspended subscription's period still rolls, so a
+    customer who pays in week six resumes on a current period rather than being invoiced for every
+    month they were switched off — but it is not billed for time it is not served."""
+    return state != STATE_SUSPENDED

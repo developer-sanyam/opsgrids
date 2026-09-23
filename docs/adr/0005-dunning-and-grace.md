@@ -410,3 +410,448 @@ record the mandate it used. This is covered by **R3** (mandates route and trial�
 - **Retrying against a different instrument.** The ladder retries the same mandate. Asking the
   customer for a new one mid-cycle, and retrying against that instead, is a payment-service and
   customer-experience question this ADR does not open.
+
+---
+
+## Addendum, 2026-09-23 — the billing run: trial end, recurring invoices, and plan changes
+
+**Status: Accepted 2026-09-23.** Implemented in `subscription-service` (`app/billing_run.py`, the
+`billing_periods` table, the new edges in `app/domain.py`), `billing-service`
+(`POST /internal/v1/subscription-invoices`, `app/billing_run.py`), `metering-service` (the
+internal per-period usage read) and `payment-service` (the mandate question, and no zero debits).
+
+### The defect this closes
+
+Nothing ever looked at `trial_ends_at` or `current_period_end`. Trials never converted: the
+activation's read-time expiry switched the product off and no invoice was ever raised. Nothing
+recurred: `current_period_end` passed and nothing happened. Billing's
+`POST /internal/v1/invoices:finalize` had no caller anywhere in the repository, and billing's
+README said so ("a billing run is a deliberately deferred concern"). This ADR's ladder was
+therefore reachable only by an invoice somebody finalized by hand.
+
+### What the earlier decisions already specified, and what this addendum had to choose
+
+ADR-0013 §6 had specified trial end and nothing else: *trials that have ended with no mandate move
+to `past_due` and ADR-0005's grace window starts; a trial that ends with a mandate is charged and
+becomes `active`.* ADR-0004 and this ADR specified neither the invoicing cadence nor what a plan
+change does to money. The rules below implement §6 as written and choose the rest; each choice is
+the conservative one and each is reversible without a data migration.
+
+### 1. Trial end (ADR-0013 §6, implemented as specified)
+
+- A trial whose `trial_ends_at` has passed is invoiced for its **first paid period, in advance**,
+  and the period opens **at `trial_ends_at`**, never at the moment the sweep noticed — the same
+  stored-timestamp rule §3 applies to the ladder.
+- If the invoice total is zero, or payment answers that a mandate can collect it — `active`,
+  bank-confirmed (`activated_at` set), same currency, cap covers the amount; exactly the four
+  conditions payment's charge guard already enforces — the subscription moves
+  **`trial → active`**, reason `trial_convert`, `commerce.subscription.activated`.
+- Otherwise it moves **`trial → past_due`**, reason `trial_ended_unpaid`, and a dunning cycle opens
+  **anchored at `trial_ends_at`** carrying the invoice id and amount: the product keeps working for
+  §1's fourteen days, the ladder asks payment to retry *that invoice*, and a captured payment
+  recovers it exactly as §4 says. A mandate over its cap counts as no mandate — on UPI Autopay
+  that debit needs the customer to act (Context above).
+- Nothing is ever cancelled by this (§4). Two edges are added to the state machine:
+  `trial → past_due`, and `past_due → past_due` (a renewal while a window is open). Because an
+  unpaid trial takes a different edge with a different reason, ADR-0004 §4's trial-conversion
+  metric (`trial → active` over trial starts) does not count it as converted.
+
+### 2. The billing run: when a period is invoiced, and for what (chosen)
+
+- **Recurring prices (`flat`, `per_seat`) bill in advance** for the period that opens; **usage
+  prices bill in arrears** for the period that has just closed. A period is invoiced when it
+  opens, which is also what keeps §1's "fourteen days is half a period, so cycles never overlap"
+  true: the failure that opens a window lands at the start of a period.
+- **Trial usage is free**: the first invoice after a trial carries no usage window.
+- **Period length is what `subscribe` always used** — 30 days for `month`, 365 for `year` — now
+  recorded as `subscriptions.billing_interval` at subscribe and change-plan (and read off the
+  period's length for rows older than the column). Calendar-month anchoring is a separate
+  decision, not taken here. `one_time` plans have no period and are **not billed by the run**;
+  one due is reported as a failure, never invoiced by guess (none is sold today).
+- **Every boundary comes from the stored one**: a period opens at the previous period's end, one
+  period per pass. A run that was down for two months issues two invoices with two keys, oldest
+  first — it does not collapse them or re-anchor to `now`.
+- **Which subscriptions**: `active` and `past_due` are invoiced (both are served — §2).
+  `suspended` **rolls its period without an invoice**, so a customer who pays in week six resumes
+  on a current period rather than being billed for the months they were switched off.
+  `cancelled` is never touched. A **bundle is one subscription and one invoice**, whatever it
+  entitles.
+- **Line items** come from the **pinned** plan version's own prices, read by billing from
+  catalog — the caller never sends an amount: `flat` is `amount × quantity`, `per_seat` is
+  `amount × seats` from `subscription_items`, `usage` is `Money.rate(unit_price_micros, billable
+  quantity)` rounded half-up once per line. Integer minor units throughout, in the subscription's
+  currency; a price in another currency, or an item that names a price not on the pin, is refused
+  rather than skipped.
+- **Usage** is metering's **billable** quantity (`is_billable = true`) per `meter_key` for the
+  organization over `[usage_start, usage_end)`. Per organization is per subscription, because a
+  meter belongs to one product and an organization holds one subscription per product. Usage that
+  arrives after its period was invoiced is not billed (see Deferred).
+
+### 3. Exactly once: claim → call → record (chosen)
+
+No network call runs inside a database transaction, so the run cannot "lock, call, write" in one
+transaction. Instead:
+
+1. **Discover** on the outbox role (BYPASSRLS; it now also has `SELECT` on `subscriptions` and
+   `billing_periods`, granted in `migrations/env.py` beside `dunning_cycles`), ids only.
+2. **Claim** on the app role under the tenant: `FOR UPDATE SKIP LOCKED` on the subscription,
+   re-decide from its stored timestamps, and write or re-find a `billing_periods` row —
+   `UNIQUE (organization_id, subscription_id, period_start)` — snapshotting the pin and the items,
+   with a 10-minute lease.
+3. **Call**, no transaction open: billing prices and finalizes the invoice under the key
+   `subscription:{id}:{period_start}` (a partial-unique index, `ON CONFLICT DO NOTHING`, so a
+   repeated or racing ask returns the one invoice and stages one `commerce.invoice.finalized`);
+   for a trial conversion that owes money, payment answers the mandate question.
+4. **Record** on the app role under the tenant: write the answer, advance the period, make the
+   transition with its outbox event — one transaction.
+
+A kill between 2 and 4 leaves a `pending` row; after the lease the next pass sends the identical
+request and gets the same invoice back. A failed call keeps the claim, records `last_error`, and
+backs off (5 minutes doubling to 6 hours). A claim whose subscription moved on before the record
+(cancelled mid-flight) is closed `superseded` and logged for a person, because billing may already
+hold an invoice for it. Only `subscription` may ask billing for a billing-run invoice, only
+`billing` may read metering's usage, only `subscription` may ask payment the mandate question —
+each route checks the verified caller as well as the service token.
+
+### 4. Plan changes mid-period: upgrades prorate now, downgrades wait (revised 2026-09-24)
+
+ADR-0004 gives billing "proration" as a responsibility and billing's `app/domain.py` has an exact
+`prorate`, but no ADR said when money moves on a change. *The first version of this section chose
+"everything from the next period", which left an upgrade unbilled for the rest of the period; the
+review replaced it with the rule below.*
+
+- **Only a trial or an active subscription changes plan** — an explicit check in
+  `_change_plan`, not left to the state machine, because `past_due -> past_due` is now a legal
+  edge for the renewal and would otherwise let a customer who owes money move up a plan.
+- **One cadence for life** (round 2): a change to a version with a different billing interval, or
+  to `one_time`, is refused with a 422 — cancel and subscribe again. Monthly and yearly periods do
+  not line up, so no proration can price one against the other honestly.
+- **Direction is per day, in integers**: `new × old_days` against `old × new_days` (30 for a month,
+  365 for a year). Greater is an upgrade, less a downgrade, **equal moves no money** — re-pinned now,
+  no proration, usage so far still closed at the old pin.
+- **On a trial with nothing claimed**, either direction re-pins immediately and moves no money.
+  A trial whose conversion is already claimed is priced like an active subscription (round 2, B2).
+- **An upgrade** (the new version's recurring list price per day above the old one's) re-pins and
+  re-entitles immediately, and **charges now the prorated difference for the rest of the current
+  period**: a `proration` claim over `[change, period end)` as a fraction of the whole period,
+  billed by the run like any other claim. Billing prices both versions from catalog, prorates each
+  full-period recurring price by whole seconds remaining with `prorate` (largest remainder,
+  integer minor units), and bills the positive difference — never a credit — with the same tax
+  rule as §5. The key is `subscription:{id}:proration:{change_id}`: one upgrade, one invoice.
+- **A downgrade** takes effect **at the next period start**: the version, its cadence, its items
+  and its members are pinned as `pending_change`; nothing is emitted and entitlement does not
+  change now. The run applies it when it claims the next period — that transition emits
+  `commerce.subscription.downgraded` — and prices that period at the lower plan. Changing back to
+  the current pin withdraws it; an upgrade supersedes it.
+- **Up then down within one period**: the upgrade's proration stands and is billed; the downgrade
+  waits for the next period like any other.
+
+### 5. Tax (chosen; ADR-0004 "Open: Tax" is still open)
+
+Jurisdiction resolution is still unsettled, so the interim rule is one deployment-wide choice:
+billing's `BILLING_TAX_CODE` (and optional `BILLING_TAX_JURISDICTION`) names the `tax_rates` row;
+the rate **in force on the period's start date** applies (versioned by `effective_from`, so a
+re-run uses the period's own rate); tax is **exclusive**, computed **once on the subtotal** with
+`Money.percent_bps` (half-up) and written as its own line, so the lines still foot. Unset means no
+tax line. Set with no rate in force, the run **refuses** to invoice and reports it failing,
+because an untaxed invoice under-collects a statutory amount.
+
+### 6. Observability
+
+`billing_run.pass` (issued / activated / past_due / renewed / skipped / failed counts, logged when
+a pass did anything), `billing_run.recorded` and `billing_run.failed` per subscription, and
+`GET /health/billing-run` on subscription-service: `overdue`, `pending`, `failing`,
+`oldest_pending_seconds`, `invoiced_24h`, `skipped_24h`, `last_recorded_at` — counts only, counted
+on the outbox role so a stall cannot hide its own backlog. **Alert on `overdue > 0`**: a stopped
+run does not error. The edge runbook has the procedure. (Review fixes add `failing_permanent`
+and `void_pending`; see below.)
+
+Because nothing ever billed before, the first passes on a box with history convert every expired
+trial and invoice every overdue period, one period per pass. The run therefore has a kill switch
+(`BILLING_RUN_ENABLED`, **off by default** since the review) and a preview
+(`python -m app.billing_run --dry-run`, writes nothing), and the runbook stages a first deploy
+through both.
+
+### Deferred, deliberately
+
+- **Credit and prepaid packs are not drawn** by the run; an invoice is raised at full price and a
+  pack (commerce-packaging.md) must still be applied by hand.
+- **payment does not attach the mandate** to the charge it raises on `commerce.invoice.finalized`;
+  the stub accepts that, a live Razorpay recurring debit will need the token. A payment-slice
+  change.
+- **The three-day `commerce.subscription.trial_ending` notice** ADR-0013 §6 also names is not
+  emitted yet.
+- **Cancel at period end** has no API (cancellation is immediate), so there is nothing for the
+  run to honour; when it exists, the run's claim is where it is checked.
+- **Late usage** (recorded after its period was invoiced) is never billed; a watermark or a grace
+  before closing the usage window would fix it.
+- **Dunning a second invoice**: a renewal invoiced while a window is open keeps that window's
+  schedule, and the ladder retries the first invoice only.
+- **A meter priced by both a bundle and a standalone subscription** for the same organization
+  would be billed by both; no seeded catalog version does this today.
+- **Refunds and credit notes** are unchanged by this addendum.
+
+
+### Review fixes, 2026-09-24
+
+The first billing run was reviewed before merge; these are the decisions that came out of it,
+each implemented with a test that fails without it.
+
+1. **A conversion charge that fails before the record step is not dropped.** Billing's
+   `commerce.invoice.finalized` can reach payment, and payment's failure reach subscription, before
+   the run's record step commits — while the subscription is still `trial`, which the failure
+   handler used to ignore. The failure is now written onto the pending `trial_conversion` claim
+   (`payment_failed_at`, reason); the record step then takes `trial -> past_due` with a dunning
+   cycle carrying that invoice, whatever payment said about the mandate. If the conversion was
+   already recorded `active`, the ordinary failure path opens the window.
+2. **No head-of-line blocking.** Discovery excludes (`NOT EXISTS`) any subscription whose lifecycle
+   claim is leased or backing off (`next_attempt_at`, now a column apart from the lease), and
+   orders the rest by when each next becomes workable. A `one_time` cadence is a persisted
+   failure row (permanent, backed off), not a log line rediscovered every pass.
+   `/health/billing-run` gains `failing_permanent` (a data defect, or five failures): alert on it.
+3. **`past_due` cannot change plan** (see §4). **A capture closes the open window only when it is
+   for the window's invoice** (`capture.invoice_id == cycle.invoice_id`): money for another invoice
+   settles nothing the window is about. *This narrows §4 above ("recovery is bound to every
+   capture") for an open window; recovery from `suspended`, with no open window, is unchanged.*
+4. **Upgrades prorate now; downgrades wait** — §4, rewritten.
+5. **Closing usage.** A cancellation or a suspension claims a usage-only `close` period
+   `[period start, stop)` — key `subscription:{id}:{period_start}:close` — billed by the run with no
+   recurring lines (those were billed in advance). `usage_billed_through` then moves to the stop,
+   so the renewal after a recovered suspension bills usage from there and never twice.
+6. **Kill switch off by default** — `config.py`, `compose.prod.yml`
+   (`${BILLING_RUN_ENABLED:-false}`), documented commented-out in `.env.example`, and preflight warns
+   whenever it is not `true`.
+7. **Two clocks.** Due-ness is decided against the pass's `now`; leases, backoff and `recorded_at`
+   use the wall clock.
+8. A failure report is written only while the claim is still work (`pending` / `void_pending`).
+9. Every lock and billing's key lookup filter `organization_id` explicitly, beside RLS.
+10. **The outbox role reads columns, not tables**: on `subscriptions` the id, organization, state,
+    trial end and period end; on `billing_periods` the ids, kind, state, lease, backoff, attempts,
+    error flags, invoice id and timestamps the discovery and the probe read. Never an amount, a
+    pin or an item. (The one-line CLAUDE.md rule naming what `opsgrids_outbox` may read is left
+    for the owner to update — agents do not edit it.)
+11. **Superseded invoices are voided.** A period the subscription moved past between claim and
+    record — or a stale claim whose subscription moved on — goes to `void_pending`, and the run
+    asks billing's `POST /internal/v1/subscription-invoices:void` to void whatever stands under the
+    claim's key (void is a state on the frozen invoice, never a delete; it stages
+    `commerce.invoice.voided`). The void is made immediately after the record, but payment may
+    already have raised a charge from the finalized event; payment does not yet consume `voided`
+    (deferred, below).
+12. **Invoice numbers cannot wedge a claim.** Numbers derive from a hash of the whole key (a
+    period, its proration and its close differ), and if a hand-finalized invoice holds the number
+    the next suffix is used.
+13. **The dry-run** splits periods owed into invoiced and suspended-roll, and counts trials whose
+    grace window — anchored at the trial's end — has already expired.
+
+Added to *Deferred*: payment consuming `commerce.invoice.voided` to cancel an unsettled charge for
+a voided invoice. *(Round 2's finalize-after-record makes this moot for the billing run: a
+superseded period is now a voided draft that was never announced.)*
+
+### Review fixes, round 2 (2026-09-24)
+
+- **B1 — one cadence.** See §4: a different interval or `one_time` is refused (422); direction is
+  compared per day with integer cross-multiplication.
+- **B2 — changes against a claim.** When a renewal or a trial conversion is claimed and not yet
+  recorded, an upgrade is prorated against **the claim's** period `[change, claim end)` from the
+  pin it moved off, and the record step checks the claim's pin against the subscription's and
+  claims the same proration again under a change id derived from the claim and the new pin — a
+  unique index makes that a no-op when the change-plan path already did it. A downgrade scheduled
+  after a claim is applied only when a period **not yet claimed** is claimed.
+- **M3 — usage at the old pin.** Whenever a paid subscription's pin changes, usage up to the change
+  is closed at the old pin: an immediate change claims `close [floor, change)`; a deferred downgrade
+  claims `close [floor, period end)` before it is applied, and that renewal carries no usage window.
+  An equal-price switch closes usage too, and raises no proration.
+- **M4 — stops against a claim.** A closing window starts at the latest of the period start,
+  `usage_billed_through`, and the usage end of any lifecycle claim already made. A claimed renewal
+  is never pre-empted by a suspended roll; if the subscription was suspended between claim and
+  record, the renewal's draft is voided (no advance charge for an unserved period), the period
+  still rolls, and the usage it carried is re-claimed as a closing period of its own — the same
+  happens to any superseded renewal. Cancel, suspend and change-plan take the subscription row
+  lock the run's claim and record take. Any failure while billing a subscription backs its pending
+  claim off.
+- **M5 — finalize after record.** Billing raises a run invoice as a **draft**, with no event.
+  Subscription records the claim (`finalize_pending`), then — a fourth step, keyed and idempotent —
+  asks `POST /internal/v1/subscription-invoices:finalize`, which moves `draft -> finalized`, freezes
+  the invoice and stages `commerce.invoice.finalized` exactly once (`finalized`). The freeze
+  trigger already allowed a draft to take lines and change; it freezes at finalize as before.
+  A superseded or stale period is therefore a **draft** voided — as a state, with an audit row and
+  no event — before anything could charge it. Customers never see a draft. Discovery picks up
+  `finalize_pending` with the same lease and backoff as a call; `/health/billing-run` counts it.
+- **m6** — the column-grant hook grants only columns the current revision has, so a partial
+  downgrade works. **m7** — a trial conversion is stamped with a failed charge only when the failure
+  names the conversion's own invoice. **m8** — a proration that nets to nothing writes no invoice.
+- **m9 — deferred:** a closing-period charge that fails after the customer cancelled is not dunned
+  (there is nothing left to suspend). It is stamped on the closing period and counted by
+  `/health/billing-run` as `close_charges_failed`; collecting it is a person's decision.
+- **Worker supervision.** The worker's loops are supervised (`app/supervise.py`): a sweep pass that
+  raises is logged and retried with capped exponential backoff, a dunning cycle whose action raises
+  is pushed back 15 minutes and the pass carries on, and any loop that raises **or returns** stops
+  the process non-zero, cancelling the others — no zombie worker without its payment consumer.
+  `CancelledError` always propagates.
+
+### Review fixes, round 3 (2026-09-24)
+
+- **B1 — a proration belongs to its claim.** A proration raised while a renewal or trial
+  conversion is claimed and unrecorded records that claim (`against_period_id`, a plain uuid in
+  the same schema). It is not billed until the claim is **finalized**; and whatever moves the
+  claim to `void_pending` or `skipped` (a cancel, a suspension the claimed period was not served
+  into, a stale or superseded claim) moves its prorations too: pending → `skipped`
+  (`parent_voided`), a recorded draft → `void_pending`. A finalized proration on a voided parent
+  cannot arise; if it ever does it is logged and counted (`prorations_on_voided_parent`).
+- **B2 — the last pin is the baseline.** The record step's backstop prices a missed change from
+  the **last pin already prorated against the claim**, not the claim's own pin, and does nothing
+  if the subscription is on that pin. An equal-price switch against a claim writes a settled
+  marker row (`skipped`, `equal_price`, never billed) so the last pin is always known; an
+  equal-price switch after an upgrade therefore charges exactly one proration, whichever door
+  (customer or operator) it came through.
+- **M3 — no money decisions while the run lags.** A customer or operator **plan change** is
+  refused **409 "billing is catching up on this subscription — try again shortly"** while a period
+  end or trial end is due and unclaimed, or while a claim is pending for a period that has already
+  ended. The run claims within one pass, so the wait is minutes. While `BILLING_RUN_ENABLED=false`
+  it means plan changes on every overdue subscription are refused — the runbook's enable step says
+  so. We chose refusal over "claim first, then change" for the operator too: it is one rule in one
+  place. *(Amended by the final review: a customer cancel is **not** refused — see below.)*
+- **Opening charges (found by the property test).** A subscription that started `active` without
+  a trial was never charged its first period: the run charged the *next* period in advance at each
+  roll, and nothing charged the first. It now claims an **opening** charge at subscribe —
+  `[start, period end)` at the pin, billed by billing as a proration from nothing (keyed on its own
+  change id). The same kind charges the rest of a period on **resumption** after a suspension that
+  crossed a roll, when no base charge covers the resumption instant. Existing subscriptions are not
+  back-charged.
+- **A suspension that came after the period opened does not make it free.**
+  `subscriptions.suspended_at` records when service stopped (an operator's suspension now; a
+  dunning suspension at its grace end). A claimed or due period that opened **before** that instant
+  is charged in advance like any other — the run being late to roll it must not make it free —
+  and a period that opened after it is voided or skipped as before (`served_into`).
+- **m4** — billing reads the invoice under its key `FOR UPDATE` (with `populate_existing`) for
+  finalize and void: two racing finalizes serialise, the second answers `(invoice, False)`.
+  **m5** — every `*_for_update` selector in subscription sets `populate_existing`. **m6** —
+  `failing` / `failing_permanent` count claims in `pending`, `finalize_pending` and
+  `void_pending`; billing's `/health/billing-drafts` counts drafts, and drafts older than an hour.
+  **m7** — a failed charge on a close, proration or opening row of a cancelled or suspended
+  subscription is stamped on that row and counted (`close_charges_failed`,
+  `proration_charges_failed`); the dead conversion branch in `record_payment_failure` is gone.
+  **m8** — the model's state comments name every state; the runbook covers the `f5a7b9c1d3e6`
+  downgrade leaving billing drafts un-finalized.
+- **Deferred, deliberately:** a **cancel** against a claim whose period opened a little before the
+  cancel (the run was late) skips the claim — the served time between the period start and the
+  cancel is not charged. It is bounded by the run's lateness, it favours the customer, and
+  charging a full period in arrears to someone who has just cancelled is worse than the leak. A
+  pro-rata charge for that sliver is the right fix and is not built.
+- **The property test.** `services/subscription/tests/test_billing_run_properties.py` drives a
+  subscription through random sequences of trial, upgrade, downgrade, equal-price switch,
+  suspension, resumption, failed and recovered payments, crashes between every step of the run,
+  billing outages and passes of the run, on a controlled clock, then cancels it and lets the run
+  catch up. Seeds are deterministic (`BILLING_PROPERTY_SEEDS`; 25 by default since the final review). Over what billing
+  finalized: base charges never overlap, never start before the paid start or at/after the
+  cancellation, and cover every served instant; usage windows never overlap, stay inside paid
+  time and cover every served instant; each is priced at the pin in force at its start and no pin
+  change falls inside a usage window; nothing is charged on a voided or skipped parent and no
+  finalized invoice is voided; no upgrade is charged twice; totals are integers. On the round-2
+  head it failed 171 of 200 seeds.
+
+### Final review (2026-09-24)
+
+- **Blocker — a payment is not a key to every suspension.** Both suspension paths close the cycle
+  first, so a capture on a suspended subscription used to find no open cycle and resume it — any
+  capture: the run's closing-usage invoice, raised *by* the suspension and captured moments later,
+  lifted an operator's fraud hold, and a customer dunned for a ₹1,000 invoice resumed by paying a
+  ₹40 usage invoice. Now, on `suspended` with no open cycle, a capture resumes only if the last move
+  into `suspended` was dunning's (written by the sweep's service actor, read off the transition
+  log — amended below: the actor, not the reason) **and** the
+  latest cycle closed `grace_expired` for exactly the captured invoice. Anything else logs
+  `dunning.capture.no_resume` and moves nothing. **An operator's suspension is never lifted by a
+  payment**; there is no resume route yet, so a person lifts it with a reviewed data change.
+- **Major 2 — a cancel is never refused.** With the run off by default, M3's refusal would have
+  answered 409 to every cancel in production. A customer cancel always succeeds; a period that was
+  due and unclaimed at the cancel is never opened, and the run bills the cancellation's closing
+  usage only. (The served time since that period's boundary is not charged — the same deliberate,
+  customer-favouring deferral as round 3's late-run cancel.) Plan changes keep the 409.
+- **Major 3 — the billing cutover.** `BILLING_RUN_NOT_BEFORE`, a timezone-aware instant,
+  **required** when `BILLING_RUN_ENABLED=true`: the worker refuses to start the run's loop without
+  it (`billing_run.refused`; the payment consumer and dunning keep running), and preflight fails.
+  The operator sets it to the moment they turn the run on and never moves it later. Chosen:
+  * recurring money — a renewal, a trial conversion, a proration, an opening — for a period that
+    **began before** the cutover is never invoiced: the row is written or settled `skipped` with
+    outcome `pre_cutover` and the period rolls. An existing subscription starts paying at its
+    first period that begins after the cutover; the period straddling it is free;
+  * a trial that **ended before** the cutover converts to `active` with no invoice, no mandate
+    question and no dunning (the conversion's `activated` event says `invoiced: false`); its first
+    paid period opens at the trial's end and is that free straddling period. A trial ending after
+    the cutover converts and is dunned exactly as before;
+  * **no usage from before the cutover is billed**: a renewal's usage window starts no earlier
+    than it, a closing window straddling it is billed from it (only the usage window moves — the
+    row's `period_start`, billing's key, stays), and one that ended by it is skipped. We clamp
+    rather than skip straddling usage because usage after the cutover is consumption billing is
+    live for;
+  * `python -m app.billing_run --dry-run [--not-before …]` splits each due subscription's periods
+    into `periods_pre_cutover` / `periods_invoiced` / `periods_suspended_roll`, and reports the
+    backlog of rows that are their own work by kind (`opening`, `close`, `proration`,
+    `finalize_pending`, `void_pending`) with how many would be invoiced, clamped or skipped.
+- **A stop while the run lags applies a lapsed downgrade first** (found by the property test once
+  dunning suspensions joined it). A deferred downgrade takes effect at the first unclaimed
+  boundary, which the run applies when it claims that roll. If the run is behind and the
+  subscription is cancelled or suspended (by an operator, or by dunning at its window's end)
+  after that boundary, the stop's closing usage ran across it at the old, dearer pin. The stop now
+  applies the downgrade at the boundary first: usage to it closes at the old pin, the rest at the
+  new one, and later rolls price at the new pin as they would have.
+- **Minors.** Billing's drafts probe reads `invoices(state, created_at)` only — `id` and
+  `organization_id` are revoked on every migrate. The property test tolerates only the refusals a
+  customer can meet (`BillingCatchingUp`, and 409/422/403 problems) — anything else fails the
+  seed; it now suspends through dunning as well as by an operator, checks every resumption against
+  the rule above, and checks that every charged proration prices from the pin in force just
+  before it. It runs 25 seeds in the ordinary suite; `make test-billing-properties` runs 500
+  (nightly, and by hand before changing the run). The runbook notes that a permanently failing
+  claim freezes its subscription's plan changes (409) once its own period has ended too, until a
+  person fixes it — `failing_permanent` is the alert.
+
+### Final money review, second fixup (2026-09-24)
+
+- **Major — the payment handlers lock first.** `record_payment_captured` and
+  `record_payment_failure` are handed a subscription the consumer read unlocked, and every other
+  writer (cancel, suspend, change-plan, the run's claim and record) locks the row before reading
+  it. Three races followed: a fraud hold racing a capture of the owed invoice ended `active`; a
+  cancel of a dunning-suspended subscription racing a capture ended `active` with `cancel_at`
+  set; a cancel racing a failure ended `past_due` — dunning a cancelled customer. Both handlers
+  now take the row lock (`populate_existing`) as their first statement and decide from what the
+  last committed writer left. The **dunning sweep** locked the cycle, then the subscription — the
+  reverse of a cancel, and a 40P01 deadlock when they met; it now locks the subscription (skip
+  locked: a held row waits for the next pass), then the cycle. Every path is subscription →
+  cycle. (This predates the billing run; it was found by its review.)
+- **Which suspension is in force is read from the transition's actor** — the sweep's service
+  actor — never from its reason, which is free text an operator supplies. An operator may not use
+  a reason only the machinery writes (`dunning_exhausted`, `grace_expired`, `payment_failed`, …):
+  422. `suspended -> suspended` is illegal, so a fraud hold cannot be layered on a dunning
+  suspension; paying the owed invoice lifts it (the runbook says what to do).
+- **The cutover setting refuses bad values softly.** Accepted, exactly:
+  `YYYY-MM-DDTHH:MM[:SS[.f]]` then `Z` or `±HH:MM`. pydantic would read `0` or `2026` as epoch
+  seconds — 1970, back-billing everything — and a hard validation error would crash-loop the whole
+  worker, taking the payment consumer and dunning with it. So anything else (and an impossible
+  date) is dropped with its reason kept (`billing_run_not_before_invalid`), the settings load, and
+  the run's loop refuses to start (`billing_run.refused`). Preflight checks the same pattern, that
+  GNU date reads it as a real instant, and warns when it is in the future; the runbook's enable
+  step runs preflight and prints the parsed setting before recreating the worker.
+- **A closing invoice is dated, taxed and numbered on its usage window.** A close bills usage
+  only; its invoice period, the day the tax rate is read and its number now come from the usage
+  window, which differs from the claim's start only when the cutover moved it. Taxing on the
+  pre-cutover day found no rate when the rate row starts at go-live, and failed the close
+  permanently. The key still names the claim, so a retry lands on the same invoice.
+- **The cutover decides a row once**, before its first lease: a proration, opening or close
+  already sent to billing is retried exactly as sent — never skipped or re-clamped — so the retry
+  lands on the invoice billing priced.
+- **A resumption inside the straddling period charges no opening** — that period is free, known
+  from the configured cutover or from a `pre_cutover` row covering the instant.
+- **The reviewer's randomised cutover variant is permanent** (cutover 0-60 days into each life,
+  run on throughout or off until the cutover; 25 seeds by default, 500 by
+  `make test-billing-properties`), as are its edge probes: an opening or a trial end exactly at the
+  cutover is billed, moving the cutover earlier re-bills nothing, a future cutover rolls once and
+  waits, a close retried after the cutover moved later keeps its first window.
+- **Known limitation — moving the cutover later.** Documented, not detected: rows not yet handled
+  that begin between the old and the new cutover become free while the same kind handled earlier
+  was invoiced. A probe field was considered and not built — the health probe runs in the API
+  process, which does not carry the cutover, and the column it would need is not in the outbox
+  role's grant.
+- **Open:** an internal operator **resume** route. Until it exists, lifting an operator's
+  suspension is a reviewed one-off that must write the state, the transition row, the audit row,
+  the `activated` outbox event (or product-service never re-entitles) and the opening for the
+  rest of the period — all listed in the runbook.
