@@ -169,6 +169,23 @@ OPERATIONS = PermissionCatalogue(
         PermissionSpec(
             "inventory", "warehouse", "write", "Create, edit and delete warehouses", "ORG", "ORG"
         ),
+        # Promising stock to a demand without moving it, and giving that promise back — the
+        # kernel has carried this since Phase 0 (`ledger.reserve`/`release`); this is the first
+        # permission that lets a caller reach it over HTTP (ADR-0014 §11's release endpoint).
+        # ORG only: a reservation narrows what every other caller in the org can promise, so
+        # there is no meaningful OWN reading.
+        PermissionSpec(
+            "inventory",
+            "stock",
+            "reserve",
+            "Reserve stock for a demand, and release a reservation's open remainder",
+            "ORG",
+            "ORG",
+        ),
+        # Item master reference data: categories, typed attributes, variants, tracking flags,
+        # HSN/tax fields and secondary UOM (ADR-0014 Phase 1). Reuses `inventory.item.read/write`
+        # rather than a permission per sub-resource: these are all facets of the one item master
+        # `inventory_items` already carries, not a separate object with its own audience.
     ],
 )
 
@@ -203,6 +220,7 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.inventory.item.read", "ORG"),
             ("operations.inventory.item.write", "ORG"),
             ("operations.inventory.stock.adjust", "ORG"),
+            ("operations.inventory.stock.reserve", "ORG"),
             ("operations.inventory.warehouse.read", "ORG"),
         ),
     ),

@@ -128,6 +128,17 @@ def is_discrete(code: str) -> bool:
     return bool(u and u.discrete)
 
 
+def canonical_uom_code(code: str) -> str:
+    """The code a wire `uom` string resolves to, stripped, alias-folded, and case-folded exactly
+    as `app.inventory.services.resolve_or_create_uom` folds it before it ever reaches a `uoms`
+    row: a code the registry knows becomes its canonical spelling; anything else is lower-cased.
+    Two spellings that canonicalise the same way name the same unit — `"PCS"`, `"pc"`, and
+    `"piece"` are one thing on an item whose stock is already `pcs`, not three different ones."""
+    stripped = code.strip()
+    known = unit(stripped)
+    return known.code if known else stripped.lower()
+
+
 def parse_qty(value: str | int, uom: str = "", *, allow_negative: bool = False) -> int:
     """A wire quantity → milli-units, exactly.
 
@@ -191,6 +202,26 @@ def _round(value: Fraction, mode: Rounding) -> int:
     return toward_zero + (1 if value > 0 else -1)
 
 
+def _apply_factor(
+    milli: int, factor: Fraction, *, dst_discrete: bool, dst_label: str, rounding: Rounding | None
+) -> int:
+    """The exact-or-explicitly-rounded arithmetic both `convert` and `convert_by_ratio` share:
+    multiply, and refuse a fractional milli-unit result unless a rounding mode was named."""
+    exact = Fraction(milli) * factor
+    if exact.denominator == 1:
+        result = exact.numerator
+    elif rounding is None:
+        raise QuantityError(
+            f"{format_qty(milli)} is not a whole number of thousandths of a {dst_label}; "
+            "name a rounding mode to convert it"
+        )
+    else:
+        result = _round(exact, rounding)
+    if dst_discrete and result % QTY_SCALE:
+        raise QuantityError(f"{dst_label} is counted in whole units")
+    return result
+
+
 def convert(milli: int, from_uom: str, to_uom: str, *, rounding: Rounding | None = None) -> int:
     """Convert milli-units of one fixed unit into milli-units of another (`1000` m → `1000000` mm).
 
@@ -208,21 +239,71 @@ def convert(milli: int, from_uom: str, to_uom: str, *, rounding: Rounding | None
         )
     if src.code == dst.code:
         return milli
-    exact = Fraction(milli) * src.to_base / dst.to_base
-    if exact.denominator == 1:
-        result = exact.numerator
-    elif rounding is None:
-        raise QuantityError(
-            f"{format_qty(milli)} {src.code} is not a whole number of thousandths of a "
-            f"{dst.code}; name a rounding mode to convert it"
-        )
-    else:
-        result = _round(exact, rounding)
-    if dst.discrete and result % QTY_SCALE:
-        raise QuantityError(f"{dst.code} is counted in whole units")
+    return _apply_factor(
+        milli,
+        src.to_base / dst.to_base,
+        dst_discrete=dst.discrete,
+        dst_label=dst.code,
+        rounding=rounding,
+    )
+
+
+def convert_by_ratio(
+    milli: int,
+    numerator: int,
+    denominator: int,
+    *,
+    invert: bool = False,
+    discrete: bool,
+    rounding: Rounding | None = None,
+) -> int:
+    """Convert milli-units through an item-specific rational ratio (a Phase 1 `uom_conversions`
+    row: "1 box = 12 pcs" is `numerator=12, denominator=1`), never a float (ADR-0014 §2).
+
+    `invert=False` converts milli-units of the *container* unit (the box) into milli-units of the
+    item's stock unit (the pcs); `invert=True` goes the other way. `discrete` names whether the
+    *destination* of this call is counted in whole units — the caller knows which side that is,
+    unlike `convert`, which reads it off the fixed registry. It has no default: guessing wrong
+    silently lets a fractional box or carton through, so every caller must say which it means.
+    """
+    if numerator <= 0 or denominator <= 0:
+        raise QuantityError("A unit conversion ratio is a positive numerator and denominator")
+    factor = Fraction(denominator, numerator) if invert else Fraction(numerator, denominator)
+    result = _apply_factor(
+        milli, factor, dst_discrete=discrete, dst_label="that unit", rounding=rounding
+    )
+    if abs(result) > MAX_ABS_MILLI:
+        raise QuantityError("That quantity is too large")
     return result
 
 
 def value_minor(milli: int, unit_cost_minor: int) -> int:
     """Stock value in integer minor units: `quantity * unit cost`, rounded half-to-even once."""
     return round(Fraction(milli * unit_cost_minor, QTY_SCALE))
+
+
+#: Display name for every fixed-registry unit — used to seed each organization's `uoms` directory
+#: (Phase 1). Migration `37e17a153b64` inlines its own copy rather than importing this: a
+#: migration is a snapshot of what it did, and must not silently change behaviour if this map
+#: ever does.
+UNIT_NAMES: dict[str, str] = {
+    "mm": "Millimetre",
+    "cm": "Centimetre",
+    "m": "Metre",
+    "in": "Inch",
+    "yd": "Yard",
+    "mg": "Milligram",
+    "g": "Gram",
+    "kg": "Kilogram",
+    "t": "Tonne",
+    "ml": "Millilitre",
+    "l": "Litre",
+    "m2": "Square metre",
+    "pcs": "Piece",
+    "dozen": "Dozen",
+    "box": "Box",
+    "carton": "Carton",
+    "bundle": "Bundle",
+    "set": "Set",
+    "roll": "Roll",
+}
