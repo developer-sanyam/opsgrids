@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import posixpath
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -373,6 +374,17 @@ def build_gateway(
     async def proxy(path: str, request: Request) -> Response:
         full_path = f"/api/{path}"
 
+        if _has_internal_segment(full_path):
+            # Defence in depth, not the only control: every service mounts its own internal
+            # router at `/internal/v1` (never under `/api`), so no route table entry should
+            # ever match one of these anyway. This exists for the request that reaches here
+            # through a path a route table author did not anticipate — a typo'd prefix, a
+            # `..` segment — rather than to be the thing that makes `/internal/` unreachable.
+            # 404, the same answer a route that does not exist gives, so this refusal is not
+            # itself a way to confirm an internal path exists.
+            log.warning("gateway.internal_path_refused", path=full_path)
+            raise NotFoundProblem(f"No route for {full_path}")
+
         route = routes.resolve(full_path)
         if route is None:
             raise NotFoundProblem(f"No route for {full_path}")
@@ -511,6 +523,26 @@ def build_gateway(
             headers["x-perms"] = ",".join(grants)
 
         return await _forward(request, route, headers, policy)
+
+
+def _has_internal_segment(path: str) -> bool:
+    """True when `path`, normalised, contains a literal `internal` path segment.
+
+    Every service mounts its internal, service-to-service router at `/internal/v1` — never
+    under `/api`, which is all this gateway ever forwards — so an ordinary request has no
+    business matching this at all; it exists for the request that was crafted to reach one
+    anyway.
+
+    Normalising first is what makes this hold under `..`: `/api/v1/x/../internal/y` is a
+    literal string that does not contain `/internal/` as its own segment sequence in the
+    naive sense, and `posixpath.normpath` collapsing it to `/api/internal/y` is what a
+    same-check-without-normalising would miss. Percent-encoded forms (`%2Finternal%2F`) need
+    no handling here: the ASGI server has already decoded them into literal `/` characters by
+    the time `path` (captured from `{path:path}`) reaches this function, which is exactly why
+    they show up as an ordinary `..`-free case above.
+    """
+    normalized = posixpath.normpath(path)
+    return "internal" in normalized.split("/")
 
 
 def _slug_from_host(request: Request) -> str | None:
