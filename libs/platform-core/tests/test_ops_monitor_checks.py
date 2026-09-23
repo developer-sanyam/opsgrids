@@ -5,6 +5,7 @@ filesystem only. The ones that need real Postgres/RabbitMQ/HTTP
 
 from __future__ import annotations
 
+import asyncio
 import socket
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -115,6 +116,9 @@ def _connection_refused() -> httpx.ConnectError:
 
 
 class TestIsDnsFailure:
+    """`_is_dns_failure` only phrases the failure message now (round 2) — it is never a reason
+    to treat the check as passing. See `TestApiReadinessNeverSkips` below for that half."""
+
     def test_a_gaierror_in_the_cause_chain_is_a_dns_failure(self) -> None:
         assert _is_dns_failure(_dns_failure()) is True
 
@@ -125,17 +129,23 @@ class TestIsDnsFailure:
         assert _is_dns_failure(RuntimeError("boom")) is False
 
 
-class TestApiReadinessSkipsUndeployedProfiles:
-    """B3: a container name that does not resolve at all (its product profile is off on this
-    box) is skipped — absent from the result — never reported as a failing observation that
-    would eventually page someone for a container this box was never going to run."""
+class TestApiReadinessNeverSkips:
+    """B1 (round 2): a container name that does not resolve at all is a REAL failure, never
+    skipped. Docker's embedded DNS drops a stopped, crashed, OOM-killed or restarting
+    container exactly the way it drops one whose profile was never turned on — there is no way
+    to tell those apart from a DNS failure alone, so treating it as "not deployed" would hide a
+    crashed container behind the exact same symptom a fine, undeployed one produces. Every
+    container this monitor is told to check is one `COMPOSE_PROFILES` says should exist
+    (`config.expected_api_containers`); a config change is how a box says a container should no
+    longer be watched, not a DNS failure at check time."""
 
-    async def test_a_dns_failure_is_skipped_not_failed(self) -> None:
+    async def test_a_dns_failure_is_a_real_failure(self) -> None:
         client = _FakeClient({"employee": _dns_failure()})
         result = await check_api_readiness(client, {"employee": 8000})  # type: ignore[arg-type]
-        assert result == {}
+        assert result["api.employee"].ok is False
+        assert "does not resolve" in result["api.employee"].detail
 
-    async def test_connection_refused_is_a_real_failure(self) -> None:
+    async def test_connection_refused_is_also_a_real_failure(self) -> None:
         client = _FakeClient({"auth": _connection_refused()})
         result = await check_api_readiness(client, {"auth": 8000})  # type: ignore[arg-type]
         assert result["api.auth"].ok is False
@@ -145,34 +155,55 @@ class TestApiReadinessSkipsUndeployedProfiles:
         result = await check_api_readiness(client, {"auth": 8000})  # type: ignore[arg-type]
         assert result["api.auth"].ok is True
 
-    async def test_one_skipped_and_one_real_container_are_both_handled_in_one_call(self) -> None:
+    async def test_a_failing_and_a_healthy_container_are_both_reported_in_one_call(self) -> None:
         client = _FakeClient(
             {
-                "employee": _dns_failure(),  # profile off — skipped
-                "auth": _FakeResponse(200, {"status": "ok"}),  # always-on — reported
+                "employee": _dns_failure(),
+                "auth": _FakeResponse(200, {"status": "ok"}),
             }
         )
         result = await check_api_readiness(client, {"employee": 8000, "auth": 8000})  # type: ignore[arg-type]
-        assert "api.employee" not in result
+        assert result["api.employee"].ok is False
         assert result["api.auth"].ok is True
 
 
-class TestCoreOnlyDefaults:
-    """B3: the default API-container and DLQ-queue lists are the always-on core only — never
-    every product this platform could sell, which used to mean a permanent false alarm (and a
-    dead daily digest, since `evaluate_digest` never sees "all quiet") on any box that does not
-    run every profile."""
+class TestApiReadinessConcurrency:
+    """m5: every container is probed concurrently, each with its own timeout — five slow
+    containers must finish in about one timeout period, not five."""
 
-    def test_api_containers_default_to_core_only(self) -> None:
+    async def test_five_slow_containers_finish_concurrently_not_sequentially(self) -> None:
+        class _SlowClient:
+            async def get(self, url: str, timeout: float = 5.0) -> _FakeResponse:  # noqa: ASYNC109
+                await asyncio.sleep(10)
+                return _FakeResponse(200, {"status": "ok"})
+
+        containers = {f"svc{i}": 8000 for i in range(5)}
+        start = asyncio.get_event_loop().time()
+        result = await check_api_readiness(_SlowClient(), containers, timeout_seconds=0.1)  # type: ignore[arg-type]
+        elapsed = asyncio.get_event_loop().time() - start
+
+        assert elapsed < 1.0, f"took {elapsed:.2f}s — probes ran sequentially, not concurrently"
+        assert len(result) == 5
+        for i in range(5):
+            assert result[f"api.svc{i}"].ok is False
+            assert "svc" in result[f"api.svc{i}"].detail
+            assert "timed out" in result[f"api.svc{i}"].detail
+
+
+class TestApiContainersDefaultsFromProfiles:
+    """B1/m6 (round 2): the default API-container and DLQ-queue lists derive from
+    `COMPOSE_PROFILES` — core when no profile is enabled, core plus each profile's own
+    containers/queues when profiles are — never a fixed guess that misses everything beyond
+    core on a box selling more than the base platform. Full coverage of the derivation itself
+    lives in `test_ops_monitor_config.py`; this is just the "no profiles" boundary case,
+    exercised the same way B3 originally was."""
+
+    def test_no_profiles_means_core_only(self) -> None:
         settings = OpsMonitorSettings()
         assert settings.ops_monitor_api_containers == list(CORE_API_CONTAINERS)
-        assert len(settings.ops_monitor_api_containers) == 10
-
-    def test_dlq_queues_default_to_core_only(self) -> None:
-        settings = OpsMonitorSettings()
         assert settings.ops_monitor_dlq_queues == list(CORE_DLQ_QUEUES)
 
-    def test_an_empty_env_value_also_falls_back_to_core_only(
+    def test_an_empty_env_value_also_falls_back_to_the_computed_default(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """`compose.prod.yml` passes `${OPS_MONITOR_API_CONTAINERS:-}` — empty when the

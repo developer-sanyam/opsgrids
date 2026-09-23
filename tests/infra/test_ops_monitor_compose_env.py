@@ -57,12 +57,37 @@ def test_ops_monitor_does_not_inherit_the_full_service_env_anchor() -> None:
     assert not present, f"ops-monitor must not receive {present} — it uses neither"
 
 
-def test_ops_monitor_runs_as_a_configurable_non_default_user() -> None:
-    """B2: writes its own state file and heartbeat into the `/srv/opsgrids/state` bind mount,
-    which is owned by the deploy user, not the image's baked-in `opsgrids` system user — so it
-    must run as that same uid, configurably (a box whose deploy user is not uid 1000 needs to
-    be able to say so)."""
+def test_ops_monitor_has_no_user_override() -> None:
+    """M2 (round 2): runs as the `product` image's own baked-in uid, not a guessed deploy-user
+    uid — this box's `deploy` user is not reliably uid 1000 (Azure's own provisioning already
+    takes it for `azureuser`), so a fixed `user:` override here would be exactly as likely to
+    be wrong as the image's own default. `remote.sh`'s `ensure_ops_monitor_state_dir` chowns
+    the one directory this container needs instead."""
     raw = yaml.safe_load(COMPOSE_FILE.read_text())
-    user = raw["services"]["ops-monitor"]["user"]
-    assert "OPS_MONITOR_UID" in user
-    assert "OPS_MONITOR_GID" in user
+    assert "user" not in raw["services"]["ops-monitor"]
+
+
+def test_ops_monitor_mounts_its_own_state_subdirectory_read_write_and_the_rest_read_only() -> None:
+    """M2 (round 2): only `/srv/opsgrids/state/ops-monitor` is writable by this container —
+    everything else under `/srv/opsgrids/state` (`last-good-ref`, `deploy-log`,
+    `backup.last-ok`) stays the deploy user's, read-only from here."""
+    raw = yaml.safe_load(COMPOSE_FILE.read_text())
+    volumes = raw["services"]["ops-monitor"]["volumes"]
+    assert any(v.endswith(":/srv/opsgrids/state:ro") for v in volumes), volumes
+    assert any(v.endswith(":/srv/opsgrids/state/ops-monitor:rw") for v in volumes), volumes
+
+
+def test_ops_monitor_receives_compose_profiles() -> None:
+    """B1 (round 2): the same variable docker compose itself reads to decide which containers
+    to start — so OpsMonitorSettings can derive exactly which API containers/DLQ queues
+    should exist, instead of guessing."""
+    env = _ops_monitor_environment()
+    assert "COMPOSE_PROFILES" in env
+
+
+def test_ops_monitor_uid_and_gid_keys_are_gone() -> None:
+    """M2 (round 2) reversed round 1's `user:` override entirely — these two keys must not
+    reappear in .env.example or preflight's required-key set now that nothing reads them."""
+    env_example = (REPO_ROOT / "infrastructure/edge/.env.example").read_text()
+    assert "OPS_MONITOR_UID" not in env_example
+    assert "OPS_MONITOR_GID" not in env_example

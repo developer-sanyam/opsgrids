@@ -735,15 +735,19 @@ services:
   # gateway's route table ever names it (`tests/infra/test_metrics_never_routed.py` is the
   # lint). `/metrics` and `/status` stay reachable only to whatever else is already on `back`.
   #
-  # `user:` matches the deploy user's own uid/gid (default 1000:1000 — Ubuntu 24.04's first
-  # non-root user, exactly what RUNBOOK.md's "standing up a new box" step 3 creates), not the
-  # image's baked-in `opsgrids` system user. `/srv/opsgrids/state` is created and chowned to
-  # `deploy:deploy` in that same step, so this container can write its own state file and
-  # heartbeat into the bind mount with no extra chown step, no sudo, and no dedicated subdir —
-  # it is the same trust boundary as the deploy user already has over its own checkout. Override
-  # `OPS_MONITOR_UID`/`_GID` in `.env` if `id -u deploy` on this box is not 1000 (RUNBOOK.md,
-  # "standing up a new box" step 3). A state or heartbeat write that fails anyway (wrong uid,
-  # full disk) is logged and does not crash the loop — see `main.py`'s `_write_state_safely`.
+  # No `user:` override (round 2's M2 decision) — this box's `deploy` user is not reliably
+  # uid 1000 the way a fresh Ubuntu box's first human user would be (Azure's own provisioning
+  # already takes uid 1000 for `azureuser`, so `deploy`, created after it, is likely 1001), so
+  # a fixed uid guess here would be as wrong as the image's own baked-in one. Instead this runs
+  # as the image's own `opsgrids` system user (uid 999, the same one the JWT signing key's
+  # setup already discovers dynamically — RUNBOOK.md, "standing up a new box" step 5), and
+  # `remote.sh up`'s `ensure_ops_monitor_state_dir` creates and chowns exactly one directory
+  # for it: `/srv/opsgrids/state/ops-monitor`, mounted `rw` below. The state directory's own
+  # root stays mounted `ro` — this process only ever needs to read `backup.last-ok` from it,
+  # never write there, and `deploy`'s own `last-good-ref`/`deploy-log` stay untouched by any of
+  # this. `preflight.sh` checks the subdirectory's ownership and warns (not refuses) if a
+  # deploy has not run yet to fix it. A state or heartbeat write that fails anyway (a full
+  # disk) is logged and does not crash the loop — see `main._dump_safely`/`_write_heartbeat_safely`.
   #
   # Deliberately NOT `<<: *service-env` (m11): this process touches no PII, mints no internal
   # service token, and calls no other service's `/internal/*` route, so it is handed none of
@@ -754,7 +758,6 @@ services:
     <<: *background
     image: opsgrids-edge/product
     command: ['python', '-m', 'platform_core.ops_monitor']
-    user: '${OPS_MONITOR_UID:-1000}:${OPS_MONITOR_GID:-1000}'
     environment:
       ENVIRONMENT: production
       DEBUG: 'false'
@@ -765,13 +768,16 @@ services:
       MALLOC_ARENA_MAX: '2'
       MALLOC_TRIM_THRESHOLD_: '131072'
       EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm}
-      # Empty means "the always-on core only" (`OpsMonitorSettings`' own
-      # `CORE_API_CONTAINERS`/`CORE_DLQ_QUEUES` defaults, read when the env var is unset OR
-      # empty — `env_ignore_empty=True` in `ServiceSettings`) — never a bash-level list of
-      # every product hardcoded here, which used to mean a permanent false alarm (and a dead
-      # daily digest) on any box that does not run every profile. A name that does not resolve
-      # on this network (a profile that is off) is skipped, not failed — same tolerance
-      # `edge-relay` already has for a schema with no `outbox` table yet.
+      # B1 (round 2): the same variable docker compose itself already reads to decide which
+      # containers to start — one source of truth for "what does this box run", so
+      # OpsMonitorSettings can derive exactly which API containers/DLQ queues SHOULD exist
+      # (`config.expected_api_containers`/`expected_dlq_queues`) instead of guessing. A name
+      # that should exist and does not resolve is now a real failure, never skipped — Docker's
+      # embedded DNS drops a crashed or OOM-killed container the same way it drops one that was
+      # never started, so "does not resolve" cannot mean "not deployed" any more.
+      COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
+      # Empty means "derive from COMPOSE_PROFILES above" — set explicitly only to narrow or add
+      # to that computed list; doing so REPLACES it entirely. See .env.example's own comment.
       OPS_MONITOR_API_CONTAINERS: ${OPS_MONITOR_API_CONTAINERS:-}
       OPS_MONITOR_DLQ_QUEUES: ${OPS_MONITOR_DLQ_QUEUES:-}
       OPS_ALERT_EMAIL: ${OPS_ALERT_EMAIL:-}
@@ -786,11 +792,15 @@ services:
       OPS_MONITOR_CERT_HOST: caddy
       OPS_MONITOR_CERT_PORT: '443'
       OPS_MONITOR_PORT: '9110'
-      OPS_MONITOR_STATE_PATH: /srv/opsgrids/state/ops-monitor.json
-      OPS_MONITOR_HEARTBEAT_PATH: /srv/opsgrids/state/ops-monitor.heartbeat
+      OPS_MONITOR_STATE_PATH: /srv/opsgrids/state/ops-monitor/ops-monitor.json
+      OPS_MONITOR_HEARTBEAT_PATH: /srv/opsgrids/state/ops-monitor/ops-monitor.heartbeat
       OPS_MONITOR_BACKUP_MARKER_PATH: /srv/opsgrids/state/backup.last-ok
     volumes:
-      - ${EDGE_STATE_DIR:-/srv/opsgrids/state}:/srv/opsgrids/state:rw
+      # Root read-only (this process only ever reads backup.last-ok from it), the one
+      # subdirectory it owns mounted read-write on top — see the block comment above for why
+      # this is two mounts and who chowns the second one.
+      - ${EDGE_STATE_DIR:-/srv/opsgrids/state}:/srv/opsgrids/state:ro
+      - ${EDGE_STATE_DIR:-/srv/opsgrids/state}/ops-monitor:/srv/opsgrids/state/ops-monitor:rw
     # Overrides `*background`'s disabled healthcheck: unlike a relay or a sweep, this process
     # writes a heartbeat file every cycle specifically so `docker compose ps` can answer "is the
     # loop still turning" without reading logs — three missed 60s cycles (`-mmin -3`) is a
@@ -799,7 +809,7 @@ services:
       test:
         [
           'CMD-SHELL',
-          'find /srv/opsgrids/state/ops-monitor.heartbeat -mmin -3 2>/dev/null | grep -q .',
+          'find /srv/opsgrids/state/ops-monitor/ops-monitor.heartbeat -mmin -3 2>/dev/null | grep -q .',
         ]
       interval: 60s
       timeout: 5s

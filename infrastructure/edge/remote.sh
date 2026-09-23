@@ -189,8 +189,28 @@ migrate() {
 	done
 }
 
+# C10, M2: ops-monitor runs as the `product` image's own baked-in non-root user, deliberately
+# with no `user:` override in compose.prod.yml (the box's `deploy` user's uid varies — Azure's
+# own `azureuser` provisioning already takes 1000, so `deploy` is created after it and is not
+# guaranteed to be 1000 the way a fresh Ubuntu box's first human user would be), so it cannot
+# write into a directory `deploy` owns. This gives it exactly one directory it can, discovering
+# the image's real uid the same way the JWT signing key's setup already does (RUNBOOK.md,
+# "standing up a new box" step 5: `--entrypoint id`) rather than assuming a number, then using
+# `--user 0` (root, inside a throwaway container only, never the running service) once to
+# create and chown it. Nothing else under `/srv/opsgrids/state` changes owner — `last-good-ref`,
+# `deploy-log` and `backup.last-ok` stay `deploy`'s, exactly as `record_ref`/`backup.sh` expect.
+ensure_ops_monitor_state_dir() {
+	local state_dir="${EDGE_STATE_DIR:-/srv/opsgrids/state}/ops-monitor"
+	local uid
+	uid=$("${COMPOSE[@]}" run --rm --no-deps -T --entrypoint id product -u)
+	mkdir -p "$state_dir"
+	docker run --rm --user 0 -v "$state_dir:/s" opsgrids-edge/product sh -c "chown $uid:$uid /s"
+	echo "ops-monitor state dir: $state_dir owned by uid $uid"
+}
+
 up() {
 	log "recreating containers (brief downtime for anything that changed)"
+	ensure_ops_monitor_state_dir
 	# Four at a time. Unbounded, a deploy that touches the shared environment starts every
 	# container at once, and ~59 Python interpreters importing SQLAlchemy on two cores is a
 	# load average of 7 and health checks timing out for no reason but the stampede.

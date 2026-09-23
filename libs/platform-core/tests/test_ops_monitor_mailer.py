@@ -108,8 +108,9 @@ class TestImplicitTls:
         mailer = Mailer(_settings(smtp_use_tls=True, smtp_use_ssl=True))
 
         assert await mailer.send("subject", "body") is False
-        assert mailer.last_error is not None
-        assert "mutually exclusive" in mailer.last_error
+        # last_error is a redacted summary (round 2) — the raw "mutually exclusive" message
+        # only reaches the process's own log line, never /status; see TestStatusRedaction.
+        assert mailer.last_error == "ValueError"
 
 
 class TestRefusesPlaintextCredentials:
@@ -120,7 +121,8 @@ class TestRefusesPlaintextCredentials:
         mailer = Mailer(_settings(smtp_use_tls=False, smtp_username="ops", smtp_password="secret"))
 
         assert await mailer.send("subject", "body") is False
-        assert "unencrypted" in (mailer.last_error or "")
+        # Redacted (round 2) — see TestStatusRedaction for the /status-facing assertion.
+        assert mailer.last_error == "ValueError"
         # Never actually attempted — the credential must not reach the wire at all.
         assert _FakeSMTP.instances[0].login_args is None
         assert _FakeSMTP.instances[0].sent is False
@@ -131,3 +133,37 @@ class TestRefusesPlaintextCredentials:
 
         assert await mailer.send("subject", "body") is True
         assert _FakeSMTP.instances[0].login_args == ("ops", "secret")
+
+
+class TestStatusRedaction:
+    """`/status` is reachable, unauthenticated, to anything already on `back` — a much larger
+    audience than this box's own `.env`. Neither the configured alert address nor a raw
+    exception message belongs there."""
+
+    def test_status_never_includes_the_configured_alert_email(self) -> None:
+        mailer = Mailer(_settings(ops_alert_email="ops@real-company-domain.example"))
+        status = mailer.status()
+        assert "ops@real-company-domain.example" not in str(status)
+        assert status["email"] == "enabled"
+
+    def test_disabled_status_names_no_address_either(self) -> None:
+        mailer = Mailer(OpsMonitorSettings())
+        status = mailer.status()
+        assert "@" not in (status["email"] or "")
+
+    async def test_a_send_failures_last_error_is_a_summary_not_the_raw_message(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _ExplodingSMTP(_FakeSMTP):
+            def __enter__(self) -> _FakeSMTP:
+                raise ConnectionRefusedError(
+                    "[Errno 61] Connection refused to smtp.internal.example"
+                )
+
+        monkeypatch.setattr("smtplib.SMTP", _ExplodingSMTP)
+        mailer = Mailer(_settings())
+
+        assert await mailer.send("subject", "body") is False
+        assert mailer.last_error is not None
+        assert "smtp.internal.example" not in mailer.last_error
+        assert "ConnectionRefusedError" in mailer.last_error

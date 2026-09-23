@@ -37,6 +37,7 @@ from platform_core.logging import configure_logging, get_logger
 from platform_core.ops_monitor import checks
 from platform_core.ops_monitor.config import OpsMonitorSettings
 from platform_core.ops_monitor.mailer import Mailer
+from platform_core.ops_monitor.redact import summarize_exception
 from platform_core.ops_monitor.server import MonitorRuntime, build_app
 from platform_core.ops_monitor.state import (
     CheckState,
@@ -88,7 +89,9 @@ async def _collect(
         observations[name] = Observation(ok=False, detail=f"timed out after {timeout_seconds:.0f}s")
         log.error("ops_monitor.probe_timed_out", probe=name, timeout_seconds=timeout_seconds)
     except Exception as exc:  # a probe's own bug must not sink the whole cycle
-        observations[name] = Observation(ok=False, detail=f"probe crashed: {exc!s:.200}")
+        observations[name] = Observation(
+            ok=False, detail=f"probe crashed: {summarize_exception(exc)}"
+        )
         log.error("ops_monitor.probe_crashed", probe=name, error=str(exc)[:300])
 
 
@@ -193,11 +196,22 @@ async def run_one_cycle(
     return observations
 
 
-def format_email(notifications: list[Notification], *, suppressed: int = 0) -> tuple[str, str]:
+#: Notification kinds the per-hour cap never holds back (M3, round 2): the first `firing` of a
+#: check that was not already notified this incident, and the daily digest. A first alert is
+#: exactly the thing a cap must never swallow — silence about a *new* problem because an
+#: unrelated flurry of reminders already used up the hour's budget is worse than the flurry
+#: itself. The digest is the dead-man's switch; capping it could make the monitor look stopped
+#: on the one day it was actually busy.
+_CAP_EXEMPT_KINDS = frozenset({"firing", "digest"})
+#: m3/m4: how many notification objects `MonitorRuntime.pending_notifications` carries forward
+#: across cycles before the oldest are dropped — a bound on memory, not a design target; a real
+#: box's incident count staying anywhere near this would already be its own emergency.
+_MAX_PENDING_NOTIFICATIONS = 200
+
+
+def format_email(notifications: list[Notification]) -> tuple[str, str]:
     """One subject/body covering every check that changed this cycle — "one email per cycle
-    grouping all changed checks", never one email per check. `suppressed` (m9) notes how many
-    earlier notifications this hour were held back by the rate cap, so the next email that does
-    go out says so instead of the gap looking like silence."""
+    grouping all changed checks", never one email per check."""
     opened = [n for n in notifications if n.kind == "firing"]
     reminders = [n for n in notifications if n.kind == "reminder"]
     resolved = [n for n in notifications if n.kind == "resolved"]
@@ -212,17 +226,9 @@ def format_email(notifications: list[Notification], *, suppressed: int = 0) -> t
         parts.append(f"{len(resolved)} resolved")
     if digest:
         parts.append("daily digest")
-    if suppressed:
-        parts.append(f"{suppressed} suppressed")
     subject = f"[opsgrids] ops-monitor: {', '.join(parts) or 'update'}"
 
     lines: list[str] = []
-    if suppressed:
-        lines.append(
-            f"-- {suppressed} earlier notification(s) this hour were suppressed by the "
-            "per-hour cap --"
-        )
-        lines.append("")
     for group_name, group in (
         ("OPENED", opened),
         ("STILL FIRING", reminders),
@@ -237,6 +243,17 @@ def format_email(notifications: list[Notification], *, suppressed: int = 0) -> t
     return subject, "\n".join(lines).strip() + "\n"
 
 
+def _merge_pending(pending: list[Notification], new: list[Notification]) -> list[Notification]:
+    """A fresh notification for a check replaces any pending one already queued for it (it is
+    more current information); a pending entry for a check untouched this cycle carries
+    forward unchanged. Order: untouched pending entries first, then this cycle's, so the
+    longest-waiting checks are still listed first in the eventual email."""
+    by_check = {n.check: n for n in pending}
+    for n in new:
+        by_check[n.check] = n
+    return list(by_check.values())[-_MAX_PENDING_NOTIFICATIONS:]
+
+
 def _revert_notification_bookkeeping(
     prev_state: MonitorState, new_state: MonitorState, notifications: list[Notification]
 ) -> MonitorState:
@@ -245,7 +262,15 @@ def _revert_notification_bookkeeping(
     observation regardless of whether anyone was told about it. Reverting `last_notified_at`
     back to what it was before this cycle's `evaluate()` call means next cycle's reminder-due
     check sees it as still due, so a failed send is retried immediately rather than waiting a
-    full `ops_monitor_reminder_interval_seconds`."""
+    full `ops_monitor_reminder_interval_seconds`.
+
+    `resolved` notifications have no timestamp to revert (`evaluate()` already cleared
+    `last_notified_at` to `None` on resolution, and a resolved check will never spontaneously
+    re-emit a "resolved" notification on its own) — `run_cycle_and_notify`'s pending queue is
+    what actually carries an undelivered `resolved` (or `reminder`) forward; this function only
+    protects the reminder/digest *cadence* from thinking a cycle it never told anyone about
+    already happened.
+    """
     reverted_checks = dict(new_state.checks)
     for note in notifications:
         if note.kind in ("firing", "reminder") and note.check in reverted_checks:
@@ -265,48 +290,73 @@ async def _deliver(
     mailer: Mailer,
     notifications: list[Notification],
     now: datetime,
-) -> bool:
-    """Send this cycle's notifications, or decide not to — the rate cap (m9) and the bounded
-    immediate-retry count (M6) both live here. Returns whether the caller should treat this
-    cycle's notification bookkeeping as committed (`True`) or reverted for a retry (`False`).
+) -> list[Notification]:
+    """Send this cycle's notifications, or decide not to — the rate cap (M3) and the bounded
+    immediate-retry count (M6) both live here.
+
+    Returns the notifications whose state-machine bookkeeping the caller must revert (queued
+    for a later cycle instead of committed now) — either because the per-hour cap held them
+    back, or because the send itself failed. `_CAP_EXEMPT_KINDS` (a brand-new `firing`, and the
+    daily digest) are never held back by the cap, only by an actual send failure.
     """
+    exempt = [n for n in notifications if n.kind in _CAP_EXEMPT_KINDS]
+    capped_eligible = [n for n in notifications if n.kind not in _CAP_EXEMPT_KINDS]
+
     runtime.sent_at_history = [t for t in runtime.sent_at_history if now - t < timedelta(hours=1)]
-    if len(runtime.sent_at_history) >= settings.ops_monitor_max_emails_per_hour:
-        runtime.suppressed_count += len(notifications)
+    at_cap = len(runtime.sent_at_history) >= settings.ops_monitor_max_emails_per_hour
+
+    if at_cap and capped_eligible:
+        runtime.pending_notifications = _merge_pending(
+            runtime.pending_notifications, capped_eligible
+        )
         log.warning(
-            "ops_monitor.notification_suppressed",
-            count=len(notifications),
-            suppressed_total=runtime.suppressed_count,
+            "ops_monitor.notification_capped",
+            count=len(capped_eligible),
+            pending_total=len(runtime.pending_notifications),
             cap=settings.ops_monitor_max_emails_per_hour,
         )
-        # A rate-limit is a deliberate policy choice, not a delivery failure — the check
-        # really did change state, and retrying it every cycle just to re-hit the same cap
-        # would be pointless. Bookkeeping commits; the next email under the cap says how many
-        # were held back.
-        return True
+        to_send = exempt
+        reverted = list(capped_eligible)
+    else:
+        # Flush anything still owed from an earlier capped or failed cycle alongside whatever
+        # is new this cycle — one email lists every check that has been waiting, by name.
+        to_send = exempt + _merge_pending(runtime.pending_notifications, capped_eligible)
+        reverted = []
 
-    subject, body = format_email(notifications, suppressed=runtime.suppressed_count)
+    if not to_send:
+        return reverted
+
+    subject, body = format_email(to_send)
     delivered = await mailer.send(subject, body)
-    for n in notifications:
+    for n in to_send:
         log.info("ops_monitor.notification", check=n.check, kind=n.kind, detail=n.detail)
 
     if delivered:
         runtime.sent_at_history.append(now)
         runtime.consecutive_send_failures = 0
-        runtime.suppressed_count = 0
-        return True
+        runtime.pending_notifications = []
+        return reverted
 
     runtime.consecutive_send_failures += 1
     if runtime.consecutive_send_failures > settings.ops_monitor_max_immediate_send_retries:
         # Stop hammering a broken SMTP config every single cycle — fall back to the normal
         # reminder/digest cadence, and let the next real change try again from a clean slate.
+        # Whatever was queued is dropped rather than retried forever with no way out.
         log.error(
             "ops_monitor.notification_retry_exhausted",
             consecutive_failures=runtime.consecutive_send_failures,
         )
         runtime.consecutive_send_failures = 0
-        return True
-    return False
+        runtime.pending_notifications = []
+        return reverted
+
+    # The whole batch failed to send — everything in it (including anything exempt from the
+    # cap) needs its bookkeeping reverted and, for the kinds that do not naturally regenerate
+    # (resolved), carried forward so the next attempt still knows about it.
+    runtime.pending_notifications = _merge_pending(
+        runtime.pending_notifications, [n for n in to_send if n.kind not in _CAP_EXEMPT_KINDS]
+    )
+    return list(to_send)
 
 
 async def run_cycle_and_notify(
@@ -337,10 +387,10 @@ async def run_cycle_and_notify(
     if digest_notification is not None:
         notifications.append(digest_notification)
 
-    if notifications:
-        committed = await _deliver(settings, runtime, mailer, notifications, now)
-        if not committed:
-            new_state = _revert_notification_bookkeeping(runtime.state, new_state, notifications)
+    if notifications or runtime.pending_notifications:
+        to_revert = await _deliver(settings, runtime, mailer, notifications, now)
+        if to_revert:
+            new_state = _revert_notification_bookkeeping(runtime.state, new_state, to_revert)
 
     runtime.state = new_state
     runtime.last_cycle_at = now
@@ -353,9 +403,9 @@ def _dump_safely(state: MonitorState, path: Path) -> None:
     fatal — the loop keeps running on the in-memory state `runtime.state` already holds
     (assigned by the caller before this is called), and the next successful write catches up.
     A monitor that crashes because it cannot persist its own bookkeeping is worse than one that
-    persists nothing until the underlying problem — usually a permissions mismatch between this
-    container's `user:` and the bind mount's owner, see `compose.prod.yml`'s own comment on
-    `ops-monitor` — is fixed."""
+    persists nothing until the underlying problem is fixed — usually the state directory not
+    yet being owned by this container's uid, see `compose.prod.yml`'s comment on `ops-monitor`
+    and `remote.sh`'s `ensure_ops_monitor_state_dir`."""
     try:
         dump(state, path)
     except OSError as exc:
@@ -409,7 +459,9 @@ async def poll_loop(settings: OpsMonitorSettings, runtime: MonitorRuntime, maile
                     now=now,
                 )
             except Exception as exc:  # the loop itself must survive one bad cycle
-                runtime.last_cycle_error = str(exc)[:300]
+                # last_cycle_error surfaces on /status (round 2's redaction) — a summary, never
+                # the raw message; the full text still reaches this process's own log line.
+                runtime.last_cycle_error = summarize_exception(exc)
                 log.error("ops_monitor.cycle_failed", error=str(exc)[:300])
 
             # Written every cycle regardless of outcome — this is "the loop is alive",

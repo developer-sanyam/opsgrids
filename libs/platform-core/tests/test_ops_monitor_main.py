@@ -205,52 +205,131 @@ class TestRevertNotificationBookkeeping:
         assert reverted.last_digest_date == "2025-12-31"
 
 
-class TestDeliver:
+def _at_cap(n: int = 12) -> MonitorRuntime:
+    runtime = MonitorRuntime()
+    runtime.sent_at_history = [NOW - timedelta(minutes=i) for i in range(n)]
+    return runtime
+
+
+class TestDeliverSendFailureRetry:
+    """M6: a failed send does not commit until the retry cap — `_deliver` now returns the list
+    of notifications to revert (empty list means "nothing to revert")."""
+
     async def test_a_successful_send_commits_and_records_history(self) -> None:
         runtime = MonitorRuntime()
         mailer = _FakeMailer(outcomes=[True])
         settings = _settings()
-        committed = await _deliver(
-            settings,
-            runtime,
-            mailer,
-            [Notification(check="disk", kind="firing", detail="d")],
-            NOW,
+        reverted = await _deliver(
+            settings, runtime, mailer, [Notification(check="disk", kind="firing", detail="d")], NOW
         )
-        assert committed is True
+        assert reverted == []
         assert runtime.sent_at_history == [NOW]
         assert runtime.consecutive_send_failures == 0
 
-    async def test_a_failed_send_does_not_commit_until_the_retry_cap(self) -> None:
+    async def test_a_failed_send_reverts_until_the_retry_cap(self) -> None:
+        runtime = MonitorRuntime()
+        mailer = _FakeMailer(outcomes=[False])
+        settings = _settings(ops_monitor_max_immediate_send_retries=3)
+        note = [Notification(check="disk", kind="reminder", detail="d")]
+
+        for _ in range(3):
+            reverted = await _deliver(settings, runtime, mailer, note, NOW)
+            assert reverted == note
+        # The 4th consecutive failure exceeds the cap and is accepted (nothing more to revert).
+        reverted = await _deliver(settings, runtime, mailer, note, NOW)
+        assert reverted == []
+        assert runtime.consecutive_send_failures == 0
+
+    async def test_a_failed_send_of_an_exempt_kind_still_reverts_it(self) -> None:
+        """`firing`/`digest` are exempt from the *cap*, not from an actual send failure —
+        if the mailer itself is down, everything in the batch failed to deliver."""
         runtime = MonitorRuntime()
         mailer = _FakeMailer(outcomes=[False])
         settings = _settings(ops_monitor_max_immediate_send_retries=3)
         note = [Notification(check="disk", kind="firing", detail="d")]
 
-        for _ in range(3):
-            committed = await _deliver(settings, runtime, mailer, note, NOW)
-            assert committed is False
-        # The 4th consecutive failure exceeds the cap and is accepted as committed.
-        committed = await _deliver(settings, runtime, mailer, note, NOW)
-        assert committed is True
-        assert runtime.consecutive_send_failures == 0
+        reverted = await _deliver(settings, runtime, mailer, note, NOW)
+        assert reverted == note
 
-    async def test_the_hourly_cap_suppresses_without_calling_the_mailer(self) -> None:
-        runtime = MonitorRuntime()
-        runtime.sent_at_history = [NOW - timedelta(minutes=i) for i in range(12)]
+
+class TestDeliverRateCap:
+    """M3 (round 2): the per-hour cap holds back reminders/resolved notices — never a brand
+    new `firing` or the daily digest — and queues what it holds back so the next email under
+    the cap still lists every check that was waiting, by name."""
+
+    async def test_a_reminder_is_suppressed_without_calling_the_mailer(self) -> None:
+        runtime = _at_cap()
         mailer = _FakeMailer(outcomes=[True])
         settings = _settings(ops_monitor_max_emails_per_hour=12)
 
-        committed = await _deliver(
+        reverted = await _deliver(
             settings,
             runtime,
             mailer,
-            [Notification(check="disk", kind="firing", detail="d")],
+            [Notification(check="disk", kind="reminder", detail="d")],
             NOW,
         )
-        assert committed is True  # a policy choice, not a failure — no retry needed
+        assert len(reverted) == 1
         assert mailer.calls == 0
-        assert runtime.suppressed_count == 1
+        assert [n.check for n in runtime.pending_notifications] == ["disk"]
+
+    async def test_a_new_firing_is_never_suppressed_even_at_the_cap(self) -> None:
+        runtime = _at_cap()
+        mailer = _FakeMailer(outcomes=[True])
+        settings = _settings(ops_monitor_max_emails_per_hour=12)
+
+        reverted = await _deliver(
+            settings, runtime, mailer, [Notification(check="cert", kind="firing", detail="d")], NOW
+        )
+        assert reverted == []
+        assert mailer.calls == 1
+        assert mailer.sent[0][0]  # a subject was actually built and sent
+
+    async def test_the_digest_is_never_suppressed_even_at_the_cap(self) -> None:
+        runtime = _at_cap()
+        mailer = _FakeMailer(outcomes=[True])
+        settings = _settings(ops_monitor_max_emails_per_hour=12)
+
+        reverted = await _deliver(
+            settings,
+            runtime,
+            mailer,
+            [Notification(check="*", kind="digest", detail="all quiet")],
+            NOW,
+        )
+        assert reverted == []
+        assert mailer.calls == 1
+
+    async def test_a_new_check_opening_while_capped_is_named_in_the_next_sent_email(self) -> None:
+        """m3's own scenario: a reminder gets capped, then on a later cycle (window freed) a
+        brand new check opens — the email that goes out must name BOTH."""
+        runtime = _at_cap()
+        mailer = _FakeMailer(outcomes=[True])
+        settings = _settings(ops_monitor_max_emails_per_hour=12)
+
+        await _deliver(
+            settings,
+            runtime,
+            mailer,
+            [Notification(check="disk", kind="reminder", detail="d")],
+            NOW,
+        )
+        assert mailer.calls == 0  # still capped
+
+        # The window frees (old history ages out) and a different check opens for real.
+        runtime.sent_at_history = []
+        reverted = await _deliver(
+            settings,
+            runtime,
+            mailer,
+            [Notification(check="cert", kind="firing", detail="expiring")],
+            NOW + timedelta(hours=1, minutes=1),
+        )
+        assert reverted == []
+        _subject, body = mailer.sent[0]
+        assert "cert" in body
+        assert "disk" in body  # the previously-capped check is not lost
+        assert runtime.pending_notifications == []
 
     async def test_history_older_than_an_hour_is_pruned_before_checking_the_cap(self) -> None:
         runtime = MonitorRuntime()
@@ -258,12 +337,40 @@ class TestDeliver:
         mailer = _FakeMailer(outcomes=[True])
         settings = _settings(ops_monitor_max_emails_per_hour=12)
 
-        committed = await _deliver(
+        reverted = await _deliver(
             settings,
             runtime,
             mailer,
-            [Notification(check="disk", kind="firing", detail="d")],
+            [Notification(check="disk", kind="reminder", detail="d")],
             NOW,
         )
-        assert committed is True
+        assert reverted == []
         assert mailer.calls == 1  # not suppressed — the old history had already aged out
+
+
+class TestUndeliveredResolvedCarriedForward:
+    """m4: a `resolved` notice that could not be sent this cycle (capped, or a failed send)
+    must not simply vanish — nothing about the check's own state will ever regenerate it, since
+    the check is already back to OK by the time `evaluate()` produces it."""
+
+    async def test_a_capped_resolved_notice_is_queued_and_sent_once_the_window_frees(self) -> None:
+        runtime = _at_cap()
+        mailer = _FakeMailer(outcomes=[True])
+        settings = _settings(ops_monitor_max_emails_per_hour=12)
+
+        await _deliver(
+            settings,
+            runtime,
+            mailer,
+            [Notification(check="disk", kind="resolved", detail="back to normal")],
+            NOW,
+        )
+        assert mailer.calls == 0
+        assert [n.check for n in runtime.pending_notifications] == ["disk"]
+
+        runtime.sent_at_history = []
+        reverted = await _deliver(settings, runtime, mailer, [], NOW + timedelta(hours=1))
+        assert reverted == []
+        assert mailer.calls == 1
+        assert "disk" in mailer.sent[0][1]
+        assert "back to normal" in mailer.sent[0][1]

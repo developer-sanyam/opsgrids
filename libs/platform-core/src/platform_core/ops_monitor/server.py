@@ -19,7 +19,7 @@ from fastapi.responses import PlainTextResponse
 
 from platform_core.metrics import Sample, render
 from platform_core.ops_monitor.mailer import Mailer
-from platform_core.ops_monitor.state import MonitorState, Status
+from platform_core.ops_monitor.state import MonitorState, Notification, Status
 
 
 @dataclass
@@ -34,12 +34,15 @@ class MonitorRuntime:
     state: MonitorState = field(default_factory=MonitorState)
     last_cycle_at: datetime | None = None
     last_cycle_error: str | None = None
-    #: M6/m9 delivery bookkeeping — not persisted (`state.py`'s `MonitorState` carries only
+    #: M6/M3 delivery bookkeeping — not persisted (`state.py`'s `MonitorState` carries only
     #: check history), because it describes this *process's* recent sending, not a fact about
     #: any check: a restart is allowed to start the hourly cap and the retry count fresh.
     sent_at_history: list[datetime] = field(default_factory=list)
     consecutive_send_failures: int = 0
-    suppressed_count: int = 0
+    #: M3/m4: notifications held back by the per-hour cap or by a failed send, carried forward
+    #: to the next cycle so they are not lost — named by check on `/status` rather than reduced
+    #: to a bare count, so "which checks are waiting" is visible without reading logs.
+    pending_notifications: list[Notification] = field(default_factory=list)
 
 
 _HELP = {
@@ -93,7 +96,7 @@ def render_status(runtime: MonitorRuntime, mailer: Mailer) -> dict[str, Any]:
             }
             for name, cs in sorted(runtime.state.checks.items())
         },
-        "notifications_suppressed_this_hour": runtime.suppressed_count,
+        "pending_notifications": sorted(n.check for n in runtime.pending_notifications),
         "consecutive_send_failures": runtime.consecutive_send_failures,
         **mailer.status(),
     }

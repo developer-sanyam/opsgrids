@@ -8,7 +8,13 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from platform_core.ops_monitor.config import OpsMonitorSettings
+from platform_core.ops_monitor.config import (
+    CORE_API_CONTAINERS,
+    CORE_DLQ_QUEUES,
+    OpsMonitorSettings,
+    expected_api_containers,
+    expected_dlq_queues,
+)
 
 
 class TestSchemaNameValidation:
@@ -47,6 +53,70 @@ class TestDlqAndApiNameValidation:
     def test_an_invalid_api_container_name_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="OPS_MONITOR_API_CONTAINERS"):
             OpsMonitorSettings(ops_monitor_api_containers="not a hostname")
+
+
+class TestExpectedNamesFromProfiles:
+    """B1 (round 2): what this monitor checks is derived from `COMPOSE_PROFILES`, never from
+    what happens to answer a probe — a container this box's profiles say should exist is
+    checked whether or not it currently resolves; that is exactly the point (B1's fix)."""
+
+    def test_no_profiles_is_core_only(self) -> None:
+        assert expected_api_containers([]) == list(CORE_API_CONTAINERS)
+        assert expected_dlq_queues([]) == list(CORE_DLQ_QUEUES)
+
+    def test_hrms_adds_its_own_api_containers_and_queues(self) -> None:
+        containers = expected_api_containers(["hrms"])
+        assert containers == [*CORE_API_CONTAINERS, "approval", "employee", "attendance", "leave"]
+        queues = expected_dlq_queues(["hrms"])
+        assert queues == [*CORE_DLQ_QUEUES, "approval.events", "attendance.events", "leave.events"]
+
+    def test_a_profile_with_no_worker_adds_containers_but_no_queues(self) -> None:
+        """`crm` runs `customer`/`deal` APIs but neither has a worker container — its queue
+        list must not silently invent one."""
+        assert expected_api_containers(["crm"]) == [*CORE_API_CONTAINERS, "customer", "deal"]
+        assert expected_dlq_queues(["crm"]) == list(CORE_DLQ_QUEUES)
+
+    def test_every_profile_together_is_the_full_platform(self) -> None:
+        all_profiles = [
+            "inventory",
+            "storefront",
+            "hrms",
+            "crm",
+            "pulseboard",
+            "projects",
+            "support",
+            "marketing",
+            "finance",
+            "itsm",
+        ]
+        containers = expected_api_containers(all_profiles)
+        # Every core container, plus every profile's own — nothing dropped, nothing duplicated.
+        assert len(containers) == len(set(containers))
+        assert set(CORE_API_CONTAINERS) <= set(containers)
+        assert "operations" in containers  # inventory
+        assert "storefront" in containers and "document" in containers
+        assert "finance" in containers and "itsm" in containers
+
+    def test_settings_computes_the_same_list_end_to_end(self) -> None:
+        settings = OpsMonitorSettings(compose_profiles="hrms,finance")
+        assert settings.ops_monitor_api_containers == expected_api_containers(["hrms", "finance"])
+        assert settings.ops_monitor_dlq_queues == expected_dlq_queues(["hrms", "finance"])
+
+    def test_an_explicit_override_replaces_the_computed_list_entirely(self) -> None:
+        settings = OpsMonitorSettings(
+            compose_profiles="hrms", ops_monitor_api_containers="auth,employee"
+        )
+        assert settings.ops_monitor_api_containers == ["auth", "employee"]
+
+
+class TestComposeProfilesValidation:
+    def test_a_plain_profile_name_is_accepted(self) -> None:
+        settings = OpsMonitorSettings(compose_profiles="hrms,finance")
+        assert settings.compose_profiles == ["hrms", "finance"]
+
+    def test_an_invalid_profile_name_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="COMPOSE_PROFILES"):
+            OpsMonitorSettings(compose_profiles="hrms;drop table x")
 
 
 class TestProductionSecretGuardIsSkipped:

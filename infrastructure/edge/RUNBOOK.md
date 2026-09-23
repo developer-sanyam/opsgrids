@@ -651,6 +651,14 @@ through a small state machine (`libs/platform-core/src/platform_core/ops_monitor
 emails `OPS_ALERT_EMAIL` — direct SMTP, reusing the box's own `EMAIL_FROM`/`SMTP_*`,
 **deliberately not through notification-service**, which is one of the things being watched.
 
+**`.env` keys this feature added** (`.env.example` has the full comment for each):
+`OPS_ALERT_EMAIL` (optional — empty means alerts are logged only), `OPS_MONITOR_API_CONTAINERS`
+and `OPS_MONITOR_DLQ_QUEUES` (optional — empty means derive from `COMPOSE_PROFILES`, which
+already exists), and `SMTP_USE_SSL` (optional, defaults `false` — implicit TLS on 465 instead
+of STARTTLS on 587, for a provider that only offers SMTPS). None of the four are required; a
+box with none of them set still runs every check and still logs `ops.alert.firing`, it just
+pages nobody until `OPS_ALERT_EMAIL`/`SMTP_HOST` are filled in.
+
 **Hysteresis, so a single blip does not page anyone:** a check needs 3 consecutive failing
 polls (about 3 minutes) before it *opens* and sends one email; once open it *reminds* every 6
 hours for as long as it keeps failing; 3 consecutive good polls *resolves* it and sends one more
@@ -690,6 +698,15 @@ finds them.
 **What this does not cover**, named so nobody assumes otherwise: a merchant's *own* custom
 domain's certificate (that is the claim row and the sweep, next section), and anything that
 needs a human's judgment rather than a threshold — this pages on symptoms, not root causes.
+
+**If `ops-monitor` restart-loops instead of running:** it runs as the `product` image's own
+non-root user (never the `deploy` user's uid — those are not guaranteed to match on this box;
+Azure's own provisioning already takes uid 1000 for `azureuser`), and needs
+`/srv/opsgrids/state/ops-monitor` to exist and be owned by that same uid before it can write its
+state file and heartbeat. `remote.sh up`'s `ensure_ops_monitor_state_dir` creates and chowns it
+automatically on every deploy — `make edge-preflight` also checks and warns if it is out of
+sync. If you ever need to fix it by hand outside a deploy: `ssh` to the box and run
+`infrastructure/edge/remote.sh up` (safe to run alone; it recreates only what changed).
 
 ## Certificates, and how a human ever finds out
 

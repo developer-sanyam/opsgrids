@@ -23,6 +23,7 @@ from email.message import EmailMessage
 
 from platform_core.logging import get_logger
 from platform_core.ops_monitor.config import OpsMonitorSettings
+from platform_core.ops_monitor.redact import summarize_exception
 
 log = get_logger("ops_monitor")
 
@@ -38,6 +39,10 @@ class Mailer:
         return self._settings.smtp_configured
 
     def status(self) -> dict[str, str | None]:
+        """Never the actual `OPS_ALERT_EMAIL` address (round 2) — `/status` is reachable,
+        unauthenticated, to anything already on `back`, a much larger audience than this box's
+        own `.env`. Whether alerts are configured at all, and whether the last one landed, is
+        all that endpoint needs to say."""
         if not self.configured:
             return {
                 "email": "disabled — SMTP_HOST/OPS_ALERT_EMAIL/EMAIL_FROM not set",
@@ -45,7 +50,7 @@ class Mailer:
                 "last_error": self.last_error,
             }
         return {
-            "email": f"enabled — alerts to {self._settings.ops_alert_email}",
+            "email": "enabled",
             "last_send_at": self.last_send_at,
             "last_error": self.last_error,
         }
@@ -61,7 +66,9 @@ class Mailer:
             await asyncio.to_thread(self._send_sync, subject, body)
         except Exception as exc:  # reported, not raised: a bad send must not crash the loop
             log.error("ops.alert.send_failed", subject=subject, error=str(exc)[:300])
-            self.last_error = str(exc)[:300]
+            # last_error surfaces on /status (round 2's redaction) — a summary, never the raw
+            # message, which could carry the SMTP host or another operational detail.
+            self.last_error = summarize_exception(exc)
             return False
         self.last_send_at = datetime.now(UTC).isoformat()
         self.last_error = None

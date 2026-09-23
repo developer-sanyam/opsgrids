@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from typing import Annotated, Final
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import NoDecode
 
 from platform_core.config import ServiceSettings
@@ -44,9 +44,7 @@ def _validate_identifiers(
 
 
 #: The API containers that run regardless of `COMPOSE_PROFILES` (`memory-budget.json`'s
-#: `profile: null` entries, kind `api`) — the safe default for `OPS_MONITOR_API_CONTAINERS`.
-#: A box that enables a product profile adds that product's own API name(s) to its `.env`;
-#: nothing here assumes a container this box's profiles do not run.
+#: `profile: null` entries, kind `api`) — always checked, whatever profiles are enabled.
 CORE_API_CONTAINERS: Final[tuple[str, ...]] = (
     "auth",
     "account",
@@ -61,9 +59,7 @@ CORE_API_CONTAINERS: Final[tuple[str, ...]] = (
 )
 
 #: The consumer queues the always-on workers bind (`compose.prod.yml`'s `profile: null`
-#: `*-worker` containers) — the safe default for `OPS_MONITOR_DLQ_QUEUES`. Each is checked as
-#: `{queue}.dlq`. Same reasoning as `CORE_API_CONTAINERS`: a product profile's own worker adds
-#: its own queue name(s) via `.env`.
+#: `*-worker` containers) — always checked. Each is checked as `{queue}.dlq`.
 CORE_DLQ_QUEUES: Final[tuple[str, ...]] = (
     "account.events",
     "product.events",
@@ -73,9 +69,58 @@ CORE_DLQ_QUEUES: Final[tuple[str, ...]] = (
     "notification.dispatch",
 )
 
+#: B1/m6: which API containers exist for a given `COMPOSE_PROFILES` entry — the same
+#: container -> profile mapping `infrastructure/edge/memory-budget.json` prices, for `kind:
+#: "api"`, kept here as a second, static copy rather than parsed from that file at runtime: this
+#: process must still know what *should* exist even if the JSON file is unreadable, and the
+#: whole point of B1 is that "what should exist" cannot depend on anything that could itself be
+#: down. `tests/infra/test_ops_monitor_profile_containers.py` is the gate that keeps the two in
+#: sync — a profile added to one and not the other fails there, by name, before it ships.
+PROFILE_API_CONTAINERS: Final[dict[str, tuple[str, ...]]] = {
+    "storefront": ("storefront", "document"),
+    "inventory": ("operations",),
+    "hrms": ("approval", "employee", "attendance", "leave"),
+    "crm": ("customer", "deal"),
+    "pulseboard": ("project", "timesheet", "standup"),
+    "projects": ("projects",),
+    "support": ("support",),
+    "marketing": ("marketing",),
+    "finance": ("finance",),
+    "itsm": ("itsm",),
+}
+
+#: B1/m6: which DLQ-bearing worker exists for a given `COMPOSE_PROFILES` entry — only profiles
+#: whose worker actually consumes events get an entry; `storefront`, `inventory`, `crm`,
+#: `pulseboard`, `projects`, `support`, `marketing` and `itsm` run no consumer today
+#: (`compose.prod.yml` has no `*-worker`/`scheduler`-shaped container for them), so they are
+#: absent here on purpose, not by omission.
+PROFILE_DLQ_QUEUES: Final[dict[str, tuple[str, ...]]] = {
+    "hrms": ("approval.events", "attendance.events", "leave.events"),
+    "finance": ("finance.events", "scheduler.events"),
+}
+
 
 def _parse_csv(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def expected_api_containers(profiles: list[str]) -> list[str]:
+    """Every API container this box's `COMPOSE_PROFILES` says should exist — core always,
+    plus each enabled profile's own. Order is deterministic (core first, then profiles in the
+    order given, each profile's own containers in the order `PROFILE_API_CONTAINERS` lists
+    them) so a rendered `.env` or a test fixture can compare it literally."""
+    result = list(CORE_API_CONTAINERS)
+    for profile in profiles:
+        result.extend(PROFILE_API_CONTAINERS.get(profile, ()))
+    return result
+
+
+def expected_dlq_queues(profiles: list[str]) -> list[str]:
+    """The DLQ-bearing counterpart of `expected_api_containers`."""
+    result = list(CORE_DLQ_QUEUES)
+    for profile in profiles:
+        result.extend(PROFILE_DLQ_QUEUES.get(profile, ()))
+    return result
 
 
 class OpsMonitorSettings(ServiceSettings):
@@ -135,20 +180,29 @@ class OpsMonitorSettings(ServiceSettings):
     #: pool slot) for the rest of the cycle.
     ops_monitor_outbox_statement_timeout_seconds: float = 10.0
 
+    #: B1: this box's own `COMPOSE_PROFILES` — read so `ops_monitor_api_containers`/
+    #: `ops_monitor_dlq_queues` can default to "every container/queue this box actually runs"
+    #: rather than a fixed guess. `compose.prod.yml` passes it straight through
+    #: (`COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}`) — the same variable that already decides
+    #: which containers docker compose itself starts, so there is one source of truth for
+    #: "what does this box run", not two that can drift.
+    compose_profiles: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
     # --- DLQ depth (checks.check_dlq_depth) -------------------------------------------------
-    ops_monitor_dlq_queues: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: list(CORE_DLQ_QUEUES)
-    )
+    #: Comma-separated. Empty means "derive from COMPOSE_PROFILES" (`expected_dlq_queues`) —
+    #: core always, plus each enabled profile's own worker queue. Set explicitly only to
+    #: narrow or add to that computed list; setting it REPLACES the computed list entirely.
+    ops_monitor_dlq_queues: Annotated[list[str], NoDecode] = Field(default_factory=list)
     #: M4: how long `aio_pika.connect` (not `connect_robust`, which retries forever) waits for
     #: the broker before the DLQ check gives up and reports failing rather than hanging.
     ops_monitor_amqp_connect_timeout_seconds: float = 5.0
 
     # --- API readiness (checks.check_api_readiness) -----------------------------------------
     #: `name[:port]`, comma-separated. `name` is also the compose service's DNS name on `back`;
-    #: port defaults to 8000, every API container's own port.
-    ops_monitor_api_containers: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: list(CORE_API_CONTAINERS)
-    )
+    #: port defaults to 8000, every API container's own port. Empty means "derive from
+    #: COMPOSE_PROFILES" (`expected_api_containers`) — same replace-not-append rule as
+    #: `ops_monitor_dlq_queues` above if set explicitly.
+    ops_monitor_api_containers: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     # --- disk (checks.check_disk) ------------------------------------------------------------
     ops_monitor_disk_path: str = "/"
@@ -203,7 +257,9 @@ class OpsMonitorSettings(ServiceSettings):
         )
         return v
 
-    @field_validator("ops_monitor_dlq_queues", "ops_monitor_api_containers", mode="before")
+    @field_validator(
+        "ops_monitor_dlq_queues", "ops_monitor_api_containers", "compose_profiles", mode="before"
+    )
     @classmethod
     def _parse_lists(cls, v: object) -> object:
         if isinstance(v, str):
@@ -222,6 +278,24 @@ class OpsMonitorSettings(ServiceSettings):
             [entry.split(":")[0] for entry in v], field_name="OPS_MONITOR_API_CONTAINERS"
         )
         return v
+
+    @field_validator("compose_profiles")
+    @classmethod
+    def _validate_compose_profiles(cls, v: list[str]) -> list[str]:
+        return _validate_identifiers(
+            v, field_name="COMPOSE_PROFILES", pattern=_VALID_SCHEMA_IDENTIFIER
+        )
+
+    @model_validator(mode="after")
+    def _default_expected_names_from_profiles(self) -> OpsMonitorSettings:
+        """B1: an empty `ops_monitor_api_containers`/`ops_monitor_dlq_queues` means "derive
+        from `compose_profiles`" rather than "check nothing" — filled in here, once, after
+        every field has its own parsed/validated value, since the derivation needs both."""
+        if not self.ops_monitor_api_containers:
+            self.ops_monitor_api_containers = expected_api_containers(self.compose_profiles)
+        if not self.ops_monitor_dlq_queues:
+            self.ops_monitor_dlq_queues = expected_dlq_queues(self.compose_profiles)
+        return self
 
     def model_post_init(self, __context: object) -> None:
         """`ServiceSettings`'s production guard, minus the half of it about secrets this
