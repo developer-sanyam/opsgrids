@@ -38,6 +38,15 @@
       "resource": "stock"
     },
     {
+      "action": "reserve",
+      "default_scope": "ORG",
+      "description": "Reserve stock for a demand, and release a reservation's open remainder",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "stock"
+    },
+    {
       "action": "read",
       "default_scope": "ORG",
       "description": "See warehouses",
@@ -125,6 +134,10 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.stock.reserve",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.warehouse.read",
           "scope": "ORG"
         },
@@ -172,6 +185,10 @@
         },
         {
           "code": "operations.inventory.stock.adjust",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.stock.reserve",
           "scope": "ORG"
         },
         {

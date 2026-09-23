@@ -75,7 +75,7 @@ async def get_operator_session(
         yield session
 
 
-SessionDep = Annotated[AsyncSession, Depends(get_operator_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_operator_session, scope="function")]
 
 
 def get_product_registry(request: Request) -> ProductRegistry:

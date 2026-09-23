@@ -11,12 +11,16 @@
 import type {
   Category,
   InventoryItemOut,
+  ItemAttributeOut,
+  ItemCategoryOut,
+  ItemVariantOut,
   PurchaseOrderOut,
   SpendPoint,
   SpendRange,
   StockMovementOut,
   SupplierOut,
   SupplierStatus,
+  UomOut,
   WarehouseOut,
 } from "./types";
 
@@ -327,7 +331,61 @@ export const INVENTORY: InventoryItemOut[] = INVENTORY_SEEDS.map((s, i) => ({
   unit_value_minor: inr(s.unitValue),
   currency: CURRENCY,
   updated_at: s.updated,
+  item_category_id: null,
+  secondary_uom_id: null,
+  hsn_code: "",
+  track_lot: false,
+  track_roll: false,
+  track_expiry: false,
+  track_quality: false,
+  is_active: true,
 }));
+
+/* ------------------------------ item master (Phase 1) ---------------------- */
+
+const categoryUuid = (n: number): string =>
+  `90770000-0000-4000-8000-${n.toString().padStart(12, "0")}`;
+
+/** A small illustrative tree — enough for the category picker and list filter to render
+ *  something real in fixture mode. Mutated in place by fixture writes, like `SUPPLIERS`. */
+export const ITEM_CATEGORIES: ItemCategoryOut[] = [
+  { id: categoryUuid(1), code: "METALS", name: "Metals", parent_id: null },
+  { id: categoryUuid(2), code: "POLYMERS", name: "Polymers", parent_id: null },
+  { id: categoryUuid(3), code: "FASTENERS", name: "Fasteners", parent_id: null },
+  { id: categoryUuid(4), code: "STEEL", name: "Steel", parent_id: categoryUuid(1) },
+  { id: categoryUuid(5), code: "ALUMINIUM", name: "Aluminium", parent_id: categoryUuid(1) },
+];
+
+const uomUuid = (n: number): string => `91880000-0000-4000-8000-${n.toString().padStart(12, "0")}`;
+
+/** The fixed-registry units a fresh organization sees, mirroring
+ *  `app.inventory.quantity.UNIT_NAMES` closely enough for fixture-mode pickers. */
+export const UOMS: UomOut[] = [
+  { code: "mm", name: "Millimetre", dimension: "length" },
+  { code: "cm", name: "Centimetre", dimension: "length" },
+  { code: "m", name: "Metre", dimension: "length" },
+  { code: "mg", name: "Milligram", dimension: "mass" },
+  { code: "g", name: "Gram", dimension: "mass" },
+  { code: "kg", name: "Kilogram", dimension: "mass" },
+  { code: "t", name: "Tonne", dimension: "mass" },
+  { code: "l", name: "Litre", dimension: "volume" },
+  { code: "pcs", name: "Piece", dimension: "count" },
+  { code: "box", name: "Box", dimension: "box" },
+  { code: "roll", name: "Roll", dimension: "roll" },
+].map((u, i) => ({
+  id: uomUuid(i + 1),
+  code: u.code,
+  name: u.name,
+  dimension: u.dimension,
+  is_discrete: ["pcs", "box", "roll"].includes(u.code),
+  is_system: true,
+}));
+
+/** Mutated in place by fixture writes, keyed by inventory item id — same shape `MOVEMENTS`
+ *  already uses for a one-to-many fixture relationship. */
+export const ITEM_ATTRIBUTES: Record<string, ItemAttributeOut[]> = {};
+
+export const ITEM_VARIANTS: Record<string, ItemVariantOut[]> = {};
 
 /* --------------------------- spend over time (rep) ------------------------ */
 

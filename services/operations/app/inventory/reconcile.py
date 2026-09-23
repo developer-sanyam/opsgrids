@@ -49,7 +49,7 @@ _DRIFT_SQL = text(
          WHERE organization_id = :org
     ),
     reservations AS (
-        SELECT balance_id, SUM(quantity_milli - consumed_milli)::bigint AS total
+        SELECT balance_id, SUM(quantity_milli - consumed_milli - released_milli)::bigint AS total
           FROM {SCHEMA}.inventory_reservations
          WHERE organization_id = :org AND status = 'active'
          GROUP BY balance_id

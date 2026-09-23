@@ -59,7 +59,7 @@ wellknown = APIRouter(tags=["discovery"])
 # `CurrentPrincipal` takes `TenantSessionDep`, which opens the request's one transaction
 # and binds it to the caller's organization first (ADR-0002 §1); none of them opens its own.
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-TenantSessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+TenantSessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 
 
 def _set_refresh_cookie(response: Response, cfg: Settings, token: str) -> None:
