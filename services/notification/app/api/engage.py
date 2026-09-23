@@ -81,12 +81,18 @@ from app.schemas import (
     WhatsAppConnectionOut,
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
-from platform_core.db import get_session, get_tenant_session, set_tenant
+from platform_core.db import get_directory_session, get_session, get_tenant_session, set_tenant
 from platform_core.errors import NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 from platform_core.pii import mask as mask_pii
 
 router = APIRouter(tags=["engage"])
+
+#: The cross-tenant, BYPASSRLS, SELECT-only reader — the same one the webhook route resolves a
+#: tenant from. The WhatsApp connection writes below are the other caller: a phone number's
+#: global-uniqueness check must see every organization's row, which the tenant-scoped `session`
+#: (RLS-filtered to the caller's own organization) never can.
+DirectorySessionDep = Annotated[AsyncSession, Depends(get_directory_session)]
 
 #: **The tenancy chokepoint.** Opens the transaction and binds it to the caller's organization
 #: before the route body runs, so no route can read or write without one.
@@ -360,13 +366,18 @@ async def read_whatsapp_connection(
     dependencies=[Entitled],
 )
 async def connect_whatsapp(
-    body: WhatsAppConnectionIn, session: SessionDep, ctx: WhatsAppWrite, request: Request
+    body: WhatsAppConnectionIn,
+    session: SessionDep,
+    directory: DirectorySessionDep,
+    ctx: WhatsAppWrite,
+    request: Request,
 ) -> WhatsAppConnectionOut:
     """POST rather than PUT, for the reason `connect_provider` is: one organization gets one
     WhatsApp account and a second POST is refused rather than silently accepted."""
     row = await services.create_whatsapp_connection(
         session,
         ctx,
+        directory=directory,
         waba_id=body.waba_id,
         phone_number_id=body.phone_number_id,
         display_number=body.display_number,
@@ -383,11 +394,16 @@ async def connect_whatsapp(
     dependencies=[Entitled],
 )
 async def replace_whatsapp(
-    body: WhatsAppConnectionIn, session: SessionDep, ctx: WhatsAppWrite, request: Request
+    body: WhatsAppConnectionIn,
+    session: SessionDep,
+    directory: DirectorySessionDep,
+    ctx: WhatsAppWrite,
+    request: Request,
 ) -> WhatsAppConnectionOut:
     row = await services.replace_whatsapp_connection(
         session,
         ctx,
+        directory=directory,
         waba_id=body.waba_id,
         phone_number_id=body.phone_number_id,
         display_number=body.display_number,

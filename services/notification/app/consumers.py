@@ -124,37 +124,68 @@ async def fold_inbound_contact(
     message. A derived id namespaced against the raw event id keeps the two folds from treating
     each other's `processed_events` row as their own.
 
-    `resolve_contact(None) -> None`'s degrade path (see `app/contacts.py`) means this always
-    completes — a CRM that cannot be reached leaves `contact_id` unset rather than blocking or
-    retrying, and a later redelivery or manual retry resolves it once the CRM can answer.
+    **Only a definite answer is marked processed.** `app/contacts.ContactResolution.answered`
+    tells "the CRM said nobody" (write `None`, mark processed — asking again would waste a call on
+    a question already settled) apart from "the CRM could not be asked" (write nothing, mark
+    nothing — a transient outage must not permanently erase a match a *later* run could still
+    make, and must not be confused with the ledger's own redelivery guard, which exists for a
+    message Meta sends twice, not for a lookup this service itself declined to finish).
     """
     event_id = uuid.UUID(str(envelope["event_id"]))
     organization_id = uuid.UUID(str(envelope["organization_id"]))
     payload = envelope.get("payload") or {}
     conversation_id = uuid.UUID(str(payload["conversation_id"]))
+
+    # The envelope is the trusted tenant binding (it is what `session_scope` below binds the GUC
+    # to); the payload's own copy is a second statement of the same fact written by
+    # `fold_inbound_message`. The two must never disagree — if they do, something upstream is
+    # broken in a way worth refusing loudly rather than silently trusting whichever value is
+    # convenient.
+    payload_org = payload.get("organization_id")
+    if payload_org is not None and str(payload_org) != str(organization_id):
+        log.error(
+            "inbound.contact.envelope_payload_org_mismatch",
+            envelope_org=str(organization_id),
+        )
+        return
+
     fold_id = uuid.uuid5(event_id, "contact_resolve")
 
     async with session_scope(organization_id=organization_id) as session:
         if await already_processed(session, ProcessedEvent, fold_id):
             log.info("inbound.contact.redelivered", conversation_id=str(conversation_id))
             return
-        contact_id: str | None = None
-        if resolve_contact is not None:
-            conversation = await selectors.get_conversation(
-                session, organization_id, conversation_id
-            )
-            if conversation is not None:
-                phone = pii.open_sealed(conversation.wa_address_enc, settings=settings())
-                contact_id = await resolve_contact(str(organization_id), phone)
+
+        if resolve_contact is None:
+            log.error("inbound.contact.no_resolver_configured")
+            return
+
+        conversation = await selectors.get_conversation(session, organization_id, conversation_id)
+        if conversation is None:
+            # Nothing to resolve a phone number for, and nothing to retry — the conversation this
+            # event named is gone (deleted, or a stale redelivery of an org that never had it).
+            return
+
+        phone = pii.open_sealed(conversation.wa_address_enc, settings=settings())
+        resolution = await resolve_contact(str(organization_id), phone)
+
+        if not resolution.answered:
+            # No definite answer — leave the conversation exactly as it is (including a contact
+            # id an earlier, successful run already wrote) and mark nothing processed, so a later
+            # redelivery or a manual replay gets a real second attempt rather than a permanent
+            # "already handled" that was never actually answered.
+            log.warning("inbound.contact.unanswered", conversation_id=str(conversation_id))
+            return
+
         await services.resolve_conversation_contact(
             session,
             organization_id=organization_id,
             conversation_id=conversation_id,
-            contact_id=contact_id,
+            contact_id=resolution.contact_id,
         )
         mark_processed(session, ProcessedEvent, fold_id, "notification.whatsapp.contact_resolved")
 
-    log.info("inbound.contact.resolved", matched=contact_id is not None)
+    log.info("inbound.contact.resolved", matched=resolution.contact_id is not None)
 
 
 def register(

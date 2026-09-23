@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Can, useAsync } from "@opsgrids/client";
 import {
@@ -144,6 +144,14 @@ function Composer({
   // not need a whole poll cycle to catch up with the one response that just told it so.
   const [closedLocally, setClosedLocally] = useState(false);
 
+  // One key per draft, not per click: a network failure that actually reached the server (the
+  // response was what got lost, not the request) must resolve on retry to the *same* message,
+  // never a second one. Cleared on a successful send and whenever the draft is edited, so a
+  // changed message is honestly a new one — only a bare retry of the exact text just refused
+  // reuses the key that refusal already carried.
+  const idempotencyKeyRef = useRef<string | null>(null);
+  const lastKeyedBodyRef = useRef<string>("");
+
   const windowClosed = closedLocally || !conversation.within_service_window;
 
   useEffect(() => {
@@ -154,6 +162,14 @@ function Composer({
 
   const deadline = windowDeadline(conversation);
 
+  function keyFor(text: string): string {
+    if (idempotencyKeyRef.current === null || lastKeyedBodyRef.current !== text) {
+      idempotencyKeyRef.current = crypto.randomUUID();
+      lastKeyedBodyRef.current = text;
+    }
+    return idempotencyKeyRef.current;
+  }
+
   async function submit() {
     const text = body.trim();
     if (pending || text === "") return;
@@ -162,8 +178,9 @@ function Composer({
     try {
       const result = await replyToConversation(conversation.id, {
         body: text,
-        idempotency_key: crypto.randomUUID(),
+        idempotency_key: keyFor(text),
       });
+      idempotencyKeyRef.current = null;
       setBody("");
       onSent(result.state);
     } catch (caught) {

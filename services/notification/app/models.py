@@ -504,10 +504,22 @@ class InboundMessage(Base, TenantBase):
     duplicate message in someone's inbox).
 
     Only `type == "text"` has a body. Meta's other shapes — media, interactive replies — are not
-    parsed (`webhooks.parse_inbound`'s docstring says why), so `body_enc` is null and `raw` is the
-    whole of what was kept. `body_masked` is the safe, always-present preview: an ordinary read
-    shows it, and `engage.inbox.message.unmask` — the dangerous, audited permission — is the only
-    way to see `body_enc` opened (`services.unmask_inbound_message`).
+    parsed (`webhooks.parse_inbound`'s docstring says why), so `body_enc` is null. `body_masked`
+    is a **fixed-length** placeholder, never derived from the real text: a length- or tail-
+    revealing mask on free-form customer text leaks the one thing masking exists to hide, in a way
+    a masked phone number or email does not — there is no fixed convention for "the last four
+    characters of a sentence" the way there is for a card or an account number. Unmasking either
+    field is `engage.inbox.message.unmask` — the dangerous, audited permission
+    (`services.unmask_inbound_message`) — the only route that opens `body_enc` or `raw_enc`.
+
+    `raw_enc` is the provider's own message object, whole, **sealed** — it carries `from`, the
+    text body, and whatever Meta's next media or interactive shape puts in it, none of which may
+    sit in the clear at rest. There is no plaintext `raw` column at all: a field this table does
+    not yet know to strip (`context.from`, a location, a media caption) must not become a gap by
+    omission the way an allowlist-of-things-to-redact would.
+
+    `profile_name` is sealed the same way for the same reason — a WhatsApp display name is a
+    customer's own chosen name, and `profile_name_masked` is what an ordinary read shows.
     """
 
     __tablename__ = "inbound_messages"
@@ -522,13 +534,16 @@ class InboundMessage(Base, TenantBase):
     #: interpreted; everything else is stored with `type` as given (see the class docstring).
     type: Mapped[str] = mapped_column(String(20), nullable=False)
     body_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
-    body_masked: Mapped[str] = mapped_column(String(300), nullable=False, default="")
-    #: The provider's own message object, whole. What a later parser reads once the interactive
-    #: and media shapes are confirmed, and the record of what arrived either way.
-    raw: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: A constant string when a body is sealed, empty when there is none — never a function of
+    #: the real text's length or content. See `services._BODY_MASK_PLACEHOLDER`.
+    body_masked: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    #: The provider's own message object, whole, sealed. See the class docstring.
+    raw_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    #: The sender's WhatsApp profile name, when Meta included one. Display only.
-    profile_name: Mapped[str | None] = mapped_column(String(200))
+    #: The sender's WhatsApp profile name, sealed. `None` when Meta included none.
+    profile_name_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    #: `"J•••"` — first character, then a fixed run of bullets, never the name's real length.
+    profile_name_masked: Mapped[str | None] = mapped_column(String(8))
 
     __table_args__ = (
         UniqueConstraint(
@@ -541,6 +556,36 @@ class InboundMessage(Base, TenantBase):
             "conversation_id",
             "occurred_at",
         ),
+    )
+
+
+class InboundDeadLetter(Base, TenantBase):
+    """One webhook item (a status or an inbound message) that failed to fold, parked here instead
+    of failing the whole `POST` it arrived in.
+
+    A single malformed or oversized item must not cost every other item in the same batch, or —
+    worse — Meta's own retry of the *whole* body, which repeats the same failure forever and
+    never lets the items beside it through either. `app/api/webhooks.py` wraps each item's fold in
+    its own `try`/`except`; this table is where the exception lands.
+
+    Deliberately holds **no PII and no re-playable payload** — `error` is truncated and is never
+    the exception's raw text (which could quote the offending body back), and there is no column
+    that could hold a phone number, a message body or a sender name. This is an operator's worklist
+    ("what needs attention"), not a queue this service replays automatically; a human decides
+    whether a repeated failure is worth chasing with Meta or the platform's own bug tracker.
+    """
+
+    __tablename__ = "inbound_dead_letters"
+
+    #: status | inbound. Which fold this item was headed for.
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    provider_message_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: The exception's type and a truncated message. Never the payload.
+    error: Mapped[str] = mapped_column(String(500), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("ix_inbound_dead_letters_org_created", "organization_id", "created_at"),
     )
 
 

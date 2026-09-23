@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
@@ -106,11 +108,14 @@ def verification_challenge(
 
 
 def phone_number_id(payload: dict[str, Any]) -> str | None:
-    """The number that received this webhook — the only thing that says whose tenant it is.
+    """The **first** number named anywhere in this webhook body.
 
-    None when the payload carries no metadata, which is how a malformed or unfamiliar webhook
-    presents. The caller acknowledges it rather than failing: Meta retries anything it does not
-    get a 200 for, and retrying a payload we will never understand is a loop.
+    Kept only for the tests that predate batching and for a caller that already knows a body
+    holds exactly one number. **Nothing that decides which organization a status or a message
+    belongs to may use this** — Meta batches several WABAs' changes into one POST behind a single
+    platform App Secret, and picking one number for the whole body is how one organization's
+    webhook silently rewrites another's. `group_statuses_by_phone` and `group_inbound_by_phone`
+    are the routing-safe replacement: they resolve the number **per `change`**, not per body.
     """
     for entry in payload.get("entry") or []:
         for change in entry.get("changes") or []:
@@ -119,6 +124,22 @@ def phone_number_id(payload: dict[str, Any]) -> str | None:
             if found:
                 return str(found)
     return None
+
+
+def _iter_changes(payload: dict[str, Any]) -> Iterator[tuple[str | None, dict[str, Any]]]:
+    """Every `change.value` in this body, paired with **that change's own** `phone_number_id`.
+
+    The one place both grouping functions below read `metadata.phone_number_id`, so there is
+    exactly one line that decides which change belongs to which number — and it is scoped to the
+    change, not to the payload, which is the whole fix for the cross-tenant misrouting a
+    payload-wide lookup caused.
+    """
+    for entry in payload.get("entry") or []:
+        for change in entry.get("changes") or []:
+            value = change.get("value") or {}
+            metadata = value.get("metadata") or {}
+            found = metadata.get("phone_number_id")
+            yield (str(found) if found else None, value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,22 +167,39 @@ class StatusUpdate:
 
 
 def parse_statuses(payload: dict[str, Any]) -> list[StatusUpdate]:
-    """Every status update in one webhook body.
+    """Every status update in one webhook body, flattened across every number it names.
 
-    A single POST can carry several, across several `entry` and `changes` objects, and Meta
-    batches them freely — so this flattens rather than assuming one. Anything unparseable is
-    skipped rather than raising: one malformed entry must not discard the others in the same
-    body, because Meta will not send them again separately.
+    Kept for tests and any caller that already knows a body carries exactly one organization's
+    changes. **The webhook route itself must use `group_statuses_by_phone`** — flattening across
+    numbers is exactly the shape that let one organization's status update land against another's
+    message before this was caught.
     """
     updates: list[StatusUpdate] = []
-    for entry in payload.get("entry") or []:
-        for change in entry.get("changes") or []:
-            value = change.get("value") or {}
-            for raw in value.get("statuses") or []:
-                update = _status_from(raw)
-                if update is not None:
-                    updates.append(update)
+    for grouped in group_statuses_by_phone(payload).values():
+        updates.extend(grouped)
     return updates
+
+
+def group_statuses_by_phone(payload: dict[str, Any]) -> dict[str, list[StatusUpdate]]:
+    """Every status update, grouped by **the phone number its own change named** — never by the
+    first number found anywhere in the body.
+
+    Meta batches several WABAs into one POST behind the platform's single App Secret, so a status
+    update for organization B's number can arrive in the same body as one for organization A's.
+    Resolving one organization for the whole payload (`phone_number_id`'s old role here) would
+    file B's receipt against A's messages. A change with no `phone_number_id` at all is dropped —
+    logged by the caller once it knows the number could not be resolved to an account, never here,
+    because this module holds no logger and touches no PII.
+    """
+    grouped: dict[str, list[StatusUpdate]] = {}
+    for phone_id, value in _iter_changes(payload):
+        if phone_id is None:
+            continue
+        for raw in value.get("statuses") or []:
+            update = _status_from(raw)
+            if update is not None:
+                grouped.setdefault(phone_id, []).append(update)
+    return grouped
 
 
 def _status_from(raw: dict[str, Any]) -> StatusUpdate | None:
@@ -247,27 +285,43 @@ class InboundMessage:
 
 
 def parse_inbound(payload: dict[str, Any]) -> list[InboundMessage]:
-    """Every customer message in one webhook body.
+    """Every customer message in one webhook body, flattened across every number it names.
 
-    Flattened across `entry` and `changes` for the same reason statuses are: Meta batches
-    freely and will not resend what a handler dropped. A message missing its id or sender is
-    skipped — there is nothing to thread it onto and nothing to deduplicate it by.
+    Kept for tests and any caller that already knows a body carries exactly one organization's
+    changes. **The webhook route itself must use `group_inbound_by_phone`** — the same
+    cross-tenant reasoning `parse_statuses`'s docstring gives applies here identically: a stranger
+    messaging organization B's number must never be filed as a message to organization A's
+    conversation because both changes shared one POST.
     """
     messages: list[InboundMessage] = []
-    for entry in payload.get("entry") or []:
-        for change in entry.get("changes") or []:
-            value = change.get("value") or {}
-            # `contacts` carries the sender's profile name, keyed by `wa_id`.
-            names = {
-                str(c.get("wa_id")): ((c.get("profile") or {}).get("name"))
-                for c in (value.get("contacts") or [])
-                if c.get("wa_id")
-            }
-            for raw in value.get("messages") or []:
-                parsed = _inbound_from(raw, names)
-                if parsed is not None:
-                    messages.append(parsed)
+    for grouped in group_inbound_by_phone(payload).values():
+        messages.extend(grouped)
     return messages
+
+
+def group_inbound_by_phone(payload: dict[str, Any]) -> dict[str, list[InboundMessage]]:
+    """Every customer message, grouped by **the phone number its own change named**.
+
+    See `group_statuses_by_phone`'s docstring for why a payload-wide number is unsafe. A change
+    with no `phone_number_id` is dropped rather than guessed at.
+    """
+    grouped: dict[str, list[InboundMessage]] = {}
+    for phone_id, value in _iter_changes(payload):
+        if phone_id is None:
+            continue
+        # `contacts` carries the sender's profile name, keyed by `wa_id`, scoped to this same
+        # change — a name from one number's `contacts` block must never be attached to a message
+        # from a different number that happened to share the body.
+        names = {
+            str(c.get("wa_id")): ((c.get("profile") or {}).get("name"))
+            for c in (value.get("contacts") or [])
+            if c.get("wa_id")
+        }
+        for raw in value.get("messages") or []:
+            parsed = _inbound_from(raw, names)
+            if parsed is not None:
+                grouped.setdefault(phone_id, []).append(parsed)
+    return grouped
 
 
 def _inbound_from(raw: dict[str, Any], names: dict[str, str | None]) -> InboundMessage | None:
@@ -332,14 +386,39 @@ def sender_e164(raw: str) -> str | None:
 #: be silently unsubscribed for using the word in a sentence.
 STOP_KEYWORDS: Final[frozenset[str]] = frozenset({"STOP", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"})
 
+#: The re-subscribe half of the same convention. A customer who typed STOP by habit and now wants
+#: messages again should not have to contact support to say so.
+START_KEYWORDS: Final[frozenset[str]] = frozenset({"START", "UNSTOP", "SUBSCRIBE"})
+
+#: Trailing punctuation a phone keyboard's autocapitalize/autopunctuate adds without the customer
+#: noticing — "Stop." and "STOP!" mean the same thing "STOP" does, and a strict exact match would
+#: silently keep messaging someone who typed it as an ordinary sentence.
+_TRAILING_PUNCTUATION = re.compile(r"[.!?,;:]+$")
+
+
+def _keyword(body: str | None) -> str | None:
+    """`body`, trimmed, trailing punctuation dropped, upper-cased — or `None` if there is
+    nothing to match a keyword against. The one normalisation both `is_stop_keyword` and
+    `is_start_keyword` share, so the two can never drift on what counts as "the same word"."""
+    if body is None:
+        return None
+    stripped = _TRAILING_PUNCTUATION.sub("", body.strip()).strip()
+    return stripped.upper() if stripped else None
+
 
 def is_stop_keyword(body: str | None) -> bool:
     """Is this inbound text an opt-out request?
 
-    Exact match against the trimmed, upper-cased body — the same convention every SMS/WhatsApp
-    provider's own STOP handling uses, so a customer who has opted out of another business's
-    messages this way has the same expectation here.
+    Exact match against the normalised body — the same convention every SMS/WhatsApp provider's
+    own STOP handling uses, so a customer who has opted out of another business's messages this
+    way has the same expectation here. Not a substring match, and not defeated by a trailing
+    full stop or exclamation mark a keyboard added on its own.
     """
-    if body is None:
-        return False
-    return body.strip().upper() in STOP_KEYWORDS
+    keyword = _keyword(body)
+    return keyword is not None and keyword in STOP_KEYWORDS
+
+
+def is_start_keyword(body: str | None) -> bool:
+    """Is this inbound text a re-subscribe request? See `is_stop_keyword` for the same rules."""
+    keyword = _keyword(body)
+    return keyword is not None and keyword in START_KEYWORDS

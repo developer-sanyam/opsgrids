@@ -191,6 +191,37 @@ async def organization_by_domain(session: SessionDep, domain: str) -> dict[str, 
 
 
 @router.get(
+    "/organizations/{organization_id}/memberships/{membership_id}",
+    summary="Whether a membership belongs to this organization and is usable",
+)
+async def membership_lookup(
+    organization_id: uuid.UUID, membership_id: uuid.UUID, session: SessionDep
+) -> dict[str, Any]:
+    """The one fact a service needs before it lets a caller hand work to a membership it does not
+    itself own — assigning a support conversation, say. A caller only ever holds *an*
+    organization's own tenant-bound data; this is the cross-tenant read that lets it ask "is this
+    id even real, and in my organization" without being handed the whole roster the way a person
+    browsing this organization's own member list would be.
+
+    `exists=False` for a membership id that names nobody, belongs to a different organization, or
+    has been removed — the three are answered identically on purpose: telling a caller "that id
+    exists, just not here" would confirm an id it has no business learning anything about.
+    `active` is `False` for anything short of `status == "active"` (suspended, invited-not-
+    accepted, and so on) — a service asking this question is about to route work to a person, and
+    a membership that cannot sign in should not receive it.
+    """
+    found = await selectors.get_member(session, organization_id, membership_id)
+    if found is None:
+        return {"membership_id": str(membership_id), "exists": False, "active": False}
+    membership, _user = found
+    return {
+        "membership_id": str(membership_id),
+        "exists": True,
+        "active": membership.status == "active",
+    }
+
+
+@router.get(
     "/memberships/{membership_id}/grants",
     summary="Everything this membership may do, as `code:SCOPE`",
 )

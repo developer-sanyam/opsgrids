@@ -319,6 +319,34 @@ async def test_a_rule_sends_a_provider_template(session, org_id) -> None:
     }
 
 
+async def test_a_rule_driven_send_honours_an_earlier_stop(session, org_id) -> None:
+    """`services.stage_message` is the one chokepoint both a rule-driven send and a human's
+    conversation reply go through — `test_inbound_webhook.py::
+    test_stop_suppresses_and_the_next_reply_is_refused` proves the reply side, this proves the
+    automation side never got its own, unsuppressed path to the same number."""
+    await _seed_provider_template(session, org_id)
+    write = ctx_for(org_id, "notification.delivery.preference.write", Scope.ORG)
+    async with session.begin():
+        # The same row `webhooks.STOP_KEYWORDS` handling writes for an inbound "STOP" — set here
+        # through the human-facing API rather than the webhook fold, since the fold itself is
+        # exercised end to end in `test_inbound_webhook.py`.
+        await services.set_preference(
+            session,
+            write,
+            recipient="+917976603446",
+            channel="whatsapp",
+            reason="customer_stop",
+        )
+
+    async with session.begin():
+        staged = await services.apply_rules(
+            session, organization_id=org_id, envelope=_wa_event(org_id)
+        )
+
+    assert len(staged) == 1
+    assert staged[0].state == STATE_SUPPRESSED
+
+
 async def test_an_unapproved_template_stages_nothing(session, org_id) -> None:
     """Refused here rather than by Meta: its 4xx would cost a message and tell the operator
     nothing that "still in review" does not say now."""

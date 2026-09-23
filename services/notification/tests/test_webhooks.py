@@ -384,3 +384,147 @@ def test_the_window_is_closed_just_after_24_hours() -> None:
     last = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
     now = last + timedelta(hours=24, seconds=1)
     assert not webhooks.within_service_window(last, now=now)
+
+
+# --------------------------------------------------------------------- START keywords
+
+
+@pytest.mark.parametrize("body", ["START", "start", "  Start  ", "Unstop", "subscribe", "START."])
+def test_a_start_keyword_is_recognised_case_and_whitespace_insensitively(body: str) -> None:
+    assert webhooks.is_start_keyword(body)
+
+
+@pytest.mark.parametrize("body", [None, "", "let's start the meeting", "STARTED"])
+def test_a_sentence_using_start_is_not_a_resubscribe_request(body: str | None) -> None:
+    assert not webhooks.is_start_keyword(body)
+
+
+def test_stop_and_start_are_never_both_true() -> None:
+    for word in ("STOP", "START", "hello", ""):
+        assert not (webhooks.is_stop_keyword(word) and webhooks.is_start_keyword(word))
+
+
+@pytest.mark.parametrize("body", ["STOP.", "Stop!", "stop,", "STOP;", "stop:"])
+def test_stop_survives_trailing_punctuation(body: str) -> None:
+    assert webhooks.is_stop_keyword(body)
+
+
+# --------------------------------------------------------------------- cross-tenant batching
+
+
+def _batched_payload(entries: list[tuple[str, dict]]) -> dict:
+    """Two (or more) WABAs' changes in one body — exactly the shape Meta's own batching produces
+    and the shape a payload-wide `phone_number_id` lookup used to misroute."""
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": f"waba-{i}",
+                "changes": [
+                    {
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "metadata": {
+                                "display_phone_number": phone_number_id,
+                                "phone_number_id": phone_number_id,
+                            },
+                            **value,
+                        },
+                        "field": "messages",
+                    }
+                ],
+            }
+            for i, (phone_number_id, value) in enumerate(entries)
+        ],
+    }
+
+
+def test_statuses_are_grouped_by_their_own_changes_number_not_the_bodys_first() -> None:
+    payload = _batched_payload(
+        [
+            ("111", {"statuses": [{"id": "wamid.A", "status": "sent", "timestamp": "1"}]}),
+            ("222", {"statuses": [{"id": "wamid.B", "status": "delivered", "timestamp": "1"}]}),
+        ]
+    )
+    grouped = webhooks.group_statuses_by_phone(payload)
+    assert {p.provider_message_id for p in grouped["111"]} == {"wamid.A"}
+    assert {p.provider_message_id for p in grouped["222"]} == {"wamid.B"}
+    # The old, unsafe reading: everything flattened under one number.
+    assert webhooks.phone_number_id(payload) == "111"
+
+
+def test_inbound_messages_are_grouped_by_their_own_changes_number() -> None:
+    payload = _batched_payload(
+        [
+            (
+                "111",
+                {
+                    "messages": [
+                        {
+                            "from": "1",
+                            "id": "wamid.IN.A",
+                            "timestamp": "1",
+                            "type": "text",
+                            "text": {"body": "hi"},
+                        }
+                    ]
+                },
+            ),
+            (
+                "222",
+                {
+                    "messages": [
+                        {
+                            "from": "2",
+                            "id": "wamid.IN.B",
+                            "timestamp": "1",
+                            "type": "text",
+                            "text": {"body": "hi"},
+                        }
+                    ]
+                },
+            ),
+        ]
+    )
+    grouped = webhooks.group_inbound_by_phone(payload)
+    assert {m.provider_message_id for m in grouped["111"]} == {"wamid.IN.A"}
+    assert {m.provider_message_id for m in grouped["222"]} == {"wamid.IN.B"}
+
+
+def test_a_change_with_no_phone_number_id_is_dropped_not_misrouted() -> None:
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "waba-0",
+                "changes": [
+                    {
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "metadata": {"display_phone_number": "x"},
+                            "statuses": [
+                                {"id": "wamid.ORPHAN", "status": "sent", "timestamp": "1"}
+                            ],
+                        },
+                        "field": "messages",
+                    }
+                ],
+            }
+        ],
+    }
+    assert webhooks.group_statuses_by_phone(payload) == {}
+
+
+def test_parse_statuses_still_flattens_across_numbers_for_single_org_callers() -> None:
+    """The convenience function tests use — never the webhook route itself — still sees
+    everything, which is the point of keeping it around."""
+    payload = _batched_payload(
+        [
+            ("111", {"statuses": [{"id": "wamid.A", "status": "sent", "timestamp": "1"}]}),
+            ("222", {"statuses": [{"id": "wamid.B", "status": "sent", "timestamp": "1"}]}),
+        ]
+    )
+    assert {u.provider_message_id for u in webhooks.parse_statuses(payload)} == {
+        "wamid.A",
+        "wamid.B",
+    }

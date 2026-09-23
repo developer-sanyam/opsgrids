@@ -25,7 +25,7 @@ import pytest_asyncio
 from cryptography.hazmat.primitives import serialization
 from sqlalchemy import select
 
-from app import models, services
+from app import models, services, whatsapp_provider
 from app.config import settings
 from app.main import app
 from app.transports import RecordingTransport, TransportRefused, TransportUnavailable
@@ -41,6 +41,20 @@ from platform_core.pii import open_sealed
 from tests.helpers import ctx_for, principal_for
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _assume_whatsapp_ownership_proven(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test in this module except `test_whatsapp_provider.py`'s own is about the
+    connection *row* — its shape, its secrecy, its uniqueness — not about proving a token against
+    Meta's Graph API, which is exercised on its own with `httpx.MockTransport` in that file.
+    Patched here, once, rather than in each test that reaches `connect_whatsapp`/
+    `replace_whatsapp`."""
+
+    async def _pass(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(whatsapp_provider, "verify_ownership", _pass)
 
 
 class FakeResolver:

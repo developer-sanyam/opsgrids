@@ -8,6 +8,7 @@ against the same `webhooks.within_service_window` the reply route actually calls
 from __future__ import annotations
 
 import contextlib
+import json
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -15,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
+from app import services
 from app.main import app
 from app.models import AuditLog, Conversation, InboundMessage, Message
 from platform_core.auth import Principal, get_principal
@@ -47,6 +49,18 @@ def caller(org_id: uuid.UUID, perms: list[str], *, amr: list[str] | None = None)
     return principal_for(org_id, perms, entitlements=["engage"], amr=amr)
 
 
+@pytest.fixture(autouse=True)
+def _assume_membership_confirmed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every assign test here is about the conversation write, not about account-service's own
+    answer — `test_assign_refuses_an_unconfirmed_membership` is the one test that overrides this
+    to prove the refusal path, everything else gets a confirmed membership by default."""
+
+    async def _confirmed(*args: object, **kwargs: object) -> bool:
+        return True
+
+    monkeypatch.setattr(services.memberships, "membership_is_active", _confirmed)
+
+
 async def _seed_conversation(
     session,
     org_id: uuid.UUID,
@@ -56,8 +70,11 @@ async def _seed_conversation(
 ) -> tuple[Conversation, InboundMessage]:
     from app.config import settings
 
-    enc, masked = seal("+16505551234", kind="phone", settings=settings())
-    body_enc, body_masked = seal(body, kind="generic", settings=settings())
+    cfg = settings()
+    enc, masked = seal("+16505551234", kind="phone", settings=cfg)
+    body_enc, _ = seal(body, kind="generic", settings=cfg)
+    profile_name_enc, _ = seal("Jane Customer", kind="generic", settings=cfg)
+    raw_enc, _ = seal(json.dumps({"id": "wamid.SEED1"}), kind="generic", settings=cfg)
     async with session.begin():
         conversation = Conversation(
             organization_id=org_id,
@@ -76,10 +93,13 @@ async def _seed_conversation(
             provider_message_id="wamid.SEED1",
             type="text",
             body_enc=body_enc,
-            body_masked=body_masked,
-            raw={"id": "wamid.SEED1"},
+            # A fixed placeholder, exactly as `services._BODY_MASK_PLACEHOLDER` writes it — never
+            # derived from `body`, so a seeded row here matches what the real fold would produce.
+            body_masked="•" * 10,
+            raw_enc=raw_enc,
             occurred_at=last_customer_message_at or NOW,
-            profile_name="Jane Customer",
+            profile_name_enc=profile_name_enc,
+            profile_name_masked="J•••",
         )
         session.add(message)
     return conversation, message
@@ -368,3 +388,154 @@ async def test_unmask_refuses_a_caller_with_only_conversation_read(client, sessi
             f"{BASE}/{message.conversation_id}/messages/{message.id}:unmask"
         )
     assert response.status_code == 403
+
+
+# --------------------------------------------------------------------- assign target validation
+
+
+async def test_assign_refuses_an_unconfirmed_membership(
+    client, session, org_id, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """account-service says no (wrong organization, removed, or simply unreachable) — the
+    conversation must not be written to at all."""
+
+    async def _unconfirmed(*args: object, **kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(services.memberships, "membership_is_active", _unconfirmed)
+
+    conversation, _ = await _seed_conversation(session, org_id)
+    # Captured before the call that refuses: a 422 rolls the shared session back, which expires
+    # every attribute of every object it holds (see the window-boundary test's comment for why).
+    conversation_id = conversation.id
+    membership_id = uuid.uuid4()
+    with as_principal(caller(org_id, ALL)):
+        response = await client.post(
+            f"{BASE}/{conversation_id}:assign",
+            json={"assignee_membership_id": str(membership_id)},
+        )
+    assert response.status_code == 422
+
+    async with session.begin():
+        row = (
+            await session.execute(select(Conversation).where(Conversation.id == conversation_id))
+        ).scalar_one()
+    assert row.assignee_membership_id is None
+
+
+async def test_clearing_an_assignment_needs_no_membership_check(
+    client, session, org_id, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """There is no id to misroute to, so `assignee_membership_id: null` never calls out."""
+
+    async def _must_not_be_called(*args: object, **kwargs: object) -> bool:
+        raise AssertionError("membership_is_active must not be called when clearing an assignment")
+
+    monkeypatch.setattr(services.memberships, "membership_is_active", _must_not_be_called)
+
+    conversation, _ = await _seed_conversation(session, org_id)
+    with as_principal(caller(org_id, ALL)):
+        response = await client.post(
+            f"{BASE}/{conversation.id}:assign", json={"assignee_membership_id": None}
+        )
+    assert response.status_code == 200
+
+
+# --------------------------------------------------------------------- cross-tenant isolation
+
+
+async def _seed_for_other_org(admin_session, other_org: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID]:
+    """Another organization's conversation and message, written on the BYPASSRLS session — never
+    through the app role, which is exactly the boundary these tests exist to prove holds."""
+    from app.config import settings
+
+    cfg = settings()
+    enc, masked = seal("+19995550000", kind="phone", settings=cfg)
+    body_enc, _ = seal("theirs", kind="generic", settings=cfg)
+    raw_enc, _ = seal(json.dumps({"id": "wamid.THEIRS"}), kind="generic", settings=cfg)
+    async with admin_session.begin():
+        conversation = Conversation(
+            organization_id=other_org,
+            channel="whatsapp",
+            wa_address_enc=enc,
+            wa_address_masked=masked,
+            wa_address_index="idx-theirs",
+            last_customer_message_at=NOW,
+            status="open",
+        )
+        admin_session.add(conversation)
+        await admin_session.flush()
+        message = InboundMessage(
+            organization_id=other_org,
+            conversation_id=conversation.id,
+            provider_message_id="wamid.THEIRS",
+            type="text",
+            body_enc=body_enc,
+            body_masked="•" * 10,
+            raw_enc=raw_enc,
+            occurred_at=NOW,
+        )
+        admin_session.add(message)
+        await admin_session.flush()
+    return conversation.id, message.id
+
+
+async def test_a_conversation_in_another_org_is_not_found_on_every_route(
+    client, admin_session, org_id
+) -> None:
+    other_org = uuid.uuid4()
+    conversation_id, message_id = await _seed_for_other_org(admin_session, other_org)
+
+    # `amr=["otp"]` so the unmask route's own step-up gate never fires first — this test is about
+    # tenant scoping, not about the permission dependency, and every route here must answer the
+    # same "not found" regardless of which gate would otherwise apply.
+    with as_principal(caller(org_id, ALL, amr=["otp"])):
+        detail = await client.get(f"{BASE}/{conversation_id}")
+        thread = await client.get(f"{BASE}/{conversation_id}/messages")
+        reply = await client.post(
+            f"{BASE}/{conversation_id}/reply", json={"body": "hi", "idempotency_key": "k1"}
+        )
+        assign = await client.post(
+            f"{BASE}/{conversation_id}:assign", json={"assignee_membership_id": None}
+        )
+        close = await client.post(f"{BASE}/{conversation_id}:close")
+        unmask = await client.post(f"{BASE}/{conversation_id}/messages/{message_id}:unmask")
+
+    assert detail.status_code == 404
+    assert thread.status_code == 404
+    assert reply.status_code == 404
+    assert assign.status_code == 404
+    assert close.status_code == 404
+    assert unmask.status_code == 404
+
+    # Nothing this organization's caller did leaked into the other tenant's rows: still open,
+    # still unassigned, still exactly what `_seed_for_other_org` wrote, and no audit trail this
+    # organization's own caller has no business having produced against it.
+    async with admin_session.begin():
+        theirs = (
+            await admin_session.execute(
+                select(Conversation).where(Conversation.id == conversation_id)
+            )
+        ).scalar_one()
+        their_messages = (
+            (
+                await admin_session.execute(
+                    select(InboundMessage).where(InboundMessage.conversation_id == conversation_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        their_audit_rows = (
+            (
+                await admin_session.execute(
+                    select(AuditLog).where(AuditLog.organization_id == other_org)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert theirs.status == "open"
+    assert theirs.assignee_membership_id is None
+    assert len(their_messages) == 1
+    assert their_audit_rows == []

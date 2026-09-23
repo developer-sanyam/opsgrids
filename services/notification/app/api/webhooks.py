@@ -3,7 +3,7 @@
 It is unauthenticated by necessity: Meta cannot hold one of our tokens. So the signature is the
 whole of the trust boundary, and everything here is arranged around that.
 
-Four rules, each with a failure it prevents:
+Five rules, each with a failure it prevents:
 
 1. **The raw bytes are read before anything parses them.** The signature covers the body Meta
    sent; parsing to JSON and re-serialising changes whitespace and key order, so the digest
@@ -18,9 +18,18 @@ Four rules, each with a failure it prevents:
    it does not get a 200 for, so failing on an unfamiliar payload is a retry loop, not
    robustness. Unusable bodies are acknowledged and logged.
 
-4. **The tenant comes from the payload, not the caller.** One URL serves every organization, so
-   `metadata.phone_number_id` is looked up on the directory reader — the one read that happens
-   before a tenant is known — and everything after it runs tenant-bound.
+4. **The tenant comes from each `change`, never from the body as a whole.** One URL serves every
+   organization, and Meta batches several WABAs' changes into one `POST` behind a single App
+   Secret — `webhooks.group_statuses_by_phone`/`group_inbound_by_phone` resolve `metadata.
+   phone_number_id` per change and this route asks the directory reader once per **distinct**
+   number, so organization A's webhook can never be folded against organization B's rows just
+   because Meta happened to batch them together.
+
+5. **One item's failure parks that item, not the request.** Each status or message folds inside
+   its own `try`/`except`; a failure lands in `services.record_dead_letter` rather than raising
+   past this handler — a single oversized or malformed item must not turn into a 500 that costs
+   every other item in the same batch, or into Meta retrying the *whole* body forever because one
+   piece of it can never succeed.
 
 Mounted outside `/api/v1` and excluded from the OpenAPI document: this is Meta's endpoint, not
 public API, and it must not appear as though anyone else should call it.
@@ -28,6 +37,8 @@ public API, and it must not appear as though anyone else should call it.
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
@@ -75,6 +86,14 @@ async def receive(request: Request, directory: DirectorySessionDep) -> Response:
 
     Returns 200 for anything genuine. The only non-200 is 401 for a body that is not signed by
     the App Secret, because that is the one case where acknowledging would be wrong.
+
+    **Unbounded batch size, deliberately not capped here.** Meta's own limits on how much one
+    `POST` can carry are the real bound; this route folds every item it is handed, one at a time,
+    each in its own short transaction, so an unusually large body costs time (and, per item, a
+    directory lookup the first time a new number is seen) rather than memory held open across the
+    whole request. If Meta's batching ever produces a body large enough for that to matter in
+    practice, the fix is a per-request item cap answered with a fast 200 and a warning log — not
+    yet added, because nothing has been observed to need it.
     """
     cfg = settings()
     if not cfg.whatsapp_app_secret:
@@ -100,83 +119,156 @@ async def receive(request: Request, directory: DirectorySessionDep) -> Response:
         log.warning("webhook.undecodable")
         return Response(status_code=status.HTTP_200_OK)
 
-    number_id = webhooks.phone_number_id(payload)
-    if number_id is None:
+    # Rule 4: resolved **per number**, never once for the whole body. Meta can and does batch
+    # several WABAs into one POST; a single `organization_id` picked from the first change would
+    # fold every other change in the body against it.
+    status_groups = webhooks.group_statuses_by_phone(payload)
+    inbound_groups = webhooks.group_inbound_by_phone(payload)
+    phone_ids = set(status_groups) | set(inbound_groups)
+
+    if not phone_ids:
         log.info("webhook.no_phone_number_id")
         return Response(status_code=status.HTTP_200_OK)
 
-    account = await selectors.account_for_phone_number(directory, number_id)
-    if account is None:
-        # A number nobody has connected. Genuine and signed, but not ours to act on — a WABA
-        # removed from the platform, or one subscribed to this app by mistake.
-        log.warning("webhook.unknown_phone_number_id", phone_number_id=number_id)
-        return Response(status_code=status.HTTP_200_OK)
+    total_statuses = 0
+    total_messages = 0
 
-    organization_id = account.organization_id
-    updates = webhooks.parse_statuses(payload)
-    inbound_messages = webhooks.parse_inbound(payload)
+    for phone_id in phone_ids:
+        account = await selectors.account_for_phone_number(directory, phone_id)
+        if account is None:
+            # A number nobody has connected. Genuine and signed, but not ours to act on — a WABA
+            # removed from the platform, or one subscribed to this app by mistake. The *other*
+            # numbers in this same body, if any, are still folded below — one unknown number must
+            # not discard changes that belong to a number we do recognise.
+            log.warning("webhook.unknown_phone_number_id", phone_number_id=phone_id)
+            continue
 
-    for update in updates:
-        # One transaction per update, each tenant-bound and idempotent. Per update rather than
-        # per body so one unknown message id cannot roll back the receipts beside it — Meta
-        # batches them and will not send the others again.
-        async with session_scope(organization_id=organization_id) as session:
-            already = await session.get(ProcessedEvent, update.dedupe_id)
-            if already is not None:
-                log.info(
-                    "webhook.redelivered",
+        organization_id = account.organization_id
+        updates = status_groups.get(phone_id, [])
+        inbound_messages = inbound_groups.get(phone_id, [])
+        total_statuses += len(updates)
+        total_messages += len(inbound_messages)
+
+        for update in updates:
+            # One transaction per update, each tenant-bound and idempotent. Per update rather
+            # than per body so one unknown message id cannot roll back the receipts beside it —
+            # Meta batches them and will not send the others again.
+            try:
+                async with session_scope(organization_id=organization_id) as session:
+                    already = await session.get(ProcessedEvent, update.dedupe_id)
+                    if already is not None:
+                        log.info(
+                            "webhook.redelivered",
+                            provider_message_id=update.provider_message_id,
+                            status=update.status,
+                        )
+                        continue
+
+                    await services.fold_status(
+                        session,
+                        organization_id=organization_id,
+                        provider_message_id=update.provider_message_id,
+                        status=update.status,
+                        occurred_at=update.occurred_at,
+                        error_code=update.error_code,
+                        error_detail=update.error_detail,
+                    )
+                    # Marked processed even when the fold applied nothing. The event *has* been
+                    # handled: re-running it would reach the same conclusion, and leaving it
+                    # unmarked would make every redelivery repeat the work.
+                    session.add(
+                        ProcessedEvent(
+                            event_id=update.dedupe_id,
+                            event_type=f"whatsapp.status.{update.status}",
+                        )
+                    )
+            except Exception as exc:
+                # Rule 5: this item is parked, not the request. No PII in the log line — a
+                # provider message id names nothing about the customer it concerns.
+                log.error(
+                    "webhook.status_fold_failed",
                     provider_message_id=update.provider_message_id,
-                    status=update.status,
+                    error_type=type(exc).__name__,
                 )
-                continue
-
-            await services.fold_status(
-                session,
-                organization_id=organization_id,
-                provider_message_id=update.provider_message_id,
-                status=update.status,
-                occurred_at=update.occurred_at,
-                error_code=update.error_code,
-                error_detail=update.error_detail,
-            )
-            # Marked processed even when the fold applied nothing. The event *has* been handled:
-            # re-running it would reach the same conclusion, and leaving it unmarked would make
-            # every redelivery repeat the work.
-            session.add(
-                ProcessedEvent(
-                    event_id=update.dedupe_id,
-                    event_type=f"whatsapp.status.{update.status}",
+                await _dead_letter(
+                    organization_id=organization_id,
+                    kind="status",
+                    provider_message_id=update.provider_message_id,
+                    occurred_at=update.occurred_at,
+                    error=exc,
                 )
-            )
 
-    for inbound in inbound_messages:
-        # Same shape as the status loop: one transaction per message, idempotent on its own
-        # derived id, and marked processed whether or not `fold_inbound_message` found a sender
-        # it could canonicalise — see that function's docstring for why a bad `from` is not
-        # something retrying will ever fix.
-        async with session_scope(organization_id=organization_id) as session:
-            already = await session.get(ProcessedEvent, inbound.dedupe_id)
-            if already is not None:
-                log.info(
-                    "webhook.redelivered",
+        for inbound in inbound_messages:
+            # Same shape as the status loop: one transaction per message, idempotent on its own
+            # derived id, and marked processed whether or not `fold_inbound_message` found a
+            # sender it could canonicalise — see that function's docstring for why a bad `from`
+            # is not something retrying will ever fix.
+            try:
+                async with session_scope(organization_id=organization_id) as session:
+                    already = await session.get(ProcessedEvent, inbound.dedupe_id)
+                    if already is not None:
+                        log.info(
+                            "webhook.redelivered",
+                            provider_message_id=inbound.provider_message_id,
+                        )
+                        continue
+
+                    await services.fold_inbound_message(
+                        session, organization_id=organization_id, inbound=inbound
+                    )
+                    session.add(
+                        ProcessedEvent(
+                            event_id=inbound.dedupe_id,
+                            event_type="whatsapp.message.inbound",
+                        )
+                    )
+            except Exception as exc:
+                log.error(
+                    "webhook.inbound_fold_failed",
                     provider_message_id=inbound.provider_message_id,
+                    error_type=type(exc).__name__,
                 )
-                continue
-
-            await services.fold_inbound_message(
-                session, organization_id=organization_id, inbound=inbound
-            )
-            session.add(
-                ProcessedEvent(
-                    event_id=inbound.dedupe_id,
-                    event_type="whatsapp.message.inbound",
+                await _dead_letter(
+                    organization_id=organization_id,
+                    kind="inbound",
+                    provider_message_id=inbound.provider_message_id,
+                    occurred_at=inbound.occurred_at,
+                    error=exc,
                 )
-            )
 
     log.info(
         "webhook.accepted",
-        phone_number_id=number_id,
-        statuses=len(updates),
-        messages=len(inbound_messages),
+        phone_numbers=len(phone_ids),
+        statuses=total_statuses,
+        messages=total_messages,
     )
     return Response(status_code=status.HTTP_200_OK)
+
+
+async def _dead_letter(
+    *,
+    organization_id: uuid.UUID,
+    kind: str,
+    provider_message_id: str,
+    occurred_at: datetime,
+    error: BaseException,
+) -> None:
+    """Record one item's failure in its own transaction — the fold's own transaction has already
+    rolled back by the time this runs, so a fresh `session_scope` is deliberate, not a leftover.
+
+    A failure recording the failure is logged and swallowed, never raised: this function's whole
+    job is to stop one bad item from failing the request, and letting the *dead-letter write*
+    itself fail the request would undo that.
+    """
+    try:
+        async with session_scope(organization_id=organization_id) as session:
+            await services.record_dead_letter(
+                session,
+                organization_id=organization_id,
+                kind=kind,
+                provider_message_id=provider_message_id,
+                occurred_at=occurred_at,
+                error=error,
+            )
+    except Exception:
+        log.error("webhook.dead_letter_write_failed", provider_message_id=provider_message_id)

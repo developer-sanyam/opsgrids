@@ -934,7 +934,7 @@ def thread_stmt(ctx: ScopeContext, conversation_id: uuid.UUID) -> Select[Any]:
         InboundMessage.body_masked.label("body"),
         InboundMessage.occurred_at,
         InboundMessage.provider_message_id,
-        InboundMessage.profile_name,
+        InboundMessage.profile_name_masked.label("profile_name"),
     ).where(
         InboundMessage.organization_id == ctx.organization_id,
         InboundMessage.conversation_id == conversation_id,

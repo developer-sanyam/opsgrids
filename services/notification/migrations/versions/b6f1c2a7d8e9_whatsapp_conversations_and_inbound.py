@@ -1,6 +1,6 @@
 """whatsapp conversations and inbound messages
 
-The inbound half of the WhatsApp pipeline (docs/whatsapp/audit.md C5/C6/C9). Two new tables and
+The inbound half of the WhatsApp pipeline (docs/whatsapp/audit.md C5/C6/C9). Three new tables and
 two columns on an existing one:
 
 - `conversations` — one row per customer number this organization has ever exchanged WhatsApp
@@ -9,9 +9,12 @@ two columns on an existing one:
   already exist" without decrypting a single row. `last_customer_message_at` is the 24-hour
   customer service window's clock.
 - `inbound_messages` — one row per customer message folded from a webhook, `provider_message_id`
-  unique per organization. Only `type == 'text'` carries a body (sealed, same shape as the
-  conversation's address); everything else is kept in `raw` and nothing else, because Meta's
-  media and interactive shapes are not published and are not parsed on a guess.
+  unique per organization. **Nothing here is plaintext PII**: `body_enc` (text only — Meta's other
+  shapes are not parsed), `raw_enc` (the provider's whole message object, including `from`), and
+  `profile_name_enc` are all sealed; `body_masked` and `profile_name_masked` are fixed-shape
+  placeholders that reveal neither the real value nor its length.
+- `inbound_dead_letters` — one row per webhook item that failed to fold, so one bad item cannot
+  fail the whole `POST` or repeat-fail on Meta's retry of the entire body. No PII, no payload.
 - `messages.direction` and `messages.conversation_id` — so an outbound reply inside a
   conversation can be told apart from a rule-driven notification or a campaign email, and can be
   joined into the thread it belongs to.
@@ -30,7 +33,6 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects import postgresql
 
 revision: str = "b6f1c2a7d8e9"  # pragma: allowlist secret
 down_revision: str | None = "a1c7e93f5b02"  # pragma: allowlist secret
@@ -40,7 +42,7 @@ depends_on: str | Sequence[str] | None = None
 SCHEMA = "notification"
 APP_ROLE = "opsgrids_notification"
 
-TENANT_TABLES = ("conversations", "inbound_messages")
+TENANT_TABLES = ("conversations", "inbound_messages", "inbound_dead_letters")
 
 
 def _tenant_columns() -> list[sa.Column]:  # type: ignore[type-arg]
@@ -57,6 +59,20 @@ def _tenant_columns() -> list[sa.Column]:  # type: ignore[type-arg]
         sa.Column("updated_by", sa.String(length=64), nullable=True),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
     ]
+
+
+def _enable_rls(table: str) -> None:
+    op.execute(f"ALTER TABLE {SCHEMA}.{table} ENABLE ROW LEVEL SECURITY")
+    op.execute(f"ALTER TABLE {SCHEMA}.{table} FORCE ROW LEVEL SECURITY")
+    # WITH CHECK as well as USING, or one tenant could insert rows into another (ADR-0002).
+    op.execute(
+        f"""
+        CREATE POLICY tenant_isolation ON {SCHEMA}.{table}
+            FOR ALL TO {APP_ROLE}
+            USING      (organization_id = {SCHEMA}.current_org())
+            WITH CHECK (organization_id = {SCHEMA}.current_org())
+        """
+    )
 
 
 def upgrade() -> None:
@@ -108,10 +124,15 @@ def upgrade() -> None:
         sa.Column("provider_message_id", sa.String(length=200), nullable=False),
         sa.Column("type", sa.String(length=20), nullable=False),
         sa.Column("body_enc", sa.LargeBinary(), nullable=True),
-        sa.Column("body_masked", sa.String(length=300), nullable=False),
-        sa.Column("raw", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        # A fixed-shape placeholder (`services._BODY_MASK_PLACEHOLDER`), never a function of the
+        # real body's length — 40 is generous headroom for that constant, not a text preview.
+        sa.Column("body_masked", sa.String(length=40), nullable=False),
+        # The provider's whole message object, sealed — see the module docstring on why there is
+        # no plaintext `raw` column at all.
+        sa.Column("raw_enc", sa.LargeBinary(), nullable=False),
         sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("profile_name", sa.String(length=200), nullable=True),
+        sa.Column("profile_name_enc", sa.LargeBinary(), nullable=True),
+        sa.Column("profile_name_masked", sa.String(length=8), nullable=True),
         *_tenant_columns(),
         sa.ForeignKeyConstraint(
             ["conversation_id"],
@@ -140,18 +161,33 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
 
+    op.create_table(
+        "inbound_dead_letters",
+        sa.Column("kind", sa.String(length=20), nullable=False),
+        sa.Column("provider_message_id", sa.String(length=200), nullable=False),
+        sa.Column("error", sa.String(length=500), nullable=False),
+        sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
+        *_tenant_columns(),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_inbound_dead_letters")),
+        schema=SCHEMA,
+    )
+    op.create_index(
+        op.f("ix_notification_inbound_dead_letters_organization_id"),
+        "inbound_dead_letters",
+        ["organization_id"],
+        unique=False,
+        schema=SCHEMA,
+    )
+    op.create_index(
+        "ix_inbound_dead_letters_org_created",
+        "inbound_dead_letters",
+        ["organization_id", "created_at"],
+        unique=False,
+        schema=SCHEMA,
+    )
+
     for table in TENANT_TABLES:
-        op.execute(f"ALTER TABLE {SCHEMA}.{table} ENABLE ROW LEVEL SECURITY")
-        op.execute(f"ALTER TABLE {SCHEMA}.{table} FORCE ROW LEVEL SECURITY")
-        # WITH CHECK as well as USING, or one tenant could insert rows into another (ADR-0002).
-        op.execute(
-            f"""
-            CREATE POLICY tenant_isolation ON {SCHEMA}.{table}
-                FOR ALL TO {APP_ROLE}
-                USING      (organization_id = {SCHEMA}.current_org())
-                WITH CHECK (organization_id = {SCHEMA}.current_org())
-            """
-        )
+        _enable_rls(table)
 
     op.add_column(
         "messages",
@@ -178,6 +214,16 @@ def downgrade() -> None:
 
     for table in TENANT_TABLES:
         op.execute(f"DROP POLICY IF EXISTS tenant_isolation ON {SCHEMA}.{table}")
+
+    op.drop_index(
+        "ix_inbound_dead_letters_org_created", table_name="inbound_dead_letters", schema=SCHEMA
+    )
+    op.drop_index(
+        op.f("ix_notification_inbound_dead_letters_organization_id"),
+        table_name="inbound_dead_letters",
+        schema=SCHEMA,
+    )
+    op.drop_table("inbound_dead_letters", schema=SCHEMA)
 
     op.drop_index(
         "ix_inbound_messages_org_conversation", table_name="inbound_messages", schema=SCHEMA

@@ -466,6 +466,101 @@ class TestDomainLookup:
         assert (await client.get("/internal/v1/domains/acme.example")).status_code == 401
 
 
+class TestMembershipLookup:
+    """`notification`'s conversation-assignment endpoint calls this before trusting a membership
+    id a caller supplied — see that service's `app/memberships.py`."""
+
+    async def test_an_active_membership_in_the_right_organization_is_confirmed(
+        self, client: AsyncClient, people: dict[str, Membership], org: Organization
+    ) -> None:
+        response = await client.get(
+            f"/internal/v1/organizations/{org.id}/memberships/{people['manager'].id}",
+            headers=internal(),
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["exists"] is True
+        assert body["active"] is True
+
+    async def test_an_unknown_membership_id_does_not_exist(
+        self, client: AsyncClient, org: Organization
+    ) -> None:
+        response = await client.get(
+            f"/internal/v1/organizations/{org.id}/memberships/{uuid.uuid4()}",
+            headers=internal(),
+        )
+        assert response.status_code == 200
+        assert response.json() == {
+            "membership_id": response.json()["membership_id"],
+            "exists": False,
+            "active": False,
+        }
+
+    async def test_a_real_membership_asked_under_the_wrong_organization_does_not_exist(
+        self, client: AsyncClient, people: dict[str, Membership]
+    ) -> None:
+        """The whole point of this endpoint: a membership id real somewhere else must read
+        exactly like one that is real nowhere, so a caller cannot use it to confirm an id
+        belongs to an organization it has no business asking about."""
+        response = await client.get(
+            f"/internal/v1/organizations/{uuid.uuid4()}/memberships/{people['manager'].id}",
+            headers=internal(),
+        )
+        assert response.status_code == 200
+        assert response.json()["exists"] is False
+
+    async def test_a_removed_membership_does_not_exist(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        people: dict[str, Membership],
+        org: Organization,
+    ) -> None:
+        """`revoke_member` sets `status="removed"`, and `selectors.get_member` excludes that
+        status entirely — a removed membership answers exactly like one that was never real,
+        which is the right answer for an assignment target: nobody should be routed work through
+        a membership that no longer belongs to the organization."""
+        member = people["report"]
+        async with session.begin():
+            await session.refresh(member, ["roles"])
+            await services.revoke_member(session, admin_ctx(org, people["manager"]), member)
+
+        response = await client.get(
+            f"/internal/v1/organizations/{org.id}/memberships/{member.id}", headers=internal()
+        )
+        body = response.json()
+        assert body["exists"] is False
+        assert body["active"] is False
+
+    async def test_a_membership_in_a_non_active_status_is_not_active(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        people: dict[str, Membership],
+        org: Organization,
+    ) -> None:
+        """`status` carries values besides `active` and `removed` in principle (a suspension, an
+        unaccepted invitation); `get_member` only excludes `removed`, so this is the case that
+        proves `active` and `exists` are genuinely two different questions."""
+        member = people["report"]
+        async with session.begin():
+            member.status = "suspended"
+            session.add(member)
+
+        response = await client.get(
+            f"/internal/v1/organizations/{org.id}/memberships/{member.id}", headers=internal()
+        )
+        body = response.json()
+        assert body["exists"] is True
+        assert body["active"] is False
+
+    async def test_it_needs_a_service_token(self, client: AsyncClient, org: Organization) -> None:
+        response = await client.get(
+            f"/internal/v1/organizations/{org.id}/memberships/{uuid.uuid4()}"
+        )
+        assert response.status_code == 401
+
+
 def _role(code: str, permission: str, scope: str):
     return RoleIn(
         code=code,

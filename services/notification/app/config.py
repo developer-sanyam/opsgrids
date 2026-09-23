@@ -71,6 +71,13 @@ class Settings(ServiceSettings):
     customer_internal_url: str = "http://localhost:8130"
     customer_timeout_seconds: float = 5.0
 
+    #: Where to ask whether a membership id an assign call named actually belongs to the caller's
+    #: organization and is active — account-service owns the roster, and a service that took the
+    #: id on faith would let a conversation be "assigned" to someone from a different tenant, or
+    #: to nobody at all.
+    account_internal_url: str = "http://localhost:8111"
+    account_timeout_seconds: float = 5.0
+
     # ----------------------------------------------------------------- engage sending identity
     #: Test sends per organization per minute. Independent of `daily_cap`, which is the
     #: provider's own limit on a *connected* connection — this bounds the route itself, which

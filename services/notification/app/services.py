@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
@@ -26,10 +27,11 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy import CursorResult, case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import dns_check, domain, selectors, webhooks
+from app import dns_check, domain, memberships, selectors, webhooks, whatsapp_provider
 from app.config import Settings, settings
 from app.models import (
     AuditLog,
@@ -42,6 +44,7 @@ from app.models import (
     Delivery,
     EmailConnection,
     EmailDomain,
+    InboundDeadLetter,
     Message,
     OutboxEvent,
     Preference,
@@ -1054,6 +1057,27 @@ async def fold_status(
 # `docs/whatsapp/audit.md` C5/C6/C9 and `docs/whatsapp/webhooks.md` are the design record.
 
 
+#: What `body_masked` holds whenever a body was sealed. Fixed, never derived from the real text:
+#: a length- or tail-revealing mask on free-form customer text (the "keep the last two
+#: characters" convention `pii.mask`'s generic masker uses for a code or an account number) leaks
+#: the one thing masking exists to hide from a sentence, and for a message long enough it also
+#: overflowed `body_masked`'s column — a customer's 400-character message crashed the fold that
+#: was supposed to record it. This constant cannot overflow anything and cannot leak anything,
+#: whatever the real body says.
+_BODY_MASK_PLACEHOLDER: Final = "•" * 10
+
+#: How much of a WhatsApp display name an ordinary read may see: the first character, so a list
+#: of conversations is not a wall of identical bullets, and nothing else — never a length- or
+#: tail-revealing mask either, for the same reason `_BODY_MASK_PLACEHOLDER` is fixed-shape.
+_PROFILE_NAME_MASK_TAIL: Final = "•••"
+
+
+def _mask_profile_name(name: str) -> str:
+    if not name:
+        return ""
+    return name[0] + _PROFILE_NAME_MASK_TAIL
+
+
 async def fold_inbound_message(
     session: AsyncSession,
     *,
@@ -1061,7 +1085,7 @@ async def fold_inbound_message(
     inbound: webhooks.InboundMessage,
 ) -> InboundMessageRow | None:
     """Persist one customer message: upsert its conversation, insert the message row, act on a
-    STOP keyword, and stage the event a separate consumer resolves the contact id from.
+    STOP or START keyword, and stage the event a separate consumer resolves the contact id from.
 
     Returns None when the sender is not a number this service can canonicalise — `webhooks.
     sender_e164` refuses rather than guesses, the same rule `domain.normalize_recipient` applies
@@ -1074,7 +1098,13 @@ async def fold_inbound_message(
     organization (`uq_inbound_messages_org_provider_id`), so a redelivery that got past
     `processed_events` still cannot insert a second row — it raises `IntegrityError`, and the
     caller's `already_processed` guard is what actually stops that from being reached twice in
-    the ordinary case.
+    the ordinary case. Any other failure here — including that `IntegrityError` — is the caller's
+    to catch and park in `InboundDeadLetter`; this function raises rather than swallowing, so one
+    bad item never looks like it folded when it did not.
+
+    **Nothing here writes plaintext PII.** `raw_enc` seals the provider's whole message object —
+    including `from` and the text body — and there is no plaintext `raw` column at all; the
+    sender's profile name is sealed the same way. See `InboundMessageRow`'s docstring.
     """
     cfg = settings()
     sender = webhooks.sender_e164(inbound.from_address)
@@ -1095,7 +1125,18 @@ async def fold_inbound_message(
     body_enc: bytes | None = None
     body_masked = ""
     if inbound.body:
-        body_enc, body_masked = pii.seal(inbound.body, kind="generic", settings=cfg)
+        body_enc, _ = pii.seal(inbound.body, kind="generic", settings=cfg)
+        body_masked = _BODY_MASK_PLACEHOLDER
+
+    profile_name_enc: bytes | None = None
+    profile_name_masked: str | None = None
+    if inbound.profile_name:
+        profile_name_enc, _ = pii.seal(inbound.profile_name, kind="generic", settings=cfg)
+        profile_name_masked = _mask_profile_name(inbound.profile_name)
+
+    raw_enc, _ = pii.seal(
+        json.dumps(inbound.raw, separators=(",", ":")), kind="generic", settings=cfg
+    )
 
     row = InboundMessageRow(
         organization_id=organization_id,
@@ -1105,15 +1146,18 @@ async def fold_inbound_message(
         type=inbound.message_type,
         body_enc=body_enc,
         body_masked=body_masked,
-        raw=inbound.raw,
+        raw_enc=raw_enc,
         occurred_at=inbound.occurred_at,
-        profile_name=inbound.profile_name,
+        profile_name_enc=profile_name_enc,
+        profile_name_masked=profile_name_masked,
     )
     session.add(row)
     await session.flush()
 
     if webhooks.is_stop_keyword(inbound.body):
         await _record_stop_request(session, organization_id=organization_id, phone=sender)
+    elif webhooks.is_start_keyword(inbound.body):
+        await _record_start_request(session, organization_id=organization_id, phone=sender)
 
     publish_event(
         session,
@@ -1130,6 +1174,39 @@ async def fold_inbound_message(
         actor={"type": "system", "id": SYSTEM_ACTOR},
     )
     return row
+
+
+async def record_dead_letter(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    kind: str,
+    provider_message_id: str,
+    occurred_at: datetime,
+    error: BaseException,
+) -> None:
+    """Park one webhook item (a status or an inbound message) that raised while folding, in its
+    own transaction -- the caller's own fold transaction has already rolled back by the time this
+    runs, so this is deliberately a fresh write rather than a continuation of it.
+
+    `error` is reduced to its type name and a truncated `str()` -- enough for an operator to tell
+    a duplicate-key bug from a decode failure without opening a sealed column. The **log line**
+    the caller writes alongside this call carries only `provider_message_id` and `kind`, never the
+    exception text: an exception raised while handling a customer's message can in principle quote
+    that message back in its own text (a database error echoing a value), and a log is a much
+    easier place for that to leak from than one bounded, access-controlled row.
+    """
+    session.add(
+        InboundDeadLetter(
+            organization_id=organization_id,
+            created_by=SYSTEM_ACTOR,
+            kind=kind,
+            provider_message_id=provider_message_id,
+            error=f"{type(error).__name__}: {error}"[:500],
+            occurred_at=occurred_at,
+        )
+    )
+    await session.flush()
 
 
 async def _upsert_conversation(
@@ -1183,12 +1260,17 @@ async def _upsert_conversation(
     return (await session.execute(stmt)).scalar_one()
 
 
-async def _record_stop_request(
-    session: AsyncSession, *, organization_id: uuid.UUID, phone: str
+async def _set_whatsapp_preference(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    phone: str,
+    suppressed: bool,
+    reason: str,
 ) -> None:
-    """STOP, UNSUBSCRIBE and the rest (`webhooks.STOP_KEYWORDS`) suppress every WhatsApp category
-    for this number — the same `Preference` row `services.set_preference` writes for a human
-    operator, so a later send checks one table regardless of who recorded the refusal.
+    """The write both STOP and START are: one `Preference` row per number, covering every
+    WhatsApp category — the same row `services.set_preference` writes for a human operator, so a
+    later send checks one table regardless of who recorded the refusal or its reversal.
     `stage_message` re-checks it at render **and** dispatch, so a reply already queued when a
     customer says STOP still does not go out.
     """
@@ -1207,8 +1289,8 @@ async def _record_stop_request(
         session.add(pref)
     else:
         pref.updated_by = SYSTEM_ACTOR
-    pref.suppressed = True
-    pref.reason = "customer_stop"
+    pref.suppressed = suppressed
+    pref.reason = reason
     await session.flush()
 
     record_audit(
@@ -1221,8 +1303,37 @@ async def _record_stop_request(
         entity="preference",
         entity_id=pref.id,
         before={"suppressed": before},
-        after={"channel": "whatsapp", "suppressed": True, "reason": "customer_stop"},
+        after={"channel": "whatsapp", "suppressed": suppressed, "reason": reason},
     )
+
+
+async def _record_stop_request(
+    session: AsyncSession, *, organization_id: uuid.UUID, phone: str
+) -> None:
+    """STOP, UNSUBSCRIBE and the rest (`webhooks.STOP_KEYWORDS`)."""
+    await _set_whatsapp_preference(
+        session,
+        organization_id=organization_id,
+        phone=phone,
+        suppressed=True,
+        reason="customer_stop",
+    )
+    log.info("notification.whatsapp.stop_received")
+
+
+async def _record_start_request(
+    session: AsyncSession, *, organization_id: uuid.UUID, phone: str
+) -> None:
+    """START, UNSTOP, SUBSCRIBE (`webhooks.START_KEYWORDS`) — the re-subscribe half of the same
+    convention. A customer who typed STOP by habit should not have to contact support to undo it."""
+    await _set_whatsapp_preference(
+        session,
+        organization_id=organization_id,
+        phone=phone,
+        suppressed=False,
+        reason="customer_start",
+    )
+    log.info("notification.whatsapp.start_received")
     log.info("notification.whatsapp.stop_received")
 
 
@@ -1232,23 +1343,38 @@ async def resolve_conversation_contact(
     organization_id: uuid.UUID,
     conversation_id: uuid.UUID,
     contact_id: str | None,
-) -> None:
-    """Fold one CRM lookup onto a conversation (`app/consumers.py`'s `fold_inbound_contact`).
+) -> bool:
+    """Fold one **definite** CRM answer onto a conversation (`app/consumers.py`'s
+    `fold_inbound_contact` — never call this for a resolver that could not be asked at all; see
+    `app/contacts.ContactResolution`).
 
     Idempotent by comparison rather than by a guard at the top: setting the same contact id
     twice, or re-confirming "unknown" a second time, writes nothing new. A conversation the event
     named that no longer exists (deleted, or a stale redelivery) is silently skipped — there is
     nothing to fold onto and nothing to retry into existing.
+
+    Returns whether a row was actually written, so the caller can tell "already correct" from
+    "nothing to fold onto" without a second read.
     """
     conversation = await selectors.get_conversation(session, organization_id, conversation_id)
     if conversation is None:
-        return
-    new_contact_id = uuid.UUID(contact_id) if contact_id else None
+        return False
+    try:
+        new_contact_id = uuid.UUID(contact_id) if contact_id else None
+    except ValueError:
+        # customer-service answered with something that is not a UUID at all — its own bug, not
+        # this conversation's, and not a reason to crash the fold or overwrite a good value with
+        # garbage. Treated as "no usable answer" rather than "the answer is nobody".
+        log.error(
+            "notification.inbound.contact_id_unparseable", conversation_id=str(conversation_id)
+        )
+        return False
     if conversation.contact_id == new_contact_id:
-        return
+        return False
     conversation.contact_id = new_contact_id
     conversation.updated_by = SYSTEM_ACTOR
     await session.flush()
+    return True
 
 
 async def reply_to_conversation(
@@ -1337,7 +1463,23 @@ async def assign_conversation(
     assignee_membership_id: uuid.UUID | None,
     request: Request | None = None,
 ) -> Conversation:
-    """Hand a conversation to a membership, or clear its assignment with `None`."""
+    """Hand a conversation to a membership, or clear its assignment with `None`.
+
+    `assignee_membership_id` is verified against account-service before it is ever written —
+    `memberships.membership_is_active` — because an unverified id here is not a display glitch,
+    it is a conversation silently routed to nobody. Clearing the assignment (`None`) needs no
+    such check: there is no id to misroute to.
+    """
+    if assignee_membership_id is not None:
+        confirmed = await memberships.membership_is_active(
+            settings(), str(ctx.organization_id), str(assignee_membership_id)
+        )
+        if not confirmed:
+            raise ValidationProblem(
+                "That membership does not belong to this organization, is not active, or "
+                "could not be confirmed."
+            )
+
     conversation = await selectors.get_conversation(session, ctx.organization_id, conversation_id)
     if conversation is None:
         raise NotFoundProblem("No such conversation")
@@ -1837,6 +1979,7 @@ async def create_whatsapp_connection(
     session: AsyncSession,
     ctx: ScopeContext,
     *,
+    directory: AsyncSession,
     waba_id: str,
     phone_number_id: str,
     display_number: str,
@@ -1847,9 +1990,25 @@ async def create_whatsapp_connection(
 
     One per organization, refused here as well as by the org+channel index — mirrors
     `create_connection`'s reasoning for email. `phone_number_id` is also globally unique (see
-    `ProviderAccount`'s docstring: it is the webhook routing key), so a number already claimed
-    by another organization is refused with a sentence rather than surfaced as an IntegrityError.
+    `ProviderAccount`'s docstring: it is the webhook routing key), so a number already claimed by
+    another organization is refused with a sentence rather than surfaced as an IntegrityError —
+    checked on `directory`, the cross-tenant BYPASSRLS reader, because `session` is scoped to this
+    caller's own organization by row-level security and would never see another tenant's row to
+    conflict with in the first place. The `IntegrityError` guard below is the second net for the
+    race between that check and this insert, not the primary mechanism.
+
+    Before either check, `whatsapp_provider.verify_ownership` proves the supplied token can
+    actually read this phone number from Meta and see it listed under the named WABA — without
+    that, anyone who can reach this endpoint could claim a number they do not control simply by
+    typing its id, and every one of that number's future inbound webhooks would route here.
     """
+    try:
+        await whatsapp_provider.verify_ownership(
+            settings(), waba_id=waba_id, phone_number_id=phone_number_id, access_token=access_token
+        )
+    except whatsapp_provider.WhatsAppOwnershipError as exc:
+        raise ValidationProblem(str(exc)) from exc
+
     existing = await selectors.get_whatsapp_connection(session, ctx.organization_id)
     if existing is not None:
         raise BusinessRuleProblem(
@@ -1857,7 +2016,7 @@ async def create_whatsapp_connection(
             "adding another."
         )
 
-    claimed = await selectors.account_for_phone_number(session, phone_number_id)
+    claimed = await selectors.account_for_phone_number(directory, phone_number_id)
     if claimed is not None:
         raise ConflictProblem("This WhatsApp phone number is already connected elsewhere.")
 
@@ -1874,7 +2033,10 @@ async def create_whatsapp_connection(
         status="connected",
     )
     session.add(account)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        raise ConflictProblem("This WhatsApp phone number is already connected elsewhere.") from exc
 
     record_audit(
         session,
@@ -1913,6 +2075,7 @@ async def replace_whatsapp_connection(
     session: AsyncSession,
     ctx: ScopeContext,
     *,
+    directory: AsyncSession,
     waba_id: str,
     phone_number_id: str,
     display_number: str,
@@ -1923,14 +2086,23 @@ async def replace_whatsapp_connection(
 
     In place, not delete-then-create, for the same reason `replace_connection` is: no window
     with no connection at all. The old token is overwritten, not archived — there is no history
-    column for it and there must not become one.
+    column for it and there must not become one. Ownership is proved the same way creation
+    proves it — see `create_whatsapp_connection`'s docstring — and the uniqueness check runs on
+    the same cross-tenant `directory` reader for the same reason.
     """
+    try:
+        await whatsapp_provider.verify_ownership(
+            settings(), waba_id=waba_id, phone_number_id=phone_number_id, access_token=access_token
+        )
+    except whatsapp_provider.WhatsAppOwnershipError as exc:
+        raise ValidationProblem(str(exc)) from exc
+
     existing = await selectors.get_whatsapp_connection(session, ctx.organization_id)
     if existing is None:
         raise NotFoundProblem("No WhatsApp account to replace. Connect one first.")
 
     if phone_number_id != existing.phone_number_id:
-        claimed = await selectors.account_for_phone_number(session, phone_number_id)
+        claimed = await selectors.account_for_phone_number(directory, phone_number_id)
         if claimed is not None:
             raise ConflictProblem("This WhatsApp phone number is already connected elsewhere.")
 
@@ -1949,7 +2121,10 @@ async def replace_whatsapp_connection(
     existing.status = "connected"
     existing.updated_by = str(ctx.principal.sub)
 
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        raise ConflictProblem("This WhatsApp phone number is already connected elsewhere.") from exc
 
     record_audit(
         session,
