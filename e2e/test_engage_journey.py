@@ -16,6 +16,7 @@ This file is that proof, as a permanent journey rather than a one-off script.
     7  a sender is refused on that unverified domain   422, naming the reason
     8  a second organization cannot reach the first's row by id   the IDOR/BOLA check, over HTTP
     9  a same-org member with read but not write is split exactly there    403 write, 200 read
+   10  the unsubscribe link needs no token at all             a real signed link, 200 not 401
 
 Steps run in file order and share state through `engage_journey`, a dict scoped to this file
 alone — `journey` in `test_journey.py` is a *different* fixture instance with the same session
@@ -467,3 +468,37 @@ class TestEngageJourney:
             f"a caller with no engage.setup.domain.write grant was allowed to add a domain: "
             f"{write.status_code} {write.text[:300]}"
         )
+
+    # ------------------------------------------------------------------ 10. the route with no token
+
+    def test_10_the_unsubscribe_link_is_reachable_without_a_token(
+        self, client: httpx.Client, engage_journey: dict, mint_unsubscribe_token: Any
+    ) -> None:
+        """The bug this step exists to catch: `GatewayPolicy.public_paths` is an *exact*-match
+        list (`full_path in policy.public_paths`), which cannot express a path with a variable
+        segment — so the one Engage surface with no principal, the per-recipient unsubscribe
+        link, got the same 401 as every permissioned route until `public_path_prefixes`
+        existed to name it. A real, validly-signed link has to reach notification-service and
+        get an actual answer from it — not a 401 the gateway raised before ever asking.
+        """
+        token = mint_unsubscribe_token(
+            engage_journey["org_id"], f"edge-smoke-{uuid.uuid4().hex[:8]}@example.com"
+        )
+
+        page = client.get(f"/api/v1/engage/unsubscribe/{token}")
+        assert page.status_code == 200, (
+            f"GET the unsubscribe link answered {page.status_code}, not 200 — if it is 401 "
+            f"the gateway refused it before notification-service ever saw it: "
+            f"{page.text[:300]}"
+        )
+
+        one_click = client.post(
+            f"/api/v1/engage/unsubscribe/{token}",
+            content=b"List-Unsubscribe=One-Click",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert one_click.status_code == 200, (
+            f"the RFC 8058 one-click POST answered {one_click.status_code}, not 200: "
+            f"{one_click.text[:300]}"
+        )
+        assert one_click.json() == {"unsubscribed": True}

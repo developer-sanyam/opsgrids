@@ -27,7 +27,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
-from app.domain import verify_unsubscribe_token
+from app.domain import UnsubscribeTarget
 from app.models import (
     Campaign,
     Contact,
@@ -1072,8 +1072,22 @@ public_router = APIRouter(tags=["engage-public"])
 
 PlainSessionDep = Annotated[AsyncSession, Depends(get_session)]
 
-#: No search engine has any business indexing a recipient-specific, single-use link.
-_NOINDEX = {"X-Robots-Tag": "noindex"}
+#: Every response this router sends, success or failure, HTML or JSON. No search engine has any
+#: business indexing a recipient-specific, single-use link (`X-Robots-Tag`); no browser has any
+#: business running a script, loading a subresource, or being framed on a page that renders
+#: nothing but a name and a button (`Content-Security-Policy`); nothing here is meant to be
+#: sniffed as anything but what its `Content-Type` already says (`X-Content-Type-Options`);
+#: the referrer header carries a token in its path and must not leak to whatever `href` this
+#: page never actually has (`Referrer-Policy`); and no intermediate cache has any business
+#: holding a copy of a page whose whole point is one-time, one-recipient state (`Cache-Control`).
+_PUBLIC_HEADERS = {
+    "X-Robots-Tag": "noindex",
+    "Content-Security-Policy": "default-src 'none'; form-action 'self'; frame-ancestors 'none'; "
+    "base-uri 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
 
 
 def _page(title: str, body: str) -> str:
@@ -1103,29 +1117,29 @@ def _invalid_page() -> str:
     )
 
 
-def _confirm_page(masked_email: str) -> str:
-    safe = html.escape(masked_email)
+def _confirm_page(masked_email: str | None) -> str:
+    detail = (
+        f"<p>This stops email to <strong>{html.escape(masked_email)}</strong> from this sender.</p>"
+        if masked_email
+        else "<p>This stops future email from this sender to the address this link was sent to.</p>"
+    )
     return _page(
         "Unsubscribe",
-        "<h1>Unsubscribe from future emails?</h1>"
-        f"<p>This stops email to <strong>{safe}</strong> from this sender.</p>"
-        '<form method="post">'
-        '<button type="submit">Unsubscribe me</button>'
-        "</form>",
+        f"<h1>Unsubscribe from future emails?</h1>{detail}"
+        '<form method="post"><button type="submit">Unsubscribe me</button></form>',
     )
 
 
-def _done_page(masked_email: str) -> str:
-    safe = html.escape(masked_email)
+def _done_page(masked_email: str | None) -> str:
+    who = f"<strong>{html.escape(masked_email)}</strong>" if masked_email else "This address"
     return _page(
         "Unsubscribed",
-        "<h1>You're unsubscribed</h1>"
-        f"<p><strong>{safe}</strong> will no longer receive email from this sender.</p>",
+        f"<h1>You're unsubscribed</h1><p>{who} will no longer receive email from this sender.</p>",
     )
 
 
 def _html(body: str, *, status_code: int = status.HTTP_200_OK) -> HTMLResponse:
-    return HTMLResponse(body, status_code=status_code, headers=_NOINDEX)
+    return HTMLResponse(body, status_code=status_code, headers=_PUBLIC_HEADERS)
 
 
 def _wants_html(request: Request) -> bool:
@@ -1136,9 +1150,53 @@ def _wants_html(request: Request) -> bool:
     return "text/html" in request.headers.get("accept", "").lower()
 
 
-def _verify(token: str) -> tuple[uuid.UUID, str] | None:
-    key = services.unsubscribe_key()
-    return verify_unsubscribe_token(token, key) if key is not None else None
+def _invalid_response(request: Request) -> Response:
+    """Same answer for malformed, forged, unconfigured, and a v2 link naming a recipient row
+    that is gone or erased: none of them may learn anything, and none of them touches a row."""
+    if _wants_html(request):
+        return _html(_invalid_page(), status_code=status.HTTP_404_NOT_FOUND)
+    raise NotFoundProblem("This unsubscribe link is not valid", headers=_PUBLIC_HEADERS)
+
+
+async def _masked_preview(target: UnsubscribeTarget, session: AsyncSession) -> str | None:
+    """The masked address for a confirmation page. A v1 link already carries it; a v2 link
+    names a recipient row instead, so this reads (never decrypts) that row's own masked column
+    — a single `SELECT`, not a write, so `GET` stays side-effect-free. `None` when a v2 link's
+    row is gone or erased: the page still renders, just without naming an address."""
+    if target.email is not None:
+        return mask_pii(target.email, kind="email")
+    assert target.recipient_id is not None
+    async with session.begin():
+        await set_tenant(session, target.organization_id)
+        return await selectors.masked_recipient_email(
+            session, target.organization_id, target.recipient_id
+        )
+
+
+async def _resolve_and_unsubscribe(
+    target: UnsubscribeTarget, session: AsyncSession, request: Request
+) -> str | None:
+    """Writes the suppression `target` names, inside the caller's transaction. Returns the
+    masked address to show on the result page, or `None` if there was nothing to act on (a v2
+    link naming a recipient row that is gone or erased) — the caller answers that exactly like
+    an invalid token."""
+    await set_tenant(session, target.organization_id)
+    if target.email is not None:
+        await services.unsubscribe(
+            session, organization_id=target.organization_id, email=target.email, request=request
+        )
+        return mask_pii(target.email, kind="email")
+    assert target.recipient_id is not None
+    result = await services.unsubscribe_recipient(
+        session,
+        organization_id=target.organization_id,
+        recipient_id=target.recipient_id,
+        request=request,
+    )
+    if result is None:
+        return None
+    _wrote, masked = result
+    return masked
 
 
 @public_router.get(
@@ -1146,17 +1204,16 @@ def _verify(token: str) -> tuple[uuid.UUID, str] | None:
     response_class=HTMLResponse,
     summary="A confirmation page for the address a signed link names (no sign-in, no side effects)",
 )
-async def unsubscribe_confirm(token: str) -> HTMLResponse:
-    """Renders a page and nothing else. `GET` must be safe to prefetch — this reads no row and
-    opens no transaction, so a scanner fetching every link in a message body cannot unsubscribe
-    anyone by doing so."""
-    verified = _verify(token)
-    if verified is None:
+async def unsubscribe_confirm(token: str, session: PlainSessionDep) -> HTMLResponse:
+    """Renders a page and nothing else. `GET` must be safe to prefetch — the only read this
+    does is a single masked-column `SELECT` for a v2 link, never a write, so a scanner fetching
+    every link in a message body cannot unsubscribe anyone by doing so."""
+    target = services.verify_unsubscribe_link(token)
+    if target is None:
         # Same page for malformed, forged, and "unsubscribe is not configured": none of them
         # may learn anything, and none of them touches a row.
         return _html(_invalid_page(), status_code=status.HTTP_404_NOT_FOUND)
-    _organization_id, email = verified
-    return _html(_confirm_page(mask_pii(email, kind="email")))
+    return _html(_confirm_page(await _masked_preview(target, session)))
 
 
 @public_router.post(
@@ -1166,17 +1223,13 @@ async def unsubscribe_confirm(token: str) -> HTMLResponse:
     "and RFC 8058 one-click unsubscribe, both land here",
 )
 async def unsubscribe_via_link(token: str, session: PlainSessionDep, request: Request) -> Response:
-    verified = _verify(token)
-    if verified is None:
-        if _wants_html(request):
-            return _html(_invalid_page(), status_code=status.HTTP_404_NOT_FOUND)
-        raise NotFoundProblem("This unsubscribe link is not valid")
-    organization_id, email = verified
+    target = services.verify_unsubscribe_link(token)
+    if target is None:
+        return _invalid_response(request)
     async with session.begin():
-        await set_tenant(session, organization_id)
-        await services.unsubscribe(
-            session, organization_id=organization_id, email=email, request=request
-        )
+        masked = await _resolve_and_unsubscribe(target, session, request)
+    if masked is None:
+        return _invalid_response(request)
     if _wants_html(request):
-        return _html(_done_page(mask_pii(email, kind="email")))
-    return JSONResponse(UnsubscribeOut(unsubscribed=True).model_dump())
+        return _html(_done_page(masked))
+    return JSONResponse(UnsubscribeOut(unsubscribed=True).model_dump(), headers=_PUBLIC_HEADERS)

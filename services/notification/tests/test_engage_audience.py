@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import uuid
 from collections.abc import Iterator
+from datetime import date
 
 import pytest
 from sqlalchemy import func, select
@@ -281,6 +282,46 @@ async def test_repeat_unsubscribe_is_idempotent_across_get_form_and_one_click(
         assert len(audits) == 1
 
 
+_SECURITY_HEADERS = {
+    "content-security-policy": "default-src 'none'; form-action 'self'; frame-ancestors 'none'; "
+    "base-uri 'none'",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "no-referrer",
+    "cache-control": "no-store",
+    "x-robots-tag": "noindex",
+}
+
+
+def _assert_security_headers(response) -> None:
+    for name, value in _SECURITY_HEADERS.items():
+        assert response.headers[name] == value, name
+
+
+async def test_every_public_unsubscribe_response_carries_the_security_headers(client, org_id):
+    """Every response this router sends, success or failure, HTML or JSON — a page whose whole
+    job is to run in a mail client's embedded browser must not be scriptable, framable, cached,
+    or leak its own (token-bearing) URL onward as a referrer."""
+    token = services.unsubscribe_token(org_id, "Header@Example.com")
+
+    _assert_security_headers(await client.get(f"{UNSUBSCRIBE}/{token}"))
+    _assert_security_headers(
+        await client.get(f"{UNSUBSCRIBE}/not-a-real-token")
+    )  # the invalid-link page
+
+    one_click = await client.post(f"{UNSUBSCRIBE}/{token}")
+    _assert_security_headers(one_click)  # the JSON success
+
+    bad_json = await client.post(f"{UNSUBSCRIBE}/not-a-real-token")
+    _assert_security_headers(bad_json)  # the JSON problem+ 404
+
+    token2 = services.unsubscribe_token(org_id, "Header2@Example.com")
+    html_done = await client.post(f"{UNSUBSCRIBE}/{token2}", headers={"Accept": "text/html"})
+    _assert_security_headers(html_done)  # the HTML result page
+
+    html_bad = await client.post(f"{UNSUBSCRIBE}/not-a-real-token", headers={"Accept": "text/html"})
+    _assert_security_headers(html_bad)  # the HTML invalid-link page
+
+
 def _tamper(token: str) -> str:
     org, _email, mac = token.split(".")
     return f"{org}.{domain._b64e(b'victim@example.com')}.{mac}"
@@ -327,15 +368,52 @@ async def test_bad_or_forged_unsubscribe_token_is_refused_without_side_effects(
 async def test_token_round_trip_and_constant_shape():
     org = uuid.uuid4()
     token = domain.make_unsubscribe_token(org, "a@example.com", b"k")
-    assert domain.verify_unsubscribe_token(token, b"k") == (org, "a@example.com")
+    assert domain.verify_unsubscribe_token(token, b"k") == domain.UnsubscribeTarget(
+        organization_id=org, email="a@example.com"
+    )
     assert domain.verify_unsubscribe_token(token, b"other") is None
     assert domain.verify_unsubscribe_token(token + "x", b"k") is None
+
+
+async def test_v2_token_round_trip_is_opaque():
+    """Unlike v1, nothing about the address — not even its blind index — decodes out of a v2
+    token; only the two ids that name the organization and the delivery do."""
+    org = uuid.uuid4()
+    recipient_id = uuid.uuid4()
+    token = domain.make_unsubscribe_token_v2(org, recipient_id, b"k")
+    assert "a@example.com" not in token
+    assert domain.verify_unsubscribe_token(token, b"k") == domain.UnsubscribeTarget(
+        organization_id=org, recipient_id=recipient_id
+    )
+    assert domain.verify_unsubscribe_token(token, b"other") is None
+    assert domain.verify_unsubscribe_token(token + "x", b"k") is None
+    # A v1 MAC replayed against the v2 parser (or the reverse) must not verify — the two are
+    # domain-separated, not just differently shaped.
+    v1_token = domain.make_unsubscribe_token(org, "a@example.com", b"k")
+    forged = f"v2.{v1_token}"
+    assert domain.verify_unsubscribe_token(forged, b"k") is None
 
 
 async def test_placeholder_key_is_refused_in_a_real_environment(monkeypatch):
     cfg = services.settings()
     monkeypatch.setattr(cfg, "environment", "production")
     assert services.unsubscribe_key() is None
+
+
+async def test_v1_links_stop_verifying_past_their_stated_sunset(monkeypatch, org_id):
+    """A v1 link's address travels in the clear (see `domain`'s unsubscribe-link module
+    docstring) — accepted only for a stated window, never indefinitely."""
+    v1_token = services.unsubscribe_token(org_id, "reader@example.com")
+    v2_token = services.unsubscribe_token_for_recipient(org_id, uuid.uuid4())
+
+    assert services.verify_unsubscribe_link(v1_token) is not None
+    assert services.verify_unsubscribe_link(v2_token) is not None
+
+    monkeypatch.setattr(services, "_V1_UNSUBSCRIBE_SUNSET", date(2000, 1, 1))
+    assert services.verify_unsubscribe_link(v1_token) is None
+    # v2 links carry no address at all, so the sunset — which exists because v1's does —
+    # never applies to them.
+    assert services.verify_unsubscribe_link(v2_token) is not None
 
 
 # --------------------------------------------------------------------- the send selector

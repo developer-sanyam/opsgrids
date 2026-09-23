@@ -4666,7 +4666,7 @@
     },
     "/api/v1/engage/unsubscribe/{token}": {
       "get": {
-        "description": "Renders a page and nothing else. `GET` must be safe to prefetch \u2014 this reads no row and\nopens no transaction, so a scanner fetching every link in a message body cannot unsubscribe\nanyone by doing so.",
+        "description": "Renders a page and nothing else. `GET` must be safe to prefetch \u2014 the only read this\ndoes is a single masked-column `SELECT` for a v2 link, never a write, so a scanner fetching\nevery link in a message body cannot unsubscribe anyone by doing so.",
         "operationId": "unsubscribe_confirm_api_v1_engage_unsubscribe__token__get",
         "parameters": [
           {

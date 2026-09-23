@@ -17,14 +17,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import uuid
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import UTC, date, datetime, timedelta
 from html import escape as html_escape
 from typing import Any, Final, Literal, cast
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from sqlalchemy import CursorResult, delete, select, update
+from sqlalchemy import CursorResult, case, delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -2029,11 +2029,52 @@ def _check_public_base(cfg: Settings) -> None:
 
 
 def unsubscribe_token(organization_id: uuid.UUID, email: str) -> str:
-    """The token that goes into the unsubscribe link of mail sent to `email`."""
+    """The v1 unsubscribe token for `email`.
+
+    Nothing that mails a real recipient calls this any more — `claim_campaign_batch` mints
+    `unsubscribe_token_for_recipient` instead, precisely because this shape puts the address in
+    the link (see `domain`'s unsubscribe-link module docstring). It stays public for the tests
+    that prove `verify_unsubscribe_link` still accepts a v1 link already sent.
+    """
     key = unsubscribe_key()
     if key is None:
         raise UpstreamUnavailableProblem("Unsubscribe links are not configured")
     return _rules.make_unsubscribe_token(organization_id, _normalize_email(email), key)
+
+
+def unsubscribe_token_for_recipient(organization_id: uuid.UUID, recipient_id: uuid.UUID) -> str:
+    """The token that goes into the unsubscribe link of a campaign delivery. Opaque — see
+    `domain`'s unsubscribe-link module docstring for why this, rather than `unsubscribe_token`,
+    is what every real send uses."""
+    key = unsubscribe_key()
+    if key is None:
+        raise UpstreamUnavailableProblem("Unsubscribe links are not configured")
+    return _rules.make_unsubscribe_token_v2(organization_id, recipient_id, key)
+
+
+#: v1 links stop verifying on this date, even though the MAC would still check out — see
+#: `domain`'s unsubscribe-link module docstring. Chosen as a stated window rather than an
+#: instant cutover: mail already delivered before this change keeps its links working long
+#: enough that a recipient reading a backlogged newsletter can still leave, but not
+#: indefinitely — every day past it is another day a real address keeps working from
+#: cleartext an old access log entry.
+_V1_UNSUBSCRIBE_SUNSET: Final = date(2026, 12, 22)
+
+
+def verify_unsubscribe_link(token: str) -> domain.UnsubscribeTarget | None:
+    """The one place a route resolves an unsubscribe token — GET's confirmation page and POST's
+    actual unsubscribe both call this, so the two can never disagree about what a token names,
+    and neither has to know the sunset policy for itself.
+    """
+    key = unsubscribe_key()
+    if key is None:
+        return None
+    target = _rules.verify_unsubscribe_token(token, key)
+    if target is None:
+        return None
+    if target.email is not None and datetime.now(UTC).date() > _V1_UNSUBSCRIBE_SUNSET:
+        return None
+    return target
 
 
 async def create_contact(
@@ -2162,12 +2203,23 @@ async def delete_contact(
     )
 
 
-#: What `erase_contact_campaign_copies` re-seals `email_enc` over — never the real address again.
+#: What `erase_contact_campaign_copies` overwrites `email_enc` with — never the real address
+#: again. Not a crypto-shred in the strict sense (the encryption key itself is never rotated or
+#: destroyed by this call; see the module note on erasure limits): this is an ordinary
+#: application-level overwrite, and the platform's usual data-retention horizons still apply —
+#: backups taken before this commits, WAL not yet recycled, and the dead tuple Postgres has not
+#: yet vacuumed all still hold the row this replaced, for as long as this deployment's backup
+#: and WAL retention windows say.
 _ERASED_PLACEHOLDER = "erased contact"
 #: What it writes to `email_masked` — a hint that says plainly what happened, rather than
 #: `pii.mask`'s generic bullets-plus-tail over the placeholder above, which would read as a
 #: broken mask rather than as "this address was erased" to whoever looks at the recipient list.
 _ERASED_MASK = "(erased)"
+#: The one failure reason for "this recipient's address is gone" — written by
+#: `erase_contact_campaign_copies` for a row still `queued` when erasure runs, and by
+#: `claim_campaign_batch`/`drop_erased_from_batch` for a row erased after being claimed. One
+#: string so a report never has to explain why the same outcome reads two different ways.
+_ERASED_ERROR: Final = "This recipient's address was erased"
 
 
 async def erase_contact_campaign_copies(
@@ -2178,8 +2230,8 @@ async def erase_contact_campaign_copies(
     actor_id: uuid.UUID | None = None,
     request: Request | None = None,
 ) -> int:
-    """Crypto-shred a contact's sealed address in every `campaign_recipients` row it was ever
-    copied into, in this organization. Returns how many rows were erased.
+    """Overwrite a contact's sealed address in every `campaign_recipients` row it was ever
+    copied into, in this organization. Returns how many rows were touched.
 
     Called from `delete_contact`, in the same transaction as the contact's own deletion — but
     takes an `organization_id` and a `contact_id` rather than a `ScopeContext` so a future
@@ -2193,9 +2245,15 @@ async def erase_contact_campaign_copies(
     later contact re-imported under the same address. `email_enc` is re-sealed over a placeholder
     instead of nulled or zeroed, so the column stays `NOT NULL` and valid ciphertext for the one
     caller that ever opens it (`claim_campaign_batch`, which checks `erased_at` first and never
-    actually does); the original address is unrecoverable the moment this commits. Rows already
-    erased are skipped, so a repeat call (a second deletion attempt, a redelivered erasure event)
-    is a no-op.
+    actually does).
+
+    A row still `queued` is also moved straight to `failed` here, in the same statement — not
+    left for the driver to discover. Without this, a contact deleted between expansion and claim
+    would leave a `queued` row an ordinary claim could still pick up, decrypt, and send before
+    anything downstream ever re-checks `erased_at`. A row already `sending` (mid-claim elsewhere)
+    is not touched by this — `drop_erased_from_batch` is what catches that narrower window,
+    immediately before the batch reaches a transport. Rows already erased are skipped, so a
+    repeat call (a second deletion attempt, a redelivered erasure event) is a no-op.
     """
     sealed, _masked = pii.seal(_ERASED_PLACEHOLDER, kind="generic", settings=settings())
     # `session.execute` is typed to return the generic `Result`, but an UPDATE statement always
@@ -2214,6 +2272,14 @@ async def erase_contact_campaign_copies(
                 email_masked=_ERASED_MASK,
                 email_index="",
                 erased_at=datetime.now(UTC),
+                status=case(
+                    (CampaignRecipient.status == "queued", "failed"),
+                    else_=CampaignRecipient.status,
+                ),
+                error=case(
+                    (CampaignRecipient.status == "queued", _ERASED_ERROR),
+                    else_=CampaignRecipient.error,
+                ),
             )
         ),
     )
@@ -2425,6 +2491,61 @@ async def unsubscribe(
         request=request,
     )
     return True
+
+
+async def unsubscribe_recipient(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    recipient_id: uuid.UUID,
+    request: Request | None = None,
+) -> tuple[bool, str] | None:
+    """The v2 counterpart to `unsubscribe`: resolves the address from a `campaign_recipients`
+    row a signed link names, rather than from plaintext the link itself carries (see `domain`'s
+    unsubscribe-link module docstring). `email_enc`/`email_masked`/`email_index` are copied
+    from that row exactly as it already held them — never decrypted, never re-derived — so this
+    never touches `pii.open_sealed` and needs no sensitive-read audit of its own.
+
+    Returns `(wrote, masked_email)` — `masked_email` handed back so the route that shows a
+    result page needs no second query — or `None` when there is nothing to act on: the
+    recipient id names no row in this organization, or it was erased
+    (`erase_contact_campaign_copies`). The caller answers that identically to an invalid token
+    — neither may learn anything, same as `unsubscribe`'s caller does for a bad MAC.
+    """
+    recipient = await selectors.get_recipient_for_unsubscribe(
+        session, organization_id, recipient_id
+    )
+    if recipient is None:
+        return None
+    stmt = (
+        pg_insert(Suppression)
+        .values(
+            id=uuid.uuid4(),
+            organization_id=organization_id,
+            created_by="recipient:unsubscribe",
+            email_enc=recipient.email_enc,
+            email_masked=recipient.email_masked,
+            email_index=recipient.email_index,
+            reason="unsubscribed",
+        )
+        .on_conflict_do_nothing(constraint="uq_suppression_org_email")
+        .returning(Suppression.id)
+    )
+    inserted = (await session.execute(stmt)).scalar_one_or_none()
+    if inserted is None:
+        return False, recipient.email_masked
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        action="engage.suppression.unsubscribed",
+        entity="suppression",
+        entity_id=inserted,
+        after={"email": recipient.email_masked, "reason": "unsubscribed"},
+        request=request,
+    )
+    return True, recipient.email_masked
 
 
 # --------------------------------------------------------------------- engage lists
@@ -2922,6 +3043,11 @@ async def expand_campaign(
             limit=batch_size,
             after_id=after,
             list_id=campaign.list_id if campaign.audience == "list" else None,
+            # FOR KEY SHARE: a concurrent `delete_contact` on one of these rows must wait for
+            # this transaction to commit, so its own erasure of `campaign_recipients` — which
+            # only sees rows that exist yet — always runs after the copy below exists to
+            # erase, never before. See `sendable_contacts`'s docstring.
+            lock=True,
         )
         if not contacts:
             break
@@ -2964,8 +3090,17 @@ async def _fold_campaign_counts(session: AsyncSession, campaign: Campaign) -> di
 
 
 def unsubscribe_url(organization_id: uuid.UUID, email: str) -> str:
+    """The v1 unsubscribe link for `email`. See `unsubscribe_token` — nothing that mails a real
+    recipient calls this; `unsubscribe_url_for_recipient` is what a campaign send uses."""
     base = settings().engage_public_api_base.rstrip("/")
     return f"{base}/engage/unsubscribe/{unsubscribe_token(organization_id, email)}"
+
+
+def unsubscribe_url_for_recipient(organization_id: uuid.UUID, recipient_id: uuid.UUID) -> str:
+    """The unsubscribe link for one campaign delivery — opaque, carrying no address."""
+    base = settings().engage_public_api_base.rstrip("/")
+    token = unsubscribe_token_for_recipient(organization_id, recipient_id)
+    return f"{base}/engage/unsubscribe/{token}"
 
 
 def campaign_message(campaign: Campaign, *, to_address: str, unsubscribe: str) -> Outgoing:
@@ -3045,6 +3180,42 @@ async def resolve_campaign_transport(batch: ClaimedBatch) -> Transport:
     if batch.transport_override is not None:
         return batch.transport_override
     return await campaign_transport(batch.connection, batch.sender)
+
+
+async def drop_erased_from_batch(
+    session: AsyncSession, *, organization_id: uuid.UUID, batch: ClaimedBatch
+) -> ClaimedBatch:
+    """Re-checks `erased_at` for a claimed batch's own recipients, immediately before the
+    driver hands any of them to a transport. Closes the window `claim_campaign_batch`'s own
+    check cannot: `erased_at` is read once, at claim time, and the batch then sits in the
+    driver's hands — resolving the transport, then a network call per message — for however
+    long that takes, which is time enough for `erase_contact_campaign_copies` to run on one of
+    these very rows in between. A message already built with a now-erased address is dropped
+    here rather than sent, and resolved `failed` alongside whatever the transport goes on to
+    report for the rest of the batch.
+
+    Narrows the window; does not close it — the address could still be erased in the instant
+    between this query and the transport call, which is irreducible without serialising a send
+    behind the same row lock `expand_campaign` takes on `contacts` (and campaigns send far more
+    often than contacts are deleted, so that trade is not taken here). The other, wider half of
+    the window — a row still `queued` when erasure runs — is closed directly by
+    `erase_contact_campaign_copies`, which fails it on the spot rather than leaving it to be
+    claimed at all.
+    """
+    if not batch.messages:
+        return batch
+    erased = await selectors.erased_recipient_ids(
+        session, organization_id, [m.recipient_id for m in batch.messages]
+    )
+    if not erased:
+        return batch
+    kept = [m for m in batch.messages if m.recipient_id not in erased]
+    dropped: list[tuple[uuid.UUID, Literal["suppressed", "failed"], str]] = [
+        (m.recipient_id, "failed", _ERASED_ERROR)
+        for m in batch.messages
+        if m.recipient_id in erased
+    ]
+    return replace(batch, messages=kept, resolved=[*batch.resolved, *dropped])
 
 
 ClaimOutcome = Literal["claimed", "done", "stopped", "capped", "paused", "idle"]
@@ -3261,14 +3432,14 @@ async def claim_campaign_batch(
             # longer holds a real address (see `erase_contact_campaign_copies`), so this is
             # checked before `pii.open_sealed` rather than left to the `except` below — the
             # same outcome either way, but a clear reason instead of a decrypt failure.
-            resolved.append((recipient.id, "failed", "This recipient's address was erased"))
+            resolved.append((recipient.id, "failed", _ERASED_ERROR))
             continue
         try:
             address = pii.open_sealed(recipient.email_enc, settings=cfg)
             message = campaign_message(
                 campaign,
                 to_address=address,
-                unsubscribe=unsubscribe_url(organization_id, address),
+                unsubscribe=unsubscribe_url_for_recipient(organization_id, recipient.id),
             )
         except Exception:
             # One row's own problem (a sealed address that will not open, a body that will not

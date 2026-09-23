@@ -814,16 +814,40 @@ def fold_domain_status(records: list[dict[str, Any]]) -> str:
 # --------------------------------------------------------------------- engage unsubscribe links
 #
 # A link in a marketing email that lets the recipient leave without signing in. The recipient
-# has no account and no token of ours, so the link itself is the credential: it names the
-# organization and the address, and an HMAC-SHA256 over both proves we minted it. Anything that
-# does not verify is refused before a single row is read — a forged link must not be able to
-# suppress somebody else's address, nor learn whether that address is a contact.
+# has no account and no token of ours, so the link itself is the credential: an HMAC-SHA256
+# proves we minted it. Anything that does not verify is refused before a single row is read — a
+# forged link must not be able to suppress somebody else's address, nor learn whether that
+# address is a contact.
 #
-# Layout: `<org uuid, 16 bytes>.<address, utf-8>.<mac, 32 bytes>`, each part base64url without
-# padding. The address travels in the link rather than being looked up because the link goes to
-# that address and nowhere else; the recipient is the one party it tells nothing new.
+# Two token shapes, and the difference between them is the whole reason a second one exists.
+#
+# **v1** — `<org uuid, 16 bytes>.<address, utf-8>.<mac, 32 bytes>`, base64url without padding —
+# carried the address in the clear (well, unencrypted; base64 is not secrecy) inside the link
+# itself. That was deliberate at the time: the recipient already knows their own address, so the
+# link tells *them* nothing new. It missed who else reads a URL that travels over the public
+# internet — every reverse proxy and gateway between here and the recipient's mailbox logs the
+# request path by default, so the address ended up in infrastructure access logs this platform
+# does not treat as holding PII, in cleartext, forever. `services._V1_UNSUBSCRIBE_SUNSET` is
+# when this stops verifying; until then it has to, because mail already delivered still carries
+# these links and a recipient's ability to leave must not regress.
+#
+# **v2** — `v2.<org uuid, 16 bytes>.<recipient uuid, 16 bytes>.<mac, 32 bytes>` — carries no
+# address and no blind index, just two ids an access log can do nothing with on their own. The
+# recipient id names one row in `campaign_recipients`, and the caller (`services.
+# unsubscribe_recipient`) resolves the sealed address from *that row*, never from the token —
+# the same sealed copy the row already held, reused rather than re-derived.
 
 _UNSUBSCRIBE_MAX_LEN: Final = 1024
+
+
+@dataclass(frozen=True, slots=True)
+class UnsubscribeTarget:
+    """What a verified token names. Exactly one of `email` (v1) or `recipient_id` (v2) is set —
+    never both, never neither."""
+
+    organization_id: uuid.UUID
+    email: str | None = None
+    recipient_id: uuid.UUID | None = None
 
 
 def _b64e(raw: bytes) -> str:
@@ -841,23 +865,53 @@ def _unsubscribe_mac(organization_id: uuid.UUID, email: str, key: bytes) -> byte
     return hmac.new(key, message, hashlib.sha256).digest()
 
 
+def _unsubscribe_mac_v2(organization_id: uuid.UUID, recipient_id: uuid.UUID, key: bytes) -> bytes:
+    # A distinct context string from v1's ("v2" rather than "v1"), so a MAC minted for one
+    # shape can never verify as the other even if the encoded bytes happened to coincide.
+    message = f"engage.unsubscribe.v2\n{organization_id}\n{recipient_id}".encode()
+    return hmac.new(key, message, hashlib.sha256).digest()
+
+
 def make_unsubscribe_token(organization_id: uuid.UUID, email: str, key: bytes) -> str:
-    """The unsubscribe token for one address in one organization. `email` must be normalised."""
+    """The v1 unsubscribe token. `email` must be normalised.
+
+    Kept for the links already sent that `verify_unsubscribe_token` still has to accept (see the
+    module docstring above) and for the tests that prove that acceptance. Every new link is
+    minted with `make_unsubscribe_token_v2` instead — nothing in this service calls this to
+    produce a link a customer will actually receive.
+    """
     mac = _unsubscribe_mac(organization_id, email, key)
     return f"{_b64e(organization_id.bytes)}.{_b64e(email.encode())}.{_b64e(mac)}"
 
 
-def verify_unsubscribe_token(token: str, key: bytes) -> tuple[uuid.UUID, str] | None:
-    """`(organization_id, email)` if `token` is one we minted, else None.
+def make_unsubscribe_token_v2(
+    organization_id: uuid.UUID, recipient_id: uuid.UUID, key: bytes
+) -> str:
+    """The unsubscribe token for one delivery. Opaque: decoding it reveals neither the
+    recipient's address nor its blind index, just the two ids above."""
+    mac = _unsubscribe_mac_v2(organization_id, recipient_id, key)
+    return f"v2.{_b64e(organization_id.bytes)}.{_b64e(recipient_id.bytes)}.{_b64e(mac)}"
+
+
+def verify_unsubscribe_token(token: str, key: bytes) -> UnsubscribeTarget | None:
+    """The target `token` names, if it is one we minted, else None.
 
     Never raises on bad input — every malformed shape gets the same answer as a wrong MAC, so
     whoever sent it cannot tell "not base64" from "forged". The MAC comparison is constant-time.
+    The v1/v2 sunset itself is not enforced here — this function is pure and has no clock — see
+    `services.verify_unsubscribe_link`, the one place a route actually resolves a token.
     """
     if not token or len(token) > _UNSUBSCRIBE_MAX_LEN:
         return None
     parts = token.split(".")
-    if len(parts) != 3:
-        return None
+    if len(parts) == 4 and parts[0] == "v2":
+        return _verify_unsubscribe_token_v2(parts[1:], key)
+    if len(parts) == 3:
+        return _verify_unsubscribe_token_v1(parts, key)
+    return None
+
+
+def _verify_unsubscribe_token_v1(parts: list[str], key: bytes) -> UnsubscribeTarget | None:
     try:
         org_raw, email_raw, mac = (_b64d(p) for p in parts)
         organization_id = uuid.UUID(bytes=org_raw)
@@ -867,4 +921,17 @@ def verify_unsubscribe_token(token: str, key: bytes) -> tuple[uuid.UUID, str] | 
     expected = _unsubscribe_mac(organization_id, email, key)
     if not hmac.compare_digest(expected, mac):
         return None
-    return organization_id, email
+    return UnsubscribeTarget(organization_id=organization_id, email=email)
+
+
+def _verify_unsubscribe_token_v2(parts: list[str], key: bytes) -> UnsubscribeTarget | None:
+    try:
+        org_raw, recipient_raw, mac = (_b64d(p) for p in parts)
+        organization_id = uuid.UUID(bytes=org_raw)
+        recipient_id = uuid.UUID(bytes=recipient_raw)
+    except (ValueError, binascii.Error):
+        return None
+    expected = _unsubscribe_mac_v2(organization_id, recipient_id, key)
+    if not hmac.compare_digest(expected, mac):
+        return None
+    return UnsubscribeTarget(organization_id=organization_id, recipient_id=recipient_id)
