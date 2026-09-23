@@ -58,7 +58,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import selectors, services
 from app.config import settings
-from app.transports import send_batch
+from app.transports import Receipt, TransportError, send_batch
 from platform_core.db import (
     assert_app_role,
     assert_outbox_role,
@@ -240,12 +240,23 @@ class CampaignDriver:
         if outcome != "claimed" or batch is None:
             return outcome
 
+        # One more read, immediately before any address in this batch reaches a transport: a
+        # contact erased in the window between the claim above and now must not be mailed just
+        # because it was not yet erased when it was claimed. See `drop_erased_from_batch`'s
+        # docstring for what this does and does not close.
+        async with self._work_scope(organization_id) as session:
+            batch = await services.drop_erased_from_batch(
+                session, organization_id=organization_id, batch=batch
+            )
+
         # Building the real transport (a self-hosted `smtp` connection re-resolves its host,
         # `ClaimedBatch`'s own docstring explains why) happens here, after the claim
         # transaction above has already committed — never inside it.
-        wire = await services.resolve_campaign_transport(batch)
-        results = await send_batch(wire, [m.outgoing for m in batch.messages])
-        paired = list(zip((m.recipient_id for m in batch.messages), results, strict=True))
+        paired: list[tuple[uuid.UUID, Receipt | TransportError]] = []
+        if batch.messages:
+            wire = await services.resolve_campaign_transport(batch)
+            results = await send_batch(wire, [m.outgoing for m in batch.messages])
+            paired = list(zip((m.recipient_id for m in batch.messages), results, strict=True))
 
         async with self._work_scope(organization_id) as session:
             any_unavailable = await services.record_campaign_batch(

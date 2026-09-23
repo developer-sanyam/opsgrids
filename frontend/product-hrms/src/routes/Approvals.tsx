@@ -25,7 +25,13 @@ import type { Column } from "@opsgrids/ui";
 
 import { listInbox } from "@/api/approvals";
 import type { InboxItemOut } from "@/api/types";
-import { dueCellCopy, inboxReasonChip, isOverdue, summaryLine } from "@/lib/approvalCopy";
+import {
+  dueCellCopy,
+  inboxReasonChip,
+  isOverdue,
+  requestTypeCopy,
+  summaryLine,
+} from "@/lib/approvalCopy";
 import { useZoneLookup } from "@/lib/zone";
 import { PersonRefBlock } from "@/ui/PersonRef";
 
@@ -163,7 +169,7 @@ function ApprovalsInbox() {
       header: "Request",
       render: (r) => (
         <div className="flex flex-col leading-tight">
-          <span className="font-semibold text-ink">Attendance correction</span>
+          <span className="font-semibold text-ink">{requestTypeCopy(r.request_type).title}</span>
           <span className="text-xs text-muted">{summaryLine(r.summary)}</span>
         </div>
       ),

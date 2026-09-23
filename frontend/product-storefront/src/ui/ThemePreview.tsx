@@ -47,8 +47,10 @@ export function ThemePreview({
   const scale = width / DESIGN_WIDTH;
 
   // The preview needs a store-shaped document; forking here keeps the miniature and the adopted
-  // store identical by construction.
-  const preview = useMemo(() => adoptTheme(theme, suggestedBrand(theme.key)), [theme]);
+  // store identical by construction. `showChrome={false}` below means the brand never actually
+  // paints, but the prop is still real data rather than a stand-in.
+  const preview = useMemo(() => adoptTheme(theme), [theme]);
+  const brand = useMemo(() => suggestedBrand(theme.key), [theme]);
 
   return (
     <div
@@ -70,6 +72,7 @@ export function ThemePreview({
       >
         <StoreRenderer
           store={preview}
+          brand={brand}
           route="/"
           products={products}
           categories={categories}

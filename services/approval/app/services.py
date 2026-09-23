@@ -56,19 +56,23 @@ from platform_core.errors import (
 )
 from platform_core.events import publish_event
 
-#: `<product>.<module>.<thing>` (ADR-0006 §12) — the one request type this slice routes.
+#: `<product>.<module>.<thing>` (ADR-0006 §12) — the request types this slice routes.
 REQUEST_TYPE_REGULARIZATION = "hrms.time.regularization"
+#: Leave's own request type (HRMS leave slice 1) — routed by the same generic opening/decision/
+#: application machinery as regularisation, parametrized by `request_type` rather than
+#: duplicated; see `_open_request`/`_apply_outcome` below.
+REQUEST_TYPE_LEAVE = "hrms.time.leave"
 
 #: Every request type approval currently knows how to route. `GET /policies` (§10, §11) iterates
 #: this rather than "every request_type a PUT has ever written" or "every distinct request_type
-#: `approval_requests` has ever seen": the settings screen shows exactly one card today
-#: ("Attendance correction", screens §4.G) and needs it to render at its honest defaults even for
-#: a brand-new organization that has opened nothing yet and an administrator who has edited
-#: nothing — the alternative (deriving the list from written rows, or from routing history) would
-#: show the card only after someone else has already acted, which is not what "the type is shown
-#: once, on the settings screen" (screens, overview) describes. A second request type is added
-#: here the same way `REQUEST_TYPE_REGULARIZATION` was: one new module-level constant, appended.
-KNOWN_REQUEST_TYPES: tuple[str, ...] = (REQUEST_TYPE_REGULARIZATION,)
+#: `approval_requests` has ever seen": the settings screen needs every type to render at its
+#: honest defaults even for a brand-new organization that has opened nothing yet and an
+#: administrator who has edited nothing — the alternative (deriving the list from written rows,
+#: or from routing history) would show a card only after someone else has already acted, which is
+#: not what "the type is shown, on the settings screen" (screens, overview) describes. A new
+#: request type is added here the same way `REQUEST_TYPE_LEAVE` was: one new module-level
+#: constant, appended.
+KNOWN_REQUEST_TYPES: tuple[str, ...] = (REQUEST_TYPE_REGULARIZATION, REQUEST_TYPE_LEAVE)
 
 EVT_REQUEST_OPENED = "core.approval.request.opened"
 EVT_REQUEST_DECIDED = "core.approval.request.decided"
@@ -363,7 +367,56 @@ async def open_regularization_request(
     request_note: str | None,
 ) -> ApprovalRequest | None:
     """Open a `hrms.time.regularization` request from `hrms.time.regularization.requested`
-    (ADR-0006 §4), inside the caller's (already tenant-bound) transaction.
+    (ADR-0006 §4). Thin wrapper over `_open_request`, kept as its own name and signature so every
+    existing call site and test is untouched by `REQUEST_TYPE_LEAVE` landing beside it."""
+    return await _open_request(
+        session,
+        request_type=REQUEST_TYPE_REGULARIZATION,
+        organization_id=organization_id,
+        source_ref=source_ref,
+        requester_employee_id=requester_employee_id,
+        summary=summary,
+        request_note=request_note,
+    )
+
+
+async def open_leave_request(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    source_ref: uuid.UUID,
+    requester_employee_id: uuid.UUID,
+    summary: dict[str, Any],
+    request_note: str | None,
+) -> ApprovalRequest | None:
+    """Open a `hrms.time.leave` request from `hrms.time.leave.requested` (HRMS leave slice 1) —
+    the same opening rule ADR-0006 §4 states for regularisation, applied to a second request
+    type through the shared `_open_request`."""
+    return await _open_request(
+        session,
+        request_type=REQUEST_TYPE_LEAVE,
+        organization_id=organization_id,
+        source_ref=source_ref,
+        requester_employee_id=requester_employee_id,
+        summary=summary,
+        request_note=request_note,
+    )
+
+
+async def _open_request(
+    session: AsyncSession,
+    *,
+    request_type: str,
+    organization_id: uuid.UUID,
+    source_ref: uuid.UUID,
+    requester_employee_id: uuid.UUID,
+    summary: dict[str, Any],
+    request_note: str | None,
+) -> ApprovalRequest | None:
+    """The routing engine's one "open a request" rule (ADR-0006 §4), shared by every request
+    type this service knows how to route — parametrized by `request_type` rather than
+    duplicated, which is what let `open_leave_request` add a second product's request type with
+    no new routing logic to get subtly out of step with the first.
 
     Returns `None` when the insert is a no-op: `ON CONFLICT (organization_id, request_type,
     source_ref) DO NOTHING` means a producer that re-published the same request under a new event
@@ -377,7 +430,7 @@ async def open_regularization_request(
         pg_insert(ApprovalRequest)
         .values(
             organization_id=organization_id,
-            request_type=REQUEST_TYPE_REGULARIZATION,
+            request_type=request_type,
             source_ref=source_ref,
             requester_employee_id=requester_employee_id,
             summary=summary,
@@ -454,7 +507,7 @@ async def open_regularization_request(
     step_due_at = await _sla_due_at(
         session,
         organization_id=organization_id,
-        request_type=REQUEST_TYPE_REGULARIZATION,
+        request_type=request_type,
         approver_present=step_approver_id is not None,
         opened_at=now,
     )
@@ -777,6 +830,49 @@ async def apply_regularization_outcome(
     failure_reason: str | None,
 ) -> ApprovalRequest | None:
     """`hrms.time.regularization.applied` → the write-once `application_*` trio (ADR-0006 §12).
+    Thin wrapper over `_apply_outcome`, kept as its own name so every existing call site and test
+    is untouched by `apply_leave_outcome` landing beside it."""
+    return await _apply_outcome(
+        session,
+        request_type=REQUEST_TYPE_REGULARIZATION,
+        organization_id=organization_id,
+        source_ref=source_ref,
+        outcome=outcome,
+        failure_reason=failure_reason,
+    )
+
+
+async def apply_leave_outcome(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    source_ref: uuid.UUID,
+    outcome: str,
+    failure_reason: str | None,
+) -> ApprovalRequest | None:
+    """`hrms.time.leave.applied` → the write-once `application_*` trio (ADR-0006 §12), for the
+    leave request type."""
+    return await _apply_outcome(
+        session,
+        request_type=REQUEST_TYPE_LEAVE,
+        organization_id=organization_id,
+        source_ref=source_ref,
+        outcome=outcome,
+        failure_reason=failure_reason,
+    )
+
+
+async def _apply_outcome(
+    session: AsyncSession,
+    *,
+    request_type: str,
+    organization_id: uuid.UUID,
+    source_ref: uuid.UUID,
+    outcome: str,
+    failure_reason: str | None,
+) -> ApprovalRequest | None:
+    """The product's return leg (ADR-0006 §12), shared by every request type — see
+    `_open_request`'s identical reasoning for why this is parametrized rather than duplicated.
 
     Returns `None` when there is no request to apply to yet (the `.applied` event outran
     `.requested`, which `app/consumers.py`'s idempotent handling tolerates as a log-and-drop
@@ -789,7 +885,7 @@ async def apply_regularization_outcome(
     handling every consumer in this codebase uses).
     """
     request = await selectors.get_request_by_source(
-        session, organization_id, REQUEST_TYPE_REGULARIZATION, source_ref
+        session, organization_id, request_type, source_ref
     )
     if request is None or request.status == "pending" or request.application_state is not None:
         return request
@@ -809,6 +905,69 @@ async def apply_regularization_outcome(
         entity="approval_request",
         entity_id=request.id,
         after={"application_state": outcome},
+    )
+    return request
+
+
+async def withdraw_request(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    request_type: str,
+    source_ref: uuid.UUID,
+) -> ApprovalRequest | None:
+    """Close a still-pending request's open step because the product withdrew the thing being
+    asked about — leave's own cancellation of a request nobody has decided yet
+    (`hrms.time.leave.cancelled`), so that approving or rejecting it is no longer offered to
+    anyone (HRMS leave slice 1).
+
+    **Deliberately does not touch `approval_requests.status`.** An undecided withdrawal has no
+    decider, and `ck_approval_requests_decided_iff_not_pending` requires a non-pending status to
+    carry one — which `ck_approval_requests_decider_not_requester` then forbids from ever being
+    the requester themselves. There is no legal non-pending status this function could write
+    for a self-withdrawal without a schema change this slice does not make. Closing the one open
+    step instead — with the same `'rejected'` outcome a real rejection already uses — achieves
+    the actual requirement without one: every eligibility route (ADR-0006 §6 (a)/(b)/(c)) requires
+    an `open`/`delegated`/`escalated` *step* naming the caller, so a request whose only step is
+    closed has nothing left for anyone to decide, and `decide_request` itself finds no open step
+    to act on. `uq_approval_steps_open_per_request` is "at most one open step", never "at least
+    one", so a pending request with zero open steps is a legal, quiet, terminal state — not a
+    violated invariant. The authoritative fact of *why* nothing will ever decide it lives on the
+    product's own row (`leave.leave_requests.status = 'cancelled'`), not here.
+
+    Locks the request the same way `decide_request` does (`get_request_by_source_for_update`,
+    "lock order is always request, then steps") so a withdrawal racing an in-flight decision can
+    never leave the step half-closed: whichever transaction gets the lock first wins, and the
+    second sees the already-changed state under its own lock and no-ops.
+
+    Returns `None`/the request unchanged for the same no-op reasons every other consumer in this
+    codebase uses: no request to withdraw yet (`.cancelled` outran `.requested`), already decided,
+    or already withdrawn (no open step left) — none of these are errors.
+    """
+    request = await selectors.get_request_by_source_for_update(
+        session, organization_id, request_type, source_ref
+    )
+    if request is None or request.status != "pending":
+        return request
+
+    step = await selectors.get_open_step(session, organization_id, request.id)
+    if step is None:
+        return request
+
+    now = await db_now(session)
+    step.outcome = "rejected"
+    step.closed_at = now
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        acting_as="approval.consumer",
+        action="approval.request.withdrawn",
+        entity="approval_request",
+        entity_id=request.id,
+        after={"step_id": step.id, "level": step.level},
     )
     return request
 

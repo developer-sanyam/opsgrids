@@ -11,13 +11,13 @@ Product line: **OpsGrids Support** — one queue for customers and staff, with S
 ## Run it
 
 ```bash
-pnpm --filter @opsgrids/product-support dev        # http://localhost:4340
+pnpm --filter @opsgrids/product-support dev        # http://localhost:4430
 pnpm --filter @opsgrids/product-support build
 pnpm --filter @opsgrids/product-support typecheck
 pnpm --filter @opsgrids/product-support lint
 ```
 
-Dev serves on **:4340** (`--strictPort`), clear of the marketing site (4300) and product-hrms (4310).
+Dev serves on **:4430** (`--strictPort`), clear of the marketing site (4300) and product-hrms (4310).
 
 ## Screens
 

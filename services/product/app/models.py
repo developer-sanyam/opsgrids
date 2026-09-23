@@ -1,6 +1,6 @@
 """Tables owned by the product service — what exists to sell, and who has it.
 
-Two tables, and the distinction between them is the whole design.
+Three tables, and the distinction between the first two is the whole design.
 
 **`products` is global.** It is the platform's catalogue, not a customer's: HRMS is HRMS for
 everybody. It carries no `organization_id`, takes no tenancy policy, and is readable by every
@@ -9,6 +9,12 @@ tenant on purpose — a marketplace is a list of things you do not have yet.
 **`activations` is tenant-scoped.** One row per organization per product, and it answers the
 only question the gateway asks: may this organization use this product? Everything else here
 exists to keep that row honest.
+
+**`activation_sources` is why an activation is on.** A product can be entitled by more than one
+thing at once — its own subscription, and a bundle that includes it — and an activation is on
+while *any* of them is live (ADR-0004 §5, addendum). Each source is one row; the activation's
+status is recomputed from them, never set directly by whichever event arrived last. Without it,
+cancelling a suite would switch off the standalone HRMS the same customer also pays for.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ from typing import Any
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Index,
     Integer,
@@ -86,6 +93,14 @@ class Product(Base):
     is_platform: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
 
+    #: A bundle is sold, not routed: `suite` is a key a subscription is bought under and a
+    #: marketplace card shows, but no gateway route names it and no activation is ever projected
+    #: for it — a subscription to it entitles its members instead (docs/commerce-packaging.md).
+    #: `activate()` refuses one outright; it has nothing to switch on.
+    is_bundle: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -152,6 +167,81 @@ class Activation(Base, TenantBase):
         if self.status == "active":
             return True
         if self.status == "trial":
+            return self.trial_ends_at is None or self.trial_ends_at > datetime.now(UTC)
+        return False
+
+
+#: Source statuses. The first two keep a source live (a trial only until it lapses); `suspended`
+#: is a source that exists and does not entitle; `removed` is a member a bundle no longer includes
+#: after a plan change — kept as a tombstone rather than deleted, because its `state_occurred_at`
+#: is what stops a stale, older event from quietly re-adding it.
+SOURCE_TRIAL = "trial"
+SOURCE_ACTIVE = "active"
+SOURCE_SUSPENDED = "suspended"
+SOURCE_REMOVED = "removed"
+
+
+class ActivationSource(Base, TenantBase):
+    """One reason an activation is on. An activation entitles while **any** live source does.
+
+    A source is identified by the subscription that provides it, and a subscription is named by
+    its `source_product_key`: subscription-service keeps exactly one subscription per organization
+    per product key for ever (`uq_subscription_org_product` — cancelled rows are kept, never
+    replaced), so `(organization_id, source_product_key)` names one subscription as surely as its
+    id does. The id is recorded too, when the event carries it; a row backfilled from an activation
+    that predates sources has none, and is adopted by the next event for the same source.
+
+    `source_product_key == product_key` is the product's own source: its standalone subscription,
+    or a hand activation through `activate()` — the two always shared the one activation row, and
+    still share this one. A bundle contributes a row per member, `source_product_key = 'suite'`.
+
+    `state_occurred_at` is the out-of-order guard, **per source**: every row of a source carries
+    the time of the last event applied to it, and an event older than that is dropped whole. It is
+    per source rather than per activation because two sources are independent histories — a
+    standalone cancellation must not be dropped as "stale" because a newer suite event already
+    touched the same activation.
+    """
+
+    __tablename__ = "activation_sources"
+
+    #: The product this source entitles — the activation it feeds.
+    product_key: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: The key the providing subscription was bought under: `hrms` for a standalone HRMS
+    #: subscription (or a hand activation), `suite` for a bundle.
+    source_product_key: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: The providing subscription, when known. A plain UUID into subscription's schema, never an
+    #: FK (ADR-0000 §10). NULL for a hand activation and for rows backfilled before sources existed.
+    source_subscription_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+    #: `trial`, `active`, `suspended`, `removed` — see the constants above.
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The envelope `occurred_at` of the event this source reflects. NULL for a hand activation.
+    state_occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "product_key",
+            "source_product_key",
+            name="uq_activation_sources_org_product_source",
+        ),
+        # The recompute reads every source of one activation; the diff reads every member of one
+        # source. Both lead with the tenant, which the RLS qual is ANDed into.
+        Index(
+            "ix_activation_sources_org_source",
+            "organization_id",
+            "source_product_key",
+        ),
+        CheckConstraint("status in ('trial', 'active', 'suspended', 'removed')", name="status"),
+    )
+
+    @property
+    def is_live(self) -> bool:
+        """Whether this source, on its own, would let the gateway through right now."""
+        if self.status == SOURCE_ACTIVE:
+            return True
+        if self.status == SOURCE_TRIAL:
             return self.trial_ends_at is None or self.trial_ends_at > datetime.now(UTC)
         return False
 

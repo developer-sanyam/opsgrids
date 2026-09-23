@@ -30,6 +30,40 @@ config.set_main_option("sqlalchemy.url", cfg.admin_dsn)
 target_metadata = Base.metadata
 
 
+def grant_purge_sweep_reader(connection: Connection) -> None:
+    """Column-level `SELECT` on `assets` for the outbox role — the purge sweep's own due-asset
+    discovery and the orphan pass's row-existence check (ADR-0009 §8, §9 addendum), the same
+    shape as `services/approval/migrations/env.py`'s `grant_sla_sweep_reader`.
+
+    Four columns, named exactly: `organization_id`, `id`, `deleted_at`, `purged_at`. Nothing
+    from `storage_key`, `original_filename` or `uploaded_by_user_id` — a bypass role that can
+    find which assets are due for purging, or whether a listed bucket key has any row at all,
+    must still not be able to read what a merchant uploaded or who uploaded it, and neither
+    discovery query needs to.
+
+    `REVOKE` before `GRANT` and run after **every** alembic run, upgrade or downgrade alike —
+    the same idempotent shape approval and scheduler use, and for the same reason: a
+    `GRANT`-only version would leave the privilege in place forever once issued, including
+    across a downgrade that drops the table.
+    """
+    reader = cfg.db_outbox_role
+    if not reader:
+        return
+    if not connection.execute(
+        text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": reader}
+    ).scalar():
+        return
+    if connection.execute(text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.assets"}).scalar():
+        connection.execute(text(f'REVOKE ALL ON "{SCHEMA}"."assets" FROM "{reader}"'))
+        connection.execute(
+            text(
+                "GRANT SELECT (organization_id, id, deleted_at, purged_at) "
+                f'ON "{SCHEMA}"."assets" TO "{reader}"'
+            )
+        )
+    connection.commit()
+
+
 def include_object(obj, name, type_, reflected, compare_to) -> bool:  # type: ignore[no-untyped-def]
     """Manage only this service's own schema.
 
@@ -60,6 +94,7 @@ def do_run_migrations(connection: Connection) -> None:
     # created. Doing it here rather than as a per-service step means a new service cannot ship
     # without them -- which is exactly what happened the first time this was left out.
     apply_schema_grants(connection, SCHEMA, cfg.db_app_role, outbox_role=cfg.db_outbox_role)
+    grant_purge_sweep_reader(connection)
 
 
 async def run_async_migrations() -> None:

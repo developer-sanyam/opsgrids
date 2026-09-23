@@ -5,10 +5,10 @@ import { EmptyState, InlineAlert, LayoutIcon } from "@opsgrids/ui";
 
 import type { Category, Product } from "@/api/types";
 import type {
+  Brand,
   PageDoc,
   SectionDef,
   SectionInstance,
-  StoreDoc,
   StoreMode,
   ThemeTokens,
 } from "@/theme/schema";
@@ -76,7 +76,7 @@ interface CanvasProps {
   page: PageDoc;
   library: SectionDef[];
   tokens: ThemeTokens;
-  brand: StoreDoc["brand"];
+  brand: Brand;
   /** The store's mode, narrowed by the shell. Sections preview as the buyer will see them. */
   mode: StoreMode;
   products: Product[];
@@ -441,7 +441,7 @@ function DropOutline({ at }: { at: { x: number; y: number; w: number; h: number 
 }
 
 /** The storefront's own header, so the preview reads as a shop rather than a pile of boxes. */
-function StoreBar({ brand, route }: { brand: StoreDoc["brand"]; route: string }) {
+function StoreBar({ brand, route }: { brand: Brand; route: string }) {
   return (
     <div
       aria-hidden

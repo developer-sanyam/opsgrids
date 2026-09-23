@@ -4,10 +4,10 @@ import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { usePermissions, useAsync } from "@opsgrids/client";
 
-import { getStore, listCategories, listProducts } from "@/api/client";
+import { getStore, getStoreBrand, listCategories, listProducts } from "@/api/client";
 import type { Category, Product } from "@/api/types";
 import { useElementWidth } from "@/lib/useElementWidth";
-import type { StoreDoc } from "@/theme/schema";
+import type { Brand, StoreDoc } from "@/theme/schema";
 import { StoreRenderer } from "@/theme/render";
 import { pageForRoute } from "@/theme/store";
 import { Card, ErrorState, Skeleton } from "@/ui";
@@ -40,6 +40,7 @@ import { useLiveScroll } from "./live/useLiveScroll";
 
 interface LiveStoreData {
   store: StoreDoc | null;
+  brand: Brand | null;
   products: Product[];
   categories: Category[];
 }
@@ -97,7 +98,8 @@ export function LiveStorePage() {
       listProducts(),
       listCategories(),
     ]);
-    return { store, products: products.items, categories };
+    const brand = store ? await getStoreBrand(store.themeKey) : null;
+    return { store, brand, products: products.items, categories };
   }, []);
   // The same three calls the console's preview makes, loaded once for the whole site rather than
   // once per page: `attempt` is the retry, not the address.
@@ -117,13 +119,14 @@ export function LiveStorePage() {
   useLiveScroll();
 
   const store = state.status === "success" ? state.data.store : null;
+  const brand = state.status === "success" ? state.data.brand : null;
   const page = store ? pageForRoute(store, storeRoute) : null;
   useLiveDocument(
-    store
+    store && brand
       ? {
-          title: documentTitle(store.brand.name, storeRoute, page?.name ?? null),
+          title: documentTitle(brand.name, storeRoute, page?.name ?? null),
           favicon: faviconDataUri(
-            store.brand.logoText,
+            brand.logoText,
             store.tokens.colorAccent,
             store.tokens.colorAccentText,
           ),
@@ -201,7 +204,7 @@ export function LiveStorePage() {
     return <Navigate to="/?from=live" replace state={{ notice: NO_STORE_NOTICE }} />;
   }
 
-  if (state.status === "loading" || store === null) {
+  if (state.status === "loading" || store === null || brand === null) {
     // The same shape the store will take, at the same full-bleed width, so the switch to the real
     // thing moves nothing. Neutral rather than themed: the tokens arrive with the store.
     return (
@@ -238,6 +241,7 @@ export function LiveStorePage() {
       >
         <StoreRenderer
           store={store}
+          brand={brand}
           route={storeRoute}
           products={state.data.products}
           categories={state.data.categories}

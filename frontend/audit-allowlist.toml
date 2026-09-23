@@ -1,0 +1,14 @@
+# Advisories `make frontend-audit` accepts, each with a reason and an expiry. Read by
+# tools/npm_audit.py.
+#
+# The rule is the same as tools/licenses.toml: accept the specific advisory with a reason, never
+# loosen the check. An entry past its `expires` date fails the gate until somebody fixes the
+# dependency or decides again — "until the fix lands" is not a date.
+#
+# [[accepted]]
+# advisory = "GHSA-xxxx-xxxx-xxxx"   # the GitHub advisory id pnpm reports
+# package  = "some-package"          # the vulnerable package, as pnpm names it
+# reason   = "Why it cannot be reached from a browser, or why upgrading is not yet possible."
+# expires  = 2026-12-31              # a TOML date; at most a quarter out
+#
+# Empty: nothing in the production tree is accepted today.

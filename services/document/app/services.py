@@ -28,8 +28,11 @@ explicit, audited way to make a world-readable object stop being one.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from fastapi import Request
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, selectors
@@ -203,3 +206,92 @@ async def remove_asset(
         purge=purge,
     )
     return asset
+
+
+async def db_now(session: AsyncSession) -> datetime:
+    """One clock, and it is the database's — the same amendment ADR-0006 §8 makes for the
+    approval sweep, applied here for the retention window's own re-check: `deleted_at` and
+    `purged_at` are `server_default=func.now()`/application-set timestamps written by
+    Postgres, so comparing them against a value the sweep process's own host clock produced
+    is a heisenbug waiting on ordinary clock skew, not a correctness property."""
+    return (await session.execute(select(func.now()))).scalar_one()
+
+
+@dataclass(frozen=True, slots=True)
+class PurgeResult:
+    """What one sweep action did to one asset. `purged=False` covers every skip — already
+    purged, undeleted, not yet past the window, or the row is held by someone else — and the
+    sweep's own report counts them together as a skip; nothing here distinguishes which,
+    because none of them is an error."""
+
+    purged: bool
+
+
+async def purge_asset(
+    session: AsyncSession,
+    store: ObjectStore,
+    *,
+    organization_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    retention: timedelta,
+) -> PurgeResult:
+    """One purge, in the sweep's own tenant-bound transaction (`app/cron.py`'s
+    `PurgeSweep`, ADR-0009 §8). Mirrors `remove_asset`'s purge branch exactly — object
+    first, row second — because it is the identical write-order decision, triggered by a
+    clock instead of a request.
+
+    1. Lock the row `FOR UPDATE SKIP LOCKED` (`selectors.get_asset_for_purge_sweep`) — held
+       means another replica's sweep pass, or an ordinary `?purge=true` request
+       (`remove_asset`), is already acting on this asset; skip rather than queue behind it.
+       The query itself already filters `deleted_at IS NOT NULL AND purged_at IS NULL`, so a
+       `None` here also covers "already purged" and "undeleted" without a second check.
+    2. Re-check the retention window under the lock, against this transaction's **own**,
+       deliberately later `now()` (`db_now`) — never the `cutoff` discovery computed, which
+       is possibly stale by however long discovery's batch took to drain. An asset undeleted
+       in that gap already failed step 1's filter; an asset whose `deleted_at` has not
+       actually crossed the window yet (a clock skew between the discovery and action
+       connections, vanishingly unlikely on one database but not provably impossible) is
+       caught here instead of purged early.
+    3. Delete the object **first**. `store.delete` treats a missing key as success (S3
+       `DeleteObject` on a missing key returns 204), so a retry of a purge that got this far
+       last tick and then failed at step 4 costs nothing. If this raises, it propagates: the
+       caller's `session_scope` transaction rolls back, `purged_at` stays null, and the next
+       tick retries — a row claiming the object is gone while it may still be world-readable
+       is the one lie this table must never tell (`remove_asset`'s own docstring).
+    4. Set `purged_at` to this transaction's `now()` and write the audit row
+       (`acting_as="document.purge_sweep"`). No outbox row: ADR-0009 §7 already refuses to
+       publish an asset event with no consumer, and a sweep-triggered purge is not a
+       different act from a `?purge=true` one in that respect — `remove_asset` stages
+       nothing either.
+    """
+    asset = await selectors.get_asset_for_purge_sweep(session, organization_id, asset_id)
+    if asset is None:
+        return PurgeResult(purged=False)
+
+    now = await db_now(session)
+    if asset.deleted_at is None or asset.deleted_at > now - retention:
+        return PurgeResult(purged=False)
+
+    await store.delete(asset.storage_key, organization_id=organization_id)
+
+    asset.purged_at = now
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        acting_as="document.purge_sweep",
+        action="asset.purged",
+        entity="asset",
+        entity_id=asset.id,
+        before={"purged_at": None},
+        after={"purged_at": asset.purged_at, "deleted_at": asset.deleted_at},
+        reason=f"retention window of {retention.days} days elapsed",
+    )
+    log.info(
+        "asset.purged",
+        organization_id=str(organization_id),
+        asset_id=str(asset.id),
+        deleted_at=asset.deleted_at.isoformat(),
+    )
+    return PurgeResult(purged=True)

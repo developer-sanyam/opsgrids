@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/engage.setup.domain.created/v1",
+  "title": "engage.setup.domain.created",
+  "description": "An organization added a sending domain and its DNS records were generated.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "domain_id", "domain", "status"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "domain_id": { "type": "string", "format": "uuid" },
+    "domain": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["pending", "verified", "failed"] }
+  }
+}

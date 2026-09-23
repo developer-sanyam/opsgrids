@@ -384,6 +384,10 @@ second one.
 
 ### 8. Deletion: soft by default, immediate takedown on request, purged by a sweep
 
+**Implemented 2026-09-23** — see the addendum at the foot of this document for what the sweep
+actually is (`services/document/app/cron.py`, not `bin/relay`) and what §9's orphan pass turned
+out to need beyond what this section anticipated.
+
 This is the one everyone forgets, and it has a structural constraint that decides it.
 
 **The document service cannot know what references an asset, and never will.** The store document
@@ -439,6 +443,10 @@ storefront-side reference list plus one batch route here — deferred, with an e
 speculatively built.
 
 ### 9. Write order, and the orphan it deliberately chooses
+
+**The orphan sweep named at the end of this section is implemented 2026-09-23** — see the
+addendum for the credential it needed that this section did not anticipate, and for the
+caution built into turning it on.
 
 An upload is two writes that cannot be one transaction: an object into S3 and a row into Postgres.
 One of them can fail after the other succeeded, and the choice of order is the choice of which
@@ -805,3 +813,77 @@ addendum is the concrete argument for not deferring the *domain* choice along wi
 does arrive, its origin should be that cookieless domain, not a `stores.opsgrids.com` or
 `opsgrids.com` subdomain, and `PUBLIC_ASSET_BASE_URL` (§6, §13) is already the one config value
 that changing costs nothing else — the payoff §6 was built for, spent here.
+
+## Addendum (2026-09-23) — §8 shipped: the purge sweep, and the orphan pass it made possible
+
+§8's own deadline was thirty days after the document service reached the edge, and the edge
+addendum above records that as the same date this one carries. This addendum is that slice:
+`services/document/app/cron.py`, wired to `bin/cron` in place of the scaffold's `app/relay`,
+and a second container, `document-cron`, in `infrastructure/edge/compose.prod.yml`.
+
+**§8 is implemented as designed, with the discipline the ADR named.** Discovery — which
+organizations have assets whose `deleted_at` is past `ASSET_PURGE_RETENTION_DAYS` (a setting,
+default 30, not the module constant §8 implied) — runs cross-tenant on the BYPASSRLS outbox
+role, reading exactly four columns a new column-level grant names
+(`organization_id, id, deleted_at, purged_at`; `migrations/env.py`'s
+`grant_purge_sweep_reader`, the same shape `approval`'s and `scheduler`'s own sweep readers
+use). Every write — the object delete, then `purged_at` — runs in
+`session_scope(organization_id=...)` on the ordinary app role, under `SELECT ... FOR UPDATE
+SKIP LOCKED`, re-checking the retention window against the write transaction's own, later
+clock read rather than trusting discovery's. The partial index §12 named for "slice 2, with
+the cron" — `(deleted_at) WHERE deleted_at IS NOT NULL AND purged_at IS NULL` — ships in this
+slice's own migration, not the table's. The row survives, as §7 requires: the sweep sets
+`purged_at` and nothing here ever deletes a row.
+
+**§9's orphan sweep is also implemented, not merely designed** — the ADR's own text said this
+needed "a separate list-capable MinIO credential" and stopped there. It is built, judged safe
+to automate rather than left as a dry-run-only report, for a reason worth stating plainly: the
+one way an automated bucket scan could delete something it should not is racing the write path
+described in this very section — an object whose `PutObject` succeeded but whose row `INSERT`
+has not committed yet. That race is bounded by a single request's duration, not by anything a
+human would call "a while", so a candidate has to sit unreferenced for `orphan_sweep_min_age_hours`
+(default 24, the number §9 itself named) before it is even considered. Two further backstops sit
+on top of that judgement, deliberately redundant with it rather than a substitute for it:
+`orphan_sweep_max_deletes_per_tick` caps how much damage one bad tick can do regardless of how
+wrong discovery turns out to be, and `orphan_sweep_dry_run` — on by default even after
+`orphan_sweep_enabled` is set — means the very first thing a newly turned-on sweep does is log
+what it *would* remove, never remove it, until an operator reads a run or two and turns the
+second flag off deliberately.
+
+**The credential §9 asked for, built exactly as narrow as it needs to be.** A second MinIO user,
+created idempotently by `minio-init` alongside the existing write-only one:
+`s3:ListBucket` on the bucket plus `s3:DeleteObject` on its objects, nothing else, and handed
+to **`document-cron` only** — the `document` API container's own environment carries no trace
+of it. `services/document/app/storage.py`'s `ObjectStore` (the write path) and `OrphanScanner`
+(the sweep's own class, used only from `app/cron.py`) are two separate boto3 clients for exactly
+this reason: nothing on the request path must ever be capable of `ListBucket`, because that
+capability is the one thing ADR-0009 §3's whole tenancy argument depends on nobody having.
+
+**What discovery actually checks, precisely, because "has no row" needs to survive every state
+a row can be in.** The orphan pass's own read (`selectors.existing_asset_keys`, on the same
+column-grant-limited bypass connection §8's sweep uses) asks whether **any** row exists for a
+listed key's `(organization_id, id)` — live, soft-deleted, or already purged. A soft-deleted or
+purged asset's object is never in the bucket by the time this pass would see it (§8's own sweep,
+or `?purge=true`, already removed it), so the distinction is moot in practice, but the query is
+written to be correct rather than merely lucky: it would still refuse to touch a hypothetical
+future state where a row survives with no live object, because it asks about the row's
+existence, never its `deleted_at`.
+
+**Verified, not assumed**: the full test suite (`services/document/tests/test_cron.py`,
+`test_orphan_sweep.py`) drives the sweep against real PostgreSQL — cross-tenant discovery
+finding both organizations' own due work, the retention window's boundary, an already-purged
+row never rediscovered, a missing object counting as success, a storage failure leaving
+`purged_at` null for the next tick, two concurrent sweepers agreeing on the total, and the
+discovery role failing loudly (`42501`) on any column outside its grant — and one test in
+`test_storage_minio.py` runs the orphan pass against a genuine MinIO bucket with a real
+`ListObjectsV2` and a real `DeleteObject`, proving the credential shape works and not only that
+the application logic does.
+
+**What is deliberately still off.** `orphan_sweep_enabled` defaults to `false` in
+`services/document/app/config.py` and stays `false` in `infrastructure/edge/compose.prod.yml`
+until an operator sets `DOCUMENT_S3_ORPHAN_ACCESS_KEY`/`_SECRET_KEY` and flips it, per the
+runbook's own new section. §8's row-purge sweep carries no such flag and is on unconditionally
+once `document-cron` is deployed — its failure mode (a soft-deleted object staying public a
+little longer) is bounded and already-accepted by §7; the orphan pass's failure mode (deleting
+an object a request-in-flight might still need) is the one this addendum's caution is about,
+even though the 24-hour margin makes it very unlikely in practice.

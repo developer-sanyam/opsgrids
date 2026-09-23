@@ -51,17 +51,16 @@ export function clonePages(pages: PageDoc[]): PageDoc[] {
  * merchant's edits. That is the deliberate trade: a merchant's store can never be changed under
  * them by a release they did not ask for.
  *
- * Re-adopting keeps the brand (it is the merchant's, not the theme's) and replaces tokens and
- * pages. Pass the existing store's `brand` to do that.
+ * Re-adopting replaces tokens and pages. It never touches the brand: that is the merchant's,
+ * lives on the store's own identity (ADR-0011 §2), and a theme change cannot take it away.
  */
-export function adoptTheme(theme: Theme, brand: StoreDoc["brand"]): StoreDoc {
+export function adoptTheme(theme: Theme): StoreDoc {
   return {
     themeKey: theme.key,
     // Copied, not looked up later through `themeByKey(store.themeKey)`: that would reinstate the
     // live theme link this fork exists to cut, and it has nothing to return for a store carrying a
     // theme key this build no longer ships.
     mode: theme.mode,
-    brand: { ...brand },
     tokens: cloneTokens(theme.tokens),
     pages: clonePages(theme.pages),
   };

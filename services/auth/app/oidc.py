@@ -40,6 +40,7 @@ import httpx
 import jwt
 from jwt import PyJWKSet
 
+from platform_core.egress import EgressBlockedError, EgressGuard, Resolver
 from platform_core.errors import ProblemError, UpstreamUnavailableProblem
 from platform_core.logging import get_logger
 
@@ -215,20 +216,42 @@ class HttpIdpClient:
 
     Redirects are off on purpose: a token endpoint that 302s is either misconfigured or
     hostile, and following one would post the client secret to wherever it pointed.
+
+    **Every call goes through `platform_core.egress.EgressGuard`.** `discovery_url`,
+    `jwks_uri` and `token_endpoint` are all administrator input — directly, or via a
+    discovery document `discover` itself fetched from one — and this service's container
+    sits on the docker `back` network alongside every other service and the cache. Fetching
+    one of these without the guard is the SSRF this class exists not to be: an admin who can
+    set `discovery_url` would otherwise be able to make auth-service ask
+    `http://account:8000/internal/...` or `http://169.254.169.254/...` on their behalf.
     """
 
     def __init__(
-        self, *, timeout: float = 8.0, transport: httpx.AsyncBaseTransport | None = None
+        self,
+        *,
+        timeout: float = 8.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+        resolver: Resolver | None = None,
+        allow_insecure_http: bool = False,
     ) -> None:
-        # `transport` exists so this class — the one piece of the flow that speaks HTTP — can
-        # be exercised against `httpx.MockTransport` rather than being the untested half of a
-        # module whose fake covers everything else. Production passes nothing.
-        self._client = httpx.AsyncClient(
-            timeout=timeout, follow_redirects=False, transport=transport
+        # `transport` and `resolver` exist so this class — the one piece of the flow that
+        # speaks HTTP — can be exercised against `httpx.MockTransport` and a stub DNS answer
+        # rather than being the untested half of a module whose fake covers everything else.
+        # Production passes neither: the guard resolves for real and connects for real, to
+        # the address it just vetted.
+        self._guard = EgressGuard(
+            timeout=timeout,
+            inner_transport=transport,
+            resolver=resolver,
+            allow_insecure_http=allow_insecure_http,
         )
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        # Nothing persistent to close: the guard opens one connection per request and closes
+        # it before returning (see `EgressGuard.request`), which is what pinning each request
+        # to its own freshly-vetted address requires. Kept as a no-op method rather than
+        # removed so callers that hold this behind the `IdpClient` protocol need no change.
+        return None
 
     async def discover(self, discovery_url: str) -> dict[str, Any]:
         return await self._get(discovery_url)
@@ -238,8 +261,16 @@ class HttpIdpClient:
 
     async def _get(self, url: str) -> dict[str, Any]:
         try:
-            response = await self._client.get(url, headers={"Accept": "application/json"})
+            response = await self._guard.request("GET", url, headers={"Accept": "application/json"})
             response.raise_for_status()
+        except EgressBlockedError as exc:
+            # Refused before or during the fetch — an internal address, a redirect, an
+            # oversized response. The reason is already in the guard's own log line; nothing
+            # about *why* is repeated to whoever is holding this URL.
+            log.warning("sso.egress_blocked", url=url[:200], reason=str(exc)[:200])
+            raise UpstreamUnavailableProblem(
+                "The identity provider could not be reached. Please try again."
+            ) from exc
         except httpx.HTTPError as exc:
             # A provider being down is not "your credentials are wrong". 503 so the client
             # says "try again", and so it is separable from a real rejection in the logs.
@@ -297,9 +328,14 @@ class HttpIdpClient:
             "code_verifier": code_verifier,
         }
         try:
-            response = await self._client.post(
-                token_endpoint, data=form, headers={"Accept": "application/json"}
+            response = await self._guard.request(
+                "POST", token_endpoint, data=form, headers={"Accept": "application/json"}
             )
+        except EgressBlockedError as exc:
+            log.warning("sso.egress_blocked", url=token_endpoint[:200], reason=str(exc)[:200])
+            raise UpstreamUnavailableProblem(
+                "The identity provider could not be reached. Please try again."
+            ) from exc
         except httpx.HTTPError as exc:
             raise UpstreamUnavailableProblem(
                 "The identity provider could not be reached. Please try again."

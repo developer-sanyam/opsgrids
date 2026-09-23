@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/engage.campaign.campaign.cancelled/v1",
+  "title": "engage.campaign.campaign.cancelled",
+  "description": "A campaign was cancelled. Recipients not yet sent are never sent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "campaign_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "campaign_id": { "type": "string", "format": "uuid" }
+  }
+}

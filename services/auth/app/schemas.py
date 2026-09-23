@@ -10,7 +10,9 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from platform_core.egress import EgressBlockedError, check_url_shape
 
 Password = Annotated[str, Field(min_length=8, max_length=200)]
 
@@ -180,6 +182,24 @@ class SsoConfigIn(BaseModel):
     #: Turns password sign-in off for this organization. Per-organization, because it is a
     #: customer's decision about their own people.
     enforce_sso: bool = False
+
+    @field_validator("discovery_url", "authorization_endpoint", "token_endpoint", "jwks_uri")
+    @classmethod
+    def _https_no_userinfo(cls, value: str | None) -> str | None:
+        """Refused at write time, not on the next sign-in: `https`, no embedded credentials,
+        no bare IP. These four are exactly what `HttpIdpClient` (or a browser redirect, for
+        `authorization_endpoint`) later uses — see `platform_core.egress` for why each of
+        those three is a documented SSRF bypass and not a style preference. This is the shape
+        half only; whether the host resolves somewhere this service must not reach is a
+        network question, checked at fetch time by the same module.
+        """
+        if value is None:
+            return value
+        try:
+            check_url_shape(value)
+        except EgressBlockedError as exc:
+            raise ValueError(str(exc)) from exc
+        return value
 
 
 class SsoConfigOut(BaseModel):

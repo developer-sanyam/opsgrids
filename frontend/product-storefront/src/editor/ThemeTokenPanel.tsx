@@ -1,13 +1,20 @@
-import type { SettingField, SettingValue, StoreDoc, ThemeTokens } from "@/theme/schema";
+import { Link } from "react-router-dom";
+
+import type { Brand, SettingField, SettingValue, ThemeTokens } from "@/theme/schema";
 
 import { SettingControl } from "./SettingControl";
 import { fontOptions, TOKEN_GROUPS } from "./tokens";
 import type { TokenFieldDef } from "./tokens";
 
 /**
- * The store's own tokens — colour, type, shape — and the brand line that sits above them.
+ * The store's own tokens — colour, type, shape — and a read-only reminder of the brand above them.
  *
- * Every control here is the same `SettingControl` the section inspector uses, driven by a
+ * **The brand is not editable here.** ADR-0011 moved a store's name, tagline and logo text onto
+ * its own identity (`/settings`), so a theme edit can no longer take a merchant's name with it.
+ * This panel only reads `brand` — resolved from that identity by whoever loaded the store — to
+ * point a merchant who comes looking for it in the right direction.
+ *
+ * Every token control is the same `SettingControl` the section inspector uses, driven by a
  * `SettingField` built from the token's definition. One control layer, one set of null- and
  * parse-handling rules, and a colour behaves identically whether it is a token or a setting.
  *
@@ -17,28 +24,12 @@ import type { TokenFieldDef } from "./tokens";
 
 interface ThemeTokenPanelProps {
   tokens: ThemeTokens;
-  brand: StoreDoc["brand"];
+  brand: Brand;
   canEdit: boolean;
   onToken: (key: keyof ThemeTokens, value: string | number) => void;
-  onBrand: (key: keyof StoreDoc["brand"], value: string) => void;
 }
 
-const BRAND_FIELDS: { key: keyof StoreDoc["brand"]; field: SettingField }[] = [
-  { key: "name", field: { key: "name", label: "Store name", type: "text", default: "" } },
-  {
-    key: "logoText",
-    field: {
-      key: "logoText",
-      label: "Logo text",
-      type: "text",
-      default: "",
-      help: "Shown in the header. Falls back to the store name when empty.",
-    },
-  },
-  { key: "tagline", field: { key: "tagline", label: "Tagline", type: "textarea", default: "" } },
-];
-
-export function ThemeTokenPanel({ tokens, brand, canEdit, onToken, onBrand }: ThemeTokenPanelProps) {
+export function ThemeTokenPanel({ tokens, brand, canEdit, onToken }: ThemeTokenPanelProps) {
   if (!canEdit) {
     return (
       <dl className="flex flex-col gap-3">
@@ -53,18 +44,21 @@ export function ThemeTokenPanel({ tokens, brand, canEdit, onToken, onBrand }: Th
 
   return (
     <div className="flex flex-col gap-5">
-      <section className="flex flex-col gap-4" aria-labelledby="brand-heading">
+      <section className="flex flex-col gap-3" aria-labelledby="brand-heading">
         <h3 id="brand-heading" className="text-xs font-semibold uppercase tracking-wide text-faint">
           Brand
         </h3>
-        {BRAND_FIELDS.map(({ key, field }) => (
-          <SettingControl
-            key={key}
-            field={field}
-            value={brand[key]}
-            onChange={(value) => onBrand(key, typeof value === "string" ? value : "")}
-          />
-        ))}
+        <dl className="flex flex-col gap-2">
+          <Reading label="Store name" value={brand.name} />
+          <Reading label="Tagline" value={brand.tagline} />
+        </dl>
+        <p className="text-xs text-muted">
+          Edit the store's name, tagline and logo text from{" "}
+          <Link to="/settings" className="font-semibold text-accent hover:underline">
+            Settings
+          </Link>
+          .
+        </p>
       </section>
 
       {TOKEN_GROUPS.map((group) => (

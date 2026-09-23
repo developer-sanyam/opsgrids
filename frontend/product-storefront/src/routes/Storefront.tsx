@@ -4,12 +4,12 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { useAsync } from "@opsgrids/client";
 import { LayoutIcon, Select } from "@opsgrids/ui";
 
-import { getStore, listCategories, listProducts } from "@/api/client";
+import { getStore, getStoreBrand, listCategories, listProducts, USE_FIXTURES } from "@/api/client";
 import type { Category, Product } from "@/api/types";
 import { nameFromRoute } from "@/editor/pageRoutes";
 import { useElementWidth } from "@/lib/useElementWidth";
 import { CONSOLE_STORE_BASE } from "@/routes/live/liveRoutes";
-import type { PageDoc, StoreDoc } from "@/theme/schema";
+import type { Brand, PageDoc, StoreDoc } from "@/theme/schema";
 import { STACK_WIDTH } from "@/theme/schema";
 import { StoreRenderer, storeHref } from "@/theme/render";
 import { pageForRoute } from "@/theme/store";
@@ -27,6 +27,7 @@ import type { DeviceKey } from "@/ui";
 
 interface StorefrontData {
   store: StoreDoc | null;
+  brand: Brand | null;
   products: Product[];
   categories: Category[];
 }
@@ -113,7 +114,8 @@ export function StorefrontPage() {
       listProducts(),
       listCategories(),
     ]);
-    return { store, products: products.items, categories };
+    const brand = store ? await getStoreBrand(store.themeKey) : null;
+    return { store, brand, products: products.items, categories };
   }, []);
   // Loaded once for the whole preview rather than once per page: one component now stays mounted
   // across every store address, so `attempt` is the retry and the address is not a reason to
@@ -159,7 +161,9 @@ export function StorefrontPage() {
           // horizontal scrollbar onto the whole console at a 390px viewport. Measured in Chrome at
           // 390 and 360 — the pills fit on a line of their own at both.
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <SampleChip title="Representative data — there is no storefront service yet, so the catalogue and the store document come from local fixtures" />
+            {USE_FIXTURES ? (
+              <SampleChip title="Representative data — running on local fixtures" />
+            ) : null}
             <DeviceToggle value={device} onChange={setDevice} />
           </div>
         }
@@ -235,9 +239,10 @@ export function StorefrontPage() {
               </div>
             </div>
           ) : null}
-          {state.status === "success" && state.data.store ? (
+          {state.status === "success" && state.data.store && state.data.brand ? (
             <StoreRenderer
               store={state.data.store}
+              brand={state.data.brand}
               route={route}
               products={state.data.products}
               categories={state.data.categories}

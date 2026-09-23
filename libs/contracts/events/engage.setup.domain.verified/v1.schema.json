@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/engage.setup.domain.verified/v1",
+  "title": "engage.setup.domain.verified",
+  "description": "A sending domain's DNS checked out and it can now be used by a sender.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "domain_id", "domain"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "domain_id": { "type": "string", "format": "uuid" },
+    "domain": { "type": "string", "minLength": 1 }
+  }
+}

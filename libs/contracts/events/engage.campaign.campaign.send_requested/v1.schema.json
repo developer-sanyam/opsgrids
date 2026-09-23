@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/engage.campaign.campaign.send_requested/v1",
+  "title": "engage.campaign.campaign.send_requested",
+  "description": "A draft campaign passed the send gate. `notification.consumers.expand_campaign_send` is what turns this into `queued` recipient rows; nothing here has sent anything yet.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "campaign_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "campaign_id": { "type": "string", "format": "uuid" }
+  }
+}
