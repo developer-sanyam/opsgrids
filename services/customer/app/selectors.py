@@ -71,11 +71,17 @@ async def get_owner_for_update(
     transaction) — without the lock, two concurrent requests against the same owner race: one
     deactivating while the other assigns them a new company both read a stale `is_active` and
     neither one's check ever sees the other's write.
+
+    `populate_existing=True`: a caller that has already fetched this owner earlier in the same
+    session (the internal `leads:convert` route reads owners while validating, for instance)
+    would otherwise get the identity map's cached object back unrefreshed by this lock's own
+    read — real for the row Postgres locked, stale for the attributes this function returns.
     """
     stmt = (
         select(Owner)
         .where(Owner.id == owner_id, Owner.organization_id == org_id, Owner.deleted_at.is_(None))
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 
@@ -204,14 +210,25 @@ async def count_contacts_for_company(
 async def get_company_by_name(
     session: AsyncSession, org_id: uuid.UUID, name: str
 ) -> Company | None:
-    """Case-insensitive: "Acme Ltd" and "ACME LTD" name the same account, matching the
-    case-insensitive unique index (`uq_companies_org_name_ci`) this selector backs."""
-    stmt = select(Company).where(
-        func.lower(Company.name) == name.lower(),
-        Company.organization_id == org_id,
-        Company.deleted_at.is_(None),
+    """Case-insensitive: "Acme Ltd" and "ACME LTD" name the same account, backed by the
+    non-unique `ix_companies_org_name_ci` index.
+
+    Not unique at the database level (see that index's own comment in `models.py` and the
+    migration that added it) — an organization from before this lookup existed may already
+    hold two rows differing only by case. `scalars().first()` ordered by `created_at`, never
+    `scalar_one_or_none()`, so a pre-existing duplicate is a deterministic "the oldest one
+    wins" rather than an unhandled `MultipleResultsFound` on a read.
+    """
+    stmt = (
+        select(Company)
+        .where(
+            func.lower(Company.name) == name.lower(),
+            Company.organization_id == org_id,
+            Company.deleted_at.is_(None),
+        )
+        .order_by(Company.created_at.asc())
     )
-    return (await session.execute(stmt)).scalar_one_or_none()
+    return (await session.execute(stmt)).scalars().first()
 
 
 # ------------------------------------------------------------------ contacts

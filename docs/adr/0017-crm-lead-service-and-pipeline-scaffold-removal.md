@@ -136,6 +136,28 @@ the `crm` profile and to `memory-budget.json`.
   `lead`'s email index inherits, not something introduced by this slice; a per-tenant HKDF
   salt on top of the shared passphrase would close it and is a `platform_core.pii` change, not
   a `lead` one.
+- **A company name's case-insensitive uniqueness is enforced by the application, not the
+  database, and only going forward.** `customer.companies` kept its original, case-sensitive
+  unique index (`uq_companies_org_name`) rather than replacing it with one on `lower(name)` —
+  a database that already holds two companies differing only by case ("Acme Ltd" and "ACME
+  LTD") would fail that migration outright, and there is no data to silently merge or delete on
+  someone else's behalf. `services.create_company`'s `pg_advisory_xact_lock` (keyed on the
+  organization and the lowercased name) is what refuses a new case-insensitive duplicate now;
+  an organization that already has one from before this existed keeps it, and
+  `get_company_by_name`'s lookup resolves it deterministically to whichever row is older.
+  Reconciling an existing duplicate, if one is ever found, is a decision for whoever can see
+  both rows, not a migration.
+- **A lead's phone never overwrites a reused contact's existing number.** When `:convert`
+  matches an existing contact by email — the same person surfacing under a different lead,
+  possibly for a different company — `services._reconcile_reused_contact_phone` fills in the
+  contact's phone only if it has none yet; if the contact already carries a different number,
+  that number is kept and the lead's own (masked) number is recorded on a
+  `contact.reused_for_lead` audit row instead of applied. There is no way from the conversion
+  path alone to know which of two differing numbers is actually current, and guessing wrong in
+  either direction is worse than surfacing both to whoever later looks at that contact's
+  history. The contact's `company_id` is never reassigned by a reuse either, for the same
+  reason: the book already has an opinion about which company this person belongs to, and a
+  converting lead is not grounds to override it.
 
 ## Consequences
 

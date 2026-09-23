@@ -15,9 +15,23 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+
+
+def _reject_explicit_null(instance: BaseModel, fields: tuple[str, ...]) -> None:
+    """A PATCH field typed `X | None` is optional two different ways: omitted (leave alone) or
+    explicitly `null` (the caller's own JSON says so). For a field the database column never
+    allows NULL, only the first meaning is valid — the second is a malformed request (422),
+    not a value that should reach an `IntegrityError` or a silent no-op write. Every field on
+    `OwnerPatch`/`CompanyPatch`/`ContactPatch` maps to a NOT NULL column, so each passes every
+    one of its own fields here. Same helper `operations.app.schemas._reject_explicit_null`
+    uses."""
+    for field in fields:
+        if field in instance.model_fields_set and getattr(instance, field) is None:
+            raise ValueError(f"{field} cannot be set to null")
+
 
 # ------------------------------------------------------------------ vocabularies (match the SPA)
 
@@ -55,6 +69,11 @@ class OwnerPatch(BaseModel):
     email: EmailStr | None = Field(default=None, max_length=254)
     role: str | None = Field(default=None, max_length=120)
     is_active: bool | None = None
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> Self:
+        _reject_explicit_null(self, ("full_name", "email", "role", "is_active"))
+        return self
 
 
 class OwnerOut(BaseModel):
@@ -106,6 +125,25 @@ class CompanyPatch(BaseModel):
     status: CompanyStatus | None = None
     annual_revenue_minor: int | None = Field(default=None, ge=0)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> Self:
+        _reject_explicit_null(
+            self,
+            (
+                "name",
+                "owner_id",
+                "domain",
+                "industry",
+                "size_band",
+                "city",
+                "country",
+                "status",
+                "annual_revenue_minor",
+                "currency",
+            ),
+        )
+        return self
 
 
 class CompanyOut(BaseModel):
@@ -161,6 +199,13 @@ class ContactPatch(BaseModel):
     company_id: uuid.UUID | None = None
     owner_id: uuid.UUID | None = None
     status: ContactStatus | None = None
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> Self:
+        _reject_explicit_null(
+            self, ("full_name", "title", "email", "company_id", "owner_id", "status")
+        )
+        return self
 
 
 class ContactOut(BaseModel):

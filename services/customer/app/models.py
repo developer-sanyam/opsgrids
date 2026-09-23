@@ -122,15 +122,31 @@ class Company(Base, TenantBase):
 
     __table_args__ = (
         # Unique among LIVE rows only: a soft-deleted record must not hold its name hostage.
-        # Case-insensitive (`lower(name)`, not `name`): "Acme Ltd" and "ACME LTD" are the same
-        # account to anyone reading the book, and a case-sensitive index let both exist as two
-        # rows — the exact "two rows racing on the same natural key" bug `create_company`'s
-        # own name check exists to prevent, just spelled with a different case each time.
+        # Case-*sensitive* on purpose, and deliberately left that way (see
+        # `uq_companies_org_name_ci`'s own comment below for why a case-insensitive version of
+        # this same constraint was tried and reverted): the original constraint a database
+        # already carries, and a migration that replaced it with a unique index on `lower(name)`
+        # would fail outright on any organization that already holds two names differing only
+        # by case ("Acme Ltd" and "ACME LTD") — a real, silent possibility this constraint's own
+        # case-sensitivity has allowed since the day it was created.
         Index(
-            "uq_companies_org_name_ci",
+            "uq_companies_org_name",
+            "organization_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        # Non-unique: "Acme Ltd" and "ACME LTD" are the same account to anyone reading the
+        # book, and `get_company_by_name`'s lookup needs to find either one written in either
+        # case — but this index cannot *enforce* that they are the same row without a data
+        # migration nobody has reviewed or consented to (existing organizations may already
+        # hold both). New case-insensitive duplicates are refused going forward by
+        # `services.create_company`'s own per-name `pg_advisory_xact_lock`, not by a
+        # constraint that would break on data that already exists.
+        Index(
+            "ix_companies_org_name_ci",
             "organization_id",
             text("lower(name)"),
-            unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
         Index("ix_companies_org_status", "organization_id", "status"),

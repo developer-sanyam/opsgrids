@@ -26,6 +26,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -44,6 +45,28 @@ from platform_core.errors import (
 from platform_core.events import publish_event
 from platform_core.models import utcnow
 from platform_core.pii import blind_index, open_sealed, seal
+
+
+class CompanyDeletedProblem(ConflictProblem):
+    """The company id `:convert` was given for this lead already names a row — but it has
+    been deleted from the book. Distinct `problem_type` from the generic dedup 409 on purpose:
+    lead-service's own client reads `type`, not just the status code, to tell "pick a
+    different name" apart from "this specific company is gone" — the two need different
+    messages on lead-service's own side, and neither should ever come back with the deleted
+    company's own id quietly reused as though nothing were wrong."""
+
+    problem_type = "company-deleted"
+    title = "That company has been deleted"
+
+
+class ContactDeletedProblem(ConflictProblem):
+    """The contact-side twin of `CompanyDeletedProblem`, for the same reason: a lead's
+    deterministic contact id landing on a row that has since been soft-deleted must refuse,
+    not silently hand back a phantom contact's id."""
+
+    problem_type = "contact-deleted"
+    title = "That contact has been deleted"
+
 
 # Event names. `crm.*` because these are the product's own, not the platform's.
 EVT_COMPANY_CREATED = "crm.book.company.created"
@@ -300,6 +323,28 @@ async def reactivate_owner(
 # ------------------------------------------------------------------ companies
 
 
+async def _lock_company_name(session: AsyncSession, org_id: uuid.UUID, name: str) -> None:
+    """Serializes every writer racing to claim the same (organization, case-insensitive name)
+    pair for the rest of this transaction.
+
+    `Company`'s own unique index stayed case-*sensitive* (see its comment in `models.py`) so a
+    migration adding a case-insensitive one would not fail outright on an organization that
+    already holds "Acme Ltd" and "ACME LTD" as two rows. That means the database itself no
+    longer refuses a *new* case-insensitive duplicate — this lock is what "no new
+    case-insensitive duplicate" actually rests on now: two concurrent creates (or a create and
+    a rename) for the same name serialize here, so the second one to reach the lock always
+    sees the first one's row already committed, rather than both reading "not found" from a
+    plain `SELECT` and both inserting.
+
+    `pg_advisory_xact_lock` releases automatically at commit or rollback — there is nothing to
+    unlock by hand, and holding it for the rest of the transaction is exactly what is wanted:
+    the row this transaction is about to check-then-insert (or check-then-rename) must not
+    become visible to a concurrent transaction's own check until this one has committed.
+    """
+    key = f"company:{org_id}:{name.strip().lower()}"
+    await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": key})
+
+
 async def create_company(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -328,6 +373,7 @@ async def create_company(
     name — `ctx.principal.sub` still carries the human who ultimately asked for it, when the
     caller has one to give (`lead_conversion_ctx`)."""
     await _assert_owner_assignable(session, ctx, owner_id)
+    await _lock_company_name(session, ctx.organization_id, name)
     if await selectors.get_company_by_name(session, ctx.organization_id, name):
         raise ConflictProblem("A company with that name already exists")
 
@@ -399,6 +445,7 @@ async def update_company(
     changes = payload.model_dump(exclude_unset=True)
 
     if "name" in changes and changes["name"] != company.name:
+        await _lock_company_name(session, ctx.organization_id, changes["name"])
         existing = await selectors.get_company_by_name(
             session, ctx.organization_id, changes["name"]
         )
@@ -840,6 +887,69 @@ async def invalid_owner_ids(
     return [owner_id for owner_id in owner_ids if owner_id not in active]
 
 
+async def _reconcile_reused_contact_phone(
+    session: AsyncSession, ctx: ScopeContext, contact: Contact, *, raw_phone: str | None
+) -> None:
+    """`ensure_company_and_contact_for_lead`'s own rule for a contact matched by *email*
+    (m3): the same person is the same person regardless of which company's lead brought them
+    up, and the book already has a number on file for them if it has one at all. A lead's
+    phone only ever *fills a gap* — it never overwrites a number this book already trusts,
+    because there is no way from here to know which of the two is actually still current.
+
+    Nothing to reconcile when the lead carried no phone. When the contact has none yet, the
+    lead's becomes the contact's, sealed the same way `create_contact` seals a fresh one, and
+    audited as an ordinary update. When the contact already has a different one, that number
+    is kept, and what the lead brought is recorded — masked — as a fact seen during this
+    conversion, not silently dropped and not silently applied.
+    """
+    if not raw_phone:
+        return
+    cfg = settings()
+    raw = _canonical_e164(raw_phone)
+
+    if contact.phone_enc is None:
+        before = {"phone": contact.phone}
+        phone_enc, phone_masked = seal(raw, kind="phone", settings=cfg)
+        phone_index = blind_index(raw, kind="phone", settings=cfg)
+        contact.phone_enc = phone_enc
+        contact.phone = phone_masked
+        contact.phone_index = phone_index
+        contact.updated_by = str(ctx.principal.sub)
+        await session.flush()
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=ctx.organization_id,
+            actor_id=ctx.principal.sub,
+            acting_as="lead",
+            action="contact.updated",
+            entity="contact",
+            entity_id=contact.id,
+            before=before,
+            after={"phone": phone_masked},
+        )
+        return
+
+    # A different number already on file: kept, not overwritten. `seal` for the mask alone —
+    # this is a fresh raw value the caller handed in, not a decrypt of anything already
+    # sealed, so it carries no `entity.sensitive_read` audit row of its own (same reasoning
+    # `create_contact`'s own initial seal already relies on).
+    _, lead_phone_masked = seal(raw, kind="phone", settings=cfg)
+    if lead_phone_masked == contact.phone:
+        return
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        acting_as="lead",
+        action="contact.reused_for_lead",
+        entity="contact",
+        entity_id=contact.id,
+        after={"phone_from_lead": lead_phone_masked, "kept_existing_phone": contact.phone},
+    )
+
+
 async def ensure_company_and_contact_for_lead(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -856,10 +966,13 @@ async def ensure_company_and_contact_for_lead(
     by name/email second, so retrying `:convert` with the same deterministic ids never
     creates a second row (ADR-0017).
 
-    Order of checks, per entity: the caller's id **in any state** (a replay of a call that
-    already succeeded — including one whose row was soft-deleted since, which must still
-    count as "already used" rather than a free primary key), then the natural key (a lead
-    converting into a company or person this book already has, under a *different* id —
+    Order of checks, per entity: the caller's id **in any state** — a replay of a call that
+    already succeeded reuses that row, but if it was since *deleted* this refuses outright
+    (`CompanyDeletedProblem`/`ContactDeletedProblem`) rather than quietly handing back a
+    phantom id or attempting a second `INSERT` at a primary key the table already holds. This
+    check runs before `contact_email` is even looked at, so it applies the same way whether or
+    not the lead carried an email. Absent a live row at that id, falls to the natural key (a
+    lead converting into a company or person this book already has, under a *different* id —
     reused rather than duplicated), then a fresh insert. `contact_email` absent skips the
     contact entirely: `Contact.email` is not nullable, so a lead with no email becomes a
     company with no contact yet, not a contact with a placeholder address.
@@ -867,7 +980,12 @@ async def ensure_company_and_contact_for_lead(
     await _assert_owner_assignable(session, ctx, owner_id)
 
     company = await selectors.get_company_by_id_any_state(session, ctx.organization_id, company_id)
+    if company is not None and company.deleted_at is not None:
+        raise CompanyDeletedProblem(
+            "The company this lead would convert into has been deleted from the CRM book"
+        )
     if company is None:
+        await _lock_company_name(session, ctx.organization_id, company_name)
         company = await selectors.get_company_by_name(session, ctx.organization_id, company_name)
     if company is None:
         company = await create_company(
@@ -885,10 +1003,18 @@ async def ensure_company_and_contact_for_lead(
         contact = await selectors.get_contact_by_id_any_state(
             session, ctx.organization_id, contact_id
         )
+        if contact is not None and contact.deleted_at is not None:
+            raise ContactDeletedProblem(
+                "The contact this lead would convert into has been deleted from the CRM book"
+            )
         if contact is None:
             contact = await selectors.get_contact_by_email(
                 session, ctx.organization_id, contact_email
             )
+            if contact is not None:
+                await _reconcile_reused_contact_phone(
+                    session, ctx, contact, raw_phone=contact_raw_phone
+                )
         if contact is None:
             contact = await create_contact(
                 session,
