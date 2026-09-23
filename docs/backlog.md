@@ -34,12 +34,12 @@ today; that is a documented Phase 1 prerequisite, not a Phase 0 bug.
 
 | # | Slice | Status | Notes |
 |---|---|---|---|
-| 1 | **Storefront custom domains** — claims, the three probes, the sweep (`app/cron.py`), the console panel | **Done — PR #38, awaiting merge** | 584 backend and 986 storefront tests pass; migration round-trips. |
-| 2 | **Document service and MinIO on the edge** | **Done — PR #39, awaiting merge** | Fixes Storefront's console image upload in production. Adds ~448 MiB under the `storefront` profile. |
-| 3 | **Scheduler service, first consumer: finance `not_before`** | In progress | `services/scheduler` is a scaffold. e-Invoice and e-Way retries carry their own delay and are redelivered at once instead. Per-service cron containers move onto it later. |
+| 1 | **Storefront custom domains** — claims, the three probes, the sweep (`app/cron.py`), the console panel | **PR #38 — review fixes in progress** | 584 backend and 986 storefront tests pass; migration round-trips. |
+| 2 | **Document service and MinIO on the edge** | **PR #39 — review fixes in progress** | Fixes Storefront's console image upload in production. Adds ~448 MiB under the `storefront` profile. |
+| 3 | **Scheduler service, first consumer: finance `not_before`** | **PR #43 — under review** | `services/scheduler` is a scaffold. e-Invoice and e-Way retries carry their own delay and are redelivered at once instead. Per-service cron containers move onto it later. |
 | 4 | **Review follow-ups (UI)** | **Done — merged (#41)** | `FormDialog` inside another dialog's form also submits the outer form (React events bubble through portals); Combobox's lookup error is not announced to screen readers, and "Try again" drops keyboard focus to `<body>`. |
 | 5 | **Review follow-ups (deploy tooling)** | **Done — merged (#42)** | No automated test pins `remote.sh`'s full-rebuild rule; the dev bootstrap still pulls `minio/minio`, which Docker Hub no longer serves (the edge uses `quay.io/minio/minio`). |
-| 6 | **GSTR-3B and the input-tax-credit ledger** | Not started | The next compliance slice that needs no credentials, using the stub-client pattern. Larger than 1 to 5. |
+| 6 | **GSTR-3B and the input-tax-credit ledger** | In progress | The next compliance slice that needs no credentials, using the stub-client pattern. Larger than 1 to 5. |
 | 7 | **HRMS: leave, payroll, recruit** | In progress (leave first) | employee and attendance are live. Leave comes first because payroll consumes it; recruit is independent. |
 | 8 | **Engage follow-ups** | In progress | Event contracts for `engage.campaign.*` (repo-wide: `libs/contracts` holds no event schemas yet); erasure of a contact's sealed copies in `campaign_recipients.email_enc`; `GET /engage/unsubscribe/{token}` unsubscribes on a mail scanner's prefetch — it should show a confirm page and leave the one-click `POST` to do the work. |
 | 9 | **WhatsApp inbound messages** | Started, not committed | An inbound-message parser and the 24-hour customer-service window were drafted on 2026-09-19 in the `wa-inbound` worktree (`services/notification/app/webhooks.py`) and never committed. Nothing stores or shows inbound messages yet. |
@@ -68,7 +68,11 @@ today; that is a documented Phase 1 prerequisite, not a Phase 0 bug.
 - deploy tooling: the full-rebuild rule and the CI planner are pinned by tests that CI runs; the
   dev MinIO image moved off Docker Hub; a secret-scan false positive on `main` fixed (#42)
 
-Awaiting merge: #38 and #39 (items 1 and 2), under review.
+Not merged yet: #38 and #39 (items 1 and 2) — their reviews found production defects (#38: the sweep
+never clears the host cache, unverified claims can squat a domain forever, and a merchant can
+suspend their own domain from "Check now"; #39: every deploy would fail health on the one-shot
+`minio-init`, the nightly backup would stop uploading, and the public bucket could serve an upload
+as HTML on every `*.opsgrids.com` host). Both are being fixed before merge. #43 (item 3) is under review.
 
 **Delivered before that** (#2 to #25):
 - notification service and event-bus wiring (#2)
