@@ -837,7 +837,8 @@ services:
       WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
       WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
-      # customer-service is not deployed; the phone lookup answers unavailable, not wrong.
+      # customer-service is deployed under the `crm` profile only; on a box without it enabled
+      # the phone lookup answers unavailable, not wrong.
       CUSTOMER_INTERNAL_URL: http://customer:8000
       # Engage (services/notification/app/services.py's `request_send`/`_check_public_base`):
       # both must be real before a campaign can be sent at all outside `local`/`test`/`ci` — an
