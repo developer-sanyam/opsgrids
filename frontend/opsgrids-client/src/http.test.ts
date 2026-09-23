@@ -41,4 +41,19 @@ describe("apiRequest", () => {
     const err = await apiRequest("/x", { auth: false, signalUnauthorized: false }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
   });
+
+  it("sends extra headers, but never lets them replace the ones it owns", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(respond(204, null));
+    vi.stubGlobal("fetch", fetchMock);
+    await apiRequest("/x", {
+      method: "POST",
+      body: {},
+      auth: false,
+      headers: { "Idempotency-Key": "k-1", Accept: "text/html" },
+    });
+    const sent = (fetchMock.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>;
+    expect(sent["Idempotency-Key"]).toBe("k-1");
+    expect(sent.Accept).toBe("application/json");
+    expect(sent["Content-Type"]).toBe("application/json");
+  });
 });

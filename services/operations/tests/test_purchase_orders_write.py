@@ -7,7 +7,7 @@ import uuid
 from datetime import date, timedelta
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import (
 
 from app import services
 from app.config import settings
-from app.models import SCHEMA
+from app.models import SCHEMA, InventoryMove, LedgerEntry
 from platform_core.auth import Scope
 from platform_core.db import TENANT_GUC
 from tests.helpers import as_principal, ctx_for, principal_for
@@ -593,6 +593,46 @@ class TestPoLifecycle:
         assert item.json()["on_hand"] == before_on_hand + 3
         kinds = [m["kind"] for m in movements.json()["items"]]
         assert "receipt" in kinds
+
+    async def test_receiving_in_a_different_currency_than_the_item_keeps_the_pos_currency(
+        self, client, session, org_id, data
+    ) -> None:
+        """A receipt is recorded in **the PO's currency**, not the item's, and never converted
+        between the two (ADR-0014 §8, revised) — a supplier billing in USD against an item whose
+        stock value is tracked in INR is an ordinary case, not an error."""
+        item = data["low_stock_item"]
+        assert item.currency == "INR"
+        principal = principal_for(org_id, [PO_WRITE, PO_APPROVE], subject_ref=data["subject_a"])
+        with as_principal(principal):
+            created = await client.post(
+                "/api/v1/operations/purchase-orders",
+                json={
+                    "supplier_id": str(data["meridian"].id),
+                    "warehouse": "Pune Plant",
+                    "expected_date": TOMORROW,
+                    "currency": "USD",
+                    "lines": [{"sku": item.sku, "quantity": 2, "unit_price_minor": 5_00}],
+                },
+            )
+            assert created.json()["currency"] == "USD"
+            po_id = created.json()["id"]
+            await client.post(f"/api/v1/operations/purchase-orders/{po_id}/approve")
+            received = await client.post(f"/api/v1/operations/purchase-orders/{po_id}/receive")
+        assert received.status_code == 200
+
+        async with session.begin():
+            row = (
+                await session.execute(
+                    select(LedgerEntry.unit_cost_minor, LedgerEntry.unit_cost_currency)
+                    .join(InventoryMove, InventoryMove.id == LedgerEntry.move_id)
+                    .where(
+                        LedgerEntry.organization_id == org_id,
+                        LedgerEntry.inventory_item_id == item.id,
+                        InventoryMove.kind == "receipt",
+                    )
+                )
+            ).one()
+        assert (row.unit_cost_minor, row.unit_cost_currency) == (5_00, "USD")
 
 
 class TestFilterBySupplier:

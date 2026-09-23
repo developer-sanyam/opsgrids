@@ -151,6 +151,20 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # Reconciliation (ADR-0014 §3): run the ledger-vs-balance check on demand, see the
+        # discrepancies it records, and close one out with a note. Dangerous because resolving
+        # is a sign-off that a stock record has been investigated — it moves no stock, but it
+        # silences an integrity alarm. OPERATIONS_ADMIN gets it through `all()`; nobody else by
+        # default.
+        PermissionSpec(
+            "inventory",
+            "stock",
+            "reconcile",
+            "Check the stock ledger against balances and resolve discrepancies",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
         PermissionSpec("inventory", "warehouse", "read", "See warehouses", "ORG", "ORG"),
         PermissionSpec(
             "inventory", "warehouse", "write", "Create, edit and delete warehouses", "ORG", "ORG"

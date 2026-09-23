@@ -8,6 +8,7 @@ import { useWarehouseOptions } from "@/data/useWarehouseOptions";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import { formatMoney, formatMoneyCompact, formatNumber } from "@/lib/format";
+import { formatQty, qtyToMilli, stockValueMinor } from "@/lib/quantity";
 import {
   Button,
   Card,
@@ -40,8 +41,9 @@ const FILTERS: { value: Filter; label: string }[] = [
 type SortKey = "sku" | "on_hand" | "value";
 
 function levelOf(item: InventoryItemOut): StockLevel {
-  if (item.on_hand === 0) return "out";
-  if (item.on_hand <= item.reorder_point) return "low";
+  const onHand = qtyToMilli(item.on_hand_qty);
+  if (onHand === 0) return "out";
+  if (onHand <= item.reorder_point * 1000) return "low";
   return "ok";
 }
 
@@ -121,7 +123,7 @@ export function InventoryPage() {
       sortKey: "on_hand",
       render: (it) => (
         <span className="tnum font-semibold text-ink whitespace-nowrap">
-          {formatNumber(it.on_hand)} <span className="text-xs font-normal text-muted">{it.uom}</span>
+          {formatQty(it.on_hand_qty)} <span className="text-xs font-normal text-muted">{it.uom}</span>
         </span>
       ),
     },
@@ -140,7 +142,7 @@ export function InventoryPage() {
       sortKey: "value",
       render: (it) => (
         <span className="tnum font-semibold text-ink">
-          {formatMoney(it.on_hand * it.unit_value_minor, it.currency)}
+          {formatMoney(stockValueMinor(it.on_hand_qty, it.unit_value_minor), it.currency)}
         </span>
       ),
     },
@@ -170,7 +172,7 @@ export function InventoryPage() {
               tone: "danger",
               onSelect: () => setDeleting(it),
               hidden: !canWrite,
-              disabled: it.on_hand !== 0,
+              disabled: qtyToMilli(it.on_hand_qty) !== 0,
               disabledReason: "Adjust stock to zero before deleting this item.",
             },
           ]}
@@ -181,7 +183,7 @@ export function InventoryPage() {
 
   const totalValue =
     state.status === "success"
-      ? state.data.items.reduce((s, it) => s + it.on_hand * it.unit_value_minor, 0)
+      ? state.data.items.reduce((s, it) => s + stockValueMinor(it.on_hand_qty, it.unit_value_minor), 0)
       : 0;
 
   return (
@@ -344,7 +346,7 @@ export function InventoryPage() {
           onClose={() => setAdjusting(null)}
           onSaved={(item) => {
             setAdjusting(null);
-            toast.success(`Stock adjusted — ${item.on_hand} ${item.uom} on hand.`);
+            toast.success(`Stock adjusted — ${formatQty(item.on_hand_qty)} ${item.uom} on hand.`);
             state.reload();
           }}
         />

@@ -12,7 +12,7 @@ permission); TEAM and LOCATION are not offered (see `scope.py`).
 
 This module also holds the ORM→schema projections, because shaping a row for the wire is part of
 reading it: the human ids, the denormalised names and the nested line items are resolved here so
-routes stay thin.
+routes stay thin. Inventory, stock and warehouse reads live in `app.inventory.selectors`.
 """
 
 from __future__ import annotations
@@ -25,20 +25,14 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
-    InventoryItem,
     PurchaseOrder,
     PurchaseOrderLine,
-    StockMovement,
     Supplier,
-    Warehouse,
 )
 from app.schemas import (
-    InventoryItemOut,
     PoLineItem,
     PurchaseOrderOut,
-    StockMovementOut,
     SupplierOut,
-    WarehouseOut,
 )
 from platform_core.auth import ScopeContext
 
@@ -248,188 +242,6 @@ async def all_lines(session: AsyncSession, org_id: uuid.UUID) -> list[PurchaseOr
     return list((await session.execute(stmt)).scalars().all())
 
 
-# ------------------------------------------------------------------ inventory
-
-
-def inventory_stmt(
-    ctx: ScopeContext,
-    *,
-    q: str | None = None,
-    category: str | None = None,
-    warehouse: str | None = None,
-    low_stock: bool | None = None,
-    sort: str | None = None,
-) -> Select[Any]:
-    """Inventory on hand for the org. Not scope-narrowed: stock is shared org reference data
-    (read still requires `item.read`). `low_stock` filters to items at or below reorder point."""
-    stmt = select(InventoryItem).where(
-        InventoryItem.organization_id == ctx.organization_id,
-        InventoryItem.deleted_at.is_(None),
-    )
-    if q:
-        needle = f"%{q.lower()}%"
-        stmt = stmt.where(
-            or_(
-                func.lower(InventoryItem.sku).like(needle),
-                func.lower(InventoryItem.name).like(needle),
-                func.lower(InventoryItem.warehouse).like(needle),
-            )
-        )
-    if category:
-        stmt = stmt.where(InventoryItem.category == category)
-    if warehouse:
-        stmt = stmt.where(InventoryItem.warehouse == warehouse)
-    if low_stock:
-        stmt = stmt.where(InventoryItem.on_hand <= InventoryItem.reorder_point)
-
-    if sort == "on_hand":
-        return stmt.order_by(InventoryItem.on_hand.asc(), InventoryItem.sku.asc())
-    if sort == "value":
-        return stmt.order_by(
-            (InventoryItem.on_hand * InventoryItem.unit_value_minor).desc(),
-            InventoryItem.sku.asc(),
-        )
-    return stmt.order_by(InventoryItem.sku.asc())
-
-
-async def get_inventory_by_sku(
-    session: AsyncSession, org_id: uuid.UUID, sku: str, *, for_update: bool = False
-) -> InventoryItem | None:
-    """Fetch by SKU — used by the demo seed for idempotency, and by `receive_purchase_order`
-    (locked) to match a PO line against a stocked item."""
-    stmt = select(InventoryItem).where(
-        InventoryItem.sku == sku,
-        InventoryItem.organization_id == org_id,
-        InventoryItem.deleted_at.is_(None),
-    )
-    if for_update:
-        stmt = stmt.with_for_update()
-    return (await session.execute(stmt)).scalar_one_or_none()
-
-
-async def get_inventory_item(
-    session: AsyncSession, org_id: uuid.UUID, item_id: uuid.UUID, *, for_update: bool = False
-) -> InventoryItem | None:
-    """Org-scoped fetch by primary key. `for_update` locks the row so a concurrent stock
-    adjustment cannot lose an update to `on_hand`."""
-    stmt = select(InventoryItem).where(
-        InventoryItem.id == item_id,
-        InventoryItem.organization_id == org_id,
-        InventoryItem.deleted_at.is_(None),
-    )
-    if for_update:
-        stmt = stmt.with_for_update()
-    return (await session.execute(stmt)).scalar_one_or_none()
-
-
-async def all_inventory(session: AsyncSession, org_id: uuid.UUID) -> list[InventoryItem]:
-    """Every inventory item in the org — powers the overview rollups."""
-    stmt = select(InventoryItem).where(
-        InventoryItem.organization_id == org_id, InventoryItem.deleted_at.is_(None)
-    )
-    return list((await session.execute(stmt)).scalars().all())
-
-
-async def count_inventory_for_warehouse(
-    session: AsyncSession, org_id: uuid.UUID, warehouse_name: str
-) -> int:
-    """How many live inventory items still carry this warehouse's name — a delete guard."""
-    stmt = (
-        select(func.count())
-        .select_from(InventoryItem)
-        .where(
-            InventoryItem.organization_id == org_id,
-            InventoryItem.warehouse == warehouse_name,
-            InventoryItem.deleted_at.is_(None),
-        )
-    )
-    return (await session.execute(stmt)).scalar_one()
-
-
-# ------------------------------------------------------------------ stock movements
-
-
-def movements_stmt(
-    ctx: ScopeContext, item_id: uuid.UUID, *, kind: str | None = None
-) -> Select[Any]:
-    """One item's movement history, newest first. Not scope-narrowed — movement reads reuse
-    `operations.inventory.item.read`, which is org-wide, same as the item itself."""
-    stmt = select(StockMovement).where(
-        StockMovement.organization_id == ctx.organization_id,
-        StockMovement.inventory_item_id == item_id,
-    )
-    if kind:
-        stmt = stmt.where(StockMovement.kind == kind)
-    return stmt.order_by(StockMovement.created_at.desc())
-
-
-# ------------------------------------------------------------------ warehouses (reference)
-
-
-def warehouses_stmt(org_id: uuid.UUID) -> Select[Any]:
-    """The org's warehouses, ordered by name. Shared reference data (read requires
-    `warehouse.read`), not per-person, so it is not scope-narrowed."""
-    return (
-        select(Warehouse)
-        .where(Warehouse.organization_id == org_id, Warehouse.deleted_at.is_(None))
-        .order_by(Warehouse.name.asc())
-    )
-
-
-async def get_warehouse(
-    session: AsyncSession, org_id: uuid.UUID, warehouse_id: uuid.UUID
-) -> Warehouse | None:
-    stmt = select(Warehouse).where(
-        Warehouse.id == warehouse_id,
-        Warehouse.organization_id == org_id,
-        Warehouse.deleted_at.is_(None),
-    )
-    return (await session.execute(stmt)).scalar_one_or_none()
-
-
-async def get_warehouse_by_code(
-    session: AsyncSession, org_id: uuid.UUID, code: str
-) -> Warehouse | None:
-    stmt = select(Warehouse).where(
-        Warehouse.code == code,
-        Warehouse.organization_id == org_id,
-        Warehouse.deleted_at.is_(None),
-    )
-    return (await session.execute(stmt)).scalar_one_or_none()
-
-
-async def get_warehouse_by_name(
-    session: AsyncSession, org_id: uuid.UUID, name: str
-) -> Warehouse | None:
-    """Fetch by display name — the join key `inventory_items.warehouse` and
-    `purchase_orders.warehouse` carry, and what a create/patch payload's `warehouse` field is
-    validated against."""
-    stmt = select(Warehouse).where(
-        Warehouse.name == name,
-        Warehouse.organization_id == org_id,
-        Warehouse.deleted_at.is_(None),
-    )
-    return (await session.execute(stmt)).scalar_one_or_none()
-
-
-async def count_open_purchase_orders_for_warehouse(
-    session: AsyncSession, org_id: uuid.UUID, warehouse_name: str
-) -> int:
-    """How many `draft`/`approved` purchase orders still target this warehouse — a delete
-    guard, alongside `count_inventory_for_warehouse`."""
-    stmt = (
-        select(func.count())
-        .select_from(PurchaseOrder)
-        .where(
-            PurchaseOrder.organization_id == org_id,
-            PurchaseOrder.warehouse == warehouse_name,
-            PurchaseOrder.deleted_at.is_(None),
-            PurchaseOrder.status.in_(("draft", "approved")),
-        )
-    )
-    return (await session.execute(stmt)).scalar_one()
-
-
 # ------------------------------------------------------------------ projections (ORM → wire)
 
 
@@ -482,45 +294,4 @@ def purchase_order_out(
         received_date=po.received_date,
         line_items=[po_line_out(line) for line in lines],
         notes=po.notes,
-    )
-
-
-def inventory_out(item: InventoryItem) -> InventoryItemOut:
-    return InventoryItemOut(
-        id=str(item.id),
-        sku=item.sku,
-        name=item.name,
-        category=item.category,
-        warehouse=item.warehouse,
-        on_hand=item.on_hand,
-        reorder_point=item.reorder_point,
-        uom=item.uom,
-        unit_value_minor=item.unit_value_minor,
-        currency=item.currency,
-        updated_at=item.stocked_at,
-    )
-
-
-def warehouse_out(warehouse: Warehouse) -> WarehouseOut:
-    return WarehouseOut(
-        id=str(warehouse.id),
-        code=warehouse.code,
-        name=warehouse.name,
-        location=warehouse.location,
-    )
-
-
-def movement_out(movement: StockMovement) -> StockMovementOut:
-    return StockMovementOut(
-        id=str(movement.id),
-        kind=movement.kind,
-        reason=movement.reason,
-        quantity_delta=movement.quantity_delta,
-        on_hand_after=movement.on_hand_after,
-        reference_type=movement.reference_type,
-        reference_id=str(movement.reference_id) if movement.reference_id else None,
-        note=movement.note,
-        occurred_on=movement.occurred_on,
-        created_at=movement.created_at,
-        created_by=movement.created_by,
     )
