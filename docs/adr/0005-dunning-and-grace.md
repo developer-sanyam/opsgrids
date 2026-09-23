@@ -804,3 +804,54 @@ superseded period is now a voided draft that was never announced.)*
   (nightly, and by hand before changing the run). The runbook notes that a permanently failing
   claim freezes its subscription's plan changes (409) once its own period has ended too, until a
   person fixes it — `failing_permanent` is the alert.
+
+### Final money review, second fixup (2026-09-24)
+
+- **Major — the payment handlers lock first.** `record_payment_captured` and
+  `record_payment_failure` are handed a subscription the consumer read unlocked, and every other
+  writer (cancel, suspend, change-plan, the run's claim and record) locks the row before reading
+  it. Three races followed: a fraud hold racing a capture of the owed invoice ended `active`; a
+  cancel of a dunning-suspended subscription racing a capture ended `active` with `cancel_at`
+  set; a cancel racing a failure ended `past_due` — dunning a cancelled customer. Both handlers
+  now take the row lock (`populate_existing`) as their first statement and decide from what the
+  last committed writer left. The **dunning sweep** locked the cycle, then the subscription — the
+  reverse of a cancel, and a 40P01 deadlock when they met; it now locks the subscription (skip
+  locked: a held row waits for the next pass), then the cycle. Every path is subscription →
+  cycle. (This predates the billing run; it was found by its review.)
+- **Which suspension is in force is read from the transition's actor** — the sweep's service
+  actor — never from its reason, which is free text an operator supplies. An operator may not use
+  a reason only the machinery writes (`dunning_exhausted`, `grace_expired`, `payment_failed`, …):
+  422. `suspended -> suspended` is illegal, so a fraud hold cannot be layered on a dunning
+  suspension; paying the owed invoice lifts it (the runbook says what to do).
+- **The cutover setting refuses bad values softly.** Accepted, exactly:
+  `YYYY-MM-DDTHH:MM[:SS[.f]]` then `Z` or `±HH:MM`. pydantic would read `0` or `2026` as epoch
+  seconds — 1970, back-billing everything — and a hard validation error would crash-loop the whole
+  worker, taking the payment consumer and dunning with it. So anything else (and an impossible
+  date) is dropped with its reason kept (`billing_run_not_before_invalid`), the settings load, and
+  the run's loop refuses to start (`billing_run.refused`). Preflight checks the same pattern, that
+  GNU date reads it as a real instant, and warns when it is in the future; the runbook's enable
+  step runs preflight and prints the parsed setting before recreating the worker.
+- **A closing invoice is dated, taxed and numbered on its usage window.** A close bills usage
+  only; its invoice period, the day the tax rate is read and its number now come from the usage
+  window, which differs from the claim's start only when the cutover moved it. Taxing on the
+  pre-cutover day found no rate when the rate row starts at go-live, and failed the close
+  permanently. The key still names the claim, so a retry lands on the same invoice.
+- **The cutover decides a row once**, before its first lease: a proration, opening or close
+  already sent to billing is retried exactly as sent — never skipped or re-clamped — so the retry
+  lands on the invoice billing priced.
+- **A resumption inside the straddling period charges no opening** — that period is free, known
+  from the configured cutover or from a `pre_cutover` row covering the instant.
+- **The reviewer's randomised cutover variant is permanent** (cutover 0-60 days into each life,
+  run on throughout or off until the cutover; 25 seeds by default, 500 by
+  `make test-billing-properties`), as are its edge probes: an opening or a trial end exactly at the
+  cutover is billed, moving the cutover earlier re-bills nothing, a future cutover rolls once and
+  waits, a close retried after the cutover moved later keeps its first window.
+- **Known limitation — moving the cutover later.** Documented, not detected: rows not yet handled
+  that begin between the old and the new cutover become free while the same kind handled earlier
+  was invoiced. A probe field was considered and not built — the health probe runs in the API
+  process, which does not carry the cutover, and the column it would need is not in the outbox
+  role's grant.
+- **Open:** an internal operator **resume** route. Until it exists, lifting an operator's
+  suspension is a reviewed one-off that must write the state, the transition row, the audit row,
+  the `activated` outbox event (or product-service never re-entitles) and the opening for the
+  rest of the period — all listed in the runbook.
