@@ -33,6 +33,10 @@ function isAuthFailure(error: unknown): boolean {
 
 /**
  * Runs `loader` immediately, then again every `intervalMs` until unmounted or `deps` change —
+ * or, with `intervalMs: null`, runs it exactly once and never schedules another. A screen whose
+ * content only sometimes changes underneath it (a campaign is live while it is `sending` and
+ * settled afterwards) can ask for both behaviours from one hook, because hooks cannot be called
+ * conditionally.
  * with three things a naive `setInterval` does not do, each closing a real failure mode a polling
  * screen left open with no more than a fixed interval:
  *
@@ -57,7 +61,7 @@ function isAuthFailure(error: unknown): boolean {
 export function usePolling<T>(
   loader: () => Promise<T>,
   deps: DependencyList,
-  intervalMs: number,
+  intervalMs: number | null,
 ): PollState<T> & PollControls {
   const [state, setState] = useState<PollState<T>>({
     status: "loading",
@@ -81,7 +85,7 @@ export function usePolling<T>(
     }
 
     function scheduleNext() {
-      if (!active || stopped || document.hidden) return;
+      if (intervalMs === null || !active || stopped || document.hidden) return;
       clearTimer();
       timer = setTimeout(() => void tick(false), intervalMs * backoff);
     }
@@ -117,6 +121,7 @@ export function usePolling<T>(
     }
 
     function onVisibilityChange() {
+      if (intervalMs === null) return;
       if (document.hidden) {
         clearTimer();
       } else if (!stopped) {

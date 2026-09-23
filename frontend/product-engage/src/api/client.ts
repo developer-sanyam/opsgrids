@@ -16,8 +16,11 @@
 import { apiRequest } from "@opsgrids/client";
 
 import {
+  CAMPAIGNS,
+  CAMPAIGN_RECIPIENTS,
   CONNECTION,
   CONTACTS,
+  CONTACT_LISTS,
   CONVERSATION_MESSAGES,
   CONVERSATIONS,
   DOMAINS,
@@ -27,11 +30,19 @@ import {
   WHATSAPP_TEMPLATES,
 } from "./fixtures";
 import type {
+  CampaignIn,
+  CampaignOut,
+  CampaignPatch,
+  CampaignRecipientOut,
+  CampaignStatus,
   ConnectionIn,
   ConnectionOut,
   ContactImportOut,
   ContactImportRow,
   ContactIn,
+  ContactListIn,
+  ContactListOut,
+  ContactListPatch,
   ContactOut,
   ContactPatch,
   ConversationAssignIn,
@@ -43,9 +54,12 @@ import type {
   DomainIn,
   DomainOut,
   DomainStatus,
+  ListMembersIn,
+  ListMembersOut,
   Page,
   ProviderTemplateIn,
   ProviderTemplateOut,
+  RecipientStatus,
   SenderIn,
   SenderOut,
   SuppressionIn,
@@ -423,6 +437,225 @@ export async function removeSuppression(suppressionId: string): Promise<void> {
   await apiRequest<void>(`/engage/suppressions/${encodeURIComponent(suppressionId)}`, {
     method: "DELETE",
   });
+}
+
+/* ------------------------------------ contact lists ------------------------------------ */
+
+/** Contact lists, by name — `GET /engage/lists`, server-paged. */
+export async function listLists(
+  options: { page?: number; size?: number } = {},
+): Promise<Page<ContactListOut>> {
+  const { page = 1, size = 25 } = options;
+  if (USE_FIXTURES) {
+    return settle({
+      items: CONTACT_LISTS,
+      total: CONTACT_LISTS.length,
+      page: 1,
+      size: CONTACT_LISTS.length || size,
+      pages: CONTACT_LISTS.length ? 1 : 0,
+    });
+  }
+  const query = new URLSearchParams({ page: String(page), size: String(size) });
+  return apiRequest<Page<ContactListOut>>(`/engage/lists?${query.toString()}`);
+}
+
+/** Create a contact list — `POST /engage/lists`. */
+export async function createList(input: ContactListIn): Promise<ContactListOut> {
+  if (USE_FIXTURES) refuseWithoutService("Creating a list");
+  return apiRequest<ContactListOut>("/engage/lists", { method: "POST", body: input });
+}
+
+/** One contact list — `GET /engage/lists/{list_id}`. */
+export async function getList(listId: string): Promise<ContactListOut> {
+  if (USE_FIXTURES) {
+    const found = CONTACT_LISTS.find((l) => l.id === listId);
+    if (!found) throw new Error(`No such fixture list: ${listId}`);
+    return settle(found);
+  }
+  return apiRequest<ContactListOut>(`/engage/lists/${encodeURIComponent(listId)}`);
+}
+
+/** Rename or describe a contact list — `PATCH /engage/lists/{list_id}`. */
+export async function editList(listId: string, input: ContactListPatch): Promise<ContactListOut> {
+  if (USE_FIXTURES) refuseWithoutService("Editing a list");
+  return apiRequest<ContactListOut>(`/engage/lists/${encodeURIComponent(listId)}`, {
+    method: "PATCH",
+    body: input,
+  });
+}
+
+/** Delete a contact list — `DELETE /engage/lists/{list_id}`. Its contacts stay; only the list and
+ *  its memberships go. */
+export async function deleteList(listId: string): Promise<void> {
+  if (USE_FIXTURES) refuseWithoutService("Deleting a list");
+  await apiRequest<void>(`/engage/lists/${encodeURIComponent(listId)}`, { method: "DELETE" });
+}
+
+/** The contacts on a list, addresses masked — `GET /engage/lists/{list_id}/members`,
+ *  server-paged. */
+export async function listListMembers(
+  listId: string,
+  options: { page?: number; size?: number } = {},
+): Promise<Page<ContactOut>> {
+  const { page = 1, size = 25 } = options;
+  if (USE_FIXTURES) {
+    const rows = CONTACTS; // Every fixture contact is shown as a member of every fixture list.
+    return settle({
+      items: rows,
+      total: rows.length,
+      page: 1,
+      size: rows.length || size,
+      pages: rows.length ? 1 : 0,
+    });
+  }
+  const query = new URLSearchParams({ page: String(page), size: String(size) });
+  return apiRequest<Page<ContactOut>>(
+    `/engage/lists/${encodeURIComponent(listId)}/members?${query.toString()}`,
+  );
+}
+
+/** Add contacts to a list (idempotent) — `POST /engage/lists/{list_id}/members`. */
+export async function addListMembers(
+  listId: string,
+  input: ListMembersIn,
+): Promise<ListMembersOut> {
+  if (USE_FIXTURES) refuseWithoutService("Adding list members");
+  return apiRequest<ListMembersOut>(`/engage/lists/${encodeURIComponent(listId)}/members`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** Remove contacts from a list (idempotent) — `POST /engage/lists/{list_id}/members/remove`.
+ *  Not a `DELETE` with a body: removing many members in one call is a batch action on the list,
+ *  the same shape as adding them, rather than a delete of any one resource. */
+export async function removeListMembers(
+  listId: string,
+  input: ListMembersIn,
+): Promise<ListMembersOut> {
+  if (USE_FIXTURES) refuseWithoutService("Removing list members");
+  return apiRequest<ListMembersOut>(
+    `/engage/lists/${encodeURIComponent(listId)}/members/remove`,
+    { method: "POST", body: input },
+  );
+}
+
+/* -------------------------------------- campaigns -------------------------------------- */
+
+/** Campaigns, newest first — `GET /engage/campaigns`, server-paged. */
+export async function listCampaigns(
+  options: { status?: CampaignStatus; page?: number; size?: number } = {},
+): Promise<Page<CampaignOut>> {
+  const { status, page = 1, size = 25 } = options;
+  if (USE_FIXTURES) {
+    const rows = status === undefined ? CAMPAIGNS : CAMPAIGNS.filter((c) => c.status === status);
+    return settle({
+      items: rows,
+      total: rows.length,
+      page: 1,
+      size: rows.length || size,
+      pages: rows.length ? 1 : 0,
+    });
+  }
+  const query = new URLSearchParams({ page: String(page), size: String(size) });
+  if (status !== undefined) query.set("status", status);
+  return apiRequest<Page<CampaignOut>>(`/engage/campaigns?${query.toString()}`);
+}
+
+/** Draft a campaign — `POST /engage/campaigns`. Nothing is queued to send: a draft is edited and
+ *  sent by separate, later calls. */
+export async function createCampaign(input: CampaignIn): Promise<CampaignOut> {
+  if (USE_FIXTURES) refuseWithoutService("Drafting a campaign");
+  return apiRequest<CampaignOut>("/engage/campaigns", { method: "POST", body: input });
+}
+
+/** One campaign, with its delivery stats — `GET /engage/campaigns/{campaign_id}`. */
+export async function getCampaign(campaignId: string): Promise<CampaignOut> {
+  if (USE_FIXTURES) {
+    const found = CAMPAIGNS.find((c) => c.id === campaignId);
+    if (!found) throw new Error(`No such fixture campaign: ${campaignId}`);
+    return settle(found);
+  }
+  return apiRequest<CampaignOut>(`/engage/campaigns/${encodeURIComponent(campaignId)}`);
+}
+
+/** Edit a draft campaign — `PATCH /engage/campaigns/{campaign_id}`. The service refuses this
+ *  once the campaign has left `draft`; nothing here checks that first, the same as every other
+ *  write in this client — the writer's own refusal names the campaign's actual status. */
+export async function editCampaign(campaignId: string, input: CampaignPatch): Promise<CampaignOut> {
+  if (USE_FIXTURES) refuseWithoutService("Editing a campaign");
+  return apiRequest<CampaignOut>(`/engage/campaigns/${encodeURIComponent(campaignId)}`, {
+    method: "PATCH",
+    body: input,
+  });
+}
+
+/** Delete a draft campaign — `DELETE /engage/campaigns/{campaign_id}`. */
+export async function deleteCampaign(campaignId: string): Promise<void> {
+  if (USE_FIXTURES) refuseWithoutService("Deleting a campaign");
+  await apiRequest<void>(`/engage/campaigns/${encodeURIComponent(campaignId)}`, {
+    method: "DELETE",
+  });
+}
+
+/**
+ * Send a draft campaign to its audience — `POST /engage/campaigns/{campaign_id}/send`.
+ *
+ * The service is the gate: a `409` means the campaign is not a draft, a `422` names exactly
+ * which precondition failed (no subject, an unusable sender, an unverified domain, no connected
+ * provider, a deleted list, unsubscribe links not configured) in a sentence meant to be shown
+ * verbatim — see `services.request_send`'s docstring. Nothing here re-checks any of that first.
+ */
+export async function sendCampaign(campaignId: string): Promise<CampaignOut> {
+  if (USE_FIXTURES) refuseWithoutService("Sending a campaign");
+  return apiRequest<CampaignOut>(`/engage/campaigns/${encodeURIComponent(campaignId)}/send`, {
+    method: "POST",
+  });
+}
+
+/** Cancel a campaign; recipients not yet sent are never sent —
+ *  `POST /engage/campaigns/{campaign_id}/cancel`. Refused with `409` once the campaign is `sent`
+ *  or already `cancelled`. */
+export async function cancelCampaign(campaignId: string): Promise<CampaignOut> {
+  if (USE_FIXTURES) refuseWithoutService("Cancelling a campaign");
+  return apiRequest<CampaignOut>(`/engage/campaigns/${encodeURIComponent(campaignId)}/cancel`, {
+    method: "POST",
+  });
+}
+
+/** Retry a paused campaign now, ignoring the driver's own backoff —
+ *  `POST /engage/campaigns/{campaign_id}/resume`. Refused with `409` unless the campaign is
+ *  currently `paused`. */
+export async function resumeCampaign(campaignId: string): Promise<CampaignOut> {
+  if (USE_FIXTURES) refuseWithoutService("Resuming a campaign");
+  return apiRequest<CampaignOut>(`/engage/campaigns/${encodeURIComponent(campaignId)}/resume`, {
+    method: "POST",
+  });
+}
+
+/** A campaign's recipients and what happened to each, addresses masked —
+ *  `GET /engage/campaigns/{campaign_id}/recipients`, server-paged. */
+export async function listCampaignRecipients(
+  campaignId: string,
+  options: { status?: RecipientStatus; page?: number; size?: number } = {},
+): Promise<Page<CampaignRecipientOut>> {
+  const { status, page = 1, size = 25 } = options;
+  if (USE_FIXTURES) {
+    const rows = CAMPAIGN_RECIPIENTS[campaignId] ?? [];
+    const filtered = status === undefined ? rows : rows.filter((r) => r.status === status);
+    return settle({
+      items: filtered,
+      total: filtered.length,
+      page: 1,
+      size: filtered.length || size,
+      pages: filtered.length ? 1 : 0,
+    });
+  }
+  const query = new URLSearchParams({ page: String(page), size: String(size) });
+  if (status !== undefined) query.set("status", status);
+  return apiRequest<Page<CampaignRecipientOut>>(
+    `/engage/campaigns/${encodeURIComponent(campaignId)}/recipients?${query.toString()}`,
+  );
 }
 
 /* ----------------------------------- inbox (WhatsApp) ----------------------------------- */

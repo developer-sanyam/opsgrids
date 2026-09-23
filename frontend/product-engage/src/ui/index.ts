@@ -8,6 +8,7 @@ export {
   Announcer,
   Button,
   Card,
+  Combobox,
   ConfirmDialog,
   Dialog,
   EmptyState,
@@ -25,14 +26,16 @@ export {
   TextField,
   useAnnounce,
 } from "@opsgrids/ui";
-export type { RadioOption, SelectOption, TagTone } from "@opsgrids/ui";
+export type { ComboboxOption, RadioOption, SelectOption, TagTone } from "@opsgrids/ui";
 
 export { Sidebar } from "./Sidebar";
 export { LogoMark } from "./LogoMark";
 export {
+  CampaignStatusTag,
   ConnectionStatusTag,
   ConversationStatusTag,
   DomainStatusTag,
+  RecipientStatusTag,
   SenderStatusTag,
   SuppressionReasonTag,
   TemplateStatusTag,
