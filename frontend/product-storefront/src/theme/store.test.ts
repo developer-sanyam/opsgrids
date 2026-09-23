@@ -7,18 +7,15 @@ import { describe, expect, it } from "vitest";
 
 import type { StoreDoc, StoreMode } from "./schema";
 import { adoptTheme, clonePages, pageForRoute, resolveMode } from "./store";
-import { THEMES, foundry, suggestedBrand } from "./themes";
+import { THEMES, foundry } from "./themes";
 
 const MODES: StoreMode[] = ["retail", "trade"];
 
-const BRAND = { name: "Test Supply", tagline: "Testing", logoText: "TS" };
-
 describe("adoptTheme", () => {
   it("copies the theme's tokens and pages into a store document", () => {
-    const store = adoptTheme(foundry, BRAND);
+    const store = adoptTheme(foundry);
 
     expect(store.themeKey).toBe("foundry");
-    expect(store.brand).toEqual(BRAND);
     expect(store.tokens).toEqual(foundry.tokens);
     expect(store.pages.map((p) => p.route)).toEqual(foundry.pages.map((p) => p.route));
   });
@@ -27,12 +24,12 @@ describe("adoptTheme", () => {
     // Copied at adopt time, not resolved from `themeKey` later: the fork cuts the link to the
     // theme, and a store may outlive the theme key it was adopted from.
     for (const theme of THEMES) {
-      expect(adoptTheme(theme, BRAND).mode).toBe(theme.mode);
+      expect(adoptTheme(theme).mode).toBe(theme.mode);
     }
   });
 
   it("deep-copies rather than aliasing — mutating the store cannot reach the theme", () => {
-    const store = adoptTheme(foundry, BRAND);
+    const store = adoptTheme(foundry);
 
     const themeHome = foundry.pages[0];
     const storeHome = store.pages[0];
@@ -50,7 +47,6 @@ describe("adoptTheme", () => {
     expect(storeSection.settings).not.toBe(themeSection.settings);
     expect(storeSection.layout).not.toBe(themeSection.layout);
     expect(store.tokens).not.toBe(foundry.tokens);
-    expect(store.brand).not.toBe(BRAND);
 
     const originalHeading = themeSection.settings.heading;
     const originalX = themeSection.layout.x;
@@ -66,25 +62,18 @@ describe("adoptTheme", () => {
       layout: { x: 0, y: 99, w: 12, h: 4 },
     });
     store.tokens.colorAccent = "#000000";
-    store.brand.name = "Renamed";
 
     expect(themeSection.settings.heading).toBe(originalHeading);
     expect(themeSection.layout.x).toBe(originalX);
     expect(themeHome.sections).toHaveLength(originalSectionCount);
     expect(foundry.tokens.colorAccent).toBe(originalAccent);
-    expect(BRAND.name).toBe("Test Supply");
   });
 
-  it("keeps the brand when a different theme is adopted, and replaces the pages", () => {
-    const first = adoptTheme(foundry, BRAND);
-    const other = THEMES.find((t) => t.key !== foundry.key);
-    if (!other) throw new Error("The library must ship more than one theme");
-
-    const second = adoptTheme(other, first.brand);
-
-    expect(second.brand).toEqual(BRAND);
-    expect(second.themeKey).toBe(other.key);
-    expect(second.pages.map((p) => p.id)).toEqual(other.pages.map((p) => p.id));
+  it("never carries a brand — that lives on the store's identity, untouched by a theme change", () => {
+    // ADR-0011 §2: adopting a different theme replaces tokens and pages only. There is nothing to
+    // assert "keeps the brand" against any more, because `adoptTheme` never had one to keep.
+    const store = adoptTheme(foundry);
+    expect(store).not.toHaveProperty("brand");
   });
 });
 
@@ -126,7 +115,7 @@ describe("the shipped theme library", () => {
 
 describe("pageForRoute", () => {
   it("finds a page by route and returns null for one that does not exist", () => {
-    const store = adoptTheme(foundry, suggestedBrand("foundry"));
+    const store = adoptTheme(foundry);
     expect(pageForRoute(store, "/")?.route).toBe("/");
     expect(pageForRoute(store, "/nowhere")).toBeNull();
   });

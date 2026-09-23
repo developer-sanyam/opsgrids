@@ -984,12 +984,15 @@ removes both the walk and the cap, and is the difference between a report a merc
 postal-code to zone across the organisation and assembles it with one GET per zone. Acceptable at
 this ADR's own worst case of 12 zones; a `GET /delivery/postal-codes` collapses N requests into one.
 
-**10. Nothing in the storefront app mounts a `PermissionProvider`**, so `usePermissionStatus`
-returns `unknown` for every code. The delivery admin treats `unknown` as render-and-let-the-server-
-answer, and `denied` as hide — because hiding on `unknown` would hide the entire delivery admin
-from a merchant holding every grant. Correct given the constraint, but `denied` can never arrive
-until `src/auth/AuthProvider.tsx` mounts the provider. **Authorization is server-side regardless;
-this only affects whether the UI hides a control it was going to be refused anyway.**
+**10. Resolved.** At the time this was written, nothing in the storefront app mounted a
+`PermissionProvider`, so `usePermissionStatus` returned `unknown` for every code. The delivery
+admin treats `unknown` as render-and-let-the-server-answer, and `denied` as hide — because hiding
+on `unknown` would hide the entire delivery admin from a merchant holding every grant. Correct
+given the constraint at the time. `src/auth/AuthProvider.tsx` now mounts `PermissionProvider`
+(fixture grants in fixture mode, a real `GET /members/me/grants` fetch otherwise), so `denied` does
+arrive once that call resolves, and the delivery admin's controls disappear before the round trip
+rather than after it. **Authorization was, and remains, server-side regardless; this only ever
+affected whether the UI hides a control it was going to be refused anyway.**
 
 ### Errata, third pass — found during reconciliation (2026-09-19)
 

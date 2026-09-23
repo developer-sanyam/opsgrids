@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Category, Page, Product, StoreResponse } from "@/api/types";
+import type { Brand } from "@/theme/schema";
 import { adoptTheme } from "@/theme/store";
 import { THEMES } from "@/theme/themes";
 
@@ -20,27 +21,30 @@ import { LiveStorePage } from "../LiveStore";
  */
 
 const getStore = vi.fn<() => Promise<StoreResponse>>();
+const getStoreBrand = vi.fn<(themeKey: string) => Promise<Brand>>();
 const listProducts = vi.fn<() => Promise<Page<Product>>>();
 const listCategories = vi.fn<() => Promise<Category[]>>();
 
 vi.mock("@/api/client", () => ({
   getStore: () => getStore(),
+  getStoreBrand: (themeKey: string) => getStoreBrand(themeKey),
   listProducts: () => listProducts(),
   listCategories: () => listCategories(),
 }));
 
-const BRAND = { name: "Verma Traders", tagline: "Since 1994", logoText: "VT" };
+const BRAND: Brand = { name: "Verma Traders", tagline: "Since 1994", logoText: "VT" };
 
 function shipped() {
   const theme = THEMES[0];
   if (!theme) throw new Error("The theme library is empty");
-  return adoptTheme(theme, BRAND);
+  return adoptTheme(theme);
 }
 
 beforeEach(() => {
   listProducts.mockResolvedValue({ items: [], total: 0 });
   listCategories.mockResolvedValue([]);
   getStore.mockResolvedValue(shipped());
+  getStoreBrand.mockResolvedValue(BRAND);
   // jsdom has no scroll box; the route only needs the call to be observable.
   vi.spyOn(window, "scrollTo").mockImplementation(() => {});
   document.head.querySelector('link[rel="icon"]')?.remove();
