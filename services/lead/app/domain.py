@@ -5,8 +5,10 @@ are trivially testable in isolation from the database.
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 
 # ------------------------------------------------------------------ the lifecycle
 
@@ -52,6 +54,57 @@ def can_convert(status: str) -> bool:
     stage exists to keep out (ecosystem-gaps.md §2). Not `disqualified` — reopen it first. A
     lead already `converted` is handled by the caller as the idempotent-replay case, not here."""
     return status == "qualified"
+
+
+# ------------------------------------------------------------------ phone canonicalization
+
+#: E.164: a leading `+`, a non-zero country digit, up to fifteen digits in total. Duplicated
+#: from `customer`'s own `_canonical_e164` rather than shared — the same few deliberately
+#: duplicated lines `customer`'s own docstring already explains for its copy from
+#: notification-service. Validating **here, at capture**, is what keeps a malformed number out
+#: of the sealed column in the first place, rather than surfacing only later, at `:convert`,
+#: when customer-service tries to canonicalise its own copy and the failure is a service-to-
+#: service 4xx instead of an ordinary 422 on the form that took the bad input.
+_E164 = re.compile(r"^\+[1-9]\d{7,14}$")
+
+
+def canonical_e164(raw: str) -> str | None:
+    """Normalise a supplied number, or return `None` when it cannot be normalised.
+
+    Never raises, and never echoes the input anywhere — this is a pure function and leaves the
+    decision of *how* to fail (a 422, its wording, whether to log) to the caller, which is the
+    layer that knows whether the input is something a client typed moments ago (safe to quote
+    back) or a value that arrived over the network from another tenant's data (never is).
+    """
+    compact = re.sub(r"[\s\-().]", "", raw.strip())
+    if not compact.startswith("+"):
+        return None
+    if not _E164.match(compact):
+        return None
+    return compact
+
+
+# ------------------------------------------------------------------ conversion claim lease
+
+#: How long a conversion claim holds before a second attempt may take it over rather than
+#: being refused outright. Long enough for both upstream calls to finish at their configured
+#: timeouts; short enough that a genuinely crashed attempt does not block a retry for long.
+#: `services.claim_conversion` is the only writer of the claim fields this reads.
+CONVERSION_LEASE_SECONDS = 60
+
+
+def claim_is_live(claimed_at: datetime | None, *, now: datetime) -> bool:
+    """Whether an existing conversion claim is still within its lease and must be respected
+    (a 409, not a takeover). `None` — never claimed, or already cleared — is never live."""
+    if claimed_at is None:
+        return False
+    return (now - _aware(claimed_at)) < timedelta(seconds=CONVERSION_LEASE_SECONDS)
+
+
+def _aware(dt: datetime) -> datetime:
+    """Treat a naive timestamp as UTC so a comparison never raises — the same guard deal-
+    service's own `domain.py` uses, for the same reason."""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 
 # ------------------------------------------------------------------ round-robin assignment

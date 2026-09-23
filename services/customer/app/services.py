@@ -91,12 +91,19 @@ def service_ctx(organization_id: uuid.UUID) -> ScopeContext:
 _LEAD_CONVERSION_PERMISSION = "crm.book.company.write"
 
 
-def lead_conversion_ctx(organization_id: uuid.UUID) -> ScopeContext:
-    """The scope context `:convert`'s internal call runs under. Same shape as `service_ctx`:
-    a stable all-zero `sub` so the write is attributable to "the platform", ORG scope
-    because there is no caller-owned row to narrow a lead's brand-new company to."""
+def lead_conversion_ctx(organization_id: uuid.UUID, actor_id: uuid.UUID | None) -> ScopeContext:
+    """The scope context `:convert`'s internal call runs under. ORG scope because there is no
+    caller-owned row to narrow a lead's brand-new company to.
+
+    `actor_id` is the human who asked lead-service to convert, carried in the service token's
+    `sub` claim (`app/api/internal.py` checks the token names this organization before this is
+    ever called) — attributing the audit trail to the person who acted rather than to nobody.
+    Falls back to the stable all-zero id `service_ctx` also uses when the token carried none
+    (an older caller, or a genuinely system-initiated conversion), so a missing claim degrades
+    to "the platform" rather than raising.
+    """
     principal = Principal(
-        sub=uuid.UUID(int=0),
+        sub=actor_id if actor_id is not None else uuid.UUID(int=0),
         organization_id=organization_id,
         membership_id=None,
         perms=[f"{_LEAD_CONVERSION_PERMISSION}:ORG"],
@@ -116,8 +123,13 @@ async def _assert_owner_assignable(
     reads the same as a rep who does not exist: `deactivate_owner` already refused to leave
     one holding a live record, so an assignment reaching one here is either stale client
     state or a former rep's id resurfacing, and either way starting a new assignment on it
-    should fail the same way a nonexistent id does."""
-    owner = await selectors.get_owner(session, ctx.organization_id, owner_id)
+    should fail the same way a nonexistent id does.
+
+    Row-locked (`FOR UPDATE`): without it, this read and a concurrent `deactivate_owner` on
+    the same rep race — this assignment reads `is_active=True` a moment before the other
+    transaction flips it and commits, and the assignment proceeds against a rep who is, by
+    the time this transaction commits, already deactivated."""
+    owner = await selectors.get_owner_for_update(session, ctx.organization_id, owner_id)
     if owner is None or not owner.is_active:
         raise NotFoundProblem("That owner is not part of this organization")
     if ctx.scope is Scope.OWN and ctx.subject_ref != owner_id:
@@ -140,7 +152,7 @@ async def create_owner(
     deterministic ids so deal-service's rows cross-link); omitted, one is generated.
     Reference data, so no domain event — a rep row is vocabulary, not a business fact."""
     if await selectors.get_owner_by_email(session, ctx.organization_id, email):
-        raise ConflictProblem(f"An owner with email {email!r} already exists")
+        raise ConflictProblem("An owner with that email already exists")
 
     owner = Owner(
         organization_id=ctx.organization_id,
@@ -183,7 +195,7 @@ async def update_owner(
             session, ctx.organization_id, changes["email"]
         )
         if existing is not None and existing.id != owner.id:
-            raise ConflictProblem(f"An owner with email {changes['email']!r} already exists")
+            raise ConflictProblem("An owner with that email already exists")
 
     before = {field: getattr(owner, field) for field in changes}
     for field, value in changes.items():
@@ -215,7 +227,17 @@ async def deactivate_owner(
     The smaller, safer choice over cascading a reassignment automatically: this service has
     no way to know who *should* inherit the book, and guessing is how an account silently
     changes hands. A rep already inactive is a no-op, not an error — deactivating twice is
-    exactly the retry a client should be free to make."""
+    exactly the retry a client should be free to make.
+
+    Re-fetches and row-locks `owner` by id before checking anything: the route's own read is
+    unlocked, and without re-locking here this could run its "still owns a live record" check
+    against a book that a concurrent `create_company`/`update_company` is, in that same
+    instant, assigning to this same rep — both transactions would see zero open records and
+    both would commit, leaving a deactivated owner holding a company after all."""
+    locked = await selectors.get_owner_for_update(session, ctx.organization_id, owner.id)
+    if locked is None:
+        raise NotFoundProblem("That owner is not part of this organization")
+    owner = locked
     if not owner.is_active:
         return owner
 
@@ -295,13 +317,19 @@ async def create_company(
     company_id: uuid.UUID | None = None,
     created_at: datetime | None = None,
     request: Request | None = None,
+    acting_as: str | None = None,
 ) -> Company:
     """The core company writer. Inserts the account, records the audit row and stages the
     `created` event — all in the caller's transaction. `annual_revenue_minor` is integer
-    minor units of `currency`; no float is accepted anywhere on this path."""
+    minor units of `currency`; no float is accepted anywhere on this path.
+
+    `acting_as` names the calling *service* on the audit row (e.g. `"lead"`) when this write
+    was not a person clicking a button but a service holding a token addressed to customer by
+    name — `ctx.principal.sub` still carries the human who ultimately asked for it, when the
+    caller has one to give (`lead_conversion_ctx`)."""
     await _assert_owner_assignable(session, ctx, owner_id)
     if await selectors.get_company_by_name(session, ctx.organization_id, name):
-        raise ConflictProblem(f"A company named {name!r} already exists")
+        raise ConflictProblem("A company with that name already exists")
 
     company = Company(
         organization_id=ctx.organization_id,
@@ -330,6 +358,7 @@ async def create_company(
         AuditLog,
         organization_id=ctx.organization_id,
         actor_id=ctx.principal.sub,
+        acting_as=acting_as,
         action="company.created",
         entity="company",
         entity_id=company.id,
@@ -374,7 +403,7 @@ async def update_company(
             session, ctx.organization_id, changes["name"]
         )
         if existing is not None and existing.id != company.id:
-            raise ConflictProblem(f"A company named {changes['name']!r} already exists")
+            raise ConflictProblem("A company with that name already exists")
 
     if "owner_id" in changes:
         await _assert_owner_assignable(session, ctx, changes["owner_id"])
@@ -482,10 +511,11 @@ async def create_contact(
     contact_id: uuid.UUID | None = None,
     created_at: datetime | None = None,
     request: Request | None = None,
+    acting_as: str | None = None,
 ) -> Contact:
     """Add a person to an account. Validates the company within the organization — the FK
     would catch a bad id, but a cross-tenant guess must read as not-found, not as a
-    constraint error.
+    constraint error. `acting_as` — see `create_company`.
 
     Two ways to supply a number, and they are not interchangeable. `phone` is the masked
     display form, taken as given — which is what the seeds and the read-only slice have always
@@ -495,7 +525,7 @@ async def create_contact(
     """
     await _assert_owner_assignable(session, ctx, owner_id)
     if await selectors.get_contact_by_email(session, ctx.organization_id, email):
-        raise ConflictProblem(f"A contact with email {email!r} already exists")
+        raise ConflictProblem("A contact with that email already exists")
     company = await selectors.get_company(session, ctx.organization_id, company_id)
     if company is None:
         raise NotFoundProblem("That company is not part of this organization")
@@ -535,6 +565,7 @@ async def create_contact(
         AuditLog,
         organization_id=ctx.organization_id,
         actor_id=ctx.principal.sub,
+        acting_as=acting_as,
         action="contact.created",
         entity="contact",
         entity_id=contact.id,
@@ -581,7 +612,7 @@ async def update_contact(
             session, ctx.organization_id, changes["email"]
         )
         if existing is not None and existing.id != contact.id:
-            raise ConflictProblem(f"A contact with email {changes['email']!r} already exists")
+            raise ConflictProblem("A contact with that email already exists")
 
     if "owner_id" in changes:
         await _assert_owner_assignable(session, ctx, changes["owner_id"])
@@ -692,6 +723,15 @@ async def touch_contact_activity(
 _E164 = re.compile(r"^\+[1-9]\d{7,14}$")
 
 
+#: The one message both branches below raise. Never the submitted value: a phone number in an
+#: error body is a phone number in every place that body travels — a browser console, an error
+#: tracker, a support ticket, and (the path that made this a review finding rather than a
+#: style note) another service's own exception message when this validation runs behind
+#: `ensure_company_and_contact_for_lead` and the caller is lead-service relaying a *lead's*
+#: number, not the number the human at the keyboard just typed.
+_E164_MESSAGE = "That phone number is not a valid E.164 number, with a country code."
+
+
 def _canonical_e164(raw: str) -> str:
     """Normalise a supplied number, or refuse it.
 
@@ -707,12 +747,8 @@ def _canonical_e164(raw: str) -> str:
     construction rather than by trust.
     """
     compact = re.sub(r"[\s\-().]", "", raw.strip())
-    if not compact.startswith("+"):
-        raise ValidationProblem(
-            f"{raw!r} is not in E.164 — a messageable number needs its country code"
-        )
-    if not _E164.match(compact):
-        raise ValidationProblem(f"{raw!r} is not a valid E.164 number")
+    if not compact.startswith("+") or not _E164.match(compact):
+        raise ValidationProblem(_E164_MESSAGE)
     return compact
 
 
@@ -793,6 +829,17 @@ async def unmask_contact_phone(
     return plaintext
 
 
+async def invalid_owner_ids(
+    session: AsyncSession, organization_id: uuid.UUID, owner_ids: list[uuid.UUID]
+) -> list[uuid.UUID]:
+    """Which of `owner_ids` do **not** resolve to an active rep — the read behind
+    `owners:validate`. Read-only and unaudited: asking whether an id is a known, active
+    owner discloses nothing an internal caller already restricted to lead-service's own
+    write paths does not already have a legitimate reason to ask."""
+    active = await selectors.active_owner_ids(session, organization_id, owner_ids)
+    return [owner_id for owner_id in owner_ids if owner_id not in active]
+
+
 async def ensure_company_and_contact_for_lead(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -809,16 +856,17 @@ async def ensure_company_and_contact_for_lead(
     by name/email second, so retrying `:convert` with the same deterministic ids never
     creates a second row (ADR-0017).
 
-    Order of checks, per entity: the caller's id (a replay of a call that already
-    succeeded), then the natural key (a lead converting into a company or person this book
-    already has, under a *different* id — reused rather than duplicated), then a fresh
-    insert. `contact_email` absent skips the contact entirely: `Contact.email` is not
-    nullable, so a lead with no email becomes a company with no contact yet, not a contact
-    with a placeholder address.
+    Order of checks, per entity: the caller's id **in any state** (a replay of a call that
+    already succeeded — including one whose row was soft-deleted since, which must still
+    count as "already used" rather than a free primary key), then the natural key (a lead
+    converting into a company or person this book already has, under a *different* id —
+    reused rather than duplicated), then a fresh insert. `contact_email` absent skips the
+    contact entirely: `Contact.email` is not nullable, so a lead with no email becomes a
+    company with no contact yet, not a contact with a placeholder address.
     """
     await _assert_owner_assignable(session, ctx, owner_id)
 
-    company = await selectors.get_company(session, ctx.organization_id, company_id)
+    company = await selectors.get_company_by_id_any_state(session, ctx.organization_id, company_id)
     if company is None:
         company = await selectors.get_company_by_name(session, ctx.organization_id, company_name)
     if company is None:
@@ -829,11 +877,14 @@ async def ensure_company_and_contact_for_lead(
             owner_id=owner_id,
             status="prospect",
             company_id=company_id,
+            acting_as="lead",
         )
 
     contact: Contact | None = None
     if contact_email:
-        contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+        contact = await selectors.get_contact_by_id_any_state(
+            session, ctx.organization_id, contact_id
+        )
         if contact is None:
             contact = await selectors.get_contact_by_email(
                 session, ctx.organization_id, contact_email
@@ -849,6 +900,7 @@ async def ensure_company_and_contact_for_lead(
                 raw_phone=contact_raw_phone,
                 status="customer",
                 contact_id=contact_id,
+                acting_as="lead",
             )
 
     return company, contact

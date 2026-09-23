@@ -122,10 +122,14 @@ class Company(Base, TenantBase):
 
     __table_args__ = (
         # Unique among LIVE rows only: a soft-deleted record must not hold its name hostage.
+        # Case-insensitive (`lower(name)`, not `name`): "Acme Ltd" and "ACME LTD" are the same
+        # account to anyone reading the book, and a case-sensitive index let both exist as two
+        # rows — the exact "two rows racing on the same natural key" bug `create_company`'s
+        # own name check exists to prevent, just spelled with a different case each time.
         Index(
-            "uq_companies_org_name",
+            "uq_companies_org_name_ci",
             "organization_id",
-            "name",
+            text("lower(name)"),
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),

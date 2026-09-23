@@ -3,7 +3,9 @@ leads:convert`, called by lead-service under a token addressed to deal by name.
 
 Guarded by a service token like every internal route, and idempotent by the caller's own
 `deal_id` — calling it twice reuses the same deal rather than opening a second one
-(ADR-0017's "same lead converted twice -> one deal").
+(ADR-0017's "same lead converted twice -> one deal"). Restricted to `service_caller == "lead"`,
+and a token's `org` claim must name the path's organization even though the signature and
+audience are otherwise valid.
 """
 
 from __future__ import annotations
@@ -12,17 +14,24 @@ import uuid
 from datetime import date, timedelta
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import selectors
+from app import selectors, services
 from app.config import settings
+from app.models import AuditLog
+from platform_core.auth import Scope
 from platform_core.internal_auth import mint_service_token
+from tests.helpers import ctx_for
 
 pytestmark = pytest.mark.integration
 
 
-def _token() -> str:
-    return mint_service_token(settings(), audience="deal", caller="lead")
+def _token(org_id: uuid.UUID, *, caller: str = "lead", actor: uuid.UUID | None = None) -> str:
+    claims = {"org": str(org_id)}
+    if actor is not None:
+        claims["sub"] = str(actor)
+    return mint_service_token(settings(), audience="deal", caller=caller, claims=claims)
 
 
 def _payload(**overrides: object) -> dict:
@@ -52,7 +61,7 @@ class TestLeadConversionInternal:
         deal_id = uuid.uuid4()
         resp = await client.post(
             f"/internal/v1/organizations/{org_id}/leads:convert",
-            headers={"X-Internal-Token": _token()},
+            headers={"X-Internal-Token": _token(org_id)},
             json=_payload(deal_id=str(deal_id)),
         )
         assert resp.status_code == 200
@@ -70,12 +79,12 @@ class TestLeadConversionInternal:
         payload = _payload()
         first = await client.post(
             f"/internal/v1/organizations/{org_id}/leads:convert",
-            headers={"X-Internal-Token": _token()},
+            headers={"X-Internal-Token": _token(org_id)},
             json=payload,
         )
         second = await client.post(
             f"/internal/v1/organizations/{org_id}/leads:convert",
-            headers={"X-Internal-Token": _token()},
+            headers={"X-Internal-Token": _token(org_id)},
             json=payload,
         )
         assert first.status_code == second.status_code == 200
@@ -84,3 +93,72 @@ class TestLeadConversionInternal:
         deal_id = uuid.UUID(str(payload["deal_id"]))
         deal = await selectors.get_deal(session, org_id, deal_id)
         assert deal is not None
+
+    async def test_a_soft_deleted_deal_at_the_same_id_is_treated_as_replay(
+        self, client, org_id, session: AsyncSession
+    ) -> None:
+        payload = _payload()
+        deal_id = uuid.UUID(str(payload["deal_id"]))
+        first = await client.post(
+            f"/internal/v1/organizations/{org_id}/leads:convert",
+            headers={"X-Internal-Token": _token(org_id)},
+            json=payload,
+        )
+        assert first.status_code == 200
+
+        write = ctx_for(org_id, "crm.pipeline.deal.write", Scope.ORG)
+        async with session.begin():
+            deal = await selectors.get_deal(session, org_id, deal_id)
+            assert deal is not None
+            await services.delete_deal(session, write, deal)
+
+        second = await client.post(
+            f"/internal/v1/organizations/{org_id}/leads:convert",
+            headers={"X-Internal-Token": _token(org_id)},
+            json=payload,
+        )
+        assert second.status_code == 200
+        assert second.json()["deal_id"] == str(deal_id)
+
+    async def test_a_caller_other_than_lead_is_refused(self, client, org_id) -> None:
+        resp = await client.post(
+            f"/internal/v1/organizations/{org_id}/leads:convert",
+            headers={"X-Internal-Token": _token(org_id, caller="customer")},
+            json=_payload(),
+        )
+        assert resp.status_code == 403
+
+    async def test_a_token_addressed_to_another_organization_is_refused(
+        self, client, org_id
+    ) -> None:
+        other_org = uuid.uuid4()
+        resp = await client.post(
+            f"/internal/v1/organizations/{org_id}/leads:convert",
+            headers={"X-Internal-Token": _token(other_org)},
+            json=_payload(),
+        )
+        assert resp.status_code == 403
+
+    async def test_the_tokens_actor_claim_attributes_the_audit_row(
+        self, client, org_id, session: AsyncSession
+    ) -> None:
+        actor = uuid.uuid4()
+        deal_id = uuid.uuid4()
+        resp = await client.post(
+            f"/internal/v1/organizations/{org_id}/leads:convert",
+            headers={"X-Internal-Token": _token(org_id, actor=actor)},
+            json=_payload(deal_id=str(deal_id)),
+        )
+        assert resp.status_code == 200
+
+        row = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.entity == "deal",
+                    AuditLog.entity_id == deal_id,
+                    AuditLog.action == "deal.created",
+                )
+            )
+        ).scalar_one()
+        assert row.actor_id == actor
+        assert row.acting_as == "lead"

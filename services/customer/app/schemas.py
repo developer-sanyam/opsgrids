@@ -268,3 +268,23 @@ class LeadConversionIn(BaseModel):
 class LeadConversionOut(BaseModel):
     company_id: str
     contact_id: str | None
+
+
+# ------------------------------------------------------------------ owner validation (internal)
+
+
+class OwnersValidateIn(BaseModel):
+    """Which of these ids resolve to an active rep — lead-service's own gate for `owner_id`
+    on a lead create/patch and for the round-robin's owner list, so an inactive or unknown rep
+    never enters lead-service's own writes in the first place."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    owner_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+
+
+class OwnersValidateOut(BaseModel):
+    """The ids from the request that do **not** resolve to an active rep. Empty means every
+    id named is a known, active owner."""
+
+    invalid_owner_ids: list[str]

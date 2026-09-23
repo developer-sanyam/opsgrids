@@ -13,7 +13,7 @@ statement.
 makes every idempotency lookup return nothing and a redelivered event is handled twice in silence.
 
 Revision ID: f2c8a41d9e33
-Revises: e6b3c5bf7755
+Revises: b110ff507df9
 Create Date: 2026-09-23 21:30:00.000000
 """
 
@@ -24,7 +24,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "f2c8a41d9e33"  # pragma: allowlist secret
-down_revision: str | None = "e6b3c5bf7755"  # pragma: allowlist secret
+down_revision: str | None = "b110ff507df9"  # pragma: allowlist secret
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -73,6 +73,18 @@ async def get_deal(session: AsyncSession, org_id: uuid.UUID, deal_id: uuid.UUID)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_deal_by_id_any_state(
+    session: AsyncSession, org_id: uuid.UUID, deal_id: uuid.UUID
+) -> Deal | None:
+    """Org-scoped fetch by id, soft-deleted or not — for the lead-conversion idempotency
+    check, which must recognise "this id was already used" even after the row it named was
+    deleted, rather than attempting a second `INSERT` with a primary key Postgres already
+    holds (`api/internal.py`'s `convert_lead`, the same reasoning as customer-service's
+    `get_company_by_id_any_state`)."""
+    stmt = select(Deal).where(Deal.id == deal_id, Deal.organization_id == org_id)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def get_deal_by_name(session: AsyncSession, org_id: uuid.UUID, name: str) -> Deal | None:
     stmt = select(Deal).where(
         Deal.name == name,

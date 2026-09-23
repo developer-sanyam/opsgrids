@@ -9,7 +9,7 @@ Only the broker is faked, the same way `test_outbox_relay_idle_backoff.py` fakes
 missing broker would otherwise make this test about the broker rather than the relay.
 
 Needs `make infra`'s Postgres (`opsgrids_admin` and `opsgrids_outbox` roles, `account` and
-`activity` schemas, both migrated) reachable at `DATABASE_URL`.
+`lead` schemas, both migrated) reachable at `DATABASE_URL`.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from platform_core.edge_relay import EdgeRelaySettings, _make_outbox_model, run_
 
 pytestmark = pytest.mark.integration
 
-SCHEMAS = ("account", "activity")
+SCHEMAS = ("account", "lead")
 
 
 class _AdminSettings(ServiceSettings):
@@ -148,7 +148,7 @@ class TestEdgeRelayAgainstRealSchemas:
         monkeypatch.setattr("platform_core.events.aio_pika.connect_robust", _fake_connect_robust)
 
         settings = EdgeRelaySettings(
-            edge_relay_schemas="account,activity:Activity-Service",
+            edge_relay_schemas="account,lead:Lead-Service",
             edge_relay_poll_interval_seconds=0.05,
             edge_relay_max_idle_interval_seconds=0.1,
         )
@@ -171,9 +171,9 @@ class TestEdgeRelayAgainstRealSchemas:
         by_schema = {entry["payload"]["schema"]: entry for entry in _ours(published, org_id)}
         assert set(by_schema) == set(SCHEMAS)
         assert by_schema["account"]["producer"] == "account"
-        assert by_schema["activity"]["producer"] == "Activity-Service"
+        assert by_schema["lead"]["producer"] == "Lead-Service"
         assert by_schema["account"]["organization_id"] == str(org_id)
-        assert by_schema["activity"]["organization_id"] == str(org_id)
+        assert by_schema["lead"]["organization_id"] == str(org_id)
 
     async def test_a_schema_with_no_migrated_outbox_table_does_not_block_the_others(
         self, admin_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch

@@ -113,6 +113,30 @@ queue nothing consumes, so `contacts.last_activity_at` has been silently stale s
 shipped. This slice adds `customer-worker` (`./bin/worker`, i.e. `python -m app.consumers`) to
 the `crm` profile and to `memory-budget.json`.
 
+## Known limitations (recorded during security review, not fixed here)
+
+- **`customer.contacts.email` stays plaintext.** `lead.leads.email` is sealed, masked and
+  blind-indexed (a lead is unvetted, self-reported intake); once a lead converts, its email
+  reaches `customer.contacts.email` as plaintext business contact data, matching every other
+  contact created directly through `POST /contacts`. This is a deliberate downgrade in
+  protection at the moment of conversion, not an oversight — `customer`'s own model docstring
+  already records the reasoning ("work email stays plaintext: it is business contact data the
+  book exists to show, not personal PII"). Sealing a contact's email end-to-end is a `customer`
+  schema change out of scope for this slice; noted here because conversion is the one path
+  that visibly narrows a field's protection, and the next person touching this deserves the
+  explicit callout rather than finding it by diffing columns.
+- **The PII blind-index key is platform-wide, not per-tenant.** `platform_core.pii.blind_index`
+  derives its key from the single `PII_ENCRYPTION_KEY` passphrase every service shares — the
+  same key that already seals and indexes `customer.contacts.phone_index`. A blind index leaks
+  *equality* by design (`platform_core/pii.py`'s own docstring says as much for phone), and
+  because the key is not scoped per organization, two different tenants sealing the same email
+  or phone number produce the same index value — indistinguishable from either tenant's own
+  point of view (RLS still isolates the rows), but a break of the shared key exposes every
+  tenant's equality graph at once rather than one. This is an existing platform-wide property
+  `lead`'s email index inherits, not something introduced by this slice; a per-tenant HKDF
+  salt on top of the shared passphrase would close it and is a `platform_core.pii` change, not
+  a `lead` one.
+
 ## Consequences
 
 - The `crm` product now has three contributing processes (`customer`, `deal`, `lead`) instead of

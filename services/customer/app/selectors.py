@@ -61,6 +61,41 @@ async def get_owner_by_email(session: AsyncSession, org_id: uuid.UUID, email: st
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_owner_for_update(
+    session: AsyncSession, org_id: uuid.UUID, owner_id: uuid.UUID
+) -> Owner | None:
+    """The same fetch as `get_owner`, row-locked for the rest of this transaction.
+
+    `deactivate_owner` and `_assert_owner_assignable` both read-then-write this row (check
+    `is_active`/open-record count, then flip a flag or use the id elsewhere in the same
+    transaction) — without the lock, two concurrent requests against the same owner race: one
+    deactivating while the other assigns them a new company both read a stale `is_active` and
+    neither one's check ever sees the other's write.
+    """
+    stmt = (
+        select(Owner)
+        .where(Owner.id == owner_id, Owner.organization_id == org_id, Owner.deleted_at.is_(None))
+        .with_for_update()
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def active_owner_ids(
+    session: AsyncSession, org_id: uuid.UUID, owner_ids: list[uuid.UUID]
+) -> set[uuid.UUID]:
+    """Which of `owner_ids` resolve to an active rep in this organization — one query, not
+    N, for `owners:validate`'s batch check."""
+    if not owner_ids:
+        return set()
+    stmt = select(Owner.id).where(
+        Owner.organization_id == org_id,
+        Owner.id.in_(owner_ids),
+        Owner.is_active.is_(True),
+        Owner.deleted_at.is_(None),
+    )
+    return set((await session.execute(stmt)).scalars().all())
+
+
 async def count_open_records_for_owner(
     session: AsyncSession, org_id: uuid.UUID, owner_id: uuid.UUID
 ) -> int:
@@ -138,6 +173,17 @@ async def get_company(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_company_by_id_any_state(
+    session: AsyncSession, org_id: uuid.UUID, company_id: uuid.UUID
+) -> Company | None:
+    """Org-scoped fetch by id, soft-deleted or not — for an idempotency check that must
+    recognise "this id was already used" even after the row it named was deleted, rather than
+    attempting a second `INSERT` with a primary key Postgres already holds
+    (`ensure_company_and_contact_for_lead`)."""
+    stmt = select(Company).where(Company.id == company_id, Company.organization_id == org_id)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def count_contacts_for_company(
     session: AsyncSession, org_id: uuid.UUID, company_id: uuid.UUID
 ) -> int:
@@ -158,8 +204,10 @@ async def count_contacts_for_company(
 async def get_company_by_name(
     session: AsyncSession, org_id: uuid.UUID, name: str
 ) -> Company | None:
+    """Case-insensitive: "Acme Ltd" and "ACME LTD" name the same account, matching the
+    case-insensitive unique index (`uq_companies_org_name_ci`) this selector backs."""
     stmt = select(Company).where(
-        Company.name == name,
+        func.lower(Company.name) == name.lower(),
         Company.organization_id == org_id,
         Company.deleted_at.is_(None),
     )
@@ -211,6 +259,15 @@ async def get_contact(
         Contact.organization_id == org_id,
         Contact.deleted_at.is_(None),
     )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_contact_by_id_any_state(
+    session: AsyncSession, org_id: uuid.UUID, contact_id: uuid.UUID
+) -> Contact | None:
+    """Same reasoning as `get_company_by_id_any_state`, for the contact half of the same
+    idempotency check."""
+    stmt = select(Contact).where(Contact.id == contact_id, Contact.organization_id == org_id)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
