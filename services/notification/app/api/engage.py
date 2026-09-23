@@ -18,10 +18,12 @@ is the SMTP handshake in `services._transport_for_connection`.
 
 from __future__ import annotations
 
+import html
 import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
@@ -74,6 +76,7 @@ from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.db import get_session, get_tenant_session, set_tenant
 from platform_core.errors import NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
+from platform_core.pii import mask as mask_pii
 
 router = APIRouter(tags=["engage"])
 
@@ -1056,17 +1059,117 @@ async def campaign_recipients(
 #: and this one cannot be — the token is the whole of its authority. It never uses
 #: `get_tenant_session` (there is no caller organization); it opens the transaction itself and
 #: binds the GUC to the organization the *verified token* names, before touching a tenant table.
+#:
+#: **The GET is a confirmation page, not an action.** A mail scanner or link-preview bot that
+#: prefetches every URL in a message body used to unsubscribe the recipient on GET alone — a
+#: request nobody clicked. GET now only ever renders HTML and never opens a write transaction;
+#: the only route that touches `suppressions` is the POST below, reached either by a human
+#: submitting the confirmation page's form or by a mailbox provider's RFC 8058 one-click POST.
+#: Both are the same request — the response is simply rendered for whichever one asked, by
+#: `Accept`: a browser navigating a form submit sends `Accept: text/html`, a one-click POST
+#: does not, so it gets exactly the JSON body it always has.
 public_router = APIRouter(tags=["engage-public"])
 
 PlainSessionDep = Annotated[AsyncSession, Depends(get_session)]
 
+#: No search engine has any business indexing a recipient-specific, single-use link.
+_NOINDEX = {"X-Robots-Tag": "noindex"}
 
-async def _unsubscribe(token: str, session: AsyncSession, request: Request) -> UnsubscribeOut:
+
+def _page(title: str, body: str) -> str:
+    """The one template every page on this router renders from — plain HTML, no external
+    assets (no stylesheet, script or font to fetch), so nothing here ever depends on a CDN
+    being reachable from a recipient's mail client."""
+    return (
+        "<!doctype html>\n"
+        '<html lang="en">\n'
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        f"<title>{html.escape(title)}</title>\n"
+        "</head>\n"
+        "<body>\n"
+        f"<main>\n{body}\n</main>\n"
+        "</body>\n</html>\n"
+    )
+
+
+def _invalid_page() -> str:
+    return _page(
+        "Unsubscribe link not valid",
+        "<h1>This unsubscribe link is not valid</h1>"
+        "<p>It may have expired or been used already. If you no longer wish to receive "
+        "these emails, please contact the sender directly.</p>",
+    )
+
+
+def _confirm_page(masked_email: str) -> str:
+    safe = html.escape(masked_email)
+    return _page(
+        "Unsubscribe",
+        "<h1>Unsubscribe from future emails?</h1>"
+        f"<p>This stops email to <strong>{safe}</strong> from this sender.</p>"
+        '<form method="post">'
+        '<button type="submit">Unsubscribe me</button>'
+        "</form>",
+    )
+
+
+def _done_page(masked_email: str) -> str:
+    safe = html.escape(masked_email)
+    return _page(
+        "Unsubscribed",
+        "<h1>You're unsubscribed</h1>"
+        f"<p><strong>{safe}</strong> will no longer receive email from this sender.</p>",
+    )
+
+
+def _html(body: str, *, status_code: int = status.HTTP_200_OK) -> HTMLResponse:
+    return HTMLResponse(body, status_code=status_code, headers=_NOINDEX)
+
+
+def _wants_html(request: Request) -> bool:
+    """A browser navigating a form submit sends `Accept: text/html, ...`; an RFC 8058
+    one-click POST from a mailbox provider does not (it wants and gets the JSON body this
+    endpoint has always returned). Content negotiation, not a hidden field or a second
+    endpoint, is what tells the two apart."""
+    return "text/html" in request.headers.get("accept", "").lower()
+
+
+def _verify(token: str) -> tuple[uuid.UUID, str] | None:
     key = services.unsubscribe_key()
-    verified = verify_unsubscribe_token(token, key) if key is not None else None
+    return verify_unsubscribe_token(token, key) if key is not None else None
+
+
+@public_router.get(
+    "/engage/unsubscribe/{token}",
+    response_class=HTMLResponse,
+    summary="A confirmation page for the address a signed link names (no sign-in, no side effects)",
+)
+async def unsubscribe_confirm(token: str) -> HTMLResponse:
+    """Renders a page and nothing else. `GET` must be safe to prefetch — this reads no row and
+    opens no transaction, so a scanner fetching every link in a message body cannot unsubscribe
+    anyone by doing so."""
+    verified = _verify(token)
     if verified is None:
-        # Same answer for malformed, forged, and "unsubscribe is not configured": none of them
+        # Same page for malformed, forged, and "unsubscribe is not configured": none of them
         # may learn anything, and none of them touches a row.
+        return _html(_invalid_page(), status_code=status.HTTP_404_NOT_FOUND)
+    _organization_id, email = verified
+    return _html(_confirm_page(mask_pii(email, kind="email")))
+
+
+@public_router.post(
+    "/engage/unsubscribe/{token}",
+    response_model=UnsubscribeOut,
+    summary="Unsubscribe the address a signed link names — the confirmation form's submit, "
+    "and RFC 8058 one-click unsubscribe, both land here",
+)
+async def unsubscribe_via_link(token: str, session: PlainSessionDep, request: Request) -> Response:
+    verified = _verify(token)
+    if verified is None:
+        if _wants_html(request):
+            return _html(_invalid_page(), status_code=status.HTTP_404_NOT_FOUND)
         raise NotFoundProblem("This unsubscribe link is not valid")
     organization_id, email = verified
     async with session.begin():
@@ -1074,26 +1177,6 @@ async def _unsubscribe(token: str, session: AsyncSession, request: Request) -> U
         await services.unsubscribe(
             session, organization_id=organization_id, email=email, request=request
         )
-    return UnsubscribeOut(unsubscribed=True)
-
-
-@public_router.get(
-    "/engage/unsubscribe/{token}",
-    response_model=UnsubscribeOut,
-    summary="Unsubscribe the address a signed link names (no sign-in)",
-)
-async def unsubscribe_via_link(
-    token: str, session: PlainSessionDep, request: Request
-) -> UnsubscribeOut:
-    return await _unsubscribe(token, session, request)
-
-
-@public_router.post(
-    "/engage/unsubscribe/{token}",
-    response_model=UnsubscribeOut,
-    summary="One-click unsubscribe (RFC 8058) for the address a signed link names",
-)
-async def unsubscribe_one_click(
-    token: str, session: PlainSessionDep, request: Request
-) -> UnsubscribeOut:
-    return await _unsubscribe(token, session, request)
+    if _wants_html(request):
+        return _html(_done_page(mask_pii(email, kind="email")))
+    return JSONResponse(UnsubscribeOut(unsubscribed=True).model_dump())

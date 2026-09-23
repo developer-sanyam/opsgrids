@@ -59,6 +59,11 @@ dev = [
     "pip-licenses>=5.5.5",
     "detect-secrets>=1.5.0",
     "import-linter>=2.13",
+    # Validates an event's payload against the JSON Schema its `schema_uri` names
+    # (`platform_core.events.validate_event_schema`, `libs/contracts/events/`). Dev/test-time
+    # only — no runtime code path seals or opens an event through this, so it costs services
+    # nothing in production.
+    "jsonschema>=4.23",
 ]
 
 [tool.uv.workspace]
@@ -135,8 +140,18 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 # boto3/botocore ship no type information of their own; the generated stub packages are a
 # large install for the three calls `services/document/app/storage.py` makes, and that module
-# is the only place in the platform that imports them.
-module = ["geoalchemy2.*", "razorpay.*", "authlib.*", "argon2.*", "boto3.*", "botocore.*"]
+# is the only place in the platform that imports them. jsonschema ships no `py.typed` marker
+# either; `platform_core.events.validate_event_schema` is its only caller, and that call is
+# dev/test-time only (see its docstring).
+module = [
+    "geoalchemy2.*",
+    "razorpay.*",
+    "authlib.*",
+    "argon2.*",
+    "boto3.*",
+    "botocore.*",
+    "jsonschema.*",
+]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------- pytest

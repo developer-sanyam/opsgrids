@@ -351,8 +351,12 @@ openapi-check: ## Fail if a committed OpenAPI document or permission manifest is
 	uv run python tools/export_openapi.py --check
 	uv run python tools/export_permissions.py --check
 
+.PHONY: contracts-check
+contracts-check: ## Every event schema is valid and covers what its service actually emits
+	uv run pytest libs/contracts -q
+
 .PHONY: gate
-gate: check audit licenses secrets hygiene boundaries openapi-check migration-roundtrip smoke ## The whole quality gate — everything CI runs
+gate: check audit licenses secrets hygiene boundaries openapi-check contracts-check migration-roundtrip smoke ## The whole quality gate — everything CI runs
 
 # ---------------------------------------------------------------- the edge (ADR-0012)
 # One Linux VM, Docker Compose and Caddy. Deploys are `ssh` from a laptop with the engineer's

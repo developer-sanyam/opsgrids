@@ -2129,7 +2129,14 @@ async def delete_contact(
     request: Request | None = None,
 ) -> None:
     """Deletes the row outright. A suppression for the same address is untouched: removing
-    someone from the audience must never make them mailable again on re-import."""
+    someone from the audience must never make them mailable again on re-import.
+
+    A campaign's own record of having mailed this contact is not untouched, though: it is
+    erased, in the same transaction, by `erase_contact_campaign_copies` below. `campaigns` keeps
+    the contact's sealed address as a snapshot of who a send went to (see `CampaignRecipient`'s
+    docstring) and a contact deletion is exactly the request whose honest answer is that the
+    address is gone — everywhere, not just from `contacts`.
+    """
     contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
     if contact is None:
         raise NotFoundProblem("No such contact")
@@ -2146,6 +2153,84 @@ async def delete_contact(
     )
     await session.delete(contact)
     await session.flush()
+    await erase_contact_campaign_copies(
+        session,
+        organization_id=ctx.organization_id,
+        contact_id=contact_id,
+        actor_id=ctx.principal.sub,
+        request=request,
+    )
+
+
+#: What `erase_contact_campaign_copies` re-seals `email_enc` over — never the real address again.
+_ERASED_PLACEHOLDER = "erased contact"
+#: What it writes to `email_masked` — a hint that says plainly what happened, rather than
+#: `pii.mask`'s generic bullets-plus-tail over the placeholder above, which would read as a
+#: broken mask rather than as "this address was erased" to whoever looks at the recipient list.
+_ERASED_MASK = "(erased)"
+
+
+async def erase_contact_campaign_copies(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    contact_id: uuid.UUID,
+    actor_id: uuid.UUID | None = None,
+    request: Request | None = None,
+) -> int:
+    """Crypto-shred a contact's sealed address in every `campaign_recipients` row it was ever
+    copied into, in this organization. Returns how many rows were erased.
+
+    Called from `delete_contact`, in the same transaction as the contact's own deletion — but
+    takes an `organization_id` and a `contact_id` rather than a `ScopeContext` so a future
+    cross-service erasure event can call it the same way `unsubscribe` already handles a
+    suppression with no principal of its own (there is no generic erasure event on this platform
+    yet; `grep -rn erasure services libs` finds none, so this is the one path that exists today).
+
+    Matched on `contact_id` rather than the blind index: `CampaignRecipient.contact_id` is a
+    plain, FK-less column copied at expansion for exactly this reason — it names *this* contact
+    even after the `contacts` row is gone, where the blind index would also catch a different,
+    later contact re-imported under the same address. `email_enc` is re-sealed over a placeholder
+    instead of nulled or zeroed, so the column stays `NOT NULL` and valid ciphertext for the one
+    caller that ever opens it (`claim_campaign_batch`, which checks `erased_at` first and never
+    actually does); the original address is unrecoverable the moment this commits. Rows already
+    erased are skipped, so a repeat call (a second deletion attempt, a redelivered erasure event)
+    is a no-op.
+    """
+    sealed, _masked = pii.seal(_ERASED_PLACEHOLDER, kind="generic", settings=settings())
+    # `session.execute` is typed to return the generic `Result`, but an UPDATE statement always
+    # produces a `CursorResult` at runtime — which is what actually carries `rowcount`.
+    result = cast(
+        "CursorResult[Any]",
+        await session.execute(
+            update(CampaignRecipient)
+            .where(
+                CampaignRecipient.organization_id == organization_id,
+                CampaignRecipient.contact_id == contact_id,
+                CampaignRecipient.erased_at.is_(None),
+            )
+            .values(
+                email_enc=sealed,
+                email_masked=_ERASED_MASK,
+                email_index="",
+                erased_at=datetime.now(UTC),
+            )
+        ),
+    )
+    erased = result.rowcount or 0
+    if erased:
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=organization_id,
+            actor_id=actor_id,
+            action="engage.campaign_recipient.erased",
+            entity="contact",
+            entity_id=contact_id,
+            after={"rows_erased": erased},
+            request=request,
+        )
+    return erased
 
 
 async def import_contacts(
@@ -3170,6 +3255,13 @@ async def claim_campaign_batch(
     for recipient in claimed:
         if recipient.email_index in suppressed:
             resolved.append((recipient.id, "suppressed", ""))
+            continue
+        if recipient.erased_at is not None:
+            # The contact was deleted or erased after this row was queued. `email_enc` no
+            # longer holds a real address (see `erase_contact_campaign_copies`), so this is
+            # checked before `pii.open_sealed` rather than left to the `except` below — the
+            # same outcome either way, but a clear reason instead of a decrypt failure.
+            resolved.append((recipient.id, "failed", "This recipient's address was erased"))
             continue
         try:
             address = pii.open_sealed(recipient.email_enc, settings=cfg)

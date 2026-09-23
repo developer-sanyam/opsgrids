@@ -4666,7 +4666,8 @@
     },
     "/api/v1/engage/unsubscribe/{token}": {
       "get": {
-        "operationId": "unsubscribe_via_link_api_v1_engage_unsubscribe__token__get",
+        "description": "Renders a page and nothing else. `GET` must be safe to prefetch \u2014 this reads no row and\nopens no transaction, so a scanner fetching every link in a message body cannot unsubscribe\nanyone by doing so.",
+        "operationId": "unsubscribe_confirm_api_v1_engage_unsubscribe__token__get",
         "parameters": [
           {
             "in": "path",
@@ -4681,9 +4682,9 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": {
+              "text/html": {
                 "schema": {
-                  "$ref": "#/components/schemas/UnsubscribeOut"
+                  "type": "string"
                 }
               }
             },
@@ -4700,13 +4701,13 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Unsubscribe the address a signed link names (no sign-in)",
+        "summary": "A confirmation page for the address a signed link names (no sign-in, no side effects)",
         "tags": [
           "engage-public"
         ]
       },
       "post": {
-        "operationId": "unsubscribe_one_click_api_v1_engage_unsubscribe__token__post",
+        "operationId": "unsubscribe_via_link_api_v1_engage_unsubscribe__token__post",
         "parameters": [
           {
             "in": "path",
@@ -4740,7 +4741,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "One-click unsubscribe (RFC 8058) for the address a signed link names",
+        "summary": "Unsubscribe the address a signed link names \u2014 the confirmation form's submit, and RFC 8058 one-click unsubscribe, both land here",
         "tags": [
           "engage-public"
         ]

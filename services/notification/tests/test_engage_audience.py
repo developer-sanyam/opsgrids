@@ -184,7 +184,7 @@ async def test_manual_suppression_add_list_remove(client, org_id):
 
 async def test_only_manual_suppressions_can_be_removed(client, org_id):
     token = services.unsubscribe_token(org_id, "left@example.com")
-    assert (await client.get(f"{UNSUBSCRIBE}/{token}")).status_code == 200
+    assert (await client.post(f"{UNSUBSCRIBE}/{token}")).status_code == 200
     with as_principal(caller(org_id, ALL)):
         row = (await client.get(SUPPRESSIONS)).json()["items"][0]
         assert row["reason"] == "unsubscribed"
@@ -197,20 +197,52 @@ async def test_only_manual_suppressions_can_be_removed(client, org_id):
 # --------------------------------------------------------------------- unsubscribe
 
 
-async def test_unsubscribe_link_suppresses_once_and_audits(client, session, org_id):
+async def test_get_renders_a_confirmation_page_without_changing_state(client, session, org_id):
+    """The link-preview-bot case: prefetching the GET must never unsubscribe anyone."""
     token = services.unsubscribe_token(org_id, "Reader@Example.com")
-    first = await client.get(f"{UNSUBSCRIBE}/{token}")
-    assert first.status_code == 200, first.text
-    assert first.json() == {"unsubscribed": True}
-    # One-click POST and a repeat GET are the same single row.
-    assert (await client.post(f"{UNSUBSCRIBE}/{token}")).status_code == 200
-    assert (await client.get(f"{UNSUBSCRIBE}/{token}")).status_code == 200
+    page = await client.get(f"{UNSUBSCRIBE}/{token}")
+    assert page.status_code == 200, page.text
+    assert page.headers["content-type"].startswith("text/html")
+    assert page.headers["x-robots-tag"] == "noindex"
+    assert "<form" in page.text and 'method="post"' in page.text
+    # The masked address may appear as a courtesy; the raw one never does.
+    assert "reader@example.com" not in page.text.lower()
+
+    assert await _count(session, models.Suppression) == 0
+    assert await _count(session, models.AuditLog) == 0
+
+    # Fetching it any number of times is still just a page.
+    await client.get(f"{UNSUBSCRIBE}/{token}")
+    assert await _count(session, models.Suppression) == 0
+
+
+async def test_form_post_unsubscribes_and_renders_a_result_page(client, session, org_id):
+    token = services.unsubscribe_token(org_id, "Reader@Example.com")
+    response = await client.post(
+        f"{UNSUBSCRIBE}/{token}", headers={"Accept": "text/html,application/xhtml+xml"}
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["x-robots-tag"] == "noindex"
+    assert "unsubscribed" in response.text.lower()
+    assert "reader@example.com" not in response.text.lower()
 
     async with session.begin():
         rows = list((await session.execute(select(models.Suppression))).scalars())
         assert len(rows) == 1
         assert rows[0].reason == "unsubscribed"
         assert rows[0].organization_id == org_id
+
+
+async def test_one_click_post_unsubscribes_with_the_json_body_unchanged(client, session, org_id):
+    """RFC 8058: a mailbox provider's one-click POST gets exactly what it always has."""
+    token = services.unsubscribe_token(org_id, "Reader@Example.com")
+    first = await client.post(f"{UNSUBSCRIBE}/{token}")
+    assert first.status_code == 200, first.text
+    assert first.json() == {"unsubscribed": True}
+    assert first.headers["content-type"].startswith("application/json")
+
+    async with session.begin():
         audits = list(
             (
                 await session.execute(
@@ -222,6 +254,31 @@ async def test_unsubscribe_link_suppresses_once_and_audits(client, session, org_
         )
         assert len(audits) == 1
         assert audits[0].actor_id is None
+
+
+async def test_repeat_unsubscribe_is_idempotent_across_get_form_and_one_click(
+    client, session, org_id
+):
+    token = services.unsubscribe_token(org_id, "Reader@Example.com")
+    # A prefetch, a one-click POST, and a form POST, in that order — none of it writes twice.
+    assert (await client.get(f"{UNSUBSCRIBE}/{token}")).status_code == 200
+    assert (await client.post(f"{UNSUBSCRIBE}/{token}")).status_code == 200
+    form = await client.post(f"{UNSUBSCRIBE}/{token}", headers={"Accept": "text/html"})
+    assert form.status_code == 200
+    assert (await client.get(f"{UNSUBSCRIBE}/{token}")).status_code == 200
+
+    assert await _count(session, models.Suppression) == 1
+    async with session.begin():
+        audits = list(
+            (
+                await session.execute(
+                    select(models.AuditLog).where(
+                        models.AuditLog.action == "engage.suppression.unsubscribed"
+                    )
+                )
+            ).scalars()
+        )
+        assert len(audits) == 1
 
 
 def _tamper(token: str) -> str:
@@ -251,9 +308,18 @@ async def test_bad_or_forged_unsubscribe_token_is_refused_without_side_effects(
 ):
     token = make_token(org_id)
     path = f"{UNSUBSCRIBE}/{token}" if token else f"{UNSUBSCRIBE}/x"
-    for method in (client.get, client.post):
-        response = await method(path)
-        assert response.status_code == 404
+    get_response = await client.get(path)
+    assert get_response.status_code == 404
+    assert get_response.headers["content-type"].startswith("text/html")
+
+    post_response = await client.post(path)
+    assert post_response.status_code == 404
+    assert post_response.headers["content-type"].startswith("application/problem+json")
+
+    html_post_response = await client.post(path, headers={"Accept": "text/html"})
+    assert html_post_response.status_code == 404
+    assert html_post_response.headers["content-type"].startswith("text/html")
+
     assert await _count(session, models.Suppression) == 0
     assert await _count(session, models.AuditLog) == 0
 
@@ -385,7 +451,7 @@ async def test_unsubscribe_binds_the_tenant_from_the_token(client, session, org_
     """The link's organization is the one written to — and a link for another organization
     cannot write into this one, because the GUC is bound to the token's org."""
     token = services.unsubscribe_token(org_id, "mine@example.com")
-    assert (await client.get(f"{UNSUBSCRIBE}/{token}")).status_code == 200
+    assert (await client.post(f"{UNSUBSCRIBE}/{token}")).status_code == 200
     async with session.begin():
         orgs = set((await session.execute(select(models.Suppression.organization_id))).scalars())
     assert orgs == {org_id}

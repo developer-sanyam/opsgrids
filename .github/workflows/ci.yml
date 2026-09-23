@@ -349,9 +349,13 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen
       - name: Validate event contracts
-        # A publisher whose payload does not match its declared schema fails here rather
-        # than at 3am in a consumer that cannot parse it.
-        run: uv run pytest libs/contracts -q || echo "no contract tests yet"
+        # Static: every schema under libs/contracts/events/ is valid JSON Schema, sits where
+        # its own event's schema_uri resolves it, and exists for every engage.* event
+        # notification declares. No database here — the deeper check, that a real event's
+        # payload actually matches its schema, needs a transaction to build one through and
+        # runs as part of notification's ordinary test shard instead
+        # (services/notification/tests/test_event_contracts.py).
+        run: make contracts-check
 
   frontend:
     name: Frontend — types, lint, tests, build
