@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Category, Page, Product, StoreResponse } from "@/api/types";
+import type { Brand } from "@/theme/schema";
 import { adoptTheme } from "@/theme/store";
 import { THEMES } from "@/theme/themes";
 
@@ -14,12 +15,16 @@ import { EditorPage } from "./index";
  * definitions and the real renderer compose into an editor without anything throwing.
  */
 
+const BRAND: Brand = { name: "Verma Traders", tagline: "Since 1994", logoText: "VT" };
+
 const getStore = vi.fn<() => Promise<StoreResponse>>();
+const getStoreBrand = vi.fn<(themeKey: string) => Promise<Brand>>();
 const listProducts = vi.fn<() => Promise<Page<Product>>>();
 const listCategories = vi.fn<() => Promise<Category[]>>();
 
 vi.mock("@/api/client", () => ({
   getStore: () => getStore(),
+  getStoreBrand: (themeKey: string) => getStoreBrand(themeKey),
   listProducts: () => listProducts(),
   listCategories: () => listCategories(),
   saveStore: vi.fn(async (doc: unknown) => doc),
@@ -28,12 +33,13 @@ vi.mock("@/api/client", () => ({
 function shipped() {
   const theme = THEMES[0];
   if (!theme) throw new Error("The theme library is empty");
-  return adoptTheme(theme, { name: "Verma Traders", tagline: "Since 1994", logoText: "VT" });
+  return adoptTheme(theme);
 }
 
 beforeEach(() => {
   listProducts.mockResolvedValue({ items: [], total: 0 });
   listCategories.mockResolvedValue([]);
+  getStoreBrand.mockResolvedValue(BRAND);
 });
 
 function renderPage() {

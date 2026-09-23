@@ -18,11 +18,14 @@ import { adoptTheme, navPlacement, pagesInNav } from "../store";
 import { foundry, suggestedBrand, THEMES } from "../themes";
 import { StoreRenderer } from "./StoreRenderer";
 
+const BRAND = suggestedBrand(foundry.key);
+
 function renderStore(store: StoreDoc, route = "/") {
   return render(
     <MemoryRouter initialEntries={["/store"]}>
       <StoreRenderer
         store={store}
+        brand={BRAND}
         route={route}
         products={PRODUCTS}
         categories={CATEGORY_LIST}
@@ -33,7 +36,7 @@ function renderStore(store: StoreDoc, route = "/") {
 }
 
 function base(): StoreDoc {
-  return adoptTheme(foundry, suggestedBrand(foundry.key));
+  return adoptTheme(foundry);
 }
 
 /** The same store with one extra page, placed. */
@@ -66,7 +69,7 @@ describe.each(THEMES.map((theme) => [theme.key, theme] as const))(
   "the %s theme, which says nothing about navigation",
   (_key, theme) => {
     it("puts every page it ships in the top bar, exactly as it did before the field existed", () => {
-      const store = adoptTheme(theme, suggestedBrand(theme.key));
+      const store = adoptTheme(theme);
       expect(store.pages.every((page) => page.nav === undefined)).toBe(true);
       expect(pagesInNav(store, "primary")).toHaveLength(store.pages.length);
       expect(pagesInNav(store, "footer")).toHaveLength(0);

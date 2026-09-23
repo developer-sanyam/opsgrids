@@ -44,7 +44,6 @@ function store(): StoreDoc {
   return {
     themeKey: "depot",
     mode: "trade",
-    brand: { name: "Verma Traders", tagline: "Since 1994", logoText: "VT" },
     tokens: {
       colorBg: "#ffffff",
       colorSurface: "#f6f6f6",
@@ -177,7 +176,7 @@ describe("removing, duplicating and page order", () => {
   });
 });
 
-describe("settings, tokens and brand", () => {
+describe("settings and tokens", () => {
   const base = run(initEditor(store()), { type: "add-section", def: HERO, id: "a" });
 
   it("writes a setting without disturbing the others", () => {
@@ -201,14 +200,9 @@ describe("settings, tokens and brand", () => {
     expect(sections(editorReducer(state, { type: "undo" }))[0]?.settings["heading"]).toBe("Hello");
   });
 
-  it("edits a token and a brand field", () => {
-    const state = run(
-      base,
-      { type: "set-token", key: "colorAccent", value: "#000000" },
-      { type: "set-brand", key: "name", value: "Verma & Sons" },
-    );
+  it("edits a token", () => {
+    const state = run(base, { type: "set-token", key: "colorAccent", value: "#000000" });
     expect(state.present.tokens.colorAccent).toBe("#000000");
-    expect(state.present.brand.name).toBe("Verma & Sons");
   });
 });
 

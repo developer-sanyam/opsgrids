@@ -3,7 +3,7 @@ import { NavLink } from "react-router-dom";
 import type { Category, Product } from "@/api/types";
 import { LineListProvider } from "@/store/LineListProvider";
 import { STACK_WIDTH } from "../schema";
-import type { PageDoc, StoreDoc } from "../schema";
+import type { Brand, PageDoc, StoreDoc } from "../schema";
 import { pageForRoute, pagesInNav, resolveMode } from "../store";
 import { DEFAULT_STORE_BASE, storeHref } from "./href";
 import { contentColumnStyle } from "./pageGrid";
@@ -14,6 +14,9 @@ import { T, step } from "./tokens";
 
 export interface StoreRendererProps {
   store: StoreDoc;
+  /** The store's name, tagline and header wordmark — resolved from the store's own identity, not
+   *  part of the theme document (ADR-0011 §2). Unused when `showChrome` is false. */
+  brand: Brand;
   /** The `PageDoc.route` to render — `"/"`, `"/catalogue"`, … */
   route: string;
   products: Product[];
@@ -110,6 +113,7 @@ function ChromeNav({
  */
 export function StoreRenderer({
   store,
+  brand,
   route,
   products,
   categories,
@@ -200,14 +204,14 @@ export function StoreRenderer({
                       fontSize: "0.875rem",
                     }}
                   >
-                    {store.brand.logoText.slice(0, 3).toUpperCase()}
+                    {brand.logoText.slice(0, 3).toUpperCase()}
                   </span>
                   <span style={{ display: "flex", flexDirection: "column", lineHeight: 1.2, minWidth: 0 }}>
                     <span style={{ fontFamily: T.fontHeading, fontWeight: 800, fontSize: "1.0625rem", color: T.text }}>
-                      {store.brand.name}
+                      {brand.name}
                     </span>
                     <span style={{ fontFamily: T.fontBody, fontSize: "0.75rem", color: T.muted }}>
-                      {store.brand.tagline}
+                      {brand.tagline}
                     </span>
                   </span>
                 </div>
@@ -249,7 +253,7 @@ export function StoreRenderer({
               >
                 <ChromeNav pages={footerPages} basePath={basePath} label="More" tone="footer" />
                 <StoreText muted small>
-                  {store.brand.name} · {store.brand.tagline}
+                  {brand.name} · {brand.tagline}
                 </StoreText>
               </footer>
             </div>
