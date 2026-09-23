@@ -95,6 +95,7 @@ const ORG_SEEDS: OrgSeed[] = [
     subscriptions: [
       { product_key: "procure", plan_version_id: "pv_procure_scale_v2", plan_name: "Scale", is_bespoke: false, state: "active", seats: 26, created_at: "2025-01-27T00:00:00Z" },
       { product_key: "crm", plan_version_id: "pv_crm_growth_v2", plan_name: "Growth", is_bespoke: false, state: "active", seats: 9, created_at: "2025-11-04T00:00:00Z" },
+      { product_key: "suite", plan_version_id: "pv_suite_duo_v1", plan_name: "Suite Duo", is_bespoke: false, state: "active", seats: 9, created_at: "2026-08-26T00:00:00Z" },
     ],
   },
   {
@@ -314,6 +315,7 @@ export const SUBSCRIPTIONS: Subscription[] = ORG_SEEDS.flatMap((org) =>
       next_renewal_at: nextRenewal,
       cancel_at: seed.state === "cancelled" ? "2026-07-12T00:00:00Z" : null,
       created_at: seed.created_at,
+      entitled_products: planVersionById(seed.plan_version_id)?.bundled_products ?? [seed.product_key],
     };
   }),
 );

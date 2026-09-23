@@ -90,6 +90,7 @@ export function ProductCarousel({ settings, products, stacked, width, mode }: Se
         <SectionEmpty title="Nothing to show here yet" hint={emptySourceHint(source)} />
       ) : (
         <ul
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a horizontally scrolling region must be reachable by keyboard or its overflow is unreachable without a pointer (axe: scrollable-region-focusable); the aria-label names it when it takes focus.
           tabIndex={0}
           aria-label={heading ? `${heading} — scrollable list` : "Scrollable product list"}
           style={{

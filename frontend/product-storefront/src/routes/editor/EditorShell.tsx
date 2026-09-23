@@ -21,7 +21,7 @@ import { SectionPalette } from "@/editor/SectionPalette";
 import { findDef } from "@/editor/sectionLibrary";
 import { SettingsInspector } from "@/editor/SettingsInspector";
 import { ThemeTokenPanel } from "@/editor/ThemeTokenPanel";
-import type { NavPlacement, SectionDef, StoreDoc } from "@/theme/schema";
+import type { Brand, NavPlacement, SectionDef, StoreDoc } from "@/theme/schema";
 import { resolveMode } from "@/theme/store";
 
 /**
@@ -36,6 +36,9 @@ import { resolveMode } from "@/theme/store";
 
 interface EditorShellProps {
   store: StoreDoc;
+  /** The store's name, tagline and header wordmark — read-only here. It lives on the store's own
+   *  identity (`/settings`), not on the document this shell edits (ADR-0011 §2). */
+  brand: Brand;
   library: SectionDef[];
   products: Product[];
   categories: Category[];
@@ -46,6 +49,7 @@ interface EditorShellProps {
 
 export function EditorShell({
   store,
+  brand,
   library,
   products,
   categories,
@@ -293,7 +297,7 @@ export function EditorShell({
               page={page}
               library={library}
               tokens={state.present.tokens}
-              brand={state.present.brand}
+              brand={brand}
               mode={resolveMode(state.present)}
               products={products}
               categories={categories}
@@ -383,10 +387,9 @@ export function EditorShell({
                 <div className="border-t border-line p-3">
                   <ThemeTokenPanel
                     tokens={state.present.tokens}
-                    brand={state.present.brand}
+                    brand={brand}
                     canEdit={canEdit}
                     onToken={(key, value) => run({ type: "set-token", key, value })}
-                    onBrand={(key, value) => run({ type: "set-brand", key, value })}
                   />
                 </div>
               </details>

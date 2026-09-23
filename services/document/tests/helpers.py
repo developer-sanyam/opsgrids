@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import io
 import uuid
+from datetime import datetime
 
 from PIL import Image
 
 from app.config import Settings
-from app.storage import ObjectStore
+from app.storage import ObjectStore, OrphanScanner
 from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.errors import UpstreamUnavailableProblem
 
@@ -139,5 +140,38 @@ class FakeObjectStore(ObjectStore):
                 "Could not take the image down right now. Please try again."
             )
         # Mirrors S3: deleting a key that is not there is success, not an error.
+        self.objects.pop(key, None)
+        self.deleted.append(key)
+
+
+class FakeOrphanScanner(OrphanScanner):
+    """An `OrphanScanner` that lists and deletes against an in-memory dict rather than a real
+    bucket — the orphan sweep's own `store` analogue, so its discovery and deletion logic can
+    be exercised without `make infra`. `test_storage_minio.py` is where the real,
+    list-capable credential and a genuine `ListObjectsV2` are proven; neither test substitutes
+    for the other, the same split `FakeObjectStore` documents for the write path.
+    """
+
+    def __init__(self, cfg: Settings) -> None:
+        super().__init__(cfg)
+        self.objects: dict[str, tuple[datetime, int]] = {}
+        self.deleted: list[str] = []
+        self.fail_list = False
+        self.fail_delete = False
+
+    def seed(self, key: str, *, last_modified: datetime, size: int = 1024) -> None:
+        self.objects[key] = (last_modified, size)
+
+    def is_configured(self) -> bool:
+        return True
+
+    async def list_objects(self) -> list[tuple[str, datetime, int]]:
+        if self.fail_list:
+            raise UpstreamUnavailableProblem("Could not list the bucket right now.")
+        return [(key, last_modified, size) for key, (last_modified, size) in self.objects.items()]
+
+    async def delete(self, key: str, *, organization_id: uuid.UUID) -> None:
+        if self.fail_delete:
+            raise UpstreamUnavailableProblem("Could not take the image down right now.")
         self.objects.pop(key, None)
         self.deleted.append(key)

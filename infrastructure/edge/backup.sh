@@ -33,12 +33,16 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
-# shellcheck disable=SC1091
 set -a
+# shellcheck disable=SC1091 # .env is the box's own secrets, never in the repo to follow
 . ./.env
 set +a
 
 COMPOSE=(docker compose -f compose.prod.yml --env-file .env)
+# Pinned, never `:latest`: this image holds the bucket credentials for the length of every
+# upload, and a moved tag would change what runs with them at 03:00 with nobody watching. Bump
+# it deliberately, and change RUNBOOK.md's restore drill in the same commit.
+AWS_CLI_IMAGE=amazon/aws-cli:2.36.50
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 dir="${BACKUP_LOCAL_DIR:-/srv/opsgrids/backups}"
 mkdir -p "$dir"
@@ -102,7 +106,7 @@ upload() {
 		-e AWS_SECRET_ACCESS_KEY="$BACKUP_S3_SECRET_ACCESS_KEY" \
 		-e AWS_DEFAULT_REGION="${BACKUP_S3_REGION:-us-east-1}" \
 		-v "$dir:/backup:ro" \
-		amazon/aws-cli:latest s3 cp "/backup/$(basename "$file")" \
+		"$AWS_CLI_IMAGE" s3 cp "/backup/$(basename "$file")" \
 		"s3://$BACKUP_S3_BUCKET/${BACKUP_S3_PREFIX:-edge}/$(basename "$file")" \
 		"${endpoint_arg[@]}" --only-show-errors
 }

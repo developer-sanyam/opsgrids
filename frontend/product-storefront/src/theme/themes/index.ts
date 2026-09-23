@@ -6,7 +6,7 @@
  * therefore changes what *new* stores start from and nothing about stores that already exist.
  */
 
-import type { StoreDoc, Theme } from "../schema";
+import type { Brand, Theme } from "../schema";
 import { atelier } from "./atelier";
 import { carton } from "./carton";
 import { circuit } from "./circuit";
@@ -23,13 +23,14 @@ export function themeByKey(key: string): Theme | null {
 }
 
 /**
- * The brand a theme suggests when it is adopted from the gallery.
+ * The brand a theme suggests when it is adopted from the gallery, before a merchant has set their
+ * own on the store's identity (`/settings`).
  *
  * It lives beside the themes rather than on `Theme`, because a brand is the merchant's and the
- * schema is deliberate about that: a `StoreDoc` carries `brand`, a `Theme` does not. This map is
- * only a first draft the merchant overwrites.
+ * schema is deliberate about that: neither `StoreDoc` nor `Theme` carries one. This map is only a
+ * first draft `resolveBrand`-style callers fall back to until an identity row exists.
  */
-export const SUGGESTED_BRAND: Record<string, StoreDoc["brand"]> = {
+export const SUGGESTED_BRAND: Record<string, Brand> = {
   foundry: {
     name: "Shakti Industrial Supply",
     tagline: "Fasteners, bearings and power transmission since 1994",
@@ -72,7 +73,7 @@ export const SUGGESTED_BRAND: Record<string, StoreDoc["brand"]> = {
   },
 };
 
-export function suggestedBrand(themeKey: string): StoreDoc["brand"] {
+export function suggestedBrand(themeKey: string): Brand {
   return (
     SUGGESTED_BRAND[themeKey] ?? {
       name: "Your company",
