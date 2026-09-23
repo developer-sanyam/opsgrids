@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app import domain, services
@@ -295,7 +296,8 @@ class TestBillSubscriptionPeriod:
         body = r.json()
         assert body["created"] is True
         invoice = body["invoice"]
-        assert invoice["state"] == "finalized"
+        # A draft until subscription has recorded the claim and asks for finalize (round 2, M5).
+        assert invoice["state"] == "draft"
         assert invoice["currency"] == "INR"
         amounts = [line["amount_minor"] for line in invoice["lines"]]
         assert sorted(amounts) == sorted([149900, 7 * 29900, 1251])
@@ -304,7 +306,7 @@ class TestBillSubscriptionPeriod:
         assert metering.asked == [domain.Period(USAGE_START, PERIOD_START)]
 
         events = await _count(admin_session, OutboxEvent, event_type="commerce.invoice.finalized")
-        assert events == 1
+        assert events == 0, "a draft announces nothing — payment cannot charge it"
 
     async def test_asking_twice_returns_the_one_invoice_and_one_event(
         self,
@@ -331,7 +333,7 @@ class TestBillSubscriptionPeriod:
         assert catalog.calls == 1
         assert await _count(admin_session, Invoice) == 1
         assert (
-            await _count(admin_session, OutboxEvent, event_type="commerce.invoice.finalized") == 1
+            await _count(admin_session, OutboxEvent, event_type="commerce.invoice.finalized") == 0
         )
 
     async def test_usage_is_billed_once_even_if_the_period_is_asked_again(
@@ -611,7 +613,7 @@ class TestIsolationAndRaces:
         assert a_id == b_id
         assert await _count(admin_session, Invoice) == 1
         assert (
-            await _count(admin_session, OutboxEvent, event_type="commerce.invoice.finalized") == 1
+            await _count(admin_session, OutboxEvent, event_type="commerce.invoice.finalized") == 0
         )
 
     async def test_the_customer_reads_the_run_invoice(
@@ -621,13 +623,19 @@ class TestIsolationAndRaces:
 
         version, items = _version()
         catalog.versions[version.id] = version
-        await wired.post(
-            "/internal/v1/subscription-invoices",
-            json=_body(org_id, version, items),
-            headers=_headers(),
-        )
+        body = _body(org_id, version, items)
+        made = await wired.post("/internal/v1/subscription-invoices", json=body, headers=_headers())
         app.dependency_overrides[get_principal] = lambda: customer_principal(org_id)
         try:
+            # A draft is not a document the customer owes yet: invisible in the list and by id.
+            assert (await wired.get("/api/v1/invoices")).json() == []
+            draft_id = made.json()["invoice"]["id"]
+            assert (await wired.get(f"/api/v1/invoices/{draft_id}")).status_code == 404
+            await wired.post(
+                "/internal/v1/subscription-invoices:finalize",
+                json=_finalize_body(body),
+                headers=_headers(),
+            )
             mine = await wired.get("/api/v1/invoices")
         finally:
             app.dependency_overrides.pop(get_principal, None)
@@ -836,7 +844,11 @@ class TestVoidByKey:
         async with admin_session.begin():
             state = (await admin_session.execute(select(Invoice.state))).scalar_one()
         assert state == "void"
-        assert await _count(admin_session, OutboxEvent, event_type="commerce.invoice.voided") == 1
+        # A draft is voided silently: nothing downstream ever learned it existed (round 2, M5).
+        assert await _count(admin_session, OutboxEvent, event_type="commerce.invoice.voided") == 0
+        assert (
+            await _count(admin_session, OutboxEvent, event_type="commerce.invoice.finalized") == 0
+        )
 
     async def test_nothing_to_void_says_so(self, wired: AsyncClient, org_id: uuid.UUID) -> None:
         r = await wired.post(
@@ -931,3 +943,138 @@ class TestNumbersAndScoping:
         async with admin_session.begin():
             assert await selectors.get_invoice_by_key(admin_session, org_id, key) is None
             assert await selectors.get_invoice_by_key(admin_session, org_b, key) is not None
+
+
+# ------------------------------------------------------------ round 2: finalize after record
+
+
+def _finalize_body(body: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "organization_id": body["organization_id"],
+        "subscription_id": body["subscription_id"],
+        "kind": body.get("kind", "period"),
+        "period_start": body["period_start"],
+        "change_id": body.get("change_id"),
+        "product_key": body.get("product_key"),
+    }
+
+
+class TestFinalizeAfterRecord:
+    async def test_finalize_freezes_the_draft_and_announces_it_exactly_once(
+        self,
+        wired: AsyncClient,
+        catalog: FakeCatalog,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        version, items = _version()
+        catalog.versions[version.id] = version
+        body = _body(org_id, version, items)
+        await wired.post("/internal/v1/subscription-invoices", json=body, headers=_headers())
+        first = await wired.post(
+            "/internal/v1/subscription-invoices:finalize",
+            json=_finalize_body(body),
+            headers=_headers(),
+        )
+        again = await wired.post(
+            "/internal/v1/subscription-invoices:finalize",
+            json=_finalize_body(body),
+            headers=_headers(),
+        )
+        assert first.status_code == 200, first.text
+        assert first.json()["finalized"] is True
+        assert first.json()["invoice"]["state"] == "finalized"
+        assert first.json()["invoice"]["finalized_at"] is not None
+        assert again.json()["finalized"] is False
+        assert (
+            await _count(admin_session, OutboxEvent, event_type="commerce.invoice.finalized") == 1
+        )
+        # And frozen: the only legal move from here is void.
+        admin_session.expunge_all()
+        with pytest.raises(DBAPIError):
+            async with admin_session.begin():
+                await admin_session.execute(
+                    text("UPDATE billing.invoices SET total_minor = 1 WHERE state = 'finalized'")
+                )
+
+    async def test_a_finalized_run_invoice_voids_with_an_event(
+        self,
+        wired: AsyncClient,
+        catalog: FakeCatalog,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        version, items = _version()
+        catalog.versions[version.id] = version
+        body = _body(org_id, version, items)
+        await wired.post("/internal/v1/subscription-invoices", json=body, headers=_headers())
+        await wired.post(
+            "/internal/v1/subscription-invoices:finalize",
+            json=_finalize_body(body),
+            headers=_headers(),
+        )
+        r = await wired.post(
+            "/internal/v1/subscription-invoices:void",
+            json={**_finalize_body(body), "reason": "superseded period"},
+            headers=_headers(),
+        )
+        assert r.json()["voided"] is True
+        assert await _count(admin_session, OutboxEvent, event_type="commerce.invoice.voided") == 1
+
+    async def test_a_voided_draft_cannot_be_finalized(
+        self, wired: AsyncClient, catalog: FakeCatalog, org_id: uuid.UUID
+    ) -> None:
+        version, items = _version()
+        catalog.versions[version.id] = version
+        body = _body(org_id, version, items)
+        await wired.post("/internal/v1/subscription-invoices", json=body, headers=_headers())
+        await wired.post(
+            "/internal/v1/subscription-invoices:void",
+            json={**_finalize_body(body), "reason": "superseded period"},
+            headers=_headers(),
+        )
+        r = await wired.post(
+            "/internal/v1/subscription-invoices:finalize",
+            json=_finalize_body(body),
+            headers=_headers(),
+        )
+        assert r.status_code == 409
+
+    async def test_finalizing_nothing_is_404_and_only_subscription_may(
+        self, wired: AsyncClient, org_id: uuid.UUID
+    ) -> None:
+        body = {
+            "organization_id": str(org_id),
+            "subscription_id": str(uuid.uuid4()),
+            "kind": "period",
+            "period_start": PERIOD_START.isoformat(),
+        }
+        url = "/internal/v1/subscription-invoices:finalize"
+        assert (await wired.post(url, json=body, headers=_headers())).status_code == 404
+        assert (await wired.post(url, json=body)).status_code == 401
+        assert (
+            await wired.post(url, json=body, headers=_headers(caller="payment"))
+        ).status_code == 403
+
+    async def test_a_proration_that_nets_to_nothing_writes_no_invoice(
+        self,
+        wired: AsyncClient,
+        catalog: FakeCatalog,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        a = CatalogVersion(
+            id=uuid.uuid4(), product_key="hrms", currency="INR", prices=[_price(100000)]
+        )
+        b = CatalogVersion(
+            id=uuid.uuid4(), product_key="hrms", currency="INR", prices=[_price(100000)]
+        )
+        catalog.versions[a.id] = a
+        catalog.versions[b.id] = b
+        body = _proration_body(
+            org_id, b, a, change_id=uuid.uuid4(), effective_at=PERIOD_START + timedelta(days=4)
+        )
+        r = await wired.post("/internal/v1/subscription-invoices", json=body, headers=_headers())
+        assert r.status_code == 200, r.text
+        assert r.json() == {"created": False, "invoice": None}
+        assert await _count(admin_session, Invoice) == 0

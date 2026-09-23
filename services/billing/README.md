@@ -75,8 +75,11 @@ _No events._ The billing run reaches billing over HTTP (above), and billing read
   `POST /subscription-invoices` (the billing run, subscription only — `kind` `period`,
   `proration` for an upgrade's prorated difference keyed on its change, or `close` for the
   usage-only closing period of a cancellation or suspension),
+  `POST /subscription-invoices:finalize` (a run invoice is raised as a **draft** with no event;
+  subscription finalizes it only after recording the claim — this freezes it and stages
+  `commerce.invoice.finalized` exactly once; subscription only),
   `POST /subscription-invoices:void` (void whatever stands under a claim's key — a superseded
-  period; subscription only),
+  period, normally still a draft, voided with no event; subscription only),
   `POST /invoices:finalize`, `POST /invoices/{id}:void`, `POST /credit`,
   `POST /credit:consume`, `POST /credit:reverse`, and
   `GET /organizations/{org}/credit/packs/{pack}` (what is left on one prepaid pack, so a billing

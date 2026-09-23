@@ -34,8 +34,10 @@ from app.schemas import (
     CreditGrantIn,
     CreditPackOut,
     CreditReverseIn,
+    FinalizedPeriodOut,
     FinalizeInvoiceIn,
     InvoiceOut,
+    SubscriptionInvoiceFinalizeIn,
     SubscriptionInvoiceVoidIn,
     SubscriptionInvoiceVoidOut,
     VoidInvoiceIn,
@@ -133,10 +135,34 @@ async def bill_subscription_period(
         settings=settings,
         request=request,
     )
-    body = BilledPeriodOut(created=created, invoice=InvoiceOut.model_validate(invoice))
+    body = BilledPeriodOut(
+        created=created,
+        invoice=InvoiceOut.model_validate(invoice) if invoice is not None else None,
+    )
     if created:
         return body
     return JSONResponse(status_code=status.HTTP_200_OK, content=body.model_dump(mode="json"))
+
+
+@router.post(
+    "/subscription-invoices:finalize",
+    response_model=FinalizedPeriodOut,
+    summary="Finalize the billing run's draft under a claim's key — after subscription recorded it",
+)
+async def finalize_subscription_period(
+    payload: SubscriptionInvoiceFinalizeIn, session: SessionDep, request: Request
+) -> FinalizedPeriodOut:
+    """`draft -> finalized`, staging `commerce.invoice.finalized` exactly once (review round 2,
+    M5). Idempotent on the key; 404 when no draft was ever raised under it, 409 when it was
+    voided. Only subscription may ask."""
+    caller = getattr(request.state, "service_caller", None)
+    if caller not in BILLING_RUN_CALLERS:
+        raise ForbiddenProblem("this service may not finalize billing-run invoices")
+    settings: Settings = request.app.state.settings
+    invoice, finalized = await billing_run.finalize_subscription_period(
+        session, payload, settings=settings, request=request
+    )
+    return FinalizedPeriodOut(finalized=finalized, invoice=InvoiceOut.model_validate(invoice))
 
 
 @router.post(

@@ -19,7 +19,7 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import CreditLedgerEntry, Invoice, TaxRate
+from app.models import INVOICE_DRAFT, CreditLedgerEntry, Invoice, TaxRate
 from platform_core.auth import ScopeContext
 
 
@@ -36,7 +36,11 @@ def _scoped_invoices(ctx: ScopeContext, stmt: Select[tuple[Invoice]]) -> Select[
 async def list_invoices(session: AsyncSession, ctx: ScopeContext) -> list[Invoice]:
     stmt = _scoped_invoices(
         ctx,
-        select(Invoice).options(selectinload(Invoice.lines)).order_by(Invoice.created_at.desc()),
+        select(Invoice)
+        .options(selectinload(Invoice.lines))
+        # A billing-run draft is not a document the customer owes yet (review round 2, M5).
+        .where(Invoice.state != INVOICE_DRAFT)
+        .order_by(Invoice.created_at.desc()),
     )
     return list((await session.execute(stmt)).scalars().all())
 

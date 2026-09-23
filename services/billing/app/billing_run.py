@@ -39,6 +39,7 @@ from app.config import Settings
 from app.models import Invoice
 from app.schemas import (
     BillSubscriptionPeriodIn,
+    SubscriptionInvoiceFinalizeIn,
     SubscriptionInvoiceKeyIn,
     SubscriptionInvoiceVoidIn,
 )
@@ -215,8 +216,9 @@ async def bill_subscription_period(
     metering: Metering,
     settings: Settings,
     request: Request | None = None,
-) -> tuple[Invoice, bool]:
-    """Invoice one billing-run claim, once. Returns `(invoice, created)`.
+) -> tuple[Invoice | None, bool]:
+    """Draft one billing-run claim's invoice, once. Returns `(invoice, created)`; the invoice is
+    None only for a proration that nets to nothing (no zero-line invoice is written).
 
     `session` must arrive with **no transaction open**: this function opens two short ones of its
     own and makes its network calls between them.
@@ -305,6 +307,15 @@ async def bill_subscription_period(
             )
     except domain.PricingError as exc:
         raise BusinessRuleProblem(str(exc)) from exc
+    if payload.kind == "proration" and not lines:
+        # A change that nets to no more money (an equal price, seats that cancel out) is not an
+        # invoice at all — never a zero-line one (review round 2, m8).
+        log.info(
+            "billing_run.proration.nothing",
+            organization_id=str(payload.organization_id),
+            subscription_id=str(payload.subscription_id),
+        )
+        return None, False
 
     # 4. Record — one short transaction, idempotent at the database.
     async with session.begin():
@@ -349,6 +360,26 @@ async def void_subscription_period(
             organization_id=payload.organization_id,
             key=claim_key(payload),
             reason=payload.reason,
+            request=request,
+        )
+
+
+async def finalize_subscription_period(
+    session: AsyncSession,
+    payload: SubscriptionInvoiceFinalizeIn,
+    *,
+    settings: Settings,
+    request: Request | None = None,
+) -> tuple[Invoice, bool]:
+    """Finalize the draft under a claim's key. One short transaction; no network."""
+    async with session.begin():
+        await _bind(session, payload.organization_id, settings)
+        return await services.finalize_subscription_invoice(
+            session,
+            organization_id=payload.organization_id,
+            key=claim_key(payload),
+            product_key=payload.product_key,
+            kind=payload.kind,
             request=request,
         )
 

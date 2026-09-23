@@ -235,6 +235,12 @@ class BillSubscriptionPeriodIn(SubscriptionInvoiceKeyIn):
         return self
 
 
+class SubscriptionInvoiceFinalizeIn(SubscriptionInvoiceKeyIn):
+    """Finalize the run's draft under a claim's key, after subscription recorded the claim."""
+
+    product_key: str | None = Field(default=None, max_length=40)
+
+
 class SubscriptionInvoiceVoidIn(SubscriptionInvoiceKeyIn):
     """Void whatever billing-run invoice stands under a claim's key — the superseded-period fix."""
 
@@ -250,9 +256,17 @@ class SubscriptionInvoiceVoidOut(BaseModel):
 
 
 class BilledPeriodOut(BaseModel):
-    """The invoice for one subscription period, and whether this call created it."""
+    """The draft invoice for one claim, and whether this call created it. `invoice` is null only
+    for a proration that nets to nothing — no zero-line invoice is ever written for one."""
 
     created: bool
+    invoice: InvoiceOut | None = None
+
+
+class FinalizedPeriodOut(BaseModel):
+    """The claim's invoice after finalize, and whether this call finalized it."""
+
+    finalized: bool
     invoice: InvoiceOut
 
 

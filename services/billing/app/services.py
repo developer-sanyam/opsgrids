@@ -34,6 +34,7 @@ from app.models import (
     CREDIT_CONSUME,
     CREDIT_GRANT,
     CREDIT_REVERSAL,
+    INVOICE_DRAFT,
     INVOICE_FINALIZED,
     INVOICE_VOID,
     AuditLog,
@@ -216,7 +217,12 @@ async def record_subscription_invoice(
     kind: str = "period",
     request: Request | None = None,
 ) -> tuple[Invoice, bool]:
-    """Write the billing run's invoice for one claim — once. `(invoice, created)`.
+    """Write the billing run's invoice for one claim, as a **draft** — once. `(invoice, created)`.
+
+    A draft announces nothing: no `commerce.invoice.finalized`, so payment cannot charge it
+    (review round 2, fix M5). Subscription records the claim first and only then asks for
+    `finalize_subscription_invoice`, so a period superseded in between is a draft voided before
+    anyone could act on it. Lines are written now; the draft → finalized move freezes them.
 
     The **record** step of claim → call → record: every price, usage count and tax rate has
     already been read, outside any transaction, and this function only writes. The insert is
@@ -263,12 +269,12 @@ async def record_subscription_invoice(
             organization_id=organization_id,
             subscription_id=subscription_id,
             number=number,
-            state=INVOICE_FINALIZED,
+            state=INVOICE_DRAFT,
             currency=currency,
             total_minor=total.minor,
             period_start=period.start,
             period_end=period.end,
-            finalized_at=now,
+            finalized_at=None,
             idempotency_key=key,
         )
         .on_conflict_do_nothing(
@@ -299,10 +305,59 @@ async def record_subscription_invoice(
     await session.flush()
 
     invoice = await require_invoice(session, invoice_id)
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        action="billing.invoice.drafted",
+        entity="invoice",
+        entity_id=invoice.id,
+        after={
+            "number": invoice.number,
+            "total_minor": invoice.total_minor,
+            "idempotency_key": key,
+            "kind": kind,
+            "product_key": product_key,
+            "created_at": now.isoformat(),
+        },
+        request=request,
+    )
+    await session.flush()
+    return invoice, True
+
+
+async def finalize_subscription_invoice(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    key: str,
+    product_key: str | None,
+    kind: str,
+    request: Request | None = None,
+) -> tuple[Invoice, bool]:
+    """Finalize the billing run's draft under `key` — once. `(invoice, finalized_by_this_call)`.
+
+    `draft -> finalized` freezes the invoice (the freeze trigger refuses everything but a void from
+    here) and stages `commerce.invoice.finalized`, which payment charges. Idempotent: a finalized
+    invoice answers `(invoice, False)` and stages nothing, so a crash between this commit and the
+    run's record of it re-asks and changes nothing. A void invoice is refused — the run voids only
+    a period it has superseded, which it never then finalizes.
+    """
+    invoice = await selectors.get_invoice_by_key(session, organization_id, key)
+    if invoice is None:
+        raise NotFoundProblem("No billing-run invoice under that key")
+    if invoice.state == INVOICE_FINALIZED:
+        return invoice, False
+    if invoice.state == INVOICE_VOID:
+        raise ConflictProblem("that billing-run invoice is void and cannot be finalized")
+    invoice.state = INVOICE_FINALIZED
+    invoice.finalized_at = datetime.now(UTC)
+    await session.flush()
     _stage_finalized(
         session,
         invoice,
-        line_count=len(lines),
+        line_count=len(invoice.lines),
         request=request,
         extra={"product_key": product_key, "source": "billing_run", "kind": kind},
     )
@@ -329,6 +384,25 @@ async def void_subscription_invoice(
     if invoice is None:
         return False, None
     if invoice.state == INVOICE_VOID:
+        return True, invoice.id
+    if invoice.state == INVOICE_DRAFT:
+        # Never announced, so never charged: void it as a state, with an audit row and no event
+        # — nothing downstream ever learned it existed (review round 2, fix M5).
+        invoice.state = INVOICE_VOID
+        invoice.voided_at = datetime.now(UTC)
+        invoice.void_reason = reason
+        await session.flush()
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=organization_id,
+            actor_id=None,
+            action="billing.invoice.draft_voided",
+            entity="invoice",
+            entity_id=invoice.id,
+            after={"number": invoice.number, "reason": reason},
+            request=request,
+        )
         return True, invoice.id
     await void_invoice(
         session,
