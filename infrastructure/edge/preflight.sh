@@ -95,6 +95,32 @@ else
 	ok "off-box backup credentials present"
 fi
 
+# ---------------------------------------------------------------- object storage (ADR-0009)
+# MinIO enforces an 8-character minimum on both its root password and any user it creates.
+# Failing here, before minio-init ever runs, turns a cryptic MinIO startup/user-creation error
+# into a preflight message that names the key — never the value.
+for key in MINIO_ROOT_PASSWORD DOCUMENT_S3_SECRET_KEY; do
+	value="${!key:-}"
+	if [ -n "$value" ] && [ "${#value}" -lt 8 ]; then
+		bad "$key is shorter than MinIO's 8-character minimum"
+	else
+		ok "$key length"
+	fi
+done
+
+# PUBLIC_ASSET_BASE_URL must resolve to exactly the one host `caddy/Caddyfile` proxies
+# `/opsgrids-public/*` on — EDGE_HOST, and only EDGE_HOST (see the Caddyfile's "uploaded
+# merchant images" section: the route was deliberately narrowed off the shared snippet every
+# other platform hostname imports, to close a stored-XSS path through MinIO's
+# `?response-content-type=` override on a host carrying the `.opsgrids.com`-scoped refresh
+# cookie). Pointing it at a different host — even one correctly listed in TLS_PLATFORM_HOSTS —
+# builds a URL Caddy now answers 404 on, for a reason nobody will guess from the symptom.
+expected_asset_base="https://${EDGE_HOST:-}/${S3_PUBLIC_BUCKET:-opsgrids-public}"
+case "${PUBLIC_ASSET_BASE_URL:-}" in
+"$expected_asset_base") ok "PUBLIC_ASSET_BASE_URL matches https://\$EDGE_HOST/\$S3_PUBLIC_BUCKET" ;;
+*) bad "PUBLIC_ASSET_BASE_URL must be exactly https://\$EDGE_HOST/\$S3_PUBLIC_BUCKET (names only: currently pointed somewhere that is not this box's own EDGE_HOST, or at the wrong bucket path)" ;;
+esac
+
 # ---------------------------------------------------------------- the signing key
 if [ -n "${JWT_PRIVATE_KEY_HOST_PATH:-}" ] && [ -f "$JWT_PRIVATE_KEY_HOST_PATH" ]; then
 	keymode=$(stat -c '%a' "$JWT_PRIVATE_KEY_HOST_PATH" 2>/dev/null || stat -f '%Lp' "$JWT_PRIVATE_KEY_HOST_PATH")

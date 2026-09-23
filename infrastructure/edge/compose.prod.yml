@@ -148,6 +148,13 @@ services:
       # outage must not also stop certificate issuance.
       ACME_EMAIL: ${ACME_EMAIL}
       TLS_ASK_URL: http://storefront:8000/api/v1/storefront/internal/tls-authorize
+      # Names the one site block that proxies uploaded merchant images (ADR-0009 addendum,
+      # 2026-09-23) — see caddy/Caddyfile's "uploaded merchant images" section for why that
+      # route lives on this one host and nowhere else.
+      EDGE_HOST: ${EDGE_HOST}
+      # Drives the @opsgrids_public path matcher, so a bucket rename in `.env` is a one-value
+      # change rather than a second hardcoded path to remember and forget.
+      S3_PUBLIC_BUCKET: ${S3_PUBLIC_BUCKET:-opsgrids-public}
     volumes:
       # A directory, not the file. A single-file bind mount follows the *inode*: when a
       # checkout replaces the file, the container keeps reading the old one, and a deploy
@@ -295,9 +302,9 @@ services:
   # reaches it on `front`, `document` writes and deletes objects on `back`.
   #
   # `quay.io/minio/minio`, not `minio/minio`: Docker Hub no longer serves MinIO's server image —
-  # `minio/minio` 404s there now (verified against the registry, not assumed; `tools/dev-bootstrap
-  # /compose.yml` still names the Hub image and needs the same fix, out of scope here). quay.io is
-  # MinIO's own published mirror for the same tags.
+  # `minio/minio` 404s there now (verified against the registry, not assumed). quay.io is
+  # MinIO's own published mirror for the same tags. `tools/dev-bootstrap/compose.yml` already
+  # made the same switch (#42).
   minio:
     image: quay.io/minio/minio:RELEASE.2024-01-16T16-07-38Z
     restart: unless-stopped
@@ -336,18 +343,37 @@ services:
   minio-init:
     image: quay.io/minio/minio:RELEASE.2024-01-16T16-07-38Z
     profiles: ['storefront']
+    # A one-shot: it does its job and exits 0. `remote.sh`'s `health` step treats "exited" as a
+    # failure for everything EXCEPT a container carrying this label with exit code 0 — without
+    # it, every deploy with the `storefront` profile waited the full HEALTH_TIMEOUT (600s) and
+    # failed, skipping `record_ref` and the apps job, because this container's job is to not be
+    # running by the time health is checked.
+    labels:
+      - 'opsgrids.oneshot=true'
     depends_on:
       minio:
         condition: service_healthy
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      # `mc` recognises `MC_HOST_<alias>` on its own — no `mc alias set og http://minio:9000
+      # "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"` call needed, which is what this replaces.
+      # The old form put the root password on the command line of a process running inside
+      # this container for as long as that `mc` invocation ran — readable by anything that can
+      # see this container's process list (`docker top`, a shared PID namespace) for that
+      # window. An env var `mc` reads directly never appears in argv at all.
+      MC_HOST_og: http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000
+      S3_PUBLIC_BUCKET: ${S3_PUBLIC_BUCKET:-opsgrids-public}
+      # The scoped credential `document` actually connects with (below), created here rather
+      # than handing it the root account: a compromised or merely buggy `document` process can
+      # now put and delete objects in this one bucket and nothing more — it cannot list the
+      # bucket, cannot touch a second bucket if one is ever added, and cannot change this
+      # bucket's own policy out from under `minio-init`.
+      DOCUMENT_S3_ACCESS_KEY: ${DOCUMENT_S3_ACCESS_KEY}
+      DOCUMENT_S3_SECRET_KEY: ${DOCUMENT_S3_SECRET_KEY}
     entrypoint: ['/bin/sh', '-c']
     command:
       - |
         set -e
-        mc alias set og http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
-        mc mb --ignore-existing og/${S3_PUBLIC_BUCKET:-opsgrids-public}
+        mc mb --ignore-existing "og/$$S3_PUBLIC_BUCKET"
         cat > /tmp/public-read.json <<JSON
         {
           "Version": "2012-10-17",
@@ -356,13 +382,53 @@ services:
               "Effect": "Allow",
               "Principal": {"AWS": ["*"]},
               "Action": ["s3:GetObject"],
-              "Resource": ["arn:aws:s3:::${S3_PUBLIC_BUCKET:-opsgrids-public}/*"]
+              "Resource": ["arn:aws:s3:::$$S3_PUBLIC_BUCKET/*"]
             }
           ]
         }
         JSON
-        mc anonymous set-json /tmp/public-read.json og/${S3_PUBLIC_BUCKET:-opsgrids-public}
-        echo "${S3_PUBLIC_BUCKET:-opsgrids-public} ready: anonymous GetObject only, no ListBucket"
+        mc anonymous set-json /tmp/public-read.json "og/$$S3_PUBLIC_BUCKET"
+        echo "$$S3_PUBLIC_BUCKET ready: anonymous GetObject only, no ListBucket"
+
+        # The scoped user `document` writes and deletes as (finding: root credential shared
+        # with a whole bucket's worth of blast radius). `s3:PutObject` and `s3:DeleteObject`
+        # only — `document` never calls GetObject or ListBucket (see `app/storage.py`), and the
+        # anonymous policy above already covers every read a buyer's browser needs.
+        #
+        # Idempotent the way each step actually behaves, verified against this pinned `mc`,
+        # not assumed: `admin user add` on an existing user resets its secret to this value
+        # rather than erroring, and `admin policy create` on an existing name silently
+        # overwrites it — but `admin policy attach` on an already-attached policy errors
+        # ("already in effect", exit 1) rather than being a no-op, so that one step's result is
+        # checked explicitly instead of trusted to be safe to just re-run.
+        #
+        # The secret is unavoidably a positional argument to `admin user add` — `mc`'s admin
+        # API has no env-var form for it — so it is visible in this container's own process
+        # list for the moment this one line runs, same as any `docker run -e PASSWORD=...`
+        # secret; it never appears in a log, in `docker inspect`, or in this file.
+        mc admin user add og "$$DOCUMENT_S3_ACCESS_KEY" "$$DOCUMENT_S3_SECRET_KEY"
+        cat > /tmp/document-write.json <<JSON
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": ["s3:PutObject", "s3:DeleteObject"],
+              "Resource": ["arn:aws:s3:::$$S3_PUBLIC_BUCKET/*"]
+            }
+          ]
+        }
+        JSON
+        mc admin policy create og document-write /tmp/document-write.json
+        attach_out=$$(mc admin policy attach og document-write --user "$$DOCUMENT_S3_ACCESS_KEY" 2>&1) && echo "$$attach_out" || {
+          case "$$attach_out" in
+          *"already in effect"*) echo "document-write already attached to the scoped user" ;;
+          *)
+            echo "$$attach_out" >&2
+            exit 1
+            ;;
+          esac
+        }
     restart: on-failure
     networks:
       - back
@@ -692,6 +758,16 @@ services:
     build:
       context: ../..
       dockerfile: services/document/Dockerfile
+    # `memswap_limit` equal to `mem_limit` gives this container zero swap of its own (the
+    # value is total memory+swap, so setting it equal to `mem_limit` allows none). Every other
+    # service here inherits Docker's default of roughly double `mem_limit` in swap, which is
+    # the right choice for a mostly-idle API — but `document` is the one process on this box
+    # that decodes attacker-sized images (ADR-0009 §5, §11), and swapping a 300+ MB spike onto
+    # this already-swapping 2 vCPU / 3.8 GB box turns one large upload into a slow box for
+    # everyone. Failing fast with an OOM kill (`docker compose logs document` shows exit 137;
+    # `restart: unless-stopped` brings it back, and the request that caused it gets a 503
+    # rather than a slow death for the whole VM) is the trade this container should make.
+    memswap_limit: 320m
     environment:
       <<: *service-env
       # Reached over the compose network, never through Caddy: writes and deletes never need
@@ -699,13 +775,13 @@ services:
       S3_ENDPOINT_URL: http://minio:9000
       S3_FORCE_PATH_STYLE: 'true'
       S3_PUBLIC_BUCKET: ${S3_PUBLIC_BUCKET:-opsgrids-public}
-      # This MinIO holds exactly one bucket for one caller, so reusing its root credential here
-      # — the same choice `tools/dev-bootstrap/compose.yml` makes for local development — buys
-      # parity and one fewer secret to generate and keep in sync, at a blast radius a scoped IAM
-      # user would barely narrow: a compromised `document` process could already write or delete
-      # anything in the only bucket that exists. Revisit if a second service ever writes here.
-      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
-      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      # The scoped user `minio-init` creates (above), not the MinIO root account: `s3:PutObject`
+      # and `s3:DeleteObject` on this one bucket's objects, nothing else. A compromised or
+      # merely buggy `document` process can no longer list the bucket, touch a second bucket,
+      # or rewrite this bucket's own anonymous-read policy — the blast radius the root
+      # credential used to hand it for free.
+      S3_ACCESS_KEY: ${DOCUMENT_S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${DOCUMENT_S3_SECRET_KEY}
       # The absolute address returned as `AssetOut.public_url` for the editor's own immediate
       # preview only (never persisted — ADR-0009 §6). Must be a host Caddy actually proxies
       # `/opsgrids-public/*` on; see `.env.example`.
