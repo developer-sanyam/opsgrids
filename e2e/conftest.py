@@ -558,6 +558,18 @@ def seed_password(platform: Platform) -> Any:
     return _set
 
 
+@pytest.fixture(scope="session")
+def mint_unsubscribe_token(platform: Platform) -> Any:
+    """A real, validly-signed Engage unsubscribe token for one organization and address —
+    what `test_engage_journey.py`'s edge-reachability step proves the gateway lets through
+    with no bearer token at all."""
+
+    def _mint(org_id: str, email: str) -> str:
+        return _seed("_mint_unsubscribe_token.py", "notification", org_id, email)
+
+    return _mint
+
+
 # ------------------------------------------------- the Wave 0 exit journey's own machinery
 #
 # Everything below serves `test_approval_journey.py`. Each piece exists because the operation it

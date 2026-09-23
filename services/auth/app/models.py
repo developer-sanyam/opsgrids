@@ -343,7 +343,17 @@ class OrgIdpConfig(Base):
     #: somebody in the organization deciding — is a bigger change than a sign-in flow, so an
     #: unknown email is refused and this flag is honoured only in the log line that says it
     #: was asked for. See docs/backlog.md.
-    jit_provisioning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    #:
+    #: Defaults to `False`, at the database as well as here — unlike this table's other
+    #: booleans, which only get the Python-side default every other `mapped_column` on this
+    #: model uses. A flag that is inert today but reads as "provision unknown sign-ins" the
+    #: day it is wired up must not default to on for a row an administrator never touched: a
+    #: raw insert that forgets to set it explicitly (a fixture, a future migration, a repair
+    #: script) must land on the safe answer, not the ORM's. See the migration that flipped
+    #: this default for the existing rows it corrected.
+    jit_provisioning: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     default_role_codes: Mapped[list[str]] = mapped_column(
         ARRAY(String(60)), nullable=False, default=list
     )

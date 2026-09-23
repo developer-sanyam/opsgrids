@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/engage.setup.sender.created/v1",
+  "title": "engage.setup.sender.created",
+  "description": "An organization added a sender on a verified domain. Not yet usable by a campaign until it passes a test send (see engage.setup.sender.verified).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "sender_id", "domain_id", "address"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "sender_id": { "type": "string", "format": "uuid" },
+    "domain_id": { "type": "string", "format": "uuid" },
+    "address": { "type": "string", "format": "email" }
+  }
+}

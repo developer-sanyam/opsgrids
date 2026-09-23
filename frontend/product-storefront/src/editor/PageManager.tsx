@@ -498,6 +498,7 @@ function EditPageRow({
           // the page they belong to is what keeps a screen reader's list of form controls
           // unambiguous — and what keeps them findable at all.
           aria-label={`Page name for ${page.name}`}
+          // eslint-disable-next-line jsx-a11y/no-autofocus -- mounted only by the user's own "Rename" click; moving focus into the field they asked for is the focus management, not a surprise on page load.
           autoFocus
           value={name}
           maxLength={MAX_PAGE_NAME_LENGTH}
@@ -568,6 +569,7 @@ function DeletePageRow({
         Undo brings it back.
       </p>
       <div className="flex items-center gap-2">
+        {/* eslint-disable-next-line jsx-a11y/no-autofocus -- mounted only by the user's own "Delete" click; focus follows them into the confirmation, and Escape (useRowEscape) backs out. */}
         <Button variant="dark" size="sm" autoFocus onClick={onConfirm}>
           Delete page
         </Button>

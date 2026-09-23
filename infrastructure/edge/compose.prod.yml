@@ -1,9 +1,15 @@
 # The production edge — one Linux VM, ADR-0012 §1.
 #
-# Everything that serves a merchant's own domain runs here: Caddy, Postgres+PostGIS, Redis and
-# the five service containers slice 1 needs (auth, account, product, app-gateway, storefront)
-# plus storefront's scheduled sweep. The other thirty services are not deployed, and that is
-# the point.
+# Every product this platform sells can run here, one compose profile per product (ADR-0013
+# §5). That is 44 containers with every profile on (down from 46: ADR-0013's memory-budget
+# erratum, 2026-09-23, folded subscription's and approval's `bin/cron` sweep into their
+# `bin/worker` the way `notification/app/worker.py` already combines two consumers), plus
+# Postgres, Redis, RabbitMQ and Caddy. This is not "five service containers" and not "~35
+# processes" — that described slice 1, one profile in, and stayed in comments long after it
+# stopped being true. `memory-budget.json` in this directory is the source of truth for what
+# each container actually costs; `preflight.sh` sums it against the box's live MemTotal and
+# refuses a deploy whose enabled `COMPOSE_PROFILES` do not fit (see the erratum for why the box
+# does not grow to meet them instead — the owner will not resize it).
 #
 # Read `RUNBOOK.md` before touching this file on a box that is serving. Once one real domain
 # points at this address there is a production and there is no second box.
@@ -50,11 +56,12 @@ x-service-env: &service-env
   # The broker (ADR-0013 §5). Every service's relay publishes its outbox here and every
   # consumer reads from it; this is what makes activation install roles without a human.
   RABBITMQ_URL: amqp://opsgrids:${RABBITMQ_PASSWORD}@rabbitmq:5672/
-  # ~35 processes share one Postgres with every product profile on, and an API holds up to
-  # three engines (app, outbox, directory). Pools fill lazily, so idle is a fraction of this,
-  # but the ceiling is what a spike reaches: 3 + 2 keeps it near the 400 Postgres allows, where
-  # the library default (10 + 5) would want well over a thousand.
-  # glibc gives every thread its own malloc arena; across ~50 mostly idle Python processes
+  # ~38 processes (`memory-budget.json`'s api + background containers) share one Postgres with
+  # every product profile on, and an API holds up to three engines (app, outbox, directory).
+  # Pools fill lazily, so idle is a fraction of this, but the ceiling is what a spike reaches:
+  # 3 + 2 keeps it near the 400 Postgres allows, where the library default (10 + 5) would want
+  # well over a thousand.
+  # glibc gives every thread its own malloc arena; across ~38 mostly idle Python processes
   # that is resident memory this box swaps for. Two arenas cost nothing measurable here.
   MALLOC_ARENA_MAX: '2'
   # glibc's trim threshold ratchets up to 128 MB, so a long-lived idle process never gives back
@@ -78,7 +85,7 @@ x-service-common: &service-common
   restart: unless-stopped
   logging: *logging
   # Replaces the image's HEALTHCHECK, which imports urllib (and with it ssl, email, http) in a
-  # fresh interpreter every 30 s in each of ~24 API containers. `-S` skips site initialisation
+  # fresh interpreter every 30 s in each of 26 API containers. `-S` skips site initialisation
   # and a raw socket needs no imports worth the name; once a minute is plenty for a process
   # that `restart: unless-stopped` already brings back. `start_interval` keeps startup quick.
   healthcheck:
@@ -109,8 +116,12 @@ x-service-common: &service-common
     redis:
       condition: service_healthy
   # A fuse, not a budget: with no limit anywhere the kernel picks the out-of-memory victim, and
-  # the largest process on this box is Postgres. An API here idles at 70–100 MB.
-  mem_limit: 320m
+  # the largest process on this box is Postgres. An API here idles at 70–100 MB
+  # (`memory-budget.json`'s `kinds.api`, 85 MB expected) — 320m was more than 3x that with
+  # nothing to show for the extra headroom, so ADR-0013's memory-budget erratum (2026-09-23)
+  # brought it down to 256m: still 3x expected idle, and 26 containers at the old ceiling
+  # versus this one cost 1.7 GB of fuse this box does not have to spend.
+  mem_limit: 256m
 
 # A background process of a service: a consumer (`bin/worker`), an outbox relay (`bin/relay`)
 # or a sweep (`bin/cron`). Same image as the API, no port, and the image's HTTP healthcheck
@@ -127,7 +138,10 @@ x-background: &background
       condition: service_healthy
     rabbitmq:
       condition: service_healthy
-  mem_limit: 256m
+  # Same reasoning as the API fuse above, for the smaller number: a consumer or a sweep idles
+  # at 35–50 MB (`memory-budget.json`'s `kinds.background`, 42 MB expected — the edge-relay
+  # comment below measured its idle consumers at ~35 MB each). 192m is still 4–5x that.
+  mem_limit: 192m
   networks:
     - back
 
@@ -180,6 +194,17 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    # Never had a limit before ADR-0013's memory-budget erratum (2026-09-23), alongside
+    # postgres, rabbitmq and redis below — the four processes big enough that an unbounded one
+    # is what the OOM killer reaches for first when something else spikes. Caddy here proxies
+    # a handful of domains and streams `/opsgrids-public/*` rather than buffering it
+    # (`document`'s comment above); `memory-budget.json`'s `datastores.caddy` puts idle at
+    # ~64 MB. `mem_reservation` (a soft limit, only enforced under host-wide memory pressure)
+    # is set close to that idle figure so the kernel reclaims from the squeezable API and
+    # background containers first — see `datastores.postgres` below for the fuller version of
+    # this argument.
+    mem_limit: 192m
+    mem_reservation: 96m
 
   # ---------------------------------------------------------------- datastores
   postgres:
@@ -223,6 +248,18 @@ services:
       retries: 5
       start_period: 120s
       start_interval: 3s
+    # Postgres was the one process on this box the OOM killer could reach for first without a
+    # limit anywhere else fixing that on its own — it is the biggest thing running, so with no
+    # `mem_limit` at all it was also the biggest thing a spike on another container could take
+    # down alongside it (ADR-0013's memory-budget erratum, 2026-09-23). `shared_buffers=256MB`
+    # above plus the ~25 client processes' own backend memory (`work_mem` × active backends)
+    # and OS page cache is what `memory-budget.json`'s `datastores.postgres` prices at ~350 MB
+    # idle; 768m leaves over 400 MB of headroom for a real query spike before this container's
+    # own limit — not the whole box's — is what gets hit. `mem_reservation` at 512m is the
+    # signal the other direction: under host-wide memory pressure, reclaim from the API and
+    # background containers (which have none) before this one.
+    mem_limit: 768m
+    mem_reservation: 512m
     networks:
       - back
 
@@ -243,6 +280,10 @@ services:
     # No published port. To look inside: `docker compose exec rabbitmq rabbitmqctl list_queues`.
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+      # See the file's own header: sets the memory alarm and the disk alarm relative to the
+      # `mem_limit` below, not to the box. The `-management` image reads conf.d the same way;
+      # this file works unmodified if that image is ever swapped back in.
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/10-memory.conf:ro
     healthcheck:
       # Every probe starts a second Erlang VM — about a second of CPU — so this runs once a
       # minute, not every ten seconds as it used to. It is still the diagnostics tool and not a
@@ -255,6 +296,14 @@ services:
       retries: 3
       start_period: 120s
       start_interval: 10s
+    # ADR-0013's memory-budget erratum (2026-09-23): no limit here before meant the second
+    # biggest process on the box (after postgres) could grow unbounded. `rabbitmq.conf`
+    # (mounted above) keeps the broker's own alarm inside this ceiling; `memory-budget.json`'s
+    # `datastores.rabbitmq` prices idle at ~150 MB, so 256m leaves headroom for the alarm to
+    # fire and be acted on (queues stop accepting, publishers back up) before Docker's own
+    # cgroup limit kills the container outright.
+    mem_limit: 256m
+    mem_reservation: 192m
     networks:
       - back
 
@@ -264,7 +313,30 @@ services:
     logging: *logging
     # Append-only because the rate limiter and the 300-second host cache are cheap to lose but
     # annoying to lose at the same time as everything else. maxmemory keeps a runaway key space
-    # from competing with Postgres for the box's 8 GB.
+    # from competing with Postgres for the box's 3.8 GB.
+    #
+    # What is actually in here (`libs/platform-core/src/platform_core/cache.py`), because the
+    # right eviction policy depends on it and `allkeys-lru` was picked without checking:
+    #   * `cache_get`/`cache_set` — soft caches with a TTL (e.g. storefront's 300s slug cache).
+    #     A miss falls through to Postgres; losing one of these is invisible.
+    #   * `rl:*` — rate-limit counters, also TTL'd (`expire` set the moment a bucket is opened).
+    #     Losing one resets a caller's window early: a minor extra allowance, not a correctness
+    #     bug.
+    #   * `pv:*` (`permission_version_key`) — the organization's permission-version counter,
+    #     written with a bare `incr` and **no TTL**. `gateway.py`'s `proxy` (`build_gateway`)
+    #     treats a missing `pv:` key as "nothing has changed since this cache was last empty" and
+    #     skips the staleness check — so evicting a live `pv:` key under memory pressure is the
+    #     same class of bug as `bc7f049` ("stop the permission cache holding a grant back after
+    #     activation"), pointed the other way: that fix stopped a stale cache from refusing a
+    #     grant that had already landed; losing `pv:*` here would let a *revoked* grant's token
+    #     keep being accepted, silently, for as long as it has left to live. That must never be
+    #     the key Redis throws away to make room for a slug cache.
+    #
+    # `volatile-lru` only evicts keys that carry a TTL — the caches and the rate limiter — and
+    # returns `OOM command not allowed` on a write once none are left, rather than reaching into
+    # `pv:*`. `maxmemory` stays small precisely because nothing here is meant to hold much: a
+    # 64 MB dataset limit that fills up is a signal to look at what is being cached, not a
+    # reason to widen the policy back to `allkeys-*`.
     command:
       [
         'redis-server',
@@ -273,7 +345,7 @@ services:
         '--maxmemory',
         '64mb',
         '--maxmemory-policy',
-        'allkeys-lru',
+        'volatile-lru',
       ]
     volumes:
       - redis_data:/data
@@ -284,6 +356,11 @@ services:
       retries: 5
       start_period: 60s
       start_interval: 3s
+    # ADR-0013's memory-budget erratum (2026-09-23). `maxmemory 64mb` above already bounds the
+    # dataset; this bounds the process (client buffers, the AOF rewrite's fork, Redis's own
+    # bookkeeping) — `memory-budget.json`'s `datastores.redis` prices idle at ~40 MB.
+    mem_limit: 128m
+    mem_reservation: 64m
     networks:
       - back
 
@@ -369,6 +446,14 @@ services:
       # bucket's own policy out from under `minio-init`.
       DOCUMENT_S3_ACCESS_KEY: ${DOCUMENT_S3_ACCESS_KEY}
       DOCUMENT_S3_SECRET_KEY: ${DOCUMENT_S3_SECRET_KEY}
+      # The second scoped credential, held only by `document-cron` (ADR-0009 §9 addendum):
+      # `s3:ListBucket` plus `s3:DeleteObject`, so the orphan sweep can list the bucket and
+      # remove what it finds. The API's own `document` container never receives this
+      # credential and never calls `ListBucket` (`app/storage.py`'s `ObjectStore` vs.
+      # `OrphanScanner`) — a compromised or merely buggy API process still cannot enumerate
+      # the bucket, which is the whole of ADR-0009 §3's tenancy argument.
+      DOCUMENT_S3_ORPHAN_ACCESS_KEY: ${DOCUMENT_S3_ORPHAN_ACCESS_KEY}
+      DOCUMENT_S3_ORPHAN_SECRET_KEY: ${DOCUMENT_S3_ORPHAN_SECRET_KEY}
     entrypoint: ['/bin/sh', '-c']
     command:
       - |
@@ -429,6 +514,44 @@ services:
             ;;
           esac
         }
+
+        # The orphan sweep's own user (ADR-0009 §9 addendum): `s3:ListBucket` on the bucket
+        # itself plus `s3:DeleteObject` on its objects — the one capability the write-path
+        # user above deliberately does not hold. `document-cron` is the only process this
+        # credential is ever handed to (`compose.prod.yml`'s `document-cron`, below); the API
+        # container reads only `DOCUMENT_S3_ACCESS_KEY`/`_SECRET_KEY`.
+        mc admin user add og "$$DOCUMENT_S3_ORPHAN_ACCESS_KEY" "$$DOCUMENT_S3_ORPHAN_SECRET_KEY"
+        cat > /tmp/document-orphan-sweep.json <<JSON
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": ["s3:ListBucket"],
+              "Resource": ["arn:aws:s3:::$$S3_PUBLIC_BUCKET"]
+            },
+            {
+              "Effect": "Allow",
+              "Action": ["s3:DeleteObject"],
+              "Resource": ["arn:aws:s3:::$$S3_PUBLIC_BUCKET/*"]
+            }
+          ]
+        }
+        JSON
+        mc admin policy create og document-orphan-sweep /tmp/document-orphan-sweep.json
+        orphan_attach_out=$$(mc admin policy attach og document-orphan-sweep --user "$$DOCUMENT_S3_ORPHAN_ACCESS_KEY" 2>&1) && echo "$$orphan_attach_out" || {
+          case "$$orphan_attach_out" in
+          *"already in effect"*) echo "document-orphan-sweep already attached to the scoped user" ;;
+          *)
+            echo "$$orphan_attach_out" >&2
+            exit 1
+            ;;
+          esac
+        }
+    # A `mc` client doing a handful of admin calls and exiting — `memory-budget.json` marks it
+    # `steady_state: false` (it never runs for more than a few seconds) but it still gets a
+    # fuse, the same as every other container here.
+    mem_limit: 64m
     restart: on-failure
     networks:
       - back
@@ -632,19 +755,17 @@ services:
     networks:
       - back
 
+  # Runs both the payment-event consumer (app/consumers.py) and the dunning + trial-end sweep
+  # (app/cron.py's DunningSweep, ADR-0005 and ADR-0013 §6) in one process — app/worker.py,
+  # `gather`ed the way notification/app/worker.py already combines its two consumers.
+  # ADR-0013's memory-budget erratum (2026-09-23): these were two containers
+  # (`subscription-worker` on `./bin/worker`, `subscription-cron` on `./bin/cron`) at 192m
+  # apiece for two processes that are each idle almost all the time. `bin/cron` still points at
+  # `app.cron` unchanged and runs standalone for local debugging; only `bin/worker` moved.
   subscription-worker:
     <<: *background
     image: opsgrids-edge/subscription
     command: ['./bin/worker']
-    environment:
-      <<: *service-env
-      CATALOG_SERVICE_URL: http://catalog:8000
-
-  # The dunning sweep (ADR-0005), and from slice 4 the trial-end sweep (ADR-0013 §6).
-  subscription-cron:
-    <<: *background
-    image: opsgrids-edge/subscription
-    command: ['./bin/cron']
     environment:
       <<: *service-env
       CATALOG_SERVICE_URL: http://catalog:8000
@@ -756,10 +877,8 @@ services:
   # `edge-relay` below). An idle worker holding an open broker channel for nothing is 30 MB this
   # box does not have to give away.
   #
-  # `bin/cron` is the untouched scaffold default (`python -m app.relay`) — ADR-0009 §8's purge
-  # sweep was designed and never built, so there is nothing for a document-cron container to
-  # run. Soft-deleted assets accumulate past their 30-day window until it lands (backlog #3
-  # covers the shared scheduler this and every other per-service cron is meant to retire onto).
+  # `bin/cron` runs the purge sweep (ADR-0009 §8, and its 2026-09-23 addendum's §9 orphan
+  # pass) — see `document-cron`, below, for that container. This block is the API only.
   document:
     <<: *service-common
     profiles: ['storefront']
@@ -804,6 +923,49 @@ services:
         condition: service_healthy
     networks:
       - back
+
+  # The purge sweep (ADR-0009 §8, and its 2026-09-23 addendum's §9 orphan pass). Its own
+  # process for the same reason every other sweep here is: a poll loop must not share a pool
+  # with request traffic, and `docker compose ps` should answer "is anything purging assets"
+  # without reading code. Same profile as `document` — a box that runs the asset store always
+  # needs its own housekeeping, and a box that does not sell Storefront never needs a cron
+  # container that would find nothing to purge.
+  #
+  # Two credentials, deliberately not one: `S3_ACCESS_KEY`/`_SECRET_KEY` are the same
+  # write-only pair the `document` API holds, for the row-purge pass's own `DeleteObject`
+  # call; `S3_ORPHAN_ACCESS_KEY`/`_SECRET_KEY` are the second, list-capable pair `minio-init`
+  # creates above, held **only** by this container. `document`'s own API process never
+  # receives the orphan credential and never calls `ListBucket` — ADR-0009 §3's tenancy
+  # argument depends on nothing on the request path being able to enumerate the bucket.
+  document-cron:
+    <<: *background
+    profiles: ['storefront']
+    image: opsgrids-edge/document
+    command: ['./bin/cron']
+    environment:
+      <<: *service-env
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_FORCE_PATH_STYLE: 'true'
+      S3_PUBLIC_BUCKET: ${S3_PUBLIC_BUCKET:-opsgrids-public}
+      S3_ACCESS_KEY: ${DOCUMENT_S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${DOCUMENT_S3_SECRET_KEY}
+      S3_ORPHAN_ACCESS_KEY: ${DOCUMENT_S3_ORPHAN_ACCESS_KEY:-}
+      S3_ORPHAN_SECRET_KEY: ${DOCUMENT_S3_ORPHAN_SECRET_KEY:-}
+      ASSET_PURGE_RETENTION_DAYS: ${ASSET_PURGE_RETENTION_DAYS:-30}
+      # Off, and reporting-only even once on — see `app/config.py`'s own docstring for why an
+      # automated, bucket-wide delete earns that much caution before an operator trusts it
+      # with a real `DeleteObject`. Both flip independently, from `.env`, with no image change.
+      ORPHAN_SWEEP_ENABLED: ${DOCUMENT_ORPHAN_SWEEP_ENABLED:-false}
+      ORPHAN_SWEEP_DRY_RUN: ${DOCUMENT_ORPHAN_SWEEP_DRY_RUN:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
   # ---------------------------------------------------------------- products behind profiles
   # One profile per sellable product (ADR-0013 §5). COMPOSE_PROFILES in the box's .env turns a
@@ -855,18 +1017,16 @@ services:
     networks:
       - back
 
+  # Runs both the hierarchy/regularization consumer (app/consumers.py) and the SLA escalation
+  # sweep (app/cron.py's EscalationSweep, ADR-0006 §8) in one process — app/worker.py, the same
+  # `gather` shape notification/app/worker.py and subscription/app/worker.py already use.
+  # ADR-0013's memory-budget erratum (2026-09-23) folded `approval-cron` into this container;
+  # `bin/cron` is unchanged and still runs `app.cron` standalone for local debugging.
   approval-worker:
     <<: *background
     profiles: ['hrms']
     image: opsgrids-edge/approval
     command: ['./bin/worker']
-    environment: *service-env
-
-  approval-cron:
-    <<: *background
-    profiles: ['hrms']
-    image: opsgrids-edge/approval
-    command: ['./bin/cron']
     environment: *service-env
 
   employee:

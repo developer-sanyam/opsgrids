@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import io
 import threading
+import uuid
 from dataclasses import dataclass
 
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -258,3 +259,21 @@ def public_path(organization_id: object, asset_id: object) -> str:
     `storage_key` exactly.
     """
     return f"/a/{storage_key(organization_id, asset_id)}"
+
+
+def parse_storage_key(key: str) -> tuple[uuid.UUID, uuid.UUID] | None:
+    """The inverse of `storage_key`: `{organization_id}/{asset_id}` back into two UUIDs.
+
+    Used only by the orphan sweep (ADR-0009 §9 addendum), which lists the bucket rather than
+    a row and has to recover both ids from the key alone to check whether any row claims it.
+    Returns `None` rather than raising on a key this service did not write — an object a
+    future service shares the bucket with, or an operator's `mc cp`, must be left alone
+    rather than crash the sweep or be treated as this service's own orphan.
+    """
+    parts = key.split("/")
+    if len(parts) != 2:
+        return None
+    try:
+        return uuid.UUID(parts[0]), uuid.UUID(parts[1])
+    except ValueError:
+        return None

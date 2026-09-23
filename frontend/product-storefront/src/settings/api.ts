@@ -9,7 +9,7 @@
 
 import { ApiError, apiRequest, settle } from "@opsgrids/client";
 
-import { USE_FIXTURES } from "@/api/client";
+import { USE_FIXTURES } from "@/api/mode";
 import { FIXTURE_STORE } from "@/delivery/fixtures";
 import type { StoreOut, StorePut } from "./types";
 
