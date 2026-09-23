@@ -14,11 +14,19 @@ from app.storage import get_object_store, get_orphan_scanner
 from platform_core.app import create_app
 from platform_core.db import (
     assert_outbox_role,
+    bulkhead_scope,
+    create_bulkhead_engine,
     get_outbox_engine,
     get_outbox_sessionmaker,
-    session_scope,
 )
-from platform_core.supervise import start_background_sweep, stop_background_sweep
+from platform_core.logging import get_logger
+from platform_core.supervise import (
+    register_sweep_health,
+    start_background_sweep,
+    stop_background_sweep,
+)
+
+log = get_logger("document.main")
 
 
 async def _start_purge_sweep(app: FastAPI) -> None:
@@ -52,13 +60,26 @@ async def _start_purge_sweep(app: FastAPI) -> None:
     responsibility, the same split `app/cron.py`'s standalone `main()` makes.
     """
     app.state.purge_sweep_task = None
+    app.state.sweep_engine = None
     cfg = settings()
     if not cfg.run_sweeps_in_api:
         return
-    await assert_outbox_role(get_outbox_engine(), environment=cfg.environment)
+    try:
+        await assert_outbox_role(get_outbox_engine(), environment=cfg.environment)
+    except Exception:
+        # The upload API must not fail to start over the purge sweep's precondition (round 3,
+        # LOW) — see `operations.app.main._start_reconcile_sweep`. Skip only the sweep, at error.
+        log.exception("document.sweep.not_started", reason="outbox role precondition failed")
+        register_sweep_health("document.sweep").record_failure()
+        return
+    # A one-connection engine of its own: some purge transactions hold their connection across
+    # the object-store delete, and must not take one of the upload path's (`create_bulkhead_
+    # engine`).
+    engine = create_bulkhead_engine(cfg, name="sweep")
+    app.state.sweep_engine = engine
     sweep = PurgeSweep(
         discovery_factory=get_outbox_sessionmaker(),
-        work_scope=lambda organization_id: session_scope(organization_id=organization_id),
+        work_scope=bulkhead_scope(engine),
         store=get_object_store(),
         scanner=get_orphan_scanner(),
         retention=timedelta(days=cfg.asset_purge_retention_days),
@@ -67,11 +88,14 @@ async def _start_purge_sweep(app: FastAPI) -> None:
         orphan_min_age=timedelta(hours=cfg.orphan_sweep_min_age_hours),
         orphan_max_deletes=cfg.orphan_sweep_max_deletes_per_tick,
     )
-    app.state.purge_sweep_task = start_background_sweep(sweep.run())
+    app.state.purge_sweep_task = start_background_sweep(sweep.run(), name="document.sweep")
 
 
 async def _stop_purge_sweep(app: FastAPI) -> None:
     await stop_background_sweep(getattr(app.state, "purge_sweep_task", None))
+    engine = getattr(app.state, "sweep_engine", None)
+    if engine is not None:
+        await engine.dispose()
 
 
 app = create_app(

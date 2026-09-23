@@ -1,93 +1,111 @@
 {
   "$comment": [
-    "The production edge's memory budget (ADR-0013's memory-budget erratum, 2026-09-23; the",
-    "measured numbers below were corrected by the memory-headroom slice, 2026-09-23 addendum).",
-    "The box is one Azure VM, 2 vCPU / 3.8 GB RAM (MemTotal 3862 MB, read on the box, 2026-09-24;",
-    "+ a swapfile). The erratum recorded that the owner would not resize it, hence fewer",
-    "processes rather than a bigger box; the release this file ships with is over the hard line",
-    "even so, which makes resizing the first option the RUNBOOK asks the owner to reconsider.",
+    "The production edge's memory budget (ADR-0013's memory-budget erratum, 2026-09-23; corrected by",
+    "the memory-headroom slice's review rounds 1-3, 2026-09-24). The box is one Azure VM, 2 vCPU,",
+    "MemTotal 3862 MB (read on the box, 2026-09-24) plus a swapfile. The erratum recorded that the",
+    "owner would not resize it, hence fewer processes rather than a bigger box; the release this file",
+    "ships with is over the hard line even so, which makes resizing the first option the RUNBOOK asks",
+    "the owner to reconsider.",
     "",
-    "`expected_rss_mb` is a steady-state (idle, no load) planning figure, not a ceiling — the",
-    "ceilings are `mem_limit_mb`/`mem_reservation_mb`, applied in compose.prod.yml.",
+    "`expected_rss_mb` is a steady-state (idle, no load) planning figure in MiB (kB / 1024, the unit",
+    "/proc/meminfo's MemTotal is compared in), not a ceiling — the ceilings are `mem_limit_mb` /",
+    "`mem_reservation_mb`, applied in compose.prod.yml.",
     "",
-    "`kinds.api` and `kinds.background` were re-measured directly (not estimated) for the",
-    "memory-headroom slice: the production Dockerfile image for `account` (api, and `python -m",
-    "app.consumers` as the background worker) and for `product` (`python -m",
-    "platform_core.edge_relay`, background, draining all 27 schemas) were built and run against",
-    "an isolated Postgres/Redis/RabbitMQ (never the shared dev database), and `/proc/1/status`'s",
-    "`VmRSS` read after startup settled. Method: `docker build` the real service Dockerfile,",
-    "`docker run` it on an isolated `docker network` with fresh postgres/redis/rabbitmq",
-    "containers seeded from `tools/dev-bootstrap/init-db.sql`, warm it with health-check probes,",
-    "then `docker exec <container> cat /proc/1/status | grep VmRSS` once the number stopped",
-    "moving. Result: api idled at 92-95 MB (confirms the previous 70-100 MB range and its 85 MB",
-    "midpoint — no change); background idled at 87-93 MB (account-worker: 88 MB; edge-relay",
-    "servicing all 27 schemas: 93 MB) — **not** the previously assumed 35-50 MB. The gap is not a",
-    "measurement error: a consumer or relay imports essentially the same dependency graph an API",
-    "does (SQLAlchemy's async engine, pydantic-settings, structlog, cryptography for PII,",
-    "aio-pika) minus the smaller-than-assumed ASGI/uvicorn increment, so the two kinds cost",
-    "almost the same. The old 35-50 MB figure traces to a comment ('idle consumers at ~35 MB",
-    "each') that was itself a guess, never a measurement — exactly the gap this file exists to",
-    "close. This single correction is large enough to explain, on its own, why this box has",
-    "needed a swapfile since before this slice: the previously-documented ~94% full-profile",
-    "figure was optimistic. See ADR-0013's memory-headroom addendum for the full table and what",
-    "this slice did about it and what is still left for the owner to decide.",
+    "**How `kinds` were measured** (round 3, from the merged tree): each service's production",
+    "Dockerfile was built (`docker build`, the same file compose.prod.yml uses) and run against an",
+    "isolated Postgres/Redis/RabbitMQ (a throwaway stack from tools/dev-bootstrap/init-db.sql, never",
+    "the shared dev database) with compose's MALLOC_ARENA_MAX=2, trim threshold and pool sizes, warmed",
+    "with 40 in-container /health probes for an API, then `/proc/1/status` VmRSS read after ~40 s",
+    "idle. Each kind's `source` and `measured_mib` list the images. api 98 (mean of ten readings of",
+    "seven images 97.3, max 102.3), background 90 (mean 89.4 of four), ops_monitor 93 (one reading,",
+    "92.3). They were 85 / 85 / 48: the first was confirmed by one image, the second was a guess",
+    "corrected once already (it was 42), the third was supplied unmeasured by the slice that added",
+    "the container. **These are arm64 Docker Desktop figures and the box is amd64: read `free -m`",
+    "and `docker stats --no-stream` on the box before treating any total here as exact.** The",
+    "datastores (caddy, postgres, rabbitmq, redis, minio) were NOT re-measured and postgres is the",
+    "one most likely to move.",
     "",
-    "Review fix round 2 (2026-09-24): `preflight.sh` prices the POST-deploy set — running",
-    "containers the new compose still defines, unioned with what the declared profiles",
-    "configure (`post_deploy_compute`, lib/memory-budget.sh) — and a deploy over the hard line",
-    "refuses unless the owner has set `EDGE_BUDGET_ACCEPTED_MB` in .env to a number at or above",
-    "it (`apply_accepted_ceiling`). operations-cron, storefront-cron and document-cron were",
-    "removed as containers: their sweeps now run inside their own API container (RUN_SWEEPS_IN_API),",
-    "3 x 85 MB. A running container with no entry in `containers` is priced at `kinds.background`",
-    "and named in a warning, never treated as free.",
+    "**What the re-pricing did to the release** (ten profiles, merged tree): 4112 MB at the old",
+    "prices, 4581 MB at these — 118.6% of 3862 MB, 719 MB over MemTotal (the +469 is 28 APIs x 13,",
+    "12 background x 5 and ops-monitor +45). The running set on the box today (the production ref's",
+    "40 services) prices at 4044 MB / 104.7% — it was reported as 3494 MB / 90% by summing without",
+    "`approval-cron` and `subscription-cron`, which had no entry here and are priced as",
+    "`kinds.background` by the rule below (3664 MB / 94.9% at the old prices). With `planned` the",
+    "ten profiles project to 5537 MB / 143.4%. See ADR-0013 'Fix round 3' and the RUNBOOK's memory",
+    "section for the per-profile table; `test_runbook_ceiling_example_is_the_number_preflight_would_",
+    "print` keeps the RUNBOOK's worked example equal to what preflight prints.",
     "",
-    "Round 2 re-measurement of the in-API sweeps (built production images, isolated stack, 40",
-    "health probes, /proc/1/status VmRSS, RUN_SWEEPS_IN_API off vs on): operations 96,984 kB ->",
-    "96,516 kB, storefront 99,996 kB -> 101,040 kB, document 104,260 kB -> 104,336 kB. The sweep",
-    "costs an API container at most ~1 MB; the 3 x 85 MB saving is real. The same numbers say",
-    "these three API images idle at ~95-104 MB (kB / 1024 = 94-102 MiB) on the arm64 machine they",
-    "were measured on, above `kinds.api`'s 85 MB planning figure and consistent with the 92-95 MB",
-    "the `account` image showed in the first measurement. `kinds.api` was deliberately NOT changed",
-    "in a review round about something else, and a laptop's RSS is not the box's — but if the",
-    "real containers idle near 95 MB, the 27 API containers alone are ~270 MB more than this",
-    "file prices, and the true overcommit is larger than the projection says. Cross-check the",
-    "priced total against `free -m` on the box before setting EDGE_BUDGET_ACCEPTED_MB (RUNBOOK).",
+    "**How the gate reads this file.** `preflight.sh` prices the POST-deploy set — containers running,",
+    "restarting or paused that the new compose still defines, unioned with what the declared profiles",
+    "configure (`post_deploy_compute`, lib/memory-budget.sh, which fails closed: a compose or docker",
+    "failure is a FAILED row, never a zero) — and refuses a deploy over `hard_budget_percent` unless",
+    "the owner has set `EDGE_BUDGET_ACCEPTED_MB` in .env to a number at or above the total and no",
+    "greater than `max_accepted_percent` of MemTotal (`apply_accepted_ceiling`). A running container",
+    "with no entry in `containers` is priced at `kinds.background` and named in a warning, never",
+    "treated as free.",
+    "",
+    "operations-cron, storefront-cron and document-cron no longer exist: their sweeps run inside",
+    "their own API container (RUN_SWEEPS_IN_API), 3 x 90 MB, at a measured cost of ~1 MiB per API",
+    "(operations 96,984 -> 96,516 kB, storefront 99,996 -> 101,040 kB, document 104,260 -> 104,336 kB",
+    "with the sweep off -> on). Each runs on its own one-connection bulkhead engine.",
     "",
     "`tests/infra/test_compose_memory_budget.py` is the gate: every service compose.prod.yml",
     "defines must have a `containers` entry here, and vice versa, or the test fails by name.",
     "`preflight.sh` sums this file against the box's live /proc/meminfo through",
     "`infrastructure/edge/lib/memory_budget_totals.py` and",
-    "`infrastructure/edge/lib/memory-budget.sh`'s `memory_budget_verdict`, and refuses a",
-    "deploy over `hard_budget_percent` unless `EDGE_BUDGET_ACCEPTED_MB` covers it.",
+    "`infrastructure/edge/lib/memory-budget.sh`'s `memory_budget_verdict`.",
     "",
     "`planned` (below `containers`) prices services that do not exist in compose.prod.yml yet —",
     "backlog items with a rough shape (an api, a worker) but no code. `preflight.sh` and",
     "`tests/infra/test_planned_headroom.py` report it as *projected* headroom, never as part of",
-    "the enforced budget: a placeholder must never be able to fail a real deploy."
+    "the enforced budget: a placeholder must never be able to fail a real deploy. **Delete a",
+    "placeholder the day its container lands in `containers`** — `test_planned_and_containers_never_",
+    "overlap` fails otherwise (ops-monitor, lead-api and customer-worker were each priced twice in",
+    "every projection until it existed). An `-api` placeholder names the compose service it will",
+    "become in `container`, so that test can compare names."
   ],
 
   "host": {
     "mem_total_mb_reference": 3862,
     "soft_budget_percent": 85,
     "hard_budget_percent": 100,
-    "notes": "mem_total_mb_reference documents the box this was measured against (3862 MB, from a read-only look at the production VM during review fix round 2 — it was 3800, a round number, before that); preflight.sh reads the box's own /proc/meminfo at deploy time and does not use this number. Soft: warn and let the deploy proceed — the box is allowed to run tight. Hard: refuse — past this, the kernel starts reclaiming from things that must not be reclaimed from (see datastores' mem_reservation) or the OOM killer picks a victim. Raised from 80 to 85 by the memory-headroom slice (2026-09-23) to match the 15%-margin target the backlog set for planned services — see the ADR-0013 addendum."
+    "max_accepted_percent": 125,
+    "notes": "mem_total_mb_reference documents the box this was measured against (3862 MB, from a read-only look at the production VM during review fix round 2 — it was 3800, a round number, before that); preflight.sh reads the box's own /proc/meminfo at deploy time and does not use this number. Soft: warn and let the deploy proceed — the box is allowed to run tight. Hard: refuse — past this, the kernel starts reclaiming from things that must not be reclaimed from (see datastores' mem_reservation) or the OOM killer picks a victim. Raised from 80 to 85 by the memory-headroom slice (2026-09-23) to match the 15%-margin target the backlog set for planned services — see the ADR-0013 addendum. max_accepted_percent (round 3): the most any EDGE_BUDGET_ACCEPTED_MB can cover, as a percentage of MemTotal. preflight FAILs on a ceiling above it (a 38940-for-3894 typo would otherwise be a blank cheque) and refuses any post-deploy total above it even with a ceiling: a quarter more than the box has is where the kernel stops swapping and starts killing, which is not an overcommit anyone can sign for in a .env file."
   },
 
   "kinds": {
     "api": {
-      "expected_rss_mb": 85,
+      "expected_rss_mb": 98,
       "mem_limit_mb": 256,
-      "source": "Re-measured (memory-headroom slice, 2026-09-23): the built `account` production image idled at 92-95 MB VmRSS after startup on an isolated Postgres/Redis, confirming the existing 70-100 MB range and its 85 MB midpoint. No change. mem_limit stays 256m (~3x expected idle)."
+      "source": "RE-PRICED (memory-headroom slice, review round 3, 2026-09-24) from a measurement of the real production images built from the merged tree, run against an isolated Postgres/Redis/RabbitMQ (never the shared dev stack), warmed with 40 in-container /health probes, /proc/1/status VmRSS read after ~40 s idle, MALLOC_ARENA_MAX=2 and the compose pool sizes: account 97.1, lead 92.2, operations 95.5, storefront 99.2, document 102.3, notification 100.6, customer 91.7 MiB (kB / 1024). Earlier round-2 runs of operations/storefront/document gave 94.7 / 97.7 / 101.8. Ten measurements of seven images: mean 97.3, max 102.3 MiB; priced at 98 (the mean, rounded up to a whole MiB). It was 85, an estimate confirmed only by one 92-95 MB read of `account` — the API images are ~15% heavier than that. These are arm64 Docker Desktop figures; the box is amd64. Cross-check `docker stats --no-stream` on the box before treating any of this as exact. mem_limit stays 256m (~2.6x expected idle).",
+      "measured_mib": {
+        "account": 97.1,
+        "lead": 92.2,
+        "operations": 95.5,
+        "storefront": 99.2,
+        "document": 102.3,
+        "notification": 100.6,
+        "customer": 91.7
+      }
     },
     "background": {
-      "expected_rss_mb": 85,
+      "expected_rss_mb": 90,
       "mem_limit_mb": 192,
-      "source": "CORRECTED (memory-headroom slice, 2026-09-23): the built `account` image running `python -m app.consumers` idled at 88 MB VmRSS; the built `product` image running `python -m platform_core.edge_relay` across all 27 schemas idled at 93 MB. Both isolated Postgres/Redis/RabbitMQ, never the shared dev database. Raised from the previous 42 MB (35-50 MB assumed range, itself never actually measured — see this file's top-level $comment) to 85 MB, matching `kinds.api`: a background process imports nearly the same module graph an API does and is not meaningfully lighter. mem_limit stays 192m; that is now ~2.3x expected idle rather than ~4.5x, still a real fuse."
+      "source": "RE-PRICED (memory-headroom slice, review round 3, 2026-09-24), same method as kinds.api, images built from the merged tree: account-worker (./bin/worker) 89.6, notification-worker 92.1, customer-worker 84.6, edge-relay (python -m platform_core.edge_relay, EDGE_RELAY_SCHEMAS = compose's full list) 91.4 MiB. Mean 89.4, priced at 90 (rounded up). Was 85 (round 2), and 42 before that — a guess (compose comment '~35 MB each') never measured; a background process imports nearly the same module graph an API does and is not meaningfully lighter. arm64 figures; cross-check on the box. mem_limit stays 192m: ~2.1x expected idle, a real but shrinking fuse.",
+      "measured_mib": {
+        "account-worker": 89.6,
+        "notification-worker": 92.1,
+        "customer-worker": 84.6,
+        "edge-relay": 91.4
+      }
     },
     "ops_monitor": {
-      "expected_rss_mb": 48,
+      "expected_rss_mb": 93,
       "mem_limit_mb": 128,
-      "source": "C10 (ops-monitor): a 60s poll loop over a 2-connection outbox pool, a short-lived httpx client and one embedded uvicorn worker serving /metrics and /status — a shade heavier than a plain background consumer (background's 42 MB) for the extra HTTP server, still well under an API's 85 MB. mem_limit is 128m, not background's 192m: the full-profile budget (test_env_example_profile_list_fits_the_documented_box) was already at ~94% before this container existed, and this is the one always-on container added since — 128m keeps the total at ~98%, still under the 100% hard line, where 192m would not. ~2.7x expected idle rather than background's ~4.5x: less headroom, on purpose, because there was no headroom to spend. If this ever needs to grow, something else on the box has to shrink first."
+      "source": "MEASURED (memory-headroom slice, review round 3, 2026-09-24): the `product` image running `python -m platform_core.ops_monitor` idled at 92.3 MiB VmRSS (94,476 kB), same method as kinds.api. slice/ops-monitor priced it at 48 MB ('a shade heavier than a plain background consumer') — it is not lighter than one: it imports the same module graph plus an HTTP server. The 128m mem_limit that slice chose to keep the total under the hard line leaves ~36 MiB of headroom over this idle figure (1.4x); a reduced-headroom fuse that was tuned against the wrong number. Not raised here (that container's own block belongs to the slice that owns it) — listed in the review-round-3 report for that owner. arm64 figure; cross-check on the box.",
+      "measured_mib": {
+        "ops-monitor": 92.3
+      }
     }
   },
 
@@ -252,21 +270,8 @@
       "how many loops share the process). If a future merge ever needs a bigger `mem_limit` for",
       "the container it lands in, that is a `containers`/`mem_limit_mb` edit, not a `planned` one."
     ],
-    "ops-monitor": {
-      "kind": "ops_monitor",
-      "note": "slice/ops-monitor (e812d44, in review 2026-09-23): an always-on health/alerting container. Landing on release before this slice; this branch's compose.prod.yml does not have it yet, so it is priced here rather than in `containers`."
-    },
-    "lead-api": {
-      "kind": "api",
-      "profile": "crm",
-      "note": "CRM lead service (services/lead) going from scaffold to a real API this quarter — the ADR-0013 comment naming it 'deliberately absent' stops being true once this lands."
-    },
-    "customer-worker": {
-      "kind": "background",
-      "profile": "crm",
-      "note": "customer-service gaining its first consumer this quarter (Q3 lead/customer work). customer and deal today have no worker at all — this is the first background container that profile would add."
-    },
     "payroll-api": {
+      "container": "payroll",
       "kind": "api",
       "profile": "hrms",
       "note": "backlog: payroll, folded into HRMS. No service directory yet."
@@ -277,21 +282,25 @@
       "note": "backlog: payroll's payslip/compliance run, assumed to need its own sweep the way approval and attendance do."
     },
     "recruit-api": {
+      "container": "recruit",
       "kind": "api",
       "profile": "hrms",
       "note": "backlog: recruiting/ATS, folded into HRMS. No service directory yet."
     },
     "config-service-api": {
+      "container": "config",
       "kind": "api",
       "profile": null,
       "note": "backlog: a platform config surface (feature flags / org-level settings) named core rather than product-profiled, since every product would read it. No service directory yet — priced against core so a future slice adding it to `containers` with `profile: null` matches this placeholder."
     },
     "operator-console-api": {
+      "container": "console",
       "kind": "api",
       "profile": null,
       "note": "the operator/staff console backend (this repository's own slice/operator-console-backend branch) — internal tooling used across every product, assumed core rather than profiled."
     },
     "analytics-api": {
+      "container": "analytics",
       "kind": "api",
       "profile": "analytics",
       "note": "backlog: cross-product analytics/reporting. New profile; no service directory yet."
@@ -302,11 +311,13 @@
       "note": "backlog: analytics' rollup/aggregation sweep, assumed to run on a schedule against event data the way finance's e-Invoice retry does."
     },
     "marketplace-api": {
+      "container": "marketplace",
       "kind": "api",
       "profile": "marketplace",
       "note": "backlog: a partner/integration marketplace. New profile; no service directory yet."
     },
     "workflow-api": {
+      "container": "workflow",
       "kind": "api",
       "profile": "workflow",
       "note": "backlog: a cross-product workflow/automation engine. New profile; no service directory yet."

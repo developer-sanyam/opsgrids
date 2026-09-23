@@ -150,3 +150,44 @@ class TestActivatedProfiles:
             "hrms",
             "inventory",
         ]
+
+
+def expand_profile_wildcard(declared: str, every: str) -> str:
+    script = f'source "{ACTIVE_PROFILES_LIB}"; expand_profile_wildcard "$1" "$2"'
+    result = subprocess.run(
+        ["bash", "-c", script, "_", declared, every], capture_output=True, text=True, cwd="/"
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+class TestExpandProfileWildcard:
+    """`COMPOSE_PROFILES=*` is valid for docker compose and ops-monitor; preflight's advisories
+    match profile names one at a time and a literal `*` matches none of them (round 3)."""
+
+    def test_a_bare_star_becomes_every_profile(self) -> None:
+        assert expand_profile_wildcard("*", "inventory,storefront,hrms") == (
+            "inventory,storefront,hrms"
+        )
+
+    def test_a_list_without_a_star_is_untouched(self) -> None:
+        assert expand_profile_wildcard("inventory,hrms", "inventory,storefront,hrms") == (
+            "inventory,hrms"
+        )
+
+    def test_a_star_beside_named_profiles_keeps_them_first_and_deduplicates(self) -> None:
+        assert expand_profile_wildcard("hrms,*", "inventory,storefront,hrms") == (
+            "hrms,inventory,storefront"
+        )
+
+    def test_empty_stays_empty(self) -> None:
+        assert expand_profile_wildcard("", "inventory") == ""
+
+    def test_the_star_is_never_glob_expanded_into_filenames(self) -> None:
+        """Run from a directory full of files: an unquoted `for x in $list` would turn `*` into
+        their names. (cwd is the repository root here, which has plenty.)"""
+        script = f'source "{ACTIVE_PROFILES_LIB}"; expand_profile_wildcard "*" "inventory"'
+        result = subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True, cwd=REPO_ROOT
+        )
+        assert result.stdout.strip() == "inventory"

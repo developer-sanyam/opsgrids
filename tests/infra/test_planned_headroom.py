@@ -134,3 +134,40 @@ def test_realistic_today_plus_every_planned_service_projection() -> None:
         "longer over the hard budget. If consolidation work earned this back, update this test's "
         "expectation and revisit the RAM/de-listing decision this number used to document."
     )
+
+
+def test_planned_and_containers_never_overlap() -> None:
+    """A `planned` placeholder is deleted the day its container lands in `containers` (round 3).
+    Left behind, it prices the same container twice in every projection — which is exactly what
+    happened to `ops-monitor`, `lead-api` (compose name: `lead`) and `customer-worker` when their
+    slices merged: the projected total counted each of them once as real and once as planned.
+
+    Names differ between the two lists (`lead-api` vs `lead`), so this checks each planned
+    entry's own name, its declared eventual `container`, and the name with an `-api` suffix
+    stripped — the convention every compose service name here follows."""
+    budget = _budget()
+    containers = set(budget["containers"])
+    for name, meta in planned_entries(budget).items():
+        candidates = {name, meta.get("container", name), name.removesuffix("-api")}
+        clash = candidates & containers
+        assert not clash, (
+            f"planned.{name} is already a real container ({sorted(clash)}) in `containers` — "
+            "delete the placeholder; it is being priced twice."
+        )
+
+
+def test_planned_api_entries_name_the_container_they_will_become() -> None:
+    """The overlap test above is only as good as the names it can compare. An `-api` planned entry
+    without a `container` field is guessing at the compose name; declare it."""
+    budget = _budget()
+    for name, meta in planned_entries(budget).items():
+        if name.endswith("-api"):
+            assert "container" in meta, f"planned.{name} does not say what compose will call it"
+
+
+def test_the_accepted_ceiling_cap_is_above_the_hard_line_and_documented() -> None:
+    """`host.max_accepted_percent` is what preflight bounds `EDGE_BUDGET_ACCEPTED_MB` with. A cap at
+    or below the hard line would make the ceiling meaningless (nothing could ever be accepted)."""
+    host = _budget()["host"]
+    assert host["max_accepted_percent"] > host["hard_budget_percent"]
+    assert host["max_accepted_percent"] == 125

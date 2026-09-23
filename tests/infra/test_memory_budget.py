@@ -80,10 +80,22 @@ def test_custom_thresholds_are_respected() -> None:
 
 
 def apply_accepted_ceiling(
-    verdict: str, percent: int, expected_mb: int, accepted_mb: str = ""
+    verdict: str, percent: int, expected_mb: int, accepted_mb: str = "", cap_mb: str = ""
 ) -> str:
-    script = f'source "{MEMORY_BUDGET_LIB}"; apply_accepted_ceiling "$1" "$2" "$3" "${{4:-}}"'
-    args = ["bash", "-c", script, "_", verdict, str(percent), str(expected_mb), str(accepted_mb)]
+    script = (
+        f'source "{MEMORY_BUDGET_LIB}"; apply_accepted_ceiling "$1" "$2" "$3" "${{4:-}}" "${{5:-}}"'
+    )
+    args = [
+        "bash",
+        "-c",
+        script,
+        "_",
+        verdict,
+        str(percent),
+        str(expected_mb),
+        str(accepted_mb),
+        str(cap_mb),
+    ]
     result = subprocess.run(args, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     return result.stdout.strip()
@@ -122,3 +134,49 @@ def test_the_ceiling_is_static_not_derived_from_expected_mb() -> None:
     """Unlike the removed last-ok ratchet, this ceiling never moves on its own — a smaller
     deploy than before is judged against the same owner-set number, not a new, lower bar."""
     assert apply_accepted_ceiling("refuse", 90, 3500, "4149") == "warn 90"
+
+
+# ------------------------------------------ the ceiling's upper bound (round 3, M5)
+
+
+def test_a_total_over_the_cap_refuses_even_with_a_ceiling_that_covers_it() -> None:
+    """The cap is absolute: past a quarter more than the box has, no `.env` line can sign for it."""
+    assert apply_accepted_ceiling("refuse", 130, 5000, "6000", "4827") == "refuse 130"
+
+
+def test_a_total_at_the_cap_is_still_covered_by_a_ceiling() -> None:
+    assert apply_accepted_ceiling("refuse", 125, 4827, "4827", "4827") == "warn 125"
+
+
+def test_no_cap_given_behaves_as_before() -> None:
+    assert apply_accepted_ceiling("refuse", 130, 5000, "6000") == "warn 130"
+
+
+def test_a_non_numeric_cap_is_not_a_reason_to_error_out_of_the_gate() -> None:
+    assert apply_accepted_ceiling("refuse", 109, 4149, "4200", "lots") == "refuse 109"
+
+
+def describe_budget_usage(expected_mb: int, mem_total_mb: int) -> str:
+    script = f'source "{MEMORY_BUDGET_LIB}"; describe_budget_usage "$1" "$2"'
+    result = subprocess.run(
+        ["bash", "-c", script, "_", str(expected_mb), str(mem_total_mb)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def test_usage_under_memtotal_is_percent_to_one_decimal() -> None:
+    assert describe_budget_usage(3400, 3862) == "3400M of 3862M MemTotal (88.0%)"
+
+
+def test_usage_over_memtotal_says_how_many_megabytes_over() -> None:
+    """3894 MB on a 3862 MB box floors to "100%" — reads as fine. It is 32 MB over."""
+    assert describe_budget_usage(3894, 3862) == (
+        "3894M against 3862M MemTotal: 32M over MemTotal (100.8%)"
+    )
+
+
+def test_usage_exactly_at_memtotal_is_not_called_an_overcommit() -> None:
+    assert describe_budget_usage(3862, 3862) == "3862M of 3862M MemTotal (100.0%)"

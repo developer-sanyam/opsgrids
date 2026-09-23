@@ -74,6 +74,7 @@ from platform_core.db import (
     session_scope,
 )
 from platform_core.logging import get_logger
+from platform_core.supervise import register_sweep_health
 
 log = get_logger("storefront.cron")
 
@@ -137,6 +138,10 @@ class DomainSweep:
         # SIGTERM shutdown" the loop exists to have, not merely a flag nothing ever reads
         # promptly.
         self._stop_event = asyncio.Event()
+        #: The three numbers `/metrics` exposes for an in-API sweep (`sweep_alive`,
+        #: `sweep_consecutive_failures`, `sweep_last_success_timestamp_seconds`) — see
+        #: `platform_core.supervise.SweepHealth`. Named after the log-event prefix.
+        self.health = register_sweep_health("storefront.domain.sweep")
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -155,19 +160,28 @@ class DomainSweep:
         # the `storefront` API process itself, not only its own `storefront-cron` container: an
         # unguarded discovery failure here would take the storefront API down with it, not just
         # this sweep.
-        backoff = self._poll_interval
+        # Starts at `min(poll_interval, max_backoff)`, not the bare poll interval — the same fix
+        # `GuardedSweep` got: a poll interval above the cap must not make the *first* retry wait
+        # the whole interval.
+        initial_backoff = min(self._poll_interval, self._max_backoff)
+        backoff = initial_backoff
         while not self._stop_event.is_set():
             try:
                 report = await self.tick()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception("storefront.domain.sweep.tick_failed")
+                self.health.record_failure()
+                log.exception(
+                    "storefront.domain.sweep.tick_failed",
+                    consecutive_failures=self.health.consecutive_failures,
+                )
                 with suppress(TimeoutError):
                     await asyncio.wait_for(self._stop_event.wait(), timeout=backoff)
                 backoff = min(backoff * 2, self._max_backoff)
                 continue
-            backoff = self._poll_interval
+            backoff = initial_backoff
+            self.health.record_success()
             if report.acted or report.failed:
                 log.info(
                     "storefront.domain.sweep.pass",

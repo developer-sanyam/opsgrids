@@ -102,3 +102,59 @@ class TestTickFailureIsCaughtAndBackedOff:
         monkeypatch.setattr(sweep, "tick", fake_tick)
         with pytest.raises(asyncio.CancelledError):
             await sweep.run()
+
+
+class TestFirstBackoffNeverExceedsTheCap:
+    """Round 3: the same fix `GuardedSweep` got — backoff begins at `min(poll_interval,
+    max_backoff)`, so a poll interval above the cap cannot make the first retry wait the whole
+    interval."""
+
+    async def test_a_poll_interval_above_the_cap_retries_after_the_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sweep = _sweep(poll_interval=86_400.0, max_backoff=300.0)
+        waits = await _run_and_collect(
+            sweep,
+            monkeypatch,
+            [RuntimeError("blip"), SweepReport(), RuntimeError("x"), SweepReport()],
+        )
+        assert waits == [300.0, 86_400.0, 300.0, 86_400.0]
+
+
+class TestSweepHealthIsRecorded:
+    """The numbers `/metrics` exposes for an in-API sweep (`sweep_consecutive_failures`,
+    `sweep_last_success_timestamp_seconds`): a failed tick counts, a clean one resets and stamps."""
+
+    async def test_failures_count_up_and_a_clean_tick_resets_and_stamps(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sweep = _sweep(poll_interval=5.0, max_backoff=60.0)
+        seen: list[tuple[int, float]] = []
+        ticks = [RuntimeError("x"), RuntimeError("x"), SweepReport()]
+
+        async def spying_wait_for(aw: Any, timeout: float) -> None:  # noqa: ASYNC109
+            aw.close()
+            seen.append((sweep.health.consecutive_failures, sweep.health.last_success_ts))
+            raise TimeoutError
+
+        monkeypatch.setattr(asyncio, "wait_for", spying_wait_for)
+
+        async def fake_tick(now: Any = None) -> SweepReport:
+            result = ticks.pop(0)
+            if not ticks:
+                sweep.stop()
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        monkeypatch.setattr(sweep, "tick", fake_tick)
+        await sweep.run()
+        # After the two failures the streak was 1 then 2 (never a success yet); after the clean
+        # tick it is back to 0 with a real wall-clock stamp.
+        assert [streak for streak, _ in seen] == [1, 2, 0]
+        assert seen[0][1] == 0.0 and seen[1][1] == 0.0
+        assert seen[2][1] > 1_700_000_000
+
+    def test_the_sweep_registers_under_its_log_event_prefix(self) -> None:
+        sweep = _sweep()
+        assert sweep.health.name == "storefront.domain.sweep"

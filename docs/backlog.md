@@ -27,7 +27,7 @@ deployed only by GitHub Actions from green `main`.
 
 | # | Slice | Status | Why this order |
 |---|---|---|---|
-| 1 | **Storefront custom-domain sweep** (`services/storefront/app/cron.py`) | In progress | `compose.prod.yml` already defines `storefront-cron` running `bin/cron`, and the module it runs does not exist. A merchant's custom domain can never become verified. ADR-0012 specifies the behaviour. |
+| 1 | **Storefront custom-domain sweep** (`services/storefront/app/cron.py`) | In progress | The module now exists (ADR-0012 §6) and, since ADR-0013's memory-headroom fix round 2, runs inside the `storefront` API container (`RUN_SWEEPS_IN_API`) — `storefront-cron` is no longer a container. Original gap: a merchant's custom domain could never become verified. ADR-0012 specifies the behaviour. |
 | 2 | **Document service and MinIO on the edge** | PR open | `document` and `minio` are wired into `compose.prod.yml` behind the `storefront` profile, routed at the gateway, migrated by `remote.sh`, and backed up; needs `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` set on the box before the next deploy. |
 | 3 | **Scheduler service, first consumer: finance `not_before`** | Not started | `services/scheduler` is a scaffold. e-Invoice and e-Way retries carry their own delay and are redelivered at once instead. Per-service cron containers move onto it later. |
 | 4 | **GSTR-3B and the input-tax-credit ledger** | Not started | The next compliance slice that needs no credentials, using the stub-client pattern. Larger than 1 to 3. |

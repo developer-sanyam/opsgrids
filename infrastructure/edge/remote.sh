@@ -57,11 +57,22 @@ resolve_profiles() {
 	edge_profiles=$(sed -n 's/^EDGE_PROFILES=//p' .env | head -1 | tr -d '"'"'"' \r')
 	compose_profiles=$(sed -n 's/^COMPOSE_PROFILES=//p' .env | head -1 | tr -d '"'"'"' \r')
 	resolved=$(resolve_declared_profiles "$edge_profiles" "$compose_profiles")
+	# `COMPOSE_PROFILES=*` is valid for compose itself; expand it here (as preflight.sh does) so
+	# every script judges the same explicit list. `config --profiles` reads the compose file only.
+	case ",$resolved," in
+	*",*,"*)
+		local all_profiles
+		all_profiles=$(docker compose -f compose.prod.yml --env-file .env config --profiles | tr '\n' ',' | sed 's/,$//') || return 1
+		resolved=$(expand_profile_wildcard "$resolved" "$all_profiles")
+		;;
+	esac
+	# Always exported — not only when EDGE_PROFILES overrides (round 3, LOW): an exported shell
+	# variable is what "${COMPOSE[@]}" resolves ahead of the COMPOSE_PROFILES line `--env-file
+	# .env` would otherwise supply, so exporting the value this function just resolved is what makes
+	# preflight.sh and this script provably the same list, whichever key it came from, quoted or
+	# not. (Exporting an identical value is free; not exporting one that differs is the bug.)
+	export COMPOSE_PROFILES="$resolved"
 	if [ -n "$edge_profiles" ]; then
-		# Exported, so it takes precedence over the COMPOSE_PROFILES line in .env for every
-		# "${COMPOSE[@]}" call below — docker compose resolves an exported shell variable ahead
-		# of one read from --env-file.
-		export COMPOSE_PROFILES="$resolved"
 		echo "profiles: EDGE_PROFILES set — running $COMPOSE_PROFILES"
 	fi
 }
@@ -258,13 +269,30 @@ ensure_ops_monitor_state_dir() {
 	echo "ops-monitor state dir: $state_dir owned by $uid:$gid"
 }
 
+# How many containers `up` starts at once. Four by default; `EDGE_UP_PARALLEL_LIMIT` — in the
+# environment, or as a line in `.env` (ssh does not carry an operator's shell environment across,
+# and `make deploy` runs this over ssh) — overrides it. Anything that is not a positive whole
+# number falls back to four rather than reaching compose. The release that merged ops-monitor,
+# CRM lead/customer-worker and the document/scheduler/leave services lands ~+450 MB at once on a
+# box already swapping: the RUNBOOK's rollout section asks for `2` on that deploy.
+up_parallel_limit() {
+	local value="${EDGE_UP_PARALLEL_LIMIT:-}"
+	if [ -z "$value" ] && [ -f .env ]; then
+		value=$(sed -n 's/^EDGE_UP_PARALLEL_LIMIT=//p' .env | head -1 | tr -d '"'"'"' \r')
+	fi
+	case "$value" in
+	'' | *[!0-9]* | 0) value=4 ;;
+	esac
+	echo "$value"
+}
+
 up() {
 	log "recreating containers (brief downtime for anything that changed)"
 	ensure_ops_monitor_state_dir
-	# Four at a time. Unbounded, a deploy that touches the shared environment starts every
-	# container at once, and ~59 Python interpreters importing SQLAlchemy on two cores is a
+	# Four at a time by default. Unbounded, a deploy that touches the shared environment starts
+	# every container at once, and ~59 Python interpreters importing SQLAlchemy on two cores is a
 	# load average of 7 and health checks timing out for no reason but the stampede.
-	COMPOSE_PARALLEL_LIMIT=4 "${COMPOSE[@]}" up -d --remove-orphans
+	COMPOSE_PARALLEL_LIMIT="$(up_parallel_limit)" "${COMPOSE[@]}" up -d --remove-orphans
 	# The Caddyfile arrives through a bind mount (of its directory — a file mount follows the
 	# inode and keeps serving the pre-checkout file), so editing it changes nothing compose
 	# can see: `up` leaves the container, and the config it loaded at start, exactly as it
@@ -391,7 +419,7 @@ record_budget() {
 		return 0
 	fi
 	if ! post_deploy_compute "$budget_file" || [ -z "${POST_DEPLOY_MB:-}" ]; then
-		echo "record-budget: could not price the running box — not recorded" >&2
+		echo "record-budget: could not price the running box (${POST_DEPLOY_ERROR:-no reason given}) — not recorded" >&2
 		return 0
 	fi
 	if ! mkdir -p "$STATE_DIR" || ! tmp=$(mktemp "$STATE_DIR/.edge-budget.last-ok.XXXXXX"); then

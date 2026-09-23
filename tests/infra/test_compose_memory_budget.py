@@ -201,3 +201,29 @@ def test_realistic_default_profile_list_fits_comfortably() -> None:
         f"{host['mem_total_mb_reference']}M box ({percent}%) — no longer comfortably under the "
         f"soft budget ({host['soft_budget_percent']}%)."
     )
+
+
+def _mb(value: str) -> int:
+    """`256m` / `1g` / `320m` -> megabytes, the only units compose.prod.yml uses."""
+    value = str(value).strip().lower()
+    if value.endswith("g"):
+        return int(float(value[:-1]) * 1024)
+    assert value.endswith("m"), value
+    return int(float(value[:-1]))
+
+
+def test_a_memswap_limit_that_says_no_swap_really_means_no_swap() -> None:
+    """`memswap_limit` is memory *plus* swap. `document` set it to 320m for "zero swap of its
+    own" back when the shared `mem_limit` was 320m; ADR-0013's memory-budget erratum then lowered
+    the shared limit to 256m and left 64 MB of swap the comment said did not exist (round 3).
+    Any service that sets one must set it equal to its own `mem_limit`."""
+    offenders = {}
+    for name, service in _compose_services().items():
+        if "memswap_limit" not in service:
+            continue
+        mem, swap = _mb(service["mem_limit"]), _mb(service["memswap_limit"])
+        if swap != mem:
+            offenders[name] = (
+                f"mem_limit {service['mem_limit']} but memswap_limit {service['memswap_limit']}"
+            )
+    assert not offenders, offenders

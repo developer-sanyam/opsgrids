@@ -66,6 +66,38 @@ resolve_declared_profiles() {
 	fi
 }
 
+# expand_profile_wildcard <declared_csv> <all_profiles_csv> — docker compose accepts
+# `COMPOSE_PROFILES=*` ("every profile") and so does ops-monitor, so a box's `.env` may say it.
+# This script's own arithmetic and advisories, though, match profile names one at a time
+# (`*",$profile,"*` against the declared list), and a literal `*` matches none of them: every
+# sold product would read as "no service will run for it". So a declared list containing `*` is
+# expanded to the compose file's own profile list (`docker compose config --profiles`, read by
+# the caller — this stays pure), keeping anything else it listed, deduplicated, in order. Anything
+# without a `*` is returned untouched. Arrays rather than an unquoted `for`, so a `*` is never
+# glob-expanded into filenames.
+expand_profile_wildcard() {
+	local declared="${1:-}" all="${2:-}" item out="" seen=","
+	local -a items
+	case ",$declared," in
+	*",*,"*) ;;
+	*)
+		echo "$declared"
+		return 0
+		;;
+	esac
+	IFS=',' read -r -a items <<<"$declared,$all"
+	for item in "${items[@]}"; do
+		[ -n "$item" ] || continue
+		[ "$item" = "*" ] && continue
+		case "$seen" in
+		*",$item,"*) continue ;;
+		esac
+		seen="$seen$item,"
+		out="${out:+$out,}$item"
+	done
+	echo "$out"
+}
+
 # activated_profiles <product-key>... — the deduplicated list of compose profiles, one per
 # line, that have at least one activation among the product keys given. Order follows first
 # appearance; a key with no compose profile is silently skipped, the same rule the catalogue

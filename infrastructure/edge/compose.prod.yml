@@ -124,11 +124,12 @@ x-service-common: &service-common
     redis:
       condition: service_healthy
   # A fuse, not a budget: with no limit anywhere the kernel picks the out-of-memory victim, and
-  # the largest process on this box is Postgres. An API here idles at 70–100 MB
-  # (`memory-budget.json`'s `kinds.api`, 85 MB expected) — 320m was more than 3x that with
-  # nothing to show for the extra headroom, so ADR-0013's memory-budget erratum (2026-09-23)
-  # brought it down to 256m: still 3x expected idle, and 26 containers at the old ceiling
-  # versus this one cost 1.7 GB of fuse this box does not have to spend.
+  # the largest process on this box is Postgres. An API here idles at ~92–102 MiB measured
+  # (`memory-budget.json`'s `kinds.api`, 98 expected — re-priced from 85 in the memory-headroom
+  # slice's review round 3, from the real images) — 320m was more than 3x that with nothing to
+  # show for the extra headroom, so ADR-0013's memory-budget erratum (2026-09-23) brought it
+  # down to 256m: ~2.6x expected idle, and 26 containers at the old ceiling versus this one
+  # cost 1.7 GB of fuse this box does not have to spend.
   mem_limit: 256m
 
 # A background process of a service: a consumer (`bin/worker`), an outbox relay (`bin/relay`)
@@ -146,12 +147,12 @@ x-background: &background
       condition: service_healthy
     rabbitmq:
       condition: service_healthy
-  # A consumer or a sweep idles at 85-93 MB measured (`memory-budget.json`'s `kinds.background`,
-  # 85 MB expected — corrected by the memory-headroom slice, 2026-09-23: the previous 35-50 MB
-  # here was never actually measured, and building the real image against an isolated Postgres/
-  # Redis/RabbitMQ showed a background process costs about the same as an API one, not a
-  # fraction of it — see memory-budget.json's own header for the method). 192m is still ~2.3x
-  # that, a smaller multiple than before this correction but still a real fuse.
+  # A consumer or a sweep idles at ~85–92 MiB measured (`memory-budget.json`'s
+  # `kinds.background`, 90 expected — corrected by the memory-headroom slice: the original
+  # 35-50 MB here was never actually measured, and building the real images against an isolated
+  # Postgres/Redis/RabbitMQ showed a background process costs about the same as an API one, not
+  # a fraction of it — see memory-budget.json's own header for the method). 192m is ~2.1x that,
+  # a smaller multiple than it looked when the price was 42, but still a real fuse.
   mem_limit: 192m
   networks:
     - back
@@ -724,8 +725,8 @@ services:
   # under the bind mount below, never the database — it has to keep working when Postgres is
   # the thing it is watching.
   #
-  # `front` as well as `back`, the same shape `storefront-cron`'s certificate probe already
-  # uses and for the identical reason: the certificate-expiry check handshakes against Caddy on
+  # `front` as well as `back`, the same shape `storefront`'s in-process certificate probe
+  # (the domain sweep, which used to be `storefront-cron`) uses and for the identical reason: the certificate-expiry check handshakes against Caddy on
   # `front` with SNI set (see `checks.check_cert_expiry`). This is network *reachability*, not
   # exposure — nothing publishes this container's port, and neither the Caddyfile nor either
   # gateway's route table ever names it (`tests/infra/test_metrics_never_routed.py` is the
@@ -813,7 +814,7 @@ services:
       start_period: 30s
     mem_limit: 128m
     networks:
-      - front # the certificate probe handshakes against Caddy with SNI set (same as storefront-cron)
+      - front # the certificate probe handshakes against Caddy with SNI set (same as storefront's sweep)
       - back
     depends_on:
       postgres:
@@ -996,12 +997,17 @@ services:
     # value is total memory+swap, so setting it equal to `mem_limit` allows none). Every other
     # service here inherits Docker's default of roughly double `mem_limit` in swap, which is
     # the right choice for a mostly-idle API — but `document` is the one process on this box
-    # that decodes attacker-sized images (ADR-0009 §5, §11), and swapping a 300+ MB spike onto
-    # this already-swapping 2 vCPU / 3.8 GB box turns one large upload into a slow box for
+    # that decodes attacker-sized images (ADR-0009 §5, §11), and swapping a spike onto this
+    # already-swapping 2 vCPU / 3.8 GB box turns one large upload into a slow box for
     # everyone. Failing fast with an OOM kill (`docker compose logs document` shows exit 137;
     # `restart: unless-stopped` brings it back, and the request that caused it gets a 503
     # rather than a slow death for the whole VM) is the trade this container should make.
-    memswap_limit: 320m
+    #
+    # Must equal the `mem_limit` it inherits from `*service-common` (256m). It said 320m — the
+    # value that *was* the common limit until ADR-0013's memory-budget erratum lowered it to 256m
+    # — which silently allowed 64 MB of swap while this comment claimed none (round 3, LOW);
+    # `tests/infra/test_compose_memory_budget.py` pins the equality so the two cannot drift again.
+    memswap_limit: 256m
     environment:
       <<: *service-env
       # Reached over the compose network, never through Caddy: writes and deletes never need

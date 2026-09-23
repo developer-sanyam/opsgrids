@@ -366,7 +366,9 @@ been.
 > price of *this release's compose file*, not of what the box runs today.** A read-only look at the
 > production VM (MemTotal 3862 MB, about 2 GB of swap in use, 40 containers running under
 > `com.docker.compose.project=opsgrids-edge`) priced the containers actually running at **3494 MB —
-> 90%**. The 4149 MB figure is what that same box would run once *this release's* compose file
+> 90%** *(round 3 corrects this: that figure left out two running containers the budget had no
+> entry for; by the file's own rule they are priced as `background`, which makes it 3664 MB /
+> 94.9% at those prices, and 4044 MB / 104.7% at the corrected ones — see "Fix round 3")*. The 4149 MB figure is what that same box would run once *this release's* compose file
 > (47 services, ten profiles) is deployed: the extra ~655 MB is `document`, `document-cron`,
 > `minio`, `leave`, `leave-worker`, `scheduler`, `operations-cron` and `storefront-cron`, less the
 > `approval-cron` and `subscription-cron` that earlier merges removed. **This release creates the
@@ -437,8 +439,8 @@ runs:
 are over the hard line, independent of anything still on the backlog. Round 1 answered that by
 grandfathering the overcommit; round 2 found the premise ("the box already runs this") false and
 replaced the grandfather clause with an explicit owner ceiling — see "Fix round 2 review" below for
-the current numbers (3894 MB after consolidation, on the 3862 MB the box really has) and the
-decision that remains the owner's: more RAM, de-listing a product, or accepting the overcommit in
+the numbers as of that round (3894 MB after consolidation; **superseded by round 3's 4581 MB on the
+merged tree with corrected prices**) and the decision that remains the owner's: more RAM, de-listing a product, or accepting the overcommit in
 writing.
 
 ### What this does not fix — left for the owner, or a future slice
@@ -498,7 +500,8 @@ hard line before a single planned service is added (see "The projected budget" a
 Decision at the time: **grandfather, do not de-list.** *Round 2 reversed the grandfather half of
 this — read (a) as history, and "Fix round 2 review" below for what replaced it. The "109%" was
 also mislabelled "what the box actually runs today": it is what this release's compose file would
-run; the box runs ~3494 MB (90%).*
+run; the box runs ~3494 MB (90%) — round 3: 3664 MB / 94.9% at those prices once the two
+unpriced `*-cron` containers are counted, 4044 MB / 104.7% at the corrected ones.*
 - **(a) ~~Grandfather clause.~~ Removed in round 2 (B2).** Round 1 shipped
   `grandfathered_verdict` (`infrastructure/edge/lib/memory-budget.sh`), which downgraded an
   over-hard-line verdict to a `warn` when the deploy was not more than 1% worse than the last one
@@ -653,6 +656,11 @@ said "35-50 MB" and "4-5x that").
 
 ## Fix round 2 review (2026-09-24)
 
+> **Numbers in this section are as of round 2 (pre-merge tree, `kinds` 85 / 85 / 48) and are
+> superseded by "Fix round 3" below: the merge added ops-monitor, `lead` and `customer-worker`,
+> and the kinds were re-priced from measured images. The reasoning here stands; the figures do
+> not. Where a figure is wrong on its own terms it is corrected inline.**
+
 The re-review of round 1 (`8179f5f`) came back NEEDS-FIXES with two blockers, and it came with
 something this document had been missing: a read-only look at the real box. Everything below is
 priced against those facts, not against the reference number in `memory-budget.json`.
@@ -661,18 +669,25 @@ priced against those facts, not against the reference number in `memory-budget.j
 it said 3800), about 2 GB of swap already in use, 40 containers running under the compose project
 `opsgrids-edge`, `.env` with `COMPOSE_PROFILES` listing all ten profiles and no `EDGE_PROFILES`,
 and no `edge-budget.last-ok` in the state dir. Priced at `memory-budget.json`'s numbers, the
-running set is **3494 MB — 90%**.
+running set was reported as **3494 MB — 90%**. *(Corrected in round 3: that sum silently
+excluded `approval-cron` and `subscription-cron`, which were running and had no budget entry.
+The file's own M7 rule prices such a container as `kinds.background`, never as free: 3664 MB —
+94.9% at the old prices.)*
 
 **The correction this whole section turns on: this release creates the overcommit.** Rounds 0 and
-1 both said the box was already over its hard line ("109% today"). It was not — it is at 90%. The
+1 both said the box was already over its hard line ("109% today"). It was not — at the prices then
+in the file it was at ~90-95%. The
 109% was the price of *this release's compose file* (47 services, ten profiles, 4149 MB): the extra
 ~655 MB is `document`, `document-cron`, `minio`, `leave`, `leave-worker`, `scheduler`,
 `operations-cron` and `storefront-cron`, less the `approval-cron` and `subscription-cron` that
 earlier merges removed. A grandfather clause ("do not make it worse than last time") was therefore
 an answer to a question the box was not asking; the honest question is "should this release be
-allowed to take a 90% box to over 100%?", and that is the owner's to answer.
+allowed to take a ~95% box to over 100%?", and that is the owner's to answer. *(Round 3: at
+prices measured from the real images the box was already at 104.7% — see below — which is what
+the ~2 GB of swap in use was saying. That does not rescue the grandfather clause; it makes the
+owner's decision more, not less, necessary.)*
 
-### Numbers, after this round
+### Numbers, after this round (superseded — see "Fix round 3" for the current ones)
 
 Post-deploy pricing of the real production compose (`infrastructure/edge/compose.prod.yml`, 44
 services with all ten profiles) against MemTotal 3862 MB. "Cumulative" turns profiles on in the
@@ -693,9 +708,9 @@ order `memory-budget.json` lists them; "alone" is core plus that one profile.
 | **itsm — all ten** | 2049 / 53% | **3894 / 100.8%** |
 | + every `planned` backlog item (+1068) | | 4962 / 128% |
 
-Round 2's consolidation (below) is worth 3 x 85 = **255 MB** (4149 MB before, 3894 MB after). The
-ten-profile set is still fractionally over the 100% hard line and about 16 points over the 85%
-soft line, and the planned backlog does not fit on this box at any profile count near ten. No
+Round 2's consolidation (below) is worth 3 x 85 = **255 MB** at the round-2 price (4149 MB before,
+3894 MB after; 3 x 90 = 270 MB at round 3's). The ten-profile set was still fractionally over the
+100% hard line and about 16 points over the 85% soft line, and the planned backlog does not fit on this box at any profile count near ten. No
 change in this repository closes that gap; what the repository can do is refuse to let it be closed
 by accident. That is B2.
 
@@ -762,15 +777,16 @@ harness above is the middle route, and it now pins
 print` keeps the RUNBOOK's worked example (`EDGE_BUDGET_ACCEPTED_MB=3894`) from drifting from the
 priced total.
 
-**The decision this leaves open, plainly.** Ten profiles is 3894 MB on a 3862 MB box after the
-consolidation — a box that already swaps at 90% would run at 100.8%. The three options are in the
+**The decision this leaves open, plainly (round-2 figures; round 3's are 4581 MB / 118.6%).** Ten
+profiles was 3894 MB on a 3862 MB box after the consolidation — a box that already swaps would
+run at 100.8%. The three options are in the
 RUNBOOK. More RAM is the only one that adds headroom rather than redistributing it, but the
 erratum above recorded that the owner would not resize this box; that was decided at ~90%, before
 this release added ~400 MB net, so the RUNBOOK asks again rather than assuming. The planned
-backlog (+1068 MB) does not fit on this box under any of the three. **And the price list may be
-low:** see the RSS measurements below — the API images measured at 94-102 MiB against `kinds.api`'s
-85 MB, which across the 27 API containers is ~270 MB the projection does not contain. The RUNBOOK
-asks the owner to cross-check against `free -m` on the box before writing the ceiling down.
+backlog (+1068 MB) does not fit on this box under any of the three. **And the price list was
+low:** the API images measured at 94-102 MiB against `kinds.api`'s 85 MB — which round 3 acted on
+(re-priced to 98), and which the RUNBOOK still asks the owner to cross-check against `free -m` on
+the box before writing the ceiling down.
 
 ### Consolidation — `operations-cron`, `storefront-cron`, `document-cron` folded into their APIs
 
@@ -789,13 +805,16 @@ collides.
   propagating.
 - Gated per service by `RUN_SWEEPS_IN_API` (`Settings.run_sweeps_in_api`, default `false`
   everywhere; `compose.prod.yml` sets `${RUN_SWEEPS_IN_API:-true}` on the three API services).
-  `bin/cron` is kept — it is the manual entrypoint, and setting the flag to `false` puts a sweep
-  back in a container of its own without a code change.
+  `bin/cron` is kept — it is the manual entrypoint. *(Round-2 text said setting the flag to `false`
+  "puts a sweep back in a container of its own": wrong — no `*-cron` service exists to catch it, so
+  `false` **stops** the sweep. Preflight warns when it is not `true`.)*
 - **Idempotent and lease-safe, verified rather than assumed.** Storefront's domain sweep and
   document's purge sweep claim rows with `SELECT ... FOR UPDATE SKIP LOCKED`; operations'
   reconciler is read-mostly and appends (append-only ledger rule), so two overlapping runs —
-  during a rolling restart, or a rollback where the old `*-cron` briefly coexists with the new API
-  — cannot double-process. The role checks the `*-cron` entrypoints made move with the sweep:
+  the API's own copy and a by-hand `bin/cron` — cannot double-process. (The edge runs exactly one
+  API replica and `up` recreates a container rather than overlapping two, so a rolling restart is
+  not a scenario here; only a rollback to a ref that still has the `*-cron` services briefly
+  overlaps.) The role checks the `*-cron` entrypoints made move with the sweep:
   operations and document call `assert_outbox_role` at API startup, storefront asserts its
   directory role.
 - **Security exception, kept deliberately: document's orphan scan does not run in the API.**
@@ -807,7 +826,7 @@ collides.
 - Deleted from `compose.prod.yml` and `memory-budget.json`: the three `*-cron` services and their
   entries (the RUNBOOK's backup-restore stop/start lists and the storefront/document sections were
   updated to match).
-- Saving: 3 x 85 MB = **255 MB** in the budget (4149 -> 3894 MB, table above).
+- Saving: 3 x 85 MB = **255 MB** in the budget at round 2's price (4149 -> 3894 MB, table above).
 - **Measured, not assumed:** the three real production images (`docker build` of each service's
   Dockerfile) were run against an isolated Postgres/Redis/RabbitMQ (`d4b2_iso`, ports 55442 /
   63992 / 56742 — never the shared dev stack) with compose's `MALLOC_ARENA_MAX=2`, trim threshold
@@ -829,6 +848,7 @@ collides.
   box's, the reviewer asked about something else, and re-pricing 27 containers should be its own
   decision made against `docker stats` on the real box. But an owner deciding on
   `EDGE_BUDGET_ACCEPTED_MB` should know the projection may understate by up to ~270 MB.
+  *(Round 3 re-priced `kinds.api` to 98 and quantified the effect; see below.)*
 
 Tests: `libs/platform-core/tests/test_supervise.py::TestBackgroundSweep` (start then stop cancels
 cleanly; stopping a never-started task is a no-op; a sweep that finished on its own is not an
@@ -898,3 +918,307 @@ orgs`.
   ticking inside a live API is visible today only through its log lines
   (`*.sweep.started`, `*.tick_failed`).
 - **`subscription`'s own `DunningSweep`** — unchanged and still the billing slice's call.
+
+
+---
+
+## Fix round 3 review (2026-09-24) — the final round
+
+The re-review of round 2 (`c159a3e`) came back NEEDS-FIXES: two HIGH, four MEDIUM and a tail of
+lows, on a branch that had to be merged again first (`origin/release/backlog-complete` had moved
+to `1706135`: ops-monitor, the CRM `lead` service and `customer-worker`, ADR-0017/0018/0019). This
+section records what changed and, above all, **what the numbers are now**, because two of the
+previous rounds' headline numbers turned out to be wrong in the optimistic direction.
+
+**Merge.** Four conflicts, resolved as the review's map said: `remote.sh` kept both sets of `source`
+lines; `memory-budget.json` kept the corrected `background` text and took the release's
+`ops_monitor` kind with its stale "background's 42 MB" and "~94%/~98%" claims replaced by a
+measurement; `compose.prod.yml` kept the header without a service count; the RUNBOOK's routine
+table took ops-monitor's rows and its "`storefront-cron` alive" became a
+`storefront.domain.sweep.started` check. The release's own edits to this ADR (its §7 decisions)
+merged without conflict and stand.
+
+### The numbers, corrected — and re-priced from measurement (MEDIUM 4a, 4b, 4c; HIGH 2)
+
+Three things were wrong in what the owner was being told, all in the same direction.
+
+**(a) "Running today = 3494 MB / 90%" excluded two running containers.** The read-only look at the
+box found 40 containers; the budget had no entry for `approval-cron` and `subscription-cron`,
+and the sum skipped them, against the file's own M7 rule (an unpriced container is priced as
+`kinds.background`, never as free). Priced by that rule: **3664 MB — 94.9%** at the round-2
+prices. The production ref's compose (`47143a0`), ten profiles, is exactly those 40 services, so
+this is reproducible from the repository rather than from anyone's memory of the box.
+
+**(b) The price list was measured on one image.** `kinds.api` was 85, "confirmed" by a single
+92-95 MB reading of `account`. Round 2 measured three more and noticed the gap and then left it;
+round 3 acts on it. Ten measurements of seven API images, production Dockerfiles built from the
+merged tree, run against an isolated Postgres/Redis/RabbitMQ with compose's `MALLOC_ARENA_MAX=2`,
+trim threshold and pool sizes, warmed with 40 in-container `/health` probes, `VmRSS` read from
+`/proc/1/status` after ~40 s idle (MiB = kB / 1024):
+
+| kind | image | VmRSS (MiB) |
+|---|---|---|
+| api | account | 97.1 |
+| api | lead | 92.2 |
+| api | operations | 95.5 (round 2 run: 94.7) |
+| api | storefront | 99.2 (97.7) |
+| api | document | 102.3 (101.8) |
+| api | notification | 100.6 |
+| api | customer | 91.7 |
+| background | account-worker | 89.6 |
+| background | notification-worker | 92.1 |
+| background | customer-worker | 84.6 |
+| background | edge-relay (all 28 schemas) | 91.4 |
+| ops_monitor | ops-monitor (`product` image, `python -m platform_core.ops_monitor`) | 92.3 |
+
+`kinds.api` **85 -> 98** (mean 97.3 over ten readings, rounded up; max 102.3),
+`kinds.background` **85 -> 90** (mean 89.4, rounded up), `kinds.ops_monitor` **48 -> 93**
+(measured; slice/ops-monitor's figure was "a shade heavier than a plain background consumer" and
+it is not lighter than one — it imports the same module graph plus an HTTP server). Its 128m
+`mem_limit`, chosen to keep a total under the hard line at a price of 48, now leaves ~36 MiB over
+idle (1.4x): flagged for that container's owner, not edited here.
+
+**These are laptop figures.** The images ran on an arm64 Docker Desktop VM; the box is amd64. The
+same code and the same allocator settings, so the difference should be small, but it is a
+difference nobody has measured. The RUNBOOK asks the owner to read `free -m` and `docker stats` on
+the box before writing a ceiling, and the ceiling is a number the owner reads back off preflight,
+not one this repository can vouch for.
+
+The measured effect of the re-pricing on the ten-profile release: 28 API containers x 13 MiB, 12
+background x 5 MiB and ops-monitor +45 = **+469 MB** — the "up to ~270 MB understatement" round 2
+guessed at was itself an understatement, because it counted only the 27 API containers of the
+pre-merge tree and stopped at the API kind.
+
+**(c) All the numbers, on the merged tree with the re-priced kinds**, against MemTotal 3862 MB
+(soft line 3282, hard line 3862, cap 4827):
+
+| profiles enabled | this profile adds | cumulative | of MemTotal |
+|---|---|---|---|
+| core | — | 2217 | 57.4% |
+| + storefront | 256 | 2473 | 64.0% |
+| + inventory | 98 | 2571 | 66.6% |
+| + hrms | 662 | 3233 | 83.7% |
+| + crm | 384 | 3617 | 93.7% |
+| + pulseboard | 294 | 3911 | 101.3% |
+| + projects | 98 | 4009 | 103.8% |
+| + support | 98 | 4107 | 106.3% |
+| + marketing | 98 | 4205 | 108.9% |
+| + finance | 278 | 4483 | 116.1% |
+| **+ itsm — all ten** | 98 | **4581** | **118.6% — 719 MB over MemTotal** |
+| + every `planned` backlog item (+956) | | 5537 | 143.4% |
+
+| reference point | MB | % |
+|---|---|---|
+| the running set today at the production ref, round-2 prices, unpriced crons excluded (the "3494") | 3494 | 90.5% |
+| the same set, unpriced crons priced as `background` (M7) | 3664 | 94.9% |
+| the same set at the corrected prices | 4044 | 104.7% (182 MB over) |
+| this release's merge target at the *old* prices (ops-monitor 48, lead 85, customer-worker 85) | 4112 | 106.5% |
+| **this release, corrected prices, ten profiles** | **4581** | **118.6%** |
+
+The release adds eight containers (customer-worker, document, lead, leave, leave-worker, minio,
+ops-monitor, scheduler: 717 MB) and removes two (`approval-cron`, `subscription-cron`: 180 MB):
+**net +537 MB, 104.7% -> 118.6%.** The `planned` list lost its three entries that are real
+containers now (ops-monitor, `lead-api` = `lead`, `customer-worker`), which had been priced twice
+in every projection; 956 MB of genuinely-unbuilt backlog remains.
+
+**What this means for the decision, stated once and plainly.** With realistic prices the ten
+profiles need **~118.6% of a 3862 MB box** — the box is already over its hard line today (104.7%,
+which is what ~2 GB of swap in use means) and this release takes it 537 MB further. The owner's
+options are the same three as round 2, with real numbers attached (the RUNBOOK carries them):
+**accept a deliberate overcommit ceiling** (`EDGE_BUDGET_ACCEPTED_MB=4581`), **de-list products**
+(719 MB to get under the hard line: `hrms` is 662 of it, plus any one 98 MB profile; 1299 MB to
+get under the soft line), or **resize** (an 8 GB VM puts the ten near 58% and the whole planned
+backlog near 70%). The earlier erratum's "the owner will not resize" was decided before any of
+these numbers existed and is asked again rather than assumed. Every RUNBOOK and ADR figure is
+generated from the merged tree, and `test_runbook_ceiling_example_is_the_number_preflight_would_
+print` fails when the RUNBOOK's worked example stops being what preflight would print.
+
+### 1 HIGH — the gate failed open. Fixed: it fails closed, and prices restarting and paused containers
+
+`post_deploy_compute` (`lib/memory-budget.sh`) sent compose's stderr to /dev/null and ignored its
+exit status: a compose failure (a missing `.env` key, a syntax error, a missing binary) produced an
+empty post-deploy set and a green "ok memory budget … 0M (0%)". It now returns non-zero with
+`POST_DEPLOY_ERROR` naming the reason when `docker ps` fails, either `docker compose config
+--services` fails or comes back empty (a valid compose file always has core services, so empty is
+a failure, not "nothing to price"); compose's own stderr stays visible; and preflight turns it into
+`FAIL memory budget could not be priced — <why>`. The one remaining fail-open in the same gate —
+an unreadable `MemTotal` used to warn and skip — is a FAIL too. `record-budget` reports the reason
+in its own "not recorded" line. `docker ps` now includes `status=restarting` and `status=paused`: a
+crash-looping container is resident between crashes and a paused one keeps every page. "Every
+profile" for the running-set intersection is compose's own `COMPOSE_PROFILES='*'` rather than a
+list in the JSON, so a profile added to compose and forgotten in the budget cannot fall out of it.
+Tests (`tests/infra/test_preflight_memory.py`, real `preflight.sh`/`remote.sh` against a fake
+`docker`): `test_a_compose_config_failure_fails_the_memory_row_instead_of_pricing_zero` (also
+asserts compose's own error is visible), `test_an_empty_service_list_is_a_failure_not_a_zero_
+megabyte_box`, `test_docker_ps_failing_is_a_failure_because_the_running_set_is_unknown`,
+`test_an_unreadable_memtotal_is_a_failure_not_a_skipped_check`,
+`test_record_budget_reports_why_it_could_not_price_a_broken_compose_file`,
+`test_restarting_and_paused_containers_are_priced_and_exited_ones_are_not`.
+
+### 5 MEDIUM — the ceiling had no upper bound. Fixed: `host.max_accepted_percent` = 125
+
+`EDGE_BUDGET_ACCEPTED_MB` above 125% of MemTotal (4827 MB here) is a FAILED row naming the cap and
+is ignored for the verdict (a `38940` for `3894` typo would otherwise be a blank cheque); a total
+above the cap is refused even with a ceiling; a ceiling above the printed total prints
+`info … is NM above this deploy's total` (the ceiling is a decision record — exactly the printed
+post-deploy total for the commit being deployed, a rule now in the RUNBOOK and `.env.example`); a
+ceiling on a deploy that is under the hard line prints `set but not needed`; and an overcommit is
+printed as `719M over MemTotal (118.6%)` rather than a floored `118%` (a floored percent read
+"100%" for a box that was 32 MB over). Tests: `test_a_ceiling_above_the_cap_is_a_failure_naming_
+the_cap`, `test_a_total_over_the_cap_is_refused_and_says_no_ceiling_can_cover_it`,
+`test_a_ceiling_exactly_at_the_cap_is_accepted`, `test_slack_between_the_ceiling_and_the_total_is_
+reported`, `test_a_ceiling_at_exactly_the_total_reports_no_slack`, `test_a_ceiling_this_deploy_
+does_not_need_is_called_out`, and the unit cases in `test_memory_budget.py` (`apply_accepted_
+ceiling` with a cap; `describe_budget_usage`).
+
+### 3 MEDIUM — the document purge sweep spun with no sleep. Fixed: only progress earns an immediate re-run
+
+`PurgeSweep.run()` slept only when a tick *considered nothing*; one asset whose object-store delete
+failed every time made it re-run at once, forever (~740 ticks a second) — in a loop that now shares
+an event loop and a 3+2 connection pool with the upload API. It now re-runs immediately only when
+something was purged or removed (a backlog larger than `batch_size` still drains back to back);
+found-but-no-progress backs off exactly like an idle tick, doubling to the cap. A tick where every
+attempt failed also counts as a failure for the gauges below, so an always-failing asset shows as a
+climbing `sweep_consecutive_failures` instead of a healthy-looking loop. Tests (`services/document/
+tests/test_purge_sweep_run.py`): `test_a_permanently_failing_asset_sleeps_between_ticks_instead_of_
+spinning`, `test_rows_another_sweeper_keeps_locking_also_back_off`, `test_progress_earns_an_
+immediate_rerun_and_stopping_progress_backs_off`, `test_an_idle_tick_backs_off_as_it_always_did`,
+`test_a_dry_run_orphan_report_is_not_progress`, `test_health_counts_a_tick_where_every_attempt_
+failed_and_clears_on_progress`.
+
+### 6 MEDIUM — an in-API sweep was invisible when dead or failing. Fixed: an error log and three gauges
+
+`start_background_sweep` now attaches a done-callback: a sweep task that ends without being
+cancelled — it raised, or a bug made it return — is logged at **error** as
+`supervise.background_sweep_exited`, and its `sweep_alive` gauge drops to 0. Each sweep
+(`GuardedSweep` subclasses, storefront's `DomainSweep`, document's `PurgeSweep`) records a
+`SweepHealth`, and every API's own `/metrics` exposes `sweep_alive`, `sweep_consecutive_failures`
+and `sweep_last_success_timestamp_seconds`, labelled `sweep="inventory.reconcile"`,
+`"storefront.domain.sweep"`, `"document.sweep"` (the log-event prefix, so a metric and the line that
+explains it read the same). Names are in the RUNBOOK for the ops-monitor follow-up — nothing reads
+them yet, and ops_monitor's code is deliberately untouched. Tests: `test_supervise.py::
+TestSweepHealth`, `::TestBackgroundSweepIsLoudWhenItDies` (raises -> error log + not alive;
+merely returns -> error; a clean stop -> no error; stopping a dead sweep does not raise at
+shutdown), `test_app_metrics.py::test_an_in_process_sweep_reports_its_three_gauges`,
+`::test_an_api_with_no_sweep_exposes_none`, and each service's wiring test (alive while running,
+not alive after stop).
+
+### 7 LOW-MED — a daily sweep waited a day after its first failure. Fixed
+
+`GuardedSweep`'s backoff began at `poll_interval` and was only capped after the first sleep: a
+86,400 s sweep with the default 300 s cap waited 24 hours after one failed tick. It now starts (and
+resets) at `min(poll_interval, max_backoff)`; storefront's `DomainSweep` and document's `PurgeSweep`
+got the same. Tests: `test_supervise.py::TestFirstBackoffNeverExceedsTheCap` (both the first retry
+and the reset after a clean tick), `test_domain_sweep_run.py::TestFirstBackoffNeverExceedsTheCap`,
+`test_purge_sweep_run.py::test_a_raising_tick_first_retries_after_the_cap_not_after_the_poll_
+interval`.
+
+### 8 LOW — the in-API sweeps held a request-pool connection across network calls. Fixed: a bulkhead
+
+It was straightforward, so it was done rather than deferred: `platform_core.db.create_bulkhead_
+engine` (a private application-role engine, **one connection, no overflow**, same DSN, same
+tenant-GUC reset as the process engine) and `bulkhead_scope` (`session_scope`'s shape on that
+engine). Each of the three services builds its sweep on it and disposes it at shutdown. The problem
+it removes: storefront's domain claim holds its `FOR UPDATE` transaction across probes of up to
+~15 s a domain, and document's purge holds its transaction across the object-store delete — the
+"network I/O inside a transaction" pattern D3 (#14, #16) is removing at the source — while the API's
+request pool is 3 + 2. With the bulkhead a slow probe can neither take one of those five nor be
+starved by buyer traffic. Cost: one more Postgres connection per API process that runs a sweep,
+opened lazily, plus an engine object (no measurable RSS: the sweep-off/on readings above differed by
+~1 MiB). **Sequential use only** — a pool of one would deadlock a scope that nested a second on the
+same engine; no sweep does, and a test pins that a second scope waits rather than growing the pool.
+D3's priority is unchanged: this contains the blast radius, it does not remove the pattern.
+Tests: `libs/platform-core/tests/test_bulkhead.py` (pool of one with no overflow; app role;
+tenant GUC bound per scope and not leaked; a second scope waits), and each service's wiring test
+(the sweep is built on the bulkhead's scope; the engine is disposed at shutdown).
+
+### 9 LOW — `remote.sh` exported `COMPOSE_PROFILES` only when `EDGE_PROFILES` was set. Fixed
+
+It now always exports what `resolve_profiles` resolved, so a stray `COMPOSE_PROFILES` in an
+operator's shell can no longer beat `--env-file` and make `record-budget` price a different box
+than preflight judged. Test: `test_remote_sh_always_exports_the_profile_list_it_resolved`.
+
+### 10 LOW docs — stale statements
+
+RUNBOOK: `--remove-orphans` on the box removes **only `approval-cron` and `subscription-cron`**
+(`notification-cron`, `operations-cron` and `document-cron` never reached it, and `storefront-cron`
+sat behind the unused `sweep` profile); rollback to `47143a0` recreates those two and removes the
+eight this release added; **`RUN_SWEEPS_IN_API=false` STOPS the sweeps** (no cron service is left
+to catch them) and preflight warns when it is not `true`; the "rolling restart" scenario is
+removed. Comments: `services/document/app/config.py`, `storage.py` (no longer say the orphan
+credential is held by `document-cron`), `compose.prod.yml` (`x-service-common`, `x-background`,
+ops-monitor's `storefront-cron` references), `docs/architecture.md` (which services run their cron
+inside the API), `docs/backlog.md`, ADR-0009 and ADR-0012 pointers. Tests: `test_the_in_api_sweeps_
+being_switched_off_is_warned_about`, `test_the_in_api_sweeps_default_is_reported_ok`.
+
+### 11 LOW — the smaller items
+
+- **Suspended activations count.** Round 2's L12 dropped them on the reasoning that nobody is served
+  for one; `product.project_subscription` flips a suspended activation back to `active` when a
+  payment lands, onto a service this box would not be running. The advisory counts `trial`,
+  `active` and `suspended` (still excluding `e2e-%` organizations). Test: `test_the_activations_
+  query_counts_suspended_and_skips_e2e_orgs`.
+- **`COMPOSE_PROFILES=*`.** Valid for compose and for ops-monitor; a literal `*` matches no profile
+  name, so every sold product read as unserved and a healthy deploy was refused. Preflight and
+  `remote.sh` expand it from `docker compose config --profiles` (`expand_profile_wildcard`, tested
+  including that it is never glob-expanded into filenames). Tests: `test_a_wildcard_profile_list_is_
+  expanded_not_read_as_no_products`, `test_a_wildcard_is_expanded_by_remote_sh_too`,
+  `test_active_profiles.py::TestExpandProfileWildcard`.
+- **`document`'s `memswap_limit`** said 320m against a 256m `mem_limit` — 64 MB of swap allowed
+  under a comment that said none, left over from before the erratum lowered the shared limit. Now
+  256m, and `test_a_memswap_limit_that_says_no_swap_really_means_no_swap` keeps any service from
+  drifting the same way.
+- **The APIs must not refuse to start over a sweep's precondition.** `operations` and `document`
+  used to let a failed `assert_outbox_role` abort the API's own startup. It now skips only the
+  sweep, logs `<sweep>.not_started` at error and leaves the gauges saying it never ran. Tests:
+  `test_a_failed_outbox_role_precondition_skips_only_the_sweep` (operations and document).
+  Storefront's own directory-role assertion is the *API's* precondition (the anonymous route
+  depends on it) and is unchanged.
+- **Ledger note, not edited here:** preflight's activation advisory excludes organizations whose
+  slug starts `e2e-`, on the strength of `e2e/conftest.py`. Nothing in account/auth reserves that
+  prefix, so a real customer who registers `e2e-acme` would be invisible to the "you are about to
+  take a paying customer's product away" refusal. The reservation belongs in account/auth (out of
+  this slice's scope); until then the exclusion is a known small hole.
+
+### Two deploy blockers found by the environment audit, fixed in the same push
+
+- **The Caddyfile site list matched the catch-all as an empty name.** `preflight.sh`'s `sed -n
+  's#^https://\([a-z0-9.-]*\) {$#\1#p'` matched `https:// {` (the custom-domain on-demand-TLS
+  catch-all) as `""`, so every preflight run failed with "the Caddyfile serves  but
+  TLS_PLATFORM_HOSTS does not list it", whatever `.env` said. `\{1,\}` instead of `*`. Tests
+  extract the exact expression from `preflight.sh`, run it against the real Caddyfile and assert no
+  empty name and that every site it does produce is in the example `TLS_PLATFORM_HOSTS` — **none is
+  unlisted, so nothing needed exempting**. (The test helper that built the scratch `.env` used the
+  same `*` and had been quietly listing an empty host, which is how the suite stayed green.)
+- **`.env` is sourced as shell, so an unquoted value with whitespace ran the rest as a command.**
+  `EDGE_PROFILES=inventory, storefront` died with exit 127 and no FAILED footer. A pre-check on the
+  raw file, before it is sourced, now fails with a row naming the key and exits before anything is
+  read or run; quoted values, a trailing space, an inline ` # comment` and a `#` inside a value are
+  not flagged, and neither are CRLF line endings. Tests: `test_an_unquoted_value_with_whitespace_is_
+  a_named_failure_not_exit_127`, `test_nothing_in_a_bad_env_line_is_executed`,
+  `test_quoted_values_a_trailing_space_and_inline_comments_are_not_flagged` and three more.
+
+### Deploy guidance for this release (RUNBOOK, "Rolling out this release on the box")
+
+`up` is not staged and the merge lands ~+540 MB at once on a box that is already swapping (~+450 at
+the old prices). So: `EDGE_UP_PARALLEL_LIMIT=2` for this one deploy (a new optional `.env` line —
+ssh carries no environment, so an exported variable would never arrive; `remote.sh up` reads it,
+default 4, anything that is not a positive whole number falls back to 4; tested), a quiet window,
+`vmstat 5` in a second session. **There is no automatic rollback**: `health` gives up after 600 s
+with the containers as they are and no `record_ref`; the rollback is `make edge-rollback`. The
+key table lists all 19 keys `.env.example` gained since the production ref.
+
+### Still not done, and why
+
+- **The owner decision** — unchanged, and now with numbers that cannot be read as "nearly fits".
+  Until `.env` has a considered `EDGE_BUDGET_ACCEPTED_MB` (or the box is bigger, or a product
+  de-listed), the first deploy refuses, on purpose.
+- **The prices are laptop figures** and the datastores (postgres 350, rabbitmq 150, redis 40, caddy
+  64, minio 60) were never re-measured; postgres is the one most likely to move.
+- **ops-monitor's `mem_limit` (128m) against 92.3 MiB idle** — for that container's owner. Its
+  `checks.py` docstrings still describe `operations-cron`'s liveness as uncovered; the `sweep_alive`
+  gauge is what would cover it now.
+- **D3's #14/#16** (network I/O out of transactions) — the bulkhead contains it, the fix is theirs.
+- **The `e2e-` slug reservation** (ledger note above), the `GuardedSweep` heartbeat file (still
+  opt-in and unwired; the gauges are the visible signal), and `subscription`'s own `DunningSweep`
+  guard (billing's, untouched as instructed).

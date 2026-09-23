@@ -77,6 +77,43 @@ optional_empty="$optional_empty EDGE_BUDGET_ACCEPTED_MB"
 # bug COMPOSE_PROFILES being merely empty already guards against, one layer further back.
 optional_absent="EDGE_PROFILES EDGE_BUDGET_ACCEPTED_MB"
 
+# `.env` is sourced as SHELL below, and this file exists to fail with a message, not with
+# whatever bash makes of a stray space. An unquoted value containing whitespace —
+# `EDGE_PROFILES=inventory, storefront`, `OPS_ALERT_EMAIL=a and b` — is not one assignment: bash
+# assigns the text before the first space and then RUNS the rest as a command (exit 127 "command
+# not found" at best, with no FAILED footer; at worst something that exists). docker compose parses
+# the same line as a single value, so the two would also disagree about what the box says. Checked
+# on the raw file, before it is sourced, and nothing is sourced if one is found. Quoted values
+# (`KEY="a b"`), a trailing space, and an inline ` # comment` after an unquoted value are all fine
+# and are not flagged.
+unquoted_whitespace=""
+while IFS= read -r env_line || [ -n "$env_line" ]; do
+	env_line=${env_line%$'\r'}
+	case "$env_line" in
+	[A-Za-z_]*=*) ;;
+	*) continue ;;
+	esac
+	env_key=${env_line%%=*}
+	case "$env_key" in
+	*[!A-Za-z0-9_]*) continue ;;
+	esac
+	env_value=${env_line#*=}
+	case "$env_value" in
+	\"* | \'*) continue ;; # quoted: the shell reads it as one word, and so does compose
+	esac
+	env_value=$(printf '%s' "$env_value" | sed -e 's/[[:space:]]\{1,\}#.*$//' -e 's/[[:space:]]\{1,\}$//')
+	case "$env_value" in
+	*[[:space:]]*) unquoted_whitespace="$unquoted_whitespace $env_key" ;;
+	esac
+done <.env
+if [ -n "$unquoted_whitespace" ]; then
+	for env_key in $unquoted_whitespace; do
+		bad "$env_key in .env has an unquoted value containing whitespace — bash would run the words after the first space as a command. Quote the whole value: $env_key=\"…\""
+	done
+	echo "preflight: FAILED — nothing was changed (.env was not read: fix the line(s) above first)." >&2
+	exit 1
+fi
+
 set -a
 # shellcheck disable=SC1091 # .env is data, generated on the box from .env.example
 . ./.env
@@ -99,6 +136,21 @@ set +a
 # shellcheck source=lib/active-profiles.sh
 . ./lib/active-profiles.sh
 declared_profiles=$(resolve_declared_profiles "${EDGE_PROFILES:-}" "${COMPOSE_PROFILES:-}")
+# `COMPOSE_PROFILES=*` ("every profile") is valid for docker compose and for ops-monitor, but the
+# advisories below match profile names one at a time, and a literal `*` matches none of them —
+# every sold product would read as unserved. Expanded here to the compose file's own profile
+# list; `bad` (not a silent fallback) if compose cannot list it.
+case ",${declared_profiles}," in
+*",*,"*)
+	if all_compose_profiles=$(docker compose -f compose.prod.yml --env-file .env config --profiles | tr '\n' ',' | sed 's/,$//') && [ -n "$all_compose_profiles" ]; then
+		declared_profiles=$(expand_profile_wildcard "$declared_profiles" "$all_compose_profiles")
+		ok "COMPOSE_PROFILES=* expanded to: $declared_profiles"
+	else
+		bad "COMPOSE_PROFILES contains '*' but 'docker compose config --profiles' could not list this file's profiles to expand it (compose's own error is above)"
+		declared_profiles=""
+	fi
+	;;
+esac
 if [ -n "${EDGE_PROFILES:-}" ]; then
 	ok "COMPOSE_PROFILES overridden by EDGE_PROFILES: $declared_profiles"
 fi
@@ -252,7 +304,10 @@ else
 	if post_deploy_compute "$budget_file"; then
 		expected_mb="$POST_DEPLOY_MB"
 	else
-		bad "could not compute the post-deploy expected memory budget from $budget_file"
+		# Fails closed (round 3, HIGH): a compose/docker failure used to yield an empty post-deploy
+		# set and a green "0M (0%)" line. Now it is a FAILED row that says why, and every memory
+		# line below is skipped — there is no total to judge.
+		bad "memory budget could not be priced — ${POST_DEPLOY_ERROR:-no reason given}. The gate refuses to pass on a total it could not compute."
 	fi
 	priced_as="post-deploy: running that the new compose still defines, plus declared profiles"
 
@@ -270,18 +325,26 @@ else
 	esac
 
 	# Read from the budget file itself rather than hardcoded here — this file's own
-	# `host.soft_budget_percent`/`hard_budget_percent` is what `tests/infra/
+	# `host.soft_budget_percent`/`hard_budget_percent`/`max_accepted_percent` is what `tests/infra/
 	# test_compose_memory_budget.py` pins, and a hardcoded copy here would silently drift from
-	# it the next time either threshold changes.
+	# it the next time any of them changes.
 	soft_percent=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['host']['soft_budget_percent'])" "$budget_file")
 	hard_percent=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['host']['hard_budget_percent'])" "$budget_file")
+	max_accepted_percent=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['host']['max_accepted_percent'])" "$budget_file")
 	if [ -n "$expected_mb" ]; then
 		mem_total_kb=$(awk '/^MemTotal:/ {print $2}' "${EDGE_MEMINFO_FILE:-/proc/meminfo}" 2>/dev/null || echo "")
-		if [ -n "$mem_total_kb" ]; then
+		if [ -z "$mem_total_kb" ]; then
+			# Same principle as post_deploy_compute: no reading is not "fine". (This used to warn
+			# and skip — the one branch of the gate that still failed open.)
+			bad "could not read MemTotal from ${EDGE_MEMINFO_FILE:-/proc/meminfo} — the memory budget cannot be judged"
+		else
 			verdict_line=$(memory_budget_verdict "$mem_total_kb" "$expected_mb" "$soft_percent" "$hard_percent")
 			verdict=${verdict_line%% *}
 			percent=${verdict_line#* }
 			mem_total_mb=$((mem_total_kb / 1024))
+			cap_mb=$((mem_total_mb * max_accepted_percent / 100))
+			hard_mb=$((mem_total_mb * hard_percent / 100))
+			usage=$(describe_budget_usage "$expected_mb" "$mem_total_mb")
 
 			# B2/H3/H4 (review round 2): an explicit owner ceiling replaces the previous
 			# grandfather-vs-last-ok ratchet. `EDGE_BUDGET_ACCEPTED_MB` in `.env`, if set, is the
@@ -290,15 +353,32 @@ else
 			# to a loud warning only when this deploy is at or under that number. No ceiling set:
 			# today's behaviour, unchanged — refuse. See RUNBOOK.md, 'the memory budget' for the
 			# decision this asks the owner to make before the first deploy that needs it.
-			final_line=$(apply_accepted_ceiling "$verdict" "$percent" "$expected_mb" "${EDGE_BUDGET_ACCEPTED_MB:-}")
+			#
+			# Round 3 (M5): the ceiling has an upper bound, `host.max_accepted_percent` of MemTotal.
+			# A ceiling above it is a FAILED row (a `38940` for `3894` typo would otherwise be a
+			# blank cheque) and is ignored for the verdict; and no ceiling — however correct — can
+			# cover a total above it.
+			accepted="${EDGE_BUDGET_ACCEPTED_MB:-}"
+			accepted_effective=""
+			case "$accepted" in
+			'' | *[!0-9]*) ;; # unset, or already reported above
+			*)
+				if [ "$accepted" -gt "$cap_mb" ]; then
+					bad "EDGE_BUDGET_ACCEPTED_MB (${accepted}M) is above the ${max_accepted_percent}% cap (${cap_mb}M of ${mem_total_mb}M MemTotal) — a typo? The ceiling is the exact post-deploy total preflight printed for this commit (RUNBOOK.md, 'the memory budget'), and it never legitimately exceeds the cap."
+				else
+					accepted_effective="$accepted"
+				fi
+				;;
+			esac
+			final_line=$(apply_accepted_ceiling "$verdict" "$percent" "$expected_mb" "$accepted_effective" "$cap_mb")
 			final_verdict=${final_line%% *}
 
 			case "$final_verdict" in
-			ok) ok "memory budget ($priced_as): ${expected_mb}M of ${mem_total_mb}M MemTotal (${percent}%)" ;;
+			ok) ok "memory budget ($priced_as): $usage" ;;
 			warn)
-				echo "  warn  memory budget ($priced_as): ${expected_mb}M of ${mem_total_mb}M MemTotal (${percent}%)" >&2
+				echo "  warn  memory budget ($priced_as): $usage" >&2
 				if [ "$verdict" = "refuse" ]; then
-					echo "        — OVER THE HARD BUDGET (${hard_percent}%), accepted: EDGE_BUDGET_ACCEPTED_MB=${EDGE_BUDGET_ACCEPTED_MB} covers it." >&2
+					echo "        — OVER THE HARD BUDGET (${hard_percent}% = ${hard_mb}M), accepted: EDGE_BUDGET_ACCEPTED_MB=${accepted} covers it." >&2
 					echo "        This box is overcommitted by owner decision — more RAM (a VM resize) or de-listing" >&2
 					echo "        a product would bring it back under the hard line. Still deploying — see" >&2
 					echo "        RUNBOOK.md, 'the memory budget'." >&2
@@ -307,13 +387,28 @@ else
 				fi
 				;;
 			refuse)
-				if [ -n "${EDGE_BUDGET_ACCEPTED_MB:-}" ]; then
-					bad "memory budget ($priced_as): ${expected_mb}M of ${mem_total_mb}M MemTotal (${percent}%) — over the hard budget AND over the owner-accepted ceiling (EDGE_BUDGET_ACCEPTED_MB=${EDGE_BUDGET_ACCEPTED_MB}M). Raise the accepted ceiling (a deliberate decision, not a default) or trim COMPOSE_PROFILES/EDGE_PROFILES or consolidate a service."
+				if [ "$expected_mb" -gt "$cap_mb" ]; then
+					bad "memory budget ($priced_as): $usage — over the absolute cap (${max_accepted_percent}% of MemTotal = ${cap_mb}M), which no EDGE_BUDGET_ACCEPTED_MB can cover. De-list a product (COMPOSE_PROFILES/EDGE_PROFILES), consolidate a service, or resize the VM."
+				elif [ -n "$accepted_effective" ]; then
+					bad "memory budget ($priced_as): $usage — over the hard budget AND over the owner-accepted ceiling (EDGE_BUDGET_ACCEPTED_MB=${accepted}M, $((expected_mb - accepted))M short). Raise the accepted ceiling (a deliberate decision, not a default) or trim COMPOSE_PROFILES/EDGE_PROFILES or consolidate a service."
+				elif [ -n "$accepted" ]; then
+					bad "memory budget ($priced_as): $usage — over the hard budget, and the EDGE_BUDGET_ACCEPTED_MB in .env was rejected (see above), so nothing accepts it."
 				else
-					bad "memory budget ($priced_as): ${expected_mb}M of ${mem_total_mb}M MemTotal (${percent}%) — over the hard budget, and no EDGE_BUDGET_ACCEPTED_MB is set in .env. Set it after reading the projection (RUNBOOK.md, 'the memory budget'), trim COMPOSE_PROFILES/EDGE_PROFILES, or consolidate a service."
+					bad "memory budget ($priced_as): $usage — over the hard budget, and no EDGE_BUDGET_ACCEPTED_MB is set in .env. Set it after reading the projection (RUNBOOK.md, 'the memory budget'), trim COMPOSE_PROFILES/EDGE_PROFILES, or consolidate a service."
 				fi
 				;;
 			esac
+
+			# The ceiling is a decision record — exactly the printed total for the commit being
+			# deployed (RUNBOOK.md) — so any slack, or a ceiling this deploy does not need, is worth
+			# saying: it is an overcommit the owner agreed to that this deploy is not asking for.
+			if [ -n "$accepted_effective" ]; then
+				if [ "$verdict" = "refuse" ] && [ "$expected_mb" -le "$accepted_effective" ] && [ "$accepted_effective" -gt "$expected_mb" ]; then
+					echo "  info  EDGE_BUDGET_ACCEPTED_MB (${accepted_effective}M) is $((accepted_effective - expected_mb))M above this deploy's total (${expected_mb}M) — slack the owner accepted but this commit does not use; set it to ${expected_mb} so the file records what was actually decided."
+				elif [ "$verdict" != "refuse" ]; then
+					echo "  info  EDGE_BUDGET_ACCEPTED_MB (${accepted_effective}M) is set but not needed: this deploy is under the hard line (${expected_mb}M against ${hard_mb}M) — clear it, so a future deploy that does go over is not silently pre-approved."
+				fi
+			fi
 
 			# Informational only, from here on — L8: `record_budget` (remote.sh) writes this
 			# after every healthy deploy; printed for reference, never read by the verdict above.
@@ -327,13 +422,13 @@ else
 			# a backlog placeholder in memory-budget.json's `planned` key must not be able to fail
 			# a real deploy. This is what tells whoever is watching a deploy whether the box is
 			# still projected to have room for what is coming, not just for what is running now.
-			planned_mb=$(python3 lib/memory_budget_totals.py "$budget_file" --profiles "$declared_profiles" --with-planned) || planned_mb=""
-			if [ -n "$planned_mb" ] && [ "$planned_mb" -gt "$expected_mb" ]; then
-				projected_percent=$((planned_mb * 100 / mem_total_mb))
-				echo "  info  projected with the planned backlog too: ${planned_mb}M of ${mem_total_mb}M (${projected_percent}%) — see memory-budget.json's 'planned' key"
+			# Projected on top of *this deploy's own* total, not a fresh profile-list one.
+			core_mb=$(python3 lib/memory_budget_totals.py "$budget_file" --profiles "") || core_mb=""
+			core_planned_mb=$(python3 lib/memory_budget_totals.py "$budget_file" --profiles "" --with-planned) || core_planned_mb=""
+			if [ -n "$core_mb" ] && [ -n "$core_planned_mb" ] && [ "$core_planned_mb" -gt "$core_mb" ]; then
+				projected_mb=$((expected_mb + core_planned_mb - core_mb))
+				echo "  info  projected with the planned backlog too: $(describe_budget_usage "$projected_mb" "$mem_total_mb") — see memory-budget.json's 'planned' key"
 			fi
-		else
-			echo "  warn  could not read /proc/meminfo — memory budget check skipped" >&2
 		fi
 	fi
 fi
@@ -362,6 +457,22 @@ if [ -z "${OPS_ALERT_EMAIL:-}" ] || [ -z "${SMTP_HOST:-}" ]; then
 else
 	ok "ops-monitor alerts email: $OPS_ALERT_EMAIL"
 fi
+
+# The operations reconcile sweep, storefront's custom-domain sweep and document's purge sweep run
+# inside their own API containers (`RUN_SWEEPS_IN_API`, compose.prod.yml defaults it to `true`;
+# ADR-0013 fix round 2). Anything else in `.env` turns them OFF, and — since the `*-cron`
+# containers that used to carry them no longer exist — nothing runs them at all: no stock
+# reconciliation, no domain verification, no purge of soft-deleted uploads past their retention
+# window, with every container healthy. Loud, not fatal: an operator may be stopping a sweep on
+# purpose for a maintenance window, but never by accident.
+case "${RUN_SWEEPS_IN_API:-true}" in
+true) ok "in-API sweeps enabled (operations reconcile, storefront domains, document purge)" ;;
+*)
+	echo "  warn  RUN_SWEEPS_IN_API=${RUN_SWEEPS_IN_API}: the operations, storefront and document sweeps are OFF and" >&2
+	echo "        no separate cron container exists to run them — nothing reconciles stock, verifies" >&2
+	echo "        custom domains or purges deleted uploads until it is 'true' again." >&2
+	;;
+esac
 
 # ops-monitor's own state subdirectory (C10, M2): it runs as the `product` image's baked-in
 # non-root user, not `deploy`, so it can only write there if `remote.sh up`'s
@@ -406,7 +517,7 @@ while read -r site; do
 	*) bad "the Caddyfile serves $site but TLS_PLATFORM_HOSTS does not list it: no certificate will be issued" ;;
 	esac
 # Process substitution, not a pipe: `bad` must set `failed` in this shell, not in a subshell.
-done < <(sed -n 's#^https://\([a-z0-9.-]*\) {$#\1#p' caddy/Caddyfile)
+done < <(sed -n 's#^https://\([a-z0-9.-]\{1,\}\) {$#\1#p' caddy/Caddyfile)
 
 # A prefix in the route table whose upstream is not among this box's services is a hung
 # connection and a 504 for whoever calls it. Product routes are covered by the catalogue check
@@ -476,15 +587,21 @@ if docker compose -f compose.prod.yml --env-file .env ps --status running postgr
 	done
 
 	# ---- the real-customer-impact advisory (H2/H3) ----
-	# L12 (review round 2): only an activation that is actually live counts — `trial` or `active`,
-	# not a `suspended` row nobody is being served for — and never an end-to-end test
+	# L12 (review round 2, corrected in round 3): an activation counts when the customer is, or
+	# is about to be again, served by it — `trial`, `active` **and `suspended`**. The round-2
+	# version dropped `suspended` on the reasoning that nobody is served for one; the re-review
+	# pointed out what that misses: `product.project_subscription` flips a suspended activation
+	# back to `active` the moment a payment lands, onto a service this box would by then not be
+	# running — a paying customer returning to a 504. (`product.activations.status` is only ever
+	# `trial | active | suspended`, so this list is every status a row can have; it is spelled out
+	# so a future terminal status has to be added deliberately.) Never an end-to-end test
 	# organization (`e2e/conftest.py` names every one it creates `e2e-…`; a seeded test org must
 	# not be the reason a real product profile looks "in use", or a real customer-impact refusal
 	# fire over a fixture). Read-only, across schemas, as the box's own superuser — there is no
 	# foreign key between the two, only this join.
 	activations_rc=0
 	activated_keys=$(docker compose -f compose.prod.yml --env-file .env exec -T postgres \
-		psql -U opsgrids -d opsgrids -Atc "select distinct a.product_key from product.activations a where a.status in ('trial','active') and not exists (select 1 from account.organizations o where o.id = a.organization_id and o.slug like 'e2e-%')" 2>/dev/null) || activations_rc=$?
+		psql -U opsgrids -d opsgrids -Atc "select distinct a.product_key from product.activations a where a.status in ('trial','active','suspended') and not exists (select 1 from account.organizations o where o.id = a.organization_id and o.slug like 'e2e-%')" 2>/dev/null) || activations_rc=$?
 	if [ "$activations_rc" -ne 0 ]; then
 		# H3: a query failure is not evidence of zero activations — it is evidence of nothing at
 		# all, and must never be read as "safe to turn this profile off". Skipped with a warning,

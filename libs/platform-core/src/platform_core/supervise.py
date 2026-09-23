@@ -28,12 +28,103 @@ import asyncio
 import contextlib
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from platform_core.logging import get_logger
+from platform_core.metrics import Sample
 
 log = get_logger("platform_core.supervise")
+
+
+@dataclass
+class SweepHealth:
+    """What one background sweep says about itself — the three numbers an alert needs.
+
+    A sweep that runs inside an API process (`start_background_sweep`) fails invisibly: the API
+    stays healthy, `docker compose ps` says `healthy`, and the only trace of a dead or
+    always-failing sweep is a log line nobody is tailing. These are exposed on that service's own
+    `/metrics` (`sweep_health_samples`, rendered by `platform_core.app`'s health router) so an
+    ops-monitor check can page on them without anyone reading logs.
+
+    `last_success_ts` is wall-clock (`time.time()`, epoch seconds), 0.0 if the sweep has not
+    succeeded since this process started — an alert computes `now - ts`, so "never" and "very
+    long ago" deliberately look the same.
+    """
+
+    name: str
+    alive: bool = False
+    consecutive_failures: int = 0
+    last_success_ts: float = 0.0
+
+    def record_success(self) -> None:
+        self.consecutive_failures = 0
+        self.last_success_ts = time.time()
+
+    def record_failure(self) -> None:
+        self.consecutive_failures += 1
+
+
+#: Process-wide, by sweep name — the latest sweep constructed under a name wins (a restarted
+#: sweep replaces its own stale record; two tests never share one).
+_SWEEP_HEALTH: dict[str, SweepHealth] = {}
+
+SWEEP_METRICS_HELP = {
+    "sweep_alive": "1 while this process's background sweep task is running, 0 once it has exited.",
+    "sweep_consecutive_failures": "Ticks of this background sweep that have failed in a row.",
+    "sweep_last_success_timestamp_seconds": (
+        "Unix time of the sweep's last successful tick; 0 if it has not succeeded since start."
+    ),
+}
+SWEEP_METRICS_TYPES = dict.fromkeys(SWEEP_METRICS_HELP, "gauge")
+
+
+def register_sweep_health(name: str) -> SweepHealth:
+    """A fresh health record for the sweep called `name`, registered process-wide. `name` is the
+    sweep's log-event prefix (`inventory.reconcile`, `storefront.domain.sweep`,
+    `document.sweep`), so a metric label and the log line that explains it read the same."""
+    health = SweepHealth(name=name)
+    _SWEEP_HEALTH[name] = health
+    return health
+
+
+def get_sweep_health(name: str) -> SweepHealth | None:
+    """The registered record for `name`, or None. What a test (or an operator's debug shell) reads;
+    `/metrics` uses `sweep_health_samples`."""
+    return _SWEEP_HEALTH.get(name)
+
+
+def reset_sweep_health() -> None:
+    """Forget every registered sweep. Test isolation only."""
+    _SWEEP_HEALTH.clear()
+
+
+def sweep_health_samples() -> list[Sample]:
+    """Every registered sweep's gauges, grouped by metric (Prometheus wants one metric family's
+    samples together). Empty when no sweep runs in this process — an API with its sweeps off
+    exposes nothing extra."""
+    samples: list[Sample] = []
+    ordered = sorted(_SWEEP_HEALTH.values(), key=lambda health: health.name)
+    for health in ordered:
+        samples.append(Sample("sweep_alive", 1.0 if health.alive else 0.0, {"sweep": health.name}))
+    for health in ordered:
+        samples.append(
+            Sample(
+                "sweep_consecutive_failures",
+                float(health.consecutive_failures),
+                {"sweep": health.name},
+            )
+        )
+    for health in ordered:
+        samples.append(
+            Sample(
+                "sweep_last_success_timestamp_seconds",
+                health.last_success_ts,
+                {"sweep": health.name},
+            )
+        )
+    return samples
 
 
 class LoopExited(RuntimeError):
@@ -86,7 +177,7 @@ async def run_supervised(**named_coroutines: Any) -> None:
     raise LoopExited(finished_name)
 
 
-def start_background_sweep(coro: Any) -> asyncio.Task[None]:
+def start_background_sweep(coro: Any, *, name: str | None = None) -> asyncio.Task[None]:
     """Starts a `GuardedSweep.run()` (or any other forever-running coroutine) as a background
     task and returns it, for a caller that is not itself a supervised loop — an ASGI app's own
     `lifespan`, chiefly (the memory-headroom slice's fix round 2: `operations`, `storefront` and
@@ -97,8 +188,38 @@ def start_background_sweep(coro: Any) -> asyncio.Task[None]:
     be allowed to end the API process itself, only to stop that one sweep (and `GuardedSweep`'s
     own guard means it should never end on its own at all, short of cancellation). Pair with
     `stop_background_sweep` in the same lifespan's shutdown.
+
+    **A sweep that ends by itself is loud (round 3).** The task carries a done-callback: if it
+    finishes without having been cancelled — it raised, or a bug made it return — that is logged
+    at error as `supervise.background_sweep_exited`, and (when `name` is given) the sweep's
+    `sweep_alive` gauge drops to 0. Before this, a dead in-API sweep left no trace at all: the
+    API kept answering, `docker compose ps` said healthy, and the platform quietly stopped
+    reconciling stock, verifying domains or purging deleted uploads. A cancellation (shutdown)
+    is the normal end and logs nothing.
+
+    `name` is the sweep's registered health name (`register_sweep_health`, which every sweep's
+    constructor calls) — the label its `/metrics` gauges carry.
     """
-    return asyncio.ensure_future(coro)
+    task: asyncio.Task[None] = asyncio.ensure_future(coro)
+    health = _SWEEP_HEALTH.setdefault(name, SweepHealth(name=name)) if name else None
+    if health is not None:
+        health.alive = True
+
+    def _on_done(finished: asyncio.Task[None]) -> None:
+        if health is not None:
+            health.alive = False
+        if finished.cancelled():
+            return
+        exc = finished.exception()
+        log.error(
+            "supervise.background_sweep_exited",
+            sweep=name,
+            returned=exc is None,
+            error=repr(exc) if exc is not None else None,
+        )
+
+    task.add_done_callback(_on_done)
+    return task
 
 
 async def stop_background_sweep(task: asyncio.Task[None] | None) -> None:
@@ -107,7 +228,10 @@ async def stop_background_sweep(task: asyncio.Task[None] | None) -> None:
     if task is None:
         return
     task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
+    # `Exception` too: a sweep that already died (see the done-callback above) would re-raise
+    # its own exception here, out of the lifespan's shutdown — already logged, and no reason to
+    # make the API's own shutdown fail with it.
+    with contextlib.suppress(asyncio.CancelledError, Exception):
         await task
 
 
@@ -141,13 +265,29 @@ class GuardedSweep:
         self._max_backoff = max_backoff
         self._heartbeat_path = heartbeat_path
         self._stop = False
-        #: Consecutive failed ticks — reset to 0 the moment one succeeds. This is the number an
-        #: eventual ops-monitor probe reading the heartbeat file cares about far more than any
-        #: single failure: one bad tick backing off is normal operation; a climbing streak is
-        #: the thing worth paging on. Exposed on the instance (`sweep.consecutive_failures`) for
-        #: a caller with a direct reference, and written into the heartbeat file's own JSON for
-        #: one without.
-        self.consecutive_failures = 0
+        #: Registered process-wide under this sweep's log name, so an API that runs it in-process
+        #: can expose `sweep_consecutive_failures` / `sweep_last_success_timestamp_seconds` /
+        #: `sweep_alive` on `/metrics` (`SweepHealth`). Also the source of truth for
+        #: `consecutive_failures` below.
+        self.health = register_sweep_health(self._log_name)
+
+    @property
+    def consecutive_failures(self) -> int:
+        """Consecutive failed ticks — reset to 0 the moment one succeeds. This is the number an
+        ops-monitor probe cares about far more than any single failure: one bad tick backing off
+        is normal operation; a climbing streak is the thing worth paging on. Read from here by a
+        caller with a direct reference, from `/metrics` (`sweep_consecutive_failures`) by one
+        without, and written into the heartbeat file's own JSON when one is configured."""
+        return self.health.consecutive_failures
+
+    @property
+    def _initial_backoff(self) -> float:
+        """Where a failure streak's backoff starts (and resets to): the poll interval, but never
+        more than `max_backoff`. A daily sweep (86,400 s) with the default 300 s cap used to wait
+        a whole day after its first failed tick, because backoff began at the poll interval and
+        was only *capped* after the first sleep — a one-second DB blip meant no reconciliation
+        for 24 hours."""
+        return min(self._poll_interval, self._max_backoff)
 
     def stop(self) -> None:
         self._stop = True
@@ -166,7 +306,7 @@ class GuardedSweep:
             poll_interval=self._poll_interval,
             max_backoff=self._max_backoff,
         )
-        backoff = self._poll_interval
+        backoff = self._initial_backoff
         while not self._stop:
             try:
                 result = await self.tick()
@@ -174,7 +314,7 @@ class GuardedSweep:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                self.consecutive_failures += 1
+                self.health.record_failure()
                 log.exception(
                     f"{self._log_name}.tick_failed",
                     consecutive_failures=self.consecutive_failures,
@@ -183,8 +323,8 @@ class GuardedSweep:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, self._max_backoff)
                 continue
-            backoff = self._poll_interval
-            self.consecutive_failures = 0
+            backoff = self._initial_backoff
+            self.health.record_success()
             self._write_heartbeat(ok=True)
             await asyncio.sleep(self._poll_interval)
 

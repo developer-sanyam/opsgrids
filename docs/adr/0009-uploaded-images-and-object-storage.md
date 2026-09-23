@@ -890,7 +890,8 @@ the application logic does.
 `services/document/app/config.py` and stays `false` in `infrastructure/edge/compose.prod.yml`
 until an operator sets `DOCUMENT_S3_ORPHAN_ACCESS_KEY`/`_SECRET_KEY` and flips it, per the
 runbook's own new section. §8's row-purge sweep carries no such flag and is on unconditionally
-once `document-cron` is deployed — its failure mode (a soft-deleted object staying public a
+once the sweep runs (originally as `document-cron`; since 2026-09-24 inside the `document` API
+container) — its failure mode (a soft-deleted object staying public a
 little longer) is bounded and already-accepted by §7; the orphan pass's failure mode (deleting
 an object a request-in-flight might still need) is the one this addendum's caution is about,
 even though the 24-hour margin makes it very unlikely in practice.

@@ -79,8 +79,11 @@ class Settings(ServiceSettings):
     asset_purge_retention_days: int = 30
 
     # --- the orphan sweep (ADR-0009 §9 addendum) -----------------------------------
-    #: A second, list-capable MinIO credential, held only by `document-cron` — never by the
-    #: API process, which never calls `ListBucket` (`app/storage.py`). Optional for the same
+    #: A second, list-capable MinIO credential, held by **no always-on container** — only ever
+    #: handed to a one-off `docker compose run --rm --no-deps document ./bin/cron` an operator
+    #: starts by hand (the purge sweep runs inside the API without it; `document-cron` no longer
+    #: exists) — never by the API process, which never calls `ListBucket` (`app/storage.py`).
+    #: Optional for the same
     #: reason `s3_access_key` is: absent, `OrphanScanner` simply cannot build a client and the
     #: orphan pass of the sweep is skipped, which is the safe direction to be wrong in.
     s3_orphan_access_key: SecretStr | None = None

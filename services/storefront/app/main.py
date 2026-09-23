@@ -17,7 +17,7 @@ from app.config import assert_directory_role_configured, settings
 from app.cron import DomainSweep
 from app.models import OutboxEvent
 from platform_core.app import create_app
-from platform_core.db import get_directory_sessionmaker, session_scope
+from platform_core.db import bulkhead_scope, create_bulkhead_engine, get_directory_sessionmaker
 from platform_core.supervise import start_background_sweep, stop_background_sweep
 
 
@@ -35,19 +35,30 @@ async def _startup(app: FastAPI) -> None:
     cfg = settings()
     assert_directory_role_configured(cfg)
     app.state.domain_sweep_task = None
+    app.state.sweep_engine = None
     if not cfg.run_sweeps_in_api:
         return
+    # A one-connection engine of its own (`create_bulkhead_engine`): a claim's probes run while
+    # its transaction is open, for up to ~15 s a domain, and the shop's request pool is 3 + 2 —
+    # the sweep must not be able to take a fifth of it, or be starved by the buyer traffic.
+    engine = create_bulkhead_engine(cfg, name="sweep")
+    app.state.sweep_engine = engine
     sweep = DomainSweep(
         discovery_factory=get_directory_sessionmaker(),
-        work_scope=lambda organization_id: session_scope(organization_id=organization_id),
+        work_scope=bulkhead_scope(engine),
         batch_size=cfg.domain_sweep_batch_size,
         poll_interval=cfg.domain_sweep_poll_interval_seconds,
     )
-    app.state.domain_sweep_task = start_background_sweep(sweep.run())
+    app.state.domain_sweep_task = start_background_sweep(
+        sweep.run(), name="storefront.domain.sweep"
+    )
 
 
 async def _shutdown(app: FastAPI) -> None:
     await stop_background_sweep(getattr(app.state, "domain_sweep_task", None))
+    engine = getattr(app.state, "sweep_engine", None)
+    if engine is not None:
+        await engine.dispose()
 
 
 app = create_app(

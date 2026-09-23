@@ -1,5 +1,7 @@
 """`preflight.sh`'s memory-budget gate and `remote.sh record-budget`, end to end (memory-headroom
-slice, review fix round 2: B1, B2/H3/H4, M5, M7, L8, L12).
+slice, review fix rounds 2 and 3: B1, B2/H3/H4, M5, M7, L8, L12; round 3: fail-closed pricing,
+restarting/paused containers, the ceiling's upper bound, `COMPOSE_PROFILES=*`, suspended
+activations, the always-exported profile list).
 
 The real scripts run in a scratch copy of `infrastructure/edge/`, against a fake `docker` on
 `PATH` (a small Python program, below) that answers from `memory-budget.json` itself:
@@ -48,11 +50,47 @@ log = os.environ.get("STUB_SQL_LOG")
 if args[:1] == ["info"]:
     sys.exit(0)
 if args[:1] == ["ps"]:
-    for name in filter(None, os.environ.get("STUB_RUNNING", "").split(",")):
-        print(name)
+    if os.environ.get("STUB_PS_FAILS"):
+        print("Cannot connect to the Docker daemon", file=sys.stderr)
+        sys.exit(1)
+    # Honour `--filter status=X` like the real thing: several of the same key are ORed, and a
+    # caller that asks for `running` only never hears about a restarting or paused container.
+    wanted = {{args[i + 1].split("=", 1)[1] for i, a in enumerate(args[:-1])
+              if a == "--filter" and args[i + 1].startswith("status=")}}
+    by_status = {{
+        "running": os.environ.get("STUB_RUNNING", ""),
+        "restarting": os.environ.get("STUB_RESTARTING", ""),
+        "paused": os.environ.get("STUB_PAUSED", ""),
+        "exited": os.environ.get("STUB_EXITED", ""),
+    }}
+    for status, names in by_status.items():
+        if wanted and status not in wanted:
+            continue
+        for name in filter(None, names.split(",")):
+            print(name)
     sys.exit(0)
 if args[:1] == ["compose"]:
+    if "run" in args and "--entrypoint" in args and "id" in args:
+        print("999")  # the image's uid/gid, as `remote.sh up`'s ops-monitor state-dir step asks
+        sys.exit(0)
+    if "up" in args:
+        with open(os.environ["STUB_UP_LOG"], "a") as fh:
+            fh.write(os.environ.get("COMPOSE_PARALLEL_LIMIT", "") + "\\n")
+        with open(os.environ["STUB_UP_LOG"] + ".profiles", "a") as fh:
+            fh.write(os.environ.get("COMPOSE_PROFILES", "<unset>") + "\\n")
+        sys.exit(0)
+    if "config" in args and "--profiles" in args:
+        budget = json.load(open(os.environ["STUB_BUDGET"]))
+        for name in budget["profiles"]:
+            print(name)
+        sys.exit(0)
     if "config" in args and "--services" in args:
+        if os.environ.get("STUB_COMPOSE_FAILS"):
+            print("error while interpolating services.x.environment: required variable is missing",
+                  file=sys.stderr)
+            sys.exit(1)
+        if os.environ.get("STUB_COMPOSE_EMPTY"):
+            sys.exit(0)
         budget = json.load(open(os.environ["STUB_BUDGET"]))
         # Real compose: an exported COMPOSE_PROFILES beats the one in `--env-file`.
         raw = os.environ.get("COMPOSE_PROFILES")
@@ -61,9 +99,10 @@ if args[:1] == ["compose"]:
                 if line.startswith("COMPOSE_PROFILES="):
                     raw = line.split("=", 1)[1].strip()
         profiles = {{p for p in (raw or "").split(",") if p}}
+        every = "*" in profiles  # real compose: `*` enables every profile
         for name, meta in budget["containers"].items():
             profile = meta.get("profile")
-            if profile is None or profile in profiles:
+            if profile is None or every or profile in profiles:
                 print(name)
         for name in filter(None, os.environ.get("STUB_EXTRA_SERVICES", "").split(",")):
             print(name)
@@ -125,6 +164,9 @@ class Box:
         self.meminfo.write_text(f"MemTotal:       {MEM_TOTAL_KB} kB\n")
         self.sql_log = tmp_path / "sql.log"
         self.running: set[str] = set()
+        self.restarting: set[str] = set()
+        self.paused: set[str] = set()
+        self.exited: set[str] = set()
         self.extra_services: set[str] = set()
         self.extra_env: dict[str, str] = {}
         self.write_env()
@@ -141,7 +183,7 @@ class Box:
         key.write_text("not a real key")
         key.chmod(0o600)
         sites = re.findall(
-            r"^https://([a-z0-9.-]*) \{$", (self.edge / "caddy/Caddyfile").read_text(), re.M
+            r"^https://([a-z0-9.-]+) \{$", (self.edge / "caddy/Caddyfile").read_text(), re.M
         )
         values = {
             "EDGE_HOST": "edge.opsgrids.test",
@@ -179,9 +221,13 @@ class Box:
             EDGE_MEMINFO_FILE=str(self.meminfo),
             EDGE_STATE_DIR=str(self.state),
             STUB_RUNNING=",".join(sorted(self.running)),
+            STUB_RESTARTING=",".join(sorted(self.restarting)),
+            STUB_PAUSED=",".join(sorted(self.paused)),
+            STUB_EXITED=",".join(sorted(self.exited)),
             STUB_EXTRA_SERVICES=",".join(sorted(self.extra_services)),
             STUB_BUDGET=str(self.edge / "memory-budget.json"),
             STUB_SQL_LOG=str(self.sql_log),
+            STUB_UP_LOG=str(self.root / "up.log"),
         )
         base.update(self.extra_env)
         return base
@@ -199,12 +245,15 @@ class Box:
         return self.run("preflight.sh")
 
 
-def _priced_mb(result: subprocess.CompletedProcess[str]) -> int:
+def _priced_mb(result: subprocess.CompletedProcess[str], mem_total_mb: int = MEM_TOTAL_MB) -> int:
+    """The post-deploy total preflight printed: "1964M of 3862M MemTotal (50.8%)" under the
+    box's memory, "4581M against 3862M MemTotal: 719M over MemTotal (118.6%)" over it."""
     m = re.search(
-        r"memory budget \(post-deploy[^)]*\): (\d+)M of (\d+)M", result.stdout + result.stderr
+        r"memory budget \(post-deploy[^)]*\): (\d+)M (?:of|against) (\d+)M",
+        result.stdout + result.stderr,
     )
     assert m, f"no memory budget line in:\n{result.stdout}\n{result.stderr}"
-    assert int(m.group(2)) == MEM_TOTAL_MB
+    assert int(m.group(2)) == mem_total_mb
     return int(m.group(1))
 
 
@@ -293,7 +342,12 @@ def test_over_the_hard_line_but_at_or_under_the_accepted_ceiling_warns_and_names
     assert not _memory_failed(result), result.stderr
     assert "OVER THE HARD BUDGET" in result.stderr
     assert f"EDGE_BUDGET_ACCEPTED_MB={total}" in result.stderr
-    assert re.search(r"\(\d+%\)", result.stderr)  # the overcommit percentage is named
+    # The overcommit is named in megabytes and to one decimal — a floored "100%" reads as fine
+    # for a box that is 3894 MB on 3862 MB (round 3, M5).
+    over = total - MEM_TOTAL_MB
+    assert over > 0
+    assert f"{over}M over MemTotal" in result.stderr
+    assert re.search(rf"\({total * 1000 // MEM_TOTAL_MB // 10}\.\d%\)", result.stderr)
 
 
 def test_over_the_accepted_ceiling_still_refuses(box: Box, budget: dict) -> None:
@@ -379,13 +433,15 @@ def test_a_service_with_no_budget_entry_is_priced_as_background_and_named(
 # ------------------------------------------------------------ L12: which activations count
 
 
-def test_the_activations_query_counts_only_live_activations_and_skips_e2e_orgs(box: Box) -> None:
+def test_the_activations_query_counts_suspended_and_skips_e2e_orgs(box: Box) -> None:
     box.extra_env = {"STUB_POSTGRES": "1", "STUB_ACTIVATED": "operations"}
     box.write_env(compose_profiles="inventory")
     box.preflight()
     sql = box.sql_log.read_text()
     activations_sql = next(line for line in sql.splitlines() if "product.activations" in line)
-    assert "status in ('trial','active')" in activations_sql
+    # `suspended` counts: `product.project_subscription` flips it back to `active` when a
+    # payment lands, onto a service this box would not be running (round 3).
+    assert "status in ('trial','active','suspended')" in activations_sql
     assert "e2e-%" in activations_sql
 
 
@@ -431,3 +487,393 @@ def test_record_budget_writes_atomically_and_leaves_no_temp_file(box: Box, budge
     result = box.run("remote.sh", "record-budget")
     assert result.returncode == 0, result.stderr
     assert sorted(p.name for p in box.state.iterdir()) == ["edge-budget.last-ok"]
+
+
+# ------------------------------------------ round 3, HIGH: the gate fails closed, not open
+
+
+def _memory_row_failed_closed(result: subprocess.CompletedProcess[str]) -> None:
+    """The one invariant every fail-closed case shares: preflight FAILED, on a memory row that
+    says it could not price the box — never a green "ok memory budget … 0M (0%)"."""
+    assert result.returncode != 0, result.stdout
+    assert "FAIL  memory budget could not be priced" in result.stderr
+    assert "ok    memory budget" not in result.stdout
+
+
+def test_a_compose_config_failure_fails_the_memory_row_instead_of_pricing_zero(
+    box: Box,
+) -> None:
+    """`docker compose config --services` exiting non-zero used to send its stderr to /dev/null
+    and its status to nowhere: an empty post-deploy set, and a green "0M (0%)" — a gate that
+    passes exactly when it cannot see."""
+    box.extra_env = {"STUB_COMPOSE_FAILS": "1"}
+    box.write_env(compose_profiles="inventory")
+    result = box.preflight()
+    _memory_row_failed_closed(result)
+    assert "docker compose config --services failed" in result.stderr
+    # compose's own error stays visible — the operator needs to read *why*.
+    assert "required variable is missing" in result.stderr
+
+
+def test_an_empty_service_list_is_a_failure_not_a_zero_megabyte_box(box: Box) -> None:
+    box.extra_env = {"STUB_COMPOSE_EMPTY": "1"}
+    box.write_env(compose_profiles="inventory")
+    result = box.preflight()
+    _memory_row_failed_closed(result)
+    assert "listed no services" in result.stderr
+
+
+def test_docker_ps_failing_is_a_failure_because_the_running_set_is_unknown(box: Box) -> None:
+    box.extra_env = {"STUB_PS_FAILS": "1"}
+    box.write_env(compose_profiles="inventory")
+    result = box.preflight()
+    _memory_row_failed_closed(result)
+    assert "docker ps failed" in result.stderr
+
+
+def test_an_unreadable_memtotal_is_a_failure_not_a_skipped_check(box: Box) -> None:
+    box.meminfo.write_text("MemFree: 1 kB\n")
+    box.write_env(compose_profiles="inventory")
+    result = box.preflight()
+    assert result.returncode != 0
+    assert "could not read MemTotal" in result.stderr
+
+
+def test_record_budget_reports_why_it_could_not_price_a_broken_compose_file(box: Box) -> None:
+    box.extra_env = {"STUB_COMPOSE_FAILS": "1"}
+    box.write_env(compose_profiles="inventory")
+    result = box.run("remote.sh", "record-budget")
+    assert "could not price the running box" in result.stderr
+    assert "docker compose config --services failed" in result.stderr
+    assert not (box.state / "edge-budget.last-ok").exists()
+
+
+def test_restarting_and_paused_containers_are_priced_and_exited_ones_are_not(
+    box: Box, budget: dict
+) -> None:
+    """A crash-looping container is resident between crashes and a paused one keeps every page;
+    an exited one holds nothing. Pricing only `status=running` dropped the first two — exactly
+    the containers a struggling box is most likely to be carrying."""
+    box.running = _core(budget)
+    box.restarting = {"operations"}
+    box.paused = {"approval"}
+    box.exited = {"employee"}
+    box.write_env(compose_profiles="")  # none of the three is declared any more
+    priced = _priced_mb(box.preflight())
+    assert priced == expected_total_for_names(budget, _core(budget) | {"operations", "approval"})
+    assert priced > expected_total_for_names(budget, _core(budget))
+
+
+# -------------------------------------- round 3, M5: the ceiling has an upper bound
+
+
+def _cap_mb(budget: dict, mem_total_mb: int = MEM_TOTAL_MB) -> int:
+    return mem_total_mb * budget["host"]["max_accepted_percent"] // 100
+
+
+def test_a_ceiling_above_the_cap_is_a_failure_naming_the_cap(box: Box, budget: dict) -> None:
+    """The typo the cap exists to catch: 38940 for 3894 was a blank cheque."""
+    total = _ten_profile_total(budget)
+    box.write_env(compose_profiles=_all_ten_csv(budget), accepted_mb=str(total * 10))
+    result = box.preflight()
+    assert result.returncode != 0
+    assert f"EDGE_BUDGET_ACCEPTED_MB ({total * 10}M) is above the " in result.stderr
+    assert f"{budget['host']['max_accepted_percent']}% cap ({_cap_mb(budget)}M" in result.stderr
+    # ...and the rejected ceiling covers nothing: the deploy itself refuses too.
+    assert _memory_failed(result)
+    assert "was rejected" in result.stderr
+
+
+def test_a_total_over_the_cap_is_refused_and_says_no_ceiling_can_cover_it(
+    box: Box, budget: dict
+) -> None:
+    total = _ten_profile_total(budget)
+    small_box_mb = total * 100 // (budget["host"]["max_accepted_percent"] + 10)  # total > cap
+    box.meminfo.write_text(f"MemTotal:       {small_box_mb * 1024} kB\n")
+    box.write_env(compose_profiles=_all_ten_csv(budget), accepted_mb=str(total))
+    result = box.preflight()
+    assert _memory_failed(result)
+    assert total > _cap_mb(budget, small_box_mb)
+    assert f"EDGE_BUDGET_ACCEPTED_MB ({total}M) is above the " in result.stderr
+
+
+def test_a_ceiling_exactly_at_the_cap_is_accepted(box: Box, budget: dict) -> None:
+    """125% of a box just big enough that the total sits under it."""
+    total = _ten_profile_total(budget)
+    cap_pct = budget["host"]["max_accepted_percent"]
+    mem_mb = (total * 100 + cap_pct - 1) // cap_pct  # smallest box whose cap is >= total
+    box.meminfo.write_text(f"MemTotal:       {mem_mb * 1024} kB\n")
+    cap = _cap_mb(budget, mem_mb)
+    assert cap >= total
+    box.write_env(compose_profiles=_all_ten_csv(budget), accepted_mb=str(cap))
+    result = box.preflight()
+    assert not _memory_failed(result), result.stderr
+    assert "OVER THE HARD BUDGET" in result.stderr
+
+
+def test_slack_between_the_ceiling_and_the_total_is_reported(box: Box, budget: dict) -> None:
+    total = _ten_profile_total(budget)
+    box.write_env(compose_profiles=_all_ten_csv(budget), accepted_mb=str(total + 50))
+    result = box.preflight()
+    assert not _memory_failed(result), result.stderr
+    assert f"is 50M above this deploy's total ({total}M)" in result.stdout
+
+
+def test_a_ceiling_at_exactly_the_total_reports_no_slack(box: Box, budget: dict) -> None:
+    total = _ten_profile_total(budget)
+    box.write_env(compose_profiles=_all_ten_csv(budget), accepted_mb=str(total))
+    result = box.preflight()
+    assert not _memory_failed(result), result.stderr
+    assert "above this deploy's total" not in result.stdout
+    assert "set but not needed" not in result.stdout
+
+
+def test_a_ceiling_this_deploy_does_not_need_is_called_out(box: Box, budget: dict) -> None:
+    """A ceiling left in `.env` after the box was resized or a product de-listed silently
+    pre-approves the next deploy that does go over."""
+    box.write_env(compose_profiles="inventory", accepted_mb="4000")
+    result = box.preflight()
+    assert not _memory_failed(result)
+    assert "EDGE_BUDGET_ACCEPTED_MB (4000M) is set but not needed" in result.stdout
+
+
+# ------------------------------- round 3, LOW: COMPOSE_PROFILES=* and the exported list
+
+
+def test_a_wildcard_profile_list_is_expanded_not_read_as_no_products(
+    box: Box, budget: dict
+) -> None:
+    """`COMPOSE_PROFILES=*` works in docker compose and in ops-monitor. preflight's advisories
+    match profiles one name at a time, where a literal `*` matches nothing — every sold product
+    would have read as "no service will run for it" and refused a healthy deploy."""
+    box.extra_env = {
+        "STUB_POSTGRES": "1",
+        "STUB_AVAILABLE": "operations,storefront,hrms",
+        "STUB_ACTIVATED": "operations",
+    }
+    box.write_env(compose_profiles="*", accepted_mb=str(_ten_profile_total(budget)))
+    result = box.preflight()
+    assert "COMPOSE_PROFILES=* expanded to:" in result.stdout
+    assert "no service will run for it" not in result.stderr
+    assert "customers would lose access" not in result.stderr
+    assert not _memory_failed(result), result.stderr
+    assert _priced_mb(result) == _ten_profile_total(budget)
+
+
+def test_a_wildcard_is_expanded_by_remote_sh_too(box: Box, budget: dict) -> None:
+    """What compose is handed is the explicit list, not the `*` — the same list preflight judged,
+    and the one ops-monitor (which reads `COMPOSE_PROFILES` from the environment compose passes
+    it) derives its expected containers from."""
+    box.write_env(compose_profiles="*")
+    result = box.run("remote.sh", "record-budget")
+    assert result.returncode == 0, result.stderr
+    assert (box.state / "edge-budget.last-ok").read_text().strip() == str(
+        _ten_profile_total(budget)
+    )
+    up = box.run("remote.sh", "up")
+    assert up.returncode == 0, up.stderr
+    handed = (box.root / "up.log.profiles").read_text().split()
+    assert handed == [_all_ten_csv(budget)]
+
+
+def test_remote_sh_always_exports_the_profile_list_it_resolved(box: Box, budget: dict) -> None:
+    """A stray `COMPOSE_PROFILES` exported in the operator's own shell beats `--env-file`. When
+    only EDGE_PROFILES caused an export, a stray value silently won and record-budget priced a
+    different box than preflight had judged."""
+    box.extra_env = {"COMPOSE_PROFILES": "hrms"}  # the stray one
+    box.write_env(compose_profiles="inventory")
+    result = box.run("remote.sh", "record-budget")
+    assert result.returncode == 0, result.stderr
+    assert (box.state / "edge-budget.last-ok").read_text().strip() == str(
+        expected_total_mb(budget, {"inventory"})
+    )
+
+
+# ------------------------------------ round 3, LOW: RUN_SWEEPS_IN_API is loud when not true
+
+
+def test_the_in_api_sweeps_being_switched_off_is_warned_about(box: Box) -> None:
+    box.write_env(compose_profiles="")
+    with_flag = box.edge / ".env"
+    with_flag.write_text(with_flag.read_text() + "RUN_SWEEPS_IN_API=false\n")
+    result = box.preflight()
+    assert "RUN_SWEEPS_IN_API=false" in result.stderr
+    assert "no separate cron container exists" in result.stderr
+
+
+def test_the_in_api_sweeps_default_is_reported_ok(box: Box) -> None:
+    box.write_env(compose_profiles="")
+    result = box.preflight()
+    assert "in-API sweeps enabled" in result.stdout
+
+
+# ------------------------------------- round 3: how many containers `up` starts at once
+
+
+def _up_limits(box: Box) -> list[str]:
+    log = box.root / "up.log"
+    return log.read_text().split() if log.exists() else []
+
+
+def test_up_starts_four_containers_at_a_time_unless_told_otherwise(box: Box) -> None:
+    result = box.run("remote.sh", "up")
+    assert result.returncode == 0, result.stderr
+    assert _up_limits(box) == ["4"]
+
+
+def test_the_up_parallel_limit_can_be_set_in_the_environment(box: Box) -> None:
+    box.extra_env = {"EDGE_UP_PARALLEL_LIMIT": "2"}
+    assert box.run("remote.sh", "up").returncode == 0
+    assert _up_limits(box) == ["2"]
+
+
+def test_the_up_parallel_limit_can_be_set_in_dot_env_because_ssh_carries_no_environment(
+    box: Box,
+) -> None:
+    """`make deploy` runs remote.sh over ssh: an operator's exported variable never arrives. The
+    deploy that merges a batch of new containers onto a swapping box needs 2, and needs it to
+    actually reach compose."""
+    env_file = box.edge / ".env"
+    env_file.write_text(env_file.read_text() + "EDGE_UP_PARALLEL_LIMIT=2\n")
+    assert box.run("remote.sh", "up").returncode == 0
+    assert _up_limits(box) == ["2"]
+
+
+@pytest.mark.parametrize("value", ["0", "two", "-1", "2.5", ""])
+def test_a_value_that_is_not_a_positive_whole_number_falls_back_to_four(
+    box: Box, value: str
+) -> None:
+    box.extra_env = {"EDGE_UP_PARALLEL_LIMIT": value}
+    assert box.run("remote.sh", "up").returncode == 0
+    assert _up_limits(box) == ["4"]
+
+
+# ---------- round 3, deploy blockers found by the environment audit: the Caddyfile site list and
+# ---------- a `.env` that is sourced as shell
+
+
+def _caddy_site_sed_expression() -> str:
+    """The exact `sed` program preflight.sh runs to list the Caddyfile's site names — pulled out
+    of the script text, so this tests what ships and not a copy of it."""
+    text = (EDGE_SRC / "preflight.sh").read_text()
+    m = re.search(r"sed -n '(s#\^https://[^']*)' caddy/Caddyfile", text)
+    assert m, "preflight.sh no longer extracts Caddyfile site names with a `sed -n 's#^https://…'`"
+    return m.group(1)
+
+
+def _caddy_sites() -> list[str]:
+    result = subprocess.run(
+        ["sed", "-n", _caddy_site_sed_expression(), str(EDGE_SRC / "caddy/Caddyfile")],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.splitlines()
+
+
+def test_the_caddy_site_list_never_contains_an_empty_name() -> None:
+    """`https:// {` — the custom-domain on-demand-TLS catch-all — matched the old `[a-z0-9.-]*`
+    as an EMPTY site name, so every preflight run failed with "the Caddyfile serves  but
+    TLS_PLATFORM_HOSTS does not list it", whatever the box's `.env` said (commit ffaa682)."""
+    sites = _caddy_sites()
+    assert sites, "the expression found no site at all — it is broken the other way"
+    assert "" not in sites
+
+
+def test_the_caddyfile_catch_all_really_is_in_the_caddyfile() -> None:
+    """The regression's premise: if `https:// {` ever leaves the Caddyfile this file's test above
+    stops proving anything, and should be said so rather than pass vacuously."""
+    caddyfile = (EDGE_SRC / "caddy/Caddyfile").read_text()
+    assert re.search(r"^https:// \{$", caddyfile, re.M)
+
+
+def test_every_caddy_site_is_listed_in_the_example_tls_platform_hosts() -> None:
+    """A site the Caddyfile serves and `TLS_PLATFORM_HOSTS` does not list gets no certificate. The
+    example is what a new box starts from. (`https://{$EDGE_HOST} {` is not matched by the
+    expression on purpose — EDGE_HOST is listed by its own key — and the catch-all has no name.)"""
+    listed = set()
+    for line in (EDGE_SRC / ".env.example").read_text().splitlines():
+        if line.startswith("TLS_PLATFORM_HOSTS="):
+            listed = set(line.split("=", 1)[1].split(","))
+    assert listed
+    unlisted = [site for site in _caddy_sites() if site not in listed]
+    assert not unlisted, f"Caddy serves {unlisted}, which .env.example's TLS_PLATFORM_HOSTS omits"
+
+
+def test_preflight_no_longer_fails_on_the_catch_all_site(box: Box) -> None:
+    box.write_env(compose_profiles="")
+    result = box.preflight()
+    assert "the Caddyfile serves  but" not in result.stderr
+    assert "TLS_PLATFORM_HOSTS does not list it" not in result.stderr
+
+
+def _append_to_env(box: Box, *lines: str) -> None:
+    env_file = box.edge / ".env"
+    env_file.write_text(env_file.read_text() + "\n".join(lines) + "\n")
+
+
+def test_an_unquoted_value_with_whitespace_is_a_named_failure_not_exit_127(box: Box) -> None:
+    """`.env` is sourced as shell: `EDGE_PROFILES=inventory, storefront` assigns `inventory,` and
+    then runs `storefront` as a command — exit 127, "command not found", no FAILED footer."""
+    box.write_env(compose_profiles="")
+    _append_to_env(box, "EDGE_PROFILES=inventory, storefront", "OPS_ALERT_EMAIL=a and b")
+    result = box.preflight()
+    assert result.returncode == 1, (result.returncode, result.stderr)
+    assert (
+        "FAIL  EDGE_PROFILES in .env has an unquoted value containing whitespace" in result.stderr
+    )
+    assert (
+        "FAIL  OPS_ALERT_EMAIL in .env has an unquoted value containing whitespace" in result.stderr
+    )
+    assert "preflight: FAILED" in result.stderr
+    assert "command not found" not in result.stderr
+
+
+def test_nothing_in_a_bad_env_line_is_executed(box: Box) -> None:
+    """The check runs on the raw file BEFORE it is sourced: the words after the space must never
+    reach the shell."""
+    marker = box.root / "executed"
+    box.write_env(compose_profiles="")
+    _append_to_env(box, f"OPS_ALERT_EMAIL=a touch {marker}")
+    result = box.preflight()
+    assert result.returncode == 1
+    assert not marker.exists()
+
+
+def test_quoted_values_a_trailing_space_and_inline_comments_are_not_flagged(box: Box) -> None:
+    box.write_env(compose_profiles="")
+    _append_to_env(
+        box,
+        'OPS_ALERT_EMAIL="ops team <ops@opsgrids.test>"',
+        "SENTRY_DSN='a b'",
+        "EDGE_WEB_ROOT=/srv/opsgrids/web   ",
+        "S3_PUBLIC_BUCKET=opsgrids-public # the public bucket",
+        "  # an indented comment with = and spaces",
+        "# COMMENTED_KEY=has spaces",
+    )
+    result = box.preflight()
+    assert "unquoted value containing whitespace" not in result.stderr
+    assert "command not found" not in result.stderr
+
+
+def test_a_value_that_contains_a_hash_but_no_whitespace_is_left_alone(box: Box) -> None:
+    """`KEY=abc#def` is one word to bash — a comment only starts after whitespace."""
+    box.write_env(compose_profiles="")
+    _append_to_env(box, "SENTRY_DSN=https://abc#def@sentry.example.test/1")
+    assert "unquoted value containing whitespace" not in box.preflight().stderr
+
+
+def test_windows_line_endings_are_not_mistaken_for_whitespace(box: Box) -> None:
+    box.write_env(compose_profiles="")
+    env_file = box.edge / ".env"
+    env_file.write_bytes(env_file.read_bytes().replace(b"\n", b"\r\n"))
+    assert "unquoted value containing whitespace" not in box.preflight().stderr
+
+
+def test_a_lowercase_assignment_is_checked_too(box: Box) -> None:
+    """The shell runs `not_upper=has spaces` just as it runs an upper-case one."""
+    box.write_env(compose_profiles="")
+    _append_to_env(box, "site_note=has spaces")
+    result = box.preflight()
+    assert result.returncode == 1
+    assert "FAIL  site_note in .env has an unquoted value containing whitespace" in result.stderr
