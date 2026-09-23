@@ -91,11 +91,22 @@ async def test_connection_created_and_replaced_match_their_schemas(session, org_
 # --------------------------------------------------------------------- setup: whatsapp
 
 
-async def test_whatsapp_created_and_replaced_match_their_schemas(session, org_id) -> None:
+async def test_whatsapp_created_and_replaced_match_their_schemas(
+    session, org_id, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # This test is about the event payload, not about proving a token against Meta's Graph API
+    # (`test_whatsapp_provider.py` owns that) or the cross-tenant uniqueness check (which needs
+    # the directory role's own DSN, not the tenant session this test already has bound).
+    async def _pass(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(services.whatsapp_provider, "verify_ownership", _pass)
+
     async with session.begin():
         await services.create_whatsapp_connection(
             session,
             _ctx(org_id, "engage.setup.whatsapp.write"),
+            directory=session,
             waba_id="waba-1",
             phone_number_id="phone-1",
             display_number="+15551234567",
@@ -107,6 +118,7 @@ async def test_whatsapp_created_and_replaced_match_their_schemas(session, org_id
         await services.replace_whatsapp_connection(
             session,
             _ctx(org_id, "engage.setup.whatsapp.write"),
+            directory=session,
             waba_id="waba-1",
             phone_number_id="phone-2",
             display_number="+15557654321",

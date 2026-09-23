@@ -31,9 +31,11 @@ export { Sidebar } from "./Sidebar";
 export { LogoMark } from "./LogoMark";
 export {
   ConnectionStatusTag,
+  ConversationStatusTag,
   DomainStatusTag,
   SenderStatusTag,
   SuppressionReasonTag,
   TemplateStatusTag,
+  WindowStatusTag,
 } from "./StatusTags";
 export { EngageNotActive, LoadFailure, NotificationNotActive } from "./LoadFailure";
