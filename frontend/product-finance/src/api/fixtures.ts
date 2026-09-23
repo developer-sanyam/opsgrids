@@ -12,6 +12,7 @@ import type {
   EInvoiceState,
   EwayBillWithInvoice,
   FilingStatus,
+  Gstr3bSections,
   GstRegistration,
   GstReturn,
   GstReturnDetail,
@@ -20,6 +21,7 @@ import type {
   ImsDecision,
   ImsDocument,
   ImsDocumentDetail,
+  ImsExpenseCategory,
   ImsReason,
   Invoice,
   InvoiceLine,
@@ -31,6 +33,7 @@ import type {
   ReturnDiff,
   ReturnTotals,
   SupplyType,
+  TaxHeadAmounts,
   WithholdingRate,
   WithholdingWithInvoice,
 } from "./types";
@@ -810,6 +813,7 @@ const IMS_BASE: ImsDocument[] = IMS_SEEDS.map((seed) => {
           note: seed.decision.note,
           suggested_action: seed.action,
           suggestion_reason: seed.reason,
+          expense_category: "general",
           decided_by: seed.decision.by,
           decided_at: seed.decision.at,
         }
@@ -872,6 +876,7 @@ export function recordFixtureDecision(
   documentId: string,
   action: ImsAction,
   note: string | null,
+  expenseCategory: ImsExpenseCategory,
   decidedBy: string,
 ): ImsDecision {
   const document = IMS_BASE.find((d) => d.id === documentId);
@@ -882,6 +887,7 @@ export function recordFixtureDecision(
     note,
     suggested_action: suggestion?.suggested_action ?? null,
     suggestion_reason: suggestion?.reason ?? null,
+    expense_category: expenseCategory,
     decided_by: decidedBy,
     decided_at: new Date().toISOString(),
   };
@@ -941,6 +947,25 @@ export const RETURNS: GstReturn[] = [
     filed_at: null,
     arn: null,
   },
+  {
+    id: "ret-2026-07-gstr3b",
+    gst_registration_id: GST_REGISTRATION.id,
+    gstin: SELLER_GSTIN,
+    state_code: SELLER_STATE_CODE,
+    period: "2026-07",
+    return_type: "gstr3b",
+    status: "filed",
+    // Table 3.1's totals — must, and do, match the July GSTR-1 above.
+    total_taxable_minor: paise(2_140_000),
+    total_cgst_minor: paise(96_000),
+    total_sgst_minor: paise(96_000),
+    total_igst_minor: paise(72_000),
+    document_count: 6,
+    line_count: 9,
+    generated_at: "2026-08-03T08:00:00Z",
+    filed_at: "2026-08-05T07:50:00Z",
+    arn: "AB270826005678B",
+  },
 ];
 
 export const RETURN_TRANSITIONS: Record<string, GstReturnTransition[]> = {
@@ -951,6 +976,102 @@ export const RETURN_TRANSITIONS: Record<string, GstReturnTransition[]> = {
   "ret-2026-08-gstr1": [
     { id: "trn-03", from_status: null, to_status: "generated", arn: null, note: null, total_taxable_minor: paise(2_980_000), total_tax_minor: paise(330_000), transitioned_by: "Rahul Deshpande", transitioned_at: "2026-08-24T06:00:00Z" },
   ],
+  "ret-2026-07-gstr3b": [
+    { id: "trn-04", from_status: null, to_status: "generated", arn: null, note: null, total_taxable_minor: paise(2_140_000), total_tax_minor: paise(264_000), transitioned_by: "Rahul Deshpande", transitioned_at: "2026-08-03T08:00:00Z" },
+    { id: "trn-05", from_status: "generated", to_status: "filed", arn: "AB270826005678B", note: "Filed after the ITC ledger was reconciled.", total_taxable_minor: paise(2_140_000), total_tax_minor: paise(264_000), transitioned_by: "Rahul Deshpande", transitioned_at: "2026-08-05T07:50:00Z" },
+  ],
+};
+
+const ZERO_HEADS: TaxHeadAmounts = {
+  igst_minor: 0,
+  cgst_minor: 0,
+  sgst_minor: 0,
+  cess_minor: 0,
+  total_minor: 0,
+};
+
+/**
+ * July's GSTR-3B. Table 3.1's liability — 96,000 CGST + 96,000 SGST + 72,000 IGST — is exactly
+ * July's GSTR-1 totals above, the reconciliation the finance service checks at generation time.
+ *
+ * The ITC side: ₹90,000 of fresh IGST credit this period (4A(5)), ₹4,000 CGST + ₹4,000 SGST that
+ * would have been credit but was blocked under s. 17(5) — a motor-vehicle purchase, shown for
+ * transparency in 4D(1) and never added to the balance — and ₹1,80,000 of IGST brought forward
+ * from June. IGST credit is exhausted first per the statutory order: it clears its own liability,
+ * then spills into CGST, then SGST, leaving ₹6,000 of IGST credit carried into August and nothing
+ * payable in cash.
+ */
+const GSTR3B_SECTIONS: Gstr3bSections = {
+  outward: {
+    taxable_supplies: {
+      igst_minor: paise(72_000),
+      cgst_minor: paise(96_000),
+      sgst_minor: paise(96_000),
+      cess_minor: 0,
+      total_minor: paise(264_000),
+    },
+    outward_taxable_minor: paise(2_140_000),
+    zero_rated: ZERO_HEADS,
+    zero_rated_taxable_minor: 0,
+    nil_rated_taxable_minor: 0,
+    reverse_charge_inward_taxable_minor: 0,
+    non_gst_taxable_minor: 0,
+    outward_reverse_charge: ZERO_HEADS,
+    outward_reverse_charge_taxable_minor: 0,
+  },
+  itc: {
+    // 4A(5) gross: the IGST actually accrued, plus the CGST+SGST that would have but for being
+    // blocked under s. 17(5) (a motor-vehicle purchase).
+    available: {
+      igst_minor: paise(90_000),
+      cgst_minor: paise(4_000),
+      sgst_minor: paise(4_000),
+      cess_minor: 0,
+      total_minor: paise(98_000),
+    },
+    reversed_section_17_5: {
+      igst_minor: 0,
+      cgst_minor: paise(4_000),
+      sgst_minor: paise(4_000),
+      cess_minor: 0,
+      total_minor: paise(8_000),
+    },
+    reversed_other: ZERO_HEADS,
+    reclaimed: ZERO_HEADS,
+    ineligible_other: ZERO_HEADS,
+    total_reversed: {
+      igst_minor: 0,
+      cgst_minor: paise(4_000),
+      sgst_minor: paise(4_000),
+      cess_minor: 0,
+      total_minor: paise(8_000),
+    },
+    net_eligible: { igst_minor: paise(90_000), cgst_minor: 0, sgst_minor: 0, cess_minor: 0, total_minor: paise(90_000) },
+  },
+  itc_brought_forward: {
+    igst_minor: paise(180_000),
+    cgst_minor: 0,
+    sgst_minor: 0,
+    cess_minor: 0,
+    total_minor: paise(180_000),
+  },
+  payment: {
+    liability: {
+      igst_minor: paise(72_000),
+      cgst_minor: paise(96_000),
+      sgst_minor: paise(96_000),
+      cess_minor: 0,
+      total_minor: paise(264_000),
+    },
+    utilisation: [
+      { head: "igst", against: "igst", amount_minor: paise(72_000) },
+      { head: "igst", against: "cgst", amount_minor: paise(96_000) },
+      { head: "igst", against: "sgst", amount_minor: paise(96_000) },
+    ],
+    credit_remaining: { igst_minor: paise(6_000), cgst_minor: 0, sgst_minor: 0, cess_minor: 0, total_minor: paise(6_000) },
+    cash_payable: ZERO_HEADS,
+    excess_liability: ZERO_HEADS,
+  },
 };
 
 const EMPTY_TOTALS: ReturnTotals = {
@@ -969,7 +1090,10 @@ export function fixtureReturnDetail(id: string): GstReturnDetail | null {
   if (!ret) return null;
   return {
     ret,
-    sections: { b2b: [], b2cl: [], b2cs: [], cdnr: [], cdnur: [], exp: [], hsn: [], docs: [] },
+    sections:
+      ret.return_type === "gstr3b"
+        ? GSTR3B_SECTIONS
+        : { b2b: [], b2cl: [], b2cs: [], cdnr: [], cdnur: [], exp: [], hsn: [], docs: [] },
     transitions: RETURN_TRANSITIONS[id] ?? [],
   };
 }

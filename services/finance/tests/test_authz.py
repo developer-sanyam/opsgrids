@@ -63,6 +63,11 @@ ENDPOINTS = [
         "finance.compliance.withholding.read",
     ),
     ("/api/v1/finance/gst/withholding-rates", "finance.compliance.withholding.read"),
+    # The ITC ledger: a fourth compliance question — what input tax credit does this business
+    # actually hold — with its own read grant, since generating and filing (which post to it)
+    # already have theirs.
+    ("/api/v1/finance/gst/itc-ledger", "finance.compliance.itc.read"),
+    ("/api/v1/finance/gst/itc-ledger/balance?period=2026-08", "finance.compliance.itc.read"),
 ]
 
 
