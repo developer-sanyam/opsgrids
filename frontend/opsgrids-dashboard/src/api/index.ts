@@ -8,6 +8,8 @@ import { apiRequest } from "@opsgrids/client";
 import type {
   Activation,
   CreditBalance,
+  Domain,
+  DomainCreate,
   Invitation,
   InvitationCreate,
   InvitationCreated,
@@ -282,4 +284,27 @@ export function deleteRole(id: string): Promise<void> {
 /** `GET /permissions` — the read-only catalogue the grant picker is built from. */
 export function listPermissions(): Promise<Permission[]> {
   return apiRequest<Permission[]>("/permissions");
+}
+
+// ------------------------------------------------------------------ email domains (SSO)
+
+/** `GET /domains`. */
+export function listDomains(): Promise<Domain[]> {
+  return apiRequest<Domain[]>("/domains");
+}
+
+/** `POST /domains` — claims a fresh, unverified domain, or re-claims (rotating the token
+ * shown) one this organisation already holds and has not yet verified. */
+export function claimDomain(payload: DomainCreate): Promise<Domain> {
+  return apiRequest<Domain>("/domains", { method: "POST", body: payload });
+}
+
+/** `POST /domains/{id}/verify` — checks DNS now. Rate limited per organisation. */
+export function verifyDomain(id: string): Promise<Domain> {
+  return apiRequest<Domain>(`/domains/${id}/verify`, { method: "POST" });
+}
+
+/** `DELETE /domains/{id}`. */
+export function releaseDomain(id: string): Promise<void> {
+  return apiRequest<void>(`/domains/${id}`, { method: "DELETE" });
 }
