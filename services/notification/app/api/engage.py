@@ -26,12 +26,13 @@ from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import dns_check, selectors, services
+from app import dns_check, selectors, services, webhooks
 from app.domain import UnsubscribeTarget
 from app.models import (
     Campaign,
     Contact,
     ContactList,
+    Conversation,
     EmailConnection,
     EmailDomain,
     ProviderAccount,
@@ -56,6 +57,12 @@ from app.schemas import (
     ContactListPatch,
     ContactOut,
     ContactPatch,
+    ConversationAssignIn,
+    ConversationMessageOut,
+    ConversationOut,
+    ConversationReplyIn,
+    ConversationReplyOut,
+    ConversationStatus,
     DnsRecordOut,
     DomainIn,
     DomainOut,
@@ -68,18 +75,31 @@ from app.schemas import (
     SuppressionOut,
     SuppressionReason,
     TestSendIn,
+    UnmaskedMessageOut,
     UnsubscribeOut,
     WhatsAppConnectionIn,
     WhatsAppConnectionOut,
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.config import ServiceSettings
-from platform_core.db import assert_tenant, get_session, get_tenant_session, set_tenant
+from platform_core.db import (
+    assert_tenant,
+    get_directory_session,
+    get_session,
+    get_tenant_session,
+    set_tenant,
+)
 from platform_core.errors import NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 from platform_core.pii import mask as mask_pii
 
 router = APIRouter(tags=["engage"])
+
+#: The cross-tenant, BYPASSRLS, SELECT-only reader — the same one the webhook route resolves a
+#: tenant from. The WhatsApp connection writes below are the other caller: a phone number's
+#: global-uniqueness check must see every organization's row, which the tenant-scoped `session`
+#: (RLS-filtered to the caller's own organization) never can.
+DirectorySessionDep = Annotated[AsyncSession, Depends(get_directory_session)]
 
 #: **The tenancy chokepoint.** Opens the transaction and binds it to the caller's organization
 #: before the route body runs, so no route can read or write without one.
@@ -135,6 +155,22 @@ SuppressionRead = Annotated[
 ]
 SuppressionWrite = Annotated[
     ScopeContext, Depends(require("engage.audience.suppression.write", minimum=Scope.ORG))
+]
+ConversationRead = Annotated[
+    ScopeContext, Depends(require("engage.inbox.conversation.read", minimum=Scope.ORG))
+]
+ConversationWrite = Annotated[
+    ScopeContext, Depends(require("engage.inbox.conversation.write", minimum=Scope.ORG))
+]
+MessageReply = Annotated[
+    ScopeContext, Depends(require("engage.inbox.message.reply", minimum=Scope.ORG))
+]
+#: The dangerous, stepped-up unmask. `amr={"otp"}` pairs with the permission the same way
+#: `crm.book.contact.read_sensitive` does — an ordinary inbox session must not be a standing
+#: route to a customer's real words.
+MessageUnmask = Annotated[
+    ScopeContext,
+    Depends(require("engage.inbox.message.unmask", minimum=Scope.ORG, amr={"otp"})),
 ]
 
 
@@ -212,6 +248,25 @@ def _suppression_out(row: Suppression) -> SuppressionOut:
         email=row.email_masked,
         reason=row.reason,
         created_at=row.created_at,
+    )
+
+
+def _conversation_out(row: Conversation) -> ConversationOut:
+    """The mask, never the address — same rule as `_contact_out`. `within_service_window` is
+    computed at read time so the inbox never reimplements the 24-hour rule client-side."""
+    return ConversationOut(
+        id=str(row.id),
+        channel=row.channel,
+        wa_address=row.wa_address_masked,
+        contact_id=str(row.contact_id) if row.contact_id else None,
+        last_customer_message_at=row.last_customer_message_at,
+        within_service_window=webhooks.within_service_window(row.last_customer_message_at),
+        status=row.status,
+        assignee_membership_id=(
+            str(row.assignee_membership_id) if row.assignee_membership_id else None
+        ),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
     )
 
 
@@ -323,13 +378,18 @@ async def read_whatsapp_connection(
     dependencies=[Entitled],
 )
 async def connect_whatsapp(
-    body: WhatsAppConnectionIn, session: SessionDep, ctx: WhatsAppWrite, request: Request
+    body: WhatsAppConnectionIn,
+    session: SessionDep,
+    directory: DirectorySessionDep,
+    ctx: WhatsAppWrite,
+    request: Request,
 ) -> WhatsAppConnectionOut:
     """POST rather than PUT, for the reason `connect_provider` is: one organization gets one
     WhatsApp account and a second POST is refused rather than silently accepted."""
     row = await services.create_whatsapp_connection(
         session,
         ctx,
+        directory=directory,
         waba_id=body.waba_id,
         phone_number_id=body.phone_number_id,
         display_number=body.display_number,
@@ -346,11 +406,16 @@ async def connect_whatsapp(
     dependencies=[Entitled],
 )
 async def replace_whatsapp(
-    body: WhatsAppConnectionIn, session: SessionDep, ctx: WhatsAppWrite, request: Request
+    body: WhatsAppConnectionIn,
+    session: SessionDep,
+    directory: DirectorySessionDep,
+    ctx: WhatsAppWrite,
+    request: Request,
 ) -> WhatsAppConnectionOut:
     row = await services.replace_whatsapp_connection(
         session,
         ctx,
+        directory=directory,
         waba_id=body.waba_id,
         phone_number_id=body.phone_number_id,
         display_number=body.display_number,
@@ -1083,6 +1148,165 @@ async def campaign_recipients(
         total=total,
         params=params,
     )
+
+
+# --------------------------------------------------------------------- inbox (WhatsApp)
+
+
+async def _conversation_or_404(
+    session: AsyncSession, ctx: ScopeContext, conversation_id: uuid.UUID
+) -> Conversation:
+    row = await selectors.get_conversation(session, ctx.organization_id, conversation_id)
+    if row is None:
+        raise NotFoundProblem("No such conversation")
+    return row
+
+
+@router.get(
+    "/engage/conversations",
+    response_model=Page[ConversationOut],
+    summary="WhatsApp conversations, most recently active first",
+    dependencies=[Entitled],
+)
+async def list_conversations(
+    session: SessionDep,
+    ctx: ConversationRead,
+    params: PageQuery,
+    conversation_status: Annotated[ConversationStatus | None, Query(alias="status")] = None,
+) -> Page[ConversationOut]:
+    stmt = selectors.conversations_stmt(ctx, conversation_status=conversation_status)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([_conversation_out(r) for r in rows], total=total, params=params)
+
+
+@router.get(
+    "/engage/conversations/{conversation_id}",
+    response_model=ConversationOut,
+    summary="One conversation",
+    dependencies=[Entitled],
+)
+async def get_conversation(
+    conversation_id: uuid.UUID, session: SessionDep, ctx: ConversationRead
+) -> ConversationOut:
+    return _conversation_out(await _conversation_or_404(session, ctx, conversation_id))
+
+
+@router.get(
+    "/engage/conversations/{conversation_id}/messages",
+    response_model=Page[ConversationMessageOut],
+    summary="A conversation's thread, both directions, oldest first, bodies masked on the "
+    "inbound side",
+    dependencies=[Entitled],
+)
+async def list_conversation_messages(
+    conversation_id: uuid.UUID,
+    session: SessionDep,
+    ctx: ConversationRead,
+    params: PageQuery,
+) -> Page[ConversationMessageOut]:
+    await _conversation_or_404(session, ctx, conversation_id)
+    rows, total = await selectors.thread_messages(
+        session, ctx, conversation_id, offset=params.offset, limit=params.size
+    )
+    items = [
+        ConversationMessageOut(
+            id=str(r.id),
+            direction=r.direction,
+            message_type=r.message_type,
+            body=r.body or "",
+            occurred_at=r.occurred_at,
+            provider_message_id=r.provider_message_id,
+            profile_name=r.profile_name,
+        )
+        for r in rows
+    ]
+    return Page.build(items, total=total, params=params)
+
+
+@router.post(
+    "/engage/conversations/{conversation_id}/reply",
+    response_model=ConversationReplyOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Send a free-text WhatsApp reply inside the 24-hour service window",
+    dependencies=[Entitled],
+)
+async def reply_to_conversation(
+    conversation_id: uuid.UUID,
+    body: ConversationReplyIn,
+    session: SessionDep,
+    ctx: MessageReply,
+    request: Request,
+) -> ConversationReplyOut:
+    """202: staged, not yet sent — the dispatcher sends it, same as every other message in this
+    service. 409 with `remedy: "template"` when the window has closed; nothing is staged then."""
+    message = await services.reply_to_conversation(
+        session,
+        ctx,
+        conversation_id=conversation_id,
+        body=body.body,
+        idempotency_key=body.idempotency_key,
+        request=request,
+    )
+    return ConversationReplyOut(
+        message_id=str(message.id), state=message.state, conversation_id=str(conversation_id)
+    )
+
+
+@router.post(
+    "/engage/conversations/{conversation_id}:assign",
+    response_model=ConversationOut,
+    summary="Assign a conversation to a membership, or clear its assignment",
+    dependencies=[Entitled],
+)
+async def assign_conversation(
+    conversation_id: uuid.UUID,
+    body: ConversationAssignIn,
+    session: SessionDep,
+    ctx: ConversationWrite,
+    request: Request,
+) -> ConversationOut:
+    row = await services.assign_conversation(
+        session,
+        ctx,
+        conversation_id=conversation_id,
+        assignee_membership_id=body.assignee_membership_id,
+        request=request,
+    )
+    return _conversation_out(row)
+
+
+@router.post(
+    "/engage/conversations/{conversation_id}:close",
+    response_model=ConversationOut,
+    summary="Close a conversation. A later reply, or the customer writing back, reopens it",
+    dependencies=[Entitled],
+)
+async def close_conversation(
+    conversation_id: uuid.UUID, session: SessionDep, ctx: ConversationWrite, request: Request
+) -> ConversationOut:
+    row = await services.close_conversation(
+        session, ctx, conversation_id=conversation_id, request=request
+    )
+    return _conversation_out(row)
+
+
+@router.post(
+    "/engage/conversations/{conversation_id}/messages/{message_id}:unmask",
+    response_model=UnmaskedMessageOut,
+    summary="Reveal one customer message's real text (dangerous; audited every time)",
+    dependencies=[Entitled],
+)
+async def unmask_message(
+    conversation_id: uuid.UUID,
+    message_id: uuid.UUID,
+    session: SessionDep,
+    ctx: MessageUnmask,
+    request: Request,
+) -> UnmaskedMessageOut:
+    body = await services.unmask_inbound_message(
+        session, ctx, conversation_id=conversation_id, message_id=message_id, request=request
+    )
+    return UnmaskedMessageOut(message_id=str(message_id), body=body)
 
 
 # --------------------------------------------------------------------- public unsubscribe

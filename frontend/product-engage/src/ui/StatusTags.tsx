@@ -1,7 +1,13 @@
 import { Tag } from "@opsgrids/ui";
 import type { TagTone } from "@opsgrids/ui";
 
-import type { ConnectionStatus, DomainStatus, SuppressionReason, TemplateStatus } from "@/api/types";
+import type {
+  ConnectionStatus,
+  ConversationStatus,
+  DomainStatus,
+  SuppressionReason,
+  TemplateStatus,
+} from "@/api/types";
 
 /**
  * The three status vocabularies this product renders, each translated in exactly one place.
@@ -83,4 +89,28 @@ const SUPPRESSION_LABELS: Record<SuppressionReason, { label: string; tone: TagTo
 export function SuppressionReasonTag({ reason }: { reason: SuppressionReason }) {
   const { label, tone } = SUPPRESSION_LABELS[reason];
   return <Tag tone={tone}>{label}</Tag>;
+}
+
+/** A conversation's triage state. Independent of the 24-hour service window — a closed
+ *  conversation can still be inside its window, and an open one can be well outside it — so this
+ *  is never a proxy for whether a reply is possible; that answer is `WindowStatusTag`'s. */
+const CONVERSATION_LABELS: Record<ConversationStatus, { label: string; tone: TagTone }> = {
+  open: { label: "Open", tone: "positive" },
+  closed: { label: "Closed", tone: "neutral" },
+};
+
+export function ConversationStatusTag({ status }: { status: ConversationStatus }) {
+  const { label, tone } = CONVERSATION_LABELS[status];
+  return <Tag tone={tone}>{label}</Tag>;
+}
+
+/** Whether a free-text reply is possible right now, exactly as the service computed it
+ *  (`within_service_window`) — never re-derived from `last_customer_message_at` here, so this
+ *  screen can never disagree with the reply endpoint about the one fact that decides it. */
+export function WindowStatusTag({ withinWindow }: { withinWindow: boolean }) {
+  return withinWindow ? (
+    <Tag tone="positive">Can reply</Tag>
+  ) : (
+    <Tag tone="warning">Template only</Tag>
+  );
 }

@@ -352,6 +352,48 @@ ENGAGE = PermissionCatalogue(
             "ORG",
             is_dangerous=True,
         ),
+        # The WhatsApp inbox: a customer's two-way conversation with the organization, not a
+        # one-shot campaign send. `conversation.read`/`.write` are the triage surface (the list,
+        # the thread, assignment, closing); `message.reply` is its own grant because sending words
+        # to a real customer under the organization's WhatsApp number is a materially bigger
+        # action than looking at a list of threads.
+        PermissionSpec(
+            "inbox",
+            "conversation",
+            "read",
+            "See WhatsApp conversations and their message threads, bodies masked",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "inbox",
+            "conversation",
+            "write",
+            "Assign and close WhatsApp conversations",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "inbox",
+            "message",
+            "reply",
+            "Send a free-text WhatsApp reply inside the 24-hour service window",
+            "ORG",
+            "ORG",
+        ),
+        # Reading a customer's actual words, unmasked. Dangerous in the same sense
+        # `crm.book.contact.read_sensitive` is, and paired the same way: the permission alone is
+        # not enough, `app/api/engage.py` also demands `amr={"otp"}` — an ordinary inbox session
+        # must not be a standing route to every customer's message history.
+        PermissionSpec(
+            "inbox",
+            "message",
+            "unmask",
+            "Reveal the real text of a customer's WhatsApp message (audited every time)",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
     ],
 )
 
@@ -385,6 +427,22 @@ ENGAGE_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("engage.audience.suppression.read", "ORG"),
             ("engage.audience.list.read", "ORG"),
             ("engage.campaign.campaign.read", "ORG"),
+            ("engage.inbox.conversation.read", "ORG"),
+        ),
+    ),
+    RoleTemplate(
+        code="ENGAGE_INBOX_AGENT",
+        name="Engage inbox agent",
+        product=ENGAGE_PRODUCT,
+        description=(
+            "Works the WhatsApp inbox: reads conversations, replies inside the service window, "
+            "assigns and closes threads. No unmasking of a customer's message history, and no "
+            "sending setup or campaigns."
+        ),
+        grants=ENGAGE.pick(
+            ("engage.inbox.conversation.read", "ORG"),
+            ("engage.inbox.conversation.write", "ORG"),
+            ("engage.inbox.message.reply", "ORG"),
         ),
     ),
 ]
