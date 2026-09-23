@@ -5,8 +5,9 @@ import { Can } from "@opsgrids/client";
 import { SendIcon } from "@opsgrids/ui";
 
 import { sendCampaign } from "@/api/client";
-import type { CampaignOut, ContactListOut, SenderOut } from "@/api/types";
+import type { CampaignOut } from "@/api/types";
 import { formatNumber } from "@/lib/format";
+import type { ResolvedLists } from "@/lib/refs";
 import { explainSendFailure } from "@/lib/sendGate";
 import type { GateField, GateNext, SendGateReason } from "@/lib/sendGate";
 import { Button, Card, ConfirmDialog, InlineAlert } from "@/ui";
@@ -29,13 +30,24 @@ import { Button, Card, ConfirmDialog, InlineAlert } from "@/ui";
  * "everyone you may mail" (contacts minus suppressions) at expansion and this app cannot count it.
  */
 
-function audienceSummary(campaign: CampaignOut, lists: ContactListOut[]): string {
+/**
+ * Says who the send goes to, claiming only what was learned. A list this screen could name is named
+ * with its size today; one the service answered `404` for no longer exists; one that simply could
+ * not be read (a role without the list read) is "the list chosen for this campaign" — never "not
+ * found", which would be a claim about the service.
+ */
+function audienceSummary(campaign: CampaignOut, resolved: ResolvedLists): string {
   if (campaign.audience === "all_sendable") {
     return "everyone you may mail — every contact except addresses on your Suppressions list";
   }
-  const list = lists.find((l) => l.id === campaign.list_id);
-  if (list === undefined) return "a list that could not be found";
-  return `${list.name}, ${formatNumber(list.member_count)} ${list.member_count === 1 ? "contact" : "contacts"} today, minus any that are suppressed`;
+  const list = resolved.lists.find((l) => l.id === campaign.list_id);
+  if (list !== undefined) {
+    return `${list.name}, ${formatNumber(list.member_count)} ${list.member_count === 1 ? "contact" : "contacts"} today, minus any that are suppressed`;
+  }
+  if (campaign.list_id !== null && resolved.gone.has(campaign.list_id)) {
+    return "a list that no longer exists";
+  }
+  return "the list chosen for this campaign";
 }
 
 const LINK_CLASS =
@@ -73,15 +85,16 @@ function GateAction({
 
 export function CampaignSendPanel({
   campaign,
-  sender,
-  lists,
+  senderLabel,
+  resolved,
   dirty,
   onSent,
   onFocusField,
 }: {
   campaign: CampaignOut;
-  sender: SenderOut | null;
-  lists: ContactListOut[];
+  /** "Name <address>", or a neutral phrase when the sender could not be named. */
+  senderLabel: string;
+  resolved: ResolvedLists;
   /** The form beside this has changes that are not saved. */
   dirty: boolean;
   onSent: (campaign: CampaignOut) => void;
@@ -109,8 +122,6 @@ export function CampaignSendPanel({
     }
   }
 
-  const senderText = sender === null ? "the chosen sender" : `${sender.name} <${sender.address}>`;
-
   return (
     <Card className="flex flex-col gap-4 p-6">
       <h2 className="text-base font-bold text-ink">Send</h2>
@@ -126,7 +137,7 @@ export function CampaignSendPanel({
         }
       >
         <p className="text-sm text-muted">
-          Sends the saved draft as {senderText} to {audienceSummary(campaign, lists)}. The service
+          Sends the saved draft as {senderLabel} to {audienceSummary(campaign, resolved)}. The service
           checks the sender, its domain, your provider connection and the unsubscribe link before it
           lets anything go.
         </p>
@@ -174,7 +185,7 @@ export function CampaignSendPanel({
         onConfirm={() => void send()}
         tone="primary"
         title="Send this campaign now?"
-        body={`“${campaign.name}” goes out as ${senderText} to ${audienceSummary(campaign, lists)}. You can cancel it while it is sending, but a message that has already left cannot be recalled.`}
+        body={`“${campaign.name}” goes out as ${senderLabel} to ${audienceSummary(campaign, resolved)}. You can cancel it while it is sending, but a message that has already left cannot be recalled.`}
         confirmLabel="Send campaign"
         pendingLabel="Sending…"
         pending={pending}

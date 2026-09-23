@@ -1,13 +1,13 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { ApiError, PermissionProvider } from "@opsgrids/client";
 
 import * as client from "@/api/client";
 import { CAMPAIGN_DRAFT, CAMPAIGN_PAUSED, CAMPAIGN_SENDING, CAMPAIGN_SENT, CONTACT_LISTS } from "@/api/fixtures";
-import type { CampaignOut, Page } from "@/api/types";
+import type { CampaignOut, ContactListOut, Page } from "@/api/types";
 import { CampaignsPage } from "./Campaigns";
 
 /**
@@ -31,12 +31,26 @@ function renderPage(
     <PermissionProvider grants={grants}>
       <MemoryRouter initialEntries={[{ pathname: "/campaigns", state }]}>
         <Routes>
-          <Route path="/campaigns" element={<CampaignsPage />} />
+          <Route
+            path="/campaigns"
+            element={
+              <>
+                <CampaignsPage />
+                <StateProbe />
+              </>
+            }
+          />
           <Route path="/campaigns/new" element={<p>New campaign page</p>} />
         </Routes>
       </MemoryRouter>
     </PermissionProvider>,
   );
+}
+
+/** Shows the router state of the current history entry, so a test can see it being cleared. */
+function StateProbe() {
+  const location = useLocation();
+  return <output data-testid="router-state">{JSON.stringify(location.state)}</output>;
 }
 
 function mockLists() {
@@ -147,11 +161,53 @@ describe("populated", () => {
     expect(screen.getByText("—")).toBeTruthy();
   });
 
-  it("says so when a campaign's list has since gone", async () => {
+  it("says a list no longer exists only when the service answers 404 for it", async () => {
     vi.spyOn(client, "listCampaigns").mockResolvedValue(page([CAMPAIGN_DRAFT]));
     vi.spyOn(client, "listLists").mockResolvedValue(page([]));
+    vi.spyOn(client, "getList").mockRejectedValue(new ApiError(404, "No such list", null));
     renderPage();
-    expect(await screen.findByText("A list that could not be found")).toBeTruthy();
+    expect(await screen.findByText("A list that no longer exists")).toBeTruthy();
+  });
+
+  it("does not claim a list is gone when it simply could not be read", async () => {
+    vi.spyOn(client, "listCampaigns").mockResolvedValue(page([CAMPAIGN_DRAFT]));
+    vi.spyOn(client, "listLists").mockResolvedValue(page([]));
+    vi.spyOn(client, "getList").mockRejectedValue(
+      new ApiError(403, "You do not have engage.audience.list.read", null),
+    );
+    renderPage();
+    expect(await screen.findByText("A list")).toBeTruthy();
+    expect(screen.queryByText(/no longer exists|could not be found/)).toBeNull();
+  });
+});
+
+describe("when the lists cannot be read", () => {
+  it("still shows every campaign, with 'A list' where a list's name would be", async () => {
+    vi.spyOn(client, "listCampaigns").mockResolvedValue(page([CAMPAIGN_DRAFT, CAMPAIGN_SENT]));
+    const refused = new ApiError(403, "You do not have engage.audience.list.read", null);
+    vi.spyOn(client, "listLists").mockRejectedValue(refused);
+    vi.spyOn(client, "getList").mockRejectedValue(refused);
+    renderPage(["engage.campaign.campaign.read:ORG"]);
+
+    expect(await screen.findByRole("link", { name: CAMPAIGN_DRAFT.name })).toBeTruthy();
+    expect(screen.getByRole("link", { name: CAMPAIGN_SENT.name })).toBeTruthy();
+    expect(screen.getByText("A list")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("reads by id the list a campaign is addressed to when the paged read did not reach it", async () => {
+    vi.spyOn(client, "listCampaigns").mockResolvedValue(page([CAMPAIGN_DRAFT]));
+    // Not the campaign's list — the paged read reached other lists only.
+    vi.spyOn(client, "listLists").mockResolvedValue({ ...page([CONTACT_LISTS[1] as ContactListOut]), total: 5_000, pages: 25 });
+    const byId = vi.spyOn(client, "getList").mockResolvedValue({
+      ...(CONTACT_LISTS[0] as ContactListOut),
+      id: CAMPAIGN_DRAFT.list_id ?? "",
+      name: "List 4,201",
+    });
+    renderPage();
+
+    expect(await screen.findByText("List 4,201")).toBeTruthy();
+    expect(byId).toHaveBeenCalledWith(CAMPAIGN_DRAFT.list_id);
   });
 });
 
@@ -239,5 +295,36 @@ describe("a notice handed over by the screen that navigated here", () => {
       const live = Array.from(document.querySelectorAll('[aria-live="polite"]')).map((n) => n.textContent);
       expect(live).toContain("October delivery network update deleted.");
     });
+  });
+
+  it("moves focus to the page heading, because the control that caused it is gone", async () => {
+    vi.spyOn(client, "listCampaigns").mockResolvedValue(page([]));
+    mockLists();
+    renderPage(undefined, { notice: "October delivery network update deleted." });
+    await screen.findByText("No campaigns yet");
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1 }).contains(document.activeElement)).toBe(true),
+    );
+  });
+
+  it("is cleared from the history entry once announced, so a reload does not say it again", async () => {
+    vi.spyOn(client, "listCampaigns").mockResolvedValue(page([]));
+    mockLists();
+    renderPage(undefined, { notice: "October delivery network update deleted." });
+    await screen.findByText("No campaigns yet");
+
+    await waitFor(() => expect(screen.getByTestId("router-state").textContent).toBe("null"));
+    // Announced once, and still in the live region afterwards.
+    const live = Array.from(document.querySelectorAll('[aria-live="polite"]')).map((n) => n.textContent);
+    expect(live).toContain("October delivery network update deleted.");
+  });
+
+  it("announces nothing for router state that is not a notice", async () => {
+    vi.spyOn(client, "listCampaigns").mockResolvedValue(page([]));
+    mockLists();
+    renderPage(undefined, { notice: 42 });
+    await screen.findByText("No campaigns yet");
+    const live = Array.from(document.querySelectorAll('[aria-live="polite"]')).map((n) => n.textContent);
+    expect(live.filter((text) => text !== "")).toEqual([]);
   });
 });

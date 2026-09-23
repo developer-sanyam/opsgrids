@@ -50,7 +50,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function renderPage(grants = ["engage.audience.list.read:ORG", "engage.audience.list.write:ORG"]) {
+const ALL_GRANTS = [
+  "engage.audience.list.read:ORG",
+  "engage.audience.list.write:ORG",
+  "engage.audience.contact.write:ORG",
+];
+
+function renderPage(grants: readonly string[] = ALL_GRANTS) {
   return render(
     <PermissionProvider grants={grants}>
       <MemoryRouter initialEntries={[`/lists/${LIST.id}`]}>

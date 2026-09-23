@@ -187,7 +187,7 @@ describe("a sent campaign", () => {
     renderReport(listed);
     await screen.findByRole("heading", { level: 2, name: "What was sent" });
     expect(screen.getByText("Vaayu Logistics Support <support@vaayu-logistics.example.com>")).toBeTruthy();
-    expect(screen.getByText("Enterprise accounts list")).toBeTruthy();
+    expect(screen.getByText("Enterprise accounts")).toBeTruthy();
     const frame = screen.getByTitle("HTML preview of the campaign body");
     expect(frame.getAttribute("sandbox")).toBe("");
     // The outline nests: the preview is a subsection of "What was sent", not a second h2.
@@ -201,10 +201,12 @@ describe("a sent campaign", () => {
     vi.spyOn(client, "listLists").mockResolvedValue(page([]));
     const orphan = { ...SENT, audience: "list" as const, list_id: LIST.id };
     vi.spyOn(client, "getCampaign").mockResolvedValue(orphan);
+    vi.spyOn(client, "getList").mockRejectedValue(new ApiError(404, "No such list", null));
     vi.spyOn(client, "listCampaignRecipients").mockResolvedValue(page([]));
     renderReport(orphan);
-    expect(await screen.findByText("A sender that could not be found")).toBeTruthy();
-    expect(screen.getByText("A list that could not be found")).toBeTruthy();
+    // Every sender was read and this one is not among them; the service said 404 for the list.
+    expect(await screen.findByText("a sender that no longer exists")).toBeTruthy();
+    expect(screen.getByText("A list that no longer exists")).toBeTruthy();
   });
 });
 

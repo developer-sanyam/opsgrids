@@ -58,7 +58,17 @@ not protection: the service refuses every read regardless, and the copy of the d
   no campaign is ever `scheduled` — so the form does not offer a time.
 - **Bodies are sent exactly as written.** There is no merge-field substitution, and an unsubscribe
   link is appended to every message. The HTML preview is a sandboxed `srcdoc` iframe (no scripts,
-  no same-origin); nothing in this app uses `dangerouslySetInnerHTML`.
+  no same-origin); nothing in this app uses `dangerouslySetInnerHTML`. **Remote images are blocked
+  in it until the person previewing turns them on** (`img-src 'none'`, then `https:`): an image is a
+  request from this browser to whoever hosts it, carrying the previewer's IP address and browser.
+- **Reference data is read in full, and never assumed complete.** Senders, domains and lists are
+  read page by page (up to 1,000 each); past that a picker says "Showing N of TOTAL". A campaign's
+  own list is read by id, so it always names the list it is addressed to, and a label says a list
+  "no longer exists" only on a real `404`. Each read settles alone, so a role that may read
+  campaigns and not lists still sees every row, with neutral labels (`src/lib/refs.ts`).
+- **A poll the service refuses stops and keeps the figures.** On a `401`/`403` `usePolling` stops,
+  keeps the last good data and reports `stopped`; the report says "Live updates stopped — reload to
+  refresh" rather than reverting the counts.
 - **Reporting is the five counts the service folds** (`recipients`, `queued`, `sent`, `failed`,
   `suppressed`). There are no delivered, bounced or unsubscribed counts because a recipient row has
   no link to the delivery ledger or to a later unsubscribe; those land on Suppressions.

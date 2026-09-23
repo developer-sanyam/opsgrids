@@ -1,12 +1,14 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { Can, useAsync } from "@opsgrids/client";
 import { MegaphoneIcon } from "@opsgrids/ui";
 
-import { listCampaigns, listLists } from "@/api/client";
-import type { CampaignOut, CampaignStatus, ContactListOut } from "@/api/types";
+import { listCampaigns } from "@/api/client";
+import type { CampaignOut, CampaignStatus } from "@/api/types";
 import { formatInstant, formatNumber } from "@/lib/format";
+import { audienceName, loadLists, resolveLists } from "@/lib/refs";
+import type { ResolvedLists } from "@/lib/refs";
 import { useRouteNotice } from "@/lib/useRouteNotice";
 import {
   Announcer,
@@ -16,6 +18,7 @@ import {
   EmptyState,
   LoadFailure,
   PageHeader,
+  PageTitle,
   Pagination,
   Select,
   Skeleton,
@@ -38,13 +41,7 @@ const STATUS_OPTIONS: SelectOption[] = [
   { value: "cancelled", label: "Cancelled" },
 ];
 
-function audienceLabel(campaign: CampaignOut, lists: ContactListOut[]): string {
-  if (campaign.audience === "all_sendable") return "Everyone you may mail";
-  const list = lists.find((l) => l.id === campaign.list_id);
-  return list ? list.name : "A list that could not be found";
-}
-
-function CampaignRow({ campaign, lists }: { campaign: CampaignOut; lists: ContactListOut[] }) {
+function CampaignRow({ campaign, resolved }: { campaign: CampaignOut; resolved: ResolvedLists }) {
   return (
     <tr className="border-t border-line align-top">
       <th scope="row" className="py-3 pr-4 text-left">
@@ -54,7 +51,7 @@ function CampaignRow({ campaign, lists }: { campaign: CampaignOut; lists: Contac
         >
           {campaign.name}
         </Link>
-        <span className="mt-0.5 block text-xs text-muted">{audienceLabel(campaign, lists)}</span>
+        <span className="mt-1 block text-xs text-muted">{audienceName(campaign, resolved)}</span>
       </th>
       <td className="py-3 pr-4">
         <CampaignStatusTag status={campaign.status} />
@@ -72,32 +69,36 @@ function CampaignRow({ campaign, lists }: { campaign: CampaignOut; lists: Contac
 }
 
 const NO_CAMPAIGNS: CampaignOut[] = [];
-const NO_LISTS: ContactListOut[] = [];
+const NO_RESOLVED: ResolvedLists = { lists: [], gone: new Set() };
 
 function Campaigns() {
   const navigate = useNavigate();
-  useRouteNotice();
+  const titleRef = useRef<HTMLSpanElement>(null);
+  useRouteNotice(titleRef);
   const [status, setStatus] = useState<CampaignStatus | "">("");
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(25);
 
-  const loader = useCallback(
-    () =>
-      Promise.all([
-        listCampaigns({ ...(status === "" ? {} : { status }), page, size }),
-        listLists({ size: 200 }),
-      ]),
-    [status, page, size],
-  );
+  /* The list names are decoration: a caller who may read campaigns but not lists still gets every
+     row, with "A list" where the name would be. Lists the paged read did not reach are read by id,
+     so a campaign addressed to the 2,301st list still names it. */
+  const loader = useCallback(async () => {
+    const [campaigns, lists] = await Promise.all([
+      listCampaigns({ ...(status === "" ? {} : { status }), page, size }),
+      loadLists(),
+    ]);
+    const ids = campaigns.items.flatMap((c) => (c.list_id === null ? [] : [c.list_id]));
+    return { campaigns, resolved: await resolveLists(ids, lists.items) };
+  }, [status, page, size]);
   const state = useAsync(loader, [status, page, size]);
-  const campaigns = state.status === "success" ? state.data[0].items : NO_CAMPAIGNS;
-  const lists = state.status === "success" ? state.data[1].items : NO_LISTS;
+  const campaigns = state.status === "success" ? state.data.campaigns.items : NO_CAMPAIGNS;
+  const resolved = state.status === "success" ? state.data.resolved : NO_RESOLVED;
 
   return (
     <div className="rise flex flex-col gap-6">
       <PageHeader
         eyebrow="Email"
-        title="Campaigns"
+        title={<PageTitle ref={titleRef}>Campaigns</PageTitle>}
         description="Drafted, scheduled, sending, sent and cancelled — every campaign this organization has ever addressed to its audience."
         actions={
           <Can permission="engage.campaign.campaign.write" scope="ORG">
@@ -106,7 +107,7 @@ function Campaigns() {
         }
       />
 
-      <Card className="flex flex-col gap-4 p-4 sm:p-5">
+      <Card className="flex flex-col gap-4 p-4 sm:p-6">
         <Select
           label="Filter by status"
           containerClassName="sm:max-w-xs"
@@ -181,16 +182,16 @@ function Campaigns() {
               </thead>
               <tbody>
                 {campaigns.map((campaign) => (
-                  <CampaignRow key={campaign.id} campaign={campaign} lists={lists} />
+                  <CampaignRow key={campaign.id} campaign={campaign} resolved={resolved} />
                 ))}
               </tbody>
             </table>
           </div>
           <Pagination
-            page={state.data[0].page}
-            pages={state.data[0].pages}
-            total={state.data[0].total}
-            size={state.data[0].size}
+            page={state.data.campaigns.page}
+            pages={state.data.campaigns.pages}
+            total={state.data.campaigns.total}
+            size={state.data.campaigns.size}
             noun="campaigns"
             onPageChange={setPage}
             onSizeChange={(n) => {

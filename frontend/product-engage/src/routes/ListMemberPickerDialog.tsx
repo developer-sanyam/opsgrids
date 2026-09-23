@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { CloseIcon } from "@opsgrids/ui";
 
@@ -35,6 +35,23 @@ export function ListMemberPickerDialog({
   const [staged, setStaged] = useState<ComboboxOption[]>([]);
   const [failure, setFailure] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chipButtons = useRef(new Map<string, HTMLButtonElement>());
+  /* Where focus goes once a staged contact has been taken back out: the button that was on the
+     Remove's neighbour, or the search box when none is left. Removing the focused button would
+     otherwise drop focus to the document and end the dialog's trap in the middle of a task. */
+  const focusAfterUnstage = useRef<string | "input" | null>(null);
+
+  useEffect(() => {
+    const target = focusAfterUnstage.current;
+    if (target === null) return;
+    focusAfterUnstage.current = null;
+    if (target === "input") {
+      containerRef.current?.querySelector<HTMLInputElement>('input[role="combobox"]')?.focus();
+    } else {
+      chipButtons.current.get(target)?.focus();
+    }
+  }, [staged]);
 
   function close() {
     setSelected(null);
@@ -50,6 +67,9 @@ export function ListMemberPickerDialog({
   }
 
   function unstage(id: string) {
+    const index = staged.findIndex((c) => c.id === id);
+    const neighbour = staged[index + 1] ?? staged[index - 1];
+    focusAfterUnstage.current = neighbour === undefined ? "input" : neighbour.id;
     setStaged((current) => current.filter((c) => c.id !== id));
   }
 
@@ -105,7 +125,7 @@ export function ListMemberPickerDialog({
         </>
       }
     >
-      <div className="flex flex-col gap-4">
+      <div ref={containerRef} className="flex flex-col gap-4">
         <div aria-live="polite" className="empty:hidden">
           {failure !== null ? (
             <InlineAlert tone="danger" title="Those contacts weren't added">
@@ -137,15 +157,19 @@ export function ListMemberPickerDialog({
             </span>
             <ul className="flex flex-wrap gap-2">
               {staged.map((contact) => (
-                <li key={contact.id}>
-                  <span className="inline-flex items-center gap-2 rounded-full bg-accent-soft py-1 pl-3 pr-1 text-sm font-semibold text-accent-ink">
-                    <span className="truncate">{contact.label}</span>
+                <li key={contact.id} className="max-w-full">
+                  <span className="inline-flex max-w-full items-center gap-2 rounded-full bg-accent-soft py-1 pl-3 pr-1 text-sm font-semibold text-accent-ink">
+                    <span className="min-w-0 truncate">{contact.label}</span>
                     <button
                       type="button"
+                      ref={(element) => {
+                        if (element === null) chipButtons.current.delete(contact.id);
+                        else chipButtons.current.set(contact.id, element);
+                      }}
                       onClick={() => unstage(contact.id)}
                       disabled={submitting}
                       aria-label={`Remove ${contact.label} from what's staged to add`}
-                      className="grid size-6 place-items-center rounded-full transition-colors hover:bg-surface/60"
+                      className="grid size-6 shrink-0 place-items-center rounded-full transition-colors hover:bg-surface/60"
                     >
                       <CloseIcon className="size-4" />
                     </button>

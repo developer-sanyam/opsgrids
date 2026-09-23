@@ -1,3 +1,9 @@
+import { useState } from "react";
+
+import { Switch } from "@opsgrids/ui";
+
+import { framePolicy } from "@/lib/previewPolicy";
+
 /**
  * What a recipient will see, without ever running what the author wrote.
  *
@@ -5,8 +11,15 @@
  * an `<iframe srcdoc>` with an empty `sandbox` attribute: no scripts, no forms, no popups, no
  * top-level navigation, and an opaque origin, so nothing in it can read this app's session or
  * reach its DOM. A `Content-Security-Policy` meta tag prepended to the markup narrows it further —
- * nothing loads except inline styles and images over `https:` or `data:`. There is no
- * `dangerouslySetInnerHTML` anywhere in this product, and this component is why that stays true.
+ * nothing loads except inline styles. There is no `dangerouslySetInnerHTML` anywhere in this
+ * product, and this component is why that stays true.
+ *
+ * **Remote images are off until the person previewing asks for them.** Every `<img src="https://…">`
+ * in a preview is a request from *this browser* to whoever hosts the image, carrying the previewer's
+ * IP address and user agent — a tracking pixel in a campaign body would tell its host that someone
+ * on this team opened the editor, and when. `img-src 'none'` is the default and the switch changes
+ * it to `https:`; it is per preview, never remembered, and there is no way to load a non-`https`
+ * or `data:` image at all.
  *
  * The plain-text body and the subject are rendered as React text children, which escape.
  *
@@ -15,9 +28,6 @@
  * unsubscribe link to every message, which is why the note below says so rather than the preview
  * pretending to draw it.
  */
-
-const FRAME_POLICY =
-  '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src https: data:; style-src \'unsafe-inline\'">';
 
 export function CampaignPreview({
   subject,
@@ -32,6 +42,7 @@ export function CampaignPreview({
    *  so the outline never repeats a level. */
   heading?: "h2" | "h3";
 }) {
+  const [remoteImages, setRemoteImages] = useState(false);
   const hasHtml = html.trim() !== "";
   const hasText = text.trim() !== "";
 
@@ -49,15 +60,25 @@ export function CampaignPreview({
       </div>
 
       {hasHtml ? (
-        <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-2">
           <span className="text-xs font-bold uppercase tracking-wider text-faint">HTML version</span>
           {/* A fixed height, so the preview never shifts the form beneath it as the author types. */}
           <iframe
             title="HTML preview of the campaign body"
             sandbox=""
             referrerPolicy="no-referrer"
-            srcDoc={`${FRAME_POLICY}${html}`}
+            srcDoc={`${framePolicy(remoteImages)}${html}`}
             className="h-80 w-full rounded-tile border border-line"
+          />
+          <Switch
+            checked={remoteImages}
+            onChange={setRemoteImages}
+            label="Load remote images"
+            description={
+              remoteImages
+                ? "Images are being fetched from the addresses in the body. Each host can see your IP address and browser."
+                : "Images are blocked. Turning this on fetches each one from wherever it is hosted, which tells that host your IP address and browser."
+            }
           />
         </div>
       ) : null}
@@ -79,7 +100,9 @@ export function CampaignPreview({
 
       <p className="text-xs text-muted">
         Sent exactly as written: merge fields such as {"{{first_name}}"} are not filled in. An
-        unsubscribe link is added to the foot of every message automatically.
+        unsubscribe link is added to the foot of every message automatically. Remote images are
+        blocked here unless you turn them on above; what a recipient&rsquo;s mail app shows is up to
+        that app.
       </p>
     </section>
   );

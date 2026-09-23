@@ -1,4 +1,4 @@
-import type { ConnectionKind, DnsRecordKind } from "@/api/types";
+import type { CampaignStatus, ConnectionKind, DnsRecordKind } from "@/api/types";
 
 /**
  * The few presentation decisions this product repeats, in one place.
@@ -55,4 +55,22 @@ const DNS_RECORD_LABELS: Record<DnsRecordKind, string> = {
 
 export function dnsRecordLabel(kind: DnsRecordKind): string {
   return DNS_RECORD_LABELS[kind];
+}
+
+/**
+ * A campaign's status as a word to say aloud, not the wire token: "sent", not `sent`; "paused",
+ * not `paused` — and a status this app names in words in one place, so a live-region announcement
+ * never reads out an enum.
+ */
+const CAMPAIGN_STATUS_WORDS: Record<CampaignStatus, string> = {
+  draft: "a draft",
+  scheduled: "scheduled",
+  sending: "sending",
+  paused: "paused",
+  sent: "sent",
+  cancelled: "cancelled",
+};
+
+export function campaignStatusWord(status: CampaignStatus): string {
+  return CAMPAIGN_STATUS_WORDS[status];
 }

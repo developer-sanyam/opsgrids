@@ -1,12 +1,15 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { Can, useAsync } from "@opsgrids/client";
 import { ArrowLeftIcon } from "@opsgrids/ui";
 
-import { deleteCampaign, getCampaign, listDomains, listLists, listSenders } from "@/api/client";
-import type { CampaignOut, ContactListOut, DomainOut, SenderOut } from "@/api/types";
+import { deleteCampaign, getCampaign } from "@/api/client";
+import type { CampaignOut } from "@/api/types";
 import { failureMessage } from "@/lib/errors";
+import { audienceName, loadRefs, resolveLists, senderName } from "@/lib/refs";
+import type { Refs, ResolvedLists } from "@/lib/refs";
+import { useFocusHeading } from "@/lib/useFocusHeading";
 import { useRouteNotice } from "@/lib/useRouteNotice";
 import {
   Announcer,
@@ -16,6 +19,7 @@ import {
   ConfirmDialog,
   LoadFailure,
   PageHeader,
+  PageTitle,
   Skeleton,
   useAnnounce,
 } from "@/ui";
@@ -32,15 +36,12 @@ import { CampaignSendPanel } from "./CampaignSendPanel";
  * refuses every edit (`services.update_campaign`), so nothing here offers one. Which of the two is
  * shown is the service's `status`, never a guess.
  *
- * The form's reference data — senders, their domains, and lists — is loaded with the campaign in
- * one `Promise.all`, so a screen either has everything it needs to render the pickers or shows one
- * failure. A read the caller may not make (a `403` on senders, say) surfaces here as the error it
- * is: the editor cannot be honest about a sender it was forbidden to see.
+ * The campaign is the one read this screen cannot do without. Its reference data — senders, their
+ * domains, lists — is read beside it and **settles on its own** (`lib/refs.ts`): a role that may
+ * read campaigns but not senders still gets the campaign, with neutral labels where a sender's name
+ * would be, and a list the paged read did not reach is read by id so a campaign always names the
+ * list it is actually addressed to.
  */
-
-const NO_SENDERS: SenderOut[] = [];
-const NO_DOMAINS: DomainOut[] = [];
-const NO_LISTS: ContactListOut[] = [];
 
 function LoadingCard() {
   return (
@@ -55,7 +56,7 @@ function BackLink() {
   return (
     <Link
       to="/campaigns"
-      className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted transition-colors hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      className="inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted transition-colors hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
     >
       <ArrowLeftIcon className="size-4" />
       All campaigns
@@ -66,16 +67,14 @@ function BackLink() {
 /** A draft: the form, the send gate beside it, and delete. */
 function DraftView({
   campaign,
-  senders,
-  domains,
-  lists,
+  refs,
+  resolved,
   onSaved,
   onChanged,
 }: {
   campaign: CampaignOut;
-  senders: SenderOut[];
-  domains: DomainOut[];
-  lists: ContactListOut[];
+  refs: Refs;
+  resolved: ResolvedLists;
   /** The service accepted an edit: the campaign as it now holds it. No reload — the form keeps its
    *  focus and the page keeps its place. */
   onSaved: (campaign: CampaignOut, message: string) => void;
@@ -88,8 +87,6 @@ function DraftView({
   const [deleting, setDeleting] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
   const [deleteFailure, setDeleteFailure] = useState<string | null>(null);
-
-  const sender = senders.find((s) => s.id === campaign.sender_id) ?? null;
 
   async function confirmDelete() {
     if (deletePending) return;
@@ -119,8 +116,8 @@ function DraftView({
 
       <CampaignSendPanel
         campaign={campaign}
-        sender={sender}
-        lists={lists}
+        senderLabel={senderName(campaign, refs.senders)}
+        resolved={resolved}
         dirty={dirty}
         onSent={(sent) => onChanged(`${sent.name} is sending.`)}
         onFocusField={(field) =>
@@ -130,9 +127,8 @@ function DraftView({
 
       <CampaignForm
         campaign={campaign}
-        senders={senders}
-        domains={domains}
-        lists={lists}
+        refs={refs}
+        resolved={resolved}
         focusRequest={focusRequest}
         onDirtyChange={setDirty}
         onSaved={onSaved}
@@ -158,32 +154,35 @@ function DraftView({
 
 function CampaignEditor({ campaignId }: { campaignId: string }) {
   const announce = useAnnounce();
-  useRouteNotice();
+  const titleRef = useRef<HTMLSpanElement>(null);
+  useRouteNotice(titleRef);
   /* The draft as the service last returned it from a save. Held here rather than re-fetched, so a
      save neither blanks the page to its skeleton nor throws away the form's focus and the test
      send's result. Cleared whenever the page is re-read. */
   const [saved, setSaved] = useState<CampaignOut | null>(null);
 
-  const loader = useCallback(
-    () =>
-      Promise.all([
-        getCampaign(campaignId),
-        listSenders(),
-        listDomains(),
-        listLists({ size: 200 }),
-      ]),
-    [campaignId],
-  );
+  const loader = useCallback(async () => {
+    const [campaign, refs] = await Promise.all([getCampaign(campaignId), loadRefs()]);
+    const resolved = await resolveLists(
+      campaign.list_id === null ? [] : [campaign.list_id],
+      refs.lists.items,
+    );
+    return { campaign, refs, resolved };
+  }, [campaignId]);
   const state = useAsync(loader, [campaignId]);
   const { reload } = state;
+  const focusHeading = useFocusHeading(titleRef);
 
+  /* A status change unmounts whichever control caused it — Send, Cancel, Resume — and the browser
+     would drop focus to the document. Focus goes to the heading first, then the page re-reads. */
   const onChanged = useCallback(
     (message: string) => {
       announce(message);
+      focusHeading();
       setSaved(null);
       reload();
     },
-    [announce, reload],
+    [announce, reload, focusHeading],
   );
 
   const onSaved = useCallback(
@@ -194,18 +193,16 @@ function CampaignEditor({ campaignId }: { campaignId: string }) {
     [announce],
   );
 
-  const loaded = state.status === "success" ? state.data[0] : null;
+  const data = state.status === "success" ? state.data : null;
+  const loaded = data === null ? null : data.campaign;
   const campaign = saved !== null && loaded !== null && saved.id === loaded.id ? saved : loaded;
-  const senders = state.status === "success" ? state.data[1].items : NO_SENDERS;
-  const domains = state.status === "success" ? state.data[2].items : NO_DOMAINS;
-  const lists = state.status === "success" ? state.data[3].items : NO_LISTS;
 
   return (
     <div className="rise flex flex-col gap-6">
       <BackLink />
       <PageHeader
         eyebrow="Campaigns"
-        title={campaign?.name ?? "Campaign"}
+        title={<PageTitle ref={titleRef}>{campaign?.name ?? "Campaign"}</PageTitle>}
         {...(campaign !== null && campaign.status !== "draft"
           ? { description: campaign.subject === "" ? "No subject." : campaign.subject }
           : {})}
@@ -217,23 +214,22 @@ function CampaignEditor({ campaignId }: { campaignId: string }) {
         <LoadFailure error={state.error} title="Couldn't load this campaign" />
       ) : null}
 
-      {campaign !== null && campaign.status === "draft" ? (
+      {data !== null && campaign !== null && campaign.status === "draft" ? (
         <DraftView
           campaign={campaign}
-          senders={senders}
-          domains={domains}
-          lists={lists}
+          refs={data.refs}
+          resolved={data.resolved}
           onSaved={onSaved}
           onChanged={onChanged}
         />
       ) : null}
 
-      {campaign !== null && campaign.status !== "draft" ? (
+      {data !== null && campaign !== null && campaign.status !== "draft" ? (
         <CampaignReport
           key={campaign.status}
           campaign={campaign}
-          sender={senders.find((s) => s.id === campaign.sender_id) ?? null}
-          list={lists.find((l) => l.id === campaign.list_id) ?? null}
+          senderLabel={senderName(campaign, data.refs.senders)}
+          audienceLabel={audienceName(campaign, data.resolved)}
           onChanged={onChanged}
         />
       ) : null}
@@ -243,15 +239,10 @@ function CampaignEditor({ campaignId }: { campaignId: string }) {
 
 function NewCampaign() {
   const navigate = useNavigate();
-  const loader = useCallback(
-    () => Promise.all([listSenders(), listDomains(), listLists({ size: 200 })]),
-    [],
-  );
+  const loader = useCallback(() => loadRefs(), []);
   const state = useAsync(loader, []);
 
-  const senders = state.status === "success" ? state.data[0].items : NO_SENDERS;
-  const domains = state.status === "success" ? state.data[1].items : NO_DOMAINS;
-  const lists = state.status === "success" ? state.data[2].items : NO_LISTS;
+  const refs = state.status === "success" ? state.data : null;
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -264,11 +255,14 @@ function NewCampaign() {
 
       {state.status === "loading" ? <LoadingCard /> : null}
 
-      {state.status === "error" ? (
-        <LoadFailure error={state.error} title="Couldn't load what a campaign needs" />
+      {/* A campaign is written as a sender, so a sender read that was refused leaves nothing to
+          choose: that is the one reference read whose failure is the screen's failure. Lists and
+          domains are only ever help, and a failure there is said inside the form. */}
+      {refs !== null && refs.senders.error !== null ? (
+        <LoadFailure error={refs.senders.error} title="Couldn't load what a campaign needs" />
       ) : null}
 
-      {state.status === "success" ? (
+      {refs !== null && refs.senders.error === null ? (
         <Can
           permission="engage.campaign.campaign.write"
           scope="ORG"
@@ -283,12 +277,16 @@ function NewCampaign() {
         >
           <CampaignForm
             campaign={null}
-            senders={senders}
-            domains={domains}
-            lists={lists}
+            refs={refs}
+            resolved={{ lists: refs.lists.items, gone: new Set() }}
             focusRequest={null}
             onDirtyChange={noop}
-            onSaved={(saved) => navigate(`/campaigns/${saved.id}`, { replace: true, state: { notice: `${saved.name} drafted.` } })}
+            onSaved={(saved) =>
+              navigate(`/campaigns/${saved.id}`, {
+                replace: true,
+                state: { notice: `${saved.name} drafted.` },
+              })
+            }
           />
         </Can>
       ) : null}

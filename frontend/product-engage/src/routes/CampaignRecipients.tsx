@@ -93,6 +93,12 @@ export function CampaignRecipients({ campaignId, live }: { campaignId: string; l
         />
       </div>
 
+      {state.status === "success" && state.stopped ? (
+        <p role="status" className="text-xs font-semibold text-ink">
+          Live updates stopped — reload to refresh.
+        </p>
+      ) : null}
+
       {state.status === "loading" ? (
         <div className="flex flex-col gap-4">
           <Skeleton className="h-6 w-48" />
@@ -120,7 +126,13 @@ export function CampaignRecipients({ campaignId, live }: { campaignId: string; l
 
       {state.status === "success" && rows.length > 0 ? (
         <>
-          <div className="overflow-x-auto">
+          <div
+            className="overflow-x-auto"
+            role="region"
+            aria-label="Recipients of this campaign"
+            // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a horizontally scrolling region must be reachable by keyboard or its overflow is unreachable without a pointer (axe: scrollable-region-focusable); the aria-label names it when it takes focus.
+            tabIndex={0}
+          >
             <table className="w-full min-w-2xl border-collapse text-left">
               <caption className="sr-only">
                 Recipients of this campaign, addresses masked, with the outcome of each

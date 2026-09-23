@@ -15,9 +15,20 @@ import { isNotActivated } from "@/lib/errors";
  * link or field to jump to is chosen by matching that prose. That is best-effort on purpose: if the
  * service rewords a sentence the match misses, `next` is `null`, and the customer is left with the
  * service's own explanation and no shortcut — never with a wrong shortcut, and never with a
- * paraphrase in place of the reason. `sendGate.test.ts` pins every sentence `request_send` and
- * `_check_public_base` can raise, so a reword that breaks a shortcut fails a test rather than
- * silently dropping it.
+ * paraphrase in place of the reason.
+ *
+ * **Two tests hold the two halves of that match, and neither alone would catch a reword.**
+ * `sendGate.test.ts` pins what this file does with each sentence — but the sentences in it are
+ * copies, so it cannot notice the service changing one. The service's side is
+ * `services/notification/tests/test_engage_send_gate_sentences.py`, which raises every gate from
+ * the real `request_send` and `_check_public_base` and pins the exact substring this file keys on.
+ * A reword now fails a backend test, in the same change that made it, rather than silently
+ * dropping a shortcut in production.
+ *
+ * The long-term fix is not a better match. It is a machine `code` on the `422` problem document
+ * (`unusable_sender`, `domain_unverified`, `no_connection`, …) that this file switches on and the
+ * prose stops being load-bearing — see the follow-up recorded in
+ * `docs/backlog.md` (Known gaps not yet scheduled).
  */
 
 /** A control on the campaign form a gate reason is about — the editor moves focus to it. */

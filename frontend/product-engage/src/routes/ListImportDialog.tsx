@@ -35,6 +35,8 @@ const RESULT_LABEL: Record<ContactImportOut["results"][number]["status"], string
 interface Outcome {
   import: ContactImportOut;
   added: number;
+  /** The service's sentence when the rows imported and the add to the list was refused. */
+  addFailure: string | null;
 }
 
 export function ListImportDialog({
@@ -46,7 +48,14 @@ export function ListImportDialog({
   open: boolean;
   listId: string;
   onClose: () => void;
-  onImported: (outcome: { created: number; updated: number; invalid: number; added: number }) => void;
+  onImported: (outcome: {
+    created: number;
+    updated: number;
+    invalid: number;
+    added: number;
+    /** The rows imported but the add to the list was refused, so `added` is 0. */
+    addFailed: boolean;
+  }) => void;
 }) {
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -84,26 +93,40 @@ export function ListImportDialog({
     setFailure(null);
     setSubmitting(true);
     try {
-      const imported = await importContacts(parsed.map(({ email, name }) => ({ email, name })));
+      let imported: ContactImportOut;
+      try {
+        imported = await importContacts(parsed.map(({ email, name }) => ({ email, name })));
+      } catch (caught) {
+        // The pasted text stays: a refused import is not a reason to make the customer find and
+        // re-copy the spreadsheet.
+        setFailure(failureMessage(caught));
+        return;
+      }
+
+      // The two calls are two facts. The import has already happened — the contacts exist — so a
+      // refused add must not read as "the import didn't run", and must not throw the outcome away.
       const contactIds = imported.results
         .map((row) => row.id)
         .filter((id): id is string => id !== null);
-      const added =
-        contactIds.length === 0
-          ? { changed: 0, unknown: [] }
-          : await addListMembers(listId, { contact_ids: contactIds });
-      setOutcome({ import: imported, added: added.changed });
+      let added = 0;
+      let addFailure: string | null = null;
+      if (contactIds.length > 0) {
+        try {
+          added = (await addListMembers(listId, { contact_ids: contactIds })).changed;
+        } catch (caught) {
+          addFailure = failureMessage(caught);
+        }
+      }
+
+      setOutcome({ import: imported, added, addFailure });
       setLines(parsed.map((row) => row.line));
       onImported({
         created: imported.created,
         updated: imported.updated,
         invalid: imported.invalid,
-        added: added.changed,
+        added,
+        addFailed: addFailure !== null,
       });
-    } catch (caught) {
-      // The pasted text stays: a refused import is not a reason to make the customer find and
-      // re-copy the spreadsheet.
-      setFailure(failureMessage(caught));
     } finally {
       setSubmitting(false);
     }
@@ -168,6 +191,15 @@ export function ListImportDialog({
         </>
       ) : (
         <div className="flex flex-col gap-4">
+          {outcome.addFailure !== null ? (
+            <InlineAlert
+              tone="danger"
+              title="The rows imported, but they were not added to this list"
+            >
+              {outcome.addFailure} They are in your contacts now; add them from this list with Add
+              contacts.
+            </InlineAlert>
+          ) : null}
           <div aria-live="polite" className="flex flex-wrap gap-2 text-sm font-semibold text-ink">
             <span>{outcome.import.created} created</span>
             <span aria-hidden>·</span>

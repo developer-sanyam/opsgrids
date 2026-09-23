@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { Can, useAsync } from "@opsgrids/client";
@@ -7,6 +7,7 @@ import { ArrowLeftIcon, FileTextIcon, UserPlusIcon, UsersIcon } from "@opsgrids/
 import { getList, listListMembers, removeListMembers } from "@/api/client";
 import type { ContactOut } from "@/api/types";
 import { failureMessage } from "@/lib/errors";
+import { useFocusHeading } from "@/lib/useFocusHeading";
 import { formatNumber } from "@/lib/format";
 import {
   Announcer,
@@ -16,6 +17,7 @@ import {
   EmptyState,
   LoadFailure,
   PageHeader,
+  PageTitle,
   Pagination,
   Skeleton,
   useAnnounce,
@@ -67,6 +69,8 @@ function ContactListMembers({ listId }: { listId: string }) {
     [listId, page, size],
   );
   const state = useAsync(loader, [listId, page, size]);
+  const titleRef = useRef<HTMLSpanElement>(null);
+  const focusHeading = useFocusHeading(titleRef);
 
   const list = state.status === "success" ? state.data[0] : null;
   const membersPage = state.status === "success" ? state.data[1] : null;
@@ -83,6 +87,8 @@ function ContactListMembers({ listId }: { listId: string }) {
   function reload(message: string) {
     announce(message);
     setPicking(false);
+    // The row or button that was just used is about to be unmounted by the re-read.
+    focusHeading();
     state.reload();
   }
 
@@ -106,7 +112,7 @@ function ContactListMembers({ listId }: { listId: string }) {
     <div className="rise flex flex-col gap-6">
       <Link
         to="/lists"
-        className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted transition-colors hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        className="inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted transition-colors hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         <ArrowLeftIcon className="size-4" />
         All lists
@@ -114,7 +120,7 @@ function ContactListMembers({ listId }: { listId: string }) {
 
       <PageHeader
         eyebrow="Audience · List"
-        title={list?.name ?? "List"}
+        title={<PageTitle ref={titleRef}>{list?.name ?? "List"}</PageTitle>}
         description={
           list === null
             ? "Who is on this list."
@@ -125,13 +131,17 @@ function ContactListMembers({ listId }: { listId: string }) {
         actions={
           <Can permission="engage.audience.list.write" scope="ORG">
             <div className="flex gap-2">
-              <Button
-                variant="outline"
-                onClick={() => setImporting(true)}
-                leadingIcon={<FileTextIcon className="size-4" />}
-              >
-                Import
-              </Button>
+              {/* An import creates contacts and then adds them, so it takes both grants — offering
+                  it to someone who may only edit lists would end in a refusal for half of it. */}
+              <Can permission="engage.audience.contact.write" scope="ORG">
+                <Button
+                  variant="outline"
+                  onClick={() => setImporting(true)}
+                  leadingIcon={<FileTextIcon className="size-4" />}
+                >
+                  Import
+                </Button>
+              </Can>
               <Button onClick={() => setPicking(true)} leadingIcon={<UserPlusIcon className="size-4" />}>
                 Add contacts
               </Button>
@@ -229,7 +239,9 @@ function ContactListMembers({ listId }: { listId: string }) {
         onClose={() => setImporting(false)}
         onImported={(outcome) =>
           reload(
-            `Import finished: ${outcome.created} created, ${outcome.updated} updated, ${outcome.invalid} invalid, ${outcome.added} added to this list.`,
+            outcome.addFailed
+              ? `Import finished: ${outcome.created} created, ${outcome.updated} updated, ${outcome.invalid} invalid. The contacts were not added to this list.`
+              : `Import finished: ${outcome.created} created, ${outcome.updated} updated, ${outcome.invalid} invalid, ${outcome.added} added to this list.`,
           )
         }
       />

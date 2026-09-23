@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { ApiError, Can, fieldErrorMap } from "@opsgrids/client";
+import { ApiError, Can, fieldErrorMap, usePermissionStatus } from "@opsgrids/client";
 import { SendIcon } from "@opsgrids/ui";
 
 import { createCampaign, editCampaign } from "@/api/client";
@@ -9,11 +9,11 @@ import type {
   CampaignIn,
   CampaignOut,
   CampaignPatch,
-  ContactListOut,
-  DomainOut,
   SenderOut,
 } from "@/api/types";
 import { failureMessage } from "@/lib/errors";
+import { failureText, partialNotice } from "@/lib/refs";
+import type { Refs, ResolvedLists } from "@/lib/refs";
 import type { GateField } from "@/lib/sendGate";
 import { Button, Card, InlineAlert, RadioGroup, Select, TextArea, TextField } from "@/ui";
 import type { SelectOption } from "@/ui";
@@ -71,6 +71,20 @@ const WIRE_FIELDS: Record<string, keyof Values> = {
   html_body: "htmlBody",
   text_body: "textBody",
 };
+
+const AUDIENCE_OPTIONS = [
+  {
+    value: "all_sendable",
+    label: "Everyone you may mail",
+    description:
+      "Every contact except addresses on your Suppressions list — unsubscribed, bounced, complained and blocked addresses are always skipped.",
+  },
+  {
+    value: "list",
+    label: "One list",
+    description: "Only the contacts on a list you choose. Suppressed addresses are still skipped.",
+  },
+];
 
 function seed(campaign: CampaignOut | null): Values {
   return {
@@ -145,18 +159,17 @@ export interface FocusRequest {
 
 export function CampaignForm({
   campaign,
-  senders,
-  domains,
-  lists,
+  refs,
+  resolved,
   focusRequest,
   onDirtyChange,
   onSaved,
 }: {
   /** `null` to draft a new campaign; a draft to edit it. */
   campaign: CampaignOut | null;
-  senders: SenderOut[];
-  domains: DomainOut[];
-  lists: ContactListOut[];
+  refs: Refs;
+  /** The lists this screen can name: the paged read, plus the campaign's own by id. */
+  resolved: ResolvedLists;
   focusRequest: FocusRequest | null;
   onDirtyChange: (dirty: boolean) => void;
   onSaved: (campaign: CampaignOut, message: string) => void;
@@ -189,7 +202,17 @@ export function CampaignForm({
     setFailure(null);
   }
 
-  const dirty = isDirty(values, campaign);
+  /* A caller who may read this campaign and not write it sees the draft, not a form. Known-denied
+     only: while grants load, or if they could not be read, the fields stay live and the service
+     refuses the save — a form that flickers read-only on every load is worse than one that
+     refuses late. `readOnly` for text (still focusable and selectable), `disabled` for controls
+     that have no read-only state. */
+  const readOnly = usePermissionStatus("engage.campaign.campaign.write", "ORG") === "denied";
+  const locked = submitting || readOnly;
+
+  /* A member who can send but not write cannot have changed anything, so nothing here may report
+     unsaved changes — that is what disables Send. */
+  const dirty = !readOnly && isDirty(values, campaign);
   useEffect(() => {
     onDirtyChange(dirty);
   }, [dirty, onDirtyChange]);
@@ -205,32 +228,54 @@ export function CampaignForm({
     target.current?.focus();
   }, [focusRequest]);
 
-  const verifiedDomains = useMemo(
-    () => new Set(domains.filter((d) => d.status === "verified").map((d) => d.id)),
-    [domains],
-  );
   const knownSenders = useMemo(
-    () => senders.map((sender) => tested[sender.id] ?? sender),
-    [senders, tested],
+    () => refs.senders.items.map((sender) => tested[sender.id] ?? sender),
+    [refs.senders.items, tested],
   );
+  const domainsById = useMemo(
+    () => new Map(refs.domains.items.map((domain) => [domain.id, domain])),
+    [refs.domains.items],
+  );
+  /* Hidden only when the sender's domain is *known* not to be verified. A domain the read did not
+     reach, or could not read at all, is unknown — and an unknown is offered, because the service
+     refuses at send time and hiding a sender on a guess would leave a campaign unaddressable. */
   const offered = useMemo(
     () =>
-      knownSenders.filter(
-        (sender) => verifiedDomains.has(sender.domain_id) || sender.id === campaign?.sender_id,
-      ),
-    [knownSenders, verifiedDomains, campaign?.sender_id],
+      knownSenders.filter((sender) => {
+        if (sender.id === campaign?.sender_id) return true;
+        const domain = domainsById.get(sender.domain_id);
+        return domain === undefined || domain.status === "verified";
+      }),
+    [knownSenders, domainsById, campaign?.sender_id],
   );
   const chosen = knownSenders.find((sender) => sender.id === values.senderId) ?? null;
-  const chosenDomainLapsed = chosen !== null && !verifiedDomains.has(chosen.domain_id);
+  const chosenDomain = chosen === null ? undefined : domainsById.get(chosen.domain_id);
+  const chosenDomainLapsed = chosenDomain !== undefined && chosenDomain.status !== "verified";
 
+  /* A controlled select whose value is not among its options silently shows some other option. The
+     current choice is therefore always an option — named if it could be, neutral if not. */
   const senderOptions: SelectOption[] = offered.map((sender) => ({
     value: sender.id,
     label: `${sender.name} <${sender.address}>${sender.usable ? "" : " — not tested yet"}`,
   }));
-  const listOptions: SelectOption[] = lists.map((list) => ({
+  if (values.senderId !== "" && !senderOptions.some((o) => o.value === values.senderId)) {
+    senderOptions.push({ value: values.senderId, label: "The sender chosen for this campaign" });
+  }
+  const listOptions: SelectOption[] = resolved.lists.map((list) => ({
     value: list.id,
     label: `${list.name} (${list.member_count})`,
   }));
+  if (values.listId !== "" && !listOptions.some((o) => o.value === values.listId)) {
+    listOptions.push({
+      value: values.listId,
+      label: resolved.gone.has(values.listId)
+        ? "A list that no longer exists"
+        : "The list chosen for this campaign",
+    });
+  }
+
+  const sendersNotice = partialNotice(refs.senders, "senders");
+  const listsNotice = partialNotice(refs.lists, "lists");
 
   function set<K extends keyof Values>(key: K, value: Values[K]) {
     setValues((current) => ({ ...current, [key]: value }));
@@ -284,6 +329,8 @@ export function CampaignForm({
   return (
     <div className="grid gap-6 lg:grid-cols-5">
       <Card className="p-6 lg:col-span-3">
+        <h2 className="mb-4 text-base font-bold text-ink">Write the campaign</h2>
+
         <div aria-live="polite" className="empty:hidden">
           {failure !== null ? (
             <InlineAlert tone="danger" title="That campaign wasn't saved" className="mb-4">
@@ -297,8 +344,15 @@ export function CampaignForm({
           ) : null}
         </div>
 
+        {readOnly ? (
+          <InlineAlert tone="info" live="off" title="You can read this draft, not change it" className="mb-4">
+            Editing has its own permission, “Draft, edit and delete campaigns”. Ask an Engage
+            administrator to grant it.
+          </InlineAlert>
+        ) : null}
+
         <form
-          className="flex flex-col gap-5"
+          className="flex flex-col gap-6"
           noValidate
           onSubmit={(event) => {
             event.preventDefault();
@@ -312,11 +366,16 @@ export function CampaignForm({
             placeholder="October delivery network update"
             helper="For you and your team — recipients never see it."
             maxLength={NAME_MAX}
-            disabled={submitting}
+            readOnly={locked}
             {...(errors.name !== undefined ? { error: errors.name } : {})}
           />
 
           <div className="flex flex-col gap-2">
+            {refs.senders.error !== null ? (
+              <InlineAlert tone="warning" live="off" title="Couldn't load your senders">
+                {failureText(refs.senders.error)} The sender this campaign already has is kept.
+              </InlineAlert>
+            ) : null}
             <Select
               ref={senderRef}
               label="Send as"
@@ -327,9 +386,9 @@ export function CampaignForm({
               helper={
                 chosenDomainLapsed
                   ? "The domain behind this sender is no longer verified, so it cannot send. Re-verify the domain or choose another sender."
-                  : "Only senders on verified domains are offered. A sender must have passed its test send before a campaign can go out as it."
+                  : `Only senders on verified domains are offered. A sender must have passed its test send before a campaign can go out as it.${sendersNotice === null ? "" : ` ${sendersNotice}`}`
               }
-              disabled={submitting}
+              disabled={locked}
               {...(errors.senderId !== undefined ? { error: errors.senderId } : {})}
             />
             {chosen !== null ? (
@@ -364,37 +423,32 @@ export function CampaignForm({
             name="campaign-audience"
             value={values.audience}
             onChange={(value) => set("audience", value as CampaignAudience)}
-            options={[
-              {
-                value: "all_sendable",
-                label: "Everyone you may mail",
-                description:
-                  "Every contact except addresses on your Suppressions list — unsubscribed, bounced, complained and blocked addresses are always skipped.",
-              },
-              {
-                value: "list",
-                label: "One list",
-                description: "Only the contacts on a list you choose. Suppressed addresses are still skipped.",
-              },
-            ]}
+            options={AUDIENCE_OPTIONS.map((option) => ({ ...option, disabled: locked }))}
           />
 
           {values.audience === "list" ? (
-            <Select
-              ref={listRef}
-              label="List"
-              value={values.listId}
-              onChange={(event) => set("listId", event.target.value)}
-              options={listOptions}
-              placeholder={lists.length === 0 ? "No lists yet" : "Choose a list"}
-              helper={
-                lists.length === 0
-                  ? "Create a list under Audience → Lists first, or send to everyone you may mail."
-                  : "The number is how many contacts are on it now."
-              }
-              disabled={submitting || lists.length === 0}
-              {...(errors.listId !== undefined ? { error: errors.listId } : {})}
-            />
+            <div className="flex flex-col gap-2">
+              {refs.lists.error !== null ? (
+                <InlineAlert tone="warning" live="off" title="Couldn't load your lists">
+                  {failureText(refs.lists.error)} The list this campaign already has is kept.
+                </InlineAlert>
+              ) : null}
+              <Select
+                ref={listRef}
+                label="List"
+                value={values.listId}
+                onChange={(event) => set("listId", event.target.value)}
+                options={listOptions}
+                placeholder={listOptions.length === 0 ? "No lists yet" : "Choose a list"}
+                helper={
+                  listOptions.length === 0 && refs.lists.error === null
+                    ? "Create a list under Audience → Lists first, or send to everyone you may mail."
+                    : `The number is how many contacts are on it now.${listsNotice === null ? "" : ` ${listsNotice} The list this campaign already uses is always included.`}`
+                }
+                disabled={locked || listOptions.length === 0}
+                {...(errors.listId !== undefined ? { error: errors.listId } : {})}
+              />
+            </div>
           ) : null}
 
           <TextField
@@ -405,7 +459,7 @@ export function CampaignForm({
             placeholder="What's changing on your route this month"
             helper="Required before it can be sent. One line."
             maxLength={SUBJECT_MAX}
-            disabled={submitting}
+            readOnly={locked}
             {...(errors.subject !== undefined ? { error: errors.subject } : {})}
           />
 
@@ -418,7 +472,7 @@ export function CampaignForm({
             spellCheck={false}
             optional
             helper="Sent exactly as written. Write at least one of the HTML and plain-text bodies."
-            disabled={submitting}
+            readOnly={locked}
             {...(errors.htmlBody !== undefined ? { error: errors.htmlBody } : {})}
           />
 
@@ -429,7 +483,7 @@ export function CampaignForm({
             rows={6}
             optional
             helper="What mail apps that don't show HTML display. Worth writing even when the HTML is the one you care about."
-            disabled={submitting}
+            readOnly={locked}
             {...(errors.textBody !== undefined ? { error: errors.textBody } : {})}
           />
 

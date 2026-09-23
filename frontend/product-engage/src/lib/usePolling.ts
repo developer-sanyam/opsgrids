@@ -5,8 +5,9 @@ import { ApiError } from "@opsgrids/client";
 
 /**
  * `useAsync`'s shape, plus what only a poll needs: `refresh` for an immediate out-of-band poll
- * (an action just taken should not wait for the interval), and `isRefreshing` so a screen can show
- * a quiet indicator instead of the loading skeleton it would show on the first load.
+ * (an action just taken should not wait for the interval), `isRefreshing` so a screen can show
+ * a quiet indicator instead of the loading skeleton it would show on the first load, and
+ * `stopped` so a screen can say the data on it is no longer being kept current.
  *
  * There is no cross-product `usePoll` in `@opsgrids/client` yet — the inbox is the first screen
  * on the platform that polls at all, so this stays local until a second product needs the same
@@ -15,9 +16,9 @@ import { ApiError } from "@opsgrids/client";
  * turns).
  */
 export type PollState<T> =
-  | { status: "loading"; data: null; error: null; isRefreshing: false }
-  | { status: "success"; data: T; error: null; isRefreshing: boolean }
-  | { status: "error"; data: null; error: Error; isRefreshing: false };
+  | { status: "loading"; data: null; error: null; isRefreshing: false; stopped: false }
+  | { status: "success"; data: T; error: null; isRefreshing: boolean; stopped: boolean }
+  | { status: "error"; data: null; error: Error; isRefreshing: false; stopped: boolean };
 
 export interface PollControls {
   refresh: () => void;
@@ -32,18 +33,21 @@ function isAuthFailure(error: unknown): boolean {
 }
 
 /**
- * Runs `loader` immediately, then again every `intervalMs` until unmounted or `deps` change —
- * or, with `intervalMs: null`, runs it exactly once and never schedules another. A screen whose
- * content only sometimes changes underneath it (a campaign is live while it is `sending` and
- * settled afterwards) can ask for both behaviours from one hook, because hooks cannot be called
+ * Runs `loader` immediately, then again every `intervalMs` until unmounted or `deps` change. With
+ * `intervalMs: null` it runs exactly once and never schedules another — a screen whose content
+ * only sometimes changes underneath it (a campaign is live while it is `sending` and settled
+ * afterwards) can ask for both behaviours from one hook, because hooks cannot be called
  * conditionally.
- * with three things a naive `setInterval` does not do, each closing a real failure mode a polling
- * screen left open with no more than a fixed interval:
+ *
+ * A poll does three things a naive `setInterval` does not, each closing a real failure mode of a
+ * polling screen left open:
  *
  * - **Stops outright on a 401/403.** The platform's own rule — "never retry a 4xx; an
  *   authorization failure does not fix itself" — applies to a poll exactly as it does to a single
  *   request. Retrying one every `intervalMs` forever is not resilience, it is a background tab
- *   quietly hammering an endpoint it will never be let into again.
+ *   quietly hammering an endpoint it will never be let into again. `stopped` says so, and **the
+ *   last good data stays**: figures that were true a minute ago are not replaced by nothing, and a
+ *   screen that keeps them owes the person looking a sentence saying they are no longer current.
  * - **Backs off on every other failure**, doubling the interval up to `MAX_BACKOFF_MULTIPLIER`×
  *   and resetting the moment a poll succeeds — so a gateway having a bad minute is not answered
  *   with a poll hammering it every `intervalMs` regardless.
@@ -68,6 +72,7 @@ export function usePolling<T>(
     data: null,
     error: null,
     isRefreshing: false,
+    stopped: false,
   });
   const loaderRef = useRef(loader);
   loaderRef.current = loader;
@@ -100,20 +105,24 @@ export function usePolling<T>(
         const data = await loaderRef.current();
         if (!active) return;
         backoff = 1;
-        setState({ status: "success", data, error: null, isRefreshing: false });
+        setState({ status: "success", data, error: null, isRefreshing: false, stopped: false });
       } catch (caught: unknown) {
         if (!active) return;
         const error = caught instanceof Error ? caught : new Error(String(caught));
         if (isAuthFailure(error)) {
           stopped = true;
-          setState({ status: "error", data: null, error, isRefreshing: false });
+          setState((previous) =>
+            previous.status === "success"
+              ? { ...previous, isRefreshing: false, stopped: true }
+              : { status: "error", data: null, error, isRefreshing: false, stopped: true },
+          );
           return;
         }
         backoff = Math.min(backoff * 2, MAX_BACKOFF_MULTIPLIER);
         setState((previous) =>
           previous.status === "success"
             ? { ...previous, isRefreshing: false }
-            : { status: "error", data: null, error, isRefreshing: false },
+            : { status: "error", data: null, error, isRefreshing: false, stopped: false },
         );
       } finally {
         scheduleNext();
@@ -132,7 +141,7 @@ export function usePolling<T>(
     }
 
     document.addEventListener("visibilitychange", onVisibilityChange);
-    setState({ status: "loading", data: null, error: null, isRefreshing: false });
+    setState({ status: "loading", data: null, error: null, isRefreshing: false, stopped: false });
     void tick(true);
     return () => {
       active = false;

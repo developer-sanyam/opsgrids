@@ -139,7 +139,7 @@ export function ContactListFormDialog({
       </div>
 
       <form
-        className="flex flex-col gap-5"
+        className="flex flex-col gap-6"
         onSubmit={(event) => {
           event.preventDefault();
           void submit();

@@ -81,7 +81,7 @@ export const LIVE = !USE_FIXTURES;
 
 /** A generous page size — one request returns the whole (small) working set for this org. The
  *  service caps `size` at 200, so this is the largest single page it will serve. */
-const FULL_PAGE = 200;
+export const FULL_PAGE = 200;
 
 /** Small artificial delay so loading states are exercised in fixture mode. */
 function settle<T>(value: T, ms = 240): Promise<T> {
@@ -165,13 +165,16 @@ export async function replaceProvider(input: ConnectionIn): Promise<ConnectionOu
  * sent as the customer's own filter rather than applied here so the `total` in the envelope counts
  * the same rows the page holds.
  */
-export async function listDomains(options: { status?: DomainStatus } = {}): Promise<Page<DomainOut>> {
-  const { status } = options;
+export async function listDomains(
+  options: { status?: DomainStatus; page?: number } = {},
+): Promise<Page<DomainOut>> {
+  const { status, page } = options;
   if (USE_FIXTURES) {
     const rows = status === undefined ? DOMAINS : DOMAINS.filter((d) => d.status === status);
     return settle(fixturePage(rows));
   }
   const query = new URLSearchParams({ size: String(FULL_PAGE) });
+  if (page !== undefined) query.set("page", String(page));
   if (status !== undefined) query.set("status", status);
   return apiRequest<Page<DomainOut>>(`/engage/domains?${query.toString()}`);
 }
@@ -205,13 +208,16 @@ export async function verifyDomain(domainId: string): Promise<DomainOut> {
 /* --------------------------------- senders -------------------------------- */
 
 /** The named identities mail can go out as — `GET /engage/senders`, optionally one domain's. */
-export async function listSenders(options: { domainId?: string } = {}): Promise<Page<SenderOut>> {
-  const { domainId } = options;
+export async function listSenders(
+  options: { domainId?: string; page?: number } = {},
+): Promise<Page<SenderOut>> {
+  const { domainId, page } = options;
   if (USE_FIXTURES) {
     const rows = domainId === undefined ? SENDERS : SENDERS.filter((s) => s.domain_id === domainId);
     return settle(fixturePage(rows));
   }
   const query = new URLSearchParams({ size: String(FULL_PAGE) });
+  if (page !== undefined) query.set("page", String(page));
   if (domainId !== undefined) query.set("domain_id", domainId);
   return apiRequest<Page<SenderOut>>(`/engage/senders?${query.toString()}`);
 }

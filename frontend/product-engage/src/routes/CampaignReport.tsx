@@ -4,9 +4,9 @@ import { Link } from "react-router-dom";
 import { Can } from "@opsgrids/client";
 
 import { cancelCampaign, getCampaign, resumeCampaign } from "@/api/client";
-import type { CampaignOut, CampaignStats, ContactListOut, SenderOut } from "@/api/types";
+import type { CampaignOut, CampaignStats } from "@/api/types";
 import { failureMessage } from "@/lib/errors";
-import { formatInstant, formatNumber } from "@/lib/format";
+import { campaignStatusWord, formatInstant, formatNumber } from "@/lib/format";
 import { usePolling } from "@/lib/usePolling";
 import { Button, CampaignStatusTag, Card, ConfirmDialog, InlineAlert } from "@/ui";
 import { CampaignPreview } from "./CampaignPreview";
@@ -22,13 +22,17 @@ import { CampaignRecipients } from "./CampaignRecipients";
  * unsubscribe. The note under the counts says so, and points at Suppressions, where a bounce or an
  * unsubscribe does land — as a fact about the address, not a count against a campaign.
  *
- * While the campaign is `sending` the counts and the recipients table poll; a poll that fails
- * leaves the last figures up and the "Last updated" time says how old they are. When the status
- * moves on, `onChanged` reloads the page so it remounts in its settled form.
+ * While the campaign is `sending` — or `paused`, which the driver retries on its own — the counts
+ * and the recipients table poll. A poll that fails leaves the last figures up and "Last updated"
+ * says how old they are; a poll the service *refuses* (a `401`/`403`) stops for good, keeps the
+ * figures, and says so — the counts never revert to zero while a line above them claims they are
+ * still refreshing. When the status moves on, `onChanged` reloads the page so it remounts in its
+ * settled form.
  */
 
 const LIVE_INTERVAL_MS = 5_000;
 const CANCELLABLE = new Set(["scheduled", "sending", "paused"]);
+const LIVE_STATUSES = new Set(["sending", "paused"]);
 
 function Stat({ label, value, note }: { label: string; value: number; note?: string }) {
   return (
@@ -91,16 +95,19 @@ function Timeline({ campaign }: { campaign: CampaignOut }) {
 
 function ReportView({
   campaign,
-  sender,
-  list,
+  senderLabel,
+  audienceLabel,
   live,
+  stopped,
   lastUpdated,
   onChanged,
 }: {
   campaign: CampaignOut;
-  sender: SenderOut | null;
-  list: ContactListOut | null;
+  senderLabel: string;
+  audienceLabel: string;
   live: boolean;
+  /** Live updates were refused and have stopped; the figures on screen are the last good ones. */
+  stopped: boolean;
   lastUpdated: string | null;
   onChanged: (message: string) => void;
 }) {
@@ -138,13 +145,6 @@ function ReportView({
       setResumePending(false);
     }
   }
-
-  const audience =
-    campaign.audience === "all_sendable"
-      ? "Everyone you may mail"
-      : list === null
-        ? "A list that could not be found"
-        : `${list.name} list`;
 
   return (
     <div className="flex flex-col gap-6">
@@ -219,10 +219,16 @@ function ReportView({
         <Counts stats={campaign.stats} />
         <Timeline campaign={campaign} />
 
-        {live ? (
+        {live && !stopped ? (
           <p className="text-xs text-muted">
-            Counts refresh every few seconds while this campaign is sending.
+            Counts refresh every few seconds while this campaign is sending or paused.
             {lastUpdated !== null ? ` Last updated ${lastUpdated}.` : ""}
+          </p>
+        ) : null}
+        {live && stopped ? (
+          <p role="status" className="text-xs font-semibold text-ink">
+            Live updates stopped — reload to refresh.
+            {lastUpdated !== null ? ` These figures are as of ${lastUpdated}.` : ""}
           </p>
         ) : null}
       </Card>
@@ -234,13 +240,11 @@ function ReportView({
         <dl className="grid gap-4 text-sm sm:grid-cols-2">
           <div className="flex flex-col gap-1">
             <dt className="text-xs font-bold uppercase tracking-wider text-faint">Sent as</dt>
-            <dd className="text-ink">
-              {sender === null ? "A sender that could not be found" : `${sender.name} <${sender.address}>`}
-            </dd>
+            <dd className="text-ink first-letter:uppercase">{senderLabel}</dd>
           </div>
           <div className="flex flex-col gap-1">
             <dt className="text-xs font-bold uppercase tracking-wider text-faint">Addressed to</dt>
-            <dd className="text-ink">{audience}</dd>
+            <dd className="text-ink">{audienceLabel}</dd>
           </div>
         </dl>
         <CampaignPreview
@@ -272,13 +276,13 @@ function ReportView({
 
 function LiveReport({
   initial,
-  sender,
-  list,
+  senderLabel,
+  audienceLabel,
   onChanged,
 }: {
   initial: CampaignOut;
-  sender: SenderOut | null;
-  list: ContactListOut | null;
+  senderLabel: string;
+  audienceLabel: string;
   onChanged: (message: string) => void;
 }) {
   const state = usePolling(() => getCampaign(initial.id), [initial.id], LIVE_INTERVAL_MS);
@@ -293,16 +297,17 @@ function LiveReport({
   // that status is shown in, rather than keep polling something that has stopped changing.
   useEffect(() => {
     if (polled !== null && polled.status !== initial.status) {
-      onChanged(`${polled.name} is now ${polled.status}.`);
+      onChanged(`${polled.name} is now ${campaignStatusWord(polled.status)}.`);
     }
   }, [polled, initial.status, onChanged]);
 
   return (
     <ReportView
       campaign={polled ?? initial}
-      sender={sender}
-      list={list}
+      senderLabel={senderLabel}
+      audienceLabel={audienceLabel}
       live
+      stopped={state.stopped}
       lastUpdated={lastUpdated}
       onChanged={onChanged}
     />
@@ -311,23 +316,31 @@ function LiveReport({
 
 export function CampaignReport({
   campaign,
-  sender,
-  list,
+  senderLabel,
+  audienceLabel,
   onChanged,
 }: {
   campaign: CampaignOut;
-  sender: SenderOut | null;
-  list: ContactListOut | null;
+  /** "Name <address>", or a neutral phrase when the sender could not be named. */
+  senderLabel: string;
+  /** A list's name, "Everyone you may mail", or a neutral phrase — see `lib/refs.ts`. */
+  audienceLabel: string;
   onChanged: (message: string) => void;
 }) {
-  return campaign.status === "sending" ? (
-    <LiveReport initial={campaign} sender={sender} list={list} onChanged={onChanged} />
+  return LIVE_STATUSES.has(campaign.status) ? (
+    <LiveReport
+      initial={campaign}
+      senderLabel={senderLabel}
+      audienceLabel={audienceLabel}
+      onChanged={onChanged}
+    />
   ) : (
     <ReportView
       campaign={campaign}
-      sender={sender}
-      list={list}
+      senderLabel={senderLabel}
+      audienceLabel={audienceLabel}
       live={false}
+      stopped={false}
       lastUpdated={null}
       onChanged={onChanged}
     />

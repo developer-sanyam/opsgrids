@@ -64,6 +64,59 @@ describe("usePolling", () => {
     expect(loader).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the last good data, marked stopped, when a later poll is refused with a 403", async () => {
+    vi.useFakeTimers();
+    const loader = vi
+      .fn()
+      .mockResolvedValueOnce({ sent: 60 })
+      .mockRejectedValueOnce(new ApiError(403, "Forbidden", null));
+    const { result } = renderHook(() => usePolling(loader, [], 1_000));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.stopped).toBe(false);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    // The figures that were true a minute ago are not replaced by nothing...
+    expect(result.current.status).toBe("success");
+    expect(result.current.data).toEqual({ sent: 60 });
+    // ...and the screen is told they are no longer being kept current.
+    expect(result.current.stopped).toBe(true);
+    expect(result.current.isRefreshing).toBe(false);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(loader).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not mark a transient failure stopped, and keeps polling", async () => {
+    vi.useFakeTimers();
+    const loader = vi
+      .fn()
+      .mockResolvedValueOnce("first")
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValue("third");
+    const { result } = renderHook(() => usePolling(loader, [], 1_000));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(result.current.stopped).toBe(false);
+    // Backed off to twice the interval after the failure, then recovered.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    expect(result.current.data).toBe("third");
+    expect(result.current.stopped).toBe(false);
+  });
+
   it("keeps the last good rows when a later poll fails", async () => {
     vi.useFakeTimers();
     const loader = vi

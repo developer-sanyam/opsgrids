@@ -32,6 +32,9 @@ describe("RequireGrant", () => {
     renderGuarded(["engage.audience.list.read:ORG"]);
     expect(screen.queryByText("The campaigns screen")).toBeNull();
     expect(screen.getByText("You can't open campaigns right now")).toBeTruthy();
+    // It stands in for a whole page, so it carries the page's one h1 — a screen-reader user's
+    // heading navigation has somewhere to land.
+    expect(screen.getAllByRole("heading", { level: 1 }).map((h) => h.textContent)).toEqual(["Campaigns"]);
     // Honest about both causes: a role gap, or a check that could not be made.
     expect(screen.getByText(/your role doesn't include seeing campaigns, or your access couldn't be checked/)).toBeTruthy();
   });

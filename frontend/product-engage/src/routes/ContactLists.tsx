@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { Can, useAsync } from "@opsgrids/client";
@@ -7,6 +7,7 @@ import { LayersIcon } from "@opsgrids/ui";
 import { deleteList, listLists } from "@/api/client";
 import type { ContactListOut } from "@/api/types";
 import { failureMessage } from "@/lib/errors";
+import { useFocusHeading } from "@/lib/useFocusHeading";
 import { formatInstant, formatNumber } from "@/lib/format";
 import {
   Announcer,
@@ -16,6 +17,7 @@ import {
   EmptyState,
   LoadFailure,
   PageHeader,
+  PageTitle,
   Pagination,
   Skeleton,
   useAnnounce,
@@ -47,7 +49,7 @@ function ListRow({
           {list.name}
         </Link>
         {list.description !== "" ? (
-          <span className="mt-0.5 block text-xs text-muted">{list.description}</span>
+          <span className="mt-1 block text-xs text-muted">{list.description}</span>
         ) : null}
       </th>
       <td className="py-3 pr-4 text-sm tabular-nums text-ink">{formatNumber(list.member_count)}</td>
@@ -84,6 +86,8 @@ function ContactLists() {
 
   const loader = useCallback(() => listLists({ page, size }), [page, size]);
   const state = useAsync(loader, [page, size]);
+  const titleRef = useRef<HTMLSpanElement>(null);
+  const focusHeading = useFocusHeading(titleRef);
   const lists = state.status === "success" ? state.data.items : NO_LISTS;
 
   // Deleting the last row on a page beyond the first empties that page without emptying the
@@ -98,6 +102,8 @@ function ContactLists() {
     announce(message);
     setCreating(false);
     setRenaming(null);
+    // The row or button that was just used is about to be unmounted by the re-read.
+    focusHeading();
     state.reload();
   }
 
@@ -121,7 +127,7 @@ function ContactLists() {
     <div className="rise flex flex-col gap-6">
       <PageHeader
         eyebrow="Audience"
-        title="Lists"
+        title={<PageTitle ref={titleRef}>Lists</PageTitle>}
         description="Named slices of your audience a campaign can be addressed to. Deleting a list never deletes the contacts on it."
         actions={
           <Can permission="engage.audience.list.write" scope="ORG">
