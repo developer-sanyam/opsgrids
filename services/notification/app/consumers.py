@@ -14,14 +14,20 @@ organization's rules and write that organization's messages. `already_processed`
 and `mark_processed` is staged in the same transaction as the fold, so a redelivered event is a
 no-op — redelivery is normal, not exceptional.
 
-One handler here does talk to a provider: `fan_out`, the campaign sender, bound to
-`engage.campaign.campaign.send_requested`. A campaign is not a message the dispatcher can take one
-at a time — it is an audience expanded, re-checked against suppressions and sent under a daily
-cap — so it runs here, in batches, each in its own short transaction.
+`expand_campaign_send`, bound to `engage.campaign.campaign.send_requested`, is the one handler
+that is not a fold of an arbitrary product's event: it is Engage's own send gate committing, and
+it does exactly one thing — expand the audience into `queued` recipient rows — before returning.
+It used to also *send* those rows, batch after batch, inside this same handler; that ran on
+`notification.events`, the queue every other product's events (password resets included) also
+ride, and a large campaign could run past RabbitMQ's `consumer_timeout` and get redelivered
+mid-send, or simply hold up somebody else's ticket notification behind it. Sending is now
+`app/cron.py`'s job — a separate, resumable poll loop, not the shared consumer — which claims
+batches of `queued` recipients for campaigns in `sending` (or `paused`, on its own backoff) and
+sends them outside this queue entirely. See its module docstring for the rest of that design.
 
-Apart from that, nothing here talks to a provider. The fold stages message rows and a
-`message.queued` event; the dispatcher does the sending. An event transaction that waited on an
-SMTP handshake would make a slow provider into a database problem.
+Nothing here talks to a provider. The fold stages message rows and a `message.queued` event; the
+dispatcher does the sending. Expansion writes rows and nothing else. An event transaction that
+waited on an SMTP handshake would make a slow provider into a database problem.
 """
 
 from __future__ import annotations
@@ -34,7 +40,6 @@ from app import domain, services
 from app.config import settings
 from app.models import ProcessedEvent
 from app.targets import TargetResolver, make_resolver
-from app.transports import Transport, TransportUnavailable
 from platform_core.db import assert_app_role, init_engine, session_scope
 from platform_core.events import EventConsumer, already_processed, mark_processed
 from platform_core.logging import get_logger
@@ -72,20 +77,18 @@ async def fold(envelope: dict[str, Any], resolve_target: TargetResolver | None =
         log.info("notification.staged", event_type=event_type, count=len(staged))
 
 
-async def fan_out(
+async def expand_campaign_send(
     envelope: dict[str, Any],
     *,
-    transport: Transport | None = None,
     batch_size: int | None = None,
 ) -> str:
-    """Send one campaign: expand its audience, then send batch by batch. Returns the last
-    batch outcome (`done`, `stopped`, `capped`, `unavailable`, or `redelivered`).
+    """Expand a campaign's audience into `queued` recipient rows. Returns `expanded`,
+    `redelivered`, or `not_sending` (the campaign was cancelled before this ran).
 
-    Each step is its own tenant-bound transaction, so a cancel committed between batches is
-    seen by the next one, and a crash loses at most one batch's bookkeeping. `processed_events`
-    is written only once the run ends, in its own transaction: a run the provider interrupted
-    raises instead, so the broker redelivers it and the redelivery resumes from the recipients
-    still `queued` — expansion is idempotent and sent rows are never picked again.
+    One transaction, acking fast: this is the whole of what runs on the shared consumer for a
+    campaign send. `app/cron.py`'s driver does the sending, on its own poll loop, so a campaign
+    of any size never risks `notification.events`'s `consumer_timeout` and never delays another
+    product's event behind it.
     """
     event_id = uuid.UUID(str(envelope["event_id"]))
     event_type = str(envelope["event_type"])
@@ -100,26 +103,10 @@ async def fan_out(
         sending = await services.expand_campaign(
             session, organization_id=organization_id, campaign_id=campaign_id, batch_size=size
         )
-
-    outcome = "stopped"
-    while sending:
-        async with session_scope(organization_id=organization_id) as session:
-            outcome = await services.send_campaign_batch(
-                session,
-                organization_id=organization_id,
-                campaign_id=campaign_id,
-                batch_size=size,
-                transport=transport,
-            )
-        if outcome != "more":
-            break
-
-    if outcome == "unavailable":
-        raise TransportUnavailable(f"campaign {campaign_id}: provider unavailable, will retry")
-
-    async with session_scope(organization_id=organization_id) as session:
         mark_processed(session, ProcessedEvent, event_id, event_type)
-    log.info("campaign.fan_out.finished", campaign_id=str(campaign_id), outcome=outcome)
+
+    outcome = "expanded" if sending else "not_sending"
+    log.info("campaign.expanded", campaign_id=str(campaign_id), outcome=outcome)
     return outcome
 
 
@@ -138,7 +125,7 @@ def register(resolve_target: TargetResolver | None = None) -> None:
         consumer.on(event_type)(on_event)
 
     async def on_campaign_send(envelope: dict[str, Any]) -> None:
-        await fan_out(envelope)
+        await expand_campaign_send(envelope)
 
     consumer.on(services.EVT_CAMPAIGN_SEND_REQUESTED)(on_campaign_send)
 

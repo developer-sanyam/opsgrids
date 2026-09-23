@@ -136,6 +136,10 @@
             "title": "Name",
             "type": "string"
           },
+          "pause_reason": {
+            "title": "Pause Reason",
+            "type": "string"
+          },
           "scheduled_at": {
             "anyOf": [
               {
@@ -172,6 +176,7 @@
               "draft",
               "scheduled",
               "sending",
+              "paused",
               "sent",
               "cancelled"
             ],
@@ -206,6 +211,7 @@
           "started_at",
           "completed_at",
           "cancelled_at",
+          "pause_reason",
           "stats",
           "created_at",
           "updated_at"
@@ -2869,6 +2875,7 @@
                     "draft",
                     "scheduled",
                     "sending",
+                    "paused",
                     "sent",
                     "cancelled"
                   ],
@@ -3226,6 +3233,50 @@
           }
         },
         "summary": "A campaign's recipients and what happened to each, addresses masked",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/campaigns/{campaign_id}/resume": {
+      "post": {
+        "description": "409 unless the campaign is `paused` \u2014 the send driver (`app/cron.py`) pauses a campaign\nwhen it finds no connected provider or no usable sender, and would otherwise retry it on its\nown after `Settings.engage_campaign_pause_retry_seconds`. This is the operator's \"now\".",
+        "operationId": "resume_campaign_api_v1_engage_campaigns__campaign_id__resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry a paused campaign now, ignoring the driver's own backoff",
         "tags": [
           "engage"
         ]

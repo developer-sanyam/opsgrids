@@ -837,9 +837,14 @@ def _campaign_out(row: Campaign, counts: dict[str, int]) -> CampaignOut:
         started_at=row.started_at,
         completed_at=row.completed_at,
         cancelled_at=row.cancelled_at,
+        pause_reason=row.pause_reason,
         stats=CampaignStats(
             recipients=sum(counts.values()),
-            queued=counts.get("queued", 0),
+            # `sending` is the driver's in-flight claim lease (app/models.py's
+            # `CampaignRecipient` docstring) — not a status a caller outside this service should
+            # need to know about, so it is folded into `queued` here, same as a row still
+            # waiting for its first attempt.
+            queued=counts.get("queued", 0) + counts.get("sending", 0),
             sent=counts.get("sent", 0),
             failed=counts.get("failed", 0),
             suppressed=counts.get("suppressed", 0),
@@ -978,6 +983,22 @@ async def cancel_campaign(
     return await _one_campaign_out(session, row)
 
 
+@router.post(
+    "/engage/campaigns/{campaign_id}/resume",
+    response_model=CampaignOut,
+    summary="Retry a paused campaign now, ignoring the driver's own backoff",
+    dependencies=[Entitled],
+)
+async def resume_campaign(
+    campaign_id: uuid.UUID, session: SessionDep, ctx: CampaignSend, request: Request
+) -> CampaignOut:
+    """409 unless the campaign is `paused` — the send driver (`app/cron.py`) pauses a campaign
+    when it finds no connected provider or no usable sender, and would otherwise retry it on its
+    own after `Settings.engage_campaign_pause_retry_seconds`. This is the operator's "now"."""
+    row = await services.resume_campaign(session, ctx, campaign_id=campaign_id, request=request)
+    return await _one_campaign_out(session, row)
+
+
 @router.get(
     "/engage/campaigns/{campaign_id}/stats",
     response_model=CampaignStats,
@@ -1013,7 +1034,10 @@ async def campaign_recipients(
                 id=str(r.id),
                 contact_id=str(r.contact_id),
                 email=r.email_masked,
-                status=r.status,
+                # `sending` is the driver's claim lease (see CampaignRecipient's docstring),
+                # never a status this API promises — a caller mid-batch sees `queued`, same as
+                # before the driver picked the row up.
+                status="queued" if r.status == "sending" else r.status,
                 provider_message_id=r.provider_message_id,
                 error=r.error,
                 sent_at=r.sent_at,

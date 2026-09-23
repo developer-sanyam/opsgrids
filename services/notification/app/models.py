@@ -619,9 +619,11 @@ class ContactListMember(Base, TenantBase):
 class Campaign(Base, TenantBase):
     """One email sent to an audience: a list, or every sendable contact.
 
-    `status` moves draft -> sending -> sent, and to cancelled from any state before sent. Only a
-    draft is editable; what a campaign said once it started going out is a record. The counts are
-    folded from `campaign_recipients` by the sender as it goes, so a stats read is one row.
+    `status` moves draft -> sending -> sent, and to cancelled from any state before sent, or to
+    `paused` and back when the resumable send driver (`app/cron.py`) cannot find a route to send
+    on (no connected provider, no verified sender). Only a draft is editable; what a campaign
+    said once it started going out is a record. The counts are folded from `campaign_recipients`
+    by the sender as it goes, so a stats read is one row.
     """
 
     __tablename__ = "campaigns"
@@ -636,12 +638,20 @@ class Campaign(Base, TenantBase):
     list_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.contact_lists.id")
     )
-    #: draft | scheduled | sending | sent | cancelled.
+    #: draft | scheduled | sending | paused | sent | cancelled.
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Why the driver stopped and set `status='paused'` — no connected provider, no usable
+    #: sender, and so on. Cleared when the campaign resumes. Empty otherwise.
+    pause_reason: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    #: When the driver last paused this campaign. The driver retries a paused campaign no more
+    #: often than `Settings.engage_campaign_pause_retry_seconds` after this, so a still-broken
+    #: route is not hammered every poll — and an operator's explicit resume clears it so the
+    #: very next tick tries again.
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     recipient_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     sent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -649,7 +659,8 @@ class Campaign(Base, TenantBase):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('draft', 'scheduled', 'sending', 'sent', 'cancelled')", name="status"
+            "status IN ('draft', 'scheduled', 'sending', 'paused', 'sent', 'cancelled')",
+            name="status",
         ),
         CheckConstraint("audience IN ('list', 'all_sendable')", name="audience"),
         CheckConstraint("(audience = 'list') = (list_id IS NOT NULL)", name="audience_list"),
@@ -664,6 +675,13 @@ class CampaignRecipient(Base, TenantBase):
     campaign is going out, and what this row records is who it was sent to. `(campaign_id,
     contact_id)` is unique, which is what makes expansion idempotent — a redelivered send event
     inserts nothing twice.
+
+    `sending` is a lease, not a terminal state: the driver (`app/cron.py`) sets it (with
+    `claimed_at`) when it claims a batch to send, outside any open transaction, and either
+    resolves it to `sent`/`failed`/`suppressed` afterwards or — on a provider outage — releases
+    it straight back to `queued` so the next tick retries. A row stuck at `sending` because a
+    process died mid-batch is reclaimed once its lease (`Settings.engage_campaign_claim_lease_
+    seconds`) is stale, which is what makes a crash resumable rather than a stall.
     """
 
     __tablename__ = "campaign_recipients"
@@ -678,15 +696,19 @@ class CampaignRecipient(Base, TenantBase):
     email_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     email_masked: Mapped[str] = mapped_column(String(254), nullable=False)
     email_index: Mapped[str] = mapped_column(String(64), nullable=False)
-    #: queued | sent | failed | suppressed.
+    #: queued | sending | sent | failed | suppressed. `sending` is a claim lease, see above.
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    #: Set when a batch claims this row. Null once it resolves to a terminal status.
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     provider_message_id: Mapped[str | None] = mapped_column(String(255))
     error: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         UniqueConstraint("campaign_id", "contact_id", name="uq_campaign_recipient"),
-        CheckConstraint("status IN ('queued', 'sent', 'failed', 'suppressed')", name="status"),
+        CheckConstraint(
+            "status IN ('queued', 'sending', 'sent', 'failed', 'suppressed')", name="status"
+        ),
         Index("ix_campaign_recipients_org_campaign", "organization_id", "campaign_id", "status"),
         Index("ix_campaign_recipients_org_sent_at", "organization_id", "sent_at"),
     )

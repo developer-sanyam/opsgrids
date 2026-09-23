@@ -14,6 +14,8 @@ retrying it is just a slower way to fail. A `TransportUnavailable` is "not now" 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import re
 import smtplib
 from dataclasses import dataclass, field
 from email.message import EmailMessage
@@ -21,9 +23,28 @@ from typing import Any, Protocol
 
 import httpx
 
+from platform_core import pii
 from platform_core.logging import get_logger
 
 log = get_logger("notification.transports")
+
+#: Matches anything address-shaped, so a provider's own error text
+#: (`550 5.1.1 <jane@doe.com>: Recipient address rejected`) never reaches a log line or an
+#: operator screen with the recipient's address still in it (CLAUDE.md: never log secrets or
+#: personal data). Deliberately permissive rather than a strict RFC 5322 grammar — over-matching
+#: redacts a little more than an address occasionally; under-matching leaks one.
+_ADDRESS_RE = re.compile(r"[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+")
+
+
+def scrub_addresses(text: str) -> str:
+    """A provider's error message, with every address-shaped substring redacted.
+
+    Applied at the transport boundary — inside `SmtpTransport`/`WhatsAppCloudTransport` before
+    the error is wrapped in `TransportRefused`/`TransportUnavailable` — so every caller
+    downstream (the dispatcher's log line, the campaign driver's, the recipient-facing message)
+    is safe by construction rather than by remembering to scrub at each call site.
+    """
+    return _ADDRESS_RE.sub("<redacted>", text)
 
 
 class TransportError(Exception):
@@ -97,7 +118,11 @@ class LogTransport:
         log.info(
             "notification.log_transport.send",
             channel=self._channel,
-            to=message.to_address,
+            # Masked, never the address itself — this transport is also what `make infra`
+            # without MailHog and a misconfigured staging deploy run as, and its log line is
+            # exactly the kind of place a real customer's address should never end up in the
+            # clear (CLAUDE.md).
+            to=pii.mask(message.to_address, kind="email" if self._channel == "email" else "phone"),
             subject=message.subject,
             body_chars=len(message.body),
         )
@@ -152,10 +177,31 @@ class SmtpTransport:
         self._from = from_address
 
     async def send(self, message: Outgoing) -> Receipt:
-        await asyncio.to_thread(self._send_blocking, message)
-        return Receipt(provider=self.name)
+        (receipt,) = await self.send_many([message])
+        if isinstance(receipt, TransportError):
+            raise receipt
+        return receipt
 
-    def _send_blocking(self, message: Outgoing) -> None:
+    async def send_many(self, messages: list[Outgoing]) -> list[Receipt | TransportError]:
+        """Send a batch over **one** SMTP session rather than one connection per message.
+
+        The campaign driver (`app/cron.py`) is the caller this exists for: a batch of a few
+        hundred recipients that opened a fresh TLS handshake and logged in per message would
+        spend most of its time on setup, not delivery. A connection-level failure (cannot
+        connect, `login` refused, the socket drops mid-batch) fails every message from that
+        point on as `TransportUnavailable` — retrying the batch is reasonable, and there is no
+        connection left to keep trying individual messages on. A single recipient's own refusal
+        (`SMTPRecipientsRefused`) does not: the connection is still good, so the rest of the
+        batch is still attempted on it.
+        """
+        return await asyncio.to_thread(self._send_many_blocking, messages)
+
+    def _build(self, message: Outgoing) -> EmailMessage:
+        # Building the message — including the caller-supplied headers — happens inside the
+        # same try a socket error would raise from, so a message that cannot be built (a header
+        # value `email.message` itself refuses) is this one recipient's `TransportRefused`
+        # rather than an unclassified exception that would otherwise escape `send`/`send_many`
+        # entirely and never reach the campaign driver's per-recipient handling.
         mail = EmailMessage()
         mail["From"] = self._from
         mail["To"] = message.to_address
@@ -165,17 +211,48 @@ class SmtpTransport:
         mail.set_content(message.body)
         if message.html:
             mail.add_alternative(message.html, subtype="html")
+        return mail
+
+    def _send_many_blocking(self, messages: list[Outgoing]) -> list[Receipt | TransportError]:
+        results: list[Receipt | TransportError] = []
         try:
-            with smtplib.SMTP(self._host, self._port, timeout=self._timeout) as client:
+            client = smtplib.SMTP(self._host, self._port, timeout=self._timeout)
+        except (smtplib.SMTPException, OSError) as exc:
+            unavailable = TransportUnavailable(scrub_addresses(str(exc)))
+            return [unavailable] * len(messages)
+        try:
+            try:
                 if self._use_tls:
                     client.starttls()
                 if self._username and self._password:
                     client.login(self._username, self._password)
-                client.send_message(mail)
-        except (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused) as exc:
-            raise TransportRefused(str(exc)) from exc
-        except (smtplib.SMTPException, OSError) as exc:
-            raise TransportUnavailable(str(exc)) from exc
+            except (smtplib.SMTPException, OSError) as exc:
+                unavailable = TransportUnavailable(scrub_addresses(str(exc)))
+                return [unavailable] * len(messages)
+
+            connection_dead = False
+            for message in messages:
+                if connection_dead:
+                    results.append(TransportUnavailable("SMTP connection dropped mid-batch"))
+                    continue
+                try:
+                    mail = self._build(message)
+                    client.send_message(mail)
+                    results.append(Receipt(provider=self.name))
+                except (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused) as exc:
+                    results.append(TransportRefused(scrub_addresses(str(exc))))
+                except (smtplib.SMTPException, OSError) as exc:
+                    connection_dead = True
+                    results.append(TransportUnavailable(scrub_addresses(str(exc))))
+                except Exception as exc:
+                    # Anything else building or sending this one message — a header value the
+                    # email package itself refuses, for instance — is this recipient's problem,
+                    # not the connection's, so the batch continues.
+                    results.append(TransportRefused(scrub_addresses(str(exc))))
+        finally:
+            with contextlib.suppress(Exception):
+                client.quit()
+        return results
 
 
 class WhatsAppCloudTransport:
@@ -241,6 +318,31 @@ class WhatsAppCloudTransport:
         body = response.json()
         messages = body.get("messages") or [{}]
         return Receipt(provider=self.name, provider_message_id=messages[0].get("id"))
+
+
+async def send_batch(
+    transport: Transport, messages: list[Outgoing]
+) -> list[Receipt | TransportError]:
+    """Send a batch, one call whether or not `transport` knows how to.
+
+    `SmtpTransport.send_many` reuses one session; everything else (the recording transport in
+    tests, `LogTransport`, a transport nobody has taught this yet) falls back to one `send` per
+    message. Either way the campaign driver gets the same shape back: a `Receipt` or a
+    `TransportError` per message, in order, and never an exception out of this function — a
+    per-recipient failure is data for the caller to record, not a reason to abort the batch.
+    """
+    many = getattr(transport, "send_many", None)
+    if many is not None:
+        return await many(messages)  # type: ignore[no-any-return]
+    results: list[Receipt | TransportError] = []
+    for message in messages:
+        try:
+            results.append(await transport.send(message))
+        except TransportError as exc:
+            results.append(exc)
+        except Exception as exc:
+            results.append(TransportUnavailable(scrub_addresses(str(exc))))
+    return results
 
 
 def build(cfg: object) -> dict[str, Transport]:

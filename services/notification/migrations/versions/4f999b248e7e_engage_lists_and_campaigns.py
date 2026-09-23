@@ -76,6 +76,8 @@ def upgrade() -> None:
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("cancelled_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("pause_reason", sa.String(length=300), nullable=False),
+        sa.Column("paused_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("recipient_count", sa.Integer(), nullable=False),
         sa.Column("sent_count", sa.Integer(), nullable=False),
         sa.Column("failed_count", sa.Integer(), nullable=False),
@@ -104,7 +106,7 @@ def upgrade() -> None:
             "audience IN ('list', 'all_sendable')", name=op.f("ck_campaigns_audience")
         ),
         sa.CheckConstraint(
-            "status IN ('draft', 'scheduled', 'sending', 'sent', 'cancelled')",
+            "status IN ('draft', 'scheduled', 'sending', 'paused', 'sent', 'cancelled')",
             name=op.f("ck_campaigns_status"),
         ),
         sa.ForeignKeyConstraint(
@@ -188,6 +190,7 @@ def upgrade() -> None:
         sa.Column("email_masked", sa.String(length=254), nullable=False),
         sa.Column("email_index", sa.String(length=64), nullable=False),
         sa.Column("status", sa.String(length=20), nullable=False),
+        sa.Column("claimed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("provider_message_id", sa.String(length=255), nullable=True),
         sa.Column("error", sa.String(length=500), nullable=False),
         sa.Column("sent_at", sa.DateTime(timezone=True), nullable=True),
@@ -209,7 +212,7 @@ def upgrade() -> None:
         sa.Column("updated_by", sa.String(length=64), nullable=True),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.CheckConstraint(
-            "status IN ('queued', 'sent', 'failed', 'suppressed')",
+            "status IN ('queued', 'sending', 'sent', 'failed', 'suppressed')",
             name=op.f("ck_campaign_recipients_status"),
         ),
         sa.ForeignKeyConstraint(

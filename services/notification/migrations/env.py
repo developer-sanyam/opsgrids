@@ -30,6 +30,42 @@ config.set_main_option("sqlalchemy.url", cfg.admin_dsn)
 target_metadata = Base.metadata
 
 
+def grant_campaign_sweep_reader(connection: Connection) -> None:
+    """Column-level `SELECT` on `campaigns` for the outbox role — the campaign send driver's own
+    cross-tenant discovery (`app/cron.py`, `selectors.due_campaigns`).
+
+    The outbox role's slice-1 grant (`apply_schema_grants`, `SELECT, UPDATE` on `outbox` only)
+    does not reach this table at all, and discovery must not run BYPASSRLS with a blanket
+    `SELECT *` — that would let a bug in one cross-tenant query read a subject line or a body
+    nobody but that campaign's own organization may see. Six columns, named exactly:
+    `organization_id`, `id`, `status`, `paused_at`, `started_at`, `deleted_at` — never `subject`,
+    `html_body`, `text_body`, or `sender_id`.
+
+    Same idempotent shape as `services/approval/migrations/env.py`'s `grant_sla_sweep_reader`,
+    called after **every** alembic run for the same reason: `REVOKE` first and `GRANT` again only
+    if the table still exists, rather than `GRANT`-only, which would leave the privilege in place
+    forever once issued and never take it back on a downgrade that drops the table.
+    """
+    reader = cfg.db_outbox_role
+    if not reader:
+        return
+    if not connection.execute(
+        text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": reader}
+    ).scalar():
+        return
+    if connection.execute(
+        text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.campaigns"}
+    ).scalar():
+        connection.execute(text(f'REVOKE ALL ON "{SCHEMA}"."campaigns" FROM "{reader}"'))
+        connection.execute(
+            text(
+                "GRANT SELECT (organization_id, id, status, paused_at, started_at, deleted_at) "
+                f'ON "{SCHEMA}"."campaigns" TO "{reader}"'
+            )
+        )
+    connection.commit()
+
+
 def include_object(obj, name, type_, reflected, compare_to) -> bool:  # type: ignore[no-untyped-def]
     """Manage only this service's own schema.
 
@@ -60,6 +96,7 @@ def do_run_migrations(connection: Connection) -> None:
     # created. Doing it here rather than as a per-service step means a new service cannot ship
     # without them -- which is exactly what happened the first time this was left out.
     apply_schema_grants(connection, SCHEMA, cfg.db_app_role, outbox_role=cfg.db_outbox_role)
+    grant_campaign_sweep_reader(connection)
 
 
 async def run_async_migrations() -> None:

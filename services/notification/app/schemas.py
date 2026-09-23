@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Channel = Literal["email", "whatsapp"]
 TemplateCategory = Literal["utility", "marketing", "authentication"]
@@ -535,9 +535,20 @@ class ListMembersOut(BaseModel):
 
 # --------------------------------------------------------------------- engage campaigns
 
-CampaignStatus = Literal["draft", "scheduled", "sending", "sent", "cancelled"]
+CampaignStatus = Literal["draft", "scheduled", "sending", "paused", "sent", "cancelled"]
 CampaignAudience = Literal["list", "all_sendable"]
 RecipientStatus = Literal["queued", "sent", "failed", "suppressed"]
+
+
+def _reject_header_injection(value: str) -> str:
+    """A `\\r` or `\\n` in a subject is not a longer subject — it is the start of a second mail
+    header an attacker controls (bcc, another `Subject`, a `Content-Type`). Refused at the
+    boundary rather than stripped, so the caller sees why rather than silently getting a
+    different subject than the one they asked for; every recipient of a campaign carries the
+    same subject line, so letting one through would poison the whole send."""
+    if "\r" in value or "\n" in value:
+        raise ValueError("must not contain a carriage return or line feed")
+    return value
 
 
 class CampaignIn(BaseModel):
@@ -551,6 +562,11 @@ class CampaignIn(BaseModel):
     audience: CampaignAudience = "all_sendable"
     list_id: uuid.UUID | None = None
     scheduled_at: datetime | None = None
+
+    @field_validator("subject")
+    @classmethod
+    def _subject_no_crlf(cls, value: str) -> str:
+        return _reject_header_injection(value)
 
 
 class CampaignPatch(BaseModel):
@@ -566,6 +582,11 @@ class CampaignPatch(BaseModel):
     audience: CampaignAudience | None = None
     list_id: uuid.UUID | None = None
     scheduled_at: datetime | None = None
+
+    @field_validator("subject")
+    @classmethod
+    def _subject_no_crlf(cls, value: str | None) -> str | None:
+        return value if value is None else _reject_header_injection(value)
 
 
 class CampaignStats(BaseModel):
@@ -590,6 +611,9 @@ class CampaignOut(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     cancelled_at: datetime | None
+    #: Why the send driver paused this campaign (no connected provider, no usable sender).
+    #: Empty unless `status == "paused"`.
+    pause_reason: str
     stats: CampaignStats
     created_at: datetime
     updated_at: datetime

@@ -17,19 +17,20 @@ from __future__ import annotations
 import base64
 import hashlib
 import uuid
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from html import escape as html_escape
-from typing import Any, Final
+from typing import Any, Final, Literal, cast
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from sqlalchemy import delete, update
+from sqlalchemy import CursorResult, delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import dns_check, domain, selectors
-from app.config import settings
+from app.config import Settings, settings
 from app.models import (
     AuditLog,
     Campaign,
@@ -54,8 +55,10 @@ from app.targets import TargetResolver
 from app.transports import (
     LogTransport,
     Outgoing,
+    Receipt,
     SmtpTransport,
     Transport,
+    TransportError,
     TransportRefused,
     TransportUnavailable,
 )
@@ -2002,6 +2005,29 @@ def unsubscribe_key() -> bytes | None:
     return secret.encode()
 
 
+def _check_public_base(cfg: Settings) -> None:
+    """Refuse to send a campaign whose unsubscribe link would point nowhere a recipient's
+    mailbox can reach.
+
+    `ENGAGE_PUBLIC_API_BASE` defaults to `http://localhost:8080/api/v1` — right for a developer's
+    own machine, and useless in anyone else's mail. Outside `local`/`test`/`ci` a base that is
+    still `localhost`/`127.0.0.1` or still plain `http://` is exactly the same class of mistake
+    the `dev-only-` secret prefix already refuses to sign with: an unconfigured deploy that would
+    otherwise mail a link nobody outside the box can open. The gate lives here, at the one place
+    every campaign send passes through, rather than only in `infrastructure/edge/preflight.sh` —
+    preflight catches it before a deploy; this catches it if preflight was skipped or the value
+    changed after.
+    """
+    if cfg.environment not in _REAL_ENVIRONMENTS:
+        return
+    base = cfg.engage_public_api_base.strip().lower()
+    if not base.startswith("https://") or "localhost" in base or "127.0.0.1" in base:
+        raise BusinessRuleProblem(
+            "ENGAGE_PUBLIC_API_BASE is not a public https address in this environment, so "
+            "campaigns cannot be sent."
+        )
+
+
 def unsubscribe_token(organization_id: uuid.UUID, email: str) -> str:
     """The token that goes into the unsubscribe link of mail sent to `email`."""
     key = unsubscribe_key()
@@ -2403,6 +2429,17 @@ async def delete_list(
     row = await selectors.get_list(session, ctx.organization_id, list_id)
     if row is None:
         raise NotFoundProblem("No such list")
+    # Blocks a list referenced by *any* campaign, including a finished one — considered and
+    # deliberately not narrowed to "only a draft/scheduled campaign" (review finding: allow
+    # deleting a list a finished campaign used). `Campaign.list_id` is a real foreign key
+    # (`fk_campaigns_list_id_contact_lists`, no cascade) precisely because a sent campaign's
+    # audience is part of its record — CampaignOut still reports `list_id` for a `sent` or
+    # `cancelled` campaign, and the `(audience = 'list') = (list_id IS NOT NULL)` CHECK means
+    # allowing the delete would need either an `ON DELETE SET NULL` (which breaks that CHECK for
+    # every historical `list` campaign, not just future ones) or a special-cased nullable FK for
+    # finished campaigns only, which is a schema integrity guarantee this fix is not worth
+    # weakening. An operator wanting the list gone can rename it instead; the campaign's own
+    # record is unaffected either way.
     if await selectors.campaigns_using_list(session, ctx.organization_id, list_id):
         raise ConflictProblem("A campaign is addressed to this list; delete or re-target it first")
     record_audit(
@@ -2501,7 +2538,11 @@ EVT_CAMPAIGN_CANCELLED = "engage.campaign.campaign.cancelled"
 #: What the fan-out stamps on rows it creates. It acts on an event, not for a person.
 CAMPAIGN_ACTOR = "system:engage-campaign"
 
-_CANCELLABLE: Final[frozenset[str]] = frozenset({"draft", "scheduled", "sending"})
+_CANCELLABLE: Final[frozenset[str]] = frozenset({"draft", "scheduled", "sending", "paused"})
+
+#: Campaign statuses the send driver (`app/cron.py`) will pick up: actively sending, or paused
+#: and due a retry. Anything else (draft, scheduled, sent, cancelled) it leaves alone.
+_DRIVER_ACTIVE: Final[frozenset[str]] = frozenset({"sending", "paused"})
 
 #: The recipient-facing wording of a refused send. The provider's own words go to the log only.
 _RECIPIENT_REFUSED = "The provider refused this message"
@@ -2693,6 +2734,7 @@ async def request_send(
             "Unsubscribe links are not configured for this environment, so campaigns cannot "
             "be sent."
         )
+    _check_public_base(settings())
 
     row.status = "sending"
     row.started_at = datetime.now(UTC)
@@ -2879,83 +2921,344 @@ async def campaign_transport(connection: EmailConnection, sender: Sender) -> Tra
     return await _transport_for_connection(connection, from_address=sender.address)
 
 
-async def send_campaign_batch(
+@dataclass(frozen=True, slots=True)
+class ClaimedMessage:
+    """One recipient's built message, ready to hand to a transport. `recipient_id` is what the
+    record step (`record_campaign_batch`) uses to write the outcome back — never the address,
+    which lives only in `outgoing.to_address` and only for as long as the batch is in flight."""
+
+    recipient_id: uuid.UUID
+    outgoing: Outgoing
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimedBatch:
+    """What `claim_campaign_batch` hands the driver: the connection and sender to send this
+    batch on, the messages worth sending, and the recipients already resolved without ever
+    reaching a transport (suppressed since expansion, or a row whose message could not even be
+    built) — the latter go straight to `record_campaign_batch` alongside whatever the transport
+    returns for `messages`.
+
+    Deliberately not a built `Transport`: for a self-hosted `smtp` connection, building one
+    re-resolves the host (`_transport_for_connection`'s own rebinding guard) — network I/O that
+    must not run inside the claim's open transaction any more than the send itself may. The
+    driver calls `resolve_campaign_transport` on this **after** the claim transaction has
+    committed. `transport_override` exists only for tests, which build nothing and so pay no
+    such cost either way.
+    """
+
+    connection: EmailConnection
+    sender: Sender
+    messages: list[ClaimedMessage]
+    resolved: list[tuple[uuid.UUID, Literal["suppressed", "failed"], str]]
+    transport_override: Transport | None = None
+
+
+async def resolve_campaign_transport(batch: ClaimedBatch) -> Transport:
+    """The transport a claimed batch sends on. Call this after the claim transaction has
+    committed — see `ClaimedBatch`'s docstring for why building it is not free of I/O."""
+    if batch.transport_override is not None:
+        return batch.transport_override
+    return await campaign_transport(batch.connection, batch.sender)
+
+
+ClaimOutcome = Literal["claimed", "done", "stopped", "capped", "paused", "idle"]
+
+
+async def _pause_campaign(session: AsyncSession, campaign: Campaign, reason: str) -> None:
+    """Move a `sending` (or already-`paused`) campaign to `paused`, conditionally: never
+    overwrite a `cancelled` written by an operator between this read and this write. Bumping
+    `paused_at` even when already paused is what lets `selectors.due_campaigns` back off a
+    route that is still broken rather than retrying it every tick."""
+    now = datetime.now(UTC)
+    # `session.execute` is typed to return the generic `Result`, but an UPDATE statement always
+    # produces a `CursorResult` at runtime — which is what actually carries `rowcount`.
+    result = cast(
+        "CursorResult[Any]",
+        await session.execute(
+            update(Campaign)
+            .where(
+                Campaign.id == campaign.id,
+                Campaign.organization_id == campaign.organization_id,
+                Campaign.status.in_(("sending", "paused")),
+            )
+            .values(status="paused", pause_reason=reason[:300], paused_at=now, updated_at=now)
+        ),
+    )
+    if result.rowcount:
+        log.info("engage.campaign.paused", campaign_id=str(campaign.id), reason=reason)
+
+
+async def _resume_if_paused(session: AsyncSession, campaign: Campaign) -> None:
+    """The mirror of `_pause_campaign`, run once a route exists again: conditional, so it only
+    ever moves a campaign this process itself finds still `paused` — never `cancelled`."""
+    if campaign.status != "paused":
+        return
+    now = datetime.now(UTC)
+    result = cast(
+        "CursorResult[Any]",
+        await session.execute(
+            update(Campaign)
+            .where(
+                Campaign.id == campaign.id,
+                Campaign.organization_id == campaign.organization_id,
+                Campaign.status == "paused",
+            )
+            .values(status="sending", pause_reason="", paused_at=None, updated_at=now)
+        ),
+    )
+    if result.rowcount:
+        log.info("engage.campaign.resumed", campaign_id=str(campaign.id))
+
+
+async def resume_campaign(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    campaign_id: uuid.UUID,
+    request: Request | None = None,
+) -> Campaign:
+    """An operator's explicit "try again now" — bypasses the driver's own backoff
+    (`Settings.engage_campaign_pause_retry_seconds`) by clearing `paused_at` immediately, so the
+    very next tick attempts this campaign regardless of when it last failed."""
+    row = await selectors.get_campaign(session, ctx.organization_id, campaign_id, lock=True)
+    if row is None:
+        raise NotFoundProblem("No such campaign")
+    if row.status != "paused":
+        raise ConflictProblem(f"Only a paused campaign can be resumed; this one is {row.status}")
+    row.status = "sending"
+    row.pause_reason = ""
+    row.paused_at = None
+    row.updated_by = str(ctx.principal.sub)
+    row.updated_at = datetime.now(UTC)
+    await session.flush()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.campaign.resumed",
+        entity="campaign",
+        entity_id=row.id,
+        request=request,
+    )
+    return row
+
+
+async def _mark_sent_if_still_sending(session: AsyncSession, campaign_id: uuid.UUID) -> None:
+    """The other half of the same guarantee `_pause_campaign` gives: a campaign is only ever
+    marked `sent` if it is still `sending` right now, so an operator's `cancel` committed after
+    the last batch and before this call is never quietly overwritten back to `sent`."""
+    now = datetime.now(UTC)
+    await session.execute(
+        update(Campaign)
+        .where(Campaign.id == campaign_id, Campaign.status == "sending")
+        .values(status="sent", completed_at=now, updated_at=now)
+    )
+
+
+async def _claim_recipient_rows(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    campaign_id: uuid.UUID,
+    *,
+    limit: int,
+    lease_seconds: int,
+) -> list[CampaignRecipient]:
+    """Claim the next `limit` recipients: `queued`, or `sending` past a stale lease — a batch
+    another process claimed and then died before recording. `FOR UPDATE SKIP LOCKED` inside the
+    CTE is what makes two drivers working the same campaign safe: the loser of a race skips rows
+    the winner already has, rather than blocking on them.
+
+    A CTE joined into the `UPDATE ... FROM`, not `WHERE id IN (subquery)` — the subquery form
+    self-references the table the UPDATE is writing, and Postgres does not guarantee `LIMIT`
+    inside it bounds how many rows the outer statement ends up touching (the standard "claim N
+    rows" recipe uses exactly this CTE shape for that reason).
+    """
+    stale_before = datetime.now(UTC) - timedelta(seconds=lease_seconds)
+    candidates = (
+        select(CampaignRecipient.id)
+        .where(
+            CampaignRecipient.organization_id == organization_id,
+            CampaignRecipient.campaign_id == campaign_id,
+            (CampaignRecipient.status == "queued")
+            | (
+                (CampaignRecipient.status == "sending")
+                & (CampaignRecipient.claimed_at < stale_before)
+            ),
+        )
+        .order_by(CampaignRecipient.contact_id.asc())
+        .limit(limit)
+        .with_for_update(skip_locked=True)
+        .cte("claimable_recipients")
+    )
+    stmt = (
+        update(CampaignRecipient)
+        .where(CampaignRecipient.id == candidates.c.id)
+        .values(status="sending", claimed_at=datetime.now(UTC))
+        .returning(CampaignRecipient)
+    )
+    return list((await session.execute(stmt)).scalars())
+
+
+async def claim_campaign_batch(
     session: AsyncSession,
     *,
     organization_id: uuid.UUID,
     campaign_id: uuid.UUID,
     batch_size: int,
+    lease_seconds: int,
     transport: Transport | None = None,
-) -> str:
-    """Send the next batch of queued recipients. Returns what the caller should do next:
+) -> tuple[ClaimOutcome, ClaimedBatch | None]:
+    """The driver's claim step — a short transaction, committed by the caller before anything
+    touches a network. Returns what the caller should do next:
 
-    - `more` — sent a batch; call again.
-    - `done` — nothing left queued; the campaign is now `sent`.
-    - `stopped` — the campaign is no longer `sending` (cancelled); send nothing more.
+    - `claimed` — a batch is ready; send it and call `record_campaign_batch`, then call again.
+    - `done` — nothing left `queued` or `sending`; the campaign is now `sent`.
+    - `stopped` — the campaign is not `sending`/`paused` any more (cancelled, or already sent).
     - `capped` — the connection's `daily_cap` is used up for today; remaining stay `queued`.
-    - `unavailable` — the provider could not be reached; what was sent is recorded and the
-      rest stay `queued` for a redelivery to pick up.
+    - `paused` — no connected provider or usable sender; the campaign was moved to `paused`
+      (or already was), and `Campaign.pause_reason` says why.
+    - `idle` — nothing claimable right now (another worker holds the rest); try again later.
 
-    Suppression is re-checked for every recipient at send time: an address that unsubscribed
-    after expansion is recorded `suppressed` and not sent. The provider call is made with the
-    recipient rows locked (`FOR UPDATE SKIP LOCKED`), so a concurrent worker skips them; a
-    crash mid-batch rolls the batch back to `queued`, which can re-send that batch — at-least-
-    once, bounded by the batch size.
+    Suppression is re-checked in one `IN (...)` query for the whole batch rather than one query
+    per recipient. Building each message can fail without failing the batch: a row whose sealed
+    address will not decrypt, for instance, is recorded `failed` and does not stop the rest.
     """
     campaign = await selectors.get_campaign(session, organization_id, campaign_id)
-    if campaign is None or campaign.status != "sending":
-        return "stopped"
+    if campaign is None or campaign.status not in _DRIVER_ACTIVE:
+        return "stopped", None
 
-    connection = await selectors.get_connection(session, organization_id)
+    connection = await selectors.get_connection(session, organization_id, lock=True)
     sender = await selectors.get_sender(session, organization_id, campaign.sender_id)
-    if connection is None or connection.status != "connected" or sender is None:
-        log.warning("engage.campaign.no_route", campaign_id=str(campaign_id))
-        return "stopped"
+    if connection is None or connection.status != "connected":
+        await _pause_campaign(session, campaign, "No connected email provider.")
+        return "paused", None
+    if sender is None or not sender.usable:
+        await _pause_campaign(session, campaign, "The campaign's sender is no longer usable.")
+        return "paused", None
+    await _resume_if_paused(session, campaign)
 
     today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     used = await selectors.campaign_mail_sent_since(session, organization_id, today)
     room = connection.daily_cap - used
     if room <= 0:
         log.info("engage.campaign.capped", campaign_id=str(campaign_id), cap=connection.daily_cap)
-        return "capped"
+        return "capped", None
 
-    batch = await selectors.queued_recipients(
-        session, organization_id, campaign_id, limit=min(batch_size, room)
+    claimed = await _claim_recipient_rows(
+        session,
+        organization_id,
+        campaign_id,
+        limit=min(batch_size, room),
+        lease_seconds=lease_seconds,
     )
-    if not batch:
+    if not claimed:
         counts = await _fold_campaign_counts(session, campaign)
-        if counts.get("queued", 0) == 0:
-            campaign.status = "sent"
-            campaign.completed_at = datetime.now(UTC)
-            await session.flush()
-            return "done"
-        return "more"  # Rows locked by another worker; let it finish them.
+        outstanding = counts.get("queued", 0) + counts.get("sending", 0)
+        if outstanding == 0:
+            await _mark_sent_if_still_sending(session, campaign_id)
+            return "done", None
+        return "idle", None  # Another worker holds the rest; nothing to do this tick.
 
-    wire = transport or await campaign_transport(connection, sender)
+    indexes = [r.email_index for r in claimed]
+    suppressed = await selectors.suppressed_indexes(session, organization_id, indexes)
+
     cfg = settings()
-    outcome = "more"
-    for recipient in batch:
-        if await selectors.is_suppressed(session, organization_id, recipient.email_index):
-            recipient.status = "suppressed"
+    messages: list[ClaimedMessage] = []
+    resolved: list[tuple[uuid.UUID, Literal["suppressed", "failed"], str]] = []
+    for recipient in claimed:
+        if recipient.email_index in suppressed:
+            resolved.append((recipient.id, "suppressed", ""))
             continue
-        address = pii.open_sealed(recipient.email_enc, settings=cfg)
-        message = campaign_message(
-            campaign, to_address=address, unsubscribe=unsubscribe_url(organization_id, address)
-        )
         try:
-            receipt = await wire.send(message)
-        except TransportRefused as exc:
-            log.warning("engage.campaign.refused", recipient_id=str(recipient.id), error=str(exc))
-            recipient.status = "failed"
-            recipient.error = _RECIPIENT_REFUSED
+            address = pii.open_sealed(recipient.email_enc, settings=cfg)
+            message = campaign_message(
+                campaign,
+                to_address=address,
+                unsubscribe=unsubscribe_url(organization_id, address),
+            )
+        except Exception:
+            # One row's own problem (a sealed address that will not open, a body that will not
+            # render) must not sink the batch — logged without the address, which is exactly
+            # what did not decrypt.
+            log.warning(
+                "engage.campaign.build_failed",
+                campaign_id=str(campaign_id),
+                recipient_id=str(recipient.id),
+            )
+            resolved.append((recipient.id, "failed", "Could not prepare this message"))
             continue
-        except TransportUnavailable as exc:
-            log.warning("engage.campaign.unavailable", campaign_id=str(campaign_id), error=str(exc))
-            outcome = "unavailable"
-            break
-        recipient.status = "sent"
-        recipient.sent_at = datetime.now(UTC)
-        recipient.provider_message_id = receipt.provider_message_id
+        messages.append(ClaimedMessage(recipient_id=recipient.id, outgoing=message))
+    return "claimed", ClaimedBatch(
+        connection=connection,
+        sender=sender,
+        messages=messages,
+        resolved=resolved,
+        transport_override=transport,
+    )
+
+
+async def record_campaign_batch(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    campaign_id: uuid.UUID,
+    resolved: list[tuple[uuid.UUID, Literal["suppressed", "failed"], str]],
+    sent: list[tuple[uuid.UUID, Receipt | TransportError]],
+) -> bool:
+    """The driver's record step — a second short transaction, after the provider call and with
+    no transaction open while it ran. Returns whether any recipient came back `unavailable`,
+    which is the driver's signal to back off this campaign rather than claim another batch
+    immediately.
+
+    A `TransportUnavailable` result releases its row straight back to `queued` (rather than
+    waiting out its claim lease) so the very next successful tick resends it — at-least-once,
+    the same guarantee the shared consumer's batches always gave, just resumable across a crash
+    instead of bounded by one broker redelivery.
+    """
+    ids = [rid for rid, _, _ in resolved] + [rid for rid, _ in sent]
+    rows = await selectors.recipients_by_id(session, organization_id, campaign_id, ids)
+    now = datetime.now(UTC)
+    any_unavailable = False
+
+    for recipient_id, status, note in resolved:
+        row = rows.get(recipient_id)
+        if row is None:
+            continue
+        row.status = status
+        row.error = note
+        row.claimed_at = None
+
+    for recipient_id, outcome in sent:
+        row = rows.get(recipient_id)
+        if row is None:
+            continue
+        if isinstance(outcome, Receipt):
+            row.status = "sent"
+            row.sent_at = now
+            row.provider_message_id = outcome.provider_message_id
+            row.error = ""
+            row.claimed_at = None
+        elif isinstance(outcome, TransportRefused):
+            log.warning("engage.campaign.refused", recipient_id=str(recipient_id))
+            row.status = "failed"
+            row.error = _RECIPIENT_REFUSED
+            row.claimed_at = None
+        else:
+            any_unavailable = True
+            log.warning(
+                "engage.campaign.unavailable",
+                campaign_id=str(campaign_id),
+                recipient_id=str(recipient_id),
+            )
+            # Released rather than left `sending`: the driver's backoff (not this row's lease)
+            # is what paces the retry, so the row itself should look immediately retryable.
+            row.status = "queued"
+            row.claimed_at = None
+
     await session.flush()
-    await _fold_campaign_counts(session, campaign)
-    return outcome
+    campaign = await selectors.get_campaign(session, organization_id, campaign_id)
+    if campaign is not None:
+        await _fold_campaign_counts(session, campaign)
+    return any_unavailable
