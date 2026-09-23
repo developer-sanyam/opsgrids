@@ -136,6 +136,12 @@ class Subscription(Base, TenantBase):
     #: reading is never billed twice.
     usage_billed_through: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    #: When the current suspension took effect (the operator's instant, or the grace window's
+    #: stored close). A period is left unbilled only if it *opens* on or after this instant — a
+    #: period the customer was served part of is charged in advance like any other, however late
+    #: the run gets to it (review round 3). NULL when not suspended.
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     #: ISO-4217, read from the pinned version. One currency per subscription (ADR-0004 defaults:
     #: one currency per org for now); every amount that references it must agree.
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
@@ -388,10 +394,12 @@ class DunningCycle(Base, TenantBase):
 
 
 #: The states of one billing period's claim (the billing run, ADR-0005 addendum 2026-09-23).
-#: `pending` is claimed and not yet recorded — retried after its lease or backoff; `invoiced`
-#: carries billing's answer; `skipped` was advanced without an invoice (a suspended roll, a stale
-#: claim that never reached billing). `void_pending` is an invoice raised for a period the
-#: subscription had already moved past — the run asks billing to void it — and `voided` is done.
+#: `pending` is claimed and not yet recorded — retried after its lease or backoff;
+#: `finalize_pending` is recorded with billing's draft; `finalized` is billing's announced,
+#: chargeable invoice; `skipped` was settled without an invoice (a suspended roll, a stale claim
+#: that never reached billing, a proration whose parent was voided, a change that netted to
+#: nothing). `void_pending` is a draft for a period the subscription moved past — the run asks
+#: billing to void it — and `voided` is done.
 PERIOD_PENDING = "pending"
 #: Recorded here, the invoice still a **draft** in billing (review round 2, fix M5): nothing has
 #: been announced, so nothing can be charged. The run finalizes it next, keyed and idempotent.
@@ -404,11 +412,15 @@ PERIOD_VOIDED = "voided"
 
 #: What opened the claim. `trial_conversion` and `renewal` open a period and move the
 #: subscription; `proration` is an upgrade's prorated difference for the rest of the current
-#: period; `close` is the usage-only closing period a cancellation or suspension leaves behind.
+#: period; `close` is the usage-only closing period a cancellation or suspension leaves behind;
+#: `opening` is the recurring charge for time no period charge covers — the first period of a
+#: subscription that starts paid, and the rest of a period resumed after a suspended roll
+#: (review round 3).
 PERIOD_KIND_TRIAL_CONVERSION = "trial_conversion"
 PERIOD_KIND_RENEWAL = "renewal"
 PERIOD_KIND_PRORATION = "proration"
 PERIOD_KIND_CLOSE = "close"
+PERIOD_KIND_OPENING = "opening"
 
 #: The kinds that move the subscription and are discovered through it. The other two are
 #: discovered as rows of their own.
@@ -467,6 +479,11 @@ class BillingPeriod(Base, TenantBase):
     #: A proration's other side: the pin and items the upgrade moved off, and the change's id —
     #: which billing's idempotency key is built from (`subscription:{id}:proration:{change_id}`).
     change_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: The lifecycle claim a proration was priced against, when it was made against one (review
+    #: round 3, fix B1). Same schema, deliberately no foreign key (the table's other references to
+    #: itself are plain ids too). A proration is billed only once its parent is finalized, and is
+    #: skipped — or its draft voided — when its parent is voided or skipped.
+    against_period_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     from_plan_version_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     from_items: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
     #: The start of the *whole* current period a proration is a fraction of.
@@ -513,7 +530,8 @@ class BillingPeriod(Base, TenantBase):
             name="state",
         ),
         CheckConstraint(
-            "kind in ('trial_conversion', 'renewal', 'proration', 'close')", name="kind"
+            "kind in ('trial_conversion', 'renewal', 'proration', 'close', 'opening')",
+            name="kind",
         ),
         CheckConstraint(
             "period_end is null or period_end > period_start", name="period_is_forward"
@@ -552,6 +570,12 @@ class BillingPeriod(Base, TenantBase):
             postgresql_where=text("change_id IS NOT NULL"),
         ),
         Index("ix_billing_periods_recorded", "recorded_at"),
+        Index(
+            "ix_billing_periods_org_against",
+            "organization_id",
+            "against_period_id",
+            postgresql_where=text("against_period_id IS NOT NULL"),
+        ),
     )
 
 

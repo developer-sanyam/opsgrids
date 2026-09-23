@@ -301,8 +301,14 @@ class TestPastDueGuards:
     async def test_a_subscription_that_owes_money_cannot_change_plan(
         self, session: AsyncSession, catalog: FakeCatalog, org_id: uuid.UUID, state: str
     ) -> None:
+        # A period that is not yet due, so the refusal is the owed-money rule rather than the
+        # billing-run catch-up guard.
         subscription_id = await _seed(
-            session, org_id, state=state, period_start=T0 - MONTH, period_end=T0
+            session,
+            org_id,
+            state=state,
+            period_start=_wall() - timedelta(days=10),
+            period_end=_wall() + timedelta(days=20),
         )
         target = catalog.add(make_version(product_key="hrms", currency="INR", amount_minor=99))
         with pytest.raises(BusinessRuleProblem, match="cannot change plan"):
@@ -356,7 +362,7 @@ class TestPlanChangeMoney:
         report = await run.tick(now=_wall())
         again = await run.tick(now=_wall())
         assert report.prorated == 1 and again.prorated == 0
-        (request,) = [r for r in billing.requests if r.billing_kind == "proration"]
+        (request,) = [r for r in billing.requests if r.kind == domain.KIND_PRORATION]
         assert request.billing_kind == "proration"
         assert request.plan_version_id == high.id
         assert request.from_plan_version_id == low.id
@@ -382,13 +388,16 @@ class TestPlanChangeMoney:
         await _change(session, catalog, org_id, subscription_id, low.id)
 
         await run.tick(now=_wall())
-        assert billing.requests == []
+        # The first period is charged once, at the pin in force when it opened; the downgrade
+        # moves no money now.
+        (opening,) = billing.requests
+        assert opening.kind == domain.KIND_OPENING and opening.plan_version_id == high.id
         sub = await _subscription(session, subscription_id)
         assert sub.plan_version_id == high.id and sub.pending_plan_version_id == low.id
         assert sub.current_period_end is not None
 
         await run.tick(now=sub.current_period_end)
-        (request,) = billing.requests
+        (request,) = [r for r in billing.requests if r.kind == domain.KIND_RENEWAL]
         assert request.kind == domain.KIND_RENEWAL
         assert request.plan_version_id == low.id
         assert request.items == [{"price_id": str(low.prices[0].id), "quantity": 1}]
@@ -412,7 +421,7 @@ class TestPlanChangeMoney:
 
         report = await run.tick(now=_wall())
         assert report.prorated == 1
-        assert len([r for r in billing.requests if r.billing_kind == "proration"]) == 1
+        assert len([r for r in billing.requests if r.kind == domain.KIND_PRORATION]) == 1
         sub = await _subscription(session, subscription_id)
         assert sub.plan_version_id == high.id
         assert sub.pending_plan_version_id == low.id
@@ -471,8 +480,7 @@ class TestClosingUsage:
         assert suspended_at is not None
 
         await run.tick(now=_wall())
-        (close,) = billing.requests
-        assert close.billing_kind == "close"
+        (close,) = [r for r in billing.requests if r.kind == domain.KIND_CLOSE]
         assert (close.usage_start, close.usage_end) == (start, suspended_at)
 
         # Paid in the same period: recovered, then the period closes and rolls.
@@ -482,8 +490,7 @@ class TestClosingUsage:
             await services.record_payment_captured(session, sub)
         assert end is not None
         await run.tick(now=end)
-        renewal = billing.requests[-1]
-        assert renewal.kind == domain.KIND_RENEWAL
+        (renewal,) = [r for r in billing.requests if r.kind == domain.KIND_RENEWAL]
         assert (renewal.usage_start, renewal.usage_end) == (suspended_at, end)
 
 

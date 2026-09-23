@@ -38,6 +38,7 @@ from typing import Any
 
 from app.models import (
     PERIOD_KIND_CLOSE,
+    PERIOD_KIND_OPENING,
     PERIOD_KIND_PRORATION,
     PERIOD_KIND_RENEWAL,
     PERIOD_KIND_TRIAL_CONVERSION,
@@ -484,6 +485,7 @@ KIND_TRIAL_CONVERSION = PERIOD_KIND_TRIAL_CONVERSION
 KIND_RENEWAL = PERIOD_KIND_RENEWAL
 KIND_PRORATION = PERIOD_KIND_PRORATION
 KIND_CLOSE = PERIOD_KIND_CLOSE
+KIND_OPENING = PERIOD_KIND_OPENING
 
 #: A pending lifecycle claim that has failed this often is reported as permanently failing by the
 #: health probe even if each failure looked transient.

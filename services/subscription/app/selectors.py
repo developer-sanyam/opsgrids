@@ -20,7 +20,7 @@ from typing import Any
 
 from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from app.domain import PERMANENT_AFTER_ATTEMPTS
 from app.models import (
@@ -29,10 +29,12 @@ from app.models import (
     PERIOD_FINALIZE_PENDING,
     PERIOD_FINALIZED,
     PERIOD_KIND_CLOSE,
+    PERIOD_KIND_OPENING,
     PERIOD_KIND_PRORATION,
-    PERIOD_KIND_TRIAL_CONVERSION,
     PERIOD_PENDING,
+    PERIOD_SKIPPED,
     PERIOD_VOID_PENDING,
+    PERIOD_VOIDED,
     STATE_ACTIVE,
     STATE_PAST_DUE,
     STATE_SUSPENDED,
@@ -137,6 +139,7 @@ async def lock_open_cycle(session: AsyncSession, cycle_id: uuid.UUID) -> Dunning
         select(DunningCycle)
         .where(DunningCycle.id == cycle_id, DunningCycle.state == DUNNING_OPEN)
         .with_for_update(skip_locked=True)
+        .execution_options(populate_existing=True)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 
@@ -255,16 +258,34 @@ async def due_billing_subscriptions(
 async def actionable_periods(
     session: AsyncSession, *, wall: datetime, limit: int = 100
 ) -> list[tuple[uuid.UUID, uuid.UUID]]:
-    """Rows that are their own work, as `(organization_id, period_id)`: a pending proration or
-    closing period, a recorded draft to finalize (review round 2, M5), or an invoice to void —
-    none leased or backing off. Cross-tenant on the outbox role; ordered oldest first."""
+    """Rows that are their own work, as `(organization_id, period_id)`: a pending proration,
+    opening or closing period, a recorded draft to finalize (review round 2, M5), or an invoice to
+    void — none leased or backing off. Cross-tenant on the outbox role; ordered oldest first.
+
+    **A proration priced against a claim waits for that claim to be finalized** (review round 3,
+    fix B1): its parent may yet be voided — cancelled or suspended before it was recorded — and an
+    upgrade's difference must never be charged for a period whose base was not.
+    """
+    parent = aliased(BillingPeriod)
+    parent_finalized = (
+        select(parent.id)
+        .where(
+            parent.organization_id == BillingPeriod.organization_id,
+            parent.id == BillingPeriod.against_period_id,
+            parent.state == PERIOD_FINALIZED,
+        )
+        .exists()
+    )
     stmt = (
         select(BillingPeriod.organization_id, BillingPeriod.id)
         .where(
             or_(
                 and_(
                     BillingPeriod.state == PERIOD_PENDING,
-                    BillingPeriod.kind.in_((PERIOD_KIND_PRORATION, PERIOD_KIND_CLOSE)),
+                    BillingPeriod.kind.in_(
+                        (PERIOD_KIND_PRORATION, PERIOD_KIND_CLOSE, PERIOD_KIND_OPENING)
+                    ),
+                    or_(BillingPeriod.against_period_id.is_(None), parent_finalized),
                 ),
                 BillingPeriod.state.in_((PERIOD_VOID_PENDING, PERIOD_FINALIZE_PENDING)),
             ),
@@ -342,6 +363,7 @@ async def lock_billing_period(
             BillingPeriod.period_start == period_start,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 
@@ -357,6 +379,7 @@ async def lock_billing_period_by_id(
         select(BillingPeriod)
         .where(BillingPeriod.organization_id == organization_id, BillingPeriod.id == period_id)
         .with_for_update(skip_locked=skip_locked)
+        .execution_options(populate_existing=True)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 
@@ -396,43 +419,74 @@ async def max_claimed_usage_end(
     return value
 
 
-async def close_period_for_invoice(
+async def chargeable_period_for_invoice(
     session: AsyncSession,
     organization_id: uuid.UUID,
     subscription_id: uuid.UUID,
     invoice_id: uuid.UUID,
 ) -> BillingPeriod | None:
+    """The closing period, proration or opening a failed charge's invoice belongs to — money a
+    stopped (or still-trialling) subscription owes that dunning does not pursue (round 3, m7)."""
     stmt = (
         select(BillingPeriod)
         .where(
             BillingPeriod.organization_id == organization_id,
             BillingPeriod.subscription_id == subscription_id,
-            BillingPeriod.kind == PERIOD_KIND_CLOSE,
+            BillingPeriod.kind.in_((PERIOD_KIND_CLOSE, PERIOD_KIND_PRORATION, PERIOD_KIND_OPENING)),
             BillingPeriod.invoice_id == invoice_id,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def pending_conversion(
-    session: AsyncSession, organization_id: uuid.UUID, subscription_id: uuid.UUID
-) -> BillingPeriod | None:
-    """The trial conversion claimed and not yet recorded for a subscription, held `FOR UPDATE` —
-    what a conversion charge that failed before the record step is written onto."""
+async def prorations_against(
+    session: AsyncSession, organization_id: uuid.UUID, parent_id: uuid.UUID
+) -> list[BillingPeriod]:
+    """Every proration priced against one lifecycle claim, locked — what a void of the claim
+    must take down with it (review round 3, fix B1)."""
     stmt = (
         select(BillingPeriod)
         .where(
             BillingPeriod.organization_id == organization_id,
-            BillingPeriod.subscription_id == subscription_id,
-            BillingPeriod.kind == PERIOD_KIND_TRIAL_CONVERSION,
-            BillingPeriod.state == PERIOD_PENDING,
+            BillingPeriod.against_period_id == parent_id,
         )
-        .order_by(BillingPeriod.period_start.desc())
-        .limit(1)
         .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def latest_proration_against(
+    session: AsyncSession, organization_id: uuid.UUID, parent_id: uuid.UUID
+) -> BillingPeriod | None:
+    """The last pin move priced (or settled) against a claim — the record step's baseline."""
+    stmt = (
+        select(BillingPeriod)
+        .where(
+            BillingPeriod.organization_id == organization_id,
+            BillingPeriod.against_period_id == parent_id,
+        )
+        .order_by(BillingPeriod.created_at.desc(), BillingPeriod.period_start.desc())
+        .limit(1)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def base_charge_covering(
+    session: AsyncSession, organization_id: uuid.UUID, subscription_id: uuid.UUID, at: datetime
+) -> bool:
+    """Whether a live recurring charge — a period's, or an opening — covers the instant `at`."""
+    stmt = select(func.count(BillingPeriod.id)).where(
+        BillingPeriod.organization_id == organization_id,
+        BillingPeriod.subscription_id == subscription_id,
+        BillingPeriod.kind.in_((*LIFECYCLE_KINDS, PERIOD_KIND_OPENING)),
+        BillingPeriod.state.in_((PERIOD_PENDING, PERIOD_FINALIZE_PENDING, PERIOD_FINALIZED)),
+        BillingPeriod.period_start <= at,
+        BillingPeriod.period_end > at,
+    )
+    return bool((await session.execute(stmt)).scalar_one())
 
 
 async def billing_run_health(
@@ -451,8 +505,13 @@ async def billing_run_health(
       more: a person has to fix something. **Alert.**
     * `void_pending` — invoices for superseded periods still waiting to be voided.
     * `finalize_pending` — recorded drafts waiting for billing to finalize them (round 2, M5).
-    * `close_charges_failed` — closing-period charges that failed after the customer left: owed,
-      not collected, not dunned (round 2, m9). A person decides.
+    * `close_charges_failed` / `proration_charges_failed` — closing-period, proration or opening
+      charges that failed where dunning does not follow (after the customer left, or during a
+      trial): owed, not collected (round 2 m9, round 3 m7). A person decides.
+    * `prorations_on_voided_parent` — a finalized proration whose parent claim was voided or
+      skipped. Impossible by construction (round 3, B1); non-zero is a bug — **alert**.
+    * `failing` / `failing_permanent` count every claim still in flight — pending, waiting to be
+      finalized, or waiting to be voided (round 3, m6).
     * `invoiced_24h` / `skipped_24h` / `last_recorded_at` — what it has actually done.
     """
     cutoff = now - overdue_after
@@ -484,10 +543,14 @@ async def billing_run_health(
                     )
                 ),
                 func.min(BillingPeriod.created_at),
-            ).where(BillingPeriod.state == PERIOD_PENDING)
+            ).where(
+                BillingPeriod.state.in_(
+                    (PERIOD_PENDING, PERIOD_FINALIZE_PENDING, PERIOD_VOID_PENDING)
+                )
+            )
         )
     ).one()
-    void_pending, finalize_pending, close_failed = (
+    void_pending, finalize_pending, close_failed, proration_failed = (
         await session.execute(
             select(
                 func.count(BillingPeriod.id).filter(BillingPeriod.state == PERIOD_VOID_PENDING),
@@ -496,9 +559,28 @@ async def billing_run_health(
                     BillingPeriod.kind == PERIOD_KIND_CLOSE,
                     BillingPeriod.payment_failed_at.is_not(None),
                 ),
+                func.count(BillingPeriod.id).filter(
+                    BillingPeriod.kind.in_((PERIOD_KIND_PRORATION, PERIOD_KIND_OPENING)),
+                    BillingPeriod.payment_failed_at.is_not(None),
+                ),
             )
         )
     ).one()
+    orphan = aliased(BillingPeriod)
+    on_voided_parent = (
+        await session.execute(
+            select(func.count(BillingPeriod.id)).where(
+                BillingPeriod.state == PERIOD_FINALIZED,
+                select(orphan.id)
+                .where(
+                    orphan.organization_id == BillingPeriod.organization_id,
+                    orphan.id == BillingPeriod.against_period_id,
+                    orphan.state.in_((PERIOD_VOID_PENDING, PERIOD_VOIDED, PERIOD_SKIPPED)),
+                )
+                .exists(),
+            )
+        )
+    ).scalar_one()
     since = now - timedelta(hours=24)
     invoiced, skipped, last = (
         await session.execute(
@@ -517,6 +599,8 @@ async def billing_run_health(
         "void_pending": int(void_pending or 0),
         "finalize_pending": int(finalize_pending or 0),
         "close_charges_failed": int(close_failed or 0),
+        "proration_charges_failed": int(proration_failed or 0),
+        "prorations_on_voided_parent": int(on_voided_parent or 0),
         "oldest_pending_seconds": (now - oldest).total_seconds() if oldest else 0.0,
         "invoiced_24h": int(invoiced or 0),
         "skipped_24h": int(skipped or 0),

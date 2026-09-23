@@ -68,6 +68,9 @@ _BILLING_KIND = {
     domain.KIND_RENEWAL: "period",
     domain.KIND_PRORATION: "proration",
     domain.KIND_CLOSE: "close",
+    # An opening is billed as a proration from nothing: the period's recurring share for the time
+    # remaining, less zero (review round 3).
+    domain.KIND_OPENING: "proration",
 }
 
 
@@ -297,6 +300,7 @@ class RunReport:
     past_due: int = 0
     renewed: int = 0
     prorated: int = 0
+    opened: int = 0
     closed: int = 0
     finalized: int = 0
     voided: int = 0
@@ -318,6 +322,7 @@ class RunReport:
             + self.past_due
             + self.renewed
             + self.prorated
+            + self.opened
             + self.closed
             + self.finalized
             + self.voided
@@ -377,6 +382,7 @@ class BillingRunSweep:
                 past_due=report.past_due,
                 renewed=report.renewed,
                 prorated=report.prorated,
+                opened=report.opened,
                 closed=report.closed,
                 finalized=report.finalized,
                 voided=report.voided,
@@ -566,6 +572,7 @@ class BillingRunSweep:
                 existing is None
                 and due.kind == domain.KIND_RENEWAL
                 and not domain.bills_period(subscription.state)
+                and not services.served_into(subscription, due.start)
             ):
                 # A suspended roll — only when nothing is claimed for the period. A claim made
                 # before the suspension is finished by the record step, which voids its advance
@@ -727,6 +734,8 @@ class BillingRunSweep:
         report.invoices.append(billed.invoice_id)
         if outcome == "prorated":
             report.prorated += 1
+        elif outcome == "opened":
+            report.opened += 1
         else:
             report.closed += 1
         await self._work_row(organization_id, period_id, report)

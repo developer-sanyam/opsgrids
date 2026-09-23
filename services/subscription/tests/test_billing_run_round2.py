@@ -7,7 +7,8 @@ fix:
 * **B2** an upgrade while a renewal or a trial conversion is claimed is prorated against the
   claim's period; a downgrade scheduled after a claim is not applied under that claim's snapshot.
 * **M3** usage up to a pin change is closed at the old pin — immediate, deferred, and equal-price.
-* **M4** a suspension or cancellation with a renewal claim open neither double-bills nor wedges;
+* **M4** a suspension or cancellation with a renewal claim open neither double-bills nor wedges
+  (a period that opened before the suspension is charged once — round 3);
   cancel and record serialise on the row; any failure backs the claim off.
 * **M5** run invoices are drafts until the record step commits; a superseded one is voided and never
   announced; a crash between record and finalize finalizes exactly once.
@@ -32,7 +33,6 @@ from app.models import (
     PERIOD_FINALIZE_PENDING,
     PERIOD_FINALIZED,
     PERIOD_PENDING,
-    PERIOD_VOIDED,
     STATE_ACTIVE,
     STATE_TRIAL,
     BillingPeriod,
@@ -127,6 +127,15 @@ async def _period_ended(subscription_id: uuid.UUID) -> tuple[datetime, datetime]
     await _admin(
         "UPDATE subscription.subscriptions SET current_period_start = :s, "
         "current_period_end = :e WHERE id = :i",
+        s=start,
+        e=end,
+        i=subscription_id,
+    )
+    # The first period's opening charge moves with it, so the history stays one a real
+    # subscription could have: [start, end) charged on opening, the renewal charging the next.
+    await _admin(
+        "UPDATE subscription.billing_periods SET period_start = :s, full_period_start = :s, "
+        "period_end = :e WHERE subscription_id = :i AND kind = 'opening'",
         s=start,
         e=end,
         i=subscription_id,
@@ -272,8 +281,8 @@ class TestChangeAgainstAClaim:
 
         await expire_leases(subscription_id)
         await run.tick(now=_wall())
-        renewal = billing.requests[-1]
-        assert renewal.kind == domain.KIND_RENEWAL and renewal.plan_version_id == high.id
+        renewal = [r for r in billing.requests if r.kind == domain.KIND_RENEWAL][-1]
+        assert renewal.plan_version_id == high.id
         sub = await _subscription(session, subscription_id)
         assert sub.plan_version_id == high.id, "the claimed period keeps the pin it was billed at"
         assert sub.pending_plan_version_id == low.id
@@ -337,7 +346,7 @@ class TestUsageAtTheOldPin:
 
 
 class TestStopsAgainstAClaim:
-    async def test_a_suspension_with_a_renewal_claimed_voids_the_advance_and_keeps_usage(
+    async def test_a_suspension_after_a_claimed_period_opened_charges_it_once_with_usage(
         self,
         run: BillingRunSweep,
         billing: FakeBilling,
@@ -359,10 +368,17 @@ class TestStopsAgainstAClaim:
         assert report.failed == 0, "the suspended roll must not collide with the open claim"
         periods = await _periods(session, subscription_id)
         (renewal,) = _of(periods, domain.KIND_RENEWAL)
-        assert renewal.state == PERIOD_VOIDED
-        assert renewal.invoice_id not in billing.finalized, "no advance charge for a suspension"
-        windows = sorted((p.usage_start, p.usage_end) for p in _of(periods, domain.KIND_CLOSE))
-        # The claim's usage re-claimed on its own, then the stop's, with no overlap.
+        # The claimed period opened a day before the suspension, while the subscription was still
+        # served: it is charged like any period entered while active (round 3 — the run being late
+        # to roll it must not make it free), and exactly once.
+        assert renewal.state == PERIOD_FINALIZED
+        assert billing.finalized.count(renewal.invoice_id) == 1
+        windows = sorted(
+            (p.usage_start, p.usage_end)
+            for p in [renewal, *_of(periods, domain.KIND_CLOSE)]
+            if p.usage_start is not None
+        )
+        # The renewal bills the ended period's usage; the stop's close bills the rest, no overlap.
         assert windows == [(start, end), (end, suspended_at)]
         assert (await _subscription(session, subscription_id)).current_period_start == end
 
@@ -530,7 +546,7 @@ class TestFinalizeAfterRecord:
         await run.tick(now=_wall())
         (renewal,) = _of(await _periods(session, subscription_id), domain.KIND_RENEWAL)
         assert renewal.state == PERIOD_FINALIZED
-        assert billing.finalized == [renewal.invoice_id]
+        assert billing.finalized.count(renewal.invoice_id) == 1
 
 
 # --------------------------------------------------------------------- m9

@@ -42,6 +42,7 @@ SWEEP_READABLE: dict[str, tuple[str, ...] | None] = {
         "id",
         "organization_id",
         "subscription_id",
+        "against_period_id",
         "kind",
         "state",
         "lease_until",

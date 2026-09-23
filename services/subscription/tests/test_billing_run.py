@@ -714,6 +714,8 @@ class TestTenancyAndHealth:
                 "void_pending",
                 "finalize_pending",
                 "close_charges_failed",
+                "proration_charges_failed",
+                "prorations_on_voided_parent",
                 "oldest_pending_seconds",
                 "invoiced_24h",
                 "skipped_24h",
