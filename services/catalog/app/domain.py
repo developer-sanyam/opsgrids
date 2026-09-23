@@ -24,7 +24,7 @@ as one.
 from __future__ import annotations
 
 import itertools
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from platform_core.money import CurrencyMismatch, Money
@@ -155,6 +155,69 @@ def ladder_is_graduated(rungs: Sequence[BundleRung]) -> bool:
         if not cheaper_per_product(higher, lower):
             return False
     return True
+
+
+# --------------------------------------------------------------------- what a bundle names
+
+
+@dataclass(frozen=True, slots=True)
+class RegisteredProduct:
+    """One product-registry entry, as bundle validation needs it. Product-service owns the
+    registry; `app/registry.py` fetches it, and this module only judges against it."""
+
+    key: str
+    is_platform: bool = False
+    is_bundle: bool = False
+    #: `available`, `beta`, `soon`. A `soon` product has no service behind it on this deployment.
+    status: str = "available"
+
+
+def bundle_member_problems(
+    bundle: RegisteredProduct | None,
+    bundle_key: str,
+    members: object,
+    registry: Mapping[str, RegisteredProduct],
+) -> list[str]:
+    """Everything wrong with a `bundled_products` declaration, or nothing.
+
+    A subscription to the bundle entitles exactly these keys, so each of them has to be a thing
+    the gateway routes and a customer can use:
+
+    * the plan it sits on belongs to a registered **bundle** product — a `crm` plan quietly
+      declaring members would entitle products the CRM price was never meant to include;
+    * the list is a non-empty list of distinct product keys;
+    * every member is **registered** — a typo is a customer paying for a product they never get;
+    * no member is a **platform** product — every customer already has those, so selling one is
+      charging for nothing;
+    * no member is itself a **bundle** — a bundle's key routes nowhere, and nesting would entitle
+      a key that means nothing to the gateway;
+    * no member is still **`soon`** — a product with no service behind it is a customer paying
+      for 404s (product-service refuses to project one too).
+    """
+    problems: list[str] = []
+    if bundle is None or not bundle.is_bundle:
+        problems.append(f"{bundle_key!r} is not a bundle product, so it cannot declare members")
+    if not isinstance(members, list) or not members:
+        return [*problems, "bundled_products must be a non-empty list of product keys"]
+    seen: set[str] = set()
+    for member in members:
+        if not isinstance(member, str) or not member:
+            problems.append(f"{member!r} is not a product key")
+            continue
+        if member in seen:
+            problems.append(f"{member!r} is named twice")
+            continue
+        seen.add(member)
+        entry = registry.get(member)
+        if entry is None:
+            problems.append(f"{member!r} is not a registered product")
+        elif entry.is_platform:
+            problems.append(f"{member!r} is a platform product every customer already has")
+        elif entry.is_bundle:
+            problems.append(f"{member!r} is itself a bundle")
+        elif entry.status == "soon":
+            problems.append(f"{member!r} has not launched (status 'soon')")
+    return problems
 
 
 # --------------------------------------------------------------------- what a seat may do
