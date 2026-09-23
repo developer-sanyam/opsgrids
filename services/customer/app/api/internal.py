@@ -1,6 +1,6 @@
 """The internal API — service-to-service, never reachable from outside the cluster.
 
-One endpoint, and it exists because of one constraint: a masked phone number cannot be
+The original endpoint here exists because of one constraint: a masked phone number cannot be
 messaged, and the service that does the messaging must not hold the key that opens it.
 
 Notification-service needs a contact's real number to send a WhatsApp template. It could have
@@ -19,6 +19,13 @@ calling service in `acting_as`. "Which service read this customer's number, when
 which channel" is answerable. It would not be if a machine's read went unrecorded merely because
 no human was present.
 
+Two more routes since (ADR-0017): `leads:convert`, the customer-side half of lead-service's
+`POST /leads/{id}:convert`, and `owners:validate`, the gate lead-service's own writes call
+before trusting an `owner_id`. Both are restricted to `service_caller == "lead"`
+(`_require_caller`) and to a token whose `org` claim names the path's organization
+(`_require_org_claim`) — a valid signature proves *which service* is calling, never *which
+route it was meant for* or *which tenant*, and both of those are separate checks here.
+
 Mounted at the root and excluded from the OpenAPI document: not public API, and it must not
 appear as though it were.
 """
@@ -33,11 +40,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
 from app.config import settings
-from app.schemas import ContactResolveIn, ContactResolveOut, MessagingTargetOut
+from app.schemas import (
+    ContactResolveIn,
+    ContactResolveOut,
+    LeadConversionIn,
+    LeadConversionOut,
+    MessagingTargetOut,
+    OwnersValidateIn,
+    OwnersValidateOut,
+)
 from platform_core.auth import require_service_token
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
-from platform_core.errors import NotFoundProblem, ValidationProblem
+from platform_core.errors import ForbiddenProblem, NotFoundProblem, ValidationProblem
 from platform_core.logging import get_logger
 from platform_core.pii import blind_index
 
@@ -67,6 +82,49 @@ async def _bind(session: AsyncSession, organization_id: uuid.UUID, request: Requ
     await set_tenant(session, organization_id)
     if not settings.is_production:
         await assert_tenant(session, organization_id)
+
+
+def _require_caller(request: Request, *expected: str) -> None:
+    """Restrict an internal route to a named allow-list of calling services, on top of the
+    valid-signature check `require_service_token` already did.
+
+    A validly signed token from a service this route was never meant to serve is not a forged
+    token — it is a service using a capability nobody meant to give it. `owners:validate` in
+    particular hands back which of an org's reps are active, in bulk, by id; that answer is
+    lead-service's own business (its round-robin, its explicit `owner_id` writes) and nobody
+    else's, so the allow-list is the actual authorization, not the signature check alone.
+    """
+    caller = getattr(request.state, "service_caller", "unknown-service")
+    if caller not in expected:
+        raise ForbiddenProblem(f"{caller!r} may not call this endpoint")
+
+
+def _require_org_claim(request: Request, organization_id: uuid.UUID) -> None:
+    """The token's own `org` claim must name the organization in the path.
+
+    The signature and audience alone only prove *which service* minted the token, never *which
+    organization* it was minted for — a service holding one valid token could otherwise replay
+    it against any path it can construct. `_bind`'s `assert_tenant` catches a mismatch here
+    too, but only outside production (ADR-0002 §4's own trade-off for that probe); this check
+    is the one that holds everywhere.
+    """
+    claims = getattr(request.state, "service_claims", None) or {}
+    if claims.get("org") != str(organization_id):
+        raise ForbiddenProblem("This token is not addressed to this organization")
+
+
+def _claimed_actor(request: Request) -> uuid.UUID | None:
+    """The human `sub` the caller's token carried, if any — `lead_conversion_ctx`'s actor for
+    the audit trail. `None` when the token carried no `sub` (an older or system-initiated
+    caller), which `lead_conversion_ctx` degrades to "the platform" rather than raising on."""
+    claims = getattr(request.state, "service_claims", None) or {}
+    sub = claims.get("sub")
+    if not sub:
+        return None
+    try:
+        return uuid.UUID(str(sub))
+    except ValueError:
+        return None
 
 
 @router.get(
@@ -173,3 +231,96 @@ async def resolve_contact(
     # phone number, so a log full of them is a log that correlates customers across lines.
     log.info("customer.resolve.done", matched=contact is not None)
     return ContactResolveOut(contact_id=str(contact.id) if contact else None)
+
+
+@router.post(
+    "/organizations/{organization_id}/leads:convert",
+    response_model=LeadConversionOut,
+    status_code=status.HTTP_200_OK,
+    summary="Ensure a company (+ contact) exists for a converting lead",
+)
+async def convert_lead(
+    organization_id: uuid.UUID,
+    payload: LeadConversionIn,
+    session: SessionDep,
+    request: Request,
+) -> LeadConversionOut:
+    """The customer-side half of `POST /leads/{id}:convert`.
+
+    Idempotent by the caller's own ids first (`services.ensure_company_and_contact_for_lead`):
+    lead-service derives `company_id`/`contact_id` deterministically from the lead's own id, so
+    calling this twice with the same lead reuses the same rows rather than creating a second
+    company — the guarantee ADR-0017 asks for ("same lead converted twice -> one company").
+
+    404 when `owner_id` does not resolve to an active rep in this organization's directory —
+    lead-service maps that to a 422 telling its own caller to assign an owner first, the same
+    way `_assert_owner_assignable` already refuses an unknown or deactivated owner on every
+    other write here.
+
+    Restricted to lead-service (`_require_caller`) — deal-service reaches its own,
+    identically-shaped route, never this one — and to a token whose `org` claim names this
+    path's organization (`_require_org_claim`).
+    """
+    _require_caller(request, "lead")
+    _require_org_claim(request, organization_id)
+
+    async with session.begin():
+        await _bind(session, organization_id, request)
+
+        ctx = services.lead_conversion_ctx(organization_id, _claimed_actor(request))
+        # `NotFoundProblem` here (an unknown or deactivated owner) reaches FastAPI's
+        # problem-detail handler unchanged, exactly as it would for a request from a human —
+        # lead-service is the one that knows how to translate "no such owner" into its own
+        # caller's 422.
+        company, contact = await services.ensure_company_and_contact_for_lead(
+            session,
+            ctx,
+            company_id=payload.company_id,
+            contact_id=payload.contact_id,
+            company_name=payload.company_name,
+            owner_id=payload.owner_id,
+            contact_full_name=payload.contact_full_name,
+            contact_email=payload.contact_email,
+            contact_raw_phone=payload.contact_raw_phone,
+        )
+
+    log.info(
+        "customer.lead_conversion.ensured",
+        company_id=str(company.id),
+        contact_id=str(contact.id) if contact else None,
+    )
+    return LeadConversionOut(
+        company_id=str(company.id), contact_id=str(contact.id) if contact else None
+    )
+
+
+@router.post(
+    "/organizations/{organization_id}/owners:validate",
+    response_model=OwnersValidateOut,
+    status_code=status.HTTP_200_OK,
+    summary="Which of these owner ids are active reps (lead-service only)",
+)
+async def validate_owners(
+    organization_id: uuid.UUID,
+    payload: OwnersValidateIn,
+    session: SessionDep,
+    request: Request,
+) -> OwnersValidateOut:
+    """lead-service's own gate for an `owner_id` it is about to write — an explicit one on a
+    lead create/patch, or every id in a round-robin rule before it accepts the rule
+    (`PUT /leads/assignment-rule`) — so an inactive or unknown rep never enters lead-service's
+    own writes in the first place.
+
+    Restricted to lead-service alone: no other caller has a legitimate reason to enumerate,
+    in bulk, which of an organization's reps are active. Read-only and unaudited on this side
+    — the read itself discloses nothing beyond what the allow-listed caller already needed to
+    ask to do its own job, and no PII is opened.
+    """
+    _require_caller(request, "lead")
+    _require_org_claim(request, organization_id)
+
+    async with session.begin():
+        await _bind(session, organization_id, request)
+        invalid = await services.invalid_owner_ids(session, organization_id, payload.owner_ids)
+
+    return OwnersValidateOut(invalid_owner_ids=[str(owner_id) for owner_id in invalid])

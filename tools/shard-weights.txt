@@ -19,7 +19,6 @@
 # a new service is small until measured, and shard-verify still guarantees it runs.
 
 account 72
-activity 1
 admin-gateway 0
 app-gateway 1
 attendance 12
@@ -41,7 +40,6 @@ metering 4
 notification 11
 operations 11
 payment 8
-pipeline 1
 product 7
 project 11
 projects 9

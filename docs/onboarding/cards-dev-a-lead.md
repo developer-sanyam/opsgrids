@@ -1,3 +1,8 @@
+> **Superseded in part by [ADR-0017](../adr/0017-crm-lead-service-and-pipeline-scaffold-removal.md).**
+> `lead` is real now. Cards A1–A3 and A5 held up; card A4 did not — there is no `salescrm`
+> product. `lead` joins the existing `crm` product alongside `customer` and `deal`. Read the ADR
+> before touching permissions here.
+
 # Dev A — the lead service
 
 **You own `services/lead/` and nothing else.**

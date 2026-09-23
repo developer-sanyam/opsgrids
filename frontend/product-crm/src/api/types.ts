@@ -29,12 +29,53 @@ export type ActivityType = "call" | "email" | "meeting" | "note" | "task";
 /** Inbound vs outbound, for calls and emails. `null` for notes, tasks and meetings. */
 export type ActivityDirection = "inbound" | "outbound";
 
-/** A sales rep who owns companies, contacts and deals. Resolved client-side from `owner_id`. */
+/** Where a lead was captured. */
+export type LeadSource = "form" | "import" | "manual";
+
+/** A lead's place in the intake lifecycle. `converted` is reachable only through
+ *  `POST /leads/{id}:convert`, never through a plain status edit. */
+export type LeadStatus = "new" | "working" | "qualified" | "disqualified" | "converted";
+
+/** A sales rep who owns companies, contacts, deals and leads. Resolved client-side from
+ *  `owner_id`. `is_active` false once a rep leaves — kept, never deleted, so every row that
+ *  already carries their id still resolves to a name. */
 export interface Owner {
   id: string;
   full_name: string;
   email: string;
   role: string;
+  is_active: boolean;
+}
+
+/**
+ * Mirrors `LeadOut`. `email` / `phone` are always the masked display form — the service seals
+ * and blind-indexes the raw values on the way in and never returns them raw again.
+ * `converted_*` are set together, once, by `:convert`; a lead's `status` is `"converted"` iff
+ * they are set.
+ */
+export interface Lead {
+  id: string;
+  full_name: string;
+  company: string | null;
+  email: string | null;
+  phone: string | null;
+  source: LeadSource;
+  status: LeadStatus;
+  owner_id: string | null;
+  notes: string;
+  converted_company_id: string | null;
+  converted_contact_id: string | null;
+  converted_deal_id: string | null;
+  converted_at: string | null;
+  created_at: string;
+}
+
+/** The result of converting a lead — the company, contact (if any) and deal it became. */
+export interface LeadConvertResult {
+  lead_id: string;
+  company_id: string;
+  contact_id: string | null;
+  deal_id: string;
 }
 
 /** Mirrors `CompanyOut`. `annual_revenue_minor` is minor units of `currency`. */

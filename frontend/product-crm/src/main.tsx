@@ -9,6 +9,8 @@ import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
 import { RequireAuth } from "./auth/RequireAuth";
 import { OverviewPage } from "./routes/Overview";
+import { LeadsPage } from "./routes/Leads";
+import { LeadDetailPage } from "./routes/LeadDetail";
 import { DealsPage } from "./routes/Deals";
 import { DealDetailPage } from "./routes/DealDetail";
 import { CompaniesPage } from "./routes/Companies";
@@ -38,6 +40,8 @@ const router = createBrowserRouter([
         ),
         children: [
           { index: true, element: <OverviewPage /> },
+          { path: "leads", element: <LeadsPage /> },
+          { path: "leads/:id", element: <LeadDetailPage /> },
           { path: "deals", element: <DealsPage /> },
           { path: "deals/:id", element: <DealDetailPage /> },
           { path: "companies", element: <CompaniesPage /> },

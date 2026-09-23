@@ -18,8 +18,8 @@ import * as client from "@/api/client";
 import type { Company, Owner } from "@/api/types";
 import { CompanyFormDialog } from "./CompanyFormDialog";
 
-const OWNER: Owner = { id: "own-1", full_name: "Sofia Marchetti", email: "sofia@example.com", role: "AE" };
-const NEW_OWNER: Owner = { id: "own-2", full_name: "Grace Adeyemi", email: "grace@example.com", role: "AE" };
+const OWNER: Owner = { id: "own-1", full_name: "Sofia Marchetti", email: "sofia@example.com", role: "AE", is_active: true };
+const NEW_OWNER: Owner = { id: "own-2", full_name: "Grace Adeyemi", email: "grace@example.com", role: "AE", is_active: true };
 
 const COMPANY: Company = {
   id: "comp-1",

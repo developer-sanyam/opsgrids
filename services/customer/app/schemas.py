@@ -15,9 +15,23 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+
+
+def _reject_explicit_null(instance: BaseModel, fields: tuple[str, ...]) -> None:
+    """A PATCH field typed `X | None` is optional two different ways: omitted (leave alone) or
+    explicitly `null` (the caller's own JSON says so). For a field the database column never
+    allows NULL, only the first meaning is valid — the second is a malformed request (422),
+    not a value that should reach an `IntegrityError` or a silent no-op write. Every field on
+    `OwnerPatch`/`CompanyPatch`/`ContactPatch` maps to a NOT NULL column, so each passes every
+    one of its own fields here. Same helper `operations.app.schemas._reject_explicit_null`
+    uses."""
+    for field in fields:
+        if field in instance.model_fields_set and getattr(instance, field) is None:
+            raise ValueError(f"{field} cannot be set to null")
+
 
 # ------------------------------------------------------------------ vocabularies (match the SPA)
 
@@ -44,6 +58,24 @@ class OwnerIn(BaseModel):
     role: str = Field(default="", max_length=120)
 
 
+class OwnerPatch(BaseModel):
+    """Edit a rep, or deactivate one. Absent means "leave alone". Setting `is_active` to
+    `False` is the deactivation path (`services.deactivate_owner`) and refuses while the rep
+    still owns a live company or contact — reassign those first."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str | None = Field(default=None, min_length=1, max_length=160)
+    email: EmailStr | None = Field(default=None, max_length=254)
+    role: str | None = Field(default=None, max_length=120)
+    is_active: bool | None = None
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> Self:
+        _reject_explicit_null(self, ("full_name", "email", "role", "is_active"))
+        return self
+
+
 class OwnerOut(BaseModel):
     """Mirrors the SPA's `Owner`. The `id` is what every `owner_id` in the product carries,
     including deal-service's — the SPA resolves display names from this list client-side."""
@@ -52,6 +84,7 @@ class OwnerOut(BaseModel):
     full_name: str
     email: str
     role: str
+    is_active: bool
 
 
 # ------------------------------------------------------------------ companies
@@ -92,6 +125,25 @@ class CompanyPatch(BaseModel):
     status: CompanyStatus | None = None
     annual_revenue_minor: int | None = Field(default=None, ge=0)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> Self:
+        _reject_explicit_null(
+            self,
+            (
+                "name",
+                "owner_id",
+                "domain",
+                "industry",
+                "size_band",
+                "city",
+                "country",
+                "status",
+                "annual_revenue_minor",
+                "currency",
+            ),
+        )
+        return self
 
 
 class CompanyOut(BaseModel):
@@ -147,6 +199,13 @@ class ContactPatch(BaseModel):
     company_id: uuid.UUID | None = None
     owner_id: uuid.UUID | None = None
     status: ContactStatus | None = None
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> Self:
+        _reject_explicit_null(
+            self, ("full_name", "title", "email", "company_id", "owner_id", "status")
+        )
+        return self
 
 
 class ContactOut(BaseModel):
@@ -226,3 +285,51 @@ class ContactResolveOut(BaseModel):
     permission-guarded routes, and the caller already has the number it asked with."""
 
     contact_id: str | None
+
+
+# ------------------------------------------------------------------ lead conversion (internal)
+
+
+class LeadConversionIn(BaseModel):
+    """What lead-service sends `:convert` — its own deterministic ids, so ensuring is
+    idempotent by id before either natural key is even considered (`services
+    .ensure_company_and_contact_for_lead`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    company_id: uuid.UUID
+    contact_id: uuid.UUID
+    company_name: str = Field(min_length=1, max_length=200)
+    owner_id: uuid.UUID
+    contact_full_name: str = Field(min_length=1, max_length=160)
+    #: Raw, not masked — lead-service opens its own sealed copy before this call and the
+    #: value travels once, service-to-service, to be re-sealed here under this schema's own
+    #: key. Absent when the lead carried none; a contact is then not created at all (a
+    #: contact's `email` column is not nullable — see `app/models.py`).
+    contact_email: str | None = Field(default=None, max_length=320)
+    contact_raw_phone: str | None = Field(default=None, min_length=4, max_length=40)
+
+
+class LeadConversionOut(BaseModel):
+    company_id: str
+    contact_id: str | None
+
+
+# ------------------------------------------------------------------ owner validation (internal)
+
+
+class OwnersValidateIn(BaseModel):
+    """Which of these ids resolve to an active rep — lead-service's own gate for `owner_id`
+    on a lead create/patch and for the round-robin's owner list, so an inactive or unknown rep
+    never enters lead-service's own writes in the first place."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    owner_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+
+
+class OwnersValidateOut(BaseModel):
+    """The ids from the request that do **not** resolve to an active rep. Empty means every
+    id named is a known, active owner."""
+
+    invalid_owner_ids: list[str]

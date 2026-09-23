@@ -33,6 +33,8 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
+# shellcheck source=lib/backup-marker.sh
+source lib/backup-marker.sh
 set -a
 # shellcheck disable=SC1091 # .env is the box's own secrets, never in the repo to follow
 . ./.env
@@ -174,4 +176,16 @@ if [ "$minio_backup_failed" -ne 0 ]; then
 	echo "backup: database and certificates are safely off-box. MinIO's object storage backup FAILED — see above." >&2
 	exit 1
 fi
+
+# --- the marker ops-monitor's backup-freshness check reads (C10, R37) ---------
+# Written ONLY here, after everything above has already succeeded — the database dump, the
+# certificates and (when this box runs it) the object storage archive are all off-box by this
+# line. A marker written earlier, or on a path that can still fail after it, would tell the
+# monitor a backup happened when only part of one did. `ops_monitor.checks.check_backup_freshness`
+# reads this same path (`OPS_MONITOR_BACKUP_MARKER_PATH`, default matching `lib/backup-marker.sh`'s
+# own default state dir) and treats its absence as "no marker yet" — its own state, not a false
+# alarm — so a box that has never run this script, or one whose cron entry predates this line,
+# alarms nowhere until the first successful run writes it.
+write_backup_marker "${EDGE_STATE_DIR:-/srv/opsgrids/state}"
+
 echo "backup: ok ($(du -sh "$dir" | cut -f1) kept locally, $keep newest of each)"

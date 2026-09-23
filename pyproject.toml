@@ -73,6 +73,7 @@ dev = [
     # only — no runtime code path seals or opens an event through this, so it costs services
     # nothing in production.
     "jsonschema>=4.23",
+    "types-pyyaml>=6.0",
 ]
 
 [tool.uv.workspace]
