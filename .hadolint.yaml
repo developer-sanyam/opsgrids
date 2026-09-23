@@ -1,0 +1,14 @@
+# hadolint, run by `make hadolint` (pinned version in the Makefile).
+#
+# Threshold `style`: every finding fails, the same stance as shellcheck. There are 35 Dockerfiles
+# stamped from one template (tools/new_service.py), so a finding is either fixed once in the
+# template or ignored once here with its reason — never left to scroll past 35 times.
+failure-threshold: style
+
+ignored:
+  # "Non-numeric user-id may not be resolvable by host system." The images run as the named
+  # system user `opsgrids`, created in the image. The rule matters where an orchestrator must
+  # prove non-root from the uid alone (Kubernetes runAsNonRoot); production is one VM running
+  # Docker Compose (ADR-0012), which has no such admission check, and no service bind-mounts a
+  # host path whose ownership would need a fixed uid. Revisit if either stops being true.
+  - DL3066

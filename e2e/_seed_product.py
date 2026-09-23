@@ -50,8 +50,9 @@ from app.config import settings  # noqa: E402
 from app.models import SCHEMA  # noqa: E402
 
 #: The products this suite's journeys activate. `crm` for the CRM journey (two services, two
-#: admin roles); `hrms` for the Wave 0 exit journey (employee + attendance).
-PRODUCTS = ("crm", "hrms")
+#: admin roles); `hrms` for the Wave 0 exit journey (employee + attendance); `finance` for the
+#: bundle journey — the trio's third member, and product-service will not project a `soon` one.
+PRODUCTS = ("crm", "hrms", "finance")
 
 
 async def main() -> None:
@@ -64,7 +65,14 @@ async def main() -> None:
         connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}},
     )
     async with engine.begin() as conn:
-        await conn.execute(text(f'TRUNCATE "{SCHEMA}"."activations", "{SCHEMA}"."outbox" CASCADE'))
+        # The sources go with the activations: a leftover source from a previous run would be
+        # ORed back into an activation this run expects to be off.
+        await conn.execute(
+            text(
+                f'TRUNCATE "{SCHEMA}"."activations", "{SCHEMA}"."activation_sources", '
+                f'"{SCHEMA}"."outbox" CASCADE'
+            )
+        )
         # The only interpolation is `SCHEMA`, a constant this service defines; the product
         # keys are bound.
         await conn.execute(

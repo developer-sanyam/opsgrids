@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/engage.setup.sender.verified/v1",
+  "title": "engage.setup.sender.verified",
+  "description": "A sender's test send arrived, which is what makes it selectable by a campaign.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "sender_id", "address", "provider", "provider_message_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "sender_id": { "type": "string", "format": "uuid" },
+    "address": { "type": "string", "format": "email" },
+    "provider": { "type": "string", "minLength": 1 },
+    "provider_message_id": { "type": ["string", "null"] }
+  }
+}

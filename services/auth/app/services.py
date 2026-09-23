@@ -1646,8 +1646,19 @@ async def save_sso_config(
         document = await idp.discover(discovery_url)
         found = str(document.get("issuer", "")).rstrip("/")
         if found and issuer and found != issuer.rstrip("/"):
+            # The mismatch itself — not the issuer a URL we do not control claimed to be — is
+            # what the caller learns. Echoing `found` back would put fetched content straight
+            # into an error message, which is a reflection an attacker-controlled discovery
+            # document could use to probe what this service saw. The comparison stays useful
+            # to whoever reads the log line, where it belongs.
+            log.warning(
+                "sso.discovery_issuer_mismatch",
+                organization_id=str(organization_id),
+                expected_issuer=issuer[:200],
+                found_issuer=found[:200],
+            )
             raise BusinessRuleProblem(
-                f"That discovery document belongs to a different issuer ({found}). "
+                "That discovery document does not match the configured issuer. "
                 "Check the URL, or correct the issuer."
             )
         authorization_endpoint = authorization_endpoint or document.get("authorization_endpoint")

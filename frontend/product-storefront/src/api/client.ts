@@ -23,10 +23,11 @@ import {
 } from "@opsgrids/client";
 
 import { adoptTheme as forkTheme, resolveMode } from "@/theme/store";
-import type { StoreDoc, Theme } from "@/theme/schema";
+import type { Brand, StoreDoc, Theme } from "@/theme/schema";
 import { quickcart, suggestedBrand, themeByKey, THEMES } from "@/theme/themes";
-import { getStoreIdentity } from "@/settings/api";
+import { brandFromIdentity, getStoreIdentity } from "@/settings/api";
 import { CATEGORY_LIST, PRODUCTS, RETAIL_CATEGORY_LIST, RETAIL_PRODUCTS } from "./fixtures";
+import { LIVE, USE_FIXTURES } from "./mode";
 import type { Asset, Category, Page, Product, StoreResponse } from "./types";
 
 /**
@@ -50,14 +51,9 @@ export type {
   StoreContextOut,
 } from "./storeContext";
 
-/** Default source. Fixtures unless `VITE_USE_FIXTURES=false` pins the app to the live gateway.
- *  Dev builds only: `import.meta.env.DEV` compiles to `false` in production, so a stray
- *  CI/production env var can never ship fixture mode — an app rendering fabricated data
- *  with the "Sample data" markers suppressed. */
-export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES !== "false";
-
-/** True when the app is talking to the real gateway. */
-export const LIVE = !USE_FIXTURES;
+/** Fixture mode. Defined in `./mode`, which imports nothing, so `@/settings/api` can read it
+ *  without importing this module back (see that file). Re-exported for every existing caller. */
+export { LIVE, USE_FIXTURES } from "./mode";
 
 /** A generous page size — one request returns the whole (small) catalogue for the theme
  *  renderer's own preview. The dedicated Products/Categories screens page for real. */
@@ -85,15 +81,14 @@ export async function listThemes(): Promise<Theme[]> {
  * The theme document — `GET/PUT/DELETE /storefront/theme` (ADR-0011 §3). **PUT is adopt**: there
  * is no separate `/adopt` route, so `adoptTheme` forks the theme client-side (as it always did)
  * and PUTs the result. `brand` is not part of this document (ADR-0011 §2) — it lives on the store
- * identity (`StoreOut.name/tagline/logo_text`), so composing a `StoreDoc` for the renderer means
- * reading both resources and merging them, done once here so every screen keeps calling
- * `getStore()` and getting a `StoreDoc` back exactly as before.
+ * identity (`StoreOut.name/tagline/logo_text`) and is read through `getStoreBrand`, never merged
+ * into the `StoreDoc` this module returns.
  *
  * **Optimistic concurrency.** `version` travels with every save and a stale one is a 409
  * `theme_version_conflict` — the server's own detail already tells the merchant to reload, and
  * `EditorShell` renders it with a "Reload" action rather than "Try again".
  */
-let currentStore: StoreDoc | null = forkTheme(quickcart, suggestedBrand(quickcart.key));
+let currentStore: StoreDoc | null = forkTheme(quickcart);
 /** The version the document was last read or saved at. `null` until a live read or save happens;
  *  irrelevant in fixture mode, which holds no server-side row to conflict with. */
 let currentVersion: number | null = null;
@@ -106,16 +101,10 @@ interface ThemeDocOut {
   version: number;
 }
 
-/** Compose the renderer's `StoreDoc` from the theme document and the store's own brand fields. */
-async function composeStoreDoc(doc: ThemeDocOut): Promise<StoreDoc> {
-  const identity = await getStoreIdentity().catch(() => null);
-  const brand = identity
-    ? { name: identity.name, tagline: identity.tagline ?? "", logoText: identity.logo_text ?? "" }
-    : suggestedBrand(doc.theme_key);
+function composeStoreDoc(doc: ThemeDocOut): StoreDoc {
   return {
     themeKey: doc.theme_key,
     mode: doc.mode === "retail" ? "retail" : "trade",
-    brand,
     tokens: doc.tokens as unknown as StoreDoc["tokens"],
     pages: doc.pages as unknown as StoreDoc["pages"],
   };
@@ -126,7 +115,7 @@ export async function getStore(): Promise<StoreResponse> {
   try {
     const doc = await apiRequest<ThemeDocOut>("/storefront/theme");
     currentVersion = doc.version;
-    return await composeStoreDoc(doc);
+    return composeStoreDoc(doc);
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) {
       currentVersion = null;
@@ -137,26 +126,29 @@ export async function getStore(): Promise<StoreResponse> {
 }
 
 /**
- * Adopt a theme: fork it into a store document and PUT it — this *is* adopt (ADR-0011 §3). Keeps
- * the merchant's existing brand where one is on record; a first adopt has none yet, so it starts
- * from the theme's own suggested brand, which the merchant edits on `/settings`.
+ * The brand a store's chrome draws: the identity row's name/tagline/logo, or — before a merchant
+ * has set their own on `/settings` — the adopted theme's own suggestion. Never part of the theme
+ * document (ADR-0011 §2), so every screen that renders a `StoreDoc` reads this alongside it rather
+ * than off it.
  */
+export async function getStoreBrand(themeKey: string): Promise<Brand> {
+  const identity = await getStoreIdentity().catch(() => null);
+  return identity ? brandFromIdentity(identity) : suggestedBrand(themeKey);
+}
+
+/** Adopt a theme: fork it into a store document and PUT it — this *is* adopt (ADR-0011 §3). Never
+ *  touches the brand, which lives on the store's identity and is untouched by a theme change. */
 export async function adoptTheme(themeKey: string): Promise<StoreDoc> {
   const theme = themeByKey(themeKey);
   if (!theme) throw new Error("That theme is no longer available.");
 
   if (USE_FIXTURES) {
-    const brand = currentStore?.brand ?? suggestedBrand(themeKey);
-    const next = forkTheme(theme, brand);
+    const next = forkTheme(theme);
     currentStore = next;
     return settle(next, 320);
   }
 
-  const identity = await getStoreIdentity().catch(() => null);
-  const brand = identity
-    ? { name: identity.name, tagline: identity.tagline ?? "", logoText: identity.logo_text ?? "" }
-    : suggestedBrand(themeKey);
-  const next = forkTheme(theme, brand);
+  const next = forkTheme(theme);
   const saved = await apiRequest<ThemeDocOut>("/storefront/theme", {
     method: "PUT",
     body: {

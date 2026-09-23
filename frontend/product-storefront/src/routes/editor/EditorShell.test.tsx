@@ -1,10 +1,11 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
 import { Announcer } from "@opsgrids/ui";
 
-import type { SectionDef, StoreDoc } from "@/theme/schema";
+import type { Brand, SectionDef, StoreDoc } from "@/theme/schema";
 
 import { EditorShell } from "./EditorShell";
 
@@ -34,11 +35,12 @@ const BANNER: SectionDef = {
 
 const LIBRARY = [BLOCK, BANNER];
 
+const BRAND: Brand = { name: "Verma Traders", tagline: "Since 1994", logoText: "VT" };
+
 function store(): StoreDoc {
   return {
     themeKey: "depot",
     mode: "trade",
-    brand: { name: "Verma Traders", tagline: "Since 1994", logoText: "VT" },
     tokens: {
       colorBg: "#ffffff",
       colorSurface: "#f7f7f7",
@@ -63,16 +65,19 @@ function store(): StoreDoc {
 function renderShell(options: { canEdit?: boolean; onSave?: (doc: StoreDoc) => Promise<StoreDoc> } = {}) {
   const onSave = options.onSave ?? vi.fn(async (doc: StoreDoc) => doc);
   render(
-    <Announcer>
-      <EditorShell
-        store={store()}
-        library={LIBRARY}
-        products={[]}
-        categories={[]}
-        canEdit={options.canEdit ?? true}
-        onSave={onSave}
-      />
-    </Announcer>,
+    <MemoryRouter>
+      <Announcer>
+        <EditorShell
+          store={store()}
+          brand={BRAND}
+          library={LIBRARY}
+          products={[]}
+          categories={[]}
+          canEdit={options.canEdit ?? true}
+          onSave={onSave}
+        />
+      </Announcer>
+    </MemoryRouter>,
   );
   return { onSave };
 }

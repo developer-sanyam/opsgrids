@@ -11,8 +11,10 @@ scope. `FakeCatalog` stands in for the catalog pin lookup so no test makes a rea
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
-from app.schemas import CatalogPlanVersion, CatalogPrice
+from app.registry import RegisteredProduct
+from app.schemas import CatalogFeature, CatalogPlanVersion, CatalogPrice
 from platform_core.auth import Principal
 
 APP_AUDIENCE = "app"
@@ -48,6 +50,7 @@ def make_version(
     billing_interval: str = "month",
     restricted_to_org_id: uuid.UUID | None = None,
     price_id: uuid.UUID | None = None,
+    features: dict[str, Any] | None = None,
 ) -> CatalogPlanVersion:
     """A catalog plan version as the internal pin lookup would return it."""
     vid = version_id or uuid.uuid4()
@@ -68,6 +71,19 @@ def make_version(
                 currency=currency,
             )
         ],
+        features=[CatalogFeature(feature_key=k, value=v) for k, v in (features or {}).items()],
+    )
+
+
+def make_bundle(
+    members: list[str], *, tier: str, amount_minor: int, **kwargs: Any
+) -> CatalogPlanVersion:
+    """A `suite` rung as catalog seeds it: a plan version whose features name its members."""
+    return make_version(
+        product_key="suite",
+        amount_minor=amount_minor,
+        features={"bundled_products": members, "bundle_tier": tier},
+        **kwargs,
     )
 
 
@@ -83,3 +99,24 @@ class FakeCatalog:
 
     async def get_plan_version(self, plan_version_id: uuid.UUID) -> CatalogPlanVersion | None:
         return self._versions.get(plan_version_id)
+
+
+class FakeRegistry:
+    """product-service's registry as the bundle sale path reads it: `suite` a bundle, `core` a
+    platform product, the trio's members launched, `projects` still `soon`."""
+
+    def __init__(self, overrides: dict[str, RegisteredProduct] | None = None) -> None:
+        self._entries = {
+            "core": RegisteredProduct("core", is_platform=True),
+            "suite": RegisteredProduct("suite", is_bundle=True),
+            "hrms": RegisteredProduct("hrms"),
+            "crm": RegisteredProduct("crm"),
+            "finance": RegisteredProduct("finance"),
+            "projects": RegisteredProduct("projects", status="soon"),
+            **(overrides or {}),
+        }
+        self.calls = 0
+
+    async def products(self) -> dict[str, RegisteredProduct]:
+        self.calls += 1
+        return dict(self._entries)

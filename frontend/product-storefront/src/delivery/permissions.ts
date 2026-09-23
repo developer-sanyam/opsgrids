@@ -42,12 +42,13 @@ export interface DeliveryAccess {
  * Read the caller's standing on the delivery module.
  *
  * On `unknown` the screens render the control and let the server answer. That is the opposite of
- * the usual advice — hide what you are confident the caller cannot use — and it is right here for
- * a specific reason: nothing in this app mounts a `PermissionProvider`, so every permission reads
- * as `unknown` today, and hiding on `unknown` would hide the entire delivery admin from a merchant
- * who holds every grant. A 403 from the server is rendered as its own state, with copy that names
- * the permission to ask for. When a real grants source lands, `denied` starts arriving and the
- * controls disappear before the round trip rather than after it.
+ * the usual advice — hide what you are confident the caller cannot use — and it earns its keep
+ * for the window between mount and the grants request resolving: `AuthProvider.tsx` mounts a real
+ * `PermissionProvider`, which fetches `GET /members/me/grants` once the session is authenticated,
+ * but that call has not answered yet on first render, and hiding on `unknown` there would hide the
+ * entire delivery admin from a merchant who holds every grant. A 403 from the server is rendered
+ * as its own state, with copy that names the permission to ask for. Once the grants answer,
+ * `denied` arrives and the controls disappear before the round trip rather than after it.
  */
 export function useDeliveryAccess(): DeliveryAccess {
   const read = usePermissionStatus(ZONE_READ, "ORG");

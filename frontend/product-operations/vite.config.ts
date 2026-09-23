@@ -5,7 +5,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 
 // One Vite app per product (ADR-0001). Dev on 4380 so it never collides with the marketing
-// site on 4300, HRMS on 4310, Support on 4340 or Finance on 4360.
+// site on 4300, HRMS on 4310, Support on 4430 or Finance on 4360.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {

@@ -49,9 +49,14 @@ optional_empty="$optional_empty WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN WHATSA
 # storefront's own settings default it to empty and print "the platform address" instead of a
 # literal until it is filled in. Checked separately, below, for a documentation-range value.
 optional_empty="$optional_empty EDGE_RESERVED_IP"
+# The orphan sweep's own credential (ADR-0009 §9 addendum) is off by default
+# (DOCUMENT_ORPHAN_SWEEP_ENABLED=false) — a box selling Storefront works fully without it, and
+# generating a MinIO user for a pass that is not yet turned on is a step an operator should
+# take deliberately, not one preflight forces on every box the day this shipped.
+optional_empty="$optional_empty DOCUMENT_S3_ORPHAN_ACCESS_KEY DOCUMENT_S3_ORPHAN_SECRET_KEY"
 
-# shellcheck disable=SC1091  # .env is data, generated on the box from .env.example
 set -a
+# shellcheck disable=SC1091 # .env is data, generated on the box from .env.example
 . ./.env
 set +a
 
@@ -82,10 +87,10 @@ for key in $required; do
 	esac
 done
 
-[ -z "$missing" ] && ok "every key in .env.example is set" ||
-	bad "missing or empty in .env:$missing"
-[ -z "$placeholder" ] && ok "no placeholder values" ||
-	bad "still carrying a placeholder value:$placeholder"
+if [ -z "$missing" ]; then ok "every key in .env.example is set"; else
+	bad "missing or empty in .env:$missing"; fi
+if [ -z "$placeholder" ]; then ok "no placeholder values"; else
+	bad "still carrying a placeholder value:$placeholder"; fi
 
 # EDGE_RESERVED_IP is allowed empty (a box with no floating IP yet), but if it is set it must be
 # a real address: an address in one of RFC 5737's three documentation ranges (192.0.2.0/24,
@@ -161,9 +166,50 @@ else
 fi
 
 inodes=$(df -Pi . | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
-[ "${inodes:-0}" -lt 90 ] && ok "inodes ${inodes}% used" || bad "inodes ${inodes}% used"
+if [ "${inodes:-0}" -lt 90 ]; then ok "inodes ${inodes}% used"; else bad "inodes ${inodes}% used"; fi
 
-docker info >/dev/null 2>&1 && ok "docker daemon responding" || bad "docker daemon not responding"
+if docker info >/dev/null 2>&1; then ok "docker daemon responding"; else bad "docker daemon not responding"; fi
+
+# ---------------------------------------------------------------- the memory budget
+# ADR-0013's memory-budget erratum (2026-09-23): the box does not grow to meet the container
+# count; the container count is bounded to what the box actually has. `memory-budget.json` is
+# measured, not guessed (see its own header), and this is the same arithmetic
+# `tests/infra/test_compose_memory_budget.py` pins against `compose.prod.yml` — a service added
+# to one and not the other fails there first, in CI, rather than surprising anyone here.
+budget_file="memory-budget.json"
+if [ ! -f "$budget_file" ]; then
+	echo "  warn  no $budget_file — memory budget check skipped" >&2
+elif ! command -v python3 >/dev/null 2>&1; then
+	echo "  warn  no python3 on this box — memory budget check skipped" >&2
+else
+	expected_mb=$(python3 lib/memory_budget_totals.py "$budget_file" "${COMPOSE_PROFILES:-}") || {
+		bad "could not compute the expected memory budget from $budget_file for COMPOSE_PROFILES=${COMPOSE_PROFILES:-}"
+		expected_mb=""
+	}
+	if [ -n "$expected_mb" ]; then
+		mem_total_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo "")
+		if [ -n "$mem_total_kb" ]; then
+			# shellcheck disable=SC1091  # sourced, not executed — see the file's own header
+			. ./lib/memory-budget.sh
+			verdict_line=$(memory_budget_verdict "$mem_total_kb" "$expected_mb" 80 100)
+			verdict=${verdict_line%% *}
+			percent=${verdict_line#* }
+			mem_total_mb=$((mem_total_kb / 1024))
+			case "$verdict" in
+			ok) ok "memory budget: ${expected_mb}M expected of ${mem_total_mb}M MemTotal (${percent}%)" ;;
+			warn)
+				echo "  warn  memory budget: ${expected_mb}M expected of ${mem_total_mb}M MemTotal (${percent}%)" >&2
+				echo "        — over the 80% soft line. Still deploying; see RUNBOOK.md, 'the memory budget'." >&2
+				;;
+			refuse)
+				bad "memory budget: ${expected_mb}M expected of ${mem_total_mb}M MemTotal (${percent}%) — over the hard budget. Trim COMPOSE_PROFILES or consolidate a service before deploying (ADR-0013's memory-budget erratum)."
+				;;
+			esac
+		else
+			echo "  warn  could not read /proc/meminfo — memory budget check skipped" >&2
+		fi
+	fi
+fi
 
 # ---------------------------------------------------------------- what this box sells
 if [ "${EMAIL_TRANSPORT:-log}" = "log" ]; then
@@ -192,33 +238,34 @@ esac
 # Every hostname the Caddyfile serves needs a certificate, and the issuance gate
 # (storefront's tls-authorize) admits a platform name only if TLS_PLATFORM_HOSTS lists it. A
 # site added to the Caddyfile and not to the box's .env serves a TLS error, not a page.
-for site in $(sed -n 's#^https://\([a-z0-9.-]*\) {$#\1#p' caddy/Caddyfile); do
+while read -r site; do
 	case ",${TLS_PLATFORM_HOSTS:-}," in
 	*",$site,"*) ;;
 	*) bad "the Caddyfile serves $site but TLS_PLATFORM_HOSTS does not list it: no certificate will be issued" ;;
 	esac
-done
+# Process substitution, not a pipe: `bad` must set `failed` in this shell, not in a subshell.
+done < <(sed -n 's#^https://\([a-z0-9.-]*\) {$#\1#p' caddy/Caddyfile)
 
 # A prefix in the route table whose upstream is not among this box's services is a hung
 # connection and a 504 for whoever calls it. Product routes are covered by the catalogue check
 # below; this catches the ones with no product key (approvals runs only with the hrms profile).
 running_services=" $(docker compose -f compose.prod.yml --env-file .env config --services 2>/dev/null | tr '\n' ' ') "
-for upstream in $(grep -o '"upstream": *"http://[a-z-]*' routes.prod.json | sed 's#.*http://##' | sort -u); do
+while read -r upstream; do
 	case "$running_services" in
 	*" $upstream "*) ;;
 	*) echo "  warn  routes.prod.json sends traffic to '$upstream', which this box's profiles do not run (callers get 504)" >&2 ;;
 	esac
-done
+done < <(grep -o '"upstream": *"http://[a-z-]*' routes.prod.json | sed 's#.*http://##' | sort -u)
 
 # Same check for the Caddyfile's own reverse proxies (the gateway aside, `minio` is the one
 # that is profile-gated today): a store's uploaded images 502 through Caddy rather than 404
 # from the gateway, which is a worse symptom to debug cold, so it gets named here too.
-for upstream in $(grep -oE 'reverse_proxy [a-z-]+:[0-9]+' caddy/Caddyfile | awk '{print $2}' | cut -d: -f1 | sort -u); do
+while read -r upstream; do
 	case "$running_services" in
 	*" $upstream "*) ;;
 	*) echo "  warn  caddy/Caddyfile reverse-proxies to '$upstream', which this box's profiles do not run (that path 502s)" >&2 ;;
 	esac
-done
+done < <(grep -oE 'reverse_proxy [a-z-]+:[0-9]+' caddy/Caddyfile | awk '{print $2}' | cut -d: -f1 | sort -u)
 
 # The catalogue says which products are sold; COMPOSE_PROFILES says which product services
 # run. They must agree (ADR-0013 §5): an `available` product with no service behind it is a
@@ -249,8 +296,8 @@ if docker compose -f compose.prod.yml --env-file .env ps --status running postgr
 		*) sold_unserved="$sold_unserved $key(profile:$profile)" ;;
 		esac
 	done
-	[ -z "$sold_unserved" ] && ok "every product the catalogue sells has its service profile enabled" ||
-		bad "sold in the catalogue but no service will run for it:$sold_unserved — add the profile to COMPOSE_PROFILES or set the product to 'soon'"
+	if [ -z "$sold_unserved" ]; then ok "every product the catalogue sells has its service profile enabled"; else
+		bad "sold in the catalogue but no service will run for it:$sold_unserved — add the profile to COMPOSE_PROFILES or set the product to 'soon'"; fi
 	for profile in $(echo "${COMPOSE_PROFILES:-}" | tr ',' ' '); do
 		key=""
 		case "$profile" in inventory) key=operations ;; storefront) key=storefront ;; hrms|crm|pulseboard|projects|support|marketing|finance|itsm) key=$profile ;; esac

@@ -147,6 +147,14 @@ class ServiceSettings(BaseSettings):
     pii_encryption_key: SecretStr = SecretStr("dev-only-pii-key-change-me")
     pii_decrypt_keys: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
+    # --- egress ---------------------------------------------------------------------
+    #: Lets `platform_core.egress.EgressGuard` accept plain `http://` for an admin-supplied
+    #: URL (OIDC discovery, JWKS, a token endpoint) instead of refusing anything but `https`.
+    #: Exists only for a local IdP fixture that has no certificate; refused outright below
+    #: for `production`, `staging` and `uat` so a value that leaks into one of those `.env`
+    #: files fails at startup instead of quietly widening every egress-guarded fetch.
+    egress_allow_insecure_http: bool = False
+
     # --- observability ------------------------------------------------------------
     log_level: str = "INFO"
     log_json: bool = True
@@ -247,6 +255,12 @@ class ServiceSettings(BaseSettings):
             )
         if self.debug:
             raise ValueError(f"debug must be off in {self.environment}")
+        if self.egress_allow_insecure_http:
+            raise ValueError(
+                f"{self.environment} refuses egress_allow_insecure_http: every "
+                "admin-supplied URL this platform fetches (OIDC discovery, JWKS, a token "
+                "endpoint) must be https outside development."
+            )
 
 
 @lru_cache(maxsize=8)

@@ -682,6 +682,15 @@ class CampaignRecipient(Base, TenantBase):
     it straight back to `queued` so the next tick retries. A row stuck at `sending` because a
     process died mid-batch is reclaimed once its lease (`Settings.engage_campaign_claim_lease_
     seconds`) is stale, which is what makes a crash resumable rather than a stall.
+
+    `erased_at` is set once, by `services.erase_contact_campaign_copies`, when the contact this
+    row was addressed to is deleted or otherwise erased. The row is never removed — a campaign's
+    delivery history and stats must outlive the contact that received it, the same reason the
+    address is copied here in the first place rather than joined from `contacts` — but from that
+    moment `email_enc` no longer holds the real address: it is re-sealed over a placeholder, so
+    the ciphertext column stays valid without the original plaintext being recoverable from it.
+    `claim_campaign_batch` checks this before ever calling `pii.open_sealed`, so an erased row is
+    resolved `failed` rather than attempted.
     """
 
     __tablename__ = "campaign_recipients"
@@ -703,6 +712,9 @@ class CampaignRecipient(Base, TenantBase):
     provider_message_id: Mapped[str | None] = mapped_column(String(255))
     error: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When the contact's sealed address was crypto-shredded. Null for every row whose contact
+    #: has not been deleted or erased.
+    erased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         UniqueConstraint("campaign_id", "contact_id", name="uq_campaign_recipient"),
@@ -711,6 +723,9 @@ class CampaignRecipient(Base, TenantBase):
         ),
         Index("ix_campaign_recipients_org_campaign", "organization_id", "campaign_id", "status"),
         Index("ix_campaign_recipients_org_sent_at", "organization_id", "sent_at"),
+        #: What `services.erase_contact_campaign_copies` scans: every recipient row across every
+        #: campaign this contact was ever addressed by, in one organization.
+        Index("ix_campaign_recipients_org_contact", "organization_id", "contact_id"),
     )
 
 

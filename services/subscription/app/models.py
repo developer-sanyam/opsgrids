@@ -121,6 +121,17 @@ class Subscription(Base, TenantBase):
     #: one currency per org for now); every amount that references it must agree.
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
 
+    #: The product keys this subscription entitles, **snapshotted from the pinned catalog
+    #: version** at subscribe and change-plan (docs/commerce-packaging.md). A bundle's members for
+    #: a bundle, `[product_key]` for anything else. Safe to snapshot because a published version
+    #: is immutable (ADR-0000 §9): the members cannot change under the pin, only by re-pinning,
+    #: and re-pinning rewrites this in the same transaction.
+    #:
+    #: NULL on a row written before bundles fanned out; read it through `entitled_products`,
+    #: which answers `[product_key]` for those — correct for every non-bundle, and the backfill
+    #: (`app/backfill.py`) fills in the bundles from catalog.
+    entitled_products_snapshot: Mapped[list[str] | None] = mapped_column("entitled_products", JSONB)
+
     items: Mapped[list[SubscriptionItem]] = relationship(
         back_populates="subscription", cascade="all, delete-orphan"
     )
@@ -142,6 +153,14 @@ class Subscription(Base, TenantBase):
         # not lead with `organization_id` stops serving its purpose the moment policies apply.
         Index("ix_subscriptions_org_state", "organization_id", "state"),
     )
+
+    @property
+    def entitled_products(self) -> list[str]:
+        """What this subscription switches on — the snapshot, or the product it was bought under
+        for a row that predates the snapshot."""
+        if self.entitled_products_snapshot:
+            return list(self.entitled_products_snapshot)
+        return [self.product_key]
 
 
 class SubscriptionItem(Base, TenantBase):

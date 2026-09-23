@@ -32,6 +32,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 source lib/rebuild-decision.sh
 # shellcheck source=lib/health-check.sh
 source lib/health-check.sh
+# shellcheck source=lib/role-reconcile.sh
+source lib/role-reconcile.sh
 
 COMPOSE=(docker compose -f compose.prod.yml --env-file .env)
 
@@ -43,7 +45,7 @@ STATE_DIR="${EDGE_STATE_DIR:-/srv/opsgrids/state}"
 # Every service that owns a schema. Migrated in this order, but only the ones compose will
 # actually run — a product behind a disabled profile (ADR-0013 §5) is skipped, and picked up
 # on the deploy that enables it.
-SERVICES_WITH_SCHEMA=(auth account product catalog subscription billing metering payment notification storefront document operations approval employee attendance customer deal project timesheet standup projects support marketing finance scheduler itsm)
+SERVICES_WITH_SCHEMA=(auth account product catalog subscription billing metering payment notification storefront document operations approval employee attendance leave customer deal project timesheet standup projects support marketing finance scheduler itsm)
 
 # The services compose will run for this box: honours COMPOSE_PROFILES from .env.
 configured_services() {
@@ -129,8 +131,26 @@ validate() {
 		validate --config /etc/caddy/Caddyfile --adapter caddyfile
 }
 
+# The role for every service in SERVICES_WITH_SCHEMA must exist before any of their migrations
+# run — see lib/role-reconcile.sh for why a service added after this box's first boot otherwise
+# has no role at all and aborts the deploy on its own CREATE POLICY/REVOKE. Idempotent: safe (and
+# cheap — a handful of `SELECT`s and no-op `GRANT`s once every role already exists) on every
+# deploy, not only the one that adds a service.
+reconcile_roles() {
+	log "reconciling opsgrids_<service> roles (idempotent, before any migration)"
+	local pw
+	pw=$(sed -n 's/^OPSGRIDS_DB_PASSWORD=//p' .env | head -1 | tr -d '"'"'"' \r')
+	if [ -z "$pw" ]; then
+		echo "reconcile-roles: OPSGRIDS_DB_PASSWORD is missing or empty in .env" >&2
+		exit 1
+	fi
+	role_reconcile_sql "${SERVICES_WITH_SCHEMA[@]}" |
+		"${COMPOSE[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -v "pw=$pw" -U opsgrids -d opsgrids
+}
+
 migrate() {
 	log "migrations (before the new version serves)"
+	reconcile_roles
 	local running prev migrated
 	running=" $(configured_services | tr '\n' ' ') "
 	prev=$(good_ref)
@@ -184,8 +204,7 @@ up() {
 	log "reloading Caddy with the Caddyfile from this ref (graceful, no downtime)"
 	# If this deploy recreated Caddy itself, it may not accept an exec for a moment; one failed
 	# exec must not abort the deploy before `health` and `record_ref` run.
-	local try
-	for try in 1 2 3 4 5; do
+	for _ in 1 2 3 4 5; do
 		"${COMPOSE[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile && return 0
 		sleep 2
 	done
@@ -298,6 +317,7 @@ preflight) ./preflight.sh ;;
 build) build ;;
 validate) validate ;;
 migrate) migrate ;;
+reconcile-roles) reconcile_roles ;;
 up) up ;;
 health) health ;;
 deploy)
@@ -337,7 +357,7 @@ compose)
 	"${COMPOSE[@]}" "$@"
 	;;
 *)
-	echo "usage: remote.sh {assert-host <host>|preflight|build|validate|migrate|up|health|deploy|previous-ref|backup|status|logs [lines] [svc]|compose ...}" >&2
+	echo "usage: remote.sh {assert-host <host>|preflight|build|validate|migrate|reconcile-roles|up|health|deploy|previous-ref|backup|status|logs [lines] [svc]|compose ...}" >&2
 	exit 64
 	;;
 esac

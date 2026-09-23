@@ -14,11 +14,12 @@ import { StoreRenderer } from "./StoreRenderer";
 
 function renderStore(themeKey: "foundry" | "circuit", route: string) {
   const theme = themeKey === "foundry" ? foundry : circuit;
-  const store = adoptTheme(theme, suggestedBrand(theme.key));
+  const store = adoptTheme(theme);
   return render(
     <MemoryRouter>
       <StoreRenderer
         store={store}
+        brand={suggestedBrand(theme.key)}
         route={route}
         products={PRODUCTS}
         categories={CATEGORY_LIST}
@@ -78,13 +79,14 @@ describe.each(THEMES.map((theme) => [theme.key, theme] as const))(
     });
 
     it("renders every page at desktop and stacked, with no section falling back", () => {
-      const store = adoptTheme(theme, suggestedBrand(theme.key));
+      const store = adoptTheme(theme);
       for (const width of [1200, 390]) {
         for (const page of store.pages) {
           const view = render(
             <MemoryRouter>
               <StoreRenderer
                 store={store}
+                brand={suggestedBrand(theme.key)}
                 route={page.route}
                 products={PRODUCTS}
                 categories={CATEGORY_LIST}
