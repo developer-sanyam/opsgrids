@@ -49,15 +49,11 @@ export async function putStoreIdentity(input: StorePut): Promise<StoreOut> {
       status: fixtureStore?.status ?? "draft",
       currency: input.currency,
       timezone: input.timezone,
-      ...(input.custom_domain === undefined
-        ? {
-            custom_domain: fixtureStore?.custom_domain ?? null,
-            custom_domain_status: fixtureStore?.custom_domain_status ?? null,
-          }
-        : {
-            custom_domain: input.custom_domain,
-            custom_domain_status: input.custom_domain === null ? null : ("unverified" as const),
-          }),
+      // `custom_domain` is not a field on `StorePut` any more (ADR-0012 review finding 2b) — the
+      // domain screen (`settings/domain.ts`) is the only writer, so this form carries the
+      // existing claim through unchanged rather than reading it off the input.
+      custom_domain: fixtureStore?.custom_domain ?? null,
+      custom_domain_status: fixtureStore?.custom_domain_status ?? null,
       created_at: fixtureStore?.created_at ?? now,
       updated_at: now,
     };

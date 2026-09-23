@@ -31,6 +31,8 @@ export interface StoreOut {
 /**
  * `StorePut` — a full-replacement form. `status` is deliberately absent: publishing is its own
  * named transition (`publishStore` / `unpublishStore`), never a side effect of a settings save.
+ * `custom_domain` is also absent — the server rejects it with a 422 naming
+ * `PUT /storefront/store/domain` (`settings/domain.ts`), which is the only place that owns it.
  */
 export interface StorePut {
   slug: string;
@@ -39,7 +41,4 @@ export interface StorePut {
   logo_text: string | null;
   currency: string;
   timezone: string;
-  /** Omitted means unchanged. The settings form never sends it: the domain screen owns the claim
-   *  (`PUT /storefront/store/domain`), and a stale value here would release it. */
-  custom_domain?: string | null;
 }

@@ -56,7 +56,8 @@ export function validateStoreForm(values: StoreFormValues): StoreFormErrors {
 }
 
 /** Blank clears a nullable field — the server's own rule for `tagline` and `logo_text`
- *  (`StorePut`'s field descriptions). The domain is never sent; see `StorePut.custom_domain`. */
+ *  (`StorePut`'s field descriptions). The domain is never sent — `StorePut` no longer has a
+ *  `custom_domain` field at all; the domain screen (`settings/domain.ts`) owns it. */
 export function toStorePut(values: StoreFormValues): StorePut {
   const tagline = values.tagline.trim();
   const logoText = values.logoText.trim();

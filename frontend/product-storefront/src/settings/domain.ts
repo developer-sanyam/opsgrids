@@ -86,7 +86,11 @@ function fixtureClaim(host: string): DomainOut {
     verification: {
       record_type: "TXT",
       name: `_opsgrids-challenge.${host}`,
-      value: "opsgrids-domain-verification=0f3c9a7d2b814e6a9c5d1f0b7e2a4c68",
+      // Obviously-fake and low-entropy on purpose (repeated hex nibbles): a real token is
+      // `secrets.token_hex(16)` server-side and never appears in this repository — a
+      // realistic-looking one here is exactly what `detect-secrets` exists to flag, and per
+      // ADR-0012 §14 that finding must be fixed, never baselined.
+      value: "opsgrids-domain-verification=" + "ab".repeat(16),
       issued_at: now.toISOString(),
       claim_expires_at: new Date(now.getTime() + 14 * 86_400_000).toISOString(),
     },
