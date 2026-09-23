@@ -3908,7 +3908,7 @@
     },
     "/api/v1/engage/domains/{domain_id}/verify": {
       "post": {
-        "description": "Takes the write permission although it publishes nothing: it rewrites `records` and\n`status`, and a domain flipping to verified is what lets mail go out as that name.",
+        "description": "Takes the write permission although it publishes nothing: it rewrites `records` and\n`status`, and a domain flipping to verified is what lets mail go out as that name.\n\n**Not `SessionDep`.** Every other route in this file runs its whole body inside the one\ntransaction the chokepoint opens before the handler starts; this is the one place that would\nhold it across a DNS lookup, and a resolver that is slow or simply cannot be reached\n(`NoNameservers`, `Timeout`) would then pin a pool connection for however long it takes to\ngive up (D3). So this route binds two short transactions of its own instead \u2014 the same idiom\npayment's and finance's internal APIs use, and for the same reason \u2014 with the lookups\nthemselves running between them, with no session and no transaction open at all.",
         "operationId": "verify_domain_api_v1_engage_domains__domain_id__verify_post",
         "parameters": [
           {
