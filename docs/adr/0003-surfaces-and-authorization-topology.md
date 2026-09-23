@@ -237,14 +237,21 @@ permission grammar (ADR-0000 §5) — these never touch `pv` or a membership's g
 | Capability | `owner` | `billing_ops` | `support` |
 |---|---|---|---|
 | Everything below | ✅ | | |
-| Organization list / detail, platform metrics overview | ✅ | ✅ | ✅ (read only) |
+| Organization list / detail (`/admin/organizations`, `/admin/organizations/{id}`, and account's `/admin/directory/organizations/{id}`) | ✅ | ✅ | ✅ |
+| Platform metrics overview (`/admin/metrics/overview`) | ✅ | ✅ | |
 | Audit trail (`/admin/audit`) | ✅ | | ✅ |
 | Subscriptions, usage rollups | ✅ | ✅ | |
 | Overrides (suspend, comp credit) | ✅ | ✅ | |
 | Credit ledger (billing's staff route) | ✅ | ✅ | |
-| Catalog reads | ✅ | ✅ | |
 | Catalog writes (plans, versions, publish) | ✅ | | |
 | `GET /auth/operator/me` | ✅ | ✅ | ✅ |
+| Issue a staff account's enrolment code (`POST /auth/operator/enrollment-codes`) | ✅ | | |
+
+No row exists yet for a staff *catalog read* — there is no such route today, only the writes
+above; when one is added it belongs in this table before it ships, not after, per MINOR 9 of the
+2026-09-24 security review that found this table describing capabilities the code did not
+actually enforce (metrics overview had drifted to look support-readable here when the route was
+`owner`/`billing_ops`-only in code, and this row named a route that never existed).
 
 `owner` is not "every permission that exists" as a stored list — it is every `require_operator`
 call site accepting it, which is the operator-side reading of ADR-0000 §5's corollary: a role is
@@ -253,6 +260,7 @@ rot when a new staff route is added forgetting to include it. A route that forge
 set is a bug caught by the negative-authz test every `staff_only` route now carries alongside the
 audience one.
 
-Read routes that do not appear above (e.g. `/admin/organizations` list) admit all three roles at
-read scope, because an operator support ticket routinely starts with "what does this account look
-like" before anyone knows whether it is a billing or a catalog question.
+Organization identity reads admit all three roles, because an operator support ticket routinely
+starts with "what does this account look like" before anyone knows whether it is a billing or a
+catalog question; financial reads (metrics, subscriptions, usage, the credit ledger) and the
+audit trail do not, per the table above.

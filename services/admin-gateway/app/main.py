@@ -50,6 +50,15 @@ policy = GatewayPolicy(
             "/api/v1/auth/operator/login",
             "/api/v1/auth/operator/refresh",
             "/api/v1/auth/operator/logout",
+            # The operator MFA steps — mandatory for staff (ADR-0003 addendum), and every one
+            # of them runs on a pre-auth token, not a bearer access token: there is no
+            # principal yet for the gateway to check, exactly like the tenant `mfa/verify`
+            # above. Omitting these left sign-in with no way to finish through the real
+            # gateway at all — a caller could authenticate and never complete MFA, which is
+            # BLOCKER 2 of the security review that added this.
+            "/api/v1/auth/operator/mfa/enrol",
+            "/api/v1/auth/operator/mfa/enrol/confirm",
+            "/api/v1/auth/operator/mfa/verify",
             # The Razorpay payment webhook. Public because a provider carries no platform token —
             # it authenticates with the HMAC **signature** on its body, which payment-service
             # verifies against the shared webhook secret before recording or acting on anything

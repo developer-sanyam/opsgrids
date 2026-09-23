@@ -135,6 +135,25 @@ class TestRoleMatrix:
             response = await client.get("/api/v1/admin/metrics/overview")
         assert response.status_code == 403
 
+    async def test_support_may_not_read_usage(self, client: AsyncClient) -> None:
+        with as_principal(operator_principal(roles=["support"])):
+            response = await client.get("/api/v1/admin/usage")
+        assert response.status_code == 403
+
+    async def test_support_may_not_create_an_override(
+        self, client: AsyncClient, org_id: uuid.UUID
+    ) -> None:
+        with as_principal(operator_principal(roles=["support"])):
+            response = await client.post(
+                "/api/v1/admin/overrides",
+                json={
+                    "action": "suspend",
+                    "organization_id": str(org_id),
+                    "subscription_id": str(uuid.uuid4()),
+                },
+            )
+        assert response.status_code == 403
+
 
 # --------------------------------------------------------------------- override delegation
 
@@ -272,17 +291,31 @@ class TestOrganizationDetail:
             },
         )
         with as_principal(operator_principal(staff=True)):
-            response = await client.get(
-                f"/api/v1/admin/organizations/{org_id}",
-                headers={"Authorization": "Bearer forwarded-operator-token"},
-            )
+            response = await client.get(f"/api/v1/admin/organizations/{org_id}")
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["slug"] == "acme"
         assert body["commercial"]["mrr_minor"] == 50000
 
-        # account-service was called with the caller's own token, not a service credential.
-        assert captured.calls[0].headers["authorization"] == "Bearer forwarded-operator-token"
+        # account-service was called with an asserted service token, not the caller's own
+        # bearer token (MINOR 8 of the security review). Decoded the way account-service
+        # would — `verify_service_token` checks `aud == settings.service_name`, which is
+        # "account", not console's own name, so this reads the same shared secret directly.
+        call = captured.calls[0]
+        assert "authorization" not in call.headers
+        token = call.headers["x-internal-token"]
+        claims = jwt.decode(
+            token,
+            settings().internal_service_token.get_secret_value(),
+            algorithms=["HS256"],
+            audience="account",
+            options={"require": ["exp", "iss", "aud", "jti"]},
+        )
+        assert claims["iss"] == "console"
+        assert claims["aud"] == "account"
+        assert "operator_sub" in claims
+        assert claims["operator_roles"]
+        assert "otp" in claims["operator_amr"]
 
     async def test_an_organization_account_service_does_not_know_is_404(
         self, client: AsyncClient, org_id: uuid.UUID
@@ -297,9 +330,7 @@ class TestOrganizationDetail:
 
         app.dependency_overrides[get_delegation_client] = _override
         with as_principal(operator_principal(staff=True)):
-            response = await client.get(
-                f"/api/v1/admin/organizations/{org_id}", headers={"Authorization": "Bearer x"}
-            )
+            response = await client.get(f"/api/v1/admin/organizations/{org_id}")
         assert response.status_code == 404
 
     async def test_account_service_being_unreachable_is_a_503_not_a_404(
@@ -315,9 +346,7 @@ class TestOrganizationDetail:
 
         app.dependency_overrides[get_delegation_client] = _override
         with as_principal(operator_principal(staff=True)):
-            response = await client.get(
-                f"/api/v1/admin/organizations/{org_id}", headers={"Authorization": "Bearer x"}
-            )
+            response = await client.get(f"/api/v1/admin/organizations/{org_id}")
         assert response.status_code == 503
 
     async def test_reading_an_organizations_detail_is_audited(
@@ -335,9 +364,7 @@ class TestOrganizationDetail:
             },
         )
         with as_principal(operator_principal(staff=True)):
-            response = await client.get(
-                f"/api/v1/admin/organizations/{org_id}", headers={"Authorization": "Bearer x"}
-            )
+            response = await client.get(f"/api/v1/admin/organizations/{org_id}")
         assert response.status_code == 200
         audit = await selectors.recent_audit(directory_session)
         assert len(audit) == 1

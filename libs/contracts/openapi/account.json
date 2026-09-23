@@ -1828,7 +1828,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "One organization's directory record \u2014 staff-only, cross-tenant",
+        "summary": "One organization's directory record \u2014 service-to-service, asserted by console",
         "tags": [
           "account-admin"
         ]

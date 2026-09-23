@@ -274,6 +274,10 @@ OperatorLoginResult = OperatorMfaRequired | OperatorMfaEnrollmentRequired
 
 class OperatorMfaEnrolIn(BaseModel):
     pre_auth_token: str
+    #: The out-of-band code issued for this staff account — a password alone is not enough to
+    #: reach enrolment (ADR-0003 addendum). Shaped like a recovery code, because it is issued
+    #: through the same generator.
+    enrollment_code: str = Field(min_length=8, max_length=40)
 
 
 class OperatorMfaEnrolConfirmIn(BaseModel):
@@ -299,6 +303,20 @@ class OperatorMfaEnrolled(BaseModel):
 class OperatorMfaVerifyIn(BaseModel):
     pre_auth_token: str
     code: str = Field(min_length=6, max_length=32)
+
+
+class OperatorEnrollmentCodeIn(BaseModel):
+    """An `owner` issuing another staff account's out-of-band MFA enrolment code."""
+
+    staff_id: uuid.UUID
+
+
+class OperatorEnrollmentCodeOut(BaseModel):
+    """Shown once — stored only as a hash, and never retrievable again."""
+
+    staff_id: uuid.UUID
+    enrollment_code: str
+    expires_in_minutes: int
 
 
 class OperatorMeOut(BaseModel):

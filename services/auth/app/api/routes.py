@@ -31,6 +31,8 @@ from app.schemas import (
     MfaEnrolStart,
     MfaRequired,
     MfaVerifyIn,
+    OperatorEnrollmentCodeIn,
+    OperatorEnrollmentCodeOut,
     OperatorLoginIn,
     OperatorLoginResult,
     OperatorMeOut,
@@ -336,7 +338,7 @@ async def mfa_enrol(
     if user is None:
         raise UnauthorizedProblem("That session is no longer valid.")
     factor, secret, uri = await services.begin_mfa_enrolment(
-        session, principal.sub, account_email=user.email
+        session, principal.sub, account_email=user.email, cfg=settings()
     )
     return MfaEnrolStart(factor_id=factor.id, secret=secret, otpauth_uri=uri)
 
@@ -350,7 +352,11 @@ async def mfa_confirm(
     payload: MfaEnrolConfirmIn, session: TenantSessionDep, principal: CurrentPrincipal
 ) -> MfaEnrolled:
     codes = await services.confirm_mfa_enrolment(
-        session, factor_id=payload.factor_id, user_id=principal.sub, code=payload.code
+        session,
+        factor_id=payload.factor_id,
+        user_id=principal.sub,
+        code=payload.code,
+        cfg=settings(),
     )
     # Shown once. Stored hashed, and never retrievable again.
     return MfaEnrolled(recovery_codes=codes)
@@ -593,11 +599,16 @@ async def operator_login(
     "until one is enrolled",
 )
 async def operator_mfa_enrol(
-    payload: OperatorMfaEnrolIn, session: SessionDep, pair: KeyDep
+    payload: OperatorMfaEnrolIn, request: Request, session: SessionDep, pair: KeyDep
 ) -> MfaEnrolStart:
     cfg = settings()
     factor, secret, uri = await services.operator_begin_mfa_enrolment(
-        session, cfg=cfg, pair=pair, pre_auth_token=payload.pre_auth_token
+        session,
+        cfg=cfg,
+        pair=pair,
+        pre_auth_token=payload.pre_auth_token,
+        enrollment_code=payload.enrollment_code,
+        request=request,
     )
     return MfaEnrolStart(factor_id=factor.id, secret=secret, otpauth_uri=uri)
 
@@ -681,6 +692,38 @@ async def operator_me(session: TenantSessionDep, operator: OperatorPrincipalDep)
         display_name=staff.display_name,
         operator_roles=list(staff.operator_roles),
         amr=operator.amr,
+    )
+
+
+#: The operator bootstrap: only an `owner` may hand another staff account its enrolment code.
+OperatorOwnerDep = Annotated[Principal, Depends(require_operator(roles={"owner"}))]
+
+
+@router.post(
+    "/auth/operator/enrollment-codes",
+    response_model=OperatorEnrollmentCodeOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Issue a staff account's out-of-band MFA enrolment code (owner only)",
+)
+async def issue_operator_enrollment_code(
+    payload: OperatorEnrollmentCodeIn,
+    request: Request,
+    session: TenantSessionDep,
+    operator: OperatorOwnerDep,
+) -> OperatorEnrollmentCodeOut:
+    """A password alone must never be enough to reach MFA enrolment (ADR-0003 addendum): this
+    is the audited, in-product way an `owner` hands a colleague — or a newly provisioned staff
+    account — the out-of-band code `POST /auth/operator/mfa/enrol` also requires. For the very
+    first owner, with nobody yet to issue one, `bin/seed-staff` prints one instead; for staff
+    accounts that predate this rule, `bin/issue-enrollment-codes` is the one-off deploy step.
+    """
+    code = await services.issue_staff_enrollment_code(
+        session, staff_id=payload.staff_id, actor_id=operator.sub, request=request
+    )
+    return OperatorEnrollmentCodeOut(
+        staff_id=payload.staff_id,
+        enrollment_code=code,
+        expires_in_minutes=services.ENROLLMENT_CODE_TTL_MINUTES,
     )
 
 

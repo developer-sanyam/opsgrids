@@ -506,7 +506,7 @@ class TestMfa:
     ) -> None:
         """Otherwise a mis-scanned QR locks somebody out of their own account."""
         factor, secret, uri = await services.begin_mfa_enrolment(
-            session, USER, account_email="sam@example.com"
+            session, USER, account_email="sam@example.com", cfg=cfg
         )
         assert uri.startswith("otpauth://totp/")
 
@@ -515,21 +515,37 @@ class TestMfa:
 
         code = security._totp_at(secret, int(datetime.now(UTC).timestamp()) // 30)
         codes = await services.confirm_mfa_enrolment(
-            session, factor_id=factor.id, user_id=USER, code=code
+            session, factor_id=factor.id, user_id=USER, code=code, cfg=cfg
         )
 
         assert len(codes) == 10
         await session.refresh(credential)
         assert credential.mfa_enforced is True
 
+    async def test_the_secret_is_sealed_not_stored_in_the_clear(
+        self, session, cfg, registered
+    ) -> None:
+        """MAJOR 6: a TOTP secret is a durable credential and gets the same envelope a
+        password hash or an OIDC client secret gets — never the plain base32 bytes."""
+        factor, secret, _ = await services.begin_mfa_enrolment(
+            session, USER, account_email="sam@example.com", cfg=cfg
+        )
+        assert factor.secret_enc is not None
+        assert secret.encode() not in factor.secret_enc
+        from platform_core import pii
+
+        assert pii.open_sealed(factor.secret_enc, settings=cfg) == secret
+
     async def test_sign_in_stops_for_a_second_factor(
         self, session, cfg, pair, directory, registered
     ) -> None:
         factor, secret, _ = await services.begin_mfa_enrolment(
-            session, USER, account_email="sam@example.com"
+            session, USER, account_email="sam@example.com", cfg=cfg
         )
         code = security._totp_at(secret, int(datetime.now(UTC).timestamp()) // 30)
-        await services.confirm_mfa_enrolment(session, factor_id=factor.id, user_id=USER, code=code)
+        await services.confirm_mfa_enrolment(
+            session, factor_id=factor.id, user_id=USER, code=code, cfg=cfg
+        )
 
         outcome = await _login(session, cfg, pair, directory)
         assert outcome.status == "mfa_required"
@@ -540,10 +556,12 @@ class TestMfa:
     ) -> None:
         """Otherwise the second factor is optional in practice."""
         factor, secret, _ = await services.begin_mfa_enrolment(
-            session, USER, account_email="sam@example.com"
+            session, USER, account_email="sam@example.com", cfg=cfg
         )
         code = security._totp_at(secret, int(datetime.now(UTC).timestamp()) // 30)
-        await services.confirm_mfa_enrolment(session, factor_id=factor.id, user_id=USER, code=code)
+        await services.confirm_mfa_enrolment(
+            session, factor_id=factor.id, user_id=USER, code=code, cfg=cfg
+        )
 
         outcome = await _login(session, cfg, pair, directory)
         assert outcome.pre_auth_token
@@ -563,11 +581,15 @@ class TestMfa:
         self, session, cfg, pair, directory, registered
     ) -> None:
         factor, secret, _ = await services.begin_mfa_enrolment(
-            session, USER, account_email="sam@example.com"
+            session, USER, account_email="sam@example.com", cfg=cfg
         )
         step = int(datetime.now(UTC).timestamp()) // 30
         await services.confirm_mfa_enrolment(
-            session, factor_id=factor.id, user_id=USER, code=security._totp_at(secret, step)
+            session,
+            factor_id=factor.id,
+            user_id=USER,
+            code=security._totp_at(secret, step),
+            cfg=cfg,
         )
 
         outcome = await _login(session, cfg, pair, directory)
@@ -588,29 +610,103 @@ class TestMfa:
         assert done.issued is not None
         assert "otp" in (await session.get(Session, done.issued.session_id)).amr  # type: ignore[union-attr]
 
+    async def test_a_replayed_mfa_pre_auth_token_is_refused(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """Once a session has completed its second factor, the same pre-auth token must not
+        produce a second completed sign-in (the operator-side vulnerability, exercised here
+        for the shared machinery tenant sign-in also goes through)."""
+        factor, secret, _ = await services.begin_mfa_enrolment(
+            session, USER, account_email="sam@example.com", cfg=cfg
+        )
+        step = int(datetime.now(UTC).timestamp()) // 30
+        await services.confirm_mfa_enrolment(
+            session,
+            factor_id=factor.id,
+            user_id=USER,
+            code=security._totp_at(secret, step),
+            cfg=cfg,
+        )
+
+        outcome = await _login(session, cfg, pair, directory)
+        assert outcome.pre_auth_token
+        token = outcome.pre_auth_token
+
+        await services.verify_mfa(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            entitlements=FakeEntitlements(),
+            pre_auth_token=token,
+            code=security._totp_at(secret, step + 1),
+        )
+
+        with pytest.raises(UnauthorizedProblem, match="start signing in again"):
+            await services.verify_mfa(
+                session,
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                entitlements=FakeEntitlements(),
+                pre_auth_token=token,
+                code=security._totp_at(secret, step + 2),
+            )
+
     async def test_a_code_cannot_be_replayed(self, session, cfg, registered) -> None:
         """A code shoulder-surfed from a screen must not stay usable for its window."""
         factor, secret, _ = await services.begin_mfa_enrolment(
-            session, USER, account_email="sam@example.com"
+            session, USER, account_email="sam@example.com", cfg=cfg
         )
         step = int(datetime.now(UTC).timestamp()) // 30
         code = security._totp_at(secret, step)
-        await services.confirm_mfa_enrolment(session, factor_id=factor.id, user_id=USER, code=code)
+        await services.confirm_mfa_enrolment(
+            session, factor_id=factor.id, user_id=USER, code=code, cfg=cfg
+        )
 
-        accepted = await services._accept_second_factor(session, USER, code)
-        assert accepted is False
+        accepted = await services._accept_second_factor(session, USER, code, cfg=cfg)
+        assert accepted is None
 
     async def test_a_recovery_code_works_once(self, session, cfg, registered) -> None:
         factor, secret, _ = await services.begin_mfa_enrolment(
-            session, USER, account_email="sam@example.com"
+            session, USER, account_email="sam@example.com", cfg=cfg
         )
         step = int(datetime.now(UTC).timestamp()) // 30
         codes = await services.confirm_mfa_enrolment(
-            session, factor_id=factor.id, user_id=USER, code=security._totp_at(secret, step)
+            session,
+            factor_id=factor.id,
+            user_id=USER,
+            code=security._totp_at(secret, step),
+            cfg=cfg,
         )
 
-        assert await services._accept_second_factor(session, USER, codes[0]) is True
-        assert await services._accept_second_factor(session, USER, codes[0]) is False
+        assert await services._accept_second_factor(session, USER, codes[0], cfg=cfg) == "recovery"
+        assert await services._accept_second_factor(session, USER, codes[0], cfg=cfg) is None
+
+    async def test_confirming_an_already_confirmed_factor_is_refused(
+        self, session, cfg, registered
+    ) -> None:
+        """Re-confirming is not a redo of a prior success — it is either a replay or a race,
+        and either way there is nothing left for it to legitimately do."""
+        factor, secret, _ = await services.begin_mfa_enrolment(
+            session, USER, account_email="sam@example.com", cfg=cfg
+        )
+        step = int(datetime.now(UTC).timestamp()) // 30
+        await services.confirm_mfa_enrolment(
+            session,
+            factor_id=factor.id,
+            user_id=USER,
+            code=security._totp_at(secret, step),
+            cfg=cfg,
+        )
+        with pytest.raises(UnauthorizedProblem, match="already confirmed"):
+            await services.confirm_mfa_enrolment(
+                session,
+                factor_id=factor.id,
+                user_id=USER,
+                code=security._totp_at(secret, step + 1),
+                cfg=cfg,
+            )
 
 
 class TestSessionsAndEvents:

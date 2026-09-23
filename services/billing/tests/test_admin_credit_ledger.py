@@ -18,9 +18,10 @@ from datetime import UTC, datetime
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import CreditLedgerEntry
+from app.models import AuditLog, CreditLedgerEntry
 from tests.helpers import as_principal, operator_principal
 
 pytestmark = pytest.mark.integration
@@ -142,3 +143,53 @@ class TestFilteringAndPagination:
             )
         assert response.status_code == 200
         assert response.json()["total"] == 1
+
+
+class TestAuditTrail:
+    """MINOR 11 of the security review: a read narrowed to one organization is audited."""
+
+    async def test_a_read_filtered_by_organization_is_audited(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        await _grant(admin_session, org_id)
+        with as_principal(operator_principal(roles=["owner"])):
+            response = await client.get(
+                "/api/v1/admin/credit-ledger", params={"organization_id": str(org_id)}
+            )
+        assert response.status_code == 200
+
+        rows = (
+            (
+                await admin_session.execute(
+                    select(AuditLog).where(
+                        AuditLog.organization_id == org_id,
+                        AuditLog.action == "credit_ledger.viewed",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].acting_as is not None and rows[0].acting_as.startswith("operator:")
+
+    async def test_the_unfiltered_platform_wide_read_is_not_audited(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """An overview across every organization is a different act from looking at one
+        customer's ledger — auditing every page of it would be noise, not a trail."""
+        await _grant(admin_session, org_id)
+        with as_principal(operator_principal(roles=["owner"])):
+            response = await client.get("/api/v1/admin/credit-ledger")
+        assert response.status_code == 200
+
+        rows = (
+            (
+                await admin_session.execute(
+                    select(AuditLog).where(AuditLog.action == "credit_ledger.viewed")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert rows == []

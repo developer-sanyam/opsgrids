@@ -184,6 +184,14 @@ ALLOW_LIST: dict[Route, str] = {
         "before the row exists (ADR-0013 §3). Swept by asserting that a sign-up made through "
         "a B-bound request writes nothing into A or B and lands in a third organization."
     ),
+    ("GET", f"{PREFIX}/admin/directory/organizations/{{organization_id}}"): (
+        "Service-to-service, not a bearer route (MINOR 8 of the security review): it takes no "
+        "principal at all, only a service token asserting an operator's identity, so overriding "
+        "get_principal to 'be tenant B' has no effect on it and it answers 401 unconditionally "
+        "— structurally unreachable by any tenant bearer token, which is the property this "
+        "sweep exists to prove for every other route rather than something this one leaves "
+        "untested. Covered directly instead in test_admin_directory.py."
+    ),
 }
 
 SWEPT = [route for route in ROUTES if route not in ALLOW_LIST]

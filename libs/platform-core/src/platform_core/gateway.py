@@ -161,6 +161,20 @@ class Route:
     product: str | None = None
     #: Only reachable by OpsGrids staff. Used by the operator console.
     staff_only: bool = False
+    #: Refused with the same 404 an unmatched path gets — never proxied, regardless of any
+    #: bearer token. For a sub-path that a broader prefix on the *same* gateway would
+    #: otherwise happily forward, and that this gateway specifically must not: app-gateway's
+    #: `/api/v1/auth/operator` entry over the shorter `/api/v1/auth` one is the case this
+    #: exists for (MAJOR 3 of the security review — operator sign-in was reachable from the
+    #: public product gateway with any ordinary tenant bearer token, because nothing about
+    #: `/api/v1/auth/operator/login` requires the caller's *own* token to be staff-shaped; it
+    #: reads staff credentials from the request body). `RouteTable.resolve` picks the longest
+    #: matching prefix, so a `blocked` entry here wins over the shorter one and is checked
+    #: before the token is even decoded — the same "refuse before doing any other work" shape
+    #: `_has_internal_segment` already uses for `/internal/` paths, just per-route instead of
+    #: platform-wide, because *which* paths must be blocked is a per-gateway decision
+    #: (admin-gateway wants exactly these reachable).
+    blocked: bool = False
     #: Per-route request-body ceiling in bytes. `None` means the gateway's default. An
     #: upload route legitimately needs more than a JSON POST; nothing else should.
     max_body_bytes: int | None = None
@@ -209,6 +223,7 @@ class RouteTable:
                     upstream=item["upstream"].rstrip("/"),
                     product=item.get("product"),
                     staff_only=bool(item.get("staff_only", False)),
+                    blocked=bool(item.get("blocked", False)),
                     max_body_bytes=_parse_max_body_bytes(item),
                 )
                 for item in raw["routes"]
@@ -421,6 +436,12 @@ def build_gateway(
 
         route = routes.resolve(full_path)
         if route is None:
+            raise NotFoundProblem(f"No route for {full_path}")
+        if route.blocked:
+            # Refused before the token is even decoded — a blocked route carries no bearer
+            # token that would make it acceptable, so there is nothing to check. The same 404
+            # an unmatched path gives, for the same reason `staff_only` answers 404: this
+            # gateway is not confirming which paths it deliberately does not serve.
             raise NotFoundProblem(f"No route for {full_path}")
 
         # Start from the client's headers minus anything hop-by-hop or spoofable, then

@@ -57,12 +57,7 @@ from app.schemas import (
 )
 from platform_core.auth import Principal, require_operator
 from platform_core.db import get_directory_session, get_session
-from platform_core.errors import (
-    NotFoundProblem,
-    UnauthorizedProblem,
-    UpstreamUnavailableProblem,
-    ValidationProblem,
-)
+from platform_core.errors import NotFoundProblem, UpstreamUnavailableProblem, ValidationProblem
 
 router = APIRouter(tags=["console"])
 
@@ -129,22 +124,16 @@ async def get_organization_detail(
 ) -> OrgDetailOut:
     """Compose console's own commercial snapshot with account-service's directory record.
 
-    The directory half is fetched from account-service's `staff_only` route, authorized by
-    *this request's own token* forwarded verbatim — never `/internal/v1`, which no individual
-    caller's permissions gate at all (`app/directory_client.py`). Every read here writes an
-    audit row bound to the target organization, per the ADR-0003 addendum: an operator looking
-    at one customer's detail is exactly the kind of act that must leave a trace.
+    The directory half is fetched from account-service's service-to-service route, which this
+    request's already-verified operator identity is *asserted* into rather than forwarded —
+    never `/internal/v1`, which no individual caller's permissions gate at all
+    (`app/directory_client.py`). Every read here writes an audit row bound to the target
+    organization, per the ADR-0003 addendum: an operator looking at one customer's detail is
+    exactly the kind of act that must leave a trace.
     """
-    authorization = request.headers.get("authorization")
-    if not authorization:
-        # Cannot happen through the gateway (it never strips this header) or a direct bearer
-        # call — only if something stripped it upstream. Refused rather than silently
-        # delegating with no credential.
-        raise UnauthorizedProblem("Missing bearer token")
-
     try:
         directory = await directory_client.get_organization(
-            settings(), organization_id, authorization=authorization, client=client
+            settings(), organization_id, operator=operator, client=client
         )
     except DirectoryLookupError as exc:
         raise UpstreamUnavailableProblem(str(exc)) from exc

@@ -41,7 +41,9 @@ def customer_principal(org_id: uuid.UUID, *, perms: list[str] | None = None) -> 
     )
 
 
-def operator_principal(*, staff: bool = True, roles: list[str] | None = None) -> Principal:
+def operator_principal(
+    *, staff: bool = True, roles: list[str] | None = None, amr: list[str] | None = None
+) -> Principal:
     """A staff operator as the operator gateway would have forwarded them.
 
     `audience="operator"` is the marker `require_operator` checks. `staff` toggles the audience
@@ -56,6 +58,10 @@ def operator_principal(*, staff: bool = True, roles: list[str] | None = None) ->
         membership_id=uuid.uuid4(),
         audience=OPERATOR_AUDIENCE if staff else APP_AUDIENCE,
         roles=roles if roles is not None else ["owner"],
+        # Every real operator token carries `otp` once sign-in completes (MFA is mandatory for
+        # staff, ADR-0003 addendum); defaulted on here so existing role/audience tests don't also
+        # have to spell out the amr axis.
+        amr=amr if amr is not None else ["pwd", "otp"],
     )
 
 

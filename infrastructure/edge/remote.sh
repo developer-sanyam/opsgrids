@@ -146,6 +146,19 @@ reconcile_roles() {
 	fi
 	role_reconcile_sql "${SERVICES_WITH_SCHEMA[@]}" |
 		"${COMPOSE[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -v "pw=$pw" -U opsgrids -d opsgrids
+
+	# The BYPASSRLS directory readers (MAJOR 7 of the security review): discovered from each
+	# service's own `app/config.py` rather than hand-listed, so a service that adds one — the
+	# staff credit-ledger route's `opsgrids_billing_directory` was the one this closes —
+	# reconciles here without anyone remembering to edit this file too. `../..` because this
+	# script `cd`s into `infrastructure/edge` at the top.
+	local directory_roles
+	directory_roles=$(directory_roles_from_config "../..")
+	if [ -n "$directory_roles" ]; then
+		# shellcheck disable=SC2086  # deliberately word-split, like SERVICES_WITH_SCHEMA above
+		directory_role_reconcile_sql $directory_roles |
+			"${COMPOSE[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -v "pw=$pw" -U opsgrids -d opsgrids
+	fi
 }
 
 migrate() {

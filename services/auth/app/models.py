@@ -15,7 +15,7 @@ response.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
@@ -450,6 +450,45 @@ class StaffAccount(Base):
     @property
     def is_active(self) -> bool:
         return self.status == "active"
+
+
+class StaffEnrollmentCode(Base):
+    """The out-of-band proof a staff account must present before it may enrol its first MFA
+    factor — the operator bootstrap.
+
+    A password alone must never be enough to reach MFA enrolment: whoever knows a staff
+    account's password (guessed, reused, phished) would otherwise be able to register their
+    *own* authenticator against that account and mint themselves an operator token, and
+    nothing about a successful password check tells this service that the person typing it is
+    the real staff member rather than an attacker who got there first. This code is the second
+    channel — issued out-of-band by `bin/seed-staff` for a freshly created account or by an
+    existing `owner` through an audited route — and its possession is what `operator_login`'s
+    password step alone cannot prove.
+
+    One row per staff account (`staff_id` is the primary key, not a separate id): issuing a new
+    code replaces whatever the previous one was, rather than accumulating a ledger, because at
+    most one code should ever be usable at a time. Stored hashed like a password or a recovery
+    code, never in the clear — this row is exactly as sensitive as a credential, because
+    possessing it (before it is spent) *is* one. `used_at` makes it single-use; `expires_at`
+    keeps a code issued and forgotten from being usable indefinitely.
+    """
+
+    __tablename__ = "staff_enrollment_codes"
+
+    staff_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    code_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Who issued it — an owner's staff id, or `None` for the bootstrap seed, which has no
+    #: operator actor to attribute the issuance to.
+    issued_by: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    @property
+    def is_usable(self) -> bool:
+        return self.used_at is None and self.expires_at > datetime.now(UTC)
 
 
 # --------------------------------------------------------------------- platform tables

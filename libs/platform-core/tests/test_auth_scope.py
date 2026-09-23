@@ -167,9 +167,18 @@ class TestScopeInjection:
             c.apply(select(self.owner), owner_col=self.owner)
 
 
-def _operator(roles: list[str], *, audience: str = "operator") -> Principal:
+def _operator(
+    roles: list[str], *, audience: str = "operator", amr: list[str] | None = None
+) -> Principal:
     return Principal(
-        sub=uuid.uuid4(), organization_id=uuid.UUID(int=0), audience=audience, roles=roles
+        sub=uuid.uuid4(),
+        organization_id=uuid.UUID(int=0),
+        audience=audience,
+        roles=roles,
+        # Every real operator token carries `otp` once sign-in actually completes (MFA is
+        # mandatory for staff). Defaulted on here so tests that are about the audience/role
+        # axes don't also have to spell out the amr axis every time.
+        amr=amr if amr is not None else ["pwd", "otp"],
     )
 
 
@@ -197,3 +206,15 @@ class TestRequireOperator:
     def test_holding_any_one_of_the_required_roles_is_enough(self) -> None:
         dep = require_operator(roles={"owner", "billing_ops"})
         assert dep(_operator(["billing_ops", "support"])).audience == "operator"
+
+    def test_an_operator_token_with_no_completed_second_factor_is_refused(self) -> None:
+        """A token minted before MFA was mandatory, or one that reached this dependency some
+        other way, must not pass merely for carrying the right audience and role."""
+        dep = require_operator(roles={"owner"})
+        with pytest.raises(ForbiddenProblem):
+            dep(_operator(["owner"], amr=["pwd"]))
+
+    def test_no_amr_at_all_is_refused_the_same_way(self) -> None:
+        dep = require_operator()
+        with pytest.raises(ForbiddenProblem):
+            dep(_operator(["owner"], amr=[]))

@@ -430,6 +430,27 @@ class TestOperatorAudienceBoundary:
         )
         assert resp.status_code == 401
 
+    async def test_every_catalog_write_route_refuses_a_non_owner_role(self, client) -> None:
+        """MINOR 10 of the security review: the owner-only test above covered `POST /plans`
+        alone. Every other write on this router is `owner`-only too, per the ADR-0003
+        addendum's role matrix — the role check runs in the route's dependency, before the
+        path id is ever looked up, so a placeholder id is enough to exercise it."""
+        random_id = uuid.uuid4()
+        cases = (
+            ("PATCH", f"/api/v1/admin/catalog/plans/{random_id}", {"name": "Renamed"}),
+            ("POST", f"/api/v1/admin/catalog/plans/{random_id}/retire", None),
+            (
+                "POST",
+                f"/api/v1/admin/catalog/plans/{random_id}/versions",
+                {"prices": [], "features": []},
+            ),
+            ("POST", f"/api/v1/admin/catalog/versions/{random_id}/publish", None),
+        )
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            for method, path, body in cases:
+                resp = await client.request(method, path, json=body)
+                assert resp.status_code == 403, path
+
 
 # --------------------------------------------------------------------- events
 

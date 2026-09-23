@@ -440,14 +440,22 @@ def require_operator(*, roles: set[str] | None = None) -> Any:
     addendum), minted verbatim into the token's `roles` claim on the `operator` audience. These
     are never tenant permission grants and never touch the `pv`/scope machinery.
 
-    Two distinct refusals, and the status code is chosen deliberately for each:
+    Three distinct refusals, and the status code is chosen deliberately for each:
 
     - **Wrong audience** (a tenant/product token, or none) → **404**, the same answer an unknown
       route gives. ADR-0003 §2: the existence of the operator surface is not something to confirm
       to a caller who is not staff, so this is checked and refused before anything else.
-    - **Right audience, missing role** → **403**. The caller has already proven they are staff —
-      the surface's existence is not in question — so there is nothing left to hide by pretending
-      the route does not exist; a plain "you may not do this" is the honest answer.
+    - **Right audience, second factor not proven** → **403**. Staff MFA is mandatory (ADR-0003
+      addendum): every operator token this platform mints now carries `otp` in `amr` once
+      sign-in actually completes, so a token missing it is either a stale token minted before
+      that rule existed, or one that reached a route it should never have (`operator_login`
+      itself never issues a usable token — see `services/auth/app/services.py`). Checked before
+      the role, because "not really signed in yet" is a more fundamental refusal than "signed in
+      but lacking a role."
+    - **Right audience, right factor, missing role** → **403**. The caller has already proven
+      they are staff — the surface's existence is not in question — so there is nothing left to
+      hide by pretending the route does not exist; a plain "you may not do this" is the honest
+      answer.
 
     Every service that fronts a `staff_only` route (console, catalog, account, billing) uses
     this instead of hand-rolling its own audience check, so the 404-vs-403 split and the role
@@ -457,6 +465,8 @@ def require_operator(*, roles: set[str] | None = None) -> Any:
     def _dependency(principal: CurrentPrincipal) -> Principal:
         if principal.audience != OPERATOR_AUDIENCE:
             raise NotFoundProblem("Not found")
+        if "otp" not in principal.amr:
+            raise ForbiddenProblem("This operator session has not completed its second factor")
         if roles is not None and not roles.intersection(principal.roles):
             raise ForbiddenProblem(
                 f"This action needs one of these operator roles: {', '.join(sorted(roles))}"
