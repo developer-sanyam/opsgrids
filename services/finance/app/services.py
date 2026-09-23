@@ -36,10 +36,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import domain, selectors
-from app.eway.base import EwayClient, EwayLine, EwayPayload, EwayRejected, EwayUnavailable
+from app.eway.base import (
+    EwayAck,
+    EwayAlreadyCancelled,
+    EwayAlreadyGenerated,
+    EwayCancelAck,
+    EwayClient,
+    EwayLine,
+    EwayPayload,
+    EwayRejected,
+    EwayUnavailable,
+)
 from app.ims.base import ImsClient, ImsSupplierDocument, ImsUnavailable
 from app.irp.base import (
     IrpAck,
+    IrpAlreadyCancelled,
+    IrpCancelAck,
     IrpClient,
     IrpDuplicate,
     IrpInvoicePayload,
@@ -1899,26 +1911,99 @@ async def autofile_invoice(
 # --------------------------------------------------------------------- withdrawing a filing
 # The one compliance action that stays deliberately manual. Cancelling an IRN is a statement that
 # a registered document should never have been registered, and the portal gives 24 hours to make
-# it; past that the remedy is a credit note. Nothing automatic should be making that call.
+# it; past that the remedy is a credit note. Nothing automatic makes that *decision* — but the
+# reclaim sweep does finish one somebody already made (D3, ADR-0015 addendum,
+# `docs/io-outside-transactions.md`).
+#
+# Unlike registration, cancellation is **not idempotent by document**: it is time-boxed, it needs
+# a reason and an actor, and it happens once. So it is claimed first — a `cancelling` row that
+# carries the reason, the remark and the acknowledgement being withdrawn — then the portal is
+# called with no transaction open, then the outcome is recorded. A crash between the call and the
+# record leaves the `cancelling` row standing; `app/cron.py` resumes it, and a portal that has
+# already done the work answers "already cancelled" (`IrpAlreadyCancelled`) — success-by-fetch.
 
 
-async def cancel_filing(
+@dataclass(frozen=True, slots=True)
+class CancelFacts:
+    """Everything the second and third acts of a cancellation need, read off the claim (or, on a
+    resume, off the standing `filed` row and the `cancelling` claim) — plain values, so nothing
+    crosses the network call holding an ORM instance from a transaction that has closed."""
+
+    invoice_id: uuid.UUID
+    irn: str
+    ack_no: str | None
+    ack_date: datetime | None
+    reason_code: str
+    remark: str
+    #: The clock reading the claim row was written at, and what the portal call is stamped with.
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _CancelCallOutcome:
+    kind: str  # "cancelled" | "rejected" | "unavailable"
+    ack: IrpCancelAck | None = None
+    error_code: str | None = None
+    error: str | None = None
+
+
+def call_irp_cancel(client: IrpClient, facts: CancelFacts) -> _CancelCallOutcome:
+    """The second act of a cancellation, and the only one that touches the portal. Called with
+    **no session and no transaction open** (D3).
+
+    `IrpAlreadyCancelled` is folded into `"cancelled"`: the portal's honest answer to a withdrawal
+    this platform already asked for, carrying the cancellation it holds. An outage is *not* an
+    error here — it is `"unavailable"`, and the claim row standing is the record that the
+    withdrawal is owed."""
+    try:
+        ack = client.cancel(
+            irn=facts.irn, reason_code=facts.reason_code, remark=facts.remark, at=facts.at
+        )
+    except IrpAlreadyCancelled as already:
+        return _CancelCallOutcome(kind="cancelled", ack=already.ack)
+    except IrpRejected as rejected:
+        return _CancelCallOutcome(kind="rejected", error_code=rejected.code, error=rejected.message)
+    except IrpUnavailable as outage:
+        return _CancelCallOutcome(kind="unavailable", error=str(outage))
+    return _CancelCallOutcome(kind="cancelled", ack=ack)
+
+
+def _cancel_remark(reason_code: str, remark: str) -> str:
+    return remark or domain.IRN_CANCELLATION_REASONS[reason_code]
+
+
+@dataclass(frozen=True, slots=True)
+class CancelClaim:
+    """What `claim_irn_cancellation` committed: the claim row, and the facts to drive it with."""
+
+    claim: EInvoiceFiling
+    facts: CancelFacts
+
+
+async def claim_irn_cancellation(
     session: AsyncSession,
     ctx: ScopeContext,
-    client: IrpClient,
     payload: CancelFilingIn,
     *,
-    request: Request | None = None,
     at: datetime | None = None,
-) -> EInvoiceFiling:
-    """Withdraw a registered IRN, and append the withdrawal as its own row.
+    request: Request | None = None,
+) -> CancelClaim:
+    """The first act: refuse everything that does not need the portal, then commit a
+    `cancelling` row carrying the reason and the acknowledgement it withdraws, audited as
+    `einvoice.cancel_requested` (who asked, and why).
 
     The 24-hour window is checked here, against the `filed` row's acknowledgement date, rather
     than left to the portal to refuse — the answer is knowable locally, and knowing it is what
-    lets a screen offer "cancel" or "raise a credit note" correctly instead of offering both.
+    lets a screen offer "cancel" or "raise a credit note" correctly instead of offering both. A
+    cancellation already in flight, or already done, is a conflict: the newest row says so.
+
+    Row-locks the invoice first, so two requests racing to withdraw the same IRN serialize here
+    and the second one reads the first one's claim instead of writing a second.
     """
     at = at or _now()
-    invoice = await selectors.get_invoice(session, ctx.organization_id, payload.invoice_id)
+    invoice = await selectors.get_invoice(
+        session, ctx.organization_id, payload.invoice_id, for_update=True
+    )
     if invoice is None:
         raise NotFoundProblem("That invoice is not part of this organization")
     if payload.reason_code not in domain.IRN_CANCELLATION_REASONS:
@@ -1929,6 +2014,14 @@ async def cancel_filing(
     live = live_registration(filings)
     if live is None or live.irn is None:
         raise BusinessRuleProblem(f"{invoice.number} carries no registered IRN to cancel")
+    newest = filings[0]
+    if newest.status == "cancelling":
+        raise ConflictProblem(
+            f"A cancellation of IRN {live.irn} is already in progress; the reclaim sweep "
+            "finishes it if the portal was unreachable"
+        )
+    if newest.status == "cancelled":
+        raise ConflictProblem(f"IRN {live.irn} has already been cancelled")
     if live.ack_date is not None and not domain.cancellation_window_open(live.ack_date, at):
         # The window is computed from the acknowledgement the portal returned and this platform
         # stored, not from anything read at request time — so the deadline the read model shows
@@ -1940,19 +2033,90 @@ async def cancel_filing(
             f"{deadline.isoformat()}); the correction is a credit note, not a cancellation"
         )
 
-    try:
-        ack = client.cancel(
-            irn=live.irn, reason_code=payload.reason_code, remark=payload.remark, at=at
-        )
-    except IrpRejected as rejected:
+    claim = _append_filing(
+        session,
+        ctx,
+        invoice,
+        status="cancelling",
+        at=at,
+        irn=None,
+        ack_no=live.ack_no,
+        ack_date=live.ack_date,
+        error_code=payload.reason_code,
+        error=_cancel_remark(payload.reason_code, payload.remark),
+    )
+    await session.flush()
+    _audit_filing(
+        session,
+        ctx,
+        invoice,
+        claim,
+        action="einvoice.cancel_requested",
+        request=request,
+        detail={"irn": live.irn, "reason_code": payload.reason_code},
+    )
+    facts = CancelFacts(
+        invoice_id=invoice.id,
+        irn=live.irn,
+        ack_no=live.ack_no,
+        ack_date=live.ack_date,
+        reason_code=payload.reason_code,
+        remark=payload.remark,
+        at=at,
+    )
+    return CancelClaim(claim=claim, facts=facts)
+
+
+async def record_irn_cancellation(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    facts: CancelFacts,
+    outcome: _CancelCallOutcome,
+    *,
+    at: datetime,
+    request: Request | None = None,
+) -> EInvoiceFiling:
+    """The third act: append what the portal decided, and return the newest row.
+
+    * **cancelled** — a *new* row carrying the acknowledgement, the registration row left exactly
+      as it was so "registered, then withdrawn" reads off the history in order; audit + event.
+    * **rejected** — a `failed` row carrying the portal's code (the window closed, an unknown
+      IRN); terminal for this request.
+    * **unavailable** — nothing is appended. The `cancelling` claim already standing *is* the
+      record that a withdrawal is owed, and the reclaim sweep re-drives it; the caller is handed
+      that claim back.
+
+    **Idempotent against a second recorder.** A request whose portal call outlived the sweep's
+    lease, and the sweep that resumed the same claim, can both arrive here; the invoice is
+    row-locked and the newest row re-read, so whichever records second finds the withdrawal
+    already written (or the claim already resolved) and returns that instead of appending a
+    duplicate. Re-reads the invoice rather than trusting the claim's instance: nothing handed
+    across a network call can be assumed still current.
+    """
+    invoice = await selectors.get_invoice(
+        session, ctx.organization_id, facts.invoice_id, for_update=True
+    )
+    if invoice is None:  # pragma: no cover - defensive; existed moments ago in the claim
+        raise NotFoundProblem("That invoice is not part of this organization")
+    filings = await selectors.filings_for_invoice(session, ctx.organization_id, invoice.id)
+    newest = filings[0]
+
+    if outcome.kind == "unavailable":
+        return newest
+    if outcome.kind == "cancelled" and newest.status == "cancelled":
+        return newest  # somebody else recorded this very withdrawal first
+    if outcome.kind == "rejected" and newest.status != "cancelling":
+        return newest  # the claim was already resolved; a late refusal changes nothing
+
+    if outcome.kind == "rejected":
         filing = _append_filing(
             session,
             ctx,
             invoice,
             status="failed",
             at=at,
-            error_code=rejected.code,
-            error=rejected.message,
+            error_code=outcome.error_code,
+            error=outcome.error,
         )
         await session.flush()
         _audit_filing(
@@ -1960,9 +2124,10 @@ async def cancel_filing(
         )
         return filing
 
-    # The cancellation is a *new* row carrying the same IRN — the registration row is left exactly
-    # as it was, so "this document was registered, then withdrawn" reads off the history in order.
-    # The partial unique index on (org, irn) is why the withdrawn row cannot claim the IRN twice.
+    if outcome.ack is None:  # pragma: no cover - exhaustiveness
+        raise BusinessRuleProblem(f"unknown IRP cancel outcome {outcome.kind!r}")
+    # The partial unique index on (org, irn) is why the withdrawn row carries no IRN itself: it
+    # cannot claim the number twice.
     filing = _append_filing(
         session,
         ctx,
@@ -1970,10 +2135,10 @@ async def cancel_filing(
         status="cancelled",
         at=at,
         irn=None,
-        ack_no=live.ack_no,
-        ack_date=live.ack_date,
-        error_code=payload.reason_code,
-        error=payload.remark or domain.IRN_CANCELLATION_REASONS[payload.reason_code],
+        ack_no=facts.ack_no,
+        ack_date=facts.ack_date,
+        error_code=facts.reason_code,
+        error=_cancel_remark(facts.reason_code, facts.remark),
     )
     await session.flush()
     _audit_filing(session, ctx, invoice, filing, action="einvoice.cancelled", request=request)
@@ -1989,13 +2154,194 @@ async def cancel_filing(
             "invoice_id": str(invoice.id),
             "filing_id": str(filing.id),
             "number": invoice.number,
-            "irn": ack.irn,
-            "reason_code": payload.reason_code,
-            "cancelled_at": ack.cancel_date.isoformat(),
+            "irn": outcome.ack.irn,
+            "reason_code": facts.reason_code,
+            "cancelled_at": outcome.ack.cancel_date.isoformat(),
         },
         actor=_actor(ctx),
     )
     return filing
+
+
+async def cancel_filing(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    client: IrpClient,
+    payload: CancelFilingIn,
+    *,
+    request: Request | None = None,
+    at: datetime | None = None,
+) -> EInvoiceFiling:
+    """All three acts run back to back, inside whatever transaction the caller already holds.
+
+    Kept for the unit tests that exercise the cancellation rules against a hand-built session and
+    do not care about the transaction boundary. The real caller — `POST /internal/v1/einvoice/
+    filings:cancel` — runs `claim_irn_cancellation`, `call_irp_cancel` with **no transaction
+    open**, and `record_irn_cancellation`; see `app/api/internal.py`.
+    """
+    at = at or _now()
+    claimed = await claim_irn_cancellation(session, ctx, payload, at=at, request=request)
+    outcome = call_irp_cancel(client, claimed.facts)
+    return await record_irn_cancellation(
+        session, ctx, claimed.facts, outcome, at=at, request=request
+    )
+
+
+# --------------------------------------------------------------------- re-driving a stale filing
+# What `app/cron.py`'s reclaim sweep does with an e-invoice filing whose newest row has stood too
+# long: a `cancelling` claim whose process died (or whose portal was down) is re-driven through
+# the same three acts, and a `pending` outage whose scheduled retry was lost is handed back to
+# the automatic pipeline. Discovery is cross-tenant (`selectors.due_stale_filings`); everything
+# here runs under the tenant binding, on the app role.
+
+
+#: Every answer `claim_filing_redrive` / `claim_eway_redrive` can give, so the sweep's report and
+#: a test can both match on it.
+REDRIVE_OUTCOMES: frozenset[str] = frozenset(
+    {"not_due", "requeued", "exhausted", "cancel", "generate"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class FilingRedrive:
+    """What the sweep's first act decided for one stale e-invoice filing. `cancel` is set only
+    when the outcome is `"cancel"` — the portal call is still to come, with no transaction."""
+
+    outcome: str
+    cancel: CancelFacts | None = None
+
+
+async def claim_filing_redrive(
+    session: AsyncSession, ctx: ScopeContext, invoice_id: uuid.UUID, *, now: datetime
+) -> FilingRedrive:
+    """The sweep's first act for one invoice whose newest filing row is a stale `pending` or
+    `cancelling`. Runs under `SELECT ... FOR UPDATE SKIP LOCKED` on the invoice: one that a
+    request or another sweep replica is driving right now is `not_due` this tick, never queued
+    behind.
+
+    * **cancelling** — re-checked against its own deadline (`domain.resume_after`, growing with
+      every drive). Past `domain.MAX_COMPLIANCE_RESUMES` drives it appends a terminal `failed`
+      row carrying `retry_exhausted` instead: the poisoned-step guard, turning a withdrawal the
+      portal never confirms into a failure a person sees rather than a row re-driven forever.
+      Otherwise it appends a **fresh `cancelling` row** — the lease: nobody else can pass the
+      staleness test again until that row is itself stale — and hands back the facts to call
+      the portal with.
+    * **pending** — an outage whose retry was owed. The scheduler's own table is not this
+      service's to read, so "no live scheduler job" is inferred: the row has outlived the delay
+      its retry was scheduled for plus grace (`domain.pending_redrive_after`), and no
+      `filing_requested` has been staged since it was written (`selectors.filing_request_in_
+      flight`, the lease on a re-drive already queued). Then the pipeline is re-armed at the
+      next attempt number; the attempt budget (`domain.MAX_FILING_ATTEMPTS`) is what bounds it,
+      because the consumer turns an outage on the last attempt into a terminal
+      `retry_exhausted` row.
+    """
+    invoice = await selectors.get_invoice(
+        session, ctx.organization_id, invoice_id, for_update=True, skip_locked=True
+    )
+    if invoice is None:
+        return FilingRedrive("not_due")
+    filings = await selectors.filings_for_invoice(session, ctx.organization_id, invoice.id)
+    if not filings:
+        return FilingRedrive("not_due")
+    newest = filings[0]
+    statuses = [f.status for f in filings]
+
+    if newest.status == "pending":
+        attempts = domain.leading_claim_attempts(
+            statuses, claim="pending", chain=frozenset({"pending"})
+        )
+        if newest.attempted_at > now - domain.pending_redrive_after(attempts):
+            return FilingRedrive("not_due")
+        if await selectors.filing_request_in_flight(
+            session,
+            ctx.organization_id,
+            invoice.id,
+            event_type=EVT_INVOICE_FILING_REQUESTED,
+            after=newest.created_at,
+            lease=domain.FILING_RECLAIM_AFTER,
+        ):
+            return FilingRedrive("not_due")
+        if not domain.should_auto_file(
+            supply_type=invoice.supply_type,
+            document_type=invoice.document_type,
+            status=invoice.status,
+        ):
+            return FilingRedrive("not_due")
+        request_filing(
+            session,
+            ctx,
+            invoice,
+            attempt=min(attempts + 1, domain.MAX_FILING_ATTEMPTS),
+            trigger="reclaim",
+            now=now,
+        )
+        return FilingRedrive("requeued")
+
+    if newest.status != "cancelling":
+        return FilingRedrive("not_due")
+
+    attempts = domain.leading_claim_attempts(
+        statuses, claim="cancelling", chain=frozenset({"cancelling"})
+    )
+    if newest.attempted_at > now - domain.resume_after(attempts):
+        return FilingRedrive("not_due")
+    live = live_registration(filings)
+    if live is None or live.irn is None or newest.error_code is None:  # pragma: no cover
+        return FilingRedrive("not_due")  # a claim is only ever appended over a live registration
+
+    reason_code = newest.error_code
+    remark = newest.error or ""
+    if attempts >= domain.MAX_COMPLIANCE_RESUMES:
+        failed = _append_filing(
+            session,
+            ctx,
+            invoice,
+            status="failed",
+            at=now,
+            error_code=domain.ERR_RETRY_EXHAUSTED,
+            error=(
+                f"gave up cancelling IRN {live.irn} after {attempts} attempts; the portal "
+                "never confirmed the withdrawal"
+            ),
+        )
+        await session.flush()
+        _audit_filing(session, ctx, invoice, failed, action="einvoice.cancel_failed", request=None)
+        return FilingRedrive("exhausted")
+
+    renewal = _append_filing(
+        session,
+        ctx,
+        invoice,
+        status="cancelling",
+        at=now,
+        irn=None,
+        ack_no=live.ack_no,
+        ack_date=live.ack_date,
+        error_code=reason_code,
+        error=remark,
+    )
+    await session.flush()
+    _audit_filing(
+        session,
+        ctx,
+        invoice,
+        renewal,
+        action="einvoice.cancel_resumed",
+        request=None,
+        detail={"irn": live.irn, "reason_code": reason_code, "attempt": attempts + 1},
+    )
+    return FilingRedrive(
+        "cancel",
+        cancel=CancelFacts(
+            invoice_id=invoice.id,
+            irn=live.irn,
+            ack_no=live.ack_no,
+            ack_date=live.ack_date,
+            reason_code=reason_code,
+            remark=remark,
+            at=now,
+        ),
+    )
 
 
 def _audit_filing(
@@ -2006,11 +2352,14 @@ def _audit_filing(
     *,
     action: str,
     request: Request | None,
+    detail: dict[str, Any] | None = None,
 ) -> None:
     """Every filing attempt leaves an audit row as well as a ledger row.
 
     Not redundant: `einvoice_filings` records what the portal said, `audit_logs` records who asked
-    and from where. A compliance question needs both — "was it filed" and "who filed it".
+    and from where. A compliance question needs both — "was it filed" and "who filed it". `detail`
+    adds what a claim row cannot say in its own columns — which IRN a cancellation withdraws, and
+    the remark it gave.
     """
     record_audit(
         session,
@@ -2026,6 +2375,7 @@ def _audit_filing(
             "status": filing.status,
             "irn": filing.irn,
             "error_code": filing.error_code,
+            **(detail or {}),
         },
         request=request,
     )
@@ -2135,6 +2485,12 @@ async def record_purchase_document(
 # what the portal holds, then work out what it means. Keeping them apart is what lets the
 # reconciliation be re-run after the purchase book changes without re-fetching anything, which is
 # the ordinary case — the supplier's document did not change, our record of it did.
+#
+# And the pull itself is three acts (D3): `claim_ims_sync` (a short read — is the period real,
+# whose ledger is it), `fetch_ims_period` (the portal, with **no transaction open**), then
+# `record_ims_fetch` + `reconcile_ims_documents` in one short transaction. Nothing is written
+# before the fetch, so there is nothing for a crash in between to leave half-done: the caller
+# syncs again, and the ingest is idempotent on the portal's own record key.
 
 
 @dataclass(frozen=True, slots=True)
@@ -2147,23 +2503,19 @@ class IngestResult:
     documents: list[ImsDocument]
 
 
-async def ingest_ims_documents(
-    session: AsyncSession,
-    ctx: ScopeContext,
-    client: ImsClient,
-    *,
-    period: str,
-    at: datetime | None = None,
-    request: Request | None = None,
-) -> IngestResult:
-    """Pull one return period's supplier documents and store the ones not already held.
+@dataclass(frozen=True, slots=True)
+class ImsSyncTarget:
+    """Whose supplier ledger to fetch, for which period — everything `fetch_ims_period` needs,
+    as plain values, so the call holds nothing from the transaction that resolved them."""
 
-    Idempotent on `source_ref`, the portal's own reference for its row — *not* on the supplier's
-    document number. The distinction is the whole reconciliation: re-syncing August must not
-    duplicate anything, and a supplier who filed the same invoice twice must still show up as two
-    rows, because that duplicate is precisely what an operator needs to see and reject.
-    """
-    at = at or _now()
+    gstin: str
+    period: str
+
+
+async def claim_ims_sync(session: AsyncSession, ctx: ScopeContext, *, period: str) -> ImsSyncTarget:
+    """The first act: refuse a period that does not exist and an organization with no
+    registration — both answerable without the portal — and resolve the GSTIN to fetch for.
+    Writes nothing."""
     try:
         domain.parse_period(period)
     except ValueError as exc:
@@ -2175,27 +2527,73 @@ async def ingest_ims_documents(
             "This organization has no GST registration configured, so there is no supplier "
             "ledger to fetch"
         )
+    return ImsSyncTarget(gstin=registration.gstin, period=period)
 
+
+def fetch_ims_period(client: ImsClient, target: ImsSyncTarget) -> list[ImsSupplierDocument]:
+    """The second act, and the only one that touches the portal. Called with **no session and no
+    transaction open** (D3), so a slow IMS holds nothing from this service's connection pool.
+
+    Unlike a filing, a failed fetch changes nothing and leaves nothing behind: there is no
+    attempt to record, because nothing was asserted to anybody. Answered as an upstream failure
+    so the caller retries rather than concluding the period is empty.
+    """
     try:
-        fetched = client.fetch(gstin=registration.gstin, period=period)
+        return list(client.fetch(gstin=target.gstin, period=target.period))
     except ImsUnavailable as outage:
-        # Unlike a filing, a failed fetch changes nothing and leaves nothing behind: there is no
-        # attempt to record, because nothing was asserted to anybody. Answered as an upstream
-        # failure so the caller retries rather than concluding the period is empty.
         raise UpstreamUnavailableProblem(
             f"The IMS portal could not be reached: {outage}"
         ) from outage
 
-    existing = await selectors.ims_documents_by_source_ref(
-        session, ctx.organization_id, [doc.source_ref for doc in fetched]
-    )
+
+#: Rows per `INSERT ... ON CONFLICT` statement. A period can hold thousands of supplier documents,
+#: and one statement per period would run into the driver's bind-parameter ceiling long before it
+#: ran into anything else.
+_IMS_INSERT_CHUNK = 500
+
+
+async def record_ims_fetch(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    fetched: list[ImsSupplierDocument],
+    *,
+    period: str,
+    portal: str,
+    at: datetime | None = None,
+    request: Request | None = None,
+) -> IngestResult:
+    """The third act: store the documents not already held, announce each new one, audit the sync.
+
+    Idempotent on `source_ref`, the portal's own reference for its row — *not* on the supplier's
+    document number. The distinction is the whole reconciliation: re-syncing August must not
+    duplicate anything, and a supplier who filed the same invoice twice must still show up as two
+    rows, because that duplicate is precisely what an operator needs to see and reject.
+
+    Enforced by the database, not by a read-then-write: `INSERT ... ON CONFLICT (organization_id,
+    source_ref) DO NOTHING RETURNING`, so two syncs of the same period racing each other — which
+    the fetch now happening outside any transaction makes an ordinary thing rather than a
+    theoretical one — both succeed, and only the rows that were genuinely new come back to be
+    announced. Every row is validated (`_ims_row`) before anything is inserted; a malformed one
+    refuses the whole sync.
+    """
+    at = at or _now()
+    values = [_ims_row(ctx, doc, period=period, at=at) for doc in fetched]
 
     created: list[ImsDocument] = []
-    for doc in fetched:
-        if doc.source_ref in existing:
-            continue
-        created.append(_ingest_one(session, ctx, doc, period=period, at=at))
-    await session.flush()
+    for start in range(0, len(values), _IMS_INSERT_CHUNK):
+        chunk = values[start : start + _IMS_INSERT_CHUNK]
+        stmt = (
+            pg_insert(ImsDocument)
+            .values(chunk)
+            .on_conflict_do_nothing(constraint="uq_ims_documents_org_source_ref")
+            .returning(ImsDocument)
+        )
+        created.extend((await session.scalars(stmt)).all())
+    # `RETURNING` carries no ordering promise; the events go out in the portal's own order.
+    order: dict[str, int] = {}
+    for index, doc in enumerate(fetched):
+        order.setdefault(doc.source_ref, index)
+    created.sort(key=lambda row: order.get(row.source_ref, len(order)))
 
     for row in created:
         publish_event(
@@ -2227,7 +2625,7 @@ async def ingest_ims_documents(
         entity_id=None,
         after={
             "period": period,
-            "portal": client.name,
+            "portal": portal,
             "fetched": len(fetched),
             "created": len(created),
         },
@@ -2236,15 +2634,37 @@ async def ingest_ims_documents(
     return IngestResult(fetched=len(fetched), created=len(created), documents=created)
 
 
-def _ingest_one(
+async def ingest_ims_documents(
     session: AsyncSession,
+    ctx: ScopeContext,
+    client: ImsClient,
+    *,
+    period: str,
+    at: datetime | None = None,
+    request: Request | None = None,
+) -> IngestResult:
+    """All three acts back to back, inside whatever transaction the caller already holds.
+
+    Kept for the unit tests that exercise the ingest rules against a hand-built session and do not
+    care about the transaction boundary. The real caller — `POST /internal/v1/ims/sync` — runs
+    `claim_ims_sync`, `fetch_ims_period` with **no transaction open**, then `record_ims_fetch`
+    and the reconciliation in one short transaction; see `app/api/internal.py`.
+    """
+    target = await claim_ims_sync(session, ctx, period=period)
+    fetched = fetch_ims_period(client, target)
+    return await record_ims_fetch(
+        session, ctx, fetched, period=period, portal=client.name, at=at, request=request
+    )
+
+
+def _ims_row(
     ctx: ScopeContext,
     doc: ImsSupplierDocument,
     *,
     period: str,
     at: datetime,
-) -> ImsDocument:
-    """Validate one inbound document and stage it.
+) -> dict[str, Any]:
+    """Validate one inbound document and return the row to insert.
 
     A malformed supplier GSTIN refuses the **whole sync**, loudly, naming the row. That is the
     harsher of the two available choices — the other being to skip the row — and it is the right
@@ -2264,29 +2684,28 @@ def _ingest_one(
             f"The portal returned {doc.source_ref!r} with an unusable supplier GSTIN: {exc}"
         ) from exc
 
-    row = ImsDocument(
-        organization_id=ctx.organization_id,
-        created_by=str(ctx.principal.sub),
-        source_ref=doc.source_ref,
-        source="ims",
-        supplier_gstin=supplier.value,
-        supplier_name=doc.supplier_name,
-        document_number=doc.document_number,
-        document_type=doc.document_type,
-        document_date=doc.document_date,
-        period=doc.period or period,
-        taxable_minor=doc.taxable_minor,
-        cgst_minor=doc.cgst_minor,
-        sgst_minor=doc.sgst_minor,
-        igst_minor=doc.igst_minor,
-        total_minor=doc.total_minor,
-        irn=doc.irn,
+    return {
+        "id": uuid.uuid4(),
+        "organization_id": ctx.organization_id,
+        "created_by": str(ctx.principal.sub),
+        "source_ref": doc.source_ref,
+        "source": "ims",
+        "supplier_gstin": supplier.value,
+        "supplier_name": doc.supplier_name,
+        "document_number": doc.document_number,
+        "document_type": doc.document_type,
+        "document_date": doc.document_date,
+        "period": doc.period or period,
+        "taxable_minor": doc.taxable_minor,
+        "cgst_minor": doc.cgst_minor,
+        "sgst_minor": doc.sgst_minor,
+        "igst_minor": doc.igst_minor,
+        "total_minor": doc.total_minor,
+        "irn": doc.irn,
         # Every document starts undecided. Nothing this service does moves it — only a person.
-        status="pending",
-        fetched_at=at,
-    )
-    session.add(row)
-    return row
+        "status": "pending",
+        "fetched_at": at,
+    }
 
 
 # --------------------------------------------------------------------- IMS reconciliation
@@ -3398,6 +3817,15 @@ async def registration_for(
 # **deadline is this platform's arithmetic** over the distance it stored and that timestamp. A
 # deadline only the portal knows is one a screen cannot explain and a test cannot check, and the
 # consequence of a screen and a checkpoint disagreeing falls on a driver.
+#
+# Both writes are claim / call / record (D3, ADR-0015 addendum, `docs/io-outside-transactions.md`):
+# a `submitting` or `cancelling` claim row is committed first, the portal is called with **no
+# transaction open**, and the outcome is appended in a second short transaction. Unlike an IRN
+# registration the claim *is* a row, because the transport facts are the caller's and on no
+# invoice — a resumed attempt can only find them there. A crash between the call and the record
+# leaves the claim standing; `app/cron.py`'s reclaim sweep re-drives it, and the portal's "already
+# generated" / "already cancelled" answers (`EwayAlreadyGenerated`, `EwayAlreadyCancelled`) are
+# recorded as the successes they are.
 
 
 def build_eway_payload(
@@ -3407,6 +3835,7 @@ def build_eway_payload(
     *,
     buyer_name: str,
     at: datetime,
+    idempotency_key: str = "",
 ) -> EwayPayload:
     """Assemble the consignment the portal reasons about, from a frozen document plus the
     transport facts, which are the caller's — a distance and a vehicle are not on an invoice."""
@@ -3446,6 +3875,7 @@ def build_eway_payload(
             )
             for line in invoice.lines
         ],
+        idempotency_key=idempotency_key,
     )
 
 
@@ -3490,25 +3920,97 @@ def _append_eway(
     return bill
 
 
-async def generate_eway_bill(
+def _transport_of(row: EwayBill) -> GenerateEwayIn:
+    """The transport facts a stored attempt carries, as the request that made it would have
+    stated them — how a claim row hands its facts to a resumed attempt, and how a withdrawal
+    row copies the facts of the bill it withdraws."""
+    return GenerateEwayIn(
+        organization_id=row.organization_id,
+        invoice_id=row.invoice_id,
+        distance_km=row.distance_km,
+        transport_mode=row.transport_mode,
+        vehicle_no=row.vehicle_no,
+        transporter_id=row.transporter_id,
+        transport_doc_no=row.transport_doc_no,
+        transport_doc_date=row.transport_doc_date,
+        over_dimensional=row.over_dimensional,
+    )
+
+
+def _eway_key(invoice: Invoice, transport: GenerateEwayIn, bills: list[EwayBill]) -> str:
+    return domain.eway_idempotency_key(
+        invoice_id=invoice.id,
+        generation=sum(1 for bill in bills if bill.status == "generated") + 1,
+        transport_mode=transport.transport_mode,
+        vehicle_no=transport.vehicle_no,
+        transporter_id=transport.transporter_id,
+        transport_doc_no=transport.transport_doc_no,
+        transport_doc_date=transport.transport_doc_date,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class EwayGenerateFacts:
+    """What `claim_eway_generation` (or the sweep's resume) committed, as plain values: the
+    transport facts to record the outcome against and the consignment to send."""
+
+    invoice_id: uuid.UUID
+    transport: GenerateEwayIn
+    payload: EwayPayload
+    #: The clock reading the claim row was written at; every row this attempt appends uses it.
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _EwayGenerateOutcome:
+    kind: str  # "generated" | "rejected" | "unavailable"
+    ack: EwayAck | None = None
+    error_code: str | None = None
+    error: str | None = None
+
+
+def call_eway_generate(client: EwayClient, payload: EwayPayload) -> _EwayGenerateOutcome:
+    """The second act of a generation, and the only one that touches the portal. Called with
+    **no session and no transaction open** (D3).
+
+    `EwayAlreadyGenerated` is folded into `"generated"`: the portal's answer to a repeat of the
+    same (document, transporter/vehicle part) key — the resumed half of a call whose first
+    attempt crashed before it was recorded — carrying the bill it already issued, which is
+    exactly as good as a fresh one. An outage is `"unavailable"`, recorded as `pending`."""
+    try:
+        ack = client.generate(payload)
+    except EwayAlreadyGenerated as already:
+        return _EwayGenerateOutcome(kind="generated", ack=already.ack)
+    except EwayRejected as rejected:
+        return _EwayGenerateOutcome(
+            kind="rejected", error_code=rejected.code, error=rejected.message
+        )
+    except EwayUnavailable as outage:
+        return _EwayGenerateOutcome(kind="unavailable", error=str(outage))
+    return _EwayGenerateOutcome(kind="generated", ack=ack)
+
+
+async def claim_eway_generation(
     session: AsyncSession,
     ctx: ScopeContext,
-    client: EwayClient,
     payload: GenerateEwayIn,
     *,
-    request: Request | None = None,
     at: datetime | None = None,
-) -> EwayBill:
-    """Raise an e-Way bill for one document's goods movement, and append what came back.
+    request: Request | None = None,
+) -> EwayGenerateFacts:
+    """The first act: refuse everything that does not need the portal, then commit a
+    `submitting` claim row carrying the transport facts, audited as `eway.generate_requested`.
 
-    The refusals that happen *before* the portal is called are errors, because the caller asked
-    for something impossible and deserves to be told: an unknown document, a consignment under
-    the threshold, no registration, a bill already standing. Everything from the call onward
-    becomes a row — a rejection is a `failed` attempt, an outage a `pending` one — because the
-    attempt happened and the ledger is what proves it.
+    The refusals here are errors, because the caller asked for something impossible and deserves
+    to be told: an unknown document, a consignment under the threshold, an impossible distance,
+    no registration, a bill already standing, or a generation already in flight (the newest row
+    is somebody else's `submitting` claim — the sweep finishes it if its process died). Row-locks
+    the invoice first, so two requests racing for the same consignment serialize here.
     """
     at = at or _now()
-    invoice = await selectors.get_invoice(session, ctx.organization_id, payload.invoice_id)
+    invoice = await selectors.get_invoice(
+        session, ctx.organization_id, payload.invoice_id, for_update=True
+    )
     if invoice is None:
         raise NotFoundProblem("That invoice is not part of this organization")
 
@@ -3534,6 +4036,12 @@ async def generate_eway_bill(
         )
 
     bills = await selectors.eway_bills_for_invoice(session, ctx.organization_id, invoice.id)
+    if bills and bills[0].status in ("submitting", "cancelling"):
+        raise ConflictProblem(
+            f"An e-Way {'generation' if bills[0].status == 'submitting' else 'withdrawal'} for "
+            f"{invoice.number} is already in progress; the reclaim sweep finishes it if the "
+            "portal was unreachable"
+        )
     live = selectors.live_eway_bill(bills, at=at)
     if live is not None:
         raise ConflictProblem(
@@ -3544,105 +4052,240 @@ async def generate_eway_bill(
 
     customer = await selectors.get_customer(session, ctx.organization_id, invoice.customer_id)
     eway_payload = build_eway_payload(
-        invoice, registration, payload, buyer_name=customer.name if customer else "", at=at
+        invoice,
+        registration,
+        payload,
+        buyer_name=customer.name if customer else "",
+        at=at,
+        idempotency_key=_eway_key(invoice, payload, bills),
     )
+    claim = _append_eway(session, ctx, invoice, payload, status="submitting", at=at)
+    await session.flush()
+    _audit_eway(
+        session,
+        ctx,
+        invoice,
+        claim,
+        action="eway.generate_requested",
+        request=request,
+        detail={"idempotency_key": eway_payload.idempotency_key},
+    )
+    return EwayGenerateFacts(invoice_id=invoice.id, transport=payload, payload=eway_payload, at=at)
 
-    try:
-        ack = client.generate(eway_payload)
-    except EwayRejected as rejected:
+
+async def record_eway_generation(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    facts: EwayGenerateFacts,
+    outcome: _EwayGenerateOutcome,
+    *,
+    portal: str,
+    request: Request | None = None,
+) -> EwayBill:
+    """The third act: append what the portal decided, and return it.
+
+    * **generated** — a `generated` row with the number and the validity this platform computes
+      from the stored distance; audit + `EVT_EWAY_GENERATED`. If the same number is already on
+      the ledger — a second recorder of the same claim, the portal having answered both with its
+      one bill — that row is returned instead: success-by-lookup, never a duplicate.
+    * **rejected** — a `failed` row carrying the portal's code; audit + `EVT_EWAY_FAILED`
+      (`retryable: false`).
+    * **unavailable** — a `pending` row (the goods are loaded; somebody is going to try again,
+      and the reclaim sweep is that somebody); audit + `EVT_EWAY_FAILED` (`retryable: true`).
+
+    A refusal or an outage arriving after the claim was already resolved by somebody else (the
+    newest row is no longer a `submitting` claim) appends nothing. The invoice is row-locked so
+    two recorders serialize and the second sees the first's row.
+    """
+    invoice = await selectors.get_invoice(
+        session, ctx.organization_id, facts.invoice_id, for_update=True
+    )
+    if invoice is None:  # pragma: no cover - defensive; existed moments ago in the claim
+        raise NotFoundProblem("That invoice is not part of this organization")
+    bills = await selectors.eway_bills_for_invoice(session, ctx.organization_id, invoice.id)
+    transport = facts.transport
+
+    if outcome.kind == "generated":
+        ack = outcome.ack
+        if ack is None:  # pragma: no cover - exhaustiveness
+            raise BusinessRuleProblem("a generated outcome carried no acknowledgement")
+        recorded = next(
+            (b for b in bills if b.status == "generated" and b.eway_bill_no == ack.eway_bill_no),
+            None,
+        )
+        if recorded is not None:
+            return recorded
+        # Validity is computed here, from the distance this platform is about to store and the
+        # moment the portal says the bill began — never taken from the portal's own answer, so
+        # the deadline a screen shows and the deadline a checkpoint enforces are the same
+        # arithmetic.
+        valid_until = domain.eway_valid_until(
+            ack.valid_from, transport.distance_km, over_dimensional=transport.over_dimensional
+        )
         bill = _append_eway(
             session,
             ctx,
             invoice,
-            payload,
+            transport,
+            status="generated",
+            at=facts.at,
+            eway_bill_no=ack.eway_bill_no,
+            valid_from=ack.valid_from,
+            valid_until=valid_until,
+        )
+        await session.flush()
+        _audit_eway(session, ctx, invoice, bill, action="eway.generated", request=request)
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=ctx.organization_id,
+            event_type=EVT_EWAY_GENERATED,
+            aggregate_type="invoice",
+            aggregate_id=invoice.id,
+            payload={
+                "organization_id": str(ctx.organization_id),
+                "invoice_id": str(invoice.id),
+                "eway_bill_id": str(bill.id),
+                "number": invoice.number,
+                "eway_bill_no": bill.eway_bill_no,
+                "transport_mode": bill.transport_mode,
+                "distance_km": bill.distance_km,
+                "valid_from": ack.valid_from.isoformat(),
+                "valid_until": valid_until.isoformat(),
+                "portal": portal,
+            },
+            actor=_actor(ctx),
+        )
+        return bill
+
+    newest = bills[0]
+    if newest.status != "submitting":
+        return newest  # resolved by somebody else since this claim was made
+
+    if outcome.kind == "rejected":
+        bill = _append_eway(
+            session,
+            ctx,
+            invoice,
+            transport,
             status="failed",
-            at=at,
-            error_code=rejected.code,
-            error=rejected.message,
+            at=facts.at,
+            error_code=outcome.error_code,
+            error=outcome.error,
         )
         await session.flush()
         _audit_eway(session, ctx, invoice, bill, action="eway.rejected", request=request)
-        _publish_eway_failed(session, ctx, invoice, bill, retryable=False, portal=client.name)
-        return bill
-    except EwayUnavailable as outage:
-        # The document is fine, the portal is not — and here the goods are already loaded, which
-        # is why the row is `pending` rather than `failed`: somebody is going to try again.
-        bill = _append_eway(
-            session,
-            ctx,
-            invoice,
-            payload,
-            status="pending",
-            at=at,
-            error_code=domain.ERR_PORTAL_UNAVAILABLE,
-            error=str(outage),
-        )
-        await session.flush()
-        _audit_eway(session, ctx, invoice, bill, action="eway.pending", request=request)
-        _publish_eway_failed(session, ctx, invoice, bill, retryable=True, portal=client.name)
+        _publish_eway_failed(session, ctx, invoice, bill, retryable=False, portal=portal)
         return bill
 
-    # Validity is computed here, from the distance this platform is about to store and the
-    # moment the portal says the bill began — never taken from the portal's own answer, so the
-    # deadline a screen shows and the deadline a checkpoint enforces are the same arithmetic.
-    valid_until = domain.eway_valid_until(
-        ack.valid_from, payload.distance_km, over_dimensional=payload.over_dimensional
-    )
+    # The document is fine, the portal is not — and here the goods are already loaded, which is
+    # why the row is `pending` rather than `failed`: somebody is going to try again.
     bill = _append_eway(
         session,
         ctx,
         invoice,
-        payload,
-        status="generated",
-        at=at,
-        eway_bill_no=ack.eway_bill_no,
-        valid_from=ack.valid_from,
-        valid_until=valid_until,
+        transport,
+        status="pending",
+        at=facts.at,
+        error_code=domain.ERR_PORTAL_UNAVAILABLE,
+        error=outcome.error,
     )
     await session.flush()
-    _audit_eway(session, ctx, invoice, bill, action="eway.generated", request=request)
-    publish_event(
-        session,
-        OutboxEvent,
-        organization_id=ctx.organization_id,
-        event_type=EVT_EWAY_GENERATED,
-        aggregate_type="invoice",
-        aggregate_id=invoice.id,
-        payload={
-            "organization_id": str(ctx.organization_id),
-            "invoice_id": str(invoice.id),
-            "eway_bill_id": str(bill.id),
-            "number": invoice.number,
-            "eway_bill_no": bill.eway_bill_no,
-            "transport_mode": bill.transport_mode,
-            "distance_km": bill.distance_km,
-            "valid_from": ack.valid_from.isoformat(),
-            "valid_until": valid_until.isoformat(),
-            "portal": client.name,
-        },
-        actor=_actor(ctx),
-    )
+    _audit_eway(session, ctx, invoice, bill, action="eway.pending", request=request)
+    _publish_eway_failed(session, ctx, invoice, bill, retryable=True, portal=portal)
     return bill
 
 
-async def cancel_eway_bill(
+async def generate_eway_bill(
     session: AsyncSession,
     ctx: ScopeContext,
     client: EwayClient,
-    payload: CancelEwayIn,
+    payload: GenerateEwayIn,
     *,
     request: Request | None = None,
     at: datetime | None = None,
 ) -> EwayBill:
-    """Withdraw a raised bill, and append the withdrawal as its own row.
+    """All three acts back to back, inside whatever transaction the caller already holds.
+
+    Kept for the unit tests that exercise the generation rules against a hand-built session and
+    do not care about the transaction boundary. The real caller — `POST /internal/v1/eway/bills`
+    — runs `claim_eway_generation`, `call_eway_generate` with **no transaction open**, and
+    `record_eway_generation`; see `app/api/internal.py`.
+    """
+    facts = await claim_eway_generation(session, ctx, payload, at=at, request=request)
+    outcome = call_eway_generate(client, facts.payload)
+    return await record_eway_generation(
+        session, ctx, facts, outcome, portal=client.name, request=request
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class EwayCancelFacts:
+    """What a withdrawal's second and third acts need, as plain values."""
+
+    invoice_id: uuid.UUID
+    eway_bill_no: str
+    reason_code: str
+    remark: str
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _EwayCancelOutcome:
+    kind: str  # "cancelled" | "rejected" | "unavailable"
+    ack: EwayCancelAck | None = None
+    error_code: str | None = None
+    error: str | None = None
+
+
+def call_eway_cancel(client: EwayClient, facts: EwayCancelFacts) -> _EwayCancelOutcome:
+    """The second act of a withdrawal. **No session and no transaction open** (D3).
+    `EwayAlreadyCancelled` is success-by-fetch, folded into `"cancelled"`."""
+    try:
+        ack = client.cancel(
+            eway_bill_no=facts.eway_bill_no,
+            reason_code=facts.reason_code,
+            remark=facts.remark,
+            at=facts.at,
+        )
+    except EwayAlreadyCancelled as already:
+        return _EwayCancelOutcome(kind="cancelled", ack=already.ack)
+    except EwayRejected as rejected:
+        return _EwayCancelOutcome(kind="rejected", error_code=rejected.code, error=rejected.message)
+    except EwayUnavailable as outage:
+        return _EwayCancelOutcome(kind="unavailable", error=str(outage))
+    return _EwayCancelOutcome(kind="cancelled", ack=ack)
+
+
+def _eway_cancel_remark(reason_code: str, remark: str) -> str:
+    return remark or domain.EWAY_CANCELLATION_REASONS[reason_code]
+
+
+async def claim_eway_cancellation(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    payload: CancelEwayIn,
+    *,
+    at: datetime | None = None,
+    request: Request | None = None,
+) -> EwayCancelFacts:
+    """The first act of a withdrawal: refuse what the ledger can refuse, then commit a
+    `cancelling` claim carrying the reason and the bill's own validity, audited as
+    `eway.cancel_requested`.
 
     The 24-hour window is checked against the **stored** `valid_from` — the moment the platform
     recorded the bill as beginning — rather than left to the portal to refuse. Same reasoning as
     the IRN's window: the answer is knowable locally, and knowing it is what lets a screen offer
-    "cancel" only when it will work.
+    "cancel" only when it will work. A withdrawal already in flight is a conflict.
+
+    The claim row carries **no bill number**: the partial unique index on `(org, eway_bill_no)`
+    would refuse a second row naming it. The number is found again, when needed, as the
+    `generated` row behind the claim (`selectors.generation_under_claim`).
     """
     at = at or _now()
-    invoice = await selectors.get_invoice(session, ctx.organization_id, payload.invoice_id)
+    invoice = await selectors.get_invoice(
+        session, ctx.organization_id, payload.invoice_id, for_update=True
+    )
     if invoice is None:
         raise NotFoundProblem("That invoice is not part of this organization")
     if payload.reason_code not in domain.EWAY_CANCELLATION_REASONS:
@@ -3650,6 +4293,11 @@ async def cancel_eway_bill(
         raise BusinessRuleProblem(f"Cancellation reason must be one of: {reasons}")
 
     bills = await selectors.eway_bills_for_invoice(session, ctx.organization_id, invoice.id)
+    if bills and bills[0].status == "cancelling":
+        raise ConflictProblem(
+            f"A withdrawal of {invoice.number}'s e-Way bill is already in progress; the reclaim "
+            "sweep finishes it if the portal was unreachable"
+        )
     live = selectors.live_eway_bill(bills, at=at)
     if live is None or live.eway_bill_no is None:
         raise BusinessRuleProblem(
@@ -3665,40 +4313,87 @@ async def cancel_eway_bill(
             f"closed at {deadline.isoformat()}); the movement has to be reported as it happened"
         )
 
-    attempt_payload = GenerateEwayIn(
-        organization_id=ctx.organization_id,
+    claim = _append_eway(
+        session,
+        ctx,
+        invoice,
+        _transport_of(live),
+        status="cancelling",
+        at=at,
+        eway_bill_no=None,
+        valid_from=live.valid_from,
+        valid_until=live.valid_until,
+        error_code=payload.reason_code,
+        error=_eway_cancel_remark(payload.reason_code, payload.remark),
+    )
+    await session.flush()
+    _audit_eway(
+        session,
+        ctx,
+        invoice,
+        claim,
+        action="eway.cancel_requested",
+        request=request,
+        detail={"withdraws": live.eway_bill_no, "reason_code": payload.reason_code},
+    )
+    return EwayCancelFacts(
         invoice_id=invoice.id,
-        distance_km=live.distance_km,
-        transport_mode=live.transport_mode,
-        vehicle_no=live.vehicle_no,
-        transporter_id=live.transporter_id,
-        transport_doc_no=live.transport_doc_no,
-        transport_doc_date=live.transport_doc_date,
-        over_dimensional=live.over_dimensional,
+        eway_bill_no=live.eway_bill_no,
+        reason_code=payload.reason_code,
+        remark=payload.remark,
+        at=at,
     )
 
-    try:
-        ack = client.cancel(
-            eway_bill_no=live.eway_bill_no,
-            reason_code=payload.reason_code,
-            remark=payload.remark,
-            at=at,
-        )
-    except EwayRejected as rejected:
+
+async def record_eway_cancellation(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    facts: EwayCancelFacts,
+    outcome: _EwayCancelOutcome,
+    *,
+    request: Request | None = None,
+) -> EwayBill:
+    """The third act of a withdrawal, the e-Way twin of `record_irn_cancellation`: a
+    `cancelled` row (audit + `EVT_EWAY_CANCELLED`), a `failed` row on a refusal, or — on an
+    outage — nothing, the `cancelling` claim standing as the record that the withdrawal is owed.
+    Idempotent against a second recorder the same way: invoice row-locked, newest row re-read.
+    """
+    invoice = await selectors.get_invoice(
+        session, ctx.organization_id, facts.invoice_id, for_update=True
+    )
+    if invoice is None:  # pragma: no cover - defensive; existed moments ago in the claim
+        raise NotFoundProblem("That invoice is not part of this organization")
+    bills = await selectors.eway_bills_for_invoice(session, ctx.organization_id, invoice.id)
+    newest = bills[0]
+
+    if outcome.kind == "unavailable":
+        return newest
+    if outcome.kind == "cancelled" and newest.status == "cancelled":
+        return newest
+    if outcome.kind == "rejected" and newest.status != "cancelling":
+        return newest
+    generation = selectors.generation_under_claim(bills)
+    if generation is None:  # pragma: no cover - a claim is only appended over a generated row
+        return newest
+
+    if outcome.kind == "rejected":
         bill = _append_eway(
             session,
             ctx,
             invoice,
-            attempt_payload,
+            _transport_of(generation),
             status="failed",
-            at=at,
-            error_code=rejected.code,
-            error=rejected.message,
+            at=facts.at,
+            error_code=outcome.error_code,
+            error=outcome.error,
         )
         await session.flush()
         _audit_eway(session, ctx, invoice, bill, action="eway.cancel_failed", request=request)
         return bill
 
+    ack = outcome.ack
+    if ack is None:  # pragma: no cover - exhaustiveness
+        raise BusinessRuleProblem("a cancelled outcome carried no acknowledgement")
     # The withdrawal is a **new** row and it does not carry the bill number: the partial unique
     # index on (org, eway_bill_no) is what would refuse a second claim on it, and more to the
     # point the generation row is left exactly as it was, so "raised, then withdrawn" reads off
@@ -3707,14 +4402,14 @@ async def cancel_eway_bill(
         session,
         ctx,
         invoice,
-        attempt_payload,
+        _transport_of(generation),
         status="cancelled",
-        at=at,
+        at=facts.at,
         eway_bill_no=None,
-        valid_from=live.valid_from,
-        valid_until=live.valid_until,
-        error_code=payload.reason_code,
-        error=payload.remark or domain.EWAY_CANCELLATION_REASONS[payload.reason_code],
+        valid_from=generation.valid_from,
+        valid_until=generation.valid_until,
+        error_code=facts.reason_code,
+        error=_eway_cancel_remark(facts.reason_code, facts.remark),
     )
     await session.flush()
     _audit_eway(session, ctx, invoice, bill, action="eway.cancelled", request=request)
@@ -3731,12 +4426,202 @@ async def cancel_eway_bill(
             "eway_bill_id": str(bill.id),
             "number": invoice.number,
             "eway_bill_no": ack.eway_bill_no,
-            "reason_code": payload.reason_code,
+            "reason_code": facts.reason_code,
             "cancelled_at": ack.cancel_date.isoformat(),
         },
         actor=_actor(ctx),
     )
     return bill
+
+
+async def cancel_eway_bill(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    client: EwayClient,
+    payload: CancelEwayIn,
+    *,
+    request: Request | None = None,
+    at: datetime | None = None,
+) -> EwayBill:
+    """All three acts back to back, inside whatever transaction the caller already holds — for
+    the unit tests. The real caller — `POST /internal/v1/eway/bills:cancel` — runs
+    `claim_eway_cancellation`, `call_eway_cancel` with **no transaction open**, and
+    `record_eway_cancellation`; see `app/api/internal.py`."""
+    facts = await claim_eway_cancellation(session, ctx, payload, at=at, request=request)
+    outcome = call_eway_cancel(client, facts)
+    return await record_eway_cancellation(session, ctx, facts, outcome, request=request)
+
+
+@dataclass(frozen=True, slots=True)
+class EwayRedrive:
+    """What the sweep's first act decided for one stale e-Way row. `generate` / `cancel` carry
+    the facts for the portal call still to come, with no transaction open."""
+
+    outcome: str
+    generate: EwayGenerateFacts | None = None
+    cancel: EwayCancelFacts | None = None
+
+
+#: The rows a generation chain is made of, newest first: `submitting` claims, and the `pending`
+#: rows their outages left. Only the claims count as drives (`domain.leading_claim_attempts`).
+_EWAY_GENERATION_CHAIN: frozenset[str] = frozenset({"submitting", "pending"})
+
+
+async def claim_eway_redrive(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    invoice_id: uuid.UUID,
+    *,
+    now: datetime,
+    portal: str,
+) -> EwayRedrive:
+    """The sweep's first act for one invoice whose newest e-Way row is a stale `submitting`,
+    `pending` or `cancelling`. Same shape as `claim_filing_redrive`: `SELECT ... FOR UPDATE SKIP
+    LOCKED` on the invoice, the deadline re-checked under the tenant binding against
+    `domain.resume_after(attempts)` (the bounded backoff), the poisoned-step guard at
+    `domain.MAX_COMPLIANCE_RESUMES` drives (a terminal `failed` row carrying `retry_exhausted`),
+    and otherwise a **fresh claim row** appended as the lease before the facts are handed back.
+
+    A generation is re-sent with the same idempotency key its first claim computed — the key is a
+    function of the stored transport facts and the ledger, not of anything a crash could lose —
+    so a portal that already issued the bill answers "already generated" with it.
+    """
+    invoice = await selectors.get_invoice(
+        session, ctx.organization_id, invoice_id, for_update=True, skip_locked=True
+    )
+    if invoice is None:
+        return EwayRedrive("not_due")
+    bills = await selectors.eway_bills_for_invoice(session, ctx.organization_id, invoice.id)
+    if not bills:
+        return EwayRedrive("not_due")
+    newest = bills[0]
+    statuses = [b.status for b in bills]
+
+    if newest.status in _EWAY_GENERATION_CHAIN:
+        attempts = domain.leading_claim_attempts(
+            statuses, claim="submitting", chain=_EWAY_GENERATION_CHAIN
+        )
+        if newest.attempted_at > now - domain.resume_after(attempts):
+            return EwayRedrive("not_due")
+        transport = _transport_of(newest)
+        registration = await selectors.get_gst_registration(session, ctx.organization_id)
+        if attempts >= domain.MAX_COMPLIANCE_RESUMES or registration is None:
+            failed = _append_eway(
+                session,
+                ctx,
+                invoice,
+                transport,
+                status="failed",
+                at=now,
+                error_code=(
+                    domain.ERR_NO_REGISTRATION
+                    if registration is None
+                    else domain.ERR_RETRY_EXHAUSTED
+                ),
+                error=(
+                    "this organization no longer has a GST registration configured"
+                    if registration is None
+                    else f"gave up raising an e-Way bill for {invoice.number} after {attempts} "
+                    "attempts; the portal never answered"
+                ),
+            )
+            await session.flush()
+            _audit_eway(session, ctx, invoice, failed, action="eway.failed", request=None)
+            _publish_eway_failed(session, ctx, invoice, failed, retryable=False, portal=portal)
+            return EwayRedrive("exhausted")
+
+        customer = await selectors.get_customer(session, ctx.organization_id, invoice.customer_id)
+        payload = build_eway_payload(
+            invoice,
+            registration,
+            transport,
+            buyer_name=customer.name if customer else "",
+            at=now,
+            idempotency_key=_eway_key(invoice, transport, bills),
+        )
+        lease = _append_eway(session, ctx, invoice, transport, status="submitting", at=now)
+        await session.flush()
+        _audit_eway(
+            session,
+            ctx,
+            invoice,
+            lease,
+            action="eway.generate_resumed",
+            request=None,
+            detail={"idempotency_key": payload.idempotency_key, "attempt": attempts + 1},
+        )
+        return EwayRedrive(
+            "generate",
+            generate=EwayGenerateFacts(
+                invoice_id=invoice.id, transport=transport, payload=payload, at=now
+            ),
+        )
+
+    if newest.status != "cancelling":
+        return EwayRedrive("not_due")
+
+    attempts = domain.leading_claim_attempts(
+        statuses, claim="cancelling", chain=frozenset({"cancelling"})
+    )
+    if newest.attempted_at > now - domain.resume_after(attempts):
+        return EwayRedrive("not_due")
+    generation = selectors.generation_under_claim(bills)
+    if (
+        generation is None or generation.eway_bill_no is None or newest.error_code is None
+    ):  # pragma: no cover - a claim is only ever appended over a generated bill
+        return EwayRedrive("not_due")
+
+    if attempts >= domain.MAX_COMPLIANCE_RESUMES:
+        failed = _append_eway(
+            session,
+            ctx,
+            invoice,
+            _transport_of(generation),
+            status="failed",
+            at=now,
+            error_code=domain.ERR_RETRY_EXHAUSTED,
+            error=(
+                f"gave up cancelling e-Way bill {generation.eway_bill_no} after {attempts} "
+                "attempts; the portal never confirmed the withdrawal"
+            ),
+        )
+        await session.flush()
+        _audit_eway(session, ctx, invoice, failed, action="eway.cancel_failed", request=None)
+        return EwayRedrive("exhausted")
+
+    lease = _append_eway(
+        session,
+        ctx,
+        invoice,
+        _transport_of(generation),
+        status="cancelling",
+        at=now,
+        eway_bill_no=None,
+        valid_from=generation.valid_from,
+        valid_until=generation.valid_until,
+        error_code=newest.error_code,
+        error=newest.error,
+    )
+    await session.flush()
+    _audit_eway(
+        session,
+        ctx,
+        invoice,
+        lease,
+        action="eway.cancel_resumed",
+        request=None,
+        detail={"withdraws": generation.eway_bill_no, "attempt": attempts + 1},
+    )
+    return EwayRedrive(
+        "cancel",
+        cancel=EwayCancelFacts(
+            invoice_id=invoice.id,
+            eway_bill_no=generation.eway_bill_no,
+            reason_code=newest.error_code,
+            remark=newest.error or "",
+            at=now,
+        ),
+    )
 
 
 def _publish_eway_failed(
@@ -3779,9 +4664,12 @@ def _audit_eway(
     *,
     action: str,
     request: Request | None,
+    detail: dict[str, Any] | None = None,
 ) -> None:
     """Every attempt leaves an audit row as well as a ledger row: the ledger records what the
-    portal said, the audit records who asked and from where."""
+    portal said, the audit records who asked and from where. `detail` adds what a claim row
+    cannot say in its own columns — the idempotency key a generation was sent under, the bill
+    number a withdrawal is for."""
     record_audit(
         session,
         AuditLog,
@@ -3797,6 +4685,7 @@ def _audit_eway(
             "eway_bill_no": bill.eway_bill_no,
             "valid_until": bill.valid_until.isoformat() if bill.valid_until else None,
             "error_code": bill.error_code,
+            **(detail or {}),
         },
         request=request,
     )

@@ -39,7 +39,9 @@ type checker; keep `ALLOWLIST` reviewable rather than trying to make the scanner
 
 **The allow-list is not a rubber stamp.** Every entry names an instance this sweep (D3) found and
 did not fix, with the shape of the fix it needs — see the comments beside each. New entries need
-the same.
+the same. The `#N` in each reason is the instance's row in `docs/io-outside-transactions.md`,
+which also lists what was fixed (and so is deliberately absent here: the stale-entry test fails
+the moment a fixed instance is left on the list).
 """
 
 from __future__ import annotations
@@ -86,26 +88,8 @@ TRANSACTION_MARKERS: tuple[str, ...] = (".begin(", "session_scope(", "_work_scop
 #: the report this test's own module docstring points at; an entry that no longer reproduces
 #: (the function was fixed, renamed, or removed) fails `test_the_allowlist_has_no_stale_entries`.
 ALLOWLIST: dict[tuple[str, str], str] = {
-    ("services/finance/app/api/internal.py", "cancel_filing"): (
-        "D3 sweep: calls services.cancel_filing (client.cancel(...)) inside one "
-        "session.begin(). Same claim/call/record split as file_invoice in the same file — "
-        "stage the cancellation intent, call with no transaction, record the withdrawal row."
-    ),
-    ("services/finance/app/api/internal.py", "generate_eway_bill"): (
-        "D3 sweep: calls services.generate_eway_bill (client.generate(...)) inside one "
-        "session.begin(). Same split as file_invoice."
-    ),
-    ("services/finance/app/api/internal.py", "cancel_eway_bill"): (
-        "D3 sweep: calls services.cancel_eway_bill (client.cancel(...)) inside one "
-        "session.begin(). Same split as file_invoice."
-    ),
-    ("services/finance/app/api/internal.py", "sync_ims"): (
-        "D3 sweep: calls services.ingest_ims_documents (client.fetch(...)) inside one "
-        "session.begin(). Same split as file_invoice: fetch the period with no transaction "
-        "open, then ingest and reconcile in a second transaction."
-    ),
     ("services/catalog/app/api/admin.py", "create_version"): (
-        "D3 sweep: calls services.create_version, which calls registry.products() (an httpx "
+        "D3 #10: calls services.create_version, which calls registry.products() (an httpx "
         "request to product-service) inside get_operator_session's request-long transaction. "
         "Fix: resolve the registry read in its own dependency with no session at all, before "
         "the tenant session is opened, and pass the already-fetched product map into "
@@ -113,43 +97,43 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "validation that needs a transaction open around the read."
     ),
     ("services/document/app/api/routes.py", "upload_asset"): (
-        "D3 sweep: calls services.create_asset, which calls store.put(...) (an S3 PUT, via "
+        "D3 #12: calls services.create_asset, which calls store.put(...) (an S3 PUT, via "
         "anyio.to_thread) inside get_tenant_session's request-long transaction. Fix: check the "
         "quota (a read) before opening the transaction, PUT the object with no session held, "
         "then open the transaction to insert the Asset row and audit."
     ),
     ("services/document/app/api/routes.py", "delete_asset"): (
-        "D3 sweep: the `purge=true` branch calls services.remove_asset, which calls "
+        "D3 #13: the `purge=true` branch calls services.remove_asset, which calls "
         "store.delete(...) (an S3 DELETE) inside get_tenant_session's transaction. Same fix "
         "shape as upload_asset: delete the object with no session held, then open the "
         "transaction to mark the row purged and audit."
     ),
     ("services/document/app/cron.py", "_purge"): (
-        "D3 sweep: the retention sweep's own per-asset step calls services.purge_asset, which "
+        "D3 #14: the retention sweep's own per-asset step calls services.purge_asset, which "
         "calls store.delete(...) inside its own session_scope — the sweep's counterpart to "
         "delete_asset's purge branch above, same fix shape."
     ),
     ("services/catalog/app/bundle_audit.py", "main"): (
-        "D3 sweep: a standalone operator CLI (not a live request path) opens one "
+        "D3 #11: a standalone operator CLI (not a live request path) opens one "
         "session.begin() and calls audit(), which calls registry.products() inside it. Lower "
         "severity than the request paths above — nothing else contends for this connection — "
         "but the same fix applies: fetch the registry first, open the transaction after."
     ),
     ("services/storefront/app/api/routes.py", "check_domain"): (
-        "D3 sweep: found, not fixed — already identified and deliberately deferred by an "
+        "D3 #15: found, not fixed — already identified and deliberately deferred by an "
         "earlier review (see services.run_domain_check's own docstring: 'Splitting the probes "
         "out of the transaction entirely ... is the fuller fix'). Fix: lock and re-verify the "
         "claim, release the lock, probe with no transaction, re-lock to record."
     ),
     ("services/storefront/app/cron.py", "_advance_one"): (
-        "D3 sweep: the daily sweep's own per-organization step calls advance_domain_claim "
+        "D3 #16: the daily sweep's own per-organization step calls advance_domain_claim "
         "(the DNS/TLS probes) inside session_scope, the same instance check_domain's docstring "
         "names for the synchronous 'Check now' path. Same fix shape."
     ),
     # auth is owned by another slice (excluded from this sweep's fixes per the task brief) —
     # found and reported, not touched.
     ("services/auth/app/api/routes.py", "save_sso_config"): (
-        "D3 sweep, routed to the auth slice: services.save_sso_config takes an "
+        "D3 #18, routed to the auth slice: services.save_sso_config takes an "
         "oidc.IdpClient and performs OIDC discovery over HTTP inside the request's "
         "tenant-bound transaction. Fix: run discovery (and validate the returned endpoints) "
         "in an untransacted step first, then open the transaction only to seal the secret, "
@@ -163,19 +147,19 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     # transaction (or in its own untransacted step), then open it only to write the
     # subscription/change.
     ("services/subscription/app/api/routes.py", "create_subscription"): (
-        "D3 sweep, routed to the subscription slice: calls services.subscribe, which pins the "
+        "D3 #17, routed to the subscription slice: calls services.subscribe, which pins the "
         "plan version against catalog over HTTP inside the request's transaction."
     ),
     ("services/subscription/app/api/routes.py", "change_plan"): (
-        "D3 sweep, routed to the subscription slice: calls services.change_plan, same pin "
+        "D3 #17, routed to the subscription slice: calls services.change_plan, same pin "
         "lookup as create_subscription."
     ),
     ("services/subscription/app/api/internal.py", "subscribe_as_operator"): (
-        "D3 sweep, routed to the subscription slice: the operator-console path to the same "
+        "D3 #17, routed to the subscription slice: the operator-console path to the same "
         "subscribe/pin call, same instance."
     ),
     ("services/subscription/app/api/internal.py", "change_plan_as_operator"): (
-        "D3 sweep, routed to the subscription slice: the operator-console path to the same "
+        "D3 #17, routed to the subscription slice: the operator-console path to the same "
         "change-plan/pin call, same instance."
     ),
 }
@@ -492,6 +476,15 @@ def test_the_scanner_recognises_a_known_direct_network_caller() -> None:
     names = {f.name for f in functions if _is_direct_network_call(f)}
     assert "call_irp_register" in names
     assert "call_provider_charge" in names
+    # D3 round 2: the four finance calls that were allow-listed until their split landed. If any
+    # of these stopped being recognised, the stale-entry test below would pass vacuously for
+    # them rather than proving they moved outside the transaction.
+    assert {
+        "call_irp_cancel",
+        "call_eway_generate",
+        "call_eway_cancel",
+        "fetch_ims_period",
+    } <= names
 
 
 def test_no_network_call_reachable_from_inside_a_transaction_is_unlisted() -> None:

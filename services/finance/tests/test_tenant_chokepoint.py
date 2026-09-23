@@ -56,6 +56,11 @@ _NOT_SCOPE_FILTERED: frozenset[str] = frozenset(
         # write it leads to happens back on the app role under a bound tenant. Same shape as
         # payment's and subscription's own `due_*` discovery selectors.
         "due_filing_reclaims",
+        # Its round-2 siblings (D3): which invoices have a stale newest e-invoice filing row
+        # (`pending`, `cancelling`) or e-Way row (`submitting`, `pending`, `cancelling`) for the
+        # reclaim sweep to re-drive. Same role, same reason, same column-scoped grant.
+        "due_stale_filings",
+        "due_stale_eway",
         # Aggregate/grouped reports, not scope-narrowed *list* reads: each groups every row this
         # organization owns into a handful of summary rows rather than returning one row per
         # record for a caller to page through, so there is nothing an OWN/TEAM scope would ever

@@ -143,17 +143,34 @@ async def cancel_filing(
     payload: CancelFilingIn, session: SessionDep, request: Request, client: IrpDep
 ) -> EInvoiceFilingOut:
     """Cancel a registration. The withdrawal is a new row; the registration row it withdraws is
-    left exactly as it was, so the history reads in order."""
+    left exactly as it was, so the history reads in order.
+
+    Three acts, two short transactions, and the portal call spans neither (D3): **claim**
+    (`services.claim_irn_cancellation` — every refusal, then a `cancelling` row carrying the
+    reason, audited), **call** (`services.call_irp_cancel`, no session), **record**
+    (`services.record_irn_cancellation`). Returns the newest row: `cancelled`, `failed` on a
+    portal refusal, or the `cancelling` claim itself when the portal could not be reached — the
+    withdrawal is then owed, and `app/cron.py`'s reclaim sweep finishes it.
+    """
+    ctx = _service_ctx(payload.organization_id)
     async with session.begin():
         await _bind(session, payload.organization_id, request)
-        ctx = _service_ctx(payload.organization_id)
-        filing = await services.cancel_filing(session, ctx, client, payload, request=request)
+        claim = await services.claim_irn_cancellation(session, ctx, payload, request=request)
+
+    outcome = services.call_irp_cancel(client, claim.facts)
+
+    async with session.begin():
+        await _bind(session, payload.organization_id, request)
+        filing = await services.record_irn_cancellation(
+            session, ctx, claim.facts, outcome, at=claim.facts.at, request=request
+        )
         result = selectors.to_filing_out(filing)
     log.info(
-        "finance.einvoice.cancelled",
+        "finance.einvoice.cancel_attempt",
         invoice_id=str(payload.invoice_id),
         organization_id=str(payload.organization_id),
         filing_status=result.status,
+        outcome=outcome.kind,
         portal=client.name,
     )
     return result
@@ -175,12 +192,26 @@ async def generate_eway_bill(
     vehicle number into a finance screen. A portal rejection is a 201 carrying a `failed` row —
     the attempt happened and is now part of the document's history. The 4xx responses are
     reserved for the cases where nothing was attempted at all: an unknown document, a consignment
-    under the threshold, an impossible distance, no registration, a bill already standing.
+    under the threshold, an impossible distance, no registration, a bill already standing, a
+    generation already in flight (409).
+
+    Three acts, two short transactions, and the portal call spans neither (D3): **claim**
+    (`services.claim_eway_generation`, a `submitting` row carrying the transport facts),
+    **call** (`services.call_eway_generate`, no session, idempotent by the (document,
+    transporter/vehicle part) key), **record** (`services.record_eway_generation`).
     """
+    ctx = _service_ctx(payload.organization_id)
     async with session.begin():
         await _bind(session, payload.organization_id, request)
-        ctx = _service_ctx(payload.organization_id)
-        bill = await services.generate_eway_bill(session, ctx, client, payload, request=request)
+        claim = await services.claim_eway_generation(session, ctx, payload, request=request)
+
+    outcome = services.call_eway_generate(client, claim.payload)
+
+    async with session.begin():
+        await _bind(session, payload.organization_id, request)
+        bill = await services.record_eway_generation(
+            session, ctx, claim, outcome, portal=client.name, request=request
+        )
         result = selectors.to_eway_bill_out(bill)
     log.info(
         "finance.eway.attempt",
@@ -206,17 +237,32 @@ async def cancel_eway_bill(
     payload: CancelEwayIn, session: SessionDep, request: Request, client: EwayDep
 ) -> EwayBillOut:
     """Cancel a bill. The withdrawal is a new row; the row that raised it is left exactly as it
-    was, so the history reads in order."""
+    was, so the history reads in order.
+
+    Claim (`services.claim_eway_cancellation`, a `cancelling` row), call
+    (`services.call_eway_cancel`, no transaction), record (`services.record_eway_cancellation`)
+    — the same split as `cancel_filing`, with the same answer on an outage: the `cancelling`
+    claim, which the reclaim sweep finishes.
+    """
+    ctx = _service_ctx(payload.organization_id)
     async with session.begin():
         await _bind(session, payload.organization_id, request)
-        ctx = _service_ctx(payload.organization_id)
-        bill = await services.cancel_eway_bill(session, ctx, client, payload, request=request)
+        claim = await services.claim_eway_cancellation(session, ctx, payload, request=request)
+
+    outcome = services.call_eway_cancel(client, claim)
+
+    async with session.begin():
+        await _bind(session, payload.organization_id, request)
+        bill = await services.record_eway_cancellation(
+            session, ctx, claim, outcome, request=request
+        )
         result = selectors.to_eway_bill_out(bill)
     log.info(
-        "finance.eway.cancelled",
+        "finance.eway.cancel_attempt",
         invoice_id=str(payload.invoice_id),
         organization_id=str(payload.organization_id),
         eway_status=result.status,
+        outcome=outcome.kind,
         portal=client.name,
     )
     return result
@@ -233,21 +279,30 @@ async def sync_ims(
 ) -> ImsSyncOut:
     """Fetch what suppliers filed against this organization, then work out what it means.
 
-    Two writes in one transaction, and they stay separable on purpose: the ingest is idempotent on
-    the portal's own row reference, so re-syncing a period creates nothing; the reconciliation is
-    re-run every time, because the *answers* change when the purchase book does even though the
-    supplier's documents have not. That is the ordinary case — the invoice did not change, our
-    record of it did — and it is why re-running this is cheap and safe rather than something to be
-    careful about.
+    The fetch runs with **no transaction open** (D3): a short read first
+    (`services.claim_ims_sync` — is the period real, whose ledger), then the portal
+    (`services.fetch_ims_period`), then one short transaction for both writes. They stay
+    separable on purpose: the ingest is idempotent on the portal's own row reference, so
+    re-syncing a period creates nothing; the reconciliation is re-run every time, because the
+    *answers* change when the purchase book does even though the supplier's documents have not.
+    That is the ordinary case — the invoice did not change, our record of it did — and it is why
+    re-running this is cheap and safe rather than something to be careful about.
 
     A 200 rather than a 201: a sync is a read of somebody else's ledger followed by a recomputation
-    of our opinion about it, and on a second call it creates nothing at all.
+    of our opinion about it, and on a second call it creates nothing at all. A portal outage is a
+    503 and leaves nothing behind.
     """
+    ctx = _service_ctx(payload.organization_id)
     async with session.begin():
         await _bind(session, payload.organization_id, request)
-        ctx = _service_ctx(payload.organization_id)
-        ingest = await services.ingest_ims_documents(
-            session, ctx, client, period=payload.period, request=request
+        target = await services.claim_ims_sync(session, ctx, period=payload.period)
+
+    fetched = services.fetch_ims_period(client, target)
+
+    async with session.begin():
+        await _bind(session, payload.organization_id, request)
+        ingest = await services.record_ims_fetch(
+            session, ctx, fetched, period=payload.period, portal=client.name, request=request
         )
         reconciled = await services.reconcile_ims_documents(session, ctx, period=payload.period)
         result = ImsSyncOut(

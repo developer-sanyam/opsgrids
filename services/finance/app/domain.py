@@ -36,6 +36,7 @@ render identically live, and are the obvious seam a real GL integration replaces
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from collections.abc import Sequence
@@ -69,18 +70,26 @@ EINVOICE_SUPPLY_TYPES: frozenset[str] = frozenset({"b2b", "export", "sez"})
 
 #: The lifecycle of one filing attempt. `pending` is an attempt recorded before an answer came
 #: back; `filed` carries an IRN; `failed` carries the portal's error; `cancelled` records that a
-#: previously registered IRN was withdrawn (the IRP allows this within 24 hours).
+#: previously registered IRN was withdrawn (the IRP allows this within 24 hours); `cancelling` is
+#: the **claim** for that withdrawal (see below).
 #:
-#: There is deliberately **no** "submitting"/claim status here. `stage_registration_attempt`
-#: (D3) writes nothing at all before the portal is asked — the claim is a read-only transaction
-#: — so a process that dies between the call and `record_registration_result` leaves *no* row
-#: behind, not a half-written one. That is safe only because registering a document is itself
-#: idempotent (the IRN is a pure function of the document, `IrpDuplicate` handles a real portal
-#: saying so): a resumed attempt calls the portal again from scratch and gets the same answer, so
-#: there is nothing a claim row would need to protect. `app/cron.py`'s filing-reclaim sweep
-#: therefore looks for the *absence* of a terminal row past a deadline, not for a claim to pick
-#: up.
-FILING_STATUSES: frozenset[str] = frozenset({"pending", "filed", "failed", "cancelled"})
+#: **Registration has no claim row; cancellation does** (D3, ADR-0015 addendum).
+#: `stage_registration_attempt` writes nothing before the portal is asked — registering a document
+#: is itself idempotent (the IRN is a pure function of the document, `IrpDuplicate` is a real
+#: portal saying so), so a process that dies between the call and `record_registration_result`
+#: leaves *no* row behind and a resumed attempt simply asks again. `app/cron.py`'s filing-reclaim
+#: sweep therefore looks for the *absence* of a row for a registration.
+#:
+#: Cancelling an IRN is **not** idempotent by document: it is time-boxed (24 h from the
+#: acknowledgement), needs a reason and an actor, and once done it is done. So the withdrawal is
+#: claimed first — a `cancelling` row carrying the reason, the remark and the acknowledgement it
+#: withdraws, audited as `einvoice.cancel_requested` — then the portal is called with no
+#: transaction open, then the outcome is recorded as a `cancelled` (or `failed`) row. A
+#: `cancelling` row that is still the newest for its invoice past `resume_after` is what the sweep
+#: resumes; a portal that answers "already cancelled" is success-by-fetch (`IrpAlreadyCancelled`).
+FILING_STATUSES: frozenset[str] = frozenset(
+    {"pending", "filed", "failed", "cancelled", "cancelling"}
+)
 
 #: The statutory GST rate bands. 0.25 % and 3 % are the precious-stones and precious-metals
 #: bands — easy to forget, and wrong to reject.
@@ -149,6 +158,43 @@ FILING_EARLY_ARRIVAL_TOLERANCE: timedelta = timedelta(seconds=30)
 #: longer than the finalize-to-first-attempt path and a single portal call are ever expected to
 #: take together, so an invoice genuinely still in flight is never mistaken for lost.
 FILING_RECLAIM_AFTER: timedelta = timedelta(minutes=5)
+
+#: How many times the reclaim sweep will re-drive one stuck claim (a `cancelling` filing, a
+#: `submitting` or `cancelling` e-Way row) before it stops and writes a terminal `failed` row
+#: carrying `retry_exhausted`. The poisoned-step guard: a claim that keeps failing must become a
+#: visible failure a person can act on, not a row the sweep picks up on every tick forever. Each
+#: re-drive appends a fresh claim row, which doubles as its **lease** — see `resume_after`.
+MAX_COMPLIANCE_RESUMES: int = MAX_FILING_ATTEMPTS
+
+
+def resume_after(attempts: int) -> timedelta:
+    """How long a stuck claim must have stood, with nothing newer for its document, before the
+    reclaim sweep re-drives it — the bounded backoff between re-drives.
+
+    `attempts` is how many drives the chain has had so far (1-based). The floor is
+    `FILING_RECLAIM_AFTER` (comfortably longer than one portal call); each further drive adds the
+    same capped exponential the automatic filing retry uses, so a portal that is down for an hour
+    is not hammered by a sweep ticking every minute. Because every re-drive appends a fresh claim
+    row, "newest row older than this" is also the **lease**: two sweep replicas, or a sweep and a
+    request, cannot both pass it for the same document.
+    """
+    attempts = max(1, attempts)
+    backoff: timedelta = min(FILING_RETRY_BASE * (2 ** (attempts - 1)), FILING_RETRY_CEILING)
+    return FILING_RECLAIM_AFTER + backoff - FILING_RETRY_BASE
+
+
+def pending_redrive_after(attempts: int) -> timedelta:
+    """How long a `pending` row (an attempt that got an outage answer, with a retry owed) may
+    stand with no successor before the sweep concludes the retry it scheduled was lost.
+
+    The retry was staged for `filing_retry_delay(attempts)` after the row; the sweep waits that
+    long **plus** `FILING_RECLAIM_AFTER` of grace. Finance cannot see the scheduler's own table
+    (no cross-schema reads), so "no live scheduler job" is inferred from time alone — a deliberately
+    generous bound, and a re-drive that turns out to be redundant is harmless because the
+    consumer's claim asks `live_registration` first.
+    """
+    return filing_retry_delay(max(1, min(attempts, MAX_FILING_ATTEMPTS))) + FILING_RECLAIM_AFTER
+
 
 #: Error codes this *platform* writes, as opposed to the numbered ones the portal returns. Kept
 #: distinct from the portal's namespace (which is numeric) so "who said this" is never ambiguous
@@ -2076,8 +2122,20 @@ TRANSPORT_MODES: frozenset[str] = frozenset({"road", "rail", "air", "ship"})
 #:                from the stored `valid_until`, because the table is append-only and a row
 #:                cannot be updated when the clock passes it. Storable so a bill imported from
 #:                the portal already past its validity is representable.
+#:   submitting — the **claim** for a generation (D3, ADR-0015 addendum): the transport facts,
+#:                committed before the portal is called with no transaction open. The facts are
+#:                the caller's and are on no invoice, so a claim row is the only place a resumed
+#:                attempt can find them. Idempotent by (document, transporter/vehicle part) —
+#:                `eway_idempotency_key` — and the portal's own answer to a repeat is "already
+#:                generated", carrying the bill number (success-by-lookup,
+#:                `EwayAlreadyGenerated`).
+#:   cancelling — the **claim** for a withdrawal, carrying the reason and the bill's own
+#:                validity, audited as `eway.cancel_requested`. A portal that answers "already
+#:                cancelled" is success-by-fetch (`EwayAlreadyCancelled`).
+#: A `submitting` or `cancelling` row still newest for its document past `resume_after` is what
+#: the reclaim sweep re-drives; so is a `pending` (outage) row, which nothing else retries yet.
 EWAY_STATUSES: frozenset[str] = frozenset(
-    {"pending", "generated", "failed", "cancelled", "expired"}
+    {"pending", "generated", "failed", "cancelled", "expired", "submitting", "cancelling"}
 )
 
 #: Kilometres of approximate distance one day of validity buys, for ordinary cargo.
@@ -2171,6 +2229,67 @@ def eway_cancellation_deadline(generated_at: datetime) -> datetime:
 def eway_cancellation_window_open(generated_at: datetime, at: datetime) -> bool:
     """Whether a generated bill may still be withdrawn at `at`."""
     return at - generated_at <= EWAY_CANCELLATION_WINDOW
+
+
+def eway_idempotency_key(
+    *,
+    invoice_id: uuid.UUID,
+    generation: int,
+    transport_mode: str,
+    vehicle_no: str | None,
+    transporter_id: str | None,
+    transport_doc_no: str | None,
+    transport_doc_date: date | None,
+) -> str:
+    """The key one e-Way generation is idempotent by: **(document, transporter/vehicle part)**,
+    plus which bill of the document's life this is.
+
+    * **document** — the invoice id, which fixes the seller, the document type, number and date.
+    * **transporter/vehicle part** — "Part B" of the bill: how the goods move and who moves them.
+      The same consignment asked for twice with the same Part B is one bill; a different vehicle
+      is a different request, and must not be answered with the first one's number.
+    * **generation** — 1 for the document's first bill, 2 once that one was cancelled or expired
+      and another is raised, and so on (the count of `generated` rows before this claim, plus
+      one). Without it a document legitimately re-raised on the same lorry after a cancellation
+      would be answered with the withdrawn bill.
+
+    A pure function of values stored on the claim row and the ledger, so a resumed attempt
+    (`app/cron.py`, after a crash between the portal call and recording it) recomputes the
+    identical key without anything extra having been persisted, and a real portal answers the
+    repeat with "already generated" (`EwayAlreadyGenerated`) rather than a second bill.
+    """
+    if generation < 1:
+        raise ValueError("e-Way generations are 1-based")
+    part_b = "|".join(
+        [
+            transport_mode,
+            (vehicle_no or "").upper().replace(" ", ""),
+            (transporter_id or "").upper(),
+            transport_doc_no or "",
+            transport_doc_date.isoformat() if transport_doc_date else "",
+        ]
+    )
+    digest = hashlib.sha256(part_b.encode()).hexdigest()[:24]
+    return f"eway:{invoice_id}:{generation}:{digest}"
+
+
+def leading_claim_attempts(statuses: Sequence[str], *, claim: str, chain: frozenset[str]) -> int:
+    """How many times the claim at the head of a newest-first history has been driven.
+
+    Walks `statuses` from the newest while each is in `chain` (the claim status and the outage
+    rows its attempts leave behind), counting the `claim` rows among them. A `cancelling` chain
+    is just its claim rows — an outage appends nothing, the claim standing is the record — while
+    an e-Way generation chain interleaves `submitting` claims with the `pending` rows each
+    outage recorded, and only the claims count as drives. The reclaim sweep's poisoned-step
+    guard compares this to `MAX_COMPLIANCE_RESUMES`; `resume_after` turns it into the backoff.
+    """
+    attempts = 0
+    for status in statuses:
+        if status not in chain:
+            break
+        if status == claim:
+            attempts += 1
+    return attempts
 
 
 def eway_status_at(*, status: str, valid_until: datetime | None, at: datetime) -> str:

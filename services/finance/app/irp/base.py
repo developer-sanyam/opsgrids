@@ -78,6 +78,22 @@ class IrpDuplicate(Exception):
         self.ack = ack
 
 
+class IrpAlreadyCancelled(Exception):
+    """The portal has already withdrawn this IRN — success wearing a refusal's shape.
+
+    Cancelling is **not** idempotent by document the way registering is: it is time-boxed, needs a
+    reason, and a repeat is answered with an error. That is exactly the shape a resumed call takes
+    after a crash between `call_irp_cancel` and `record_irn_cancellation` (D3): the platform's own
+    `cancelling` claim never saw the answer, but the portal did the work. A real adapter maps its
+    "IRN already cancelled" error onto this, carrying the cancellation it already holds, so the
+    resumed attempt is recorded as the `cancelled` it is — success-by-fetch, never a `failed`.
+    """
+
+    def __init__(self, ack: IrpCancelAck) -> None:
+        super().__init__(f"already cancelled: IRN {ack.irn} was withdrawn at {ack.cancel_date}")
+        self.ack = ack
+
+
 @dataclass(frozen=True, slots=True)
 class IrpLine:
     """One line of the document as the portal validates it.
@@ -197,5 +213,11 @@ class IrpClient(Protocol):
         ...
 
     def cancel(self, *, irn: str, reason_code: str, remark: str, at: datetime) -> IrpCancelAck:
-        """Withdraw a registered IRN, inside the portal's 24-hour window."""
+        """Withdraw a registered IRN, inside the portal's 24-hour window.
+
+        Raises `IrpRejected` when the portal refuses (window closed, unknown IRN),
+        `IrpUnavailable` when it cannot be reached, and `IrpAlreadyCancelled` when it reports the
+        IRN was already withdrawn — the resumed-after-a-crash case (D3), which a real adapter must
+        map onto that exception rather than `IrpRejected` so it is recorded as the success it is.
+        """
         ...

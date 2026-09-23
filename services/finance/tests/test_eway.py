@@ -771,8 +771,12 @@ class TestCancelling:
         assert cancelled.id != generated.id
         assert cancelled.status == "cancelled"
         # The generation row is left exactly as it was, so "raised, then withdrawn" reads in order.
-        assert [b.status for b in history] == ["cancelled", "generated"]
-        assert history[1].eway_bill_no == generated.eway_bill_no
+        visible = selectors.visible_attempts(history)
+        assert [b.status for b in visible] == ["cancelled", "generated"]
+        assert visible[1].eway_bill_no == generated.eway_bill_no
+        # Underneath, each act was claimed before the portal was asked (D3): the answered claims
+        # stay on the append-only ledger, ranked behind the outcome they share an instant with.
+        assert [b.status for b in history] == ["cancelled", "cancelling", "generated", "submitting"]
 
     async def test_outside_the_window_it_is_refused_and_names_the_deadline(
         self, session, org_id

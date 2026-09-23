@@ -432,7 +432,8 @@ class EInvoiceFiling(Base, TenantBase):
         ForeignKey("finance.invoices.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    #: pending | filed | failed | cancelled.
+    #: pending | filed | failed | cancelled | cancelling — `domain.FILING_STATUSES`. `cancelling`
+    #: is a claim row (D3): written before the portal is asked to withdraw the IRN.
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     #: The Invoice Reference Number: a 64-character hash the portal returns, unique per document
     #: across India. Present only on `filed` and `cancelled`.
@@ -954,7 +955,8 @@ class EwayBill(Base, TenantBase):
         ForeignKey("finance.invoices.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    #: pending | generated | failed | cancelled | expired — `domain.EWAY_STATUSES`.
+    #: pending | generated | failed | cancelled | expired | submitting | cancelling —
+    #: `domain.EWAY_STATUSES`. The last two are claim rows (D3), written before the portal call.
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     #: The portal's 12-digit bill number. Present only once a bill exists.
     eway_bill_no: Mapped[str | None] = mapped_column(String(16))

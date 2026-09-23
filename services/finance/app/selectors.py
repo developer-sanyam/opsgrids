@@ -19,12 +19,12 @@ position, the overview rollups — are reads, computed from the same `app.domain
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, case, func, literal, or_, select
+from sqlalchemy import Select, and_, case, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from app import domain
 from app.models import (
@@ -40,6 +40,7 @@ from app.models import (
     Invoice,
     InvoiceWithholding,
     ItcLedgerEntry,
+    OutboxEvent,
     Payment,
     PaymentAllocation,
     PurchaseDocument,
@@ -331,7 +332,12 @@ def to_invoice_out(
 
 
 async def get_invoice(
-    session: AsyncSession, org_id: uuid.UUID, invoice_id: uuid.UUID, *, for_update: bool = False
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    *,
+    for_update: bool = False,
+    skip_locked: bool = False,
 ) -> Invoice | None:
     """Org-scoped fetch by id, with lines. Returns None on a tenant mismatch or a soft-deleted
     row — confirming an id exists in *some* organization is itself a disclosure.
@@ -339,7 +345,11 @@ async def get_invoice(
     `for_update=True` row-locks it — the credit-note path takes this before reading how much has
     already been credited against it (`credited_total_for_invoice`), so a second credit note
     racing the same invoice serializes on the lock instead of both reading the same figure and
-    both passing the cap."""
+    both passing the cap.
+
+    `skip_locked=True` (with `for_update`) returns None for a row somebody else holds rather than
+    waiting behind them — what the reclaim sweep wants: an invoice another replica, or a request,
+    is already driving is left alone this tick, not queued behind."""
     stmt = (
         select(Invoice)
         .where(
@@ -350,7 +360,7 @@ async def get_invoice(
         .options(selectinload(Invoice.lines))
     )
     if for_update:
-        stmt = stmt.with_for_update()
+        stmt = stmt.with_for_update(skip_locked=skip_locked, of=Invoice)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -476,6 +486,73 @@ async def all_invoices(session: AsyncSession, org_id: uuid.UUID) -> list[Invoice
 
 # --------------------------------------------------------------------- e-invoicing
 
+#: The two claim statuses (D3): the row committed *before* a portal call, never an outcome.
+CLAIM_STATUSES: tuple[str, ...] = ("submitting", "cancelling")
+
+
+def _claims_last(model: type[EInvoiceFiling] | type[EwayBill]) -> Any:
+    """The last tie-break in every newest-first ordering of an attempt ledger: at an identical
+    `(attempted_at, created_at)` an outcome row is newer than a claim row.
+
+    A claim and the outcome it leads to share `attempted_at` by design (the outcome is recorded
+    against the instant the attempt was claimed), and when both are written in one transaction —
+    the single-transaction convenience wrappers the unit tests drive — they share `created_at`
+    too. A claim is always written before its own outcome, never after, so ranking claims last at
+    a tie is not a guess; without it the sort is free to put the claim first, and the read model
+    would report a finished attempt as still in flight."""
+    return case((model.status.in_(CLAIM_STATUSES), 1), else_=0)
+
+
+def _newest_first(model: type[EInvoiceFiling] | type[EwayBill]) -> tuple[Any, ...]:
+    return (model.attempted_at.desc(), model.created_at.desc(), _claims_last(model).asc())
+
+
+def _is_newest(model: Any) -> Any:
+    """SQL: `model`'s row is the newest live row for its document, by exactly `_newest_first`'s
+    ordering — a `NOT EXISTS` over a later row for the same `(organization_id, invoice_id)`.
+
+    `select(newer.id)`, not a bare `exists()`: the latter renders `SELECT *`, which the outbox
+    role's column-scoped grant (`migrations/env.py`) refuses — as it should — and this predicate
+    is also the reclaim sweep's discovery test."""
+    newer = aliased(model)
+    return ~(
+        select(newer.id)
+        .where(
+            # The organization too, not only the invoice: it is what lets the correlated probe
+            # ride `(organization_id, invoice_id)` rather than scan the ledger.
+            newer.organization_id == model.organization_id,
+            newer.invoice_id == model.invoice_id,
+            newer.deleted_at.is_(None),
+            or_(
+                newer.attempted_at > model.attempted_at,
+                and_(
+                    newer.attempted_at == model.attempted_at,
+                    newer.created_at > model.created_at,
+                ),
+                and_(
+                    newer.attempted_at == model.attempted_at,
+                    newer.created_at == model.created_at,
+                    _claims_last(newer) < _claims_last(model),
+                ),
+            ),
+        )
+        .exists()
+    )
+
+
+def visible_attempts(rows: list[Any]) -> list[Any]:
+    """A newest-first attempt history as a person reads it: every outcome row, and a claim row
+    only while it is still the newest — i.e. while that attempt is genuinely in flight.
+
+    A claim that has been answered (or re-driven by the reclaim sweep, whose every drive appends a
+    fresh claim as its lease) says nothing its outcome row does not: the outcome carries the same
+    reason, the same transport facts, the same instant. Showing them would double every history
+    and turn one withdrawal the sweep had to retry into five lines. They stay on the ledger — it
+    is append-only — and who asked is on the audit row (`*.cancel_requested`,
+    `eway.generate_requested`); this is the read model only.
+    """
+    return [row for index, row in enumerate(rows) if index == 0 or row.status not in CLAIM_STATUSES]
+
 
 async def filings_for_invoice(
     session: AsyncSession, org_id: uuid.UUID, invoice_id: uuid.UUID
@@ -492,7 +569,7 @@ async def filings_for_invoice(
             EInvoiceFiling.invoice_id == invoice_id,
             EInvoiceFiling.deleted_at.is_(None),
         )
-        .order_by(EInvoiceFiling.attempted_at.desc(), EInvoiceFiling.created_at.desc())
+        .order_by(*_newest_first(EInvoiceFiling))
     )
     return list((await session.execute(stmt)).scalars().all())
 
@@ -515,9 +592,11 @@ async def due_filing_reclaims(
 
     Deliberately **not** every invoice with a non-terminal newest filing row: a `pending` row
     already has its own scheduled retry (`services.request_filing`, ADR-0015), and re-kicking it
-    here too would race that schedule. This targets only the narrower, harder failure — an
-    invoice the pipeline has no record of trying at all — which is exactly what `stage_
-    registration_attempt` writing nothing before the call (D3) can leave behind.
+    on the same deadline would race that schedule. This targets only the narrower, harder failure
+    — an invoice the pipeline has no record of trying at all — which is exactly what `stage_
+    registration_attempt` writing nothing before the call (D3) can leave behind. A `pending` or
+    `cancelling` row that has outlived its own deadline is `due_stale_filings`' question, on a
+    longer clock (`domain.pending_redrive_after`, `domain.resume_after`).
 
     `older_than` is the poisoned-step guard: an invoice finalized moments ago is very likely still
     waiting on its own first attempt, not lost, so the sweep leaves it alone until it has had time
@@ -540,6 +619,102 @@ async def due_filing_reclaims(
     return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
 
 
+def _stale_newest_stmt(
+    model: type[EInvoiceFiling] | type[EwayBill],
+    *,
+    statuses: tuple[str, ...],
+    older_than: datetime,
+    limit: int,
+) -> Select[Any]:
+    """`(organization_id, invoice_id)` for every document whose **newest** attempt row has one of
+    `statuses` and was made at or before `older_than`.
+
+    "Newest" is a `NOT EXISTS` over a later row for the same document, ordered exactly as
+    `filings_for_invoice` / `eway_bills_for_invoice` order it (`attempted_at`, then `created_at`,
+    then an outcome ahead of a claim at a tie — `_newest_first`), so the sweep and the read model
+    can never disagree about which row is current. Filtering by
+    status first keeps the scan to the handful of rows in a claim or outage state rather than the
+    whole ledger.
+    """
+    return (
+        select(model.organization_id, model.invoice_id)
+        .where(
+            model.status.in_(statuses),
+            model.deleted_at.is_(None),
+            model.attempted_at <= older_than,
+            _is_newest(model),
+        )
+        .order_by(model.attempted_at)
+        .limit(limit)
+    )
+
+
+async def due_stale_filings(
+    session: AsyncSession, *, statuses: tuple[str, ...], older_than: datetime, limit: int = 100
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """Every invoice whose newest e-invoice filing row is a stale `pending` or `cancelling` — an
+    outage answer whose scheduled retry may have been lost, or a cancellation claim whose process
+    died between the portal call and recording it.
+
+    **Cross-tenant, like `due_filing_reclaims`**, and on the same BYPASSRLS outbox role for the
+    same reason (`migrations/env.py` grants it SELECT on `einvoice_filings`). `older_than` is only
+    the coarse floor: the exact per-attempt deadline (`domain.resume_after`,
+    `domain.pending_redrive_after`) is re-checked under the tenant binding before anything is
+    driven, so a row discovered here that is not actually due is skipped, not acted on.
+    """
+    stmt = _stale_newest_stmt(EInvoiceFiling, statuses=statuses, older_than=older_than, limit=limit)
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+
+async def due_stale_eway(
+    session: AsyncSession, *, statuses: tuple[str, ...], older_than: datetime, limit: int = 100
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """The e-Way twin of `due_stale_filings`: newest row `submitting` (a generation claim whose
+    process died), `pending` (an outage nothing else retries) or `cancelling` (a withdrawal claim).
+    Cross-tenant on the outbox role, which `migrations/env.py` grants SELECT on `eway_bills`."""
+    stmt = _stale_newest_stmt(EwayBill, statuses=statuses, older_than=older_than, limit=limit)
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+
+async def filing_request_in_flight(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    *,
+    event_type: str,
+    after: datetime,
+    lease: timedelta,
+) -> bool:
+    """Whether a `filing_requested` event for this invoice was staged on the outbox after the
+    `pending` row written at `after`, and within the last `lease` — the sweep's **lease** on a
+    `pending` row it has already re-driven.
+
+    A `pending` row is never rewritten (the ledger is append-only), so "I re-armed this a minute
+    ago" cannot be recorded on it. The outbox row the re-drive itself staged is the record: while
+    one exists that is newer than the `pending` row it answers, the consumer has not yet produced
+    a successor row, and the next tick leaves the invoice alone instead of publishing again every
+    minute until the consumer gets to it. Bounded by `lease` so a request the broker lost does not
+    hold the invoice forever.
+
+    Both comparisons are on the **database's** clock (`created_at` is `now()` at insert, and the
+    lease is measured back from `now()`), never the sweep's: the two rows being compared were
+    both stamped by it. Runs under the tenant binding, on the app role, against this service's
+    own outbox — no cross-schema read.
+    """
+    stmt = (
+        select(func.count())
+        .select_from(OutboxEvent)
+        .where(
+            OutboxEvent.organization_id == org_id,
+            OutboxEvent.event_type == event_type,
+            OutboxEvent.aggregate_id == invoice_id,
+            OutboxEvent.created_at > after,
+            OutboxEvent.created_at >= func.now() - lease,
+        )
+    )
+    return int((await session.execute(stmt)).scalar_one()) > 0
+
+
 async def latest_filings(
     session: AsyncSession, org_id: uuid.UUID, invoice_ids: list[uuid.UUID]
 ) -> tuple[dict[uuid.UUID, EInvoiceFiling], dict[uuid.UUID, int]]:
@@ -560,20 +735,19 @@ async def latest_filings(
             EInvoiceFiling.deleted_at.is_(None),
         )
         .distinct(EInvoiceFiling.invoice_id)
-        .order_by(
-            EInvoiceFiling.invoice_id,
-            EInvoiceFiling.attempted_at.desc(),
-            EInvoiceFiling.created_at.desc(),
-        )
+        .order_by(EInvoiceFiling.invoice_id, *_newest_first(EInvoiceFiling))
     )
     latest = {row.invoice_id: row for row in (await session.execute(latest_stmt)).scalars().all()}
 
+    # Attempts are outcomes: a claim and the answer it led to are one attempt, and a sweep's
+    # lease rows are not attempts at all (see `visible_attempts`).
     count_stmt = (
         select(EInvoiceFiling.invoice_id, func.count())
         .where(
             EInvoiceFiling.organization_id == org_id,
             EInvoiceFiling.invoice_id.in_(invoice_ids),
             EInvoiceFiling.deleted_at.is_(None),
+            EInvoiceFiling.status.not_in(CLAIM_STATUSES),
         )
         .group_by(EInvoiceFiling.invoice_id)
     )
@@ -889,23 +1063,6 @@ async def all_ims_documents(
     if period:
         stmt = stmt.where(ImsDocument.period == period)
     return list((await session.execute(stmt)).scalars().all())
-
-
-async def ims_documents_by_source_ref(
-    session: AsyncSession, org_id: uuid.UUID, source_refs: list[str]
-) -> dict[str, ImsDocument]:
-    """The documents already held for these portal references — the ingest's idempotency read.
-
-    One round trip for a whole fetch, so re-syncing a period is a single lookup rather than one
-    per document.
-    """
-    if not source_refs:
-        return {}
-    stmt = select(ImsDocument).where(
-        ImsDocument.organization_id == org_id,
-        ImsDocument.source_ref.in_(source_refs),
-    )
-    return {row.source_ref: row for row in (await session.execute(stmt)).scalars().all()}
 
 
 async def latest_reconciliations(
@@ -2005,7 +2162,7 @@ async def eway_bills_for_invoice(
             EwayBill.invoice_id == invoice_id,
             EwayBill.deleted_at.is_(None),
         )
-        .order_by(EwayBill.attempted_at.desc(), EwayBill.created_at.desc())
+        .order_by(*_newest_first(EwayBill))
     )
     return list((await session.execute(stmt)).scalars().all())
 
@@ -2025,7 +2182,7 @@ async def latest_eway_bills(
             EwayBill.deleted_at.is_(None),
         )
         .distinct(EwayBill.invoice_id)
-        .order_by(EwayBill.invoice_id, EwayBill.attempted_at.desc(), EwayBill.created_at.desc())
+        .order_by(EwayBill.invoice_id, *_newest_first(EwayBill))
     )
     latest = {row.invoice_id: row for row in (await session.execute(latest_stmt)).scalars().all()}
     count_stmt = (
@@ -2034,6 +2191,7 @@ async def latest_eway_bills(
             EwayBill.organization_id == org_id,
             EwayBill.invoice_id.in_(invoice_ids),
             EwayBill.deleted_at.is_(None),
+            EwayBill.status.not_in(CLAIM_STATUSES),
         )
         .group_by(EwayBill.invoice_id)
     )
@@ -2057,6 +2215,25 @@ def live_eway_bill(bills: list[EwayBill], *, at: datetime | None = None) -> Eway
         if bill.status == "generated":
             if bill.valid_until is not None and domain.eway_expired(bill.valid_until, now):
                 return None
+            return bill
+    return None
+
+
+def generation_under_claim(bills: list[EwayBill]) -> EwayBill | None:
+    """The `generated` row a `cancelling` claim is withdrawing — the newest one not already
+    withdrawn, **regardless of expiry**.
+
+    Not `live_eway_bill`: the claim checked the window and the validity when it was made, and a
+    resumed withdrawal (`app/cron.py`) must ask the portal about the bill it claimed even if the
+    clock has since run past its validity — the portal may already have done the work, and only
+    it can say. The claim rows themselves carry no bill number (the partial unique index on
+    `(org, eway_bill_no)` would refuse a second row claiming it), so this is how the number is
+    found again.
+    """
+    for bill in bills:
+        if bill.status == "cancelled":
+            return None
+        if bill.status == "generated":
             return bill
     return None
 
@@ -2145,17 +2322,22 @@ def eway_bills_stmt(
     ctx: ScopeContext, *, status: str | None = None, invoice_id: uuid.UUID | None = None
 ) -> Select[Any]:
     """Scope-filtered e-Way attempts, newest first. `status` filters the **stored** value; an
-    expired bill is stored as `generated`, so a caller after those reads `effective_status`."""
+    expired bill is stored as `generated`, so a caller after those reads `effective_status`.
+
+    A claim row (`submitting`, `cancelling`) is listed only while it is its document's newest —
+    an attempt in flight — never once answered; the same rule `visible_attempts` applies to one
+    document's history, in SQL so the page and its total agree."""
     stmt = select(EwayBill).where(
         EwayBill.organization_id == ctx.organization_id,
         EwayBill.deleted_at.is_(None),
+        or_(EwayBill.status.not_in(CLAIM_STATUSES), _is_newest(EwayBill)),
     )
     stmt = ctx.apply(stmt, owner_col=EwayBill.id)
     if status:
         stmt = stmt.where(EwayBill.status == status)
     if invoice_id:
         stmt = stmt.where(EwayBill.invoice_id == invoice_id)
-    return stmt.order_by(EwayBill.attempted_at.desc(), EwayBill.created_at.desc())
+    return stmt.order_by(*_newest_first(EwayBill))
 
 
 async def eway_bills_with_invoice(

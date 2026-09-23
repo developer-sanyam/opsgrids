@@ -1,39 +1,60 @@
 """The filing-reclaim sweep for finance. Runs as its own process (`bin/cron`).
 
-**Why this exists.** Filing an e-invoice used to run the portal call inside the same transaction
-as everything else: read the invoice, call the IRP, append the row, all in one `session.begin()`
-(the consumer) or one request (`POST /internal/v1/einvoice/filings`). That held a pool connection
-for as long as the portal took to answer — the pool-exhaustion risk D3 exists to close everywhere
-in this platform — and a process that died mid-call left nothing in `einvoice_filings` at all to
-say an attempt was ever made.
+**Why this exists.** Every compliance portal call in this service used to run inside the same
+transaction as everything else: read the invoice, call the IRP (or the e-Way portal, or IMS),
+append the row, all in one `session.begin()` (the consumer) or one request (`app/api/
+internal.py`). That held a pool connection — and the invoice's row lock — for as long as the
+portal took to answer, the pool-exhaustion risk D3 exists to close everywhere in this platform,
+and a process that died mid-call left no trace of what it had asked for.
 
-`app/consumers.py` and `app/api/internal.py` now run three acts instead: **claim**
-(`services.claim_autofile_attempt` / `claim_manual_filing`, one short transaction, and — see
-`services.stage_registration_attempt` — writes **no row** before the portal is asked, because
-registering a document is itself idempotent), **call** (`services.call_irp_register`, no
-session), **record** (`services.record_autofile_result` / `record_manual_filing`, a second short
-transaction). A process that dies between the call and the record leaves the invoice exactly as
-it looked before any attempt — no filing row at all — and this sweep is what notices and resumes
-it.
+Every one of those calls is now three acts (D3, `docs/io-outside-transactions.md`): **claim**
+(one short transaction), **call** (no session at all), **record** (a second short transaction).
+What a crash between the call and the record leaves behind differs by act, and so does what this
+sweep does about it:
+
+* **Registration** writes *no row* before the call — registering is idempotent by document (the
+  IRN is a pure function of it) — so a crash leaves the invoice with no filing row at all.
+  `selectors.due_filing_reclaims` finds those, and the sweep re-arms the queue
+  (`filing_requested`, attempt 1). It never calls the IRP itself for a registration.
+* **A `pending` e-invoice row** (an outage) has a retry scheduled through the scheduler, whose
+  table this service may not read. One that has outlived its retry's delay plus grace, with no
+  `filing_requested` staged since, is taken as lost and re-queued at the next attempt number
+  (`services.claim_filing_redrive`); the attempt budget bounds it.
+* **A `cancelling` claim** (IRN withdrawal), and **a `submitting` / `pending` / `cancelling`
+  e-Way row**, are re-driven *here*, through the same claim/call/record split the route uses
+  (`claim_filing_redrive` / `claim_eway_redrive`, `call_*` with no transaction, `record_*`). The
+  portal's "already cancelled" / "already generated" answers are recorded as the successes they
+  are, and a generation is re-sent under the same (document, transporter/vehicle part)
+  idempotency key its first claim computed.
 
 **Same claim-and-drain shape as `subscription`'s dunning sweep, `payment`'s stuck-charge sweep,
 and this platform's outbox relay itself** (ADR-0002):
 
-* **discovery** (`selectors.due_filing_reclaims`) runs on the BYPASSRLS outbox role — it asks
-  *which organizations* have a reportable, unfiled invoice with no filing history at all, and
-  there is no tenant to bind while asking. As the NOBYPASSRLS app role it would see nothing, and
-  such an invoice would sit unfiled past its reporting window, silently.
-* **every write** — re-publishing `finance.compliance.invoice.filing_requested` — runs on the app
-  role inside `session_scope(organization_id=...)`, under the tenant policy. The bypass buys
-  discovery, never authority.
+* **discovery** (`selectors.due_filing_reclaims`, `due_stale_filings`, `due_stale_eway`) runs on
+  the BYPASSRLS outbox role — it asks *which organizations* have something stuck, and there is no
+  tenant to bind while asking. As the NOBYPASSRLS app role it would see nothing, and a document
+  would sit unfiled (or a withdrawal half-done) past its statutory window, silently. The role
+  holds column-scoped `SELECT` on exactly the columns those three queries read
+  (`migrations/env.py`), nothing else.
+* **every write** — re-publishing `filing_requested`, appending a lease row, recording what the
+  portal said — runs on the app role inside `session_scope(organization_id=...)`, under the
+  tenant policy. The bypass buys discovery, never authority.
 
 **Re-checked under the tenant binding before acting**, because discovery and the resume run in
-different transactions: an invoice a manual filing raced in between the two is found to already
-have a filing row (or to no longer qualify) and is left alone rather than double-triggered.
+different transactions: the invoice is taken `FOR UPDATE SKIP LOCKED` (one a request or another
+replica is driving right now is left alone this tick, not queued behind), and the newest row's
+own deadline — `domain.resume_after(attempts)` for a claim, `domain.pending_redrive_after` for an
+outage — is compared exactly. Discovery's `older_than` is only the coarse floor.
 
-**A poisoned invoice cannot stall the sweep.** An unexpected exception resuming one invoice is
-caught, logged with its own identifiers, and counted `failed`; the tick moves on to the next
-invoice, the same reasoning every other sweep in this platform states for the same shape of bug.
+**Bounded backoff and a lease.** Every re-drive of a claim appends a *fresh* claim row, so "newest
+row older than its deadline" is itself the lease: nobody else can pass it for that document until
+the new row is stale too, and each deadline is longer than the last (`resume_after`).
+
+**A poisoned step cannot stall the sweep, or loop forever.** Past `domain.MAX_COMPLIANCE_RESUMES`
+drives a claim becomes a terminal `failed` row carrying `retry_exhausted` — a failure a person
+sees, not a row picked up on every tick. An unexpected exception on one invoice is caught, logged
+with its own identifiers, and counted `failed`; the tick moves on to the next invoice, the same
+reasoning every other sweep in this platform states for the same shape of bug.
 """
 
 from __future__ import annotations
@@ -50,6 +71,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import domain, selectors, services
 from app.config import settings
+from app.deps import get_eway_client, get_irp_client
+from app.eway.base import EwayClient
+from app.irp.base import IrpClient
 from platform_core.db import (
     assert_app_role,
     assert_outbox_role,
@@ -68,35 +92,52 @@ log = get_logger("finance.cron")
 WorkScope = Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]
 
 
+#: The newest-row statuses `selectors.due_stale_filings` / `due_stale_eway` look for. Registration
+#: has no claim row (see `services.stage_registration_attempt`), so the e-invoice side has only
+#: the outage row and the cancellation claim; the e-Way side has both claims and its outage row.
+STALE_FILING_STATUSES: tuple[str, ...] = ("pending", "cancelling")
+STALE_EWAY_STATUSES: tuple[str, ...] = ("submitting", "pending", "cancelling")
+
+
 @dataclass
 class SweepReport:
-    """What one pass did. Returned so a test can assert on it and the loop can log it."""
+    """What one pass did. Returned so a test can assert on it and the loop can log it.
+
+    `resumed` counts every invoice the pass moved forward — a lost registration re-armed, a
+    stale `pending` re-queued, a claim re-driven through the portal; `exhausted` counts claims
+    the poisoned-step guard turned terminal; `skipped` those re-checked under the tenant binding
+    and found not (or no longer) due."""
 
     considered: int = 0
     resumed: int = 0
+    exhausted: int = 0
     skipped: int = 0
     failed: int = 0
 
     @property
     def acted(self) -> int:
-        return self.resumed
+        return self.resumed + self.exhausted
 
 
 class FilingReclaimSweep:
-    """Drains reportable invoices the automatic filing pipeline has lost track of, one pass at a
-    time. See the module docstring."""
+    """Drains compliance filings the platform has lost track of, one pass at a time. See the
+    module docstring."""
 
     def __init__(
         self,
         *,
         discovery_factory: async_sessionmaker[AsyncSession],
         work_scope: WorkScope,
+        irp_client_factory: Callable[[], IrpClient] = get_irp_client,
+        eway_client_factory: Callable[[], EwayClient] = get_eway_client,
         reclaim_after: timedelta = domain.FILING_RECLAIM_AFTER,
         batch_size: int = 100,
         poll_interval: float = 60.0,
     ) -> None:
         self._discovery_factory = discovery_factory
         self._work_scope = work_scope
+        self._irp_client_factory = irp_client_factory
+        self._eway_client_factory = eway_client_factory
         self._reclaim_after = reclaim_after
         self._batch_size = batch_size
         self._poll_interval = poll_interval
@@ -118,6 +159,7 @@ class FilingReclaimSweep:
                     "finance.filing_reclaim.sweep.pass",
                     considered=report.considered,
                     resumed=report.resumed,
+                    exhausted=report.exhausted,
                     skipped=report.skipped,
                     failed=report.failed,
                 )
@@ -125,21 +167,36 @@ class FilingReclaimSweep:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=self._poll_interval)
 
     async def tick(self, now: datetime | None = None) -> SweepReport:
-        """One pass: discover invoices stuck before `now - reclaim_after`, then resume each under
-        its own tenant binding. Two transactions per invoice is deliberate — discovery cannot
-        hold a tenant binding, and the resumed publish must run under one."""
+        """One pass: discover, then resume each invoice under its own tenant binding.
+
+        Three discovery reads in one short transaction on the outbox role — invoices with no
+        filing row at all, invoices whose newest e-invoice row is a stale `pending`/`cancelling`,
+        invoices whose newest e-Way row is a stale `submitting`/`pending`/`cancelling` — each
+        bounded by `batch_size` and each only a coarse floor (`now - reclaim_after`): the exact
+        per-attempt deadline is re-checked under the tenant binding before anything is driven.
+        """
         at = now or datetime.now(UTC)
         cutoff = at - self._reclaim_after
         report = SweepReport()
 
         async with self._discovery_factory() as session, session.begin():
-            due = await selectors.due_filing_reclaims(
+            lost = await selectors.due_filing_reclaims(
                 session, older_than=cutoff, limit=self._batch_size
             )
+            stale_filings = await selectors.due_stale_filings(
+                session, statuses=STALE_FILING_STATUSES, older_than=cutoff, limit=self._batch_size
+            )
+            stale_eway = await selectors.due_stale_eway(
+                session, statuses=STALE_EWAY_STATUSES, older_than=cutoff, limit=self._batch_size
+            )
 
-        report.considered = len(due)
-        for organization_id, invoice_id in due:
+        report.considered = len(lost) + len(stale_filings) + len(stale_eway)
+        for organization_id, invoice_id in lost:
             await self._resume_one(organization_id, invoice_id, at, report)
+        for organization_id, invoice_id in stale_filings:
+            await self._redrive_filing(organization_id, invoice_id, at, report)
+        for organization_id, invoice_id in stale_eway:
+            await self._redrive_eway(organization_id, invoice_id, at, report)
         return report
 
     async def _resume_one(
@@ -174,6 +231,20 @@ class FilingReclaimSweep:
                 ):
                     report.skipped += 1
                     return
+                if await selectors.filing_request_in_flight(
+                    session,
+                    organization_id,
+                    invoice.id,
+                    event_type=services.EVT_INVOICE_FILING_REQUESTED,
+                    after=invoice.created_at,
+                    lease=domain.FILING_RECLAIM_AFTER,
+                ):
+                    # This sweep re-armed it within the lease and the consumer has not answered
+                    # yet — re-publishing on every tick until it does would only queue duplicates.
+                    # (The finalize request itself is staged in the invoice's own transaction, so
+                    # it is never newer than `invoice.created_at` and never counts.)
+                    report.skipped += 1
+                    return
                 services.request_filing(
                     session, ctx, invoice, attempt=1, trigger="reclaim", now=now
                 )
@@ -185,6 +256,110 @@ class FilingReclaimSweep:
                 invoice_id=str(invoice_id),
             )
             report.failed += 1
+
+    async def _redrive_filing(
+        self,
+        organization_id: uuid.UUID,
+        invoice_id: uuid.UUID,
+        now: datetime,
+        report: SweepReport,
+    ) -> None:
+        """One stale e-invoice filing: claim (`services.claim_filing_redrive`, which re-checks
+        the deadline, applies the poisoned-step guard and appends the lease row), then — for a
+        `cancelling` claim only — call the portal with **no transaction open**, then record the
+        answer in a second short transaction. A `pending` row is only re-queued, never called
+        from here: the consumer's own claim/call/record is what files a document."""
+        ctx = services.service_ctx(organization_id)
+        try:
+            async with self._work_scope(organization_id) as session:
+                step = await services.claim_filing_redrive(session, ctx, invoice_id, now=now)
+            if step.cancel is None:
+                self._count(step.outcome, report)
+                return
+
+            outcome = services.call_irp_cancel(self._irp_client_factory(), step.cancel)
+
+            async with self._work_scope(organization_id) as session:
+                filing = await services.record_irn_cancellation(
+                    session, ctx, step.cancel, outcome, at=step.cancel.at
+                )
+            log.info(
+                "finance.filing_reclaim.cancel_redriven",
+                organization_id=str(organization_id),
+                invoice_id=str(invoice_id),
+                outcome=outcome.kind,
+                filing_status=filing.status,
+            )
+            report.resumed += 1
+        except Exception:
+            log.exception(
+                "finance.filing_reclaim.sweep.redrive_failed",
+                organization_id=str(organization_id),
+                invoice_id=str(invoice_id),
+            )
+            report.failed += 1
+
+    async def _redrive_eway(
+        self,
+        organization_id: uuid.UUID,
+        invoice_id: uuid.UUID,
+        now: datetime,
+        report: SweepReport,
+    ) -> None:
+        """One stale e-Way row: claim (`services.claim_eway_redrive`), call the portal with **no
+        transaction open**, record — for a generation (`submitting`, or a `pending` outage) and a
+        withdrawal (`cancelling`) alike."""
+        ctx = services.service_ctx(organization_id)
+        try:
+            client = self._eway_client_factory()
+            async with self._work_scope(organization_id) as session:
+                step = await services.claim_eway_redrive(
+                    session, ctx, invoice_id, now=now, portal=client.name
+                )
+
+            if step.generate is not None:
+                generated = services.call_eway_generate(client, step.generate.payload)
+                async with self._work_scope(organization_id) as session:
+                    bill = await services.record_eway_generation(
+                        session, ctx, step.generate, generated, portal=client.name
+                    )
+                outcome_kind = generated.kind
+            elif step.cancel is not None:
+                cancelled = services.call_eway_cancel(client, step.cancel)
+                async with self._work_scope(organization_id) as session:
+                    bill = await services.record_eway_cancellation(
+                        session, ctx, step.cancel, cancelled
+                    )
+                outcome_kind = cancelled.kind
+            else:
+                self._count(step.outcome, report)
+                return
+
+            log.info(
+                "finance.filing_reclaim.eway_redriven",
+                organization_id=str(organization_id),
+                invoice_id=str(invoice_id),
+                step=step.outcome,
+                outcome=outcome_kind,
+                eway_status=bill.status,
+            )
+            report.resumed += 1
+        except Exception:
+            log.exception(
+                "finance.filing_reclaim.sweep.redrive_failed",
+                organization_id=str(organization_id),
+                invoice_id=str(invoice_id),
+            )
+            report.failed += 1
+
+    @staticmethod
+    def _count(outcome: str, report: SweepReport) -> None:
+        if outcome == "exhausted":
+            report.exhausted += 1
+        elif outcome == "requeued":
+            report.resumed += 1
+        else:
+            report.skipped += 1
 
 
 async def main() -> None:
