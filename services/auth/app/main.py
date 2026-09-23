@@ -28,7 +28,7 @@ async def _startup(application: FastAPI) -> None:
     application.state.signing_key = active_key(cfg.jwt_private_key_path)
     application.state.directory = HttpDirectory(cfg.account_service_url, cfg)
     application.state.entitlements = HttpEntitlements(cfg.product_service_url, cfg)
-    application.state.idp = HttpIdpClient()
+    application.state.idp = HttpIdpClient(allow_insecure_http=cfg.egress_allow_insecure_http)
 
 
 async def _shutdown(application: FastAPI) -> None:

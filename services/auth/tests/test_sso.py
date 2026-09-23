@@ -33,7 +33,7 @@ import jwt
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import oidc, services
@@ -673,6 +673,20 @@ def _transport(handler: Any) -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
+#: A stub resolver standing in for real DNS: `ISSUER`'s host is a fake TLD
+#: (`idp.example.test`) that no test may actually look up. Public and stable, so nothing in
+#: `TestTheHttpClient` is testing the egress guard itself — that is `TestTheEgressGuard` and
+#: `libs/platform-core`'s own suite — only that a guarded client still forwards a *permitted*
+#: URL to its transport exactly as an unguarded one did.
+async def _resolves_public(host: str) -> list[str]:
+    return ["93.184.216.34"]
+
+
+async def _resolves_internal(host: str) -> list[str]:
+    """What a rebinding attacker, or a plain misconfiguration, would have `discover` reach."""
+    return ["169.254.169.254"]
+
+
 class TestTheHttpClient:
     async def test_it_sends_the_secret_and_the_verifier_as_form_fields(self) -> None:
         seen: dict[str, str] = {}
@@ -681,7 +695,7 @@ class TestTheHttpClient:
             seen.update(dict(parse_qs(request.content.decode())))  # type: ignore[arg-type]
             return httpx.Response(200, json={"id_token": "a.b.c"})
 
-        client = oidc.HttpIdpClient(transport=_transport(handler))
+        client = oidc.HttpIdpClient(transport=_transport(handler), resolver=_resolves_public)
         result = await client.exchange_code(
             TOKEN,
             code="code",
@@ -704,7 +718,7 @@ class TestTheHttpClient:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(400, json={"error": "invalid_grant", "hint": "already used"})
 
-        client = oidc.HttpIdpClient(transport=_transport(handler))
+        client = oidc.HttpIdpClient(transport=_transport(handler), resolver=_resolves_public)
         with pytest.raises(oidc.SsoExchangeProblem) as raised:
             await client.exchange_code(
                 TOKEN,
@@ -724,7 +738,7 @@ class TestTheHttpClient:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, text="<html>sign in</html>")
 
-        client = oidc.HttpIdpClient(transport=_transport(handler))
+        client = oidc.HttpIdpClient(transport=_transport(handler), resolver=_resolves_public)
         with pytest.raises(UpstreamUnavailableProblem):
             await client.fetch_jwks(JWKS_URI)
         await client.aclose()
@@ -735,7 +749,7 @@ class TestTheHttpClient:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"access_token": "at", "token_type": "Bearer"})
 
-        client = oidc.HttpIdpClient(transport=_transport(handler))
+        client = oidc.HttpIdpClient(transport=_transport(handler), resolver=_resolves_public)
         with pytest.raises(oidc.SsoExchangeProblem):
             await client.exchange_code(
                 TOKEN,
@@ -754,13 +768,98 @@ class TestTheHttpClient:
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("no route to host")
 
-        client = oidc.HttpIdpClient(transport=_transport(handler))
+        client = oidc.HttpIdpClient(transport=_transport(handler), resolver=_resolves_public)
         with pytest.raises(UpstreamUnavailableProblem):
             await client.discover(f"{ISSUER}/.well-known/openid-configuration")
         await client.aclose()
 
 
+# --------------------------------------------------------------------- the egress guard
+#
+# `HttpIdpClient` is the one place in this service that fetches a URL an organization admin
+# chose. These tests are the SSRF finding, from the seam auth-service actually owns: a stub
+# resolver stands in for DNS returning something internal, and the assertion that matters most
+# is not the exception type — it is that the mock transport was never asked to do anything.
+
+
+class TestTheEgressGuard:
+    async def test_a_discovery_url_resolving_internally_is_refused_with_no_request_sent(
+        self,
+    ) -> None:
+        called = False
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal called
+            called = True
+            return httpx.Response(200, json={"issuer": ISSUER})  # pragma: no cover - unreached
+
+        client = oidc.HttpIdpClient(transport=_transport(handler), resolver=_resolves_internal)
+        with pytest.raises(UpstreamUnavailableProblem):
+            await client.discover(f"{ISSUER}/.well-known/openid-configuration")
+        await client.aclose()
+
+        assert called is False, "a host resolving to a disallowed address must never be dialed"
+
+    async def test_the_refusal_never_names_the_disallowed_address(self) -> None:
+        """The client-visible message is the same generic one an unreachable provider gets —
+        it does not confirm that a probe against the platform's internal network landed."""
+
+        def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - unreached
+            return httpx.Response(200, json={})
+
+        client = oidc.HttpIdpClient(transport=_transport(handler), resolver=_resolves_internal)
+        with pytest.raises(UpstreamUnavailableProblem) as raised:
+            await client.fetch_jwks(JWKS_URI)
+        await client.aclose()
+
+        assert "169.254.169.254" not in raised.value.detail
+
+    async def test_a_plain_http_discovery_url_is_refused(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - unreached
+            return httpx.Response(200, json={})
+
+        client = oidc.HttpIdpClient(transport=_transport(handler), resolver=_resolves_public)
+        with pytest.raises(UpstreamUnavailableProblem):
+            await client.discover("http://idp.example.test/.well-known/openid-configuration")
+        await client.aclose()
+
+
 # --------------------------------------------------------------------- administration
+
+
+class TestJitProvisioningDefaultsToFalse:
+    """A flag that is inert today but means "let an external issuer create an account" the
+    day it is wired up must not default to on for a row nobody explicitly configured — see
+    the column's docstring in `app/models.py` and the migration that corrected it."""
+
+    async def test_the_orm_default_is_false(self, session, cfg) -> None:
+        await set_tenant(session, ORG_A)
+        row = OrgIdpConfig(
+            organization_id=ORG_A,
+            protocol="oidc",
+            display_name="No jit_provisioning passed",
+            issuer="https://defaults.example.test",
+            client_id="defaults-client",
+        )
+        session.add(row)
+        await session.flush()
+        assert row.jit_provisioning is False
+        await session.rollback()
+
+    async def test_the_database_column_itself_defaults_to_false(self, session, cfg) -> None:
+        """Not just the ORM's default: `information_schema` is asked what the *column*
+        would supply for a row that never mentions it — a fixture, a repair script, a
+        future migration run outside this service's models — which is a question a row
+        insert cannot isolate from every other NOT NULL column also needing a value."""
+        result = await session.execute(
+            text(
+                "SELECT column_default FROM information_schema.columns "
+                "WHERE table_schema = 'auth' AND table_name = 'org_idp_configs' "
+                "AND column_name = 'jit_provisioning'"
+            )
+        )
+        assert result.scalar_one() == "false"
+        await session.rollback()
 
 
 class TestConfiguration:
