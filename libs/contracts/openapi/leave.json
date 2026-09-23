@@ -1,0 +1,1609 @@
+{
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "LeaveBalanceGrantIn": {
+        "additionalProperties": false,
+        "description": "Post a credit to one employee's ledger \u2014 a grant, an accrual, or a plain adjustment.\n\n`idempotency_key` is optional but strongly encouraged: without one, a retried request (a\nclient timeout, a double-click) posts a second credit, because there is nothing here for the\nserver to recognise as \"the same request\" (CLAUDE.md's idempotency rule applies to this\nwrite exactly as it does to a payment).",
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "entry_type": {
+            "default": "grant",
+            "enum": [
+              "grant",
+              "accrual",
+              "adjustment"
+            ],
+            "title": "Entry Type",
+            "type": "string"
+          },
+          "half_days": {
+            "description": "Always positive; this endpoint only credits.",
+            "exclusiveMinimum": 0.0,
+            "title": "Half Days",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "leave_type_id": {
+            "format": "uuid",
+            "title": "Leave Type Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "employee_id",
+          "leave_type_id",
+          "half_days"
+        ],
+        "title": "LeaveBalanceGrantIn",
+        "type": "object"
+      },
+      "LeaveBalanceOut": {
+        "properties": {
+          "balance_half_days": {
+            "title": "Balance Half Days",
+            "type": "integer"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "leave_type_code": {
+            "title": "Leave Type Code",
+            "type": "string"
+          },
+          "leave_type_id": {
+            "format": "uuid",
+            "title": "Leave Type Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "employee_id",
+          "leave_type_id",
+          "leave_type_code",
+          "balance_half_days"
+        ],
+        "title": "LeaveBalanceOut",
+        "type": "object"
+      },
+      "LeaveCancelIn": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "LeaveCancelIn",
+        "type": "object"
+      },
+      "LeaveLedgerEntryOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "delta_half_days": {
+            "title": "Delta Half Days",
+            "type": "integer"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "entry_type": {
+            "enum": [
+              "grant",
+              "accrual",
+              "consumption",
+              "reversal",
+              "adjustment"
+            ],
+            "title": "Entry Type",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "leave_request_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leave Request Id"
+          },
+          "leave_type_id": {
+            "format": "uuid",
+            "title": "Leave Type Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "id",
+          "employee_id",
+          "leave_type_id",
+          "entry_type",
+          "delta_half_days",
+          "leave_request_id",
+          "note",
+          "created_at"
+        ],
+        "title": "LeaveLedgerEntryOut",
+        "type": "object"
+      },
+      "LeaveRequestIn": {
+        "additionalProperties": false,
+        "description": "Apply for leave. There is no `employee_id`: a person applies for their own leave, so the\ncaller's own subject reference is the requester \u2014 the same shape `attendance.CheckInIn`\nuses for a self-service write.",
+        "properties": {
+          "end_date": {
+            "format": "date",
+            "title": "End Date",
+            "type": "string"
+          },
+          "half_day_end": {
+            "default": false,
+            "title": "Half Day End",
+            "type": "boolean"
+          },
+          "half_day_start": {
+            "default": false,
+            "title": "Half Day Start",
+            "type": "boolean"
+          },
+          "leave_type_id": {
+            "format": "uuid",
+            "title": "Leave Type Id",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "start_date": {
+            "format": "date",
+            "title": "Start Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "leave_type_id",
+          "start_date",
+          "end_date",
+          "reason"
+        ],
+        "title": "LeaveRequestIn",
+        "type": "object"
+      },
+      "LeaveRequestOut": {
+        "properties": {
+          "approval_opened_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Opened At"
+          },
+          "approval_request_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Request Id"
+          },
+          "approver_employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Employee Id"
+          },
+          "approver_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Name"
+          },
+          "approver_unassigned": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Unassigned"
+          },
+          "cancellation_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancellation Reason"
+          },
+          "cancelled_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancelled At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By Name"
+          },
+          "decision_comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Comment"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "end_date": {
+            "format": "date",
+            "title": "End Date",
+            "type": "string"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "half_day_end": {
+            "title": "Half Day End",
+            "type": "boolean"
+          },
+          "half_day_start": {
+            "title": "Half Day Start",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "leave_type_id": {
+            "format": "uuid",
+            "title": "Leave Type Id",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "start_date": {
+            "format": "date",
+            "title": "Start Date",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "approved",
+              "rejected",
+              "cancelled",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "total_half_days": {
+            "title": "Total Half Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "employee_id",
+          "leave_type_id",
+          "start_date",
+          "end_date",
+          "half_day_start",
+          "half_day_end",
+          "total_half_days",
+          "reason",
+          "status",
+          "approval_request_id",
+          "approval_opened_at",
+          "approver_employee_id",
+          "approver_name",
+          "decided_at",
+          "decision_comment",
+          "decided_by_name",
+          "failure_reason",
+          "cancelled_at",
+          "cancellation_reason",
+          "created_at"
+        ],
+        "title": "LeaveRequestOut",
+        "type": "object"
+      },
+      "LeaveSettingsIn": {
+        "additionalProperties": false,
+        "properties": {
+          "timezone": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timezone"
+        ],
+        "title": "LeaveSettingsIn",
+        "type": "object"
+      },
+      "LeaveSettingsOut": {
+        "properties": {
+          "organization_id": {
+            "format": "uuid",
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "timezone",
+          "updated_at"
+        ],
+        "title": "LeaveSettingsOut",
+        "type": "object"
+      },
+      "LeaveTypeIn": {
+        "additionalProperties": false,
+        "properties": {
+          "annual_quota_half_days": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Annual Quota Half Days"
+          },
+          "carry_forward_cap_half_days": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carry Forward Cap Half Days"
+          },
+          "code": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Code",
+            "type": "string"
+          },
+          "is_paid": {
+            "default": true,
+            "title": "Is Paid",
+            "type": "boolean"
+          },
+          "monthly_accrual_half_days": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Accrual Half Days"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "name"
+        ],
+        "title": "LeaveTypeIn",
+        "type": "object"
+      },
+      "LeaveTypeOut": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "annual_quota_half_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Annual Quota Half Days"
+          },
+          "carry_forward_cap_half_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carry Forward Cap Half Days"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_paid": {
+            "title": "Is Paid",
+            "type": "boolean"
+          },
+          "monthly_accrual_half_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Accrual Half Days"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "is_paid",
+          "annual_quota_half_days",
+          "monthly_accrual_half_days",
+          "carry_forward_cap_half_days",
+          "active",
+          "created_at"
+        ],
+        "title": "LeaveTypeOut",
+        "type": "object"
+      },
+      "LeaveTypePatch": {
+        "additionalProperties": false,
+        "description": "Partial update. Absent means \"leave alone\"; `code` is not editable \u2014 it is the org handle\na request references, so a rename is a new type, not a mutation in place.",
+        "properties": {
+          "active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
+          },
+          "annual_quota_half_days": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Annual Quota Half Days"
+          },
+          "carry_forward_cap_half_days": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carry Forward Cap Half Days"
+          },
+          "is_paid": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Paid"
+          },
+          "monthly_accrual_half_days": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Accrual Half Days"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "LeaveTypePatch",
+        "type": "object"
+      },
+      "Page_LeaveRequestOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LeaveRequestOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[LeaveRequestOut]",
+        "type": "object"
+      },
+      "Page_LeaveTypeOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LeaveTypeOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[LeaveTypeOut]",
+        "type": "object"
+      },
+      "ServiceInfo": {
+        "properties": {
+          "schema_name": {
+            "title": "Schema Name",
+            "type": "string"
+          },
+          "service": {
+            "title": "Service",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "schema_name"
+        ],
+        "title": "ServiceInfo",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Leave service \u2014 part of the OpsGrids platform.",
+    "title": "Leave service",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/leave/balances": {
+      "get": {
+        "description": "`employee_id` is required, not optional \u2014 the one thing that keeps this endpoint bounded\nwithout a page parameter (CLAUDE.md: no unbounded list query). One employee's balances are at\nmost the handful of leave types an organization defines; \"every employee's balance\" is\ndeliberately not a read this endpoint offers in this slice \u2014 an ORG-scoped caller asking for\nit would otherwise return one row per employee per type with nothing to page it by. `ctx.apply`\nstill narrows an OWN-scoped caller to their own id regardless of what they pass here.",
+        "operationId": "list_leave_balances_api_v1_leave_balances_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/LeaveBalanceOut"
+                  },
+                  "title": "Response List Leave Balances Api V1 Leave Balances Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Leave balances",
+        "tags": [
+          "leave"
+        ]
+      }
+    },
+    "/api/v1/leave/balances/grant": {
+      "post": {
+        "operationId": "grant_leave_balance_api_v1_leave_balances_grant_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaveBalanceGrantIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaveLedgerEntryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Grant, accrue, or adjust an employee's leave balance",
+        "tags": [
+          "leave"
+        ]
+      }
+    },
+    "/api/v1/leave/balances/ledger": {
+      "get": {
+        "operationId": "read_ledger_api_v1_leave_balances_ledger_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "leave_type_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Leave Type Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/LeaveLedgerEntryOut"
+                  },
+                  "title": "Response Read Ledger Api V1 Leave Balances Ledger Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One employee's posting history for one leave type",
+        "tags": [
+          "leave"
+        ]
+      }
+    },
+    "/api/v1/leave/info": {
+      "get": {
+        "operationId": "info_api_v1_leave_info_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "What this service is",
+        "tags": [
+          "leave"
+        ]
+      }
+    },
+    "/api/v1/leave/requests": {
+      "get": {
+        "operationId": "list_leave_requests_api_v1_leave_requests_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "employee_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Employee Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_LeaveRequestOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Leave requests",
+        "tags": [
+          "leave"
+        ]
+      },
+      "post": {
+        "description": "Self-service (ADR-0006). Opens a `pending` request and publishes\n`hrms.time.leave.requested`; approval routes it and reports the decision back on\n`core.approval.request.decided`, applied by `app.consumers`.",
+        "operationId": "apply_for_leave_api_v1_leave_requests_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaveRequestIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaveRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Apply for leave",
+        "tags": [
+          "leave"
+        ]
+      }
+    },
+    "/api/v1/leave/requests/{request_id}": {
+      "get": {
+        "operationId": "read_leave_request_api_v1_leave_requests__request_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaveRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One leave request",
+        "tags": [
+          "leave"
+        ]
+      }
+    },
+    "/api/v1/leave/requests/{request_id}/cancel": {
+      "post": {
+        "operationId": "cancel_leave_request_api_v1_leave_requests__request_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaveCancelIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaveRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Withdraw your own leave request",
+        "tags": [
+          "leave"
+        ]
+      }
+    },
+    "/api/v1/leave/requests/{request_id}/force-cancel": {
+      "post": {
+        "description": "The documented escape hatch (ADR-0006 \u00a76) \u2014 HR cancels a stuck or mistaken request\ndirectly, audited in its own domain, without going through approval. `ctx` here is already\nguarded at `minimum=Scope.ORG`, so no object-level identity check is needed: an ORG-scoped\ncaller may touch any employee's request by construction (`ScopeContext.assert_can_touch`).",
+        "operationId": "force_cancel_leave_request_api_v1_leave_requests__request_id__force_cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaveCancelIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaveRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel any employee's leave request directly (HR override)",
+        "tags": [
+          "leave"
+        ]
+      }
+    },
+    "/api/v1/leave/settings": {
+      "get": {
+        "operationId": "read_leave_settings_api_v1_leave_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaveSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "This organization's leave settings",
+        "tags": [
+          "leave"
+        ]
+      },
+      "put": {
+        "operationId": "update_leave_settings_api_v1_leave_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaveSettingsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaveSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set this organization's leave timezone",
+        "tags": [
+          "leave"
+        ]
+      }
+    },
+    "/api/v1/leave/types": {
+      "get": {
+        "operationId": "list_leave_types_api_v1_leave_types_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "include_inactive",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Inactive",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_LeaveTypeOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Leave types",
+        "tags": [
+          "leave"
+        ]
+      },
+      "post": {
+        "operationId": "create_leave_type_api_v1_leave_types_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaveTypeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaveTypeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Define a leave type",
+        "tags": [
+          "leave"
+        ]
+      }
+    },
+    "/api/v1/leave/types/{leave_type_id}": {
+      "delete": {
+        "operationId": "delete_leave_type_api_v1_leave_types__leave_type_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "leave_type_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Leave Type Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retire a leave type",
+        "tags": [
+          "leave"
+        ]
+      },
+      "patch": {
+        "operationId": "update_leave_type_api_v1_leave_types__leave_type_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "leave_type_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Leave Type Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaveTypePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaveTypeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update a leave type",
+        "tags": [
+          "leave"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Liveness \u2014 is the process up?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "description": "Route traffic on this; restart on /health.\n\nConflating the two restarts a healthy process that is merely waiting on a\ndependency.\n\nOnly the dependencies a service actually declares are checked. A gateway owns no\ntables, so asking it for a database is asking a question whose answer means nothing\n\u2014 and a readiness probe that reports on something the service does not use is worse\nthan no probe, because it will eventually fail for a reason nobody can act on.",
+        "operationId": "ready_health_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ready Health Ready Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readiness \u2014 can it serve traffic?",
+        "tags": [
+          "health"
+        ]
+      }
+    }
+  }
+}

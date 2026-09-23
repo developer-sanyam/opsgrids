@@ -4,7 +4,15 @@ import { Link, useLocation } from "react-router-dom";
 import { useAsync } from "@opsgrids/client";
 import { CheckIcon, LayoutIcon } from "@opsgrids/ui";
 
-import { adoptTheme, listCategories, listProducts, listThemes, removeStore, getStore } from "@/api/client";
+import {
+  adoptTheme,
+  listCategories,
+  listProducts,
+  listThemes,
+  removeStore,
+  getStore,
+  USE_FIXTURES,
+} from "@/api/client";
 import type { Category, Product } from "@/api/types";
 import { CONSOLE_STORE_BASE, LIVE_BASE } from "@/routes/live/liveRoutes";
 import type { StoreDoc, Theme } from "@/theme/schema";
@@ -122,7 +130,9 @@ export function GalleryPage() {
           /* Wraps: there are four controls here now, and at 360px a single row would push the
              page sideways instead of stacking. */
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <SampleChip title="Representative data — there is no storefront service yet, so the catalogue and the store document come from local fixtures" />
+            {USE_FIXTURES ? (
+              <SampleChip title="Representative data — running on local fixtures" />
+            ) : null}
             {store ? (
               <Button
                 variant="outline"

@@ -17,6 +17,8 @@ export interface Product {
   connects_to: string[];
   features: string[];
   is_platform: boolean;
+  /** A bundle (`suite`) is sold, never opened: a subscription to it entitles its members. */
+  is_bundle: boolean;
 }
 
 /** `ActivationOut` — whether this organisation may use a product right now. */
@@ -27,6 +29,8 @@ export interface Activation {
   activated_at: string;
   trial_ends_at: string | null;
   deactivated_at: string | null;
+  /** Keys of the subscriptions entitling it now: its own, and/or a bundle's (`suite`). */
+  entitled_by: string[];
 }
 
 /** `PriceOut` — one price on a plan version. `flat` is what ADR-0013 §2 sells. */
@@ -50,6 +54,14 @@ export interface PlanVersion {
   restricted_to_org_id: string | null;
   published_at: string | null;
   prices: Price[];
+  /** The version's feature sheet. A bundle names its members in `bundled_products`. */
+  features: Feature[];
+}
+
+/** `FeatureOut` — `value` is whatever JSON the catalogue stored. */
+export interface Feature {
+  feature_key: string;
+  value: unknown;
 }
 
 /** `PlanOut` — a product's plan with the versions this organisation may see. */
@@ -94,6 +106,8 @@ export interface Subscription {
   current_period_end: string | null;
   cancel_at: string | null;
   currency: string;
+  /** What this subscription switches on — the product itself, or a bundle's members. */
+  entitled_products: string[];
   items: SubscriptionItem[];
   dunning: Dunning | null;
 }

@@ -23,6 +23,10 @@ class Settings(ServiceSettings):
     #: catalog is the authority for whether a version exists, is published and is visible here.
     catalog_service_url: str = "http://localhost:8164"
 
+    #: Where product-service answers the registry read — asked only when a bundle is sold, to
+    #: refuse members the registry no longer vouches for (`app/registry.py`).
+    product_service_url: str = "http://localhost:8112"
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

@@ -13,7 +13,7 @@ somewhere honest to put both.
 
 | Shape | Configuration or code | Why |
 |---|---|---|
-| **Graduated bundle discounts** | Configuration | A bundle is a plan version. Its price sheet is the bundled price and its `features` name its members and its rung. |
+| **Graduated bundle discounts** | Configuration to price; code to entitle | A bundle is a plan version. Its price sheet is the bundled price and its `features` name its members and its rung. Fanning entitlement out to the members needed an activation that can have more than one source. |
 | **Prepaid credit packs** | Configuration, plus one correction | A pack is a time-boxed credit grant. What needed code was `drawn_from`: a draw-down has to inherit the pack's window, or an expiring pack drags the balance negative. |
 | **Free view-only seat class** | **Code** — one new table | Nothing in a price sheet could say a plan sells two kinds of seat, still less that one of them may not write. |
 | **Partner / reseller pricing** | Configuration | `restricted_to_org_id` pointed at the reseller. The same audience-of-one mechanism a negotiated enterprise price uses. |
@@ -46,7 +46,9 @@ An ordinary `POST /api/v1/admin/catalog/plans/{id}/versions` with two feature ro
 
 No new field, no new endpoint. `bundled_products` and `bundle_tier` are the only two feature keys
 the *platform* reads rather than a product — everything else in `features` stays a product's own
-vocabulary that catalog never interprets.
+vocabulary that catalog never interprets. The plan it sits on must belong to a registered bundle
+product (`suite`), and every member must be a registered, non-platform, non-bundle product;
+catalog checks both when the draft is authored (see "What a bundle entitles" below).
 
 ### The seeded ladder
 
@@ -66,15 +68,53 @@ count rounds, and a rounded comparison of two prices is a comparison of two othe
 reads the seed migration's own numbers, so re-pricing a rung into a ladder that gets *dearer* per
 product fails the build and names the rung.
 
-### What a bundle does not yet do
+### What a bundle entitles
 
-**It prices the packaging; it does not fan entitlement out to its members.** A subscription
-entitles one `product_key`, and a subscription to a bundle entitles the bundle's key. Making a
-`suite/trio` subscription light up `hrms`, `crm` and `finance` means the product-service
-projection reading `bundled_products` off the subscription event and upserting one activation per
-member — real code in the entitlement path, in three services, which is squarely outside a
-packaging slice. It is on the backlog. `bundled_products` exists now precisely so that work has a
-contract to read rather than a convention to guess.
+**Its members, and only its members.** Until this was built a bundle priced the packaging and
+entitled nothing: a `suite/trio` subscription emitted `product_key: "suite"`, product-service
+projected an activation for `suite`, and no gateway route checks `suite`. Now the fan-out runs
+through the same three services every entitlement already did, each doing its own part:
+
+| Service | What it does with a bundle |
+|---|---|
+| **catalog** | Refuses to author a `bundled_products` list that names an unregistered product, a platform product, another bundle, a product still `soon`, or the same product twice, or that sits on a plan whose product is not a registered bundle — checked against product-service's registry while the version is still a draft, because a published version is immutable. The key's presence is what counts: an explicit `null` is refused, not read as "not a bundle". `python -m app.bundle_audit` re-judges every sellable bundle against the live registry at deploy. |
+| **subscription** | Reads `bundled_products` off the **pinned** version at subscribe and at change-plan and snapshots it as `subscriptions.entitled_products`. The member list comes from catalog only; a list in the request body is ignored. Every `commerce.subscription.*` event carries `entitled_products` (additive: a consumer defaults a missing one to `[product_key]`). A change-plan may not hop to another product's version, and a version whose catalog read names no product is refused. **A bundle is sold only through the operator path** (`POST /internal/v1/subscriptions`, `…/{id}/change-plan`, service token), which re-checks the members against the registry at the moment of sale; the customer routes answer 403. |
+| **product** | One **source** per member (`activation_sources`), and an activation is on while any of its sources is live — [ADR-0004 §5 addendum](adr/0004-commercial-model.md). A plan change diffs the old member set against the new one: duo→trio adds `finance`, trio→duo tombstones it. Every fold runs under advisory locks (the source, then each activation in key order), so concurrent folds and an owner's hand deactivation serialise. A member list is honoured only on a bundle product's subscription, and a member that is unregistered, platform, a bundle or still `soon` is never projected. `suite` is registered as a bundle product: listed in the marketplace, never routed, and refused by the hand-activation path. |
+| **account** | Installs each member's permission manifest and grants each member's admin templates to the owners. `suite` has no manifest and never will. |
+
+**Trials come from the plan, not the caller.** A subscription's trial length is the pinned
+version's `trial_days` feature — 14 days when the version names none, 0 for a version that sells
+no trial. A customer's `trial_days` is only a request to trial, capped at that number; it used to
+be taken as given, which let any customer grant themselves a 365-day trial of any product. The
+decision is reversible the same way: a longer trial is a new version with a larger `trial_days`.
+
+Snapshotting is safe for the same reason a pin is: the version is immutable, so its members
+cannot change under the subscription, only by re-pinning — which re-snapshots in the same
+transaction. The snapshot is what lets a suspension or cancellation name exactly the members it
+switches off without anybody downstream reading catalog.
+
+What a bundle still does not do, deliberately:
+
+- **Per-member seat counts.** A bundle's `per_seat` price is one number across its members, and
+  a seat is a seat in all of them. Different seat counts per member is a pricing question, and
+  its answer is a different price sheet, not a flag.
+- **Upgrade credit across the boundary.** Moving from standalone HRMS to a trio that includes it
+  is two subscriptions — the standalone one keeps its own source until it is cancelled, and the
+  activation stays on throughout because the trio feeds it too. Crediting the unused standalone
+  period against the trio is billing's proration, not an entitlement concern, and is not built.
+- **Selling one self-serve.** Bundles are **sales-led**: a customer cannot subscribe to one
+  or move a bundle between rungs, and the platform team sells it through the operator path. The
+  dashboard lists the rungs and their members and marks a member "Included in Suite Trio" while
+  the bundle is active or on trial. This is a default, not a limit of the design — letting
+  customers buy a bundle is a change to one guard in `subscription.services._check_bundle`, and
+  the registry re-check it keeps would still apply.
+- **The `full` rung.** Seeded with `projects`, which is still `soon` on this deployment, so the
+  `suite/full` plan is retired (migration `c5f1e8a2b7d4`) rather than sold for a product that
+  answers 404. Its published version is untouched; reversing the migration, or reactivating the
+  plan in the staff console once Projects launches, makes it sellable again.
+- **Legacy rows.** A subscription that predates the snapshot reads as `[product_key]`. A bundle
+  among them is fixed by `python -m app.backfill` in subscription-service, a one-off deploy step
+  (RUNBOOK, "Bundle entitlement").
 
 ---
 

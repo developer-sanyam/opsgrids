@@ -64,18 +64,28 @@ export function SubscriptionsPage() {
     {
       key: "product",
       header: "Product · plan",
-      render: (s) => (
-        <div className="flex items-center gap-1.5">
-          <span className="font-semibold text-ink">{s.product_name}</span>
-          <span className="text-muted">·</span>
-          <span className="text-muted">{s.plan_name}</span>
-          {s.is_bespoke ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-1.5 py-0.5 text-[0.65rem] font-semibold text-accent-ink">
-              <TagIcon className="size-3" /> Bespoke
-            </span>
-          ) : null}
-        </div>
-      ),
+      render: (s) => {
+        const members = (s.entitled_products ?? []).filter((key) => key !== s.product_key);
+        return (
+          <div className="flex flex-col gap-0.5">
+            <div className="flex items-center gap-1.5">
+              <span className="font-semibold text-ink">{s.product_name}</span>
+              <span className="text-muted">·</span>
+              <span className="text-muted">{s.plan_name}</span>
+              {s.is_bespoke ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-1.5 py-0.5 text-[0.65rem] font-semibold text-accent-ink">
+                  <TagIcon className="size-3" /> Bespoke
+                </span>
+              ) : null}
+            </div>
+            {members.length > 0 ? (
+              <span className="text-xs text-muted">
+                Entitles <span className="mono">{members.join(", ")}</span>
+              </span>
+            ) : null}
+          </div>
+        );
+      },
     },
     { key: "state", header: "State", render: (s) => <AccountStatusPill status={s.state} /> },
     {

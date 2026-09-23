@@ -23,8 +23,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = 'ba3a482fd724'
-down_revision: str | None = 'b4a1f7c92d5e'
+revision: str = 'ba3a482fd724'  # pragma: allowlist secret
+down_revision: str | None = 'b4a1f7c92d5e'  # pragma: allowlist secret
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

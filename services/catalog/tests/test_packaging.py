@@ -47,7 +47,7 @@ from app.schemas import FeatureIn, PlanCreateIn, PriceIn, SeatClassIn, VersionCr
 from platform_core.auth import Principal, get_principal
 from platform_core.errors import BusinessRuleProblem
 from platform_core.money import CurrencyMismatch, Money
-from tests.helpers import customer_principal, operator_principal
+from tests.helpers import FakeRegistry, customer_principal, operator_principal
 
 pytestmark = pytest.mark.integration
 
@@ -120,6 +120,15 @@ async def _publish(
             seat_classes=seat_classes or [],
         ),
         request=None,
+        # These ladders live under throwaway product keys; register them as the bundle and its
+        # members so authoring validates against a registry that knows them.
+        registry=FakeRegistry.default().with_bundle(
+            product_key,
+            next(
+                (list(f.value) for f in features or [] if f.feature_key == "bundled_products"),
+                [],
+            ),
+        ),
     )
     published = await services.publish_version(session, op, version, request=None)
     fresh = await selectors.get_version(session, published.id)
