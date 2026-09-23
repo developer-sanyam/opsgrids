@@ -49,6 +49,11 @@ optional_empty="$optional_empty WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN WHATSA
 # storefront's own settings default it to empty and print "the platform address" instead of a
 # literal until it is filled in. Checked separately, below, for a documentation-range value.
 optional_empty="$optional_empty EDGE_RESERVED_IP"
+# The orphan sweep's own credential (ADR-0009 §9 addendum) is off by default
+# (DOCUMENT_ORPHAN_SWEEP_ENABLED=false) — a box selling Storefront works fully without it, and
+# generating a MinIO user for a pass that is not yet turned on is a step an operator should
+# take deliberately, not one preflight forces on every box the day this shipped.
+optional_empty="$optional_empty DOCUMENT_S3_ORPHAN_ACCESS_KEY DOCUMENT_S3_ORPHAN_SECRET_KEY"
 
 # shellcheck disable=SC1091  # .env is data, generated on the box from .env.example
 set -a
