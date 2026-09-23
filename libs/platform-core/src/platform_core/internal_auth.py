@@ -36,6 +36,9 @@ at a sixty-second window; it is recorded here rather than silently omitted.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -137,11 +140,65 @@ def verify_gateway_token(settings: ServiceSettings, token: str) -> dict[str, Any
     return claims
 
 
+#: The header the admin-gateway hop signature travels on. Never a valid `Authorization`
+#: header shape, and distinct from `x-internal-token`, so it cannot be confused with either.
+ADMIN_HOP_HEADER = "x-admin-gateway-hop"
+
+#: Short — long enough for one proxied call and a retry through the same gateway hop, far too
+#: short for a captured value to be worth anything once it has been logged or cached anywhere.
+ADMIN_HOP_TTL_SECONDS = 30
+
+
+def sign_admin_hop(method: str, path: str, *, key: str) -> str:
+    """BLOCKER 2 of the 2026-09-24 security review: defence in depth for the operator surface,
+    on top of every gateway's route table blocking `/api/v1/auth/operator` outright.
+
+    A plain HMAC of `method:path:timestamp` under a key that is **not** the general
+    `internal_service_token` — deliberately a separate secret (`ADMIN_GATEWAY_HOP_KEY`), so a
+    leak of the everyday internal-token secret does not also hand over this one. admin-gateway
+    signs every request it proxies to auth's `/api/v1/auth/operator` prefix; auth's operator
+    routes refuse any request that does not carry a fresh, valid one, so a request that reached
+    auth by some path other than through admin-gateway (a routing bug, a compromised sibling
+    service replaying a captured request) is refused even though it is otherwise a
+    well-formed, correctly-authenticated call.
+    """
+    ts = str(int(time.time()))
+    mac = hmac.new(
+        key.encode(), f"{method.upper()}:{path}:{ts}".encode(), hashlib.sha256
+    ).hexdigest()
+    return f"{ts}.{mac}"
+
+
+def verify_admin_hop(
+    header_value: str | None, method: str, path: str, *, key: str, now: float | None = None
+) -> bool:
+    """Check a hop signature `sign_admin_hop` produced. `False` for anything wrong — missing,
+    malformed, expired, or simply signed by a different key — never an exception, so a caller
+    can turn every failure into the same 401 without special-casing shapes of bad input."""
+    if not header_value or "." not in header_value:
+        return False
+    ts_raw, _, mac = header_value.partition(".")
+    if not ts_raw.isdigit():
+        return False
+    ts = int(ts_raw)
+    current = now if now is not None else time.time()
+    if abs(current - ts) > ADMIN_HOP_TTL_SECONDS:
+        return False
+    expected = hmac.new(
+        key.encode(), f"{method.upper()}:{path}:{ts_raw}".encode(), hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, mac)
+
+
 __all__ = [
+    "ADMIN_HOP_HEADER",
+    "ADMIN_HOP_TTL_SECONDS",
     "ALGORITHM",
     "DEFAULT_TTL_SECONDS",
     "GATEWAY_AUDIENCE",
     "mint_service_token",
+    "sign_admin_hop",
+    "verify_admin_hop",
     "verify_gateway_token",
     "verify_service_token",
 ]

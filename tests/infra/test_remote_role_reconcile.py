@@ -133,7 +133,9 @@ def test_directory_roles_from_config_is_deduplicated_and_sorted() -> None:
 def test_directory_role_reconcile_sql_creates_a_bypassrls_role() -> None:
     sql = directory_role_reconcile_sql("opsgrids_billing_directory")
     assert "CREATE ROLE opsgrids_billing_directory LOGIN NOINHERIT BYPASSRLS" in sql
-    assert "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'opsgrids_billing_directory')" in sql
+    assert (
+        "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'opsgrids_billing_directory')" in sql
+    )
     assert "ALTER ROLE opsgrids_billing_directory PASSWORD :'pw';" in sql
     assert "GRANT CONNECT ON DATABASE opsgrids TO opsgrids_billing_directory;" in sql
     assert (

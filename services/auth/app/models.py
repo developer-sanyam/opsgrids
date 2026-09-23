@@ -77,6 +77,16 @@ class Credential(Base):
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    #: A wrong MFA code, counted separately from `failed_attempts`. A correct *password*
+    #: must never clear this: password and MFA are two different proofs, and a person who
+    #: knows the password but is guessing the second factor should not get their guess
+    #: counter wiped every time they re-type a password they already have. Only a
+    #: successful MFA check (`_clear_mfa_failures`) resets it.
+    mfa_failed_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    mfa_locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -439,6 +449,17 @@ class StaffAccount(Base):
     failed_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    #: A wrong MFA/enrolment code, counted separately from `failed_attempts`. A **correct
+    #: password does not clear this** — the security review's BLOCKER 1: `_verify_staff`
+    #: resetting a shared counter on a right password let 20 wrong codes interleaved with
+    #: correct passwords never trip the lock. Only a successful MFA check
+    #: (`_clear_operator_failures`) resets it, and it locks and revokes the session on the
+    #: same threshold `failed_attempts` uses.
+    mfa_failed_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    mfa_locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

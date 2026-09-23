@@ -12,10 +12,19 @@ Deliberately **not reversible**: there is no session for which "still valid with
 proven a second factor" was ever the correct answer once this rule exists, so downgrade restores
 no data — the same shape as `e91a4c2f6b3d`'s jit_provisioning correction.
 
-Every staff account is left with no confirmed factor and no live session, exactly as if it had
-never signed in — the very first sign-in after this deploy takes the enrolment path, which is
-correct: an operator whose only living session was signed in and never MFA-verified never proved
-they were the real staff member either.
+This touches sessions and refresh tokens only — **not** `mfa_factors`. An account that already
+enrolled a factor keeps it, and its next sign-in takes the ordinary password-then-verify path;
+an account with no confirmed factor (everyone, at the moment MFA became mandatory) is routed to
+enrolment exactly as it would have been on its very first sign-in. Every staff account simply
+starts its next session from password again, rather than resuming one that was live but had
+never actually proven a second factor.
+
+MINOR 10 of the 2026-09-24 security review: an environment that ran the pre-fix version of this
+slice — where a wrong MFA code could share the same lockout counter a correct password reset,
+see `5ba575e36b1a` — should not trust whatever factors and recovery codes it already enrolled
+under that bug to be the real owner's. `bin/reset-staff-mfa --all` (dev/staging only) wipes every
+staff account's factors and recovery codes outright, forcing a clean re-enrolment through the
+audited code flow rather than leaving a factor of uncertain provenance live.
 
 Revision ID: c731a475333d
 Revises: e2d93c244838

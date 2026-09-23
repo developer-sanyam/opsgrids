@@ -159,6 +159,7 @@ chmod 600 .env
 openssl rand -hex 32     # POSTGRES_PASSWORD
 openssl rand -hex 32     # OPSGRIDS_DB_PASSWORD   (alphanumeric only — it goes into a URL)
 openssl rand -hex 32     # INTERNAL_SERVICE_TOKEN
+openssl rand -hex 32     # ADMIN_GATEWAY_HOP_KEY  (a different value from INTERNAL_SERVICE_TOKEN)
 openssl rand -hex 32     # PII_ENCRYPTION_KEY
 openssl rand -hex 32     # BACKUP_S3_SECRET_ACCESS_KEY, if your provider does not issue one
 openssl rand -hex 16     # MINIO_ROOT_USER
@@ -185,6 +186,7 @@ real store is published.
 |---|---|
 | `POSTGRES_PASSWORD`, `OPSGRIDS_DB_PASSWORD` | Generated on this box. Never the development `opsgrids`, which is what `tools/dev-bootstrap/init-db.sql` creates every role with before `postgres-init/30-role-passwords.sh` replaces it |
 | `INTERNAL_SERVICE_TOKEN` | Generated fresh, ≥32 bytes. It signs the tokens one service presents to another; the development value is public in `.env.example` and `platform_core` refuses to start production with any `dev-only-` value |
+| `ADMIN_GATEWAY_HOP_KEY` | Generated fresh, ≥32 bytes, **different from `INTERNAL_SERVICE_TOKEN`**. Signs admin-gateway's operator hop header (BLOCKER 2 of the 2026-09-24 security review); only admin-gateway and auth read it |
 | `PII_ENCRYPTION_KEY` | Generated fresh, ≥32 bytes, **and backed up off this box before any data exists**. Lose it and encrypted PII is unreadable; there is no recovery |
 | `jwt-ed25519.pem` | Generated on this box. Never `make devkeys`' key — that one is on every developer's laptop, and anyone holding it can mint a token for any tenant |
 | `BACKUP_S3_*` | Scoped to write into the backup bucket and nothing else |
@@ -535,6 +537,58 @@ this fail, so run it after that too.
 Bundles are sold only through subscription's operator routes (`POST /internal/v1/subscriptions`,
 `…/{id}/change-plan`, service token); the customer route answers 403. A trial's length is the
 plan version's `trial_days` feature (14 when absent), never the customer's.
+
+### Operator MFA: mandatory rollout, the one-off codes, and the legacy reseal
+
+The 2026-09-24 security review made a second factor mandatory for every staff account
+(ADR-0003 addendum) and closed several holes in how it is enforced. Three one-off steps, run
+once each, after the deploy that ships `auth`'s migrations through `5ba575e36b1a`:
+
+1. **`bin/issue-enrollment-codes`** — every staff account that predates mandatory MFA has no
+   confirmed factor and needs an out-of-band enrolment code before it can enrol one (a password
+   alone is not enough to reach enrolment, by design). Run once, right after the migration that
+   revokes every live operator session (`c731a475333d`) lands:
+
+   ```bash
+   docker compose -f compose.prod.yml --env-file .env run --rm -T auth \
+     python -c "from app.bootstrap import issue_codes_main; issue_codes_main()"
+   ```
+
+   Prints `email code` pairs to stdout, once — hand each one to its owner out of band (chat, a
+   phone call — anything that is not this box's own logs). Skips any account that already has a
+   confirmed factor, so re-running after some staff have enrolled issues codes only for the rest.
+
+2. **`bin/reseal-mfa-factors`** (MAJOR 3) — if this box enrolled any staff MFA factor before PII
+   sealing covered TOTP secrets, that row still holds the plaintext base32 secret. Every read
+   already resealed it lazily and tolerantly, but running this once forces every remaining
+   legacy row through that path immediately rather than waiting for each account's next sign-in:
+
+   ```bash
+   docker compose -f compose.prod.yml --env-file .env run --rm -T auth \
+     python -c "from app.mfa_maintenance import reseal_main; reseal_main()"
+   ```
+
+   Idempotent — prints a count, and a second run against an already-resealed database prints 0.
+
+3. **`bin/reset-staff-mfa --all`** (MINOR 10, dev/staging only) — an environment that ran the
+   pre-fix version of this slice — before `5ba575e36b1a` separated the MFA lockout counter from
+   the password one (BLOCKER 1) — may hold staff factors and recovery codes enrolled under that
+   bug and should not trust their provenance. Wipes every staff account's MFA outright, forcing a
+   clean re-enrolment through step 1 above:
+
+   ```bash
+   docker compose -f compose.prod.yml --env-file .env run --rm -T auth \
+     python -c "from app.mfa_maintenance import reset_main; reset_main()" --all
+   ```
+
+   Refuses outright in production and staging — this is a `local`/`test`-only escape hatch, not
+   a production remediation. Production accounts recovered from that bug go through the audited
+   `POST /auth/operator/staff/{id}/mfa:reset` owner route instead, one at a time.
+
+`ADMIN_GATEWAY_HOP_KEY` (BLOCKER 2) is generated the same way `INTERNAL_SERVICE_TOKEN` is in
+"Secrets — generate them here, now, and never anywhere else" above — a fresh, separate 32+ byte
+value, never reused from that or any other key. Only admin-gateway and auth read it; preflight
+refuses to deploy without it, the same as every other required secret.
 
 ### Deploying from the pipeline
 

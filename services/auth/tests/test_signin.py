@@ -534,7 +534,10 @@ class TestMfa:
         assert secret.encode() not in factor.secret_enc
         from platform_core import pii
 
-        assert pii.open_sealed(factor.secret_enc, settings=cfg) == secret
+        # MINOR 8: sealed with the per-row AAD, so opening it back requires that same context —
+        # not just the key.
+        aad = f"mfa_factor:{USER}".encode()
+        assert pii.open_sealed(factor.secret_enc, settings=cfg, aad=aad) == secret
 
     async def test_sign_in_stops_for_a_second_factor(
         self, session, cfg, pair, directory, registered
@@ -707,6 +710,64 @@ class TestMfa:
                 code=security._totp_at(secret, step + 1),
                 cfg=cfg,
             )
+
+    async def test_repeated_wrong_codes_lock_the_account_and_revoke_the_session(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """BLOCKER 1 ("also") of the 2026-09-24 security review: tenant `verify_mfa` had no
+        failure counter at all — an unlimited number of TOTP/recovery-code guesses against a
+        pre-auth session that had already survived the password step. This pins the fix:
+        `Credential.mfa_failed_attempts`/`mfa_locked_until`, and a lockout that also revokes
+        the session and its refresh tokens, matching the operator side."""
+        factor, secret, _ = await services.begin_mfa_enrolment(
+            session, USER, account_email="sam@example.com", cfg=cfg
+        )
+        step = int(datetime.now(UTC).timestamp()) // 30
+        await services.confirm_mfa_enrolment(
+            session,
+            factor_id=factor.id,
+            user_id=USER,
+            code=security._totp_at(secret, step),
+            cfg=cfg,
+        )
+
+        outcome = await _login(session, cfg, pair, directory)
+        for _ in range(cfg.max_failed_attempts):
+            with pytest.raises(UnauthorizedProblem, match="not valid"):
+                await services.verify_mfa(
+                    session,
+                    cfg=cfg,
+                    pair=pair,
+                    directory=directory,
+                    entitlements=FakeEntitlements(),
+                    pre_auth_token=outcome.pre_auth_token,
+                    code="000000",
+                )
+
+        credential = await session.get(Credential, USER)
+        assert credential is not None
+        assert credential.mfa_locked_until is not None
+
+        # A fresh login still succeeds — the password counter is untouched by any of this —
+        # but the *next* MFA attempt on the new token is refused for the lock, before the
+        # code is even checked.
+        fresh = await _login(session, cfg, pair, directory)
+        with pytest.raises(ForbiddenProblem, match="temporarily locked"):
+            await services.verify_mfa(
+                session,
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                entitlements=FakeEntitlements(),
+                pre_auth_token=fresh.pre_auth_token,
+                code="000000",
+            )
+
+        claims = jwt.decode(outcome.pre_auth_token, options={"verify_signature": False})
+        failing_session = await session.get(Session, uuid.UUID(claims["sid"]))
+        assert failing_session is not None
+        assert failing_session.revoked_at is not None
+        assert failing_session.revoked_reason == "mfa_failed_attempts"
 
 
 class TestSessionsAndEvents:

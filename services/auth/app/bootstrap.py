@@ -116,14 +116,18 @@ async def seed_dev_owner(cfg: Settings) -> None:
             roles=DEV_OWNER_ROLES,
         )
         if code:
-            # Deliberately the one place this ever appears in a log: a fresh dev seed with no
-            # owner yet to issue the real owner a code through the audited route. Anything
-            # after this first account goes through `POST /auth/operator/enrollment-codes`.
+            # MINOR 9 of the 2026-09-24 security review: printed, not logged. A structured
+            # log line is exactly the kind of thing that ends up shipped to a log aggregator,
+            # and this is the one place a real enrolment code is ever produced outside the
+            # audited API — it belongs on the terminal of whoever ran this command, once, and
+            # nowhere a log pipeline might retain it.
+            print(  # noqa: T201 - deliberately not a log line, see above
+                f"Operator enrolment code for {DEV_OWNER_EMAIL}: {code}"
+            )
             log.info(
                 "auth.bootstrap.enrollment_code_issued",
                 staff_id=str(staff.id),
                 email=DEV_OWNER_EMAIL,
-                enrollment_code=code,
             )
     finally:
         await dispose_engine()

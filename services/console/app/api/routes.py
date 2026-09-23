@@ -124,16 +124,18 @@ async def get_organization_detail(
 ) -> OrgDetailOut:
     """Compose console's own commercial snapshot with account-service's directory record.
 
-    The directory half is fetched from account-service's service-to-service route, which this
-    request's already-verified operator identity is *asserted* into rather than forwarded —
-    never `/internal/v1`, which no individual caller's permissions gate at all
-    (`app/directory_client.py`). Every read here writes an audit row bound to the target
-    organization, per the ADR-0003 addendum: an operator looking at one customer's detail is
-    exactly the kind of act that must leave a trace.
+    The directory half is fetched from account-service's service-to-service route, never
+    `/internal/v1`, which no individual caller's permissions gate at all
+    (`app/directory_client.py`). MINOR 7 of the 2026-09-24 security review: this forwards this
+    request's own operator bearer token onward rather than asserting the operator's identity in
+    a service token — account-service verifies the token itself. Every read here writes an
+    audit row bound to the target organization, per the ADR-0003 addendum: an operator looking
+    at one customer's detail is exactly the kind of act that must leave a trace.
     """
+    operator_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     try:
         directory = await directory_client.get_organization(
-            settings(), organization_id, operator=operator, client=client
+            settings(), organization_id, operator_token=operator_token, client=client
         )
     except DirectoryLookupError as exc:
         raise UpstreamUnavailableProblem(str(exc)) from exc

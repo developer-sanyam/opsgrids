@@ -22,6 +22,8 @@ from platform_core.errors import UnauthorizedProblem
 from platform_core.internal_auth import (
     GATEWAY_AUDIENCE,
     mint_service_token,
+    sign_admin_hop,
+    verify_admin_hop,
     verify_gateway_token,
     verify_service_token,
 )
@@ -133,3 +135,47 @@ class TestForwardedIdentity:
         cfg = settings()
         headers = identity_headers(hop_token(other))
         assert _principal_from_gateway(request_with(headers, cfg), cfg) is None
+
+
+class TestAdminGatewayHop:
+    """BLOCKER 2 of the 2026-09-24 security review: a defence-in-depth signature admin-gateway
+    writes on every request it proxies, checked against a key that is deliberately not the
+    general `internal_service_token`."""
+
+    KEY = "admin-gateway-hop-key-of-32-bytes!!"
+
+    def test_a_freshly_signed_hop_verifies(self) -> None:
+        signed = sign_admin_hop("POST", "/api/v1/auth/operator/login", key=self.KEY)
+        assert verify_admin_hop(signed, "POST", "/api/v1/auth/operator/login", key=self.KEY)
+
+    def test_a_different_method_refuses(self) -> None:
+        signed = sign_admin_hop("POST", "/api/v1/auth/operator/login", key=self.KEY)
+        assert not verify_admin_hop(signed, "GET", "/api/v1/auth/operator/login", key=self.KEY)
+
+    def test_a_different_path_refuses(self) -> None:
+        signed = sign_admin_hop("POST", "/api/v1/auth/operator/login", key=self.KEY)
+        assert not verify_admin_hop(
+            signed, "POST", "/api/v1/auth/operator/mfa/verify", key=self.KEY
+        )
+
+    def test_the_wrong_key_refuses(self) -> None:
+        signed = sign_admin_hop("POST", "/api/v1/auth/operator/login", key=self.KEY)
+        assert not verify_admin_hop(
+            signed, "POST", "/api/v1/auth/operator/login", key="a-different-32-byte-key-entirely!!"
+        )
+
+    def test_an_expired_signature_refuses(self) -> None:
+        signed = sign_admin_hop("POST", "/api/v1/auth/operator/login", key=self.KEY)
+        far_future = 10_000_000_000.0
+        assert not verify_admin_hop(
+            signed, "POST", "/api/v1/auth/operator/login", key=self.KEY, now=far_future
+        )
+
+    def test_a_missing_header_refuses(self) -> None:
+        assert not verify_admin_hop(None, "POST", "/api/v1/auth/operator/login", key=self.KEY)
+
+    def test_a_malformed_header_refuses_rather_than_raising(self) -> None:
+        assert not verify_admin_hop(
+            "not-even-shaped-right", "POST", "/api/v1/auth/operator/login", key=self.KEY
+        )
+        assert not verify_admin_hop("abc.def", "POST", "/api/v1/auth/operator/login", key=self.KEY)

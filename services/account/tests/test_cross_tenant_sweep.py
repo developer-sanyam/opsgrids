@@ -185,12 +185,14 @@ ALLOW_LIST: dict[Route, str] = {
         "a B-bound request writes nothing into A or B and lands in a third organization."
     ),
     ("GET", f"{PREFIX}/admin/directory/organizations/{{organization_id}}"): (
-        "Service-to-service, not a bearer route (MINOR 8 of the security review): it takes no "
-        "principal at all, only a service token asserting an operator's identity, so overriding "
-        "get_principal to 'be tenant B' has no effect on it and it answers 401 unconditionally "
-        "— structurally unreachable by any tenant bearer token, which is the property this "
-        "sweep exists to prove for every other route rather than something this one leaves "
-        "untested. Covered directly instead in test_admin_directory.py."
+        "Reachable only from console, not through get_principal at all (MINOR 7 of the "
+        "security review): it verifies an operator's own access token carried in "
+        "X-Operator-Token via JWKS, so overriding get_principal to 'be tenant B' has no "
+        "effect on it and it answers 401 unconditionally without that header — structurally "
+        "unreachable by any ordinary tenant bearer token presented the normal way (as "
+        "Authorization), which is the property this sweep exists to prove for every other "
+        "route rather than something this one leaves untested. Covered directly instead in "
+        "test_admin_directory.py."
     ),
 }
 

@@ -186,8 +186,11 @@ class TestOperatorSignIn:
         assert str(wrong.value) == str(unknown.value) == services.INVALID
 
     async def test_a_disabled_operator_is_refused(self, session, cfg, pair) -> None:
+        """MINOR 11 of the 2026-09-24 security review: a disabled account gets the same
+        generic 401 a wrong password does, not a distinct message that confirms it exists
+        and is disabled specifically."""
         await _make_staff(session, status="disabled")
-        with pytest.raises(ForbiddenProblem, match="disabled"):
+        with pytest.raises(UnauthorizedProblem, match="not valid"):
             await services.operator_login(
                 session, cfg=cfg, pair=pair, email=STAFF_EMAIL, password=STAFF_PASSWORD
             )
@@ -203,7 +206,9 @@ class TestOperatorSignIn:
                     email=STAFF_EMAIL,
                     password="wrong",  # pragma: allowlist secret
                 )
-        with pytest.raises(ForbiddenProblem, match="temporarily locked"):
+        # MINOR 11: a locked account answers the same generic 401 a wrong password gets, not
+        # a distinct "temporarily locked" message — whatever the *correct* password proves.
+        with pytest.raises(UnauthorizedProblem, match="not valid"):
             await services.operator_login(
                 session, cfg=cfg, pair=pair, email=STAFF_EMAIL, password=STAFF_PASSWORD
             )
@@ -748,7 +753,10 @@ class TestOperatorMfaEnrollment:
                     code="000000",
                 )
         await session.refresh(staff)
-        assert staff.locked_until is not None
+        # BLOCKER 1: a wrong *MFA*/enrolment-confirm code trips `mfa_locked_until`, not the
+        # password lockout field — the two counters are independent.
+        assert staff.mfa_locked_until is not None
+        assert staff.locked_until is None
 
         import uuid as _uuid
 
@@ -756,9 +764,20 @@ class TestOperatorMfaEnrollment:
         failing_session = await session.get(Session, _uuid.UUID(claims["sid"]))
         assert failing_session is not None and failing_session.revoked_at is not None
 
+        # BLOCKER 1: the MFA lock does not block the *password* step — a fresh login still
+        # succeeds (the account has no confirmed factor yet, so it is offered enrolment
+        # again); the lock refuses that next MFA-side action instead, on this new token,
+        # before the enrolment code is even checked.
+        fresh_outcome = await services.operator_login(
+            session, cfg=cfg, pair=pair, email=STAFF_EMAIL, password=STAFF_PASSWORD
+        )
         with pytest.raises(ForbiddenProblem, match="temporarily locked"):
-            await services.operator_login(
-                session, cfg=cfg, pair=pair, email=STAFF_EMAIL, password=STAFF_PASSWORD
+            await services.operator_begin_mfa_enrolment(
+                session,
+                cfg=cfg,
+                pair=pair,
+                pre_auth_token=fresh_outcome.pre_auth_token,
+                enrollment_code="does-not-matter",
             )
 
     async def test_once_enrolled_a_second_login_asks_to_verify_not_to_enrol(
@@ -882,10 +901,20 @@ class TestOperatorMfaVerify:
             await services.operator_verify_mfa(
                 session, cfg=cfg, pair=pair, pre_auth_token=outcome.pre_auth_token, code="000000"
             )
-        # And the account itself is locked for a fresh attempt too.
+        # BLOCKER 1: the MFA lock is a separate counter from the password one, so a fresh
+        # password login still succeeds — it must not leak that the *MFA* half is locked any
+        # more than a correct password already does not. The lock instead refuses the very
+        # next MFA attempt, on the new pre-auth token this login just minted.
+        fresh_outcome = await services.operator_login(
+            session, cfg=cfg, pair=pair, email=STAFF_EMAIL, password=STAFF_PASSWORD
+        )
         with pytest.raises(ForbiddenProblem, match="temporarily locked"):
-            await services.operator_login(
-                session, cfg=cfg, pair=pair, email=STAFF_EMAIL, password=STAFF_PASSWORD
+            await services.operator_verify_mfa(
+                session,
+                cfg=cfg,
+                pair=pair,
+                pre_auth_token=fresh_outcome.pre_auth_token,
+                code="000000",
             )
 
     async def test_locking_the_account_revokes_the_session_and_its_refresh_tokens(
@@ -921,6 +950,55 @@ class TestOperatorMfaVerify:
             jwt.decode(issued.refresh_token, options={"verify_signature": False})["jti"],
         )
         assert earlier_refresh is not None
+
+    async def test_a_correct_password_never_resets_the_mfa_failure_counter_across_rounds(
+        self, session, cfg, pair
+    ) -> None:
+        """BLOCKER 1 of the 2026-09-24 security review, reproduced directly: `_verify_staff`
+        used to reset the exact field a wrong MFA code counted against, so a correct password
+        between rounds wiped the counter every time and an attacker who already had the
+        password could grind the second factor forever, four guesses at a stretch, without
+        ever crossing the threshold. 20 rounds of (fresh login + 4 wrong codes) must still
+        cross `max_failed_attempts` (5) and lock the account — the failure has to survive the
+        password success between rounds, because it no longer lives on the same field."""
+        await _make_staff(session)
+        await _enrol_operator_mfa(session, cfg, pair)
+
+        for _round in range(20):
+            outcome = await services.operator_login(
+                session, cfg=cfg, pair=pair, email=STAFF_EMAIL, password=STAFF_PASSWORD
+            )
+            for _attempt in range(4):
+                with pytest.raises((UnauthorizedProblem, ForbiddenProblem)):
+                    await services.operator_verify_mfa(
+                        session,
+                        cfg=cfg,
+                        pair=pair,
+                        pre_auth_token=outcome.pre_auth_token,
+                        code="000000",
+                    )
+
+        staff = (
+            await session.execute(select(StaffAccount).where(StaffAccount.email == STAFF_EMAIL))
+        ).scalar_one()
+        # Locked, on the MFA-specific field — and the password counter, which 20 correct
+        # logins exercised just as many times, was never touched by any of this.
+        assert staff.mfa_locked_until is not None
+        assert staff.locked_until is None
+
+        revoked = (
+            (
+                await session.execute(
+                    select(Session).where(
+                        Session.user_id == staff.id,
+                        Session.revoked_reason == "operator_mfa_failed_attempts",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert revoked, "crossing the threshold must revoke the session that produced the failures"
 
 
 class TestOperatorAuditTrail:
@@ -1075,6 +1153,113 @@ class TestEnrollmentCodeRoute:
         finally:
             fastapi_app.dependency_overrides.pop(get_principal, None)
         assert response.status_code == 403
+
+
+class TestMfaResetRoute:
+    """MINOR 5 of the 2026-09-24 security review: the lost-device path."""
+
+    async def test_an_owner_can_reset_a_colleagues_mfa(self, session, cfg, pair, client) -> None:
+        from app.main import app as fastapi_app
+        from app.models import MfaFactor, MfaRecoveryCode
+        from platform_core.auth import Principal, get_principal
+
+        owner = await _make_staff(session, email="owner-reset@opsgrids.tech", roles=["owner"])
+        await _make_staff(session, email="locked-out@opsgrids.tech", roles=["support"])
+        _issued, _codes, _secret, _step = await _enrol_operator_mfa(
+            session, cfg, pair, email="locked-out@opsgrids.tech"
+        )
+        colleague = (
+            await session.execute(
+                select(StaffAccount).where(StaffAccount.email == "locked-out@opsgrids.tech")
+            )
+        ).scalar_one()
+        await session.commit()
+
+        principal = Principal(
+            sub=owner.id,
+            organization_id=services.PLATFORM_ORG,
+            audience="operator",
+            roles=["owner"],
+            amr=["pwd", "otp"],
+        )
+        fastapi_app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            response = await client.post(f"/api/v1/auth/operator/staff/{colleague.id}/mfa:reset")
+        finally:
+            fastapi_app.dependency_overrides.pop(get_principal, None)
+        assert response.status_code == 204, response.text
+
+        remaining_factors = (
+            await session.execute(select(MfaFactor).where(MfaFactor.user_id == colleague.id))
+        ).first()
+        remaining_codes = (
+            await session.execute(
+                select(MfaRecoveryCode).where(MfaRecoveryCode.user_id == colleague.id)
+            )
+        ).first()
+        assert remaining_factors is None
+        assert remaining_codes is None
+
+        live_sessions = (
+            await session.execute(
+                select(Session).where(Session.user_id == colleague.id, Session.revoked_at.is_(None))
+            )
+        ).first()
+        assert live_sessions is None
+
+        audit_row = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "auth.operator_mfa_reset",
+                    AuditLog.entity_id == colleague.id,
+                )
+            )
+        ).scalar_one_or_none()
+        assert audit_row is not None
+        assert audit_row.actor_id == owner.id
+
+    async def test_a_non_owner_cannot_reset_anyones_mfa(self, session, client) -> None:
+        from app.main import app as fastapi_app
+        from platform_core.auth import Principal, get_principal
+
+        support = await _make_staff(session, email="support-reset@opsgrids.tech", roles=["support"])
+        colleague = await _make_staff(session, email="colleague-reset@opsgrids.tech")
+        await session.commit()
+
+        principal = Principal(
+            sub=support.id,
+            organization_id=services.PLATFORM_ORG,
+            audience="operator",
+            roles=["support"],
+            amr=["pwd", "otp"],
+        )
+        fastapi_app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            response = await client.post(f"/api/v1/auth/operator/staff/{colleague.id}/mfa:reset")
+        finally:
+            fastapi_app.dependency_overrides.pop(get_principal, None)
+        assert response.status_code == 403
+
+    async def test_an_owner_cannot_reset_their_own_mfa(self, session, client) -> None:
+        from app.main import app as fastapi_app
+        from platform_core.auth import Principal, get_principal
+
+        owner = await _make_staff(session, email="self-reset@opsgrids.tech", roles=["owner"])
+        await session.commit()
+
+        principal = Principal(
+            sub=owner.id,
+            organization_id=services.PLATFORM_ORG,
+            audience="operator",
+            roles=["owner"],
+            amr=["pwd", "otp"],
+        )
+        fastapi_app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            response = await client.post(f"/api/v1/auth/operator/staff/{owner.id}/mfa:reset")
+        finally:
+            fastapi_app.dependency_overrides.pop(get_principal, None)
+        assert response.status_code == 422
 
 
 class TestBootstrap:

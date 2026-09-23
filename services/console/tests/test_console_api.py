@@ -291,31 +291,21 @@ class TestOrganizationDetail:
             },
         )
         with as_principal(operator_principal(staff=True)):
-            response = await client.get(f"/api/v1/admin/organizations/{org_id}")
+            response = await client.get(
+                f"/api/v1/admin/organizations/{org_id}",
+                headers={"Authorization": "Bearer the-operators-own-access-token"},
+            )
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["slug"] == "acme"
         assert body["commercial"]["mrr_minor"] == 50000
 
-        # account-service was called with an asserted service token, not the caller's own
-        # bearer token (MINOR 8 of the security review). Decoded the way account-service
-        # would — `verify_service_token` checks `aud == settings.service_name`, which is
-        # "account", not console's own name, so this reads the same shared secret directly.
+        # account-service is handed this request's own operator bearer token, forwarded
+        # verbatim, not an assertion about it (MINOR 7 of the security review) — so
+        # account-service can verify it independently rather than trust console's word.
         call = captured.calls[0]
-        assert "authorization" not in call.headers
-        token = call.headers["x-internal-token"]
-        claims = jwt.decode(
-            token,
-            settings().internal_service_token.get_secret_value(),
-            algorithms=["HS256"],
-            audience="account",
-            options={"require": ["exp", "iss", "aud", "jti"]},
-        )
-        assert claims["iss"] == "console"
-        assert claims["aud"] == "account"
-        assert "operator_sub" in claims
-        assert claims["operator_roles"]
-        assert "otp" in claims["operator_amr"]
+        assert call.headers["x-operator-token"] == "the-operators-own-access-token"
+        assert "x-internal-token" not in call.headers
 
     async def test_an_organization_account_service_does_not_know_is_404(
         self, client: AsyncClient, org_id: uuid.UUID

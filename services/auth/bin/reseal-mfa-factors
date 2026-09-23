@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# One-time deploy step, MAJOR 3 of the 2026-09-24 security review: force every MFA factor with a
+# stored secret through the tolerant legacy read and reseal it under the current envelope and
+# per-row AAD, rather than waiting for each staff account's next sign-in. Idempotent — safe to
+# run again, and safe to run against a database with nothing left to reseal.
+exec python -c "from app.mfa_maintenance import reseal_main; reseal_main()"

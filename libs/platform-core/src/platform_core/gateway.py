@@ -56,7 +56,12 @@ from platform_core.errors import (
     UnauthorizedProblem,
     UpstreamUnavailableProblem,
 )
-from platform_core.internal_auth import GATEWAY_AUDIENCE, mint_service_token
+from platform_core.internal_auth import (
+    ADMIN_HOP_HEADER,
+    GATEWAY_AUDIENCE,
+    mint_service_token,
+    sign_admin_hop,
+)
 from platform_core.logging import get_logger
 
 log = get_logger("gateway")
@@ -81,6 +86,12 @@ HOP_BY_HOP = frozenset(
 #: Identity headers a client must never be able to set. They are stripped from every
 #: inbound request before the gateway writes its own — otherwise a caller could simply
 #: claim to be somebody else and the internal token would vouch for it.
+#:
+#: `ADMIN_HOP_HEADER` belongs here too, for the same reason: a caller presenting one it made
+#: up itself must not be indistinguishable from the one admin-gateway signs and writes below
+#: (BLOCKER 2 of the 2026-09-24 security review). Stripping it on *every* gateway — not only
+#: app-gateway — is what makes "app-gateway strips it inbound" true without a second,
+#: gateway-specific list to keep in sync with this one.
 SPOOFABLE = frozenset(
     {
         "x-internal-token",
@@ -97,6 +108,7 @@ SPOOFABLE = frozenset(
         "x-session-id",
         "x-audience",
         "x-org-slug",
+        ADMIN_HOP_HEADER,
     }
 )
 
@@ -471,7 +483,7 @@ def build_gateway(
             await enforce_rate_limit(f"anon:{client_ip}", limit=policy.anonymous_rate_limit)
             if (slug := _slug_from_host(request)) is not None:
                 headers["x-org-slug"] = slug
-            return await _forward(request, route, headers, policy, full_path)
+            return await _forward(request, route, headers, policy, full_path, settings)
 
         authorization = request.headers.get("Authorization", "")
         if not authorization.startswith("Bearer "):
@@ -581,7 +593,7 @@ def build_gateway(
 
             headers["x-perms"] = ",".join(grants)
 
-        return await _forward(request, route, headers, policy, full_path)
+        return await _forward(request, route, headers, policy, full_path, settings)
 
 
 def _normalize_path(raw: str) -> str:
@@ -678,9 +690,24 @@ async def _read_capped_body(request: Request, limit: int) -> bytes:
 
 
 async def _forward(
-    request: Request, route: Route, headers: dict[str, str], policy: GatewayPolicy, full_path: str
+    request: Request,
+    route: Route,
+    headers: dict[str, str],
+    policy: GatewayPolicy,
+    full_path: str,
+    settings: ServiceSettings,
 ) -> Response:
     client: httpx.AsyncClient = request.app.state.http
+
+    if settings.admin_gateway_hop_key is not None:
+        # Only a gateway configured with this key ever writes the header — app-gateway leaves
+        # it unset, so its outbound requests carry none, and any copy a client attached to its
+        # *inbound* request was already stripped above with the rest of `SPOOFABLE`.
+        headers[ADMIN_HOP_HEADER] = sign_admin_hop(
+            request.method,
+            full_path,
+            key=settings.admin_gateway_hop_key.get_secret_value(),
+        )
     # The *normalised* path `proxy` already routed and authorized on — never `request.url.path`
     # again here. httpx's own URL parsing would resolve a raw `..`/`//` the same way on its way
     # to the wire regardless, but building the request from the same string the routing

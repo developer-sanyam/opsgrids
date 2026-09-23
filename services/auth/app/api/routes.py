@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import services
 from app.config import Settings, settings
-from app.deps import DirectoryDep, EntitlementsDep, IdpDep, KeyDep, SsoStateDep
+from app.deps import DirectoryDep, EntitlementsDep, IdpDep, KeyDep, SsoStateDep, require_admin_hop
 from app.keys import jwks as build_jwks
 from app.models import SCHEMA, OrgIdpConfig, StaffAccount
 from app.schemas import (
@@ -568,6 +568,7 @@ def _operator_token_out(issued: services.OperatorIssued) -> OperatorTokenOut:
     "/auth/operator/login",
     response_model=OperatorLoginResult,
     summary="Operator (OpsGrids staff) sign in — always stops for a second factor",
+    dependencies=[Depends(require_admin_hop)],
 )
 async def operator_login(
     payload: OperatorLoginIn,
@@ -597,6 +598,7 @@ async def operator_login(
     status_code=status.HTTP_201_CREATED,
     summary="Start setting up an operator's authenticator app — the only reachable step "
     "until one is enrolled",
+    dependencies=[Depends(require_admin_hop)],
 )
 async def operator_mfa_enrol(
     payload: OperatorMfaEnrolIn, request: Request, session: SessionDep, pair: KeyDep
@@ -617,6 +619,7 @@ async def operator_mfa_enrol(
     "/auth/operator/mfa/enrol/confirm",
     response_model=OperatorMfaEnrolled,
     summary="Prove the app works — completes the sign-in that started enrolment",
+    dependencies=[Depends(require_admin_hop)],
 )
 async def operator_mfa_enrol_confirm(
     payload: OperatorMfaEnrolConfirmIn,
@@ -648,6 +651,7 @@ async def operator_mfa_enrol_confirm(
     "/auth/operator/mfa/verify",
     response_model=OperatorTokenOut,
     summary="Present an operator's second factor",
+    dependencies=[Depends(require_admin_hop)],
 )
 async def operator_mfa_verify(
     payload: OperatorMfaVerifyIn,
@@ -673,6 +677,7 @@ async def operator_mfa_verify(
     "/auth/operator/me",
     response_model=OperatorMeOut,
     summary="Who this operator is",
+    dependencies=[Depends(require_admin_hop)],
 )
 async def operator_me(session: TenantSessionDep, operator: OperatorPrincipalDep) -> OperatorMeOut:
     """Goes through the same tenancy chokepoint as every other principal-bearing route.
@@ -704,6 +709,7 @@ OperatorOwnerDep = Annotated[Principal, Depends(require_operator(roles={"owner"}
     response_model=OperatorEnrollmentCodeOut,
     status_code=status.HTTP_201_CREATED,
     summary="Issue a staff account's out-of-band MFA enrolment code (owner only)",
+    dependencies=[Depends(require_admin_hop)],
 )
 async def issue_operator_enrollment_code(
     payload: OperatorEnrollmentCodeIn,
@@ -728,9 +734,34 @@ async def issue_operator_enrollment_code(
 
 
 @router.post(
+    "/auth/operator/staff/{staff_id}/mfa:reset",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Wipe a colleague's MFA after a lost device (owner only)",
+    dependencies=[Depends(require_admin_hop)],
+)
+async def reset_operator_staff_mfa(
+    staff_id: uuid.UUID,
+    request: Request,
+    session: TenantSessionDep,
+    operator: OperatorOwnerDep,
+) -> Response:
+    """The lost-device path (MINOR 5 of the 2026-09-24 security review): deletes the target's
+    factors and recovery codes, revokes their live sessions and refresh tokens, and audits the
+    act. Refuses to target the caller — resetting one's own MFA is not what this route is for.
+    Once this has run, `POST /auth/operator/enrollment-codes` issues the fresh out-of-band code
+    the account's next enrolment needs.
+    """
+    await services.reset_staff_mfa(
+        session, target_staff_id=staff_id, actor_id=operator.sub, request=request
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
     "/auth/operator/refresh",
     response_model=OperatorTokenOut,
     summary="Renew an operator access token",
+    dependencies=[Depends(require_admin_hop)],
 )
 async def operator_refresh(
     request: Request, response: Response, session: SessionDep, pair: KeyDep
@@ -748,6 +779,7 @@ async def operator_refresh(
     "/auth/operator/logout",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Operator sign out",
+    dependencies=[Depends(require_admin_hop)],
 )
 async def operator_logout(request: Request, session: SessionDep, pair: KeyDep) -> Response:
     """Idempotent. Shares `services.logout`, which touches only the session and refresh

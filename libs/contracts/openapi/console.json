@@ -781,7 +781,7 @@
     },
     "/api/v1/admin/organizations/{organization_id}": {
       "get": {
-        "description": "Compose console's own commercial snapshot with account-service's directory record.\n\nThe directory half is fetched from account-service's service-to-service route, which this\nrequest's already-verified operator identity is *asserted* into rather than forwarded \u2014\nnever `/internal/v1`, which no individual caller's permissions gate at all\n(`app/directory_client.py`). Every read here writes an audit row bound to the target\norganization, per the ADR-0003 addendum: an operator looking at one customer's detail is\nexactly the kind of act that must leave a trace.",
+        "description": "Compose console's own commercial snapshot with account-service's directory record.\n\nThe directory half is fetched from account-service's service-to-service route, never\n`/internal/v1`, which no individual caller's permissions gate at all\n(`app/directory_client.py`). MINOR 7 of the 2026-09-24 security review: this forwards this\nrequest's own operator bearer token onward rather than asserting the operator's identity in\na service token \u2014 account-service verifies the token itself. Every read here writes an\naudit row bound to the target organization, per the ADR-0003 addendum: an operator looking\nat one customer's detail is exactly the kind of act that must leave a trace.",
         "operationId": "get_organization_detail_api_v1_admin_organizations__organization_id__get",
         "parameters": [
           {
