@@ -22,7 +22,7 @@ import { usePermission } from "@opsgrids/client";
 
 import { listMyRequests, listRequests } from "@/api/approvals";
 import type { RequestListItemOut } from "@/api/types";
-import { myRequestStatusCopy, summaryLine } from "@/lib/approvalCopy";
+import { myRequestStatusCopy, requestTypeCopy, summaryLine } from "@/lib/approvalCopy";
 import { useZoneLookup } from "@/lib/zone";
 import { PersonRefInline } from "@/ui/PersonRef";
 
@@ -86,7 +86,7 @@ function MyRequestsList() {
       header: "Request",
       render: (r) => (
         <div className="flex flex-col leading-tight">
-          <span className="font-semibold text-ink">Attendance correction</span>
+          <span className="font-semibold text-ink">{requestTypeCopy(r.request_type).title}</span>
           <span className="text-xs text-muted">{summaryLine(r.summary)}</span>
         </div>
       ),
