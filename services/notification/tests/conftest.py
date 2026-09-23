@@ -34,7 +34,14 @@ from app.config import settings
 from app.main import app
 from app.models import SCHEMA
 from platform_core.cache import close_redis, init_redis
-from platform_core.db import TENANT_GUC, get_session
+from platform_core.db import (
+    TENANT_GUC,
+    dispose_directory_engine,
+    dispose_engine,
+    get_session,
+    init_directory_engine,
+    init_engine,
+)
 
 #: Every table here is tenant-scoped or global-and-empty, so all are safe to truncate.
 TENANT_TABLES = (
@@ -54,6 +61,11 @@ TENANT_TABLES = (
     "email_connections",
     "provider_accounts",
     "deliveries",
+    # The WhatsApp inbox. Messages before conversations: `inbound_messages.conversation_id`
+    # cascades on delete, but truncation order is stated explicitly here for the same reason
+    # every other pair above is — readable intent, not a constraint this relies on.
+    "inbound_messages",
+    "conversations",
     "messages",
     "rules",
     "templates",
@@ -128,7 +140,27 @@ async def admin_session() -> AsyncIterator[AsyncSession]:
 
 
 @pytest_asyncio.fixture
-async def client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
+async def engines() -> AsyncIterator[None]:
+    """The real application and **directory** engines, for the webhook's phone-number lookup.
+
+    `httpx.ASGITransport` never runs the app's own lifespan, so nothing calls `init_engine`/
+    `init_directory_engine` the way `create_app`'s startup hook does in production — without this
+    fixture, `GET /webhooks/whatsapp`'s directory-session dependency raises `init_engine() has
+    not been called` the first time a test drives the route over real HTTP rather than calling a
+    service function directly. Per test rather than per session, the same as `storefront`'s
+    identical fixture: an engine binds itself to the event loop it was created on, and
+    pytest-asyncio gives each test a fresh one.
+    """
+    cfg = settings()
+    init_engine(cfg)
+    init_directory_engine(cfg)
+    yield
+    await dispose_directory_engine()
+    await dispose_engine()
+
+
+@pytest_asyncio.fixture
+async def client(session: AsyncSession, engines: None) -> AsyncIterator[AsyncClient]:
     """HTTP client sharing the test's tenant-bound session, so writes are visible to asserts."""
 
     async def _session_override() -> AsyncIterator[AsyncSession]:

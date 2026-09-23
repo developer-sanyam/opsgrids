@@ -24,12 +24,12 @@ from typing import Any, Final, Literal, cast
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from sqlalchemy import CursorResult, case, delete, select, update
+from sqlalchemy import CursorResult, case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import dns_check, domain, selectors
+from app import dns_check, domain, selectors, webhooks
 from app.config import Settings, settings
 from app.models import (
     AuditLog,
@@ -38,6 +38,7 @@ from app.models import (
     Contact,
     ContactList,
     ContactListMember,
+    Conversation,
     Delivery,
     EmailConnection,
     EmailDomain,
@@ -51,6 +52,7 @@ from app.models import (
     Suppression,
     Template,
 )
+from app.models import InboundMessage as InboundMessageRow
 from app.targets import TargetResolver
 from app.transports import (
     LogTransport,
@@ -63,7 +65,7 @@ from app.transports import (
     TransportUnavailable,
 )
 from platform_core import pii
-from platform_core.audit import record_audit
+from platform_core.audit import record_audit, record_sensitive_read
 from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.cache import enforce_rate_limit
 from platform_core.errors import (
@@ -91,6 +93,29 @@ EVT_MESSAGE_READ = "notification.delivery.message.read"
 #: What the consumer stamps on rows it creates. A notification staged by an automation was not
 #: created by a person, and recording one would be a lie in the audit trail.
 SYSTEM_ACTOR = "system:notification"
+
+#: Staged by the webhook fold once a customer message is durably recorded (`fold_inbound_message`
+#: below). Deliberately **not** in `domain.SUBSCRIBABLE_EVENTS`: that list is what a `Rule` may
+#: name and what the generic consumer fans an event out through `apply_rules`, and an inbound
+#: message auto-triggering an outbound one is exactly the loop C14 exists to prevent (docs/
+#: whatsapp/audit.md). Binding this routing key is therefore a deliberate code change — opening
+#: it to the data-driven rule engine — never a row an operator can add on their own.
+EVT_INBOUND_RECEIVED = "notification.whatsapp.inbound_received"
+
+
+class OutsideServiceWindowProblem(ConflictProblem):
+    """A free-text WhatsApp reply was refused because the 24-hour customer service window has
+    closed. `remedy` is the machine-readable half of the body an ordinary `ConflictProblem`
+    does not carry — the inbox composer switches to its template picker on that key rather than
+    parsing `detail`."""
+
+    problem_type = "outside-service-window"
+    title = "Outside the WhatsApp service window"
+
+    def to_problem(self, request: Request) -> dict[str, Any]:
+        body = super().to_problem(request)
+        body["remedy"] = "template"
+        return body
 
 
 def _actor(ctx: ScopeContext) -> dict[str, Any]:
@@ -1020,6 +1045,401 @@ async def fold_status(
             actor={"type": "system", "id": SYSTEM_ACTOR},
         )
     return message
+
+
+# --------------------------------------------------------------------- engage inbox (WhatsApp)
+#
+# The inbound half of the pipeline: folding a customer's message into a conversation, acting on
+# STOP, replying inside the 24-hour window, and the human workflow (assign, close) around it.
+# `docs/whatsapp/audit.md` C5/C6/C9 and `docs/whatsapp/webhooks.md` are the design record.
+
+
+async def fold_inbound_message(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    inbound: webhooks.InboundMessage,
+) -> InboundMessageRow | None:
+    """Persist one customer message: upsert its conversation, insert the message row, act on a
+    STOP keyword, and stage the event a separate consumer resolves the contact id from.
+
+    Returns None when the sender is not a number this service can canonicalise — `webhooks.
+    sender_e164` refuses rather than guesses, the same rule `domain.normalize_recipient` applies
+    everywhere else, so a malformed `from` is logged and the message is not written rather than
+    filed under a phone number nobody could dial. The caller (`app/api/webhooks.py`) still marks
+    the event processed either way: retrying a `from` that will never parse is a loop, not
+    robustness — the same reasoning as an unfamiliar payload shape.
+
+    Idempotent by construction rather than by a second check: `provider_message_id` is unique per
+    organization (`uq_inbound_messages_org_provider_id`), so a redelivery that got past
+    `processed_events` still cannot insert a second row — it raises `IntegrityError`, and the
+    caller's `already_processed` guard is what actually stops that from being reached twice in
+    the ordinary case.
+    """
+    cfg = settings()
+    sender = webhooks.sender_e164(inbound.from_address)
+    if sender is None:
+        log.warning("notification.inbound.bad_sender", message_type=inbound.message_type)
+        return None
+
+    address_index = pii.blind_index(sender, kind="phone", settings=cfg)
+    conversation_id = await _upsert_conversation(
+        session,
+        organization_id=organization_id,
+        sender=sender,
+        address_index=address_index,
+        occurred_at=inbound.occurred_at,
+        cfg=cfg,
+    )
+
+    body_enc: bytes | None = None
+    body_masked = ""
+    if inbound.body:
+        body_enc, body_masked = pii.seal(inbound.body, kind="generic", settings=cfg)
+
+    row = InboundMessageRow(
+        organization_id=organization_id,
+        created_by=SYSTEM_ACTOR,
+        conversation_id=conversation_id,
+        provider_message_id=inbound.provider_message_id,
+        type=inbound.message_type,
+        body_enc=body_enc,
+        body_masked=body_masked,
+        raw=inbound.raw,
+        occurred_at=inbound.occurred_at,
+        profile_name=inbound.profile_name,
+    )
+    session.add(row)
+    await session.flush()
+
+    if webhooks.is_stop_keyword(inbound.body):
+        await _record_stop_request(session, organization_id=organization_id, phone=sender)
+
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=organization_id,
+        event_type=EVT_INBOUND_RECEIVED,
+        aggregate_type="conversation",
+        aggregate_id=conversation_id,
+        payload={
+            "organization_id": str(organization_id),
+            "conversation_id": str(conversation_id),
+            "inbound_message_id": str(row.id),
+        },
+        actor={"type": "system", "id": SYSTEM_ACTOR},
+    )
+    return row
+
+
+async def _upsert_conversation(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    sender: str,
+    address_index: str,
+    occurred_at: datetime,
+    cfg: Settings,
+) -> uuid.UUID:
+    """Insert-or-advance the conversation this number belongs to, in one statement.
+
+    `ON CONFLICT ... DO UPDATE` rather than a read-then-write: two inbound messages from the same
+    number processed concurrently (a redelivery racing the original, or two numbers' webhooks
+    interleaved) must not create two conversations for one number, and a plain upsert makes that
+    a database guarantee instead of an application lock. `GREATEST` is what keeps
+    `last_customer_message_at` monotonic when Meta's batching delivers two messages out of order
+    — the same reasoning `domain.advances` applies to a status receipt. A new message always
+    reopens the conversation: a customer writing back is the one event that should always surface
+    a closed thread again.
+    """
+    enc, masked = pii.seal(sender, kind="phone", settings=cfg)
+    conversation_id = uuid.uuid4()
+    stmt = (
+        pg_insert(Conversation)
+        .values(
+            id=conversation_id,
+            organization_id=organization_id,
+            created_by=SYSTEM_ACTOR,
+            updated_by=SYSTEM_ACTOR,
+            channel="whatsapp",
+            wa_address_enc=enc,
+            wa_address_masked=masked,
+            wa_address_index=address_index,
+            last_customer_message_at=occurred_at,
+            status="open",
+        )
+        .on_conflict_do_update(
+            constraint="uq_conversations_org_channel_address",
+            set_={
+                "last_customer_message_at": func.greatest(
+                    Conversation.last_customer_message_at, occurred_at
+                ),
+                "status": "open",
+                "updated_by": SYSTEM_ACTOR,
+            },
+        )
+        .returning(Conversation.id)
+    )
+    return (await session.execute(stmt)).scalar_one()
+
+
+async def _record_stop_request(
+    session: AsyncSession, *, organization_id: uuid.UUID, phone: str
+) -> None:
+    """STOP, UNSUBSCRIBE and the rest (`webhooks.STOP_KEYWORDS`) suppress every WhatsApp category
+    for this number — the same `Preference` row `services.set_preference` writes for a human
+    operator, so a later send checks one table regardless of who recorded the refusal.
+    `stage_message` re-checks it at render **and** dispatch, so a reply already queued when a
+    customer says STOP still does not go out.
+    """
+    pref = await selectors.get_preference(
+        session, organization_id, phone, "whatsapp", domain.CATEGORY_ALL
+    )
+    before = pref.suppressed if pref is not None else None
+    if pref is None:
+        pref = Preference(
+            organization_id=organization_id,
+            created_by=SYSTEM_ACTOR,
+            recipient=phone,
+            channel="whatsapp",
+            category=domain.CATEGORY_ALL,
+        )
+        session.add(pref)
+    else:
+        pref.updated_by = SYSTEM_ACTOR
+    pref.suppressed = True
+    pref.reason = "customer_stop"
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        acting_as=SYSTEM_ACTOR,
+        action="preference.set",
+        entity="preference",
+        entity_id=pref.id,
+        before={"suppressed": before},
+        after={"channel": "whatsapp", "suppressed": True, "reason": "customer_stop"},
+    )
+    log.info("notification.whatsapp.stop_received")
+
+
+async def resolve_conversation_contact(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    contact_id: str | None,
+) -> None:
+    """Fold one CRM lookup onto a conversation (`app/consumers.py`'s `fold_inbound_contact`).
+
+    Idempotent by comparison rather than by a guard at the top: setting the same contact id
+    twice, or re-confirming "unknown" a second time, writes nothing new. A conversation the event
+    named that no longer exists (deleted, or a stale redelivery) is silently skipped — there is
+    nothing to fold onto and nothing to retry into existing.
+    """
+    conversation = await selectors.get_conversation(session, organization_id, conversation_id)
+    if conversation is None:
+        return
+    new_contact_id = uuid.UUID(contact_id) if contact_id else None
+    if conversation.contact_id == new_contact_id:
+        return
+    conversation.contact_id = new_contact_id
+    conversation.updated_by = SYSTEM_ACTOR
+    await session.flush()
+
+
+async def reply_to_conversation(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    conversation_id: uuid.UUID,
+    body: str,
+    idempotency_key: str,
+    request: Request | None = None,
+) -> Message:
+    """Send free text inside one conversation's 24-hour window, or refuse with the remedy.
+
+    The conversation is row-locked (`selectors.get_conversation(..., lock=True)`) for the whole
+    of this transaction: a webhook folding a new inbound message for the same number blocks on
+    the lock rather than racing the window check underneath it, so "is the window open" and "act
+    on that answer" happen as one atomic step instead of two reads that could each see a
+    different truth. Outside the window this raises before anything is staged — no message row,
+    no dispatch, no partial send to explain.
+    """
+    conversation = await selectors.get_conversation(
+        session, ctx.organization_id, conversation_id, lock=True
+    )
+    if conversation is None:
+        raise NotFoundProblem("No such conversation")
+    if not webhooks.within_service_window(conversation.last_customer_message_at):
+        raise OutsideServiceWindowProblem(
+            "This conversation's 24-hour service window has closed. Send an approved "
+            "template instead of free text."
+        )
+
+    cfg = settings()
+    phone = pii.open_sealed(conversation.wa_address_enc, settings=cfg)
+
+    dedupe_key = f"engage:reply:{conversation_id}:{idempotency_key}"
+    message = await stage_message(
+        session,
+        organization_id=ctx.organization_id,
+        channel="whatsapp",
+        # Not `operational`, `marketing` or any rule-authored bucket: this is a human answering
+        # a human, one conversation at a time, and it is checked against `Preference` exactly
+        # like any other category — a `*` row from `_record_stop_request` refuses it same as
+        # every other bucket, which is the whole of how STOP reaches a reply already in flight.
+        category="conversational",
+        to_address=phone,
+        subject=None,
+        body=body,
+        created_by=str(ctx.principal.sub),
+        dedupe_key=dedupe_key,
+        actor=_actor(ctx),
+    )
+    if message is None:
+        # The same idempotency key was used before — the caller gets back what that first call
+        # produced, not a second message.
+        message = await selectors.find_by_dedupe_key(session, ctx.organization_id, dedupe_key)
+        assert message is not None  # the dedupe_key that just conflicted has to name a row
+    else:
+        message.conversation_id = conversation_id
+        message.direction = "outbound"
+        await session.flush()
+
+    if conversation.status != "open":
+        conversation.status = "open"
+        conversation.updated_by = str(ctx.principal.sub)
+        conversation.updated_at = datetime.now(UTC)
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.inbox.message.replied",
+        entity="conversation",
+        entity_id=conversation.id,
+        after={"message_id": str(message.id), "state": message.state},
+        request=request,
+    )
+    return message
+
+
+async def assign_conversation(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    conversation_id: uuid.UUID,
+    assignee_membership_id: uuid.UUID | None,
+    request: Request | None = None,
+) -> Conversation:
+    """Hand a conversation to a membership, or clear its assignment with `None`."""
+    conversation = await selectors.get_conversation(session, ctx.organization_id, conversation_id)
+    if conversation is None:
+        raise NotFoundProblem("No such conversation")
+
+    before = conversation.assignee_membership_id
+    conversation.assignee_membership_id = assignee_membership_id
+    conversation.updated_by = str(ctx.principal.sub)
+    # Set explicitly rather than left to the column's `onupdate=func.now()`: this row is
+    # serialised back to the caller in the same request, and a server-generated value is not
+    # populated on the ORM object until a round trip refreshes it — the same reason `update_list`
+    # and every other same-request read-after-write here does this.
+    conversation.updated_at = datetime.now(UTC)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.inbox.conversation.assigned",
+        entity="conversation",
+        entity_id=conversation.id,
+        before={"assignee_membership_id": str(before) if before else None},
+        after={
+            "assignee_membership_id": (
+                str(assignee_membership_id) if assignee_membership_id else None
+            )
+        },
+        request=request,
+    )
+    return conversation
+
+
+async def close_conversation(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    conversation_id: uuid.UUID,
+    request: Request | None = None,
+) -> Conversation:
+    """Mark a conversation closed. A later reply, or the customer writing back, reopens it."""
+    conversation = await selectors.get_conversation(session, ctx.organization_id, conversation_id)
+    if conversation is None:
+        raise NotFoundProblem("No such conversation")
+
+    before = conversation.status
+    conversation.status = "closed"
+    conversation.updated_by = str(ctx.principal.sub)
+    conversation.updated_at = datetime.now(UTC)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.inbox.conversation.closed",
+        entity="conversation",
+        entity_id=conversation.id,
+        before={"status": before},
+        after={"status": "closed"},
+        request=request,
+    )
+    return conversation
+
+
+async def unmask_inbound_message(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    conversation_id: uuid.UUID,
+    message_id: uuid.UUID,
+    request: Request | None = None,
+) -> str | None:
+    """Reveal one customer message's real body — the audited, stepped-up path.
+
+    Mirrors `customer.services.unmask_contact_phone`: reaching here means the caller held the
+    dangerous `engage.inbox.message.unmask` permission and stepped up (`amr={"otp"}`). An
+    `entity.sensitive_read` row is written in the caller's transaction whether or not anything
+    was sealed — the auditable act is the attempt, not whether a body happened to be text.
+    """
+    row = await selectors.get_inbound_message(
+        session, ctx.organization_id, conversation_id, message_id
+    )
+    if row is None:
+        raise NotFoundProblem("No such message")
+
+    plaintext: str | None = None
+    if row.body_enc is not None:
+        plaintext = pii.open_sealed(row.body_enc, settings=settings())
+
+    record_sensitive_read(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        entity="inbound_message",
+        entity_id=row.id,
+        fields=["body"],
+        request=request,
+    )
+    return plaintext
 
 
 # --------------------------------------------------------------------- engage sending identity

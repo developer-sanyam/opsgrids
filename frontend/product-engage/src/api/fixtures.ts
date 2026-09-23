@@ -14,6 +14,8 @@
 import type {
   ConnectionOut,
   ContactOut,
+  ConversationMessageOut,
+  ConversationOut,
   DnsRecordOut,
   DomainOut,
   ProviderTemplateOut,
@@ -314,3 +316,144 @@ export const WHATSAPP_TEMPLATES: ProviderTemplateOut[] = [
     updated_at: "2026-09-15T07:22:51Z",
   },
 ];
+
+/* ------------------------------------------ inbox ------------------------------------------ */
+
+/**
+ * Computed relative to the moment the module loads rather than pinned to a date, unlike every
+ * other fixture above: the whole point of these three rows is to exercise the 24-hour window at
+ * three different distances from its edge, and a fixed timestamp would drift out of true the day
+ * after it was written — exactly the bug `test_inbound_webhook.py`'s own fixtures found first.
+ */
+const NOW = Date.now();
+const hoursAgo = (h: number) => new Date(NOW - h * 60 * 60 * 1000).toISOString();
+
+/** Freshly active: plenty of the window left, and matched to a CRM contact. */
+export const CONVERSATION_OPEN: ConversationOut = {
+  id: "b1a2c3d4-1111-4a1a-8a1a-000000000001",
+  channel: "whatsapp",
+  wa_address: "•••••• 4210",
+  contact_id: "c1a0f2e4-9b3d-4a7c-8e1f-2d6b9c4a5e10",
+  last_customer_message_at: hoursAgo(2),
+  within_service_window: true,
+  status: "open",
+  assignee_membership_id: null,
+  created_at: hoursAgo(30),
+  updated_at: hoursAgo(2),
+};
+
+/** Ten minutes from the window closing — the composer's countdown has something to count down
+ *  to, and a stranger: no CRM contact has ever matched this number. */
+export const CONVERSATION_CLOSING_SOON: ConversationOut = {
+  id: "b1a2c3d4-2222-4a1a-8a1a-000000000002",
+  channel: "whatsapp",
+  wa_address: "•••••• 7788",
+  contact_id: null,
+  last_customer_message_at: hoursAgo(23 + 50 / 60),
+  within_service_window: true,
+  status: "open",
+  assignee_membership_id: null,
+  created_at: hoursAgo(23 + 50 / 60),
+  updated_at: hoursAgo(23 + 50 / 60),
+};
+
+/** The window closed a few hours ago and nobody has replied since — the composer's template-picker
+ *  state, on a conversation still `open` (an operator has not triaged it, the window just lapsed). */
+export const CONVERSATION_EXPIRED: ConversationOut = {
+  id: "b1a2c3d4-3333-4a1a-8a1a-000000000003",
+  channel: "whatsapp",
+  wa_address: "•••••• 5599",
+  contact_id: "d2b1e3f5-8c4e-4b8d-9f2a-3e7c0d5b6f21",
+  last_customer_message_at: hoursAgo(28),
+  within_service_window: false,
+  status: "open",
+  assignee_membership_id: null,
+  created_at: hoursAgo(50),
+  updated_at: hoursAgo(28),
+};
+
+/** A closed conversation — triaged and done, until the customer writes back. */
+export const CONVERSATION_CLOSED: ConversationOut = {
+  id: "b1a2c3d4-4444-4a1a-8a1a-000000000004",
+  channel: "whatsapp",
+  wa_address: "•••••• 1023",
+  contact_id: "c1a0f2e4-9b3d-4a7c-8e1f-2d6b9c4a5e10",
+  last_customer_message_at: hoursAgo(72),
+  within_service_window: false,
+  status: "closed",
+  assignee_membership_id: "11111111-2222-4333-8444-555555555555",
+  created_at: hoursAgo(96),
+  updated_at: hoursAgo(70),
+};
+
+export const CONVERSATIONS: ConversationOut[] = [
+  CONVERSATION_OPEN,
+  CONVERSATION_CLOSING_SOON,
+  CONVERSATION_EXPIRED,
+  CONVERSATION_CLOSED,
+];
+
+export const CONVERSATION_MESSAGES: Record<string, ConversationMessageOut[]> = {
+  [CONVERSATION_OPEN.id]: [
+    {
+      id: "m1",
+      direction: "inbound",
+      message_type: "text",
+      body: "Hi, is my order still on track for tomorrow?",
+      occurred_at: hoursAgo(2.2),
+      provider_message_id: "wamid.fixture1",
+      profile_name: "Priya Raghavan",
+    },
+    {
+      id: "m2",
+      direction: "outbound",
+      message_type: "text",
+      body: "Yes — it's out for delivery and should arrive by 6pm.",
+      occurred_at: hoursAgo(2),
+      provider_message_id: "wamid.fixture2",
+      profile_name: null,
+    },
+  ],
+  [CONVERSATION_CLOSING_SOON.id]: [
+    {
+      id: "m3",
+      direction: "inbound",
+      message_type: "text",
+      body: "Do you deliver to Whitefield?",
+      occurred_at: hoursAgo(23 + 50 / 60),
+      provider_message_id: "wamid.fixture3",
+      profile_name: null,
+    },
+  ],
+  [CONVERSATION_EXPIRED.id]: [
+    {
+      id: "m4",
+      direction: "inbound",
+      message_type: "text",
+      body: "Can I get a refund for the damaged item?",
+      occurred_at: hoursAgo(28),
+      provider_message_id: "wamid.fixture4",
+      profile_name: "Arjun Mehta",
+    },
+  ],
+  [CONVERSATION_CLOSED.id]: [
+    {
+      id: "m5",
+      direction: "inbound",
+      message_type: "text",
+      body: "Thanks for sorting that out!",
+      occurred_at: hoursAgo(72),
+      provider_message_id: "wamid.fixture5",
+      profile_name: "Priya Raghavan",
+    },
+    {
+      id: "m6",
+      direction: "outbound",
+      message_type: "text",
+      body: "Anytime — glad it's resolved.",
+      occurred_at: hoursAgo(70),
+      provider_message_id: "wamid.fixture6",
+      profile_name: null,
+    },
+  ],
+};

@@ -114,6 +114,7 @@ async def receive(request: Request, directory: DirectorySessionDep) -> Response:
 
     organization_id = account.organization_id
     updates = webhooks.parse_statuses(payload)
+    inbound_messages = webhooks.parse_inbound(payload)
 
     for update in updates:
         # One transaction per update, each tenant-bound and idempotent. Per update rather than
@@ -148,5 +149,34 @@ async def receive(request: Request, directory: DirectorySessionDep) -> Response:
                 )
             )
 
-    log.info("webhook.accepted", phone_number_id=number_id, statuses=len(updates))
+    for inbound in inbound_messages:
+        # Same shape as the status loop: one transaction per message, idempotent on its own
+        # derived id, and marked processed whether or not `fold_inbound_message` found a sender
+        # it could canonicalise — see that function's docstring for why a bad `from` is not
+        # something retrying will ever fix.
+        async with session_scope(organization_id=organization_id) as session:
+            already = await session.get(ProcessedEvent, inbound.dedupe_id)
+            if already is not None:
+                log.info(
+                    "webhook.redelivered",
+                    provider_message_id=inbound.provider_message_id,
+                )
+                continue
+
+            await services.fold_inbound_message(
+                session, organization_id=organization_id, inbound=inbound
+            )
+            session.add(
+                ProcessedEvent(
+                    event_id=inbound.dedupe_id,
+                    event_type="whatsapp.message.inbound",
+                )
+            )
+
+    log.info(
+        "webhook.accepted",
+        phone_number_id=number_id,
+        statuses=len(updates),
+        messages=len(inbound_messages),
+    )
     return Response(status_code=status.HTTP_200_OK)

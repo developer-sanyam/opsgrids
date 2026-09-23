@@ -107,6 +107,10 @@ def test_engage_catalogue_declares_setup_and_audience_permissions() -> None:
         "engage.campaign.campaign.read",
         "engage.campaign.campaign.write",
         "engage.campaign.campaign.send",
+        "engage.inbox.conversation.read",
+        "engage.inbox.conversation.write",
+        "engage.inbox.message.reply",
+        "engage.inbox.message.unmask",
     }
 
 

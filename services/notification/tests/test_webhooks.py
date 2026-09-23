@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -225,3 +225,162 @@ def test_the_same_status_on_different_messages_are_different_events() -> None:
     a = webhooks.parse_statuses(_status_payload(wamid="wamid.A"))[0]
     b = webhooks.parse_statuses(_status_payload(wamid="wamid.B"))[0]
     assert a.dedupe_id != b.dedupe_id
+
+
+# --------------------------------------------------------------------- inbound messages
+
+
+def _message_payload(
+    *,
+    body: str | None = "Hi, is my order ready?",
+    message_type: str = "text",
+    sender: str = "16505551234",
+    wamid: str = "wamid.IN1",
+    profile_name: str | None = "Jane Customer",
+) -> dict:
+    """The shape Meta publishes for an inbound-message webhook."""
+    message: dict = {
+        "from": sender,
+        "id": wamid,
+        "timestamp": "1750263773",
+        "type": message_type,
+    }
+    if message_type == "text":
+        message["text"] = {"body": body}
+    else:
+        message["image"] = {"id": "media-1", "mime_type": "image/jpeg"}
+
+    value: dict = {
+        "messaging_product": "whatsapp",
+        "metadata": {
+            "display_phone_number": "15550783881",
+            "phone_number_id": "106540352242922",
+        },
+        "messages": [message],
+    }
+    if profile_name is not None:
+        value["contacts"] = [{"wa_id": sender, "profile": {"name": profile_name}}]
+
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [{"id": "102290129340398", "changes": [{"value": value, "field": "messages"}]}],
+    }
+
+
+def test_a_text_message_is_parsed() -> None:
+    inbound = webhooks.parse_inbound(_message_payload())[0]
+    assert inbound.provider_message_id == "wamid.IN1"
+    assert inbound.from_address == "16505551234"
+    assert inbound.message_type == "text"
+    assert inbound.body == "Hi, is my order ready?"
+    assert inbound.profile_name == "Jane Customer"
+    assert inbound.occurred_at == datetime.fromtimestamp(1750263773, tz=UTC)
+
+
+def test_a_non_text_message_is_stored_with_no_body() -> None:
+    """Media and interactive shapes are not published on any page consulted, so they are kept
+    whole in `raw` and never parsed on a guess."""
+    inbound = webhooks.parse_inbound(_message_payload(message_type="image"))[0]
+    assert inbound.message_type == "image"
+    assert inbound.body is None
+    assert inbound.raw["image"]["id"] == "media-1"
+
+
+def test_an_unknown_type_keeps_its_own_name() -> None:
+    inbound = webhooks.parse_inbound(_message_payload(message_type="sticker"))[0]
+    assert inbound.message_type == "sticker"
+
+
+def test_a_message_missing_its_id_or_sender_is_skipped() -> None:
+    payload = _message_payload()
+    del payload["entry"][0]["changes"][0]["value"]["messages"][0]["id"]
+    assert webhooks.parse_inbound(payload) == []
+
+
+def test_several_messages_in_one_body_are_all_parsed() -> None:
+    payload = _message_payload()
+    payload["entry"][0]["changes"][0]["value"]["messages"].append(
+        {
+            "from": "16505551234",
+            "id": "wamid.IN2",
+            "timestamp": "1750263800",
+            "type": "text",
+            "text": {"body": "Still there?"},
+        }
+    )
+    assert [m.provider_message_id for m in webhooks.parse_inbound(payload)] == [
+        "wamid.IN1",
+        "wamid.IN2",
+    ]
+
+
+def test_no_profile_name_leaves_it_none() -> None:
+    inbound = webhooks.parse_inbound(_message_payload(profile_name=None))[0]
+    assert inbound.profile_name is None
+
+
+def test_inbound_dedupe_id_is_stable_and_distinct_from_a_status() -> None:
+    a = webhooks.parse_inbound(_message_payload())[0]
+    b = webhooks.parse_inbound(_message_payload())[0]
+    assert a.dedupe_id == b.dedupe_id
+
+    status = webhooks.parse_statuses(_status_payload(wamid="wamid.IN1"))[0]
+    assert a.dedupe_id != status.dedupe_id
+
+
+# --------------------------------------------------------------------- sender canonicalisation
+
+
+def test_a_bare_meta_sender_becomes_e164() -> None:
+    assert webhooks.sender_e164("16505551234") == "+16505551234"
+
+
+def test_an_implausible_sender_does_not_parse() -> None:
+    assert webhooks.sender_e164("not-a-number") is None
+
+
+def test_an_empty_sender_does_not_parse() -> None:
+    assert webhooks.sender_e164("") is None
+
+
+# --------------------------------------------------------------------- STOP keywords
+
+
+@pytest.mark.parametrize(
+    "body", ["STOP", "stop", "  Stop  ", "Unsubscribe", "cancel", "END", "QUIT"]
+)
+def test_a_stop_keyword_is_recognised_case_and_whitespace_insensitively(body: str) -> None:
+    assert webhooks.is_stop_keyword(body)
+
+
+@pytest.mark.parametrize(
+    "body", [None, "", "please stop sending me things", "STOPPED", "cancelled my order"]
+)
+def test_a_sentence_using_the_word_is_not_a_stop_request(body: str | None) -> None:
+    """A substring match would silently unsubscribe someone for using the word in a sentence."""
+    assert not webhooks.is_stop_keyword(body)
+
+
+# --------------------------------------------------------------------- the service window
+
+
+def test_a_conversation_with_no_customer_message_has_no_open_window() -> None:
+    assert not webhooks.within_service_window(None)
+
+
+def test_the_window_is_open_just_before_24_hours() -> None:
+    last = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
+    now = last + timedelta(hours=23, minutes=59, seconds=59)
+    assert webhooks.within_service_window(last, now=now)
+
+
+def test_the_window_is_closed_at_exactly_24_hours() -> None:
+    last = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
+    now = last + timedelta(hours=24)
+    assert not webhooks.within_service_window(last, now=now)
+
+
+def test_the_window_is_closed_just_after_24_hours() -> None:
+    last = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
+    now = last + timedelta(hours=24, seconds=1)
+    assert not webhooks.within_service_window(last, now=now)

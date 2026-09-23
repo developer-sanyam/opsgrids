@@ -36,10 +36,12 @@ import asyncio
 import uuid
 from typing import Any
 
-from app import domain, services
+from app import domain, selectors, services
 from app.config import settings
+from app.contacts import ContactResolver, make_contact_resolver
 from app.models import ProcessedEvent
 from app.targets import TargetResolver, make_resolver
+from platform_core import pii
 from platform_core.db import assert_app_role, init_engine, session_scope
 from platform_core.events import EventConsumer, already_processed, mark_processed
 from platform_core.logging import get_logger
@@ -110,12 +112,61 @@ async def expand_campaign_send(
     return outcome
 
 
-def register(resolve_target: TargetResolver | None = None) -> None:
+async def fold_inbound_contact(
+    envelope: dict[str, Any], resolve_contact: ContactResolver | None = None
+) -> None:
+    """Resolve the contact for one inbound WhatsApp conversation, idempotently.
+
+    A separate handler from `fold`, on the same event (`services.EVT_INBOUND_RECEIVED`) but
+    **not** the same idempotency row: that event's own fold (`fold_inbound_message`, run inside
+    the webhook request, not here) already durably wrote the conversation and message before this
+    ever runs, so this step's identity is the *contact resolution*, not the arrival of the
+    message. A derived id namespaced against the raw event id keeps the two folds from treating
+    each other's `processed_events` row as their own.
+
+    `resolve_contact(None) -> None`'s degrade path (see `app/contacts.py`) means this always
+    completes — a CRM that cannot be reached leaves `contact_id` unset rather than blocking or
+    retrying, and a later redelivery or manual retry resolves it once the CRM can answer.
+    """
+    event_id = uuid.UUID(str(envelope["event_id"]))
+    organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload = envelope.get("payload") or {}
+    conversation_id = uuid.UUID(str(payload["conversation_id"]))
+    fold_id = uuid.uuid5(event_id, "contact_resolve")
+
+    async with session_scope(organization_id=organization_id) as session:
+        if await already_processed(session, ProcessedEvent, fold_id):
+            log.info("inbound.contact.redelivered", conversation_id=str(conversation_id))
+            return
+        contact_id: str | None = None
+        if resolve_contact is not None:
+            conversation = await selectors.get_conversation(
+                session, organization_id, conversation_id
+            )
+            if conversation is not None:
+                phone = pii.open_sealed(conversation.wa_address_enc, settings=settings())
+                contact_id = await resolve_contact(str(organization_id), phone)
+        await services.resolve_conversation_contact(
+            session,
+            organization_id=organization_id,
+            conversation_id=conversation_id,
+            contact_id=contact_id,
+        )
+        mark_processed(session, ProcessedEvent, fold_id, "notification.whatsapp.contact_resolved")
+
+    log.info("inbound.contact.resolved", matched=contact_id is not None)
+
+
+def register(
+    resolve_target: TargetResolver | None = None,
+    resolve_contact: ContactResolver | None = None,
+) -> None:
     """Bind every subscribable routing key to the one fold.
 
     The target resolver is injected rather than imported, the way console injects its price
     resolver: a rule that targets a contact needs an HTTP call to customer-service, and a test
-    should be able to substitute that without a network or a customer-service to talk to.
+    should be able to substitute that without a network or a customer-service to talk to. The
+    contact resolver is the same shape, in the other direction.
     """
 
     async def on_event(envelope: dict[str, Any]) -> None:
@@ -129,6 +180,11 @@ def register(resolve_target: TargetResolver | None = None) -> None:
 
     consumer.on(services.EVT_CAMPAIGN_SEND_REQUESTED)(on_campaign_send)
 
+    async def on_inbound_received(envelope: dict[str, Any]) -> None:
+        await fold_inbound_contact(envelope, resolve_contact)
+
+    consumer.on(services.EVT_INBOUND_RECEIVED)(on_inbound_received)
+
 
 async def main() -> None:
     cfg = settings()
@@ -137,7 +193,7 @@ async def main() -> None:
     # row-level security can bind this role. Started on the admin or outbox DSN by
     # mistake, RLS would be silently inert — refuse outside local (ADR-0002).
     await assert_app_role(engine, environment=cfg.environment)
-    register(make_resolver(cfg))
+    register(make_resolver(cfg), make_contact_resolver(cfg))
     await consumer.run()
 
 

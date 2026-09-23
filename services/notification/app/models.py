@@ -299,6 +299,16 @@ class Message(Base, TenantBase):
     #: pending | sending | sent | delivered | read | failed | suppressed.
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
 
+    #: outbound | inbound. Every row this service has ever written is `outbound` — a customer's
+    #: own message lives in `InboundMessage`, never here — so the column exists for symmetry
+    #: with the conversation it may belong to rather than because this table ever holds the
+    #: other value today. Kept rather than assumed so a later projection that reads `messages`
+    #: alone (a thread view, an export) does not have to ask a second table what direction means.
+    direction: Mapped[str] = mapped_column(String(10), nullable=False, default="outbound")
+    #: The conversation this reply belongs to. Null for every message that is not a reply inside
+    #: a WhatsApp conversation — a rule-driven notification or a campaign email has no thread.
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
     #: Which rule produced this, and which event it reacted to. Null for a direct API send —
     #: the platform can notify without an automation behind it.
     rule_code: Mapped[str | None] = mapped_column(String(80))
@@ -340,6 +350,8 @@ class Message(Base, TenantBase):
             "organization_id",
             "provider_message_id",
         ),
+        # The thread view: every outbound reply in one conversation, oldest first.
+        Index("ix_messages_org_conversation", "organization_id", "conversation_id"),
         # Two rules on one event are two messages; one event twice is one message.
         UniqueConstraint("organization_id", "dedupe_key", name="uq_messages_org_dedupe"),
     )
@@ -407,6 +419,127 @@ class Preference(Base, TenantBase):
             "channel",
             "category",
             name="uq_preferences_org_recipient",
+        ),
+    )
+
+
+class Conversation(Base, TenantBase):
+    """One customer's WhatsApp thread with this organization.
+
+    `wa_address_enc` is the customer's number, sealed like any other PII at rest —
+    `wa_address_masked` is what an ordinary read returns, and `wa_address_index` is the keyed
+    blind index that makes "does a conversation already exist for this number" one indexed
+    equality rather than a decrypt of every row per inbound webhook. The unique constraint is on
+    the index for the same reason `Contact.email_index`'s is: uniqueness of the normalised
+    number without the database ever holding it in the clear.
+
+    `last_customer_message_at` is the whole of the 24-hour customer service window (`webhooks.
+    within_service_window`) — the fact that decides whether a reply may be free text or must be
+    an approved template. It only ever moves forward (`webhooks` folds with `GREATEST`), because
+    Meta redelivers and a batch is not guaranteed to arrive in order.
+
+    `contact_id` is a plain UUID, never a foreign key (ADR-0000 §10, and `customer` is a
+    different schema regardless): it names a row in `customer.contacts`, resolved by asking
+    customer-service the same way a proactive send does (`app/contacts.py`), and it is null
+    until that resolution runs or when it never finds a match — a stranger messaging the
+    business is ordinary, not an error.
+
+    `assignee_membership_id` is likewise a plain UUID naming a membership in `account`, not a
+    foreign key, and not resolved to a name here — the inbox UI reads a name for it from
+    whatever roster it already holds.
+    """
+
+    __tablename__ = "conversations"
+
+    #: whatsapp today; a column rather than a fixed value because the shape (a sealed address,
+    #: a service window, a contact link) is not WhatsApp's alone.
+    channel: Mapped[str] = mapped_column(String(20), nullable=False, default="whatsapp")
+
+    wa_address_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    wa_address_masked: Mapped[str] = mapped_column(String(40), nullable=False)
+    wa_address_index: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    #: Plain UUID naming a `customer.contacts` row. Null until resolved, or forever for a
+    #: stranger. See the class docstring.
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+    #: The 24-hour customer service window's clock. Null means the window has never opened —
+    #: this conversation exists (an operator started it, or a message failed outside the
+    #: window) but the customer has never actually written in.
+    last_customer_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    #: open | closed. A triage state for the inbox, independent of the service window — a closed
+    #: conversation still tracks `last_customer_message_at` and a reply reopens it.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+
+    #: Plain UUID naming an `account.memberships` row. Null when unassigned.
+    assignee_membership_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+    __table_args__ = (
+        # The webhook fold's hot path: does a conversation already exist for this number.
+        UniqueConstraint(
+            "organization_id",
+            "channel",
+            "wa_address_index",
+            name="uq_conversations_org_channel_address",
+        ),
+        # The inbox list: open conversations, most recently active first.
+        Index(
+            "ix_conversations_org_status",
+            "organization_id",
+            "status",
+            "last_customer_message_at",
+        ),
+        Index("ix_conversations_org_contact", "organization_id", "contact_id"),
+    )
+
+
+class InboundMessage(Base, TenantBase):
+    """One message a customer sent, folded from a WhatsApp webhook.
+
+    `provider_message_id` is Meta's `wamid`, unique per organization — the redelivery guard for
+    the row itself, independent of `processed_events` (which guards the *fold*, keyed by the same
+    id via `webhooks.InboundMessage.dedupe_id`, so the two never disagree in practice, but this
+    constraint is what turns a bug in that derivation into a database error instead of a
+    duplicate message in someone's inbox).
+
+    Only `type == "text"` has a body. Meta's other shapes — media, interactive replies — are not
+    parsed (`webhooks.parse_inbound`'s docstring says why), so `body_enc` is null and `raw` is the
+    whole of what was kept. `body_masked` is the safe, always-present preview: an ordinary read
+    shows it, and `engage.inbox.message.unmask` — the dangerous, audited permission — is the only
+    way to see `body_enc` opened (`services.unmask_inbound_message`).
+    """
+
+    __tablename__ = "inbound_messages"
+
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("notification.conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider_message_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: text | unknown | image | ... — whatever Meta's `type` field said. Only `text` is
+    #: interpreted; everything else is stored with `type` as given (see the class docstring).
+    type: Mapped[str] = mapped_column(String(20), nullable=False)
+    body_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    body_masked: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    #: The provider's own message object, whole. What a later parser reads once the interactive
+    #: and media shapes are confirmed, and the record of what arrived either way.
+    raw: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: The sender's WhatsApp profile name, when Meta included one. Display only.
+    profile_name: Mapped[str | None] = mapped_column(String(200))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "provider_message_id", name="uq_inbound_messages_org_provider_id"
+        ),
+        # The thread view: every inbound message in one conversation, oldest first.
+        Index(
+            "ix_inbound_messages_org_conversation",
+            "organization_id",
+            "conversation_id",
+            "occurred_at",
         ),
     )
 

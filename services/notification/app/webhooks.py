@@ -28,8 +28,10 @@ import hashlib
 import hmac
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
+
+from app import domain
 
 #: The header Meta signs the raw body with.
 SIGNATURE_HEADER: Final = "X-Hub-Signature-256"
@@ -194,3 +196,150 @@ def _timestamp(value: Any) -> datetime:
         return datetime.fromtimestamp(int(str(value)), tz=UTC)
     except (TypeError, ValueError):
         return datetime.now(UTC)
+
+
+# --------------------------------------------------------------------- inbound messages
+#
+# What a customer sends us. The envelope is the same as a status webhook; the payload carries
+# `messages` instead of `statuses`.
+#
+# Only `text` is interpreted. Meta publishes the text shape — `{"type": "text", "text":
+# {"body": "..."}}` — and every message object carries `from`, `id`, `timestamp` and `type`.
+# The *inner* shapes of an interactive reply (`button_reply`, `list_reply`) and of media are
+# not published on any page consulted, so they are stored whole and left uninterpreted rather
+# than parsed on a guess. That is the rule that caught the `sub_type` bug: a field name comes
+# from Meta's pages or it does not get written.
+#
+# Storing the raw object means nothing is lost. When the shapes are confirmed, the parser gains
+# a branch and the history is already there to backfill from.
+
+#: The message types Meta documents. Anything else is stored with `type` as given.
+TYPE_TEXT: Final = "text"
+
+#: How long after a customer's last message free-form replies are allowed. Meta's customer
+#: service window. A constant here because the rule is Meta's, not a tenant's preference.
+SERVICE_WINDOW = timedelta(hours=24)
+
+
+@dataclass(frozen=True, slots=True)
+class InboundMessage:
+    """One message a customer sent."""
+
+    provider_message_id: str
+    from_address: str
+    message_type: str
+    occurred_at: datetime
+    #: The text, for `type: "text"`. None for every other type, because the body is somewhere
+    #: inside a shape this service does not claim to understand yet.
+    body: str | None
+    #: The provider's own message object, stored whole. The record of what arrived, and what a
+    #: later parser will read when the interactive and media shapes are confirmed.
+    raw: dict[str, Any]
+    #: The sender's profile name, when Meta includes one. Display only.
+    profile_name: str | None = None
+
+    @property
+    def dedupe_id(self) -> uuid.UUID:
+        """Stable id for `processed_events`. An inbound message has one identity — unlike a
+        status, which is identified by the message *and* the status — so the id is the message
+        id alone."""
+        return uuid.uuid5(_DEDUPE_NAMESPACE, f"inbound:{self.provider_message_id}")
+
+
+def parse_inbound(payload: dict[str, Any]) -> list[InboundMessage]:
+    """Every customer message in one webhook body.
+
+    Flattened across `entry` and `changes` for the same reason statuses are: Meta batches
+    freely and will not resend what a handler dropped. A message missing its id or sender is
+    skipped — there is nothing to thread it onto and nothing to deduplicate it by.
+    """
+    messages: list[InboundMessage] = []
+    for entry in payload.get("entry") or []:
+        for change in entry.get("changes") or []:
+            value = change.get("value") or {}
+            # `contacts` carries the sender's profile name, keyed by `wa_id`.
+            names = {
+                str(c.get("wa_id")): ((c.get("profile") or {}).get("name"))
+                for c in (value.get("contacts") or [])
+                if c.get("wa_id")
+            }
+            for raw in value.get("messages") or []:
+                parsed = _inbound_from(raw, names)
+                if parsed is not None:
+                    messages.append(parsed)
+    return messages
+
+
+def _inbound_from(raw: dict[str, Any], names: dict[str, str | None]) -> InboundMessage | None:
+    provider_message_id = raw.get("id")
+    sender = raw.get("from")
+    if not provider_message_id or not sender:
+        return None
+
+    message_type = str(raw.get("type") or "unknown")
+    body: str | None = None
+    if message_type == TYPE_TEXT:
+        body = ((raw.get("text") or {}).get("body")) or None
+
+    return InboundMessage(
+        provider_message_id=str(provider_message_id),
+        from_address=str(sender),
+        message_type=message_type,
+        occurred_at=_timestamp(raw.get("timestamp")),
+        body=body,
+        raw=raw,
+        profile_name=names.get(str(sender)),
+    )
+
+
+def within_service_window(
+    last_customer_message_at: datetime | None, *, now: datetime | None = None
+) -> bool:
+    """Is free-form messaging allowed right now?
+
+    Meta accepts free text only inside 24 hours of the customer's last message; outside it,
+    only an approved template. So this is not a nicety — it decides whether a send is possible
+    at all, and getting it wrong means either a refused message or a customer who hears
+    nothing.
+
+    A conversation with no customer message has never opened a window, so False. That is the
+    common case for a proactive notification, which is exactly why templates exist.
+    """
+    if last_customer_message_at is None:
+        return False
+    reference = now or datetime.now(UTC)
+    return reference - last_customer_message_at < SERVICE_WINDOW
+
+
+def sender_e164(raw: str) -> str | None:
+    """Meta's `from` as E.164, or None when it is not a plausible number.
+
+    Meta sends the sender as bare digits with the country code and no separators — no leading
+    `+`, unlike every other E.164 value this service handles. `domain.normalize_recipient`
+    refuses exactly that shape on purpose (a bare number elsewhere in this codebase means a
+    missing country code, and guessing one sends a stranger someone else's invoice), so this
+    adds the `+` a genuine webhook implies before asking the same validator, rather than
+    duplicating its digit rules.
+    """
+    try:
+        return domain.normalize_recipient("whatsapp", f"+{raw.strip()}")
+    except domain.RuleError:
+        return None
+
+
+#: Keywords Meta and the carriers treat as an opt-out request, upper-cased for a case-insensitive
+#: exact match. Not a substring match: a customer asking "how do I stop my subscription" must not
+#: be silently unsubscribed for using the word in a sentence.
+STOP_KEYWORDS: Final[frozenset[str]] = frozenset({"STOP", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"})
+
+
+def is_stop_keyword(body: str | None) -> bool:
+    """Is this inbound text an opt-out request?
+
+    Exact match against the trimmed, upper-cased body — the same convention every SMS/WhatsApp
+    provider's own STOP handling uses, so a customer who has opted out of another business's
+    messages this way has the same expectation here.
+    """
+    if body is None:
+        return False
+    return body.strip().upper() in STOP_KEYWORDS

@@ -1,7 +1,8 @@
 # WhatsApp webhooks
 
-What Meta sends us, and how it is trusted. Documents what is built; delivery and read receipts
-work, inbound customer messages do not yet (see [audit.md](audit.md)).
+What Meta sends us, and how it is trusted. Delivery and read receipts, and inbound customer
+messages, both work — this document covers both halves. See [audit.md](audit.md) for what
+inbound messages unlocked (conversations, the service window, STOP) and what is still open.
 
 ## The endpoint
 
@@ -105,13 +106,77 @@ receipts beside it — Meta batches them and will not send the others again.
 A service with no app secret configured **refuses** webhooks rather than accepting unverified
 bodies. A deployment that trusted everything would be worse than one that trusts nothing.
 
+## Inbound messages
+
+`POST /webhooks/whatsapp` folds `messages` alongside `statuses` in the same body, item by item,
+each in its own transaction — the same shape as a status receipt, and for the same reasons
+(§Redelivery above). For each one:
+
+1. `webhooks.parse_inbound` reads the envelope. Only `type: "text"` is interpreted — the inner
+   shapes of media and an interactive reply (`button_reply`, `list_reply`) are not published on
+   any Meta page consulted, so they are stored whole in `raw` and never parsed on a guess. The
+   sender (`from`, bare digits) is canonicalised to E.164 by `webhooks.sender_e164`, which refuses
+   rather than guesses a country code — the same rule `domain.normalize_recipient` applies to
+   every outbound address.
+2. `services.fold_inbound_message` upserts the conversation for that number (`ON CONFLICT DO
+   UPDATE`, sealed address, blind-indexed for the lookup), inserts the message (sealed body,
+   masked preview), and — if the text is a STOP keyword (`webhooks.STOP_KEYWORDS`) — writes a
+   `Preference` refusal for every WhatsApp category, the same row a human operator's suppression
+   write would produce.
+3. An outbox event, `notification.whatsapp.inbound_received`, is staged in the same transaction.
+
+Idempotency is the message id alone (`webhooks.InboundMessage.dedupe_id`), unlike a status's
+message-and-status pair — one customer message has one identity. `inbound_messages.
+provider_message_id` is additionally unique per organization, so a bug in that derivation would
+surface as a database error rather than a duplicate message in an inbox.
+
+**Loop protection (C14).** `notification.whatsapp.inbound_received` is deliberately **not** in
+`domain.SUBSCRIBABLE_EVENTS` — the list a `Rule` may name and the generic consumer fans an event
+through `apply_rules`. An inbound message auto-triggering an outbound one on the same conversation
+is exactly the loop that guard exists to prevent, so opting an organization's automation into
+reacting to a customer's own message is a deliberate code change (adding the routing key to that
+list), never a `Rule` row an operator can create unsupervised.
+
+## Contact resolution
+
+A separate consumer, `consumers.fold_inbound_contact`, binds the same event and asks
+customer-service which contact holds the sender's number (`POST .../contacts:resolve`, the keyed
+blind-index lookup — see that endpoint's docstring). It is a second idempotent fold over the same
+event id, keyed by a derived id (`uuid5(event_id, "contact_resolve")`) so it does not collide with
+whichever other consumer also folds the raw event id.
+
+`app/contacts.py` **degrades to an unknown sender on anything short of a clean match** — no CRM
+entitlement, unreachable, a timeout, an unexpected status — rather than raising. That is the
+opposite of `app/targets.py`'s outbound resolver, which raises so the broker retries: there, a
+customer is owed a notification and silence would mean they never hear it. Here, the conversation
+and its message are already durably committed by the time this runs; a CRM that cannot answer
+leaves `contact_id` unset, and a later redelivery or manual retry resolves it once it can.
+
+## The 24-hour service window and STOP
+
+`webhooks.within_service_window(conversation.last_customer_message_at)` is the whole of Meta's
+rule: free text is possible only inside 24 hours of the customer's last message. It is evaluated
+server-side wherever it matters — read time (`ConversationOut.within_service_window`, so the inbox
+never reimplements it) and write time (`services.reply_to_conversation`, which row-locks the
+conversation for the check and refuses with `409` and `remedy: "template"` outside it, before
+anything is staged).
+
+STOP (`STOP`, `UNSUBSCRIBE`, `CANCEL`, `END`, `QUIT` — exact match, not a substring, so a sentence
+using the word is not an opt-out) writes the same `Preference` suppression a human operator's write
+would. `services.stage_message` checks it at render **and** at dispatch, so a reply already typed
+when a customer says STOP is staged as `suppressed` rather than sent — "we deliberately did not
+tell this customer" is a fact kept on the row, the same as any other suppressed send.
+
 ## Not built yet
 
-Inbound customer messages — text, media, interactive replies — are not persisted. The envelope
-and status shapes were verified against Meta's pages; the inner shapes of an interactive reply
-(`button_reply`, `list_reply`) are not published on the pages consulted, so they are not parsed
-rather than guessed at. Conversations, the 24-hour window and STOP handling follow from inbound
-messages and are in [audit.md](audit.md).
+- **Media and interactive replies.** Stored in `raw`, uninterpreted — see above.
+- **Sending a template from the inbox.** The reply endpoint only ever accepts free text; there is
+  no second endpoint that resolves a template send against a conversation's sealed number, so the
+  inbox's composer shows what is approved and ready without a way to send it from there yet.
+- **`messages.to_address` is still plaintext.** It should be sealed like every other PII column at
+  rest; doing so touches the dispatcher, the campaign driver and the receipt fold across both
+  channels, not just WhatsApp, and is deferred rather than half-migrated under this slice.
+- **A retention policy for inbound bodies.** `inbound_messages.body_enc` has no purge job yet.
 
 ## Verified against
 
