@@ -28,6 +28,7 @@ downstream service — whose own limit protects only itself — is ever asked it
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -236,6 +237,12 @@ class GatewayPolicy:
     #: Refuse anyone who is not OpsGrids staff. The operator console sets this.
     staff_only: bool = False
     upstream_timeout: float = 30.0
+    #: How long to keep retrying an upstream that refuses the connection before answering 503.
+    #: A deploy recreates a container, and for those seconds its name resolves to nothing or
+    #: its port refuses; without this every request in that window — a sign-in included —
+    #: failed. A refused connection never reached the service, so retrying is safe for any
+    #: method: the body is already buffered and nothing was executed.
+    upstream_connect_grace: float = 20.0
     #: Request bodies larger than this are refused with 413 before being read into memory.
     #: A route may raise its own ceiling; see `Route.max_body_bytes`.
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
@@ -593,7 +600,7 @@ async def _forward(
         content=body,
     )
     try:
-        upstream = await client.send(upstream_request, stream=True)
+        upstream = await _send_riding_out_restarts(client, upstream_request, route, policy)
     except httpx.ConnectError as exc:
         log.error("gateway.upstream_unreachable", upstream=route.upstream, path=url)
         raise UpstreamUnavailableProblem("That service is temporarily unavailable") from exc
@@ -609,6 +616,28 @@ async def _forward(
         headers=response_headers,
         background=BackgroundTask(upstream.aclose),
     )
+
+
+async def _send_riding_out_restarts(
+    client: httpx.AsyncClient, upstream_request: httpx.Request, route: Route, policy: GatewayPolicy
+) -> httpx.Response:
+    """Send, retrying only a refused connection, with backoff, for `upstream_connect_grace`.
+
+    Only `ConnectError` is retried: the request provably never reached the service. A read
+    timeout or a reset mid-response may have executed the request, and is never retried.
+    The budget counts the sleeps, not the wall clock, so the ceiling is the same under load.
+    """
+    delay, slept = 0.25, 0.0
+    while True:
+        try:
+            return await client.send(upstream_request, stream=True)
+        except httpx.ConnectError:
+            if slept + delay > policy.upstream_connect_grace:
+                raise
+            log.warning("gateway.upstream_retry", upstream=route.upstream, waited=slept)
+            await asyncio.sleep(delay)
+            slept += delay
+            delay = min(delay * 2, 2.0)
 
 
 def http_client(policy: GatewayPolicy) -> httpx.AsyncClient:

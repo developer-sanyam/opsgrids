@@ -1157,16 +1157,19 @@ D_READ = "engage.setup.domain.read"
 D_WRITE = "engage.setup.domain.write"
 S_READ = "engage.setup.sender.read"
 S_WRITE = "engage.setup.sender.write"
+W_READ = "engage.setup.whatsapp.read"
+W_WRITE = "engage.setup.whatsapp.write"
 
 CONNECTION = "/api/v1/engage/connection"
 DOMAINS = "/api/v1/engage/domains"
 SENDERS = "/api/v1/engage/senders"
+WHATSAPP_CONNECTION = "/api/v1/engage/whatsapp/connection"
 
 #: An id this organization has no row for. Used where the assertion is about a guard rather
 #: than about a row, so the refusal lands before anything is looked up or sent.
 ABSENT = uuid.UUID("11111111-1111-4111-8111-111111111111")
 
-READ_ROUTES = [CONNECTION, DOMAINS, SENDERS]
+READ_ROUTES = [CONNECTION, DOMAINS, SENDERS, WHATSAPP_CONNECTION]
 
 #: Every write this router exposes, paired with the *read* permission on its own resource. A
 #: caller holding only that read must be refused each one — which is the whole reason the
@@ -1185,6 +1188,16 @@ WRITE_ROUTES = [
     (f"{DOMAINS}/{ABSENT}/verify", D_READ, None),
     (SENDERS, S_READ, {"domain_id": str(ABSENT), "name": "Sales", "address": "sales@company.com"}),
     (f"{SENDERS}/{ABSENT}/test", S_READ, {"to_address": "ops@company.com"}),
+    (
+        WHATSAPP_CONNECTION,
+        W_READ,
+        {
+            "waba_id": "waba-1",
+            "phone_number_id": "phone-1",
+            "display_number": "+1 555 0100",
+            "access_token": "token",  # pragma: allowlist secret
+        },
+    ),
 ]
 
 
@@ -1466,3 +1479,147 @@ async def test_a_test_send_for_an_unknown_sender_is_refused_before_any_mail_move
 
     assert response.status_code == 404
     assert response.json()["detail"] == "No such sender"
+
+
+# --------------------------------------------------------------------- whatsapp connection
+
+
+async def test_connecting_whatsapp_never_returns_the_token(client, org_id) -> None:
+    """Same response-shape guarantee as the email connection's: pinned as an exact key set, not
+    a substring check, because no field here may be derived from the token at all."""
+    with as_principal(engage_caller(org_id, [f"{W_WRITE}:ORG"])):
+        response = await client.post(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": "waba-1",
+                "phone_number_id": "phone-1",
+                "display_number": "+1 555 0100",
+                "access_token": "super-secret-token",  # pragma: allowlist secret
+            },
+        )
+
+    assert response.status_code == 201
+    assert set(response.json()) == {"waba_id", "phone_number_id", "display_number", "status"}
+    assert "super-secret-token" not in response.text
+
+
+async def test_reading_the_whatsapp_connection_returns_that_same_shape(client, org_id) -> None:
+    with as_principal(engage_caller(org_id, [f"{W_WRITE}:ORG"])):
+        await client.post(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": "waba-1",
+                "phone_number_id": "phone-1",
+                "display_number": "+1 555 0100",
+                "access_token": "super-secret-token",  # pragma: allowlist secret
+            },
+        )
+    with as_principal(engage_caller(org_id, [f"{W_READ}:ORG"])):
+        response = await client.get(WHATSAPP_CONNECTION)
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["total"] == 1
+    assert set(body["items"][0]) == {"waba_id", "phone_number_id", "display_number", "status"}
+    assert body["items"][0]["status"] == "connected"
+    assert "super-secret-token" not in response.text
+
+
+async def test_a_second_whatsapp_connection_is_refused(client, org_id) -> None:
+    with as_principal(engage_caller(org_id, [f"{W_WRITE}:ORG"])):
+        await client.post(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": "waba-1",
+                "phone_number_id": "phone-1",
+                "display_number": "+1 555 0100",
+                "access_token": "token-one",  # pragma: allowlist secret
+            },
+        )
+        response = await client.post(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": "waba-2",
+                "phone_number_id": "phone-2",
+                "display_number": "+1 555 0200",
+                "access_token": "token-two",  # pragma: allowlist secret
+            },
+        )
+
+    assert response.status_code == 422
+
+
+async def test_replacing_the_whatsapp_connection_never_returns_the_token(client, org_id) -> None:
+    with as_principal(engage_caller(org_id, [f"{W_WRITE}:ORG"])):
+        await client.post(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": "waba-1",
+                "phone_number_id": "phone-1",
+                "display_number": "+1 555 0100",
+                "access_token": "old-token",  # pragma: allowlist secret
+            },
+        )
+        response = await client.put(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": "waba-1",
+                "phone_number_id": "phone-1",
+                "display_number": "+1 555 0199",
+                "access_token": "new-token",  # pragma: allowlist secret
+            },
+        )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["display_number"] == "+1 555 0199"
+    assert "old-token" not in response.text
+    assert "new-token" not in response.text
+
+
+async def test_replacing_whatsapp_when_no_connection_exists_is_a_404(client, org_id) -> None:
+    with as_principal(engage_caller(org_id, [f"{W_WRITE}:ORG"])):
+        response = await client.put(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": "waba-1",
+                "phone_number_id": "phone-1",
+                "display_number": "+1 555 0100",
+                "access_token": "token",  # pragma: allowlist secret
+            },
+        )
+    assert response.status_code == 404
+
+
+async def test_replacing_whatsapp_refuses_a_caller_holding_only_the_read(client, org_id) -> None:
+    with as_principal(engage_caller(org_id, [f"{W_READ}:ORG"])):
+        response = await client.put(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": "waba-1",
+                "phone_number_id": "phone-1",
+                "display_number": "+1 555 0100",
+                "access_token": "token",  # pragma: allowlist secret
+            },
+        )
+    assert response.status_code == 403
+
+
+async def test_another_organizations_whatsapp_connection_is_invisible(client, org_id) -> None:
+    other_org = uuid.uuid4()
+    with as_principal(engage_caller(other_org, [f"{W_WRITE}:ORG"])):
+        await client.post(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": "other-waba",
+                "phone_number_id": "other-phone",
+                "display_number": "+1 555 9999",
+                "access_token": "other-token",  # pragma: allowlist secret
+            },
+        )
+
+    with as_principal(engage_caller(org_id, [f"{W_READ}:ORG"])):
+        response = await client.get(WHATSAPP_CONNECTION)
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 0

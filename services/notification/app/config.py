@@ -77,6 +77,16 @@ class Settings(ServiceSettings):
     #: takes an arbitrary `to_address` and opens a real SMTP handshake on every call.
     engage_test_send_rate_limit_per_minute: int = 5
 
+    # ----------------------------------------------------------------- engage audience
+    #: Signs the unsubscribe links in Engage mail (HMAC-SHA256 over organization + address).
+    #:
+    #: Platform configuration, never per-organization: the link is verified before any tenant is
+    #: known, so the key cannot live in a tenant's rows. The default is a `dev-only-` placeholder;
+    #: a real environment sets `ENGAGE_UNSUBSCRIBE_SECRET`, and `app.domain.unsubscribe_key`
+    #: refuses the placeholder outside local/test so a forgeable key can never sign a link there.
+    #: Rotating it invalidates every link already sent — rotate only with that accepted.
+    engage_unsubscribe_secret: SecretStr = SecretStr("dev-only-engage-unsubscribe-secret")
+
     # ----------------------------------------------------------------- dispatcher
     #: Rows claimed per dispatcher pass.
     dispatch_batch_size: int = 50

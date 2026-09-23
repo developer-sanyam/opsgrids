@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.api.engage import public_router as engage_public_router
 from app.api.engage import router as engage_router
 from app.api.routes import router
 from app.api.webhooks import router as webhooks_router
@@ -17,7 +18,7 @@ app = create_app(
     # transactional plumbing, and `engage`, the sending identity a customer buys. They are
     # gated on different entitlements and built from different catalogues, so they stay two
     # routers rather than one with a prefix.
-    routers=[router, engage_router],
+    routers=[router, engage_router, engage_public_router],
     # A stalled relay is silent, and here it stalls *sending*: messages stage as `pending` and
     # never queue. `/health/outbox` is what makes that visible, counted through the outbox
     # engine so it is not blind to the rows the app role cannot see.

@@ -569,12 +569,52 @@ class TestUpstreamFailure:
         async def refuse(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused")
 
+        slept: list[float] = []
+
+        async def no_wait(seconds: float) -> None:
+            slept.append(seconds)
+
+        monkeypatch.setattr("platform_core.gateway.asyncio.sleep", no_wait)
         await app.state.http.aclose()
         app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(refuse))
 
         response = await client.get(HRMS, headers=auth(mint()))
         assert response.status_code == 503
         assert response.json()["type"].endswith("/upstream-unavailable")
+        # It waited out the grace window first, and no longer than that.
+        assert 15 < sum(slept) <= 20
+
+    async def test_a_restarting_service_is_waited_for_not_refused(
+        self, client: AsyncClient, mint, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A deploy recreates the container; a sign-in in that window must still land.
+
+        A refused connection never reached the service, so the gateway retries it — for a
+        POST too — and the caller sees the service's answer instead of a 503.
+        """
+        import httpx
+
+        from app.main import app
+
+        attempts = 0
+
+        async def restarting(request: httpx.Request) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise httpx.ConnectError("connection refused")
+            return httpx.Response(201, json={"ok": True})
+
+        async def no_wait(seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr("platform_core.gateway.asyncio.sleep", no_wait)
+        await app.state.http.aclose()
+        app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(restarting))
+
+        response = await client.post(HRMS, headers=auth(mint()), json={"a": 1})
+        assert response.status_code == 201
+        assert attempts == 3
 
     async def test_an_upstream_error_status_is_passed_through(
         self, client: AsyncClient, mint, upstream: EchoUpstream

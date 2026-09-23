@@ -11,7 +11,14 @@
  * to render, and then renders against the real connection the day the flag flips.
  */
 
-import type { ConnectionOut, DnsRecordOut, DomainOut, SenderOut } from "./types";
+import type {
+  ConnectionOut,
+  DnsRecordOut,
+  DomainOut,
+  ProviderTemplateOut,
+  SenderOut,
+  WhatsAppConnectionOut,
+} from "./types";
 
 /** A Workspace connection — the common case, and the one whose 2,000/day cap a campaign hits. */
 export const CONNECTION: ConnectionOut = {
@@ -176,5 +183,81 @@ export const SENDERS: SenderOut[] = [
     usable: false,
     verified_at: null,
     created_at: "2026-09-18T13:47:20Z",
+  },
+];
+
+/** A connected WhatsApp Business account. **No `access_token` field exists on this shape** —
+ *  same rule as `CONNECTION`'s: a fixture is where a leak starts, and there is nothing here to
+ *  render even by accident. */
+export const WHATSAPP_CONNECTION: WhatsAppConnectionOut = {
+  waba_id: "102938475610234",
+  phone_number_id: "109827364501928",
+  display_number: "+91 98765 43210",
+  status: "connected",
+};
+
+/**
+ * Templates in every status the vocabulary carries, so a fixture-mode screen exercises the same
+ * rendering an unlucky real sync would. None of this is invented approval: it is what
+ * `ProviderTemplateOut` looks like once a status arrives, transcribed rather than upgraded — the
+ * pending one stays pending here, exactly as it would while a fixture-mode reviewer waited on
+ * Meta.
+ */
+export const WHATSAPP_TEMPLATES: ProviderTemplateOut[] = [
+  {
+    id: "delivery_confirmed",
+    channel: "whatsapp",
+    provider_name: "meta",
+    provider_template_id: "1187364502983471",
+    language: "en",
+    category: "utility",
+    parameter_format: "positional",
+    status: "approved",
+    status_reason: null,
+    status_checked_at: "2026-09-21T04:12:09Z",
+    variables: [
+      { key: "customer_name", component: "body", position: 1, button_index: 0, kind: "text", parameter_name: "" },
+      { key: "tracking_url", component: "button", position: 0, button_index: 0, kind: "payload", parameter_name: "" },
+    ],
+    preview_text: "Hi {{1}}, your shipment is out for delivery today.",
+    sendable: true,
+    created_at: "2026-08-30T09:14:22Z",
+    updated_at: "2026-09-21T04:12:09Z",
+  },
+  {
+    id: "payment_reminder",
+    channel: "whatsapp",
+    provider_name: "meta",
+    provider_template_id: null,
+    language: "en",
+    category: "utility",
+    parameter_format: "positional",
+    status: "pending",
+    status_reason: null,
+    status_checked_at: "2026-09-20T11:03:44Z",
+    variables: [
+      { key: "amount_due", component: "body", position: 1, button_index: 0, kind: "text", parameter_name: "" },
+    ],
+    preview_text: "Reminder: {{1}} is due on your account.",
+    sendable: false,
+    created_at: "2026-09-18T15:40:02Z",
+    updated_at: "2026-09-20T11:03:44Z",
+  },
+  {
+    id: "promo_diwali",
+    channel: "whatsapp",
+    provider_name: "meta",
+    provider_template_id: "1298374650192837",
+    language: "en",
+    category: "marketing",
+    parameter_format: "positional",
+    status: "rejected",
+    status_reason: "Promotional content requires an opt-in confirmation step.",
+    status_checked_at: "2026-09-15T07:22:51Z",
+    variables: [],
+    preview_text: "Celebrate with us — 20% off this Diwali.",
+    sendable: false,
+    created_at: "2026-09-10T10:00:00Z",
+    updated_at: "2026-09-15T07:22:51Z",
   },
 ];

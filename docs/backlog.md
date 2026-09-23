@@ -17,6 +17,48 @@ Phased plan: [inventory/plan.md](inventory/plan.md), decisions in
 quantities, posting kernel, reconciler — [inventory/ledger.md](inventory/ledger.md)).
 **Next: Phase 1** — item master, UOMs, lots, rolls, locations (scope and exit criteria in the plan).
 
+## Now — as of 2026-09-22 (`main` @ `a60baa1`)
+
+This section is the current order. The sections below it keep their history and have been
+corrected where they had gone stale; nothing had edited this file since #1.
+
+**All ten products and Engage are live and sold** on the single edge VM (ADR-0012, ADR-0013),
+deployed only by GitHub Actions from green `main`.
+
+| # | Slice | Status | Why this order |
+|---|---|---|---|
+| 1 | **Storefront custom-domain sweep** (`services/storefront/app/cron.py`) | In progress | `compose.prod.yml` already defines `storefront-cron` running `bin/cron`, and the module it runs does not exist. A merchant's custom domain can never become verified. ADR-0012 specifies the behaviour. |
+| 2 | **Document service and MinIO on the edge** | Not started | The code exists, but neither is in `compose.prod.yml`, so Storefront's console image upload (`/documents/assets`) fails in a product people are paying for. Needs two new `.env` secrets on the box. |
+| 3 | **Scheduler service, first consumer: finance `not_before`** | Not started | `services/scheduler` is a scaffold. e-Invoice and e-Way retries carry their own delay and are redelivered at once instead. Per-service cron containers move onto it later. |
+| 4 | **GSTR-3B and the input-tax-credit ledger** | Not started | The next compliance slice that needs no credentials, using the stub-client pattern. Larger than 1 to 3. |
+| 5 | **Off-box backup** | Code done, not enabled | `backup.sh` uploads to S3 once `BACKUP_S3_*` is set in the box `.env`. The owner must provide the bucket. |
+| 6 | **HRMS: leave, payroll, recruit** | Not started | employee and attendance are live. |
+| — | **IRP / GSP / e-Way / IMS / Razorpay live wires** | Blocked | Each needs credentials from the owner; the state machines are done. |
+
+**Delivered since this file was last edited** (#2 to #25):
+- notification service and event-bus wiring (#2)
+- WhatsApp (#4, #5, #9 to #13):
+  - template sends
+  - sealed contact phone numbers
+  - phone lookup without decrypting
+  - delivery and read receipts
+- CI sharding, cutting a run from about 10.6 to about 3.5 minutes (#6 to #8)
+- Storefront (#14):
+  - delivery serviceability
+  - store settings
+  - production edge
+  - buyer bundle
+- single edge relay process, and PulseBoard on the real API (#15)
+- write surfaces for seven products (#16)
+- Engage, slices through to buyable (#16 to #18, #21, #22)
+- CRUD across eleven products, plus the security review, cross-tenant sweep and HRMS PII envelope (#19)
+- permission-cache fix after activation (#20)
+- deploy hardening (#23, #25):
+  - the gateway and Caddy ride out a container restart instead of answering 503
+  - the relay supervisors wait until they are up
+
+---
+
 ## Blocked, and first
 
 ### Row-level security
@@ -54,7 +96,9 @@ migration role to a module that only reads.
 cannot read another tenant's row by primary key, cannot write into another tenant, and an unbound
 session sees nothing at all.
 
-**Still open here:** the generated per-route cross-tenant sweep, and the index recomposition
+**Closed since (27b3b1a):** the generated per-route cross-tenant sweep
+(`services/account/tests/test_cross_tenant_sweep.py`) and the tenant-leading index recomposition
+(`46478181a5ab`). The paragraph below is kept for the record. Previously open: the sweep, and the index recomposition
 ADR-0002 lists (`audit_logs` first — its five single-column indexes no longer lead with the
 tenant column now that the policy qual is ANDed into every query). Neither blocks correctness;
 the second is a performance cliff waiting for volume.
@@ -285,7 +329,7 @@ has to trust.
 | **GSTR-3B** | The summary return GSTR-1 feeds, and the one that actually settles the liability. It needs the *inward* side as well: the IMS decisions decide what input tax credit may be claimed, and GSTR-3B is where the two halves net. Every input exists; nothing about it is assembled yet. |
 | **The input-tax-credit ledger** | GSTR-3B's other prerequisite, and a ledger in its own right: credit accrued from accepted IMS documents, credit utilised against output liability, and the balance carried forward. Append-only like every other ledger here, and the place a wrongly accepted supplier document eventually costs money. |
 | **Returns in the dunning loop** | An unfiled return past its deadline is a business risk exactly as an overdue receivable is, and the dunning and grace policy already knows how to escalate one. Wiring `gst_return.generated`/`.filed` — and their *absence* — into it is a policy change rather than a new mechanism; nothing chases a return today. |
-| **GSTR-7 as the deductor** | This slice reports withholding from the **supplier** side: what was deducted from what this organization is owed, grouped per deductor so it reconciles against the return they file. Filing GSTR-7 as the *deductor* is the mirror image, measured over `purchase_documents` rather than `invoices`, and it is a second obligation with its own window. |
+| ~~**GSTR-7 as the deductor**~~ **DONE** (`gstr7` return type, `test_withholding.py`) | This slice reports withholding from the **supplier** side: what was deducted from what this organization is owed, grouped per deductor so it reconciles against the return they file. Filing GSTR-7 as the *deductor* is the mirror image, measured over `purchase_documents` rather than `invoices`, and it is a second obligation with its own window. |
 | **A scheduler that honours the backoff** | `filing_requested` already carries `attempt` and `not_before`, so the retry knows its own delay; what does not exist yet is something that waits for it rather than redelivering at once. An e-Way outage now wants the same thing, and more urgently — the goods are already loaded. A delivery change, not a redesign. |
 | **IMS credentials, and pushing actions back** | Reading a supplier ledger and recording a decision about it are done; telling GSTN what was decided is a second integration. `ImsClient` deliberately has no `submit()` — inventing a method nothing implements would read as finished. |
 | **B2C dynamic QR** | The obligation B2C carries instead of an IRN. Deliberately out: `requires_einvoice` already answers `false` for it, so it is additive. |
@@ -362,7 +406,7 @@ role templates, scoped reads (OWN/TEAM/LOCATION/ORG), audit + outbox on every wr
 new schema, and the full negative-authz / cross-tenant test set. Two things are deliberately
 left:
 
-- **Sensitive PII is deferred to slice 2.** Date of birth, personal contact, PAN/Aadhaar/UAN/
+- **Sensitive PII (slice 2): DONE in #19** (`EmployeePii`, encrypted and masked). Original note: Date of birth, personal contact, PAN/Aadhaar/UAN/
   ESI, bank details and documents are *not* stored yet — "PII is encrypted and masked by
   default" is load-bearing and platform-core has no PII envelope helper. Slice 2 lands the
   envelope (encryption at rest, masking, `record_sensitive_read` on every unmask) and then adds
@@ -414,7 +458,7 @@ gap `tools/demo/promote_owner.py` exists to repair. And `_seed_product.py` promo
 `soon` to `available` in the test database, since it is the only multi-service product and
 activation rightly refuses a product that has not shipped.
 
-### `product-service`
+### `product-service` — DONE (runs on the edge)
 Product registry, per-org activation, entitlements, marketplace catalogue. Turns the gateway's
 entitlement gate from *a claim the token happens to carry* into something backed by a registry.
 
@@ -422,7 +466,7 @@ Start emitting usage events here with `is_billable=false`. Turning on usage-base
 then becomes plan configuration rather than an architecture change, and it costs almost nothing
 now.
 
-### `config-service`
+### `config-service` — scaffold only
 Per-org settings, integration secrets, feature toggles.
 
 ---
@@ -460,7 +504,7 @@ ten call sites.
   `services/employee/tests/test_pii.py`), and the account directory's cross-tenant reads leave
   a structured-log trace (`directory.cross_tenant_read`) — an `audit_logs` row is unwritable
   there, since the read predates any organization and the caller is a service, not an actor.
-- **No outbox-lag probe.** A stalled relay is silent. Worth adding before RLS lands, so there is
+- **Outbox-lag probe exists (`/health/outbox`); alerting on it does not.** A stalled relay is visible only to whoever looks. Worth adding before RLS lands, so there is
   a baseline to compare against.
 - **SAML is not implemented, and neither is just-in-time provisioning.** OIDC now flows end to
   end (see below), and `org_idp_configs` carries the SAML columns it always did —
