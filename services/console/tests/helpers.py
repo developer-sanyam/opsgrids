@@ -27,18 +27,21 @@ APP_AUDIENCE = "app"
 OPERATOR_AUDIENCE = "operator"
 
 
-def operator_principal(*, staff: bool = True) -> Principal:
+def operator_principal(*, staff: bool = True, roles: list[str] | None = None) -> Principal:
     """A staff operator as the operator gateway would have forwarded them.
 
     `audience="operator"` is the marker `require_operator` checks. `staff=False` swaps the audience
     to a product token, producing the negative case a staff route must refuse with 404 — the
-    in-service mirror of the gateway's own staff gate.
+    in-service mirror of the gateway's own staff gate. `roles` defaults to `["owner"]`, which holds
+    every route's role requirement (ADR-0003 addendum): existing tests predate the per-route role
+    gate and keep exercising the case they were written for unless a test asks for less.
     """
     return Principal(
         sub=uuid.uuid4(),
         organization_id=uuid.uuid4(),
         membership_id=uuid.uuid4(),
         audience=OPERATOR_AUDIENCE if staff else APP_AUDIENCE,
+        roles=roles if roles is not None else ["owner"],
     )
 
 

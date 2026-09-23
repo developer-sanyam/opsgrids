@@ -91,6 +91,28 @@ class OrganizationOut(BaseModel):
     created_at: datetime
 
 
+class OrganizationDirectoryOut(BaseModel):
+    """An organization as OpsGrids staff sees it — the operator console's read, never a
+    tenant's own. Deliberately narrower than `OrganizationOut`: a staff read across every
+    customer on the platform has no reason to carry `settings`, `tax_ids` or
+    `registered_address`, and the smaller the cross-tenant surface the smaller the blast
+    radius of a bug in it.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    slug: str
+    name: str
+    legal_name: str | None
+    industry: str | None
+    status: str
+    country: str | None
+    currency: str
+    trial_ends_at: datetime | None
+    created_at: datetime
+
+
 # --------------------------------------------------------------------- structure
 
 

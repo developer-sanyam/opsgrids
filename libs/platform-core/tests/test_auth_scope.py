@@ -18,8 +18,8 @@ from typing import Any
 import pytest
 from sqlalchemy import Column, String, column, select
 
-from platform_core.auth import Principal, Scope, ScopeContext
-from platform_core.errors import ForbiddenProblem
+from platform_core.auth import Principal, Scope, ScopeContext, require_operator
+from platform_core.errors import ForbiddenProblem, NotFoundProblem
 
 ORG = uuid.uuid4()
 ME = uuid.uuid4()
@@ -165,3 +165,35 @@ class TestScopeInjection:
         c = ctx(["x.y.z.read:LOCATION"], "x.y.z.read", locations=["MUM"])
         with pytest.raises(ForbiddenProblem, match="LOCATION scope"):
             c.apply(select(self.owner), owner_col=self.owner)
+
+
+def _operator(roles: list[str], *, audience: str = "operator") -> Principal:
+    return Principal(
+        sub=uuid.uuid4(), organization_id=uuid.UUID(int=0), audience=audience, roles=roles
+    )
+
+
+class TestRequireOperator:
+    """The operator-side `require()`. ADR-0003 §2 plus the addendum's role matrix."""
+
+    def test_a_product_audience_token_is_404_not_403(self) -> None:
+        # The gateway's own rule, repeated in-service: a non-staff caller must not be able to
+        # tell the difference between "wrong role" and "this surface does not exist".
+        dep = require_operator(roles={"owner"})
+        with pytest.raises(NotFoundProblem):
+            dep(_operator(["owner"], audience="app"))
+
+    def test_no_role_filter_admits_any_operator(self) -> None:
+        dep = require_operator()
+        assert dep(_operator(["support"])).roles == ["support"]
+
+    def test_a_role_outside_the_set_is_a_plain_403(self) -> None:
+        # Right audience — the surface's existence is already established — so this is an
+        # ordinary Forbidden, not a 404.
+        dep = require_operator(roles={"owner", "billing_ops"})
+        with pytest.raises(ForbiddenProblem):
+            dep(_operator(["support"]))
+
+    def test_holding_any_one_of_the_required_roles_is_enough(self) -> None:
+        dep = require_operator(roles={"owner", "billing_ops"})
+        assert dep(_operator(["billing_ops", "support"])).audience == "operator"

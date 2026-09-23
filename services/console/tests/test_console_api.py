@@ -88,9 +88,13 @@ class TestAudienceBoundary:
         response = await client.get("/api/v1/admin/organizations")
         assert response.status_code == 401
 
-    async def test_every_staff_route_refuses_a_product_token(self, client: AsyncClient) -> None:
+    async def test_every_staff_route_refuses_a_product_token(
+        self, client: AsyncClient, org_id: uuid.UUID
+    ) -> None:
         for path in (
             "/api/v1/admin/organizations",
+            f"/api/v1/admin/organizations/{org_id}",
+            "/api/v1/admin/metrics/overview",
             "/api/v1/admin/subscriptions",
             "/api/v1/admin/usage",
             "/api/v1/admin/audit",
@@ -98,6 +102,38 @@ class TestAudienceBoundary:
             with as_principal(operator_principal(staff=False)):
                 response = await client.get(path)
             assert response.status_code == 404, path
+
+
+# --------------------------------------------------------------------- role matrix
+
+
+class TestRoleMatrix:
+    """The ADR-0003 addendum's role matrix, enforced per route rather than by audience alone."""
+
+    async def test_support_may_read_organizations_but_not_billing_views(
+        self, client: AsyncClient
+    ) -> None:
+        with as_principal(operator_principal(roles=["support"])):
+            orgs = await client.get("/api/v1/admin/organizations")
+            subs = await client.get("/api/v1/admin/subscriptions")
+        assert orgs.status_code == 200
+        assert subs.status_code == 403
+
+    async def test_billing_ops_may_read_subscriptions_but_not_the_audit_trail(
+        self, client: AsyncClient
+    ) -> None:
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            subs = await client.get("/api/v1/admin/subscriptions")
+            audit = await client.get("/api/v1/admin/audit")
+        assert subs.status_code == 200
+        assert audit.status_code == 403
+
+    async def test_a_role_outside_the_set_is_403_not_404(self, client: AsyncClient) -> None:
+        """Right audience — the surface's existence is already conceded — so a role mismatch is
+        an ordinary Forbidden, never the audience boundary's 404."""
+        with as_principal(operator_principal(roles=["support"])):
+            response = await client.get("/api/v1/admin/metrics/overview")
+        assert response.status_code == 403
 
 
 # --------------------------------------------------------------------- override delegation
@@ -201,3 +237,158 @@ class TestOverrideDelegation:
             )
         assert response.status_code == 422
         assert captured.calls == [], "an invalid override must not reach the owning service"
+
+
+# --------------------------------------------------------------------- org detail composite
+
+
+class TestOrganizationDetail:
+    async def test_composes_directory_identity_with_the_commercial_projection(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        from app.models import OrgCommercialState
+
+        async with admin_session.begin():
+            admin_session.add(
+                OrgCommercialState(
+                    organization_id=org_id,
+                    mrr_minor=50000,
+                    currency="INR",
+                    active_products=["hrms"],
+                    subscription_states={"hrms": {"state": "active"}},
+                )
+            )
+
+        captured = _Captured()
+        _mock_delegation(
+            captured,
+            response={
+                "id": str(org_id),
+                "slug": "acme",
+                "name": "Acme Technologies",
+                "status": "active",
+                "country": "IN",
+                "created_at": "2026-01-01T00:00:00+00:00",
+            },
+        )
+        with as_principal(operator_principal(staff=True)):
+            response = await client.get(
+                f"/api/v1/admin/organizations/{org_id}",
+                headers={"Authorization": "Bearer forwarded-operator-token"},
+            )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["slug"] == "acme"
+        assert body["commercial"]["mrr_minor"] == 50000
+
+        # account-service was called with the caller's own token, not a service credential.
+        assert captured.calls[0].headers["authorization"] == "Bearer forwarded-operator-token"
+
+    async def test_an_organization_account_service_does_not_know_is_404(
+        self, client: AsyncClient, org_id: uuid.UUID
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404)
+
+        mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        async def _override() -> AsyncIterator[httpx.AsyncClient]:
+            yield mock_client
+
+        app.dependency_overrides[get_delegation_client] = _override
+        with as_principal(operator_principal(staff=True)):
+            response = await client.get(
+                f"/api/v1/admin/organizations/{org_id}", headers={"Authorization": "Bearer x"}
+            )
+        assert response.status_code == 404
+
+    async def test_account_service_being_unreachable_is_a_503_not_a_404(
+        self, client: AsyncClient, org_id: uuid.UUID
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        async def _override() -> AsyncIterator[httpx.AsyncClient]:
+            yield mock_client
+
+        app.dependency_overrides[get_delegation_client] = _override
+        with as_principal(operator_principal(staff=True)):
+            response = await client.get(
+                f"/api/v1/admin/organizations/{org_id}", headers={"Authorization": "Bearer x"}
+            )
+        assert response.status_code == 503
+
+    async def test_reading_an_organizations_detail_is_audited(
+        self, client: AsyncClient, directory_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        _mock_delegation(
+            _Captured(),
+            response={
+                "id": str(org_id),
+                "slug": "acme",
+                "name": "Acme",
+                "status": "active",
+                "country": None,
+                "created_at": "2026-01-01T00:00:00+00:00",
+            },
+        )
+        with as_principal(operator_principal(staff=True)):
+            response = await client.get(
+                f"/api/v1/admin/organizations/{org_id}", headers={"Authorization": "Bearer x"}
+            )
+        assert response.status_code == 200
+        audit = await selectors.recent_audit(directory_session)
+        assert len(audit) == 1
+        assert audit[0].action == "organization.viewed"
+        assert audit[0].organization_id == org_id
+        assert audit[0].acting_as is not None and audit[0].acting_as.startswith("operator:")
+
+    async def test_an_unauthenticated_request_is_refused_before_any_lookup(
+        self, client: AsyncClient, org_id: uuid.UUID
+    ) -> None:
+        response = await client.get(f"/api/v1/admin/organizations/{org_id}")
+        assert response.status_code == 401
+
+
+# --------------------------------------------------------------------- platform metrics overview
+
+
+class TestMetricsOverview:
+    async def test_reports_org_counts_by_lifecycle(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+        org_b: uuid.UUID,
+    ) -> None:
+        from app.models import OrgCommercialState
+
+        async with admin_session.begin():
+            admin_session.add_all(
+                [
+                    OrgCommercialState(
+                        organization_id=org_id,
+                        mrr_minor=10000,
+                        currency="INR",
+                        subscription_states={"hrms": {"state": "active"}},
+                    ),
+                    OrgCommercialState(
+                        organization_id=org_b,
+                        mrr_minor=0,
+                        currency="INR",
+                        locked=True,
+                        subscription_states={"hrms": {"state": "active"}},
+                    ),
+                ]
+            )
+
+        with as_principal(operator_principal(staff=True)):
+            response = await client.get("/api/v1/admin/metrics/overview")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["organization_count"] == 2
+        assert body["organizations_by_lifecycle"]["active"] == 1
+        assert body["organizations_by_lifecycle"]["suspended"] == 1
+        assert body["mrr_minor"] == 10000

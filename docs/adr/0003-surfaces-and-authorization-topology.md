@@ -201,3 +201,58 @@ and the gateway will accept, and one more consumer of the same APIs.
 - The mobile audience must be minted by auth-service and accepted by `app-gateway` like any other;
   until it is, "mobile is just another client" is a design commitment, not a running fact. It costs
   a `GatewayPolicy` and an audience, not a service.
+
+---
+
+## Addendum 2026-09-23 — operator roles are a second axis inside the operator boundary, and MFA
+is mandatory on it
+
+§2 drew the operator/customer boundary (audience + gateway) and left everything *inside* it as
+one undifferentiated `stf` claim. That was fine while the console had one screen; it stopped
+being fine once billing overrides, catalog authoring and cross-tenant PII reads all sit behind
+the same gate; "any operator" is not a role. This closes that gap without inventing a third
+mechanism: `StaffAccount.operator_roles` (`services/auth/app/models.py`) already existed and was
+already minted into the token's `roles` claim (`tokens.mint_access`, `staff=True`); nothing
+checked it. Two things change:
+
+**1. `platform_core.auth.require_operator(roles={...})`** is the operator-side `require()`.
+Every `staff_only` route now declares it, the same way a tenant route declares
+`require(permission, minimum=...)`. It keeps §2's 404-for-wrong-audience (a product token must
+learn nothing) and adds a plain **403** for right-audience-wrong-role — the surface's existence
+is already conceded once the audience check passes, so there is nothing left to protect by
+lying about the response code.
+
+**2. Staff accounts require MFA, unconditionally** — not opt-in the way a tenant's
+`Credential.mfa_enforced` is. `services.operator_login` never completes on a password alone: an
+operator with no confirmed TOTP factor can reach only `POST /auth/operator/mfa/enrol` (and its
+`/confirm`), never a usable access token, until enrolment finishes. There is no equivalent of a
+tenant's "sign in once, then optionally turn MFA on from inside the session" — the account that
+can suspend a subscription or read across every tenant does not get a grace period.
+
+### The role matrix
+
+Three operator roles, defined against **what an operator can act on**, not against a tenant's
+permission grammar (ADR-0000 §5) — these never touch `pv` or a membership's grants.
+
+| Capability | `owner` | `billing_ops` | `support` |
+|---|---|---|---|
+| Everything below | ✅ | | |
+| Organization list / detail, platform metrics overview | ✅ | ✅ | ✅ (read only) |
+| Audit trail (`/admin/audit`) | ✅ | | ✅ |
+| Subscriptions, usage rollups | ✅ | ✅ | |
+| Overrides (suspend, comp credit) | ✅ | ✅ | |
+| Credit ledger (billing's staff route) | ✅ | ✅ | |
+| Catalog reads | ✅ | ✅ | |
+| Catalog writes (plans, versions, publish) | ✅ | | |
+| `GET /auth/operator/me` | ✅ | ✅ | ✅ |
+
+`owner` is not "every permission that exists" as a stored list — it is every `require_operator`
+call site accepting it, which is the operator-side reading of ADR-0000 §5's corollary: a role is
+built from the catalogue of actions that exist, not asserted as "all of them" once and left to
+rot when a new staff route is added forgetting to include it. A route that forgets `owner` in its
+set is a bug caught by the negative-authz test every `staff_only` route now carries alongside the
+audience one.
+
+Read routes that do not appear above (e.g. `/admin/organizations` list) admit all three roles at
+read scope, because an operator support ticket routinely starts with "what does this account look
+like" before anyone knows whether it is a billing or a catalog question.

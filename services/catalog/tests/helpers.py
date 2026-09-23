@@ -39,16 +39,19 @@ def customer_principal(org_id: uuid.UUID, *, perms: list[str] | None = None) -> 
     )
 
 
-def operator_principal(*, staff: bool = True) -> Principal:
+def operator_principal(*, staff: bool = True, roles: list[str] | None = None) -> Principal:
     """A staff operator as the operator gateway would have forwarded them.
 
     `audience="operator"` is the marker `require_operator` checks. `staff` toggles the audience
     so the same helper produces the negative case — a non-operator (product) token that must be
-    refused with 404.
+    refused with 404. Defaults to `["owner"]`: catalog's writes are owner-only (ADR-0003
+    addendum), and every existing authoring test predates the role check, so the default keeps
+    them exercising the case they were written for rather than the one the role gate adds.
     """
     return Principal(
         sub=uuid.uuid4(),
         organization_id=uuid.uuid4(),
         membership_id=uuid.uuid4(),
         audience=OPERATOR_AUDIENCE if staff else APP_AUDIENCE,
+        roles=roles if roles is not None else ["owner"],
     )

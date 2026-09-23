@@ -68,6 +68,18 @@ BARE_SESSION_ROUTES = {
     "/api/v1/auth/operator/logout": (
         "Operator logout presents a cookie, not a principal, and must work for a stale one."
     ),
+    "/api/v1/auth/operator/mfa/enrol": (
+        "Enrolling an operator's first factor happens against a pre-auth token, before any "
+        "principal exists — the account being enrolled belongs to no organization to bind."
+    ),
+    "/api/v1/auth/operator/mfa/enrol/confirm": (
+        "Same pre-auth-token shape as enrolment start; it completes the sign-in but still "
+        "runs before a principal exists."
+    ),
+    "/api/v1/auth/operator/mfa/verify": (
+        "The operator's second factor, mirroring the tenant one above: presented against a "
+        "pre-auth token, not a principal, for an account with no organization to bind."
+    ),
 }
 
 

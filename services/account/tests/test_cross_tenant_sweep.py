@@ -121,6 +121,11 @@ PATH_PARAMS: dict[str, Callable[[TenantA], uuid.UUID]] = {
     "location_id": lambda a: a.location_id,
     "role_id": lambda a: a.role_id,
     "invitation_id": lambda a: a.invitation_id,
+    # `GET /admin/directory/organizations/{organization_id}` — a `staff_only` route, not a
+    # tenant one (ADR-0003 §2). B's tenant principal carries no operator audience, so it is
+    # refused with the boundary's own 404 regardless of which organization id is named; the
+    # sweep exercises exactly that rather than needing an exemption.
+    "organization_id": lambda a: a.org_id,
 }
 
 #: A minimal valid request for every non-GET route. Bodies name A's rows wherever the schema

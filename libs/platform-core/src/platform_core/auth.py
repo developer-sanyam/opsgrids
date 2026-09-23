@@ -34,8 +34,19 @@ from sqlalchemy import Select
 from sqlalchemy import false as sa_false
 
 from platform_core.config import ServiceSettings
-from platform_core.errors import ForbiddenProblem, PaymentRequiredProblem, UnauthorizedProblem
+from platform_core.errors import (
+    ForbiddenProblem,
+    NotFoundProblem,
+    PaymentRequiredProblem,
+    UnauthorizedProblem,
+)
 from platform_core.internal_auth import verify_gateway_token, verify_service_token
+
+#: The audience every operator (staff) token carries — minted only by `services.operator_login`
+#: in auth-service, never by a tenant sign-in. `require_operator` is what every staff_only route
+#: across services (console, catalog, account, billing, …) guards with, so the audience string
+#: lives here once rather than being copy-pasted per service.
+OPERATOR_AUDIENCE = "operator"
 
 
 class Scope(enum.StrEnum):
@@ -421,6 +432,40 @@ def require_product(product: str) -> Any:
     return _dependency
 
 
+def require_operator(*, roles: set[str] | None = None) -> Any:
+    """Dependency factory guarding a staff (operator) endpoint — the operator-side `require()`.
+
+    Mirrors the tenant `require()` above, but the axis is different: an operator holds
+    `operator_roles` on a `StaffAccount` (`owner` / `billing_ops` / `support`, ADR-0003
+    addendum), minted verbatim into the token's `roles` claim on the `operator` audience. These
+    are never tenant permission grants and never touch the `pv`/scope machinery.
+
+    Two distinct refusals, and the status code is chosen deliberately for each:
+
+    - **Wrong audience** (a tenant/product token, or none) → **404**, the same answer an unknown
+      route gives. ADR-0003 §2: the existence of the operator surface is not something to confirm
+      to a caller who is not staff, so this is checked and refused before anything else.
+    - **Right audience, missing role** → **403**. The caller has already proven they are staff —
+      the surface's existence is not in question — so there is nothing left to hide by pretending
+      the route does not exist; a plain "you may not do this" is the honest answer.
+
+    Every service that fronts a `staff_only` route (console, catalog, account, billing) uses
+    this instead of hand-rolling its own audience check, so the 404-vs-403 split and the role
+    grammar stay in one place rather than drifting per service.
+    """
+
+    def _dependency(principal: CurrentPrincipal) -> Principal:
+        if principal.audience != OPERATOR_AUDIENCE:
+            raise NotFoundProblem("Not found")
+        if roles is not None and not roles.intersection(principal.roles):
+            raise ForbiddenProblem(
+                f"This action needs one of these operator roles: {', '.join(sorted(roles))}"
+            )
+        return principal
+
+    return _dependency
+
+
 def require_service_token(request: Request) -> None:
     """Guard for endpoints called by another service rather than by a person.
 
@@ -452,6 +497,7 @@ def require_service_token(request: Request) -> None:
 
 
 __all__ = [
+    "OPERATOR_AUDIENCE",
     "CurrentPrincipal",
     "Principal",
     "Scope",
@@ -461,6 +507,7 @@ __all__ = [
     "get_principal",
     "register_scope_resolver",
     "require",
+    "require_operator",
     "require_product",
     "require_service_token",
     "reset_jwks_cache",

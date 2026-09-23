@@ -172,3 +172,27 @@ class CreditEntryOut(BaseModel):
     valid_until: datetime | None = None
     reversal_of: uuid.UUID | None = None
     drawn_from: uuid.UUID | None = None
+
+
+# --------------------------------------------------------------------- operator (staff) output
+
+
+class CreditLedgerEntryAdminOut(BaseModel):
+    """One ledger row as OpsGrids staff sees it — the tenant fields `CreditEntryOut` omits
+    because a customer already knows which organization it is asking about; an operator
+    reading across every customer does not, so `organization_id` is here and `created_at`
+    is the row's own append-only timestamp rather than something a customer needs."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    organization_id: uuid.UUID
+    entry_type: str
+    amount_minor: int
+    currency: str
+    reason: str
+    valid_from: datetime
+    valid_until: datetime | None = None
+    reversal_of: uuid.UUID | None = None
+    drawn_from: uuid.UUID | None = None
+    created_at: datetime

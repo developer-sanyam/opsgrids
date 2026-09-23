@@ -21,7 +21,14 @@
     "staff or not, read every user and organization on the platform.",
     "",
     "If an admin console needs account data it gets a staff_only route into a service",
-    "that authorizes the caller, never a path into the internal router."
+    "that authorizes the caller, never a path into the internal router.",
+    "",
+    "account-service's own staff-only directory route",
+    "(GET /api/v1/admin/directory/organizations/{id}) is deliberately NOT listed here: it is",
+    "called by console directly on account-service's own port, the same service-to-service",
+    "shape auth-service and both gateways already use to reach account-service, forwarding",
+    "the caller's own operator token rather than a service credential (ADR-0003 addendum).",
+    "The operator console (opsgrids-internal) never calls it itself."
   ],
   "routes": [
     { "prefix": "/api/v1/auth/operator", "upstream": "http://localhost:8110" },
@@ -30,10 +37,13 @@
     { "prefix": "/api/v1/admin/catalog", "upstream": "http://localhost:8164", "staff_only": true },
 
     { "prefix": "/api/v1/admin/organizations", "upstream": "http://localhost:8170", "staff_only": true },
+    { "prefix": "/api/v1/admin/metrics", "upstream": "http://localhost:8170", "staff_only": true },
     { "prefix": "/api/v1/admin/subscriptions", "upstream": "http://localhost:8170", "staff_only": true },
     { "prefix": "/api/v1/admin/overrides", "upstream": "http://localhost:8170", "staff_only": true },
     { "prefix": "/api/v1/admin/usage", "upstream": "http://localhost:8170", "staff_only": true },
     { "prefix": "/api/v1/admin/audit", "upstream": "http://localhost:8170", "staff_only": true },
+
+    { "prefix": "/api/v1/admin/credit-ledger", "upstream": "http://localhost:8160", "staff_only": true },
 
     { "prefix": "/api/v1/webhooks", "upstream": "http://localhost:8163" }
   ]

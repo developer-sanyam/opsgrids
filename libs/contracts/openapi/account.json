@@ -954,6 +954,96 @@
         "title": "OrgUnitPatch",
         "type": "object"
       },
+      "OrganizationDirectoryOut": {
+        "description": "An organization as OpsGrids staff sees it \u2014 the operator console's read, never a\ntenant's own. Deliberately narrower than `OrganizationOut`: a staff read across every\ncustomer on the platform has no reason to carry `settings`, `tax_ids` or\n`registered_address`, and the smaller the cross-tenant surface the smaller the blast\nradius of a bug in it.",
+        "properties": {
+          "country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "industry": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Industry"
+          },
+          "legal_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legal Name"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "trial_ends_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trial Ends At"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "name",
+          "legal_name",
+          "industry",
+          "status",
+          "country",
+          "currency",
+          "trial_ends_at",
+          "created_at"
+        ],
+        "title": "OrganizationDirectoryOut",
+        "type": "object"
+      },
       "OrganizationOut": {
         "properties": {
           "country": {
@@ -1698,6 +1788,49 @@
         "summary": "Create an organisation and become its owner",
         "tags": [
           "account"
+        ]
+      }
+    },
+    "/api/v1/admin/directory/organizations/{organization_id}": {
+      "get": {
+        "operationId": "get_organization_for_operator_api_v1_admin_directory_organizations__organization_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationDirectoryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One organization's directory record \u2014 staff-only, cross-tenant",
+        "tags": [
+          "account-admin"
         ]
       }
     },

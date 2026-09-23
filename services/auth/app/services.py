@@ -924,8 +924,30 @@ async def _accept_second_factor(session: AsyncSession, user_id: uuid.UUID, code:
 # `staff_accounts` table, belong to no organization, and are minted a token on the
 # `operator` audience carrying `stf=true`. The two never cross — a tenant email is not in
 # `staff_accounts`, and a staff account is not in the directory.
+#
+# **MFA is mandatory for staff, not opt-in.** A tenant's `Credential.mfa_enforced` is a flag
+# somebody turns on; there is no equivalent flag here — every staff account requires a second
+# factor, unconditionally, because the account that can suspend a subscription or read across
+# every tenant does not get a grace period (ADR-0003 addendum, 2026-09-23). `operator_login`
+# therefore never returns a usable token from a password alone: it returns an
+# `OperatorLoginOutcome` naming whichever of the two next steps applies — `mfa_required` for a
+# staff account with an already-confirmed factor, `mfa_enrollment_required` for one with none.
+# The enrolment and verification factor tables (`MfaFactor`, `MfaRecoveryCode`) are the exact
+# ones the tenant path uses — a factor row is keyed by `user_id` alone and carries nothing
+# tenant-specific — so `begin_mfa_enrolment` is reused verbatim; only *confirming* an
+# operator's enrolment differs, because it must not create a `Credential` row (operators have
+# none) and it completes the sign-in immediately rather than asking the caller to present the
+# code again.
 
 EVT_OPERATOR_SIGNED_IN = "core.operator.signed_in"
+EVT_OPERATOR_MFA_ENROLLED = "core.operator.mfa_enrolled"
+
+#: Pre-auth token reasons unique to the operator path. Deliberately not the tenant `"mfa"` /
+#: `"org_selection"` strings: `_decode_pre_auth`'s `expect_reason` check is what stops a token
+#: minted for one flow being spent on the other, and a shared reason string would rely on the
+#: `sub` namespace never colliding instead of the token itself refusing to cross.
+OPERATOR_MFA_REASON = "operator_mfa"
+OPERATOR_MFA_ENROLLMENT_REASON = "operator_mfa_enrollment"
 
 #: The audience the operator gateway accepts. A product/app token names its product here and
 #: is rejected at that gateway's signature-and-audience check before any route is consulted.
@@ -937,6 +959,22 @@ OPERATOR_AUDIENCE = "operator"
 #: service already stamps on platform-scoped audit and outbox rows. It is not a tenant: the
 #: console's cross-tenant reads run on the directory bypass role, never on this claim.
 PLATFORM_ORG = uuid.UUID(int=0)
+
+
+@dataclass(frozen=True, slots=True)
+class OperatorLoginOutcome:
+    """What happened, and what the client must do next.
+
+    `status` is one of `mfa_required`, `mfa_enrollment_required`, `complete`. The first two
+    carry a pre-auth token and nothing usable; `operator_login` itself never produces
+    `complete` — see the module note above — but `operator_verify_mfa` and
+    `confirm_operator_mfa_enrolment` do, and share this shape so the route's response model
+    is one union rather than three near-identical ones.
+    """
+
+    status: str
+    issued: OperatorIssued | None = None
+    pre_auth_token: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1060,6 +1098,18 @@ def _issue_operator(
     )
 
 
+async def _operator_has_confirmed_factor(session: AsyncSession, staff_id: uuid.UUID) -> bool:
+    """True once this staff account has proven it can generate a code from a factor.
+
+    No `mfa_enforced` flag to consult — see the module note: MFA is unconditional for every
+    staff account, so the only question is whether enrolment has finished yet.
+    """
+    stmt = select(MfaFactor).where(
+        MfaFactor.user_id == staff_id, MfaFactor.confirmed_at.isnot(None)
+    )
+    return (await session.execute(stmt)).first() is not None
+
+
 async def operator_login(
     session: AsyncSession,
     *,
@@ -1068,12 +1118,14 @@ async def operator_login(
     email: str,
     password: str,
     request: Request | None = None,
-) -> OperatorIssued:
-    """Authenticate a staff account and mint an operator-audience token.
+) -> OperatorLoginOutcome:
+    """Authenticate a staff account. Never returns a usable token by itself.
 
-    There is no organization step and no MFA step: an operator belongs to nothing to pick
-    between, so a correct credential completes in one call. The session and refresh chain
-    reuse the same tables and rotation-family theft detection the tenant path uses.
+    There is no organization step — an operator belongs to nothing to pick between — but
+    there is always a second-factor step: a correct password only ever earns a pre-auth
+    token naming which one applies next, `mfa_required` or `mfa_enrollment_required`. The
+    session and refresh chain reuse the same tables and rotation-family theft detection the
+    tenant path uses; the lockout on repeated failures is `_verify_staff`'s and is untouched.
     """
     staff = await _verify_staff(session, cfg, email, password)
 
@@ -1085,9 +1137,183 @@ async def operator_login(
         AuditLog,
         organization_id=PLATFORM_ORG,
         actor_id=staff.id,
-        action="auth.operator_signed_in",
+        action="auth.operator_password_verified",
         entity="staff_account",
         entity_id=staff.id,
+        request=request,
+    )
+
+    if await _operator_has_confirmed_factor(session, staff.id):
+        reason, status_ = OPERATOR_MFA_REASON, "mfa_required"
+    else:
+        reason, status_ = OPERATOR_MFA_ENROLLMENT_REASON, "mfa_enrollment_required"
+    token = tk.mint_pre_auth(
+        pair, issuer=cfg.jwt_issuer, user_id=staff.id, session_id=auth_session.id, reason=reason
+    )
+    # The session row has to survive this response — the next request presents the
+    # pre-auth token against it, exactly as the tenant MFA step does.
+    await session.commit()
+    return OperatorLoginOutcome(status=status_, pre_auth_token=token.token)
+
+
+async def operator_begin_mfa_enrolment(
+    session: AsyncSession, *, cfg: Settings, pair: KeyPair, pre_auth_token: str
+) -> tuple[MfaFactor, str, str]:
+    """Start enrolling an operator's first factor — the only door a never-enrolled staff
+    account can reach after a correct password.
+
+    Bare session, self-committing: there is no principal yet, only a pre-auth token, the
+    same shape every other pre-organization/pre-token flow in this module uses.
+    """
+    claims = _decode_pre_auth(
+        pair, cfg, pre_auth_token, expect_reason=OPERATOR_MFA_ENROLLMENT_REASON
+    )
+    staff_id = uuid.UUID(str(claims["sub"]))
+    await _live_session(session, uuid.UUID(str(claims["sid"])), staff_id)
+
+    staff = await session.get(StaffAccount, staff_id)
+    if staff is None or not staff.is_active:
+        raise UnauthorizedProblem("That session is no longer valid.")
+
+    factor, secret, otpauth_uri = await begin_mfa_enrolment(
+        session, staff_id, account_email=staff.email
+    )
+    await session.commit()
+    return factor, secret, otpauth_uri
+
+
+async def confirm_operator_mfa_enrolment(
+    session: AsyncSession,
+    *,
+    cfg: Settings,
+    pair: KeyPair,
+    pre_auth_token: str,
+    factor_id: uuid.UUID,
+    code: str,
+    request: Request | None = None,
+) -> tuple[OperatorIssued, list[str]]:
+    """Prove the enrolled factor works, and complete the sign-in that started it.
+
+    Deliberately does **not** call `confirm_mfa_enrolment`: that helper creates/updates a
+    `Credential` row, and operators have none — folding one in here is exactly how a staff
+    identity starts leaking into the tenant credential table. This mints tokens immediately
+    rather than asking the caller to present the code a second time through
+    `operator_verify_mfa`: a freshly-proven TOTP code already *is* the second factor for
+    this sign-in, so re-asking would only doubt a check that just passed.
+    """
+    claims = _decode_pre_auth(
+        pair, cfg, pre_auth_token, expect_reason=OPERATOR_MFA_ENROLLMENT_REASON
+    )
+    staff_id = uuid.UUID(str(claims["sub"]))
+    auth_session = await _live_session(session, uuid.UUID(str(claims["sid"])), staff_id)
+
+    factor = await session.get(MfaFactor, factor_id)
+    if factor is None or factor.user_id != staff_id or factor.secret_enc is None:
+        raise NotFoundProblem("No such enrolment")
+
+    step = security.verify_totp(factor.secret_enc.decode(), code)
+    if step is None:
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=PLATFORM_ORG,
+            actor_id=staff_id,
+            action="auth.operator_mfa_enrol_failed",
+            entity="staff_account",
+            entity_id=staff_id,
+            request=request,
+        )
+        await session.commit()
+        raise UnauthorizedProblem("That code is not valid. Check your device's clock.")
+
+    factor.confirmed_at = datetime.now(UTC)
+    factor.last_used_step = step
+    factor.last_used_at = datetime.now(UTC)
+
+    # Replace any previous codes, exactly as the tenant path does: a set the operator
+    # believes is retired must not still open the account.
+    await session.execute(delete(MfaRecoveryCode).where(MfaRecoveryCode.user_id == staff_id))
+    codes = security.generate_recovery_codes()
+    for code_value in codes:
+        session.add(
+            MfaRecoveryCode(user_id=staff_id, code_hash=security.hash_recovery_code(code_value))
+        )
+
+    staff = await session.get(StaffAccount, staff_id)
+    if staff is None or not staff.is_active:
+        raise UnauthorizedProblem("That session is no longer valid.")
+
+    auth_session.amr = [*auth_session.amr, "otp"]
+    auth_session.mfa_verified_at = datetime.now(UTC)
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=PLATFORM_ORG,
+        actor_id=staff_id,
+        action="auth.operator_mfa_enrolled",
+        entity="staff_account",
+        entity_id=staff_id,
+        request=request,
+    )
+    issued = _issue_operator(session, pair=pair, cfg=cfg, auth_session=auth_session, staff=staff)
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=PLATFORM_ORG,
+        event_type=EVT_OPERATOR_MFA_ENROLLED,
+        aggregate_type="staff_account",
+        aggregate_id=staff_id,
+        payload={"staff_id": str(staff_id)},
+    )
+    await session.commit()
+    return issued, codes
+
+
+async def operator_verify_mfa(
+    session: AsyncSession,
+    *,
+    cfg: Settings,
+    pair: KeyPair,
+    pre_auth_token: str,
+    code: str,
+    request: Request | None = None,
+) -> OperatorIssued:
+    """Second step of an operator sign-in, for a staff account that already has a confirmed
+    factor. Mirrors the tenant `verify_mfa`, minus the organization-selection branch an
+    operator never has."""
+    claims = _decode_pre_auth(pair, cfg, pre_auth_token, expect_reason=OPERATOR_MFA_REASON)
+    staff_id = uuid.UUID(str(claims["sub"]))
+    auth_session = await _live_session(session, uuid.UUID(str(claims["sid"])), staff_id)
+
+    if not await _accept_second_factor(session, staff_id, code):
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=PLATFORM_ORG,
+            actor_id=staff_id,
+            action="auth.operator_mfa_failed",
+            entity="staff_account",
+            entity_id=staff_id,
+            request=request,
+        )
+        await session.commit()
+        raise UnauthorizedProblem("That code is not valid")
+
+    auth_session.amr = [*auth_session.amr, "otp"]
+    auth_session.mfa_verified_at = datetime.now(UTC)
+
+    staff = await session.get(StaffAccount, staff_id)
+    if staff is None or not staff.is_active:
+        raise UnauthorizedProblem("That session is no longer valid.")
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=PLATFORM_ORG,
+        actor_id=staff_id,
+        action="auth.operator_mfa_verified",
+        entity="staff_account",
+        entity_id=staff_id,
         request=request,
     )
     issued = _issue_operator(session, pair=pair, cfg=cfg, auth_session=auth_session, staff=staff)
@@ -1097,8 +1323,8 @@ async def operator_login(
         organization_id=PLATFORM_ORG,
         event_type=EVT_OPERATOR_SIGNED_IN,
         aggregate_type="staff_account",
-        aggregate_id=staff.id,
-        payload={"staff_id": str(staff.id), "session_id": str(auth_session.id)},
+        aggregate_id=staff_id,
+        payload={"staff_id": str(staff_id), "session_id": str(auth_session.id)},
     )
     await session.commit()
     return issued

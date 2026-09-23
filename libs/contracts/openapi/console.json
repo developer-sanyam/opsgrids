@@ -116,6 +116,40 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "LifecycleCountsOut": {
+        "description": "Organization counts by lifecycle bucket (`selectors.lifecycle_counts`).",
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "integer"
+          },
+          "churned": {
+            "title": "Churned",
+            "type": "integer"
+          },
+          "none": {
+            "title": "None",
+            "type": "integer"
+          },
+          "suspended": {
+            "title": "Suspended",
+            "type": "integer"
+          },
+          "trial": {
+            "title": "Trial",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "suspended",
+          "active",
+          "trial",
+          "churned",
+          "none"
+        ],
+        "title": "LifecycleCountsOut",
+        "type": "object"
+      },
       "MetricsOut": {
         "description": "Platform-wide commercial metrics, computed from the transition log (ADR-0004 \u00a74).",
         "properties": {
@@ -170,6 +204,130 @@
           "churn_rate"
         ],
         "title": "MetricsOut",
+        "type": "object"
+      },
+      "MetricsOverviewOut": {
+        "description": "`GET /admin/metrics/overview` \u2014 the platform metrics plus org counts by lifecycle.",
+        "properties": {
+          "active_subscriptions": {
+            "title": "Active Subscriptions",
+            "type": "integer"
+          },
+          "churn_rate": {
+            "title": "Churn Rate",
+            "type": "number"
+          },
+          "churned": {
+            "title": "Churned",
+            "type": "integer"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "mrr_minor": {
+            "title": "Mrr Minor",
+            "type": "integer"
+          },
+          "organization_count": {
+            "title": "Organization Count",
+            "type": "integer"
+          },
+          "organizations_by_lifecycle": {
+            "$ref": "#/components/schemas/LifecycleCountsOut"
+          },
+          "trial_conversion_rate": {
+            "title": "Trial Conversion Rate",
+            "type": "number"
+          },
+          "trial_conversions": {
+            "title": "Trial Conversions",
+            "type": "integer"
+          },
+          "trials_started": {
+            "title": "Trials Started",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mrr_minor",
+          "currency",
+          "trials_started",
+          "trial_conversions",
+          "trial_conversion_rate",
+          "active_subscriptions",
+          "churned",
+          "churn_rate",
+          "organization_count",
+          "organizations_by_lifecycle"
+        ],
+        "title": "MetricsOverviewOut",
+        "type": "object"
+      },
+      "OrgDetailOut": {
+        "description": "One organization's detail: console's own commercial projection composed with the\ndirectory identity from account-service's staff-only route \u2014 never account's internal\nrouter, which authorizes no individual caller (see `app/directory_client.py`).\n\nThe directory fields are `None` only when account-service could not be reached in time\nfor a field that is not itself the presence check; a genuinely unknown organization is a\n404, not a row of nulls.",
+        "properties": {
+          "commercial": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OrgStateOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "organization_id": {
+            "format": "uuid",
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "slug",
+          "name",
+          "status",
+          "country",
+          "created_at",
+          "commercial"
+        ],
+        "title": "OrgDetailOut",
         "type": "object"
       },
       "OrgStateOut": {
@@ -579,6 +737,27 @@
         ]
       }
     },
+    "/api/v1/admin/metrics/overview": {
+      "get": {
+        "operationId": "metrics_overview_api_v1_admin_metrics_overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsOverviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Platform metrics: org counts by lifecycle, MRR, trials and churn",
+        "tags": [
+          "console"
+        ]
+      }
+    },
     "/api/v1/admin/organizations": {
       "get": {
         "operationId": "list_organizations_api_v1_admin_organizations_get",
@@ -595,6 +774,50 @@
           }
         },
         "summary": "Every organization's commercial state, with platform MRR/trial/churn metrics",
+        "tags": [
+          "console"
+        ]
+      }
+    },
+    "/api/v1/admin/organizations/{organization_id}": {
+      "get": {
+        "description": "Compose console's own commercial snapshot with account-service's directory record.\n\nThe directory half is fetched from account-service's `staff_only` route, authorized by\n*this request's own token* forwarded verbatim \u2014 never `/internal/v1`, which no individual\ncaller's permissions gate at all (`app/directory_client.py`). Every read here writes an\naudit row bound to the target organization, per the ADR-0003 addendum: an operator looking\nat one customer's detail is exactly the kind of act that must leave a trace.",
+        "operationId": "get_organization_detail_api_v1_admin_organizations__organization_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One organization's detail \u2014 commercial projection composed with directory identity",
         "tags": [
           "console"
         ]

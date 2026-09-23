@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.config import settings
 from app.main import app
 from app.models import SCHEMA
-from platform_core.db import TENANT_GUC, get_session
+from platform_core.db import TENANT_GUC, get_directory_session, get_session
 
 #: Everything billing owns. Tenant-scoped or global-and-test-empty, so all are safe to truncate.
 #: `invoice_lines` before `invoices` for the foreign key; TRUNCATE CASCADE would handle it too.
@@ -105,17 +105,40 @@ async def admin_session() -> AsyncIterator[AsyncSession]:
 
 
 @pytest_asyncio.fixture
-async def client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
+async def directory_session() -> AsyncIterator[AsyncSession]:
+    """The real staff credit-ledger reader: BYPASSRLS, SELECT-only, no tenant binding.
+
+    The admin route must be exercised through what serves it in production — a session that
+    genuinely reads across every organization with no GUC set — rather than the tenant-bound
+    `session` fixture, which would make the read pass for the wrong reason (ADR-0002, "the
+    cross-tenant reader").
+    """
+    engine = create_async_engine(settings().directory_dsn, connect_args=_connect_args())
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as s:
+        yield s
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def client(
+    session: AsyncSession, directory_session: AsyncSession
+) -> AsyncIterator[AsyncClient]:
     """HTTP client sharing the test's tenant-bound session, so writes are visible to asserts.
 
     Both the customer chokepoint (`get_tenant_session`) and the internal routes wrap
     `get_session`, so overriding that one dependency routes every route through the shared
-    session while leaving each route's own tenant binding intact."""
+    session while leaving each route's own tenant binding intact. The staff credit-ledger
+    route uses `get_directory_session` instead, overridden to the real cross-tenant reader."""
 
     async def _session_override() -> AsyncIterator[AsyncSession]:
         yield session
 
+    async def _directory_override() -> AsyncIterator[AsyncSession]:
+        yield directory_session
+
     app.dependency_overrides[get_session] = _session_override
+    app.dependency_overrides[get_directory_session] = _directory_override
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
     app.dependency_overrides.clear()

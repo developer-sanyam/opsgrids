@@ -5,9 +5,13 @@ non-staff caller is refused with the same 404 an unknown path gets, so the exist
 operator surface is never confirmed to whoever is probing (mirrors admin-gateway's staff
 routes). This module is defence in depth behind that gate:
 
-* `require_operator` refuses any token that did not arrive through the operator gateway — it
-  checks the audience the operator gateway stamps, and returns **404**, not 403, for the same
-  reason the gateway does. A stolen product (`app`-audience) token is inert here.
+* `platform_core.auth.require_operator` refuses any token that did not arrive through the
+  operator gateway — it checks the audience the operator gateway stamps, and returns **404**,
+  not 403, for the same reason the gateway does. A stolen product (`app`-audience) token is
+  inert here. Every route below additionally demands the `owner` operator role (ADR-0003
+  addendum): authoring the commercial catalogue that prices every customer is not something
+  `billing_ops` or `support` may do, so a caller with the right audience but the wrong role
+  gets a plain 403 rather than the 404 the audience check gives.
 * Authoring is a **platform** act, not a tenant one, so `get_operator_session` binds the
   transaction to the platform sentinel organization rather than to the caller's own. The
   definitional tables are un-policied and do not need it; catalog's `audit_logs` and `outbox`
@@ -27,31 +31,16 @@ from starlette.requests import Request
 from app import selectors, services
 from app.models import PLATFORM_ORG, Plan, PlanVersion
 from app.schemas import PlanCreateIn, PlanOut, PlanPatchIn, PlanVersionOut, VersionCreateIn
-from platform_core.auth import CurrentPrincipal, Principal
+from platform_core.auth import Principal, require_operator
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
-from platform_core.errors import NotFoundProblem
 
 router = APIRouter(prefix="/admin/catalog", tags=["catalog-admin"])
 
-#: The audience the operator gateway stamps on every request it forwards. A token good for a
-#: customer's own application carries `app`, and is refused here.
-OPERATOR_AUDIENCE = "operator"
-
-
-def require_operator(principal: CurrentPrincipal) -> Principal:
-    """Refuse anything that did not come through the operator gateway.
-
-    404, deliberately — the same answer an unknown route gives — so a caller holding a valid
-    product token learns nothing about whether this surface exists (the gateway's own rule for
-    `staff_only` routes, repeated in-service as defence in depth).
-    """
-    if principal.audience != OPERATOR_AUDIENCE:
-        raise NotFoundProblem("Not found")
-    return principal
-
-
-OperatorDep = Annotated[Principal, Depends(require_operator)]
+#: Catalog writes — plans, versions, publishing — are `owner`-only (ADR-0003 addendum): the
+#: commercial catalogue prices every customer on the platform, so `billing_ops` and `support`
+#: get read access elsewhere but not a pen to write with here.
+OperatorDep = Annotated[Principal, Depends(require_operator(roles={"owner"}))]
 
 
 async def get_operator_session(

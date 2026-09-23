@@ -412,6 +412,17 @@ class TestOperatorAudienceBoundary:
             )
         assert resp.status_code == 404
 
+    async def test_an_operator_without_the_owner_role_gets_403_not_404(self, client) -> None:
+        """The audience is right — the surface's existence is already conceded — so a staff
+        member missing the `owner` role gets an ordinary Forbidden, per the ADR-0003 addendum's
+        role matrix: catalog writes are `owner`-only."""
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            resp = await client.post(
+                "/api/v1/admin/catalog/plans",
+                json={"product_key": "hrms", "code": "not-allowed", "name": "Not allowed"},
+            )
+        assert resp.status_code == 403
+
     async def test_an_unauthenticated_caller_is_rejected(self, client) -> None:
         resp = await client.post(
             "/api/v1/admin/catalog/plans",

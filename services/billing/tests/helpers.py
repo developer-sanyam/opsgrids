@@ -12,14 +12,18 @@ exercised rather than stubbed.
 
 from __future__ import annotations
 
+import contextlib
 import uuid
+from collections.abc import Iterator
 
-from platform_core.auth import Principal
+from platform_core.auth import Principal, get_principal
 from platform_core.config import ServiceSettings
 from platform_core.internal_auth import mint_service_token
 
 #: What the product gateway stamps on a customer's token.
 APP_AUDIENCE = "app"
+#: What the operator gateway stamps. `require_operator` accepts only this.
+OPERATOR_AUDIENCE = "operator"
 
 #: The permissions the billing read routes require, at ORG scope.
 INVOICE_READ = "core.billing.invoice.read:ORG"
@@ -45,3 +49,32 @@ def service_token_headers(settings: ServiceSettings) -> dict[str, str]:
     """A real short-lived service token addressed to billing — what an internal caller sends."""
     token = mint_service_token(settings, audience=settings.service_name, caller="tests")
     return {"X-Internal-Token": token}
+
+
+def operator_principal(*, staff: bool = True, roles: list[str] | None = None) -> Principal:
+    """A staff operator as the operator gateway would have forwarded them.
+
+    `audience="operator"` is the marker `require_operator` checks. `staff=False` swaps the
+    audience to a product token, producing the negative case a staff route must refuse with 404.
+    `roles` defaults to `["owner"]`, which holds every route's role requirement (ADR-0003
+    addendum): `["owner", "billing_ops"]` is credit-ledger's actual matrix entry.
+    """
+    return Principal(
+        sub=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        membership_id=uuid.uuid4(),
+        audience=OPERATOR_AUDIENCE if staff else APP_AUDIENCE,
+        roles=roles if roles is not None else ["owner"],
+    )
+
+
+@contextlib.contextmanager
+def as_principal(principal: Principal) -> Iterator[None]:
+    """Override the resolved caller for one block — how the audience/role boundary is exercised."""
+    from app.main import app
+
+    app.dependency_overrides[get_principal] = lambda: principal
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_principal, None)

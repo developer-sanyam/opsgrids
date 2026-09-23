@@ -21,7 +21,7 @@ from app import services
 from app.config import Settings, settings
 from app.deps import DirectoryDep, EntitlementsDep, IdpDep, KeyDep, SsoStateDep
 from app.keys import jwks as build_jwks
-from app.models import SCHEMA, OrgIdpConfig
+from app.models import SCHEMA, OrgIdpConfig, StaffAccount
 from app.schemas import (
     LoginIn,
     LoginResult,
@@ -32,6 +32,14 @@ from app.schemas import (
     MfaRequired,
     MfaVerifyIn,
     OperatorLoginIn,
+    OperatorLoginResult,
+    OperatorMeOut,
+    OperatorMfaEnrolConfirmIn,
+    OperatorMfaEnrolIn,
+    OperatorMfaEnrolled,
+    OperatorMfaEnrollmentRequired,
+    OperatorMfaRequired,
+    OperatorMfaVerifyIn,
     OperatorTokenOut,
     OrganizationChoice,
     OrgSelectionRequired,
@@ -46,7 +54,14 @@ from app.schemas import (
     SwitchOrgIn,
     TokenOut,
 )
-from platform_core.auth import CurrentPrincipal, Scope, ScopeContext, require
+from platform_core.auth import (
+    CurrentPrincipal,
+    Principal,
+    Scope,
+    ScopeContext,
+    require,
+    require_operator,
+)
 from platform_core.db import get_session, get_tenant_session
 from platform_core.errors import NotFoundProblem, UnauthorizedProblem, ValidationProblem
 
@@ -60,6 +75,9 @@ wellknown = APIRouter(tags=["discovery"])
 # and binds it to the caller's organization first (ADR-0002 §1); none of them opens its own.
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 TenantSessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+#: Any authenticated operator, no role filter — `/auth/operator/me` answers "who am I", which
+#: every operator role may ask.
+OperatorPrincipalDep = Annotated[Principal, Depends(require_operator())]
 
 
 def _set_refresh_cookie(response: Response, cfg: Settings, token: str) -> None:
@@ -532,32 +550,137 @@ async def change_password(
 # returns is only accepted on `admin-gateway`, by audience.
 
 
+def _operator_token_out(issued: services.OperatorIssued) -> OperatorTokenOut:
+    return OperatorTokenOut(
+        access_token=issued.access_token,
+        expires_in=issued.expires_in,
+        operator_roles=issued.operator_roles,
+    )
+
+
 @router.post(
     "/auth/operator/login",
-    response_model=OperatorTokenOut,
-    summary="Operator (OpsGrids staff) sign in",
+    response_model=OperatorLoginResult,
+    summary="Operator (OpsGrids staff) sign in — always stops for a second factor",
 )
 async def operator_login(
     payload: OperatorLoginIn,
+    request: Request,
+    session: SessionDep,
+    pair: KeyDep,
+) -> OperatorMfaRequired | OperatorMfaEnrollmentRequired:
+    """Authenticate a staff account. Never returns a token from a password alone.
+
+    A wrong credential answers 401 with the same generic message the tenant login uses, so
+    this endpoint is not an operator-account enumeration oracle. A correct one always
+    returns one of two "keep going" answers — MFA is mandatory for staff (ADR-0003
+    addendum) — never a completed sign-in.
+    """
+    cfg = settings()
+    outcome = await services.operator_login(
+        session, cfg=cfg, pair=pair, email=payload.email, password=payload.password, request=request
+    )
+    if outcome.status == "mfa_enrollment_required":
+        return OperatorMfaEnrollmentRequired(pre_auth_token=outcome.pre_auth_token or "")
+    return OperatorMfaRequired(pre_auth_token=outcome.pre_auth_token or "")
+
+
+@router.post(
+    "/auth/operator/mfa/enrol",
+    response_model=MfaEnrolStart,
+    status_code=status.HTTP_201_CREATED,
+    summary="Start setting up an operator's authenticator app — the only reachable step "
+    "until one is enrolled",
+)
+async def operator_mfa_enrol(
+    payload: OperatorMfaEnrolIn, session: SessionDep, pair: KeyDep
+) -> MfaEnrolStart:
+    cfg = settings()
+    factor, secret, uri = await services.operator_begin_mfa_enrolment(
+        session, cfg=cfg, pair=pair, pre_auth_token=payload.pre_auth_token
+    )
+    return MfaEnrolStart(factor_id=factor.id, secret=secret, otpauth_uri=uri)
+
+
+@router.post(
+    "/auth/operator/mfa/enrol/confirm",
+    response_model=OperatorMfaEnrolled,
+    summary="Prove the app works — completes the sign-in that started enrolment",
+)
+async def operator_mfa_enrol_confirm(
+    payload: OperatorMfaEnrolConfirmIn,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    pair: KeyDep,
+) -> OperatorMfaEnrolled:
+    cfg = settings()
+    issued, codes = await services.confirm_operator_mfa_enrolment(
+        session,
+        cfg=cfg,
+        pair=pair,
+        pre_auth_token=payload.pre_auth_token,
+        factor_id=payload.factor_id,
+        code=payload.code,
+        request=request,
+    )
+    _set_refresh_cookie(response, cfg, issued.refresh_token)
+    return OperatorMfaEnrolled(
+        access_token=issued.access_token,
+        expires_in=issued.expires_in,
+        operator_roles=issued.operator_roles,
+        recovery_codes=codes,
+    )
+
+
+@router.post(
+    "/auth/operator/mfa/verify",
+    response_model=OperatorTokenOut,
+    summary="Present an operator's second factor",
+)
+async def operator_mfa_verify(
+    payload: OperatorMfaVerifyIn,
     request: Request,
     response: Response,
     session: SessionDep,
     pair: KeyDep,
 ) -> OperatorTokenOut:
-    """Authenticate a staff account and return an `operator`-audience token with `stf`.
-
-    A wrong credential answers 401 with the same generic message the tenant login uses, so
-    this endpoint is not an operator-account enumeration oracle.
-    """
     cfg = settings()
-    issued = await services.operator_login(
-        session, cfg=cfg, pair=pair, email=payload.email, password=payload.password, request=request
+    issued = await services.operator_verify_mfa(
+        session,
+        cfg=cfg,
+        pair=pair,
+        pre_auth_token=payload.pre_auth_token,
+        code=payload.code,
+        request=request,
     )
     _set_refresh_cookie(response, cfg, issued.refresh_token)
-    return OperatorTokenOut(
-        access_token=issued.access_token,
-        expires_in=issued.expires_in,
-        operator_roles=issued.operator_roles,
+    return _operator_token_out(issued)
+
+
+@router.get(
+    "/auth/operator/me",
+    response_model=OperatorMeOut,
+    summary="Who this operator is",
+)
+async def operator_me(session: TenantSessionDep, operator: OperatorPrincipalDep) -> OperatorMeOut:
+    """Goes through the same tenancy chokepoint as every other principal-bearing route.
+
+    Harmless rather than meaningful for an operator: `get_tenant_session` binds the
+    transaction to `principal.organization_id`, which for an operator token is the platform
+    sentinel (`services.PLATFORM_ORG`) — there is no tenant row here to protect, `auth`
+    carries no row-level security at all, but going through the one chokepoint every
+    principal-bearing route uses is one fewer shape for this module to special-case.
+    """
+    staff = await session.get(StaffAccount, operator.sub)
+    if staff is None:
+        raise UnauthorizedProblem("That session is no longer valid.")
+    return OperatorMeOut(
+        staff_id=staff.id,
+        email=staff.email,
+        display_name=staff.display_name,
+        operator_roles=list(staff.operator_roles),
+        amr=operator.amr,
     )
 
 
