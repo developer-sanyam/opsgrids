@@ -25,8 +25,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "c22268051b11"
-down_revision: str | None = "11d00ec66542"
+revision: str = "c22268051b11"  # pragma: allowlist secret
+down_revision: str | None = "11d00ec66542"  # pragma: allowlist secret
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

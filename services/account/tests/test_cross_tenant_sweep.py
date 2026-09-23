@@ -74,7 +74,7 @@ A_UNIT_CODE = "A-ENGINEERING"
 A_LOCATION_CODE = "A-MUMBAI"
 A_ROLE_CODE = "A-AUDITOR"
 A_INVITEE = "invitee-a@example.com"
-A_DOMAIN = "a-tenant-domain.example"
+A_DOMAIN = "a-tenant-domain.example.com"
 
 Route = tuple[str, str]
 
@@ -169,12 +169,15 @@ BODIES: dict[Route, Write] = {
     ),
     ("DELETE", f"{PREFIX}/invitations/{{invitation_id}}"): NO_BODY,
     # A brand-new string, not A's: claiming a domain never needs to name another tenant's
-    # row, so this lands in B's own organization. Takeover of *A's* domain specifically —
-    # 409, not 404, because the collision is enforced by a platform-wide unique constraint
-    # rather than by tenancy — is covered on its own in `test_domains.py`; the generic
-    # NAMING_A/OWN_ORG split here only has a slot for "not found", which a taken domain is
-    # not.
-    ("POST", f"{PREFIX}/domains"): Write(json=lambda _a: {"domain": "beta-tenant-domain.example"}),
+    # row, so this lands in B's own organization. A pending claim is scoped per-organization
+    # now (`uq_org_domains_org_domain`), so B claiming A's own pending domain would not even
+    # collide; only a domain A has *verified* is globally exclusive. That takeover path —
+    # 409, not 404, once the domain is verified elsewhere — is covered on its own in
+    # `test_domains.py::TestTakeoverSafety`; the generic NAMING_A/OWN_ORG split here only has
+    # a slot for "not found", which a pending or unclaimed domain is.
+    ("POST", f"{PREFIX}/domains"): Write(
+        json=lambda _a: {"domain": "beta-tenant-domain.example.com"}
+    ),
     ("POST", f"{PREFIX}/domains/{{domain_id}}/verify"): NO_BODY,
     ("DELETE", f"{PREFIX}/domains/{{domain_id}}"): NO_BODY,
 }
