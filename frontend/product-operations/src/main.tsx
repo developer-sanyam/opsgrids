@@ -37,6 +37,9 @@ const InventoryPage = lazy(() =>
 const InventoryItemDetailPage = lazy(() =>
   import("./routes/InventoryItemDetail").then((m) => ({ default: m.InventoryItemDetailPage })),
 );
+const ItemCategoriesPage = lazy(() =>
+  import("./routes/ItemCategories").then((m) => ({ default: m.ItemCategoriesPage })),
+);
 const SuppliersPage = lazy(() =>
   import("./routes/Suppliers").then((m) => ({ default: m.SuppliersPage })),
 );
@@ -75,6 +78,7 @@ const router = createBrowserRouter([
           lazyRoute("purchase-orders/:id", <PurchaseOrderDetailPage />),
           lazyRoute("purchase-orders/:id/edit", <PurchaseOrderFormPage />),
           lazyRoute("inventory", <InventoryPage />),
+          lazyRoute("inventory/categories", <ItemCategoriesPage />),
           lazyRoute("inventory/:id", <InventoryItemDetailPage />),
           lazyRoute("suppliers", <SuppliersPage />),
           lazyRoute("suppliers/:id", <SupplierDetailPage />),

@@ -8,6 +8,7 @@ export {
   Avatar,
   Button,
   Card,
+  CheckboxGroup,
   Combobox,
   ConfirmDialog,
   DataTable,
@@ -27,11 +28,20 @@ export {
   SectionHeader,
   Select,
   Skeleton,
+  Switch,
   Tag,
   TextArea,
   TextField,
 } from "@opsgrids/ui";
-export type { Column, ComboboxOption, KpiTone, RadioOption, RowAction, SelectOption } from "@opsgrids/ui";
+export type {
+  CheckboxOption,
+  Column,
+  ComboboxOption,
+  KpiTone,
+  RadioOption,
+  RowAction,
+  SelectOption,
+} from "@opsgrids/ui";
 
 export { Sidebar } from "./Sidebar";
 export { SpendTrend } from "./SpendTrend";
