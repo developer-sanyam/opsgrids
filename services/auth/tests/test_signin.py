@@ -1007,6 +1007,177 @@ class TestLegacyPlaintextFactorNeverLocksAMemberOut:
         credential = await session.get(Credential, USER)
         assert credential is not None and credential.mfa_failed_attempts == 1
 
+    async def _sealed_member(self, session, cfg) -> str:
+        """A member with a confirmed *sealed* factor; returns its secret."""
+        factor, secret, _ = await services.begin_mfa_enrolment(
+            session, USER, account_email="sam@example.com", cfg=cfg
+        )
+        step = int(datetime.now(UTC).timestamp()) // 30
+        await services.confirm_mfa_enrolment(
+            session,
+            factor_id=factor.id,
+            user_id=USER,
+            code=security._totp_at(secret, step),
+            cfg=cfg,
+        )
+        await session.commit()
+        return secret
+
+    async def test_a_mixed_account_counts_guesses_against_the_readable_factor(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """The reviewer's probe. A member with one refused legacy-plaintext factor *and* one
+        readable sealed factor is not in the "we could not check" state: a six-digit miss is a
+        real miss against a real factor. It used to raise the uncounted 503 whenever *any*
+        factor was refused — sixty wrong guesses, counter 0, no lock, then the right code signed
+        in."""
+        assert cfg.mfa_accept_legacy_plaintext is False
+        secret = await self._sealed_member(session, cfg)
+        session.add(
+            MfaFactor(
+                user_id=USER,
+                type="totp",
+                label="old",
+                secret_enc=security.generate_totp_secret().encode("ascii"),
+                confirmed_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+        outcome = await _login(session, cfg, pair, directory)
+        assert outcome.status == "mfa_required"
+        step = int(datetime.now(UTC).timestamp()) // 30
+        valid = {security._totp_at(secret, step + offset) for offset in (-1, 0, 1)}
+
+        guesses = [g for g in (f"{n:06d}" for n in range(100000, 100020)) if g not in valid]
+        for guess in guesses[: cfg.max_failed_attempts]:
+            with pytest.raises(UnauthorizedProblem, match="not valid"):
+                await self._verify(session, cfg, pair, directory, outcome.pre_auth_token, guess)
+
+        credential = await session.get(Credential, USER)
+        assert credential is not None
+        assert credential.mfa_locked_until is not None, "the guesses counted, so the lock tripped"
+        # ... and the right code no longer signs in: the account is locked.
+        fresh = await _login(session, cfg, pair, directory)
+        with pytest.raises(ForbiddenProblem, match="temporarily locked"):
+            await self._verify(
+                session,
+                cfg,
+                pair,
+                directory,
+                fresh.pre_auth_token,
+                security._totp_at(secret, step + 1),
+            )
+
+    async def test_a_single_refused_factor_still_gives_the_uncounted_503(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """The other side of the same rule: with *no* readable factor there was nothing to
+        check the code against, so it counts for nothing (R1)."""
+        secret = security.generate_totp_secret()
+        credential = await self._legacy_member(session, secret)
+        outcome = await _login(session, cfg, pair, directory)
+        correct = security._totp_at(secret, int(datetime.now(UTC).timestamp()) // 30)
+        with pytest.raises(services.MfaResealPendingProblem):
+            await self._verify(session, cfg, pair, directory, outcome.pre_auth_token, correct)
+        await session.refresh(credential)
+        assert credential.mfa_failed_attempts == 0
+
+    async def test_confirming_a_new_factor_drops_the_refused_legacy_one(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """At the source: once a working factor is confirmed, a confirmed legacy-plaintext
+        factor the deployment refuses is dropped and audited, so the account is no longer mixed."""
+        from app.models import AuditLog
+
+        legacy = MfaFactor(
+            user_id=USER,
+            type="totp",
+            label="old",
+            secret_enc=security.generate_totp_secret().encode("ascii"),
+            confirmed_at=datetime.now(UTC),
+        )
+        session.add(legacy)
+        await session.commit()
+        legacy_id = legacy.id
+
+        await self._sealed_member(session, cfg)
+
+        remaining = (
+            (await session.execute(select(MfaFactor).where(MfaFactor.user_id == USER)))
+            .scalars()
+            .all()
+        )
+        assert [f.id for f in remaining if f.id == legacy_id] == []
+        assert len(remaining) == 1
+        audit = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "auth.mfa_factor_legacy_dropped",
+                    AuditLog.entity_id == legacy_id,
+                )
+            )
+        ).scalar_one_or_none()
+        assert audit is not None
+
+    async def test_a_legacy_factor_is_kept_while_the_deployment_still_accepts_it(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """With acceptance on the legacy factor still works (and the reseal will seal it), so
+        confirming a new one must not throw it away."""
+        legacy_cfg = cfg.model_copy(update={"mfa_accept_legacy_plaintext": True})
+        session.add(
+            MfaFactor(
+                user_id=USER,
+                type="totp",
+                label="old",
+                secret_enc=security.generate_totp_secret().encode("ascii"),
+                confirmed_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+        await self._sealed_member(session, legacy_cfg)
+        remaining = (
+            (await session.execute(select(MfaFactor).where(MfaFactor.user_id == USER)))
+            .scalars()
+            .all()
+        )
+        assert len(remaining) == 2
+
+    async def test_a_six_digit_guess_never_runs_the_recovery_hashes(
+        self, session, cfg, pair, directory, registered, monkeypatch
+    ) -> None:
+        """A six-digit input cannot match `xxxx-xxxx-xxxx`, so the Argon2 verify per recovery
+        code (up to ten per guess) is skipped; anything else still runs them."""
+        await self._sealed_member(session, cfg)
+        outcome = await _login(session, cfg, pair, directory)
+        calls: list[str] = []
+        real = security.verify_recovery_code
+
+        def counting(hashed: str, code: str) -> bool:
+            calls.append(code)
+            return real(hashed, code)
+
+        monkeypatch.setattr(security, "verify_recovery_code", counting)
+        with pytest.raises(UnauthorizedProblem):
+            await self._verify(session, cfg, pair, directory, outcome.pre_auth_token, "000000")
+        assert calls == []
+        with pytest.raises(UnauthorizedProblem):
+            await self._verify(session, cfg, pair, directory, outcome.pre_auth_token, "zzzz-zzzz")
+        assert calls, "a non-TOTP-shaped guess still has to be checked as a recovery code"
+
+    async def test_a_unicode_digit_code_is_a_counted_miss_not_a_500(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """`str.isdigit()` is true for fullwidth digits and `hmac.compare_digest` raises
+        TypeError on non-ASCII — a 500 on a submitted code. It is an ordinary counted miss."""
+        await self._sealed_member(session, cfg)
+        outcome = await _login(session, cfg, pair, directory)
+        fullwidth = "".join(chr(0xFF10 + int(d)) for d in "123456")
+        with pytest.raises(UnauthorizedProblem, match="not valid"):
+            await self._verify(session, cfg, pair, directory, outcome.pre_auth_token, fullwidth)
+        credential = await session.get(Credential, USER)
+        assert credential is not None and credential.mfa_failed_attempts == 1
+
 
 class TestSessionsAndEvents:
     async def test_signing_in_stages_an_event_for_the_relay(

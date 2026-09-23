@@ -1087,11 +1087,13 @@ async def begin_mfa_enrolment(
 #: A pre-sealing factor row: the raw base32 secret stored as-is, before `platform_core.pii`
 #: wrapped every TOTP secret in an envelope. Recognised by shape, not guessed at random — a
 #: `pii.seal` envelope leads with a version byte outside this charset, so it never matches.
-_LEGACY_TOTP_SECRET_RE = re.compile(rb"^[A-Z2-7]{16,32}$")
+_LEGACY_TOTP_SECRET_RE = re.compile(rb"[A-Z2-7]{16,32}")
 
 
 def _legacy_totp_secret(raw: bytes) -> str | None:
-    if not _LEGACY_TOTP_SECRET_RE.match(raw):
+    # `fullmatch`, not `match(...$)`: Python's `$` also matches before a trailing newline,
+    # Postgres's does not, and the deploy's SQL count and this check must agree on every row.
+    if not _LEGACY_TOTP_SECRET_RE.fullmatch(raw):
         return None
     return raw.decode("ascii")
 
@@ -1249,6 +1251,37 @@ async def confirm_mfa_enrolment(
     factor.last_used_step = step
     factor.last_used_at = datetime.now(UTC)
 
+    # A confirmed legacy-plaintext factor this deployment refuses can only ever get in the way
+    # now that a working one exists: it makes a six-digit miss look like "we could not check",
+    # and it is a factor nobody can use. Dropped, and audited, at the source rather than left to
+    # be worked around in `_accept_second_factor`. Only while acceptance is off — with the
+    # legacy flag on it still works, and the reseal will seal it.
+    stale = (
+        (
+            await session.execute(
+                select(MfaFactor).where(
+                    MfaFactor.user_id == user_id,
+                    MfaFactor.id != factor.id,
+                    MfaFactor.confirmed_at.isnot(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for old in stale:
+        if _is_refused_plaintext(old, cfg):
+            record_audit(
+                session,
+                AuditLog,
+                organization_id=PLATFORM_ORG,
+                actor_id=user_id,
+                action="auth.mfa_factor_legacy_dropped",
+                entity="mfa_factor",
+                entity_id=old.id,
+            )
+            await session.delete(old)
+
     credential = await get_or_create_credential(session, user_id)
     credential.mfa_enforced = True
 
@@ -1392,20 +1425,28 @@ async def _accept_second_factor(
     different event from an ordinary authenticator check and an operator reading the audit trail
     needs to be able to tell them apart without decoding anything.
 
-    **Raises `MfaResealPendingProblem`, and does not return `None`, when a six-digit code missed
-    only because a confirmed factor was a legacy-plaintext row this deployment refuses**
-    (`mfa_accept_legacy_plaintext` off). The caller counts a `None` as a failed attempt and
-    eventually locks the account; here the code may have been right and *we* could not check it,
-    so it must count for nothing. Anything that is not six digits cannot have been a code for
-    that factor — it was a recovery-code guess — and still returns `None` and still counts.
+    **Raises `MfaResealPendingProblem`, and does not return `None`, only when a six-digit code
+    missed *and there was no factor it could have been checked against***: every confirmed factor
+    was a legacy-plaintext row this deployment refuses (`mfa_accept_legacy_plaintext` off). The
+    caller counts a `None` as a failed attempt and eventually locks the account; here the code
+    may have been right and *we* could not check it, so it must count for nothing.
+
+    The moment any confirmed factor *is* readable — a member who re-enrolled a sealed factor
+    while an old plaintext one lingered — a miss is a real miss against a real factor and
+    returns `None` like any other, so it counts. (Raising whenever *any* factor was refused made
+    every six-digit guess free on such an account: sixty wrong guesses, counter 0, no lock, then
+    the right code signed in.) Anything that is not six digits cannot have been a code for a
+    factor at all — it was a recovery-code guess — and also returns `None` and counts.
     """
     plaintext_refused = False
+    readable = False
     stmt = select(MfaFactor).where(MfaFactor.user_id == user_id, MfaFactor.confirmed_at.isnot(None))
     for factor in (await session.execute(stmt)).scalars().all():
         secret = await _open_factor_secret(session, factor, cfg=cfg)
         if secret is None:
             plaintext_refused = plaintext_refused or _is_refused_plaintext(factor, cfg)
             continue
+        readable = True
         step = security.verify_totp(secret, code, last_used_step=factor.last_used_step)
         if step is not None:
             # Remember the step so the same code cannot be replayed inside its window.
@@ -1413,15 +1454,19 @@ async def _accept_second_factor(
             factor.last_used_at = datetime.now(UTC)
             return "totp"
 
-    recovery_stmt = select(MfaRecoveryCode).where(
-        MfaRecoveryCode.user_id == user_id, MfaRecoveryCode.used_at.is_(None)
-    )
-    for recovery in (await session.execute(recovery_stmt)).scalars().all():
-        if security.verify_recovery_code(recovery.code_hash, code):
-            recovery.used_at = datetime.now(UTC)
-            return "recovery"
+    looks_like_totp = security.looks_like_totp_code(code)
+    if not looks_like_totp:
+        # A six-digit input cannot be a recovery code (`xxxx-xxxx-xxxx`), so a TOTP-shaped miss
+        # skips the recovery loop — up to ten Argon2 verifies saved per guess.
+        recovery_stmt = select(MfaRecoveryCode).where(
+            MfaRecoveryCode.user_id == user_id, MfaRecoveryCode.used_at.is_(None)
+        )
+        for recovery in (await session.execute(recovery_stmt)).scalars().all():
+            if security.verify_recovery_code(recovery.code_hash, code):
+                recovery.used_at = datetime.now(UTC)
+                return "recovery"
 
-    if plaintext_refused and security.looks_like_totp_code(code):
+    if plaintext_refused and not readable and looks_like_totp:
         log.error("auth.mfa_reseal_pending", user_id=str(user_id))
         raise MfaResealPendingProblem(
             "Multi-factor re-seal pending — use a recovery code to sign in."

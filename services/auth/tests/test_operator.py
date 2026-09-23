@@ -1092,6 +1092,24 @@ class TestOperatorMfaVerify:
         )
         assert issued.operator_roles
 
+    async def test_a_unicode_digit_code_is_a_counted_miss_not_a_500(
+        self, session, cfg, pair
+    ) -> None:
+        """`str.isdigit()` is true for fullwidth digits and `hmac.compare_digest` raises
+        TypeError on non-ASCII, so this used to be a 500 on an operator's second factor."""
+        staff = await _make_staff(session)
+        await _enrol_operator_mfa(session, cfg, pair)
+        outcome = await services.operator_login(
+            session, cfg=cfg, pair=pair, email=STAFF_EMAIL, password=STAFF_PASSWORD
+        )
+        fullwidth = "".join(chr(0xFF10 + int(d)) for d in "123456")
+        with pytest.raises(UnauthorizedProblem, match="not valid"):
+            await services.operator_verify_mfa(
+                session, cfg=cfg, pair=pair, pre_auth_token=outcome.pre_auth_token, code=fullwidth
+            )
+        await session.refresh(staff)
+        assert staff.mfa_failed_attempts == 1
+
 
 class TestOperatorAuditTrail:
     async def test_password_verification_and_sign_in_are_both_audited(

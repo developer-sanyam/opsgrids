@@ -295,11 +295,34 @@ class TestTheDeploysCountSql:
         staff = await _make_staff(session)
         secret = security.generate_totp_secret()
         sealed, _mask = pii.seal(secret, kind="generic", settings=cfg)
-        for stored in (secret.encode("ascii"), sealed, b"ABCDEFG", None):
+        # The fifth row: a trailing newline. Python's `$` would match it and Postgres's does not
+        # — the count and the code must agree, so it is not a plaintext row to either.
+        for stored in (
+            secret.encode("ascii"),
+            sealed,
+            b"ABCDEFG",
+            None,
+            secret.encode("ascii") + b"\n",
+        ):
             session.add(MfaFactor(user_id=staff.id, type="totp", label="x", secret_enc=stored))
         await session.commit()
 
         assert (await session.execute(text(sql))).scalar_one() == 1
+
+
+class TestPlaintextShapeAgreesWithPostgres:
+    def test_a_trailing_newline_is_not_a_legacy_secret(self) -> None:
+        """`re.match(...$)` accepts a trailing newline; Postgres's `~ '...$'` does not. The
+        deploy's count and `_legacy_totp_secret` must call the same rows plaintext."""
+        secret = security.generate_totp_secret().encode("ascii")
+        assert services._legacy_totp_secret(secret) is not None
+        assert services._legacy_totp_secret(secret + b"\n") is None
+
+    def test_verify_totp_rejects_non_ascii_digits_without_raising(self) -> None:
+        fullwidth = "".join(chr(0xFF10 + int(d)) for d in "123456")
+        assert security.verify_totp(security.generate_totp_secret(), fullwidth) is None
+        assert security.looks_like_totp_code(fullwidth) is False
+        assert security.looks_like_totp_code("123456") is True
 
 
 class TestResetAllStaffMfa:

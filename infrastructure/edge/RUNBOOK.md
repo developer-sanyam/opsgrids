@@ -617,10 +617,15 @@ container. If a count is ever above 0 on a live box (a row written by an old con
 rollback, say), the next deploy reseals it; to do it now, run the one-off command above by hand.
 
 *The window, stated plainly.* Between the reseal finishing and `up` recreating auth, the **old**
-auth container is still serving and cannot read a sealed envelope. For those seconds a member who
-signs in with an authenticator code is refused (the old code has no MFA lockout, so nothing is
-counted against them); a recovery code still works. That is accepted: the alternative order —
-`up`, then reseal — is a lockout.
+auth container is still serving and cannot read a sealed envelope: `main`'s
+`_accept_second_factor` decodes `factor.secret_enc` as UTF-8 *before* it looks at recovery codes,
+and a sealed envelope is never valid UTF-8. So for those seconds **every** MFA sign-in — an
+authenticator code **and** a recovery code — for a member whose factor was just sealed ends in a
+**500** (the old code has no MFA lockout, so nothing is counted against them). That is accepted:
+it is seconds long, and the alternative order — `up`, then reseal — is a lockout. The deploy runs
+the reseal a **second time after `health`**: a plaintext factor enrolled through the old container
+inside that window would otherwise stay refused until the next deploy (it is idempotent, and only
+warns if it fails, since the site is already up).
 
 *If a plaintext row is ever met while the flag is off* — a restore from an old backup, a manual
 insert — auth answers a distinct **503 "Multi-factor re-seal pending — use a recovery code"** and
@@ -756,6 +761,14 @@ This is a full deploy of the previous ref that actually served — same prefligh
 same validate, same recreate. It takes as long as a deploy did, because it is one. There is no
 faster path in slice 1: images are built on the box, so there is no previous image tag to point
 at. If that is too slow to live with, that is slice 2's registry, and this is its trigger.
+
+**Do not roll back past the release that introduced the MFA reseal** (Operator MFA, above). Every
+MFA factor on the box is sealed after that deploy, and a ref from before it cannot read a sealed
+envelope: its `_accept_second_factor` decodes `secret_enc` as UTF-8 before it looks at recovery
+codes, so **every MFA sign-in — authenticator code and recovery code alike — is a 500 until you
+roll forward again.** There is no unseal tool. If the release itself is what broke, roll
+*forward* with a fix; if you must go back, expect MFA sign-in to be down for the duration and say
+so.
 
 **The bundle** (a broken storefront page, but the API is fine) is much faster — one symlink:
 

@@ -158,9 +158,12 @@ def verify_totp(secret: str, code: str, *, last_used_step: int | None = None) ->
     refuse a replay: without that, a code shoulder-surfed from a screen stays valid for
     the rest of its window.
     """
-    candidate = code.strip().replace(" ", "")
-    if not candidate.isdigit() or len(candidate) != TOTP_DIGITS:
+    # `looks_like_totp_code` insists on ASCII: `str.isdigit()` is true for fullwidth and other
+    # Unicode digits, and `hmac.compare_digest` raises TypeError comparing a non-ASCII `str` —
+    # a 500 on a submitted code instead of an ordinary counted miss.
+    if not looks_like_totp_code(code):
         return None
+    candidate = code.strip().replace(" ", "")
 
     now_step = int(time.time()) // TOTP_STEP
     for offset in range(-TOTP_WINDOW, TOTP_WINDOW + 1):

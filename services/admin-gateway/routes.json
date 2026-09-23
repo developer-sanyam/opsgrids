@@ -41,7 +41,7 @@
     { "prefix": "/api/v1/admin/catalog", "upstream": "http://localhost:8164", "staff_only": true },
 
     { "prefix": "/api/v1/admin/organizations", "upstream": "http://localhost:8170", "staff_only": true },
-    { "prefix": "/api/v1/admin/metrics", "upstream": "http://localhost:8170", "staff_only": true },
+    { "prefix": "/api/v1/admin/metrics/overview", "upstream": "http://localhost:8170", "staff_only": true },
     { "prefix": "/api/v1/admin/subscriptions", "upstream": "http://localhost:8170", "staff_only": true },
     { "prefix": "/api/v1/admin/overrides", "upstream": "http://localhost:8170", "staff_only": true },
     { "prefix": "/api/v1/admin/usage", "upstream": "http://localhost:8170", "staff_only": true },

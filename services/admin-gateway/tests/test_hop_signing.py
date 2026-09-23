@@ -42,3 +42,31 @@ def test_a_real_environment_with_the_key_starts() -> None:
         admin_gateway_hop_key=SecretStr("z" * 40 + "-hop-key-value"),
     )
     assert cfg.admin_gateway_hop_key is not None
+
+
+class TestTheMetricsRouteIsNarrowedToTheOnePathTheConsoleServes:
+    """Merge fix: `tests/infra/test_metrics_never_routed.py` forbids any gateway route *prefix*
+    ending in `/metrics` (Prometheus' unauthenticated `/metrics` must never be proxied). The
+    operator console's business metrics live at `/api/v1/admin/metrics/overview`, staff-only,
+    and that is the only path the SPA calls — so the route is that exact path, not the broader
+    `/api/v1/admin/metrics` prefix that tripped the lint."""
+
+    def test_the_overview_path_resolves_to_console_and_is_staff_only(self) -> None:
+        from app.main import routes
+
+        route = routes.resolve("/api/v1/admin/metrics/overview")
+        assert route is not None
+        assert route.upstream.endswith(":8170"), "console"
+        assert route.staff_only is True
+
+    def test_the_bare_metrics_prefix_is_not_routed(self) -> None:
+        from app.main import routes
+
+        assert routes.resolve("/api/v1/admin/metrics") is None
+        assert routes.resolve("/api/v1/admin/metrics/") is None
+
+    def test_no_route_prefix_ends_in_metrics(self) -> None:
+        """The property the infra lint enforces, asserted in this service's own suite too."""
+        from app.main import routes
+
+        assert [r.prefix for r in routes if r.prefix.rstrip("/").endswith("/metrics")] == []

@@ -386,6 +386,11 @@ deploy)
 	migrate
 	up
 	health
+	# Idempotent (see lib/mfa-reseal.sh): catches a plaintext factor enrolled through the OLD
+	# container between the pre-`up` reseal and `up`. The one before `up` is what gates the
+	# deploy; this one only tidies stragglers, so its failure warns rather than fails a deploy
+	# that is already up and healthy.
+	reseal_mfa_factors_if_pending || echo "WARNING: post-health MFA reseal failed — see RUNBOOK 'Operator MFA'" >&2
 	record_ref
 	;;
 previous-ref) previous_ref ;;
