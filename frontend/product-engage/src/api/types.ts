@@ -268,3 +268,76 @@ export interface Page<T> {
   size: number;
   pages: number;
 }
+
+/* ----------------------------------------- inbox ------------------------------------------ */
+
+export type ConversationStatus = "open" | "closed";
+export type MessageDirection = "inbound" | "outbound";
+
+/**
+ * One WhatsApp conversation. `wa_address` is always the mask — sealed at rest, and no route on
+ * this service ever opens it here; the real number is reachable only through `contact_id`, and
+ * only from the CRM's own audited unmask. `within_service_window` is computed by the service at
+ * read time from `last_customer_message_at`, so this screen never reimplements the 24-hour rule.
+ */
+export interface ConversationOut {
+  id: string;
+  channel: "whatsapp";
+  wa_address: string;
+  /** A `customer.contacts` id, once `app/consumers.py`'s resolver has matched the number. `null`
+   *  for a stranger, or before resolution has run — an ordinary state, not a fault. */
+  contact_id: string | null;
+  last_customer_message_at: string | null;
+  within_service_window: boolean;
+  status: ConversationStatus;
+  assignee_membership_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * One entry in a conversation's thread. `body` is masked for an inbound message (the customer's
+ * own words) and shown in full for an outbound one (this organization's own reply) — see
+ * `selectors.thread_stmt`'s docstring for why only one side is PII-gated. Revealing an inbound
+ * message's real text needs its own audited, stepped-up permission this app does not offer a
+ * route to yet.
+ */
+export interface ConversationMessageOut {
+  id: string;
+  direction: MessageDirection;
+  message_type: string;
+  body: string;
+  occurred_at: string;
+  provider_message_id: string | null;
+  profile_name: string | null;
+}
+
+/** `POST /engage/conversations/{id}/reply`. `idempotency_key` makes a retried click a no-op
+ *  rather than a second message on the wire. */
+export interface ConversationReplyIn {
+  body: string;
+  idempotency_key: string;
+}
+
+/** pending | sending | sent | delivered | read | failed | suppressed. Only `pending` and
+ *  `suppressed` are possible immediately after a reply — the dispatcher owns every transition
+ *  after that. `suppressed` is how a customer's earlier STOP reaches a reply already in flight. */
+export type MessageState =
+  | "pending"
+  | "sending"
+  | "sent"
+  | "delivered"
+  | "read"
+  | "failed"
+  | "suppressed";
+
+export interface ConversationReplyOut {
+  message_id: string;
+  state: MessageState;
+  conversation_id: string;
+}
+
+/** `POST /engage/conversations/{id}:assign`. `null` clears the assignment. */
+export interface ConversationAssignIn {
+  assignee_membership_id: string | null;
+}

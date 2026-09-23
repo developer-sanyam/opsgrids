@@ -25,7 +25,7 @@ import pytest_asyncio
 from cryptography.hazmat.primitives import serialization
 from sqlalchemy import select
 
-from app import models, services
+from app import models, services, whatsapp_provider
 from app.config import settings
 from app.main import app
 from app.transports import RecordingTransport, TransportRefused, TransportUnavailable
@@ -41,6 +41,20 @@ from platform_core.pii import open_sealed
 from tests.helpers import ctx_for, principal_for
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _assume_whatsapp_ownership_proven(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test in this module except `test_whatsapp_provider.py`'s own is about the
+    connection *row* — its shape, its secrecy, its uniqueness — not about proving a token against
+    Meta's Graph API, which is exercised on its own with `httpx.MockTransport` in that file.
+    Patched here, once, rather than in each test that reaches `connect_whatsapp`/
+    `replace_whatsapp`."""
+
+    async def _pass(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(whatsapp_provider, "verify_ownership", _pass)
 
 
 class FakeResolver:
@@ -1192,8 +1206,8 @@ WRITE_ROUTES = [
         WHATSAPP_CONNECTION,
         W_READ,
         {
-            "waba_id": "waba-1",
-            "phone_number_id": "phone-1",
+            "waba_id": "101000000000001",
+            "phone_number_id": "106540000000001",
             "display_number": "+1 555 0100",
             "access_token": "token",  # pragma: allowlist secret
         },
@@ -1491,8 +1505,8 @@ async def test_connecting_whatsapp_never_returns_the_token(client, org_id) -> No
         response = await client.post(
             WHATSAPP_CONNECTION,
             json={
-                "waba_id": "waba-1",
-                "phone_number_id": "phone-1",
+                "waba_id": "101000000000001",
+                "phone_number_id": "106540000000001",
                 "display_number": "+1 555 0100",
                 "access_token": "super-secret-token",  # pragma: allowlist secret
             },
@@ -1508,8 +1522,8 @@ async def test_reading_the_whatsapp_connection_returns_that_same_shape(client, o
         await client.post(
             WHATSAPP_CONNECTION,
             json={
-                "waba_id": "waba-1",
-                "phone_number_id": "phone-1",
+                "waba_id": "101000000000001",
+                "phone_number_id": "106540000000001",
                 "display_number": "+1 555 0100",
                 "access_token": "super-secret-token",  # pragma: allowlist secret
             },
@@ -1530,8 +1544,8 @@ async def test_a_second_whatsapp_connection_is_refused(client, org_id) -> None:
         await client.post(
             WHATSAPP_CONNECTION,
             json={
-                "waba_id": "waba-1",
-                "phone_number_id": "phone-1",
+                "waba_id": "101000000000001",
+                "phone_number_id": "106540000000001",
                 "display_number": "+1 555 0100",
                 "access_token": "token-one",  # pragma: allowlist secret
             },
@@ -1539,8 +1553,8 @@ async def test_a_second_whatsapp_connection_is_refused(client, org_id) -> None:
         response = await client.post(
             WHATSAPP_CONNECTION,
             json={
-                "waba_id": "waba-2",
-                "phone_number_id": "phone-2",
+                "waba_id": "101000000000002",
+                "phone_number_id": "106540000000002",
                 "display_number": "+1 555 0200",
                 "access_token": "token-two",  # pragma: allowlist secret
             },
@@ -1554,8 +1568,8 @@ async def test_replacing_the_whatsapp_connection_never_returns_the_token(client,
         await client.post(
             WHATSAPP_CONNECTION,
             json={
-                "waba_id": "waba-1",
-                "phone_number_id": "phone-1",
+                "waba_id": "101000000000001",
+                "phone_number_id": "106540000000001",
                 "display_number": "+1 555 0100",
                 "access_token": "old-token",  # pragma: allowlist secret
             },
@@ -1563,8 +1577,8 @@ async def test_replacing_the_whatsapp_connection_never_returns_the_token(client,
         response = await client.put(
             WHATSAPP_CONNECTION,
             json={
-                "waba_id": "waba-1",
-                "phone_number_id": "phone-1",
+                "waba_id": "101000000000001",
+                "phone_number_id": "106540000000001",
                 "display_number": "+1 555 0199",
                 "access_token": "new-token",  # pragma: allowlist secret
             },
@@ -1582,8 +1596,8 @@ async def test_replacing_whatsapp_when_no_connection_exists_is_a_404(client, org
         response = await client.put(
             WHATSAPP_CONNECTION,
             json={
-                "waba_id": "waba-1",
-                "phone_number_id": "phone-1",
+                "waba_id": "101000000000001",
+                "phone_number_id": "106540000000001",
                 "display_number": "+1 555 0100",
                 "access_token": "token",  # pragma: allowlist secret
             },
@@ -1596,13 +1610,34 @@ async def test_replacing_whatsapp_refuses_a_caller_holding_only_the_read(client,
         response = await client.put(
             WHATSAPP_CONNECTION,
             json={
-                "waba_id": "waba-1",
-                "phone_number_id": "phone-1",
+                "waba_id": "101000000000001",
+                "phone_number_id": "106540000000001",
                 "display_number": "+1 555 0100",
                 "access_token": "token",  # pragma: allowlist secret
             },
         )
     assert response.status_code == 403
+
+
+@pytest.mark.parametrize("field", ["waba_id", "phone_number_id"])
+@pytest.mark.parametrize(
+    "value", ["waba-1", "12345678901234567890123456789012", "1e10", "", " 12345"]
+)
+async def test_a_non_numeric_or_oversized_id_is_rejected_at_the_boundary(
+    client, org_id, field: str, value: str
+) -> None:
+    """Meta's own ids are bare digit strings. Before this pattern, a stray path segment or a
+    URL could sail past the length check alone and reach a Graph API call or a database row."""
+    body = {
+        "waba_id": "101000000000001",
+        "phone_number_id": "106540000000001",
+        "display_number": "+1 555 0100",
+        "access_token": "token",  # pragma: allowlist secret
+    }
+    body[field] = value
+    with as_principal(engage_caller(org_id, [f"{W_WRITE}:ORG"])):
+        response = await client.post(WHATSAPP_CONNECTION, json=body)
+    assert response.status_code == 422
 
 
 async def test_another_organizations_whatsapp_connection_is_invisible(client, org_id) -> None:
@@ -1611,8 +1646,8 @@ async def test_another_organizations_whatsapp_connection_is_invisible(client, or
         await client.post(
             WHATSAPP_CONNECTION,
             json={
-                "waba_id": "other-waba",
-                "phone_number_id": "other-phone",
+                "waba_id": "109000000000009",
+                "phone_number_id": "106549999999999",
                 "display_number": "+1 555 9999",
                 "access_token": "other-token",  # pragma: allowlist secret
             },
