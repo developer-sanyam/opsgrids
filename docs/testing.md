@@ -3,43 +3,62 @@
 How tests work here, what they cover, and — more usefully — what they do not.
 
 ```bash
-make test         # every service, each in its own process
-make check        # lint + typecheck + test; the fast path
-make gate         # check plus the rest of the quality gate; everything CI runs
+make check          # lint + typecheck + every Python suite; the fast backend path
+make frontend-gate  # every frontend row: types, lint, boundaries, tests, builds, audit, licences
+make gate           # every row CI runs, run locally — needs `make infra` and a migrated database
+make gate-full      # gate + the end-to-end journey (and later: images, visual, a11y)
 ```
 
-**216 tests pass.** Read the next section before taking comfort from that.
+With GitHub Actions unavailable, `make gate` is the only full verification there is. Every CI
+step calls one of the targets `gate` runs, so the two cannot disagree about what "green" means.
+The full list of tools, what each enforces and where it runs is in
+[TOOLCHAIN.md](TOOLCHAIN.md).
 
 ---
 
-## What 216 passing tests does not mean
-
-Every defect in [discoveries.md](discoveries.md) passed a green suite. Six of the eight were
-**contract failures between two components** — account-service served none of the internal
-endpoints auth and the gateways call; the permission-version counter was never incremented so
-revocation did nothing.
-
-Unit tests with stubs are structurally blind to this class of bug, because the stub encodes what
-the author *believed* the other side did. Both sides can be green and disagree.
-
-**There is no test that runs two services together.** That is the single largest hole in this
-suite, and it is the top item in [backlog.md](backlog.md).
-
 ## Counts
 
-| Unit | Tests |
-|---|---|
-| `libs/platform-core` | 49 |
-| `account-service` | 78 |
-| `auth-service` | 41 |
-| `app-gateway` | 31 |
-| `admin-gateway` | 17 |
+Collected, not hand-maintained — regenerate them rather than edit them (2026-09-23):
+
+| Suite | Tests | Command |
+|---|---|---|
+| Services (35, each in its own process) | 4,756 | `make test-services` |
+| `libs/platform-core` | 341 | `make test-libs` |
+| Repository tooling (`tests/infra`) | 37 | `make test-infra` |
+| End-to-end journeys (`e2e/`) | 53 | `make e2e` |
+| Frontend (14 packages, 198 files, vitest) | 2,061 | `make frontend-test` |
+
+Python counts are `pytest --collect-only`; the frontend count is vitest's own total.
+
+## What passing tests do not mean
+
+Every defect in [discoveries.md](discoveries.md) passed a green suite. Most were **contract
+failures between two components** — account-service served none of the internal endpoints auth
+and the gateways call; the permission-version counter was never incremented so revocation did
+nothing.
+
+Unit tests with stubs are structurally blind to this class of bug, because the stub encodes what
+the author *believed* the other side did. Both sides can be green and disagree. Two things now
+exist for exactly that reason:
+
+- **The end-to-end suite** (`e2e/`, `make e2e`) boots six real services, an outbox relay and a
+  consumer, and drives one organization's whole journey over HTTP against real Postgres and
+  RabbitMQ. It needs `make infra` and its own database (`opsgrids_wt`, see the Makefile), which
+  is why it is in `gate-full` rather than `gate`.
+- **Cross-service contract tests** in `services/approval/tests/` drive another service's real
+  write and consume paths (see the note on `test-services` in the Makefile).
+
+Neither covers every pair of services. A new service-to-service call needs one or the other.
 
 ## Rules that are not negotiable
 
 ### Real PostgreSQL, never SQLite
-The schema depends on `citext`, partial unique indexes and JSONB. A test that passes against
-SQLite proves nothing about the database this ships on. `make infra` must be up.
+The schema depends on `citext`, partial unique indexes, JSONB, PostGIS and row-level security. A
+test that passes against SQLite proves nothing about the database this ships on. `make infra`
+must be up.
+
+**Never point a test run at a database someone else is using.** The service fixtures truncate
+their schema's tables. Run DB-backed suites against the local stack or an isolated database.
 
 ### One service per process
 Every service exposes a top-level `app` package, so only one can be importable at a time. This is
@@ -56,11 +75,17 @@ transaction, so the rollback that accompanied a rejected sign-in discarded it an
 lockout never fired**. A rolled-back-transaction fixture would have hidden that permanently.
 
 ### Never override the thing you are testing
-`conftest` overrides the session dependency so the HTTP client shares the test's session. Once the
-tenant chokepoint lands, tests must override *through* it, not around it — otherwise every test
-bypasses the isolation mechanism by construction, the suite stays green, and production is
-unprotected. This is called out in ADR-0002 as a design constraint rather than a test cleanup
-task.
+`conftest` overrides the session dependency so the HTTP client shares the test's session. Tests
+must override *through* the tenant chokepoint, not around it — otherwise every test bypasses the
+isolation mechanism by construction, the suite stays green, and production is unprotected.
+ADR-0002 calls this out as a design constraint rather than a test cleanup task.
+
+### A skipped test fails the build
+`make hygiene` refuses `pytest.mark.skip` and a `skipif` without a reason; the shared ESLint
+preset refuses `it.only`, `describe.skip`, `it.todo` and their relatives in the frontend. A
+frontend package with tests runs `vitest run` without `--passWithNoTests`, so a suite that stops
+being collected fails rather than passing with zero. The one package that keeps the flag,
+`opsgrids-internal`, genuinely has no tests yet — that is a gap, listed below.
 
 ## What is worth testing here
 
@@ -68,14 +93,15 @@ Ordered by how much a failure would cost:
 
 1. **Negative authorization.** For every endpoint: the caller who should be refused. More valuable
    than the happy path — the happy path breaks loudly and gets noticed.
-2. **Cross-tenant.** Seed in org A, call with an org-B token, assert never `200`.
+2. **Cross-tenant.** Seed in org A, call with an org-B token, assert never `200`. Fifteen services
+   carry a `test_cross_tenant_isolation.py`; `libs/platform-core/tests/test_tenancy.py` covers the
+   transaction-local GUC itself; the end-to-end journey proves it through the whole stack.
 3. **Fail-closed behaviour.** Kill Redis and assert the request is *refused*, not admitted.
    `test_the_limiter_fails_closed` exists for exactly this reason.
 4. **Contract shape between services.** The fields one service reads from another by name. The
    internal-API tests assert every field `HttpDirectory` parses, so a rename breaks a test rather
    than sign-in.
-5. **Idempotency**, once consumers exist: deliberately redeliver and assert the effect happens
-   once.
+5. **Idempotency.** Deliberately redeliver and assert the effect happens once.
 
 ## Test-writing conventions
 
@@ -92,38 +118,56 @@ distinguishes "refused" from "refused after forwarding it anyway".
 
 ## Gaps
 
-- **No end-to-end suite** — the top gap.
-- **No cross-tenant isolation suite** — the acceptance gate for tenancy.
-- **No frontend tests at all** — no product UI exists to test.
+- **Cross-tenant isolation is per service, not universal.** Fifteen services have the suite; the
+  rest rely on the shared chokepoint and RLS. A service without one has not proven its own lists.
+- **`opsgrids-internal` has no frontend tests** — the one package still on `--passWithNoTests`.
 - **No load or soak testing.**
 - **No mutation testing**, so the *quality* of these assertions is unmeasured.
-- **7 of the 18 quality-gate rows have no tooling.** They must be reported **N/A with a
-  reason**, never green. The rest are `make` targets, each a named CI step, and `make gate`
-  runs them all.
+- **No coverage thresholds.** Nothing fails when a critical path loses its tests.
 
 ## The quality gate
 
-What has tooling, and what it is:
+Every row is a `make` target, every CI step calls one, and `make gate` runs them all. A row that
+has no tooling is reported **N/A with its reason**, never green.
 
-| Row | Check | Command |
-|---|---|---|
-| 5 | Migration rollback | `make migration-roundtrip` — `upgrade head`, `downgrade base`, `upgrade head`, per service |
-| 7 | Boot and health | `make smoke` — the real entrypoint under uvicorn; `/health`, then `/health/ready` |
-| 10 | No secrets, skips or debug in the diff | `make secrets` and `make hygiene` |
-| 11 | API schema committed and matching | `make openapi-check`; `make openapi` regenerates `libs/contracts/openapi/` |
-| 16 | SAST, secret scan, dependency audit, licence check | `make lint` (ruff bandit rules), `make secrets`, `make audit`, `make licenses` |
-| 17 | Dependency boundaries, no import cycles | `make boundaries` — the contracts are in `.importlinter` |
+| Row | Command |
+|---|---|
+| Lint and format (Python) | `make lint` — ruff, including the bandit (`S`) rules |
+| Types (Python) | `make typecheck` — mypy strict over libs, every service, the tooling |
+| Python tests | `make test-libs`, `make test-services`, `make test-infra` |
+| No skips, debugger calls, print, bare noqa | `make hygiene` |
+| Service layering, no import cycles | `make boundaries` — contracts in `.importlinter` |
+| API schema and permission manifests committed and matching | `make openapi-check`; `make openapi` regenerates |
+| Migration rollback | `make migration-roundtrip` — `upgrade head`, `downgrade base`, `upgrade head`, per service |
+| Models match migrations | `make migration-check` — `alembic check` per service; after the roundtrip |
+| Boot and health | `make smoke` — the real entrypoint under uvicorn; `/health`, then `/health/ready` |
+| Shell scripts | `make shellcheck` — pinned 0.11.0, every severity |
+| Dockerfiles | `make hadolint` — pinned 2.15.1, `.hadolint.yaml` |
+| Dependency audit | `make audit` (pip-audit), `make frontend-audit` (pnpm audit `--prod`, expiring allow-list) |
+| Licences | `make licenses`, `make frontend-licenses` — both in `tools/licenses.toml` |
+| Secrets | `make secrets` — detect-secrets over every tracked file |
+| Frontend types | `make frontend-typecheck` |
+| Frontend lint, static accessibility, focused/skipped tests, ports | `make frontend-lint` — shared preset with jsx-a11y and the vitest rules; `tools/frontend_ports.py` |
+| Frontend package boundaries, no cycles | `make frontend-boundaries` — dependency-cruiser, `frontend/.dependency-cruiser.cjs` |
+| Frontend tests | `make frontend-test` |
+| Production build | `make frontend-build` — every app, and the storefront's buyer bundle |
+| End-to-end | `make e2e` — in `gate-full`, not `gate` |
 
-What does not, and why:
+What has no tooling yet, and why:
 
-- **Rows 6, 8, 12, 13, 14, 18** — production build, end-to-end, visual regression,
-  accessibility, performance budget, design-token lint. There is no product UI and no E2E
-  harness to run any of them against; they arrive with the first one.
-- **Row 15** — query plans. Nothing checks `EXPLAIN` output. It needs representative data
-  volumes and an agreed baseline to compare against, and neither exists yet.
+- **Visual regression** and **runtime accessibility** (axe over rendered states) — there is no
+  component workshop to run them over. `jsx-a11y` catches what is visible in the markup; it
+  cannot see contrast, focus order or live-region behaviour. `gate-full` is where they land.
+- **Performance budget** — no bundle-size or field-metric budget is enforced.
+- **Design-token lint** — nothing rejects a raw colour or spacing value in feature code.
+- **Query plans** — nothing checks `EXPLAIN` output. It needs representative data volumes and an
+  agreed baseline to compare against, and neither exists yet.
+- **Container image scan** — `gate-full`'s next extension point.
 
-Two of the tools carry allow-lists, and the rule for both is the same: allow the specific
+Several tools carry allow-lists, and the rule for all of them is the same: allow the specific
 thing with a reason, never loosen the check. Licences are allow-listed by name in
-`tools/licenses.toml`; the dev placeholders the secret scan must ignore are patterns in the
-Makefile, each with its reason, and a hard-coded test credential carries the
-`pragma: allowlist secret` marker on its own line.
+`tools/licenses.toml`; accepted npm advisories live in `frontend/audit-allowlist.toml` with an
+expiry date; the dev placeholders the secret scan must ignore are patterns in the Makefile, each
+with its reason, and a hard-coded test credential carries the `pragma: allowlist secret` marker
+on its own line; a deliberate shellcheck, hadolint or jsx-a11y finding is disabled on its own
+line with the reason beside it.

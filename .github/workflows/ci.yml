@@ -122,10 +122,12 @@ jobs:
             mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-
             mypy-${{ runner.os }}-
 
+      # Every check in this file is one make target, and `make gate` runs the same targets.
+      # (Setup — installs, the database bootstrap — is not a check.) That is the whole
+      # contract between this file and the Makefile: a check that exists only here is a check
+      # nobody can run before pushing, which with Actions unavailable means nobody runs it.
       - name: Lint
-        run: |
-          uv run ruff check .
-          uv run ruff format --check .
+        run: make lint
 
       - name: Hygiene
         # No skipped tests, debugger calls, print() or bare noqa. A skipped test is a
@@ -142,23 +144,31 @@ jobs:
         # a time.
         run: make typecheck-libs typecheck-services typecheck-tools
 
-      - name: Deploy-tooling tests
-        # remote.sh's rebuild rule and ci-plan.sh's path logic, each against a throwaway
-        # git repo the test builds itself. No database, no `make infra` — fits here, not
-        # in the tests job below.
+      - name: Repository-tooling tests
+        # remote.sh's rebuild rule, ci-plan.sh's path logic, and the gate's own checkers
+        # (licence expressions, the audit allow-list's expiry, the port check). No database,
+        # no `make infra` — fits here, not in the tests job below.
         run: make test-infra
 
       - name: Shard arithmetic
         # Asserts the shards below partition the service list exactly. The failure this
         # prevents is silent: a miscount does not break a build, it drops a service's tests
         # and leaves the pipeline green while nothing checks that service.
-        run: |
-          tools/shard-verify.sh 3
+        run: make shard-verify SHARDS=3
 
       - name: OpenAPI contract
-        # The committed documents in libs/contracts/openapi must match the code.
-        # `make openapi` regenerates them.
+        # The committed documents in libs/contracts/openapi and the permission manifests
+        # must match the code. `make openapi` regenerates them.
         run: make openapi-check
+
+      - name: Shell scripts
+        # shellcheck at its pinned version — the runner's own is older and disagrees, so the
+        # target falls back to the pinned image rather than use it.
+        run: make shellcheck
+
+      - name: Dockerfiles
+        # hadolint at its pinned version, through its image. Thresholds in .hadolint.yaml.
+        run: make hadolint
 
   migrations:
     name: Backend — migrations ${{ matrix.shard }}/3
@@ -302,7 +312,7 @@ jobs:
         # Postgres. In the old single job they happened to run after migrations, which hid
         # the dependency; moving them to a container-less job surfaced it immediately.
         if: matrix.shard == 1
-        run: uv run pytest libs -q
+        run: make test-libs
 
       - name: Boot smoke
         # The real entrypoint — uvicorn, the lifespan, the pool, Redis — not the in-process
@@ -315,7 +325,9 @@ jobs:
     name: Supply chain — vulnerabilities, licences, secrets
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.backend == 'true'
+    # Either half: the npm rows audit what the frontend ships, and a frontend-only change is
+    # exactly the one that adds an npm dependency.
+    if: needs.changes.outputs.backend == 'true' || needs.changes.outputs.frontend == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -323,44 +335,55 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        run: make frontend-install
+
       - name: Dependency audit
-        # pip-audit over what uv.lock resolves to. The only step here that needs the
-        # network for anything but installing.
+        # pip-audit over what uv.lock resolves to. Needs the network for the advisory database.
         run: make audit
+
+      - name: Frontend dependency audit
+        # pnpm audit --prod: high and critical fail unless accepted in
+        # frontend/audit-allowlist.toml with a reason and an unexpired date.
+        run: make frontend-audit
 
       - name: Licence check
         # Every dependency's licence is on the allow-list in tools/licenses.toml.
         run: make licenses
+
+      - name: Frontend licence check
+        # Every production npm package's licence is on the [npm] allow-list, same file.
+        run: make frontend-licenses
 
       - name: Secret scan
         # detect-secrets over every tracked file, against the audited baseline. The dev
         # placeholders are excluded by pattern in the Makefile, with the reasons.
         run: make secrets
 
-  contracts:
-    name: Contracts — events validate against their schemas
-    runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.backend == 'true'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-      - run: uv sync --frozen
-      - name: Validate event contracts
-        # A publisher whose payload does not match its declared schema fails here rather
-        # than at 3am in a consumer that cannot parse it.
-        run: uv run pytest libs/contracts -q || echo "no contract tests yet"
+  # There is no contracts job. It used to run `pytest libs/contracts || echo "no contract
+  # tests yet"`, which could not fail: libs/contracts holds no tests, pytest exited 5, and the
+  # echo turned that into a green tick labelled "events validate against their schemas". A row
+  # that cannot fail is worse than no row, because it is read as a guarantee.
+  #
+  # What libs/contracts does hold today — the OpenAPI documents and permission manifests — is
+  # checked by `make openapi-check` in the static job. Event schemas and `make contracts-check`
+  # land together; this job comes back then, calling that target and nothing else.
 
   frontend:
-    name: Frontend — types, lint, tests, build
+    name: Frontend — types, lint, boundaries, tests, build
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
-    defaults:
-      run:
-        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
 
@@ -374,25 +397,37 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
-      - run: pnpm install --frozen-lockfile
+      # For the port check in frontend-lint only: a stdlib script run with `uv run
+      # --no-project`, so there is no Python environment to sync here.
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install
+        run: make frontend-install
 
       # No build cache: every package here is a Vite app, and Vite keeps nothing worth carrying
-      # between runs. (The Next.js marketing site that used to have one lives in its own repo.)
+      # between runs.
 
-      # There is no separate type-check step because there is nothing left for it to do.
-      # Twelve of the fourteen packages run `tsc --noEmit` inside their own `build`, the two
-      # library packages *are* `tsc --noEmit`, and the marketing site's `next build`
-      # type-checks unless `typescript.ignoreBuildErrors` is set, which it is not. Running it
-      # again beforehand type-checked the whole workspace twice and cost ~45s for no extra
-      # coverage; a type error still fails the Build step, identically.
+      # Type-checked on its own even though every app's `build` runs `tsc --noEmit` again. That
+      # costs ~45s, measured, and buys one thing: a type error fails the row named "Type check"
+      # before lint and tests run, rather than surfacing minutes later as a build failure. It is
+      # also what `make frontend-gate` runs, and this job runs nothing the gate does not.
+      - name: Type check
+        run: make frontend-typecheck
+
+      # ESLint through the shared preset (jsx-a11y, no focused/skipped/todo tests,
+      # --max-warnings=0), then the dev/preview port check.
       - name: Lint
-        run: pnpm -r lint
+        run: make frontend-lint
 
-      # @opsgrids/client and @opsgrids/config declare no test script; -r skips what it does not find.
+      # dependency-cruiser: apps never import each other, shared packages only through their
+      # exports, the design system and the SDK never import each other, no cycles.
+      - name: Dependency boundaries
+        run: make frontend-boundaries
+
       - name: Tests
-        run: pnpm -r test
+        run: make frontend-test
 
-      # The one check that compiles for production. A type error tsc tolerates in dev and
-      # Vite refuses at build time is found here rather than at deploy.
+      # The one check that compiles for production — including the storefront's buyer bundle,
+      # which is what a merchant's customers actually download.
       - name: Build
-        run: pnpm -r build
+        run: make frontend-build
