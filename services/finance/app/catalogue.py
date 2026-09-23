@@ -174,6 +174,12 @@ FINANCE = PermissionCatalogue(
         PermissionSpec(
             "compliance", "withholding", "read", "See TDS deducted and TCS collected per document"
         ),
+        # The ITC ledger has no write permission of its own: every posting is a consequence of an
+        # IMS decision or a GSTR-3B filing, each already behind its own dangerous permission, so a
+        # third grant here would only ever be held alongside one of those two.
+        PermissionSpec(
+            "compliance", "itc", "read", "See the input-tax-credit ledger and its balance"
+        ),
     ],
 )
 
@@ -213,6 +219,7 @@ FINANCE_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("finance.compliance.returns.read", "ORG"),
             ("finance.compliance.eway.read", "ORG"),
             ("finance.compliance.withholding.read", "ORG"),
+            ("finance.compliance.itc.read", "ORG"),
         ),
     ),
 ]

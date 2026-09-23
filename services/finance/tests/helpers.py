@@ -25,6 +25,7 @@ FINANCE_READS = (
     "finance.compliance.returns.read",
     "finance.compliance.eway.read",
     "finance.compliance.withholding.read",
+    "finance.compliance.itc.read",
 )
 
 #: The writes on the public finance surface. Kept apart from the reads so a test can hand a caller
