@@ -33,7 +33,7 @@ from app.models import SCHEMA
 from platform_core.db import TENANT_GUC, get_directory_session, get_session
 
 #: Tenant-scoped tables only — the catalogue survives.
-TENANT_TABLES = ("activations", "audit_logs", "outbox", "processed_events")
+TENANT_TABLES = ("activations", "activation_sources", "audit_logs", "outbox", "processed_events")
 
 
 def _connect_args() -> dict:

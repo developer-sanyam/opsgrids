@@ -58,7 +58,13 @@ async def list_products(
 )
 async def list_activations(session: SessionDep, ctx: ActivationRead) -> list[ActivationOut]:
     activations = await selectors.list_activations(session, ctx.organization_id)
-    return [ActivationOut.model_validate(a) for a in activations]
+    entitled_by = await selectors.live_sources_by_product(session, ctx.organization_id)
+    out = []
+    for activation in activations:
+        row = ActivationOut.model_validate(activation)
+        row.entitled_by = entitled_by.get(activation.product_key, [])
+        out.append(row)
+    return out
 
 
 @router.post(

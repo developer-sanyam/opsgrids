@@ -13,7 +13,9 @@ principals carry it.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 
+from app.domain import RegisteredProduct
 from platform_core.auth import Principal
 
 #: What the product gateway stamps on a customer's token.
@@ -52,3 +54,41 @@ def operator_principal(*, staff: bool = True) -> Principal:
         membership_id=uuid.uuid4(),
         audience=OPERATOR_AUDIENCE if staff else APP_AUDIENCE,
     )
+
+
+class FakeRegistry:
+    """A dict-backed stand-in for product-service's registry read.
+
+    `default()` mirrors the seeded registry: `core` and `notification` are platform, `suite` is
+    the bundle, and the sellable products are plain. `with_bundle` adds an ad-hoc bundle key and
+    its members, for tests that author their own ladders under throwaway product keys.
+    """
+
+    def __init__(self, entries: Iterable[RegisteredProduct]) -> None:
+        self._entries = {e.key: e for e in entries}
+        self.calls = 0
+
+    @classmethod
+    def default(cls) -> FakeRegistry:
+        plain = ["hrms", "crm", "finance", "projects", "support", "operations", "engage"]
+        return cls(
+            [
+                RegisteredProduct("core", is_platform=True),
+                RegisteredProduct("notification", is_platform=True),
+                RegisteredProduct("suite", is_bundle=True),
+                *(RegisteredProduct(key) for key in plain),
+            ]
+        )
+
+    def with_bundle(self, bundle_key: str, members: Iterable[str]) -> FakeRegistry:
+        return FakeRegistry(
+            [
+                *self._entries.values(),
+                RegisteredProduct(bundle_key, is_bundle=True),
+                *(RegisteredProduct(m) for m in members if m not in self._entries),
+            ]
+        )
+
+    async def products(self) -> dict[str, RegisteredProduct]:
+        self.calls += 1
+        return dict(self._entries)

@@ -30,7 +30,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from app import services
+from app import selectors, services
 from app.config import settings
 from app.models import ProcessedEvent
 from platform_core.db import assert_app_role, init_engine, session_scope
@@ -52,6 +52,9 @@ SUBSCRIPTION_EVENTS = (
     "commerce.subscription.past_due",
     "commerce.subscription.suspended",
     "commerce.subscription.cancelled",
+    # Not a transition: the one-off backfill re-announces a bundle subscription that predates
+    # `entitled_products`, with the same payload shape, so its members are finally projected.
+    "commerce.subscription.entitlements_resynced",
 )
 
 
@@ -59,6 +62,26 @@ def _parse_dt(value: Any) -> datetime | None:
     if not value:
         return None
     return datetime.fromisoformat(value)
+
+
+def _entitled_products(payload: dict[str, Any]) -> list[str] | None:
+    """The members this event speaks for, or None for an event from before the field existed
+    (which the projection reads as `[product_key]`). A malformed value is an error, not a
+    default: guessing at which products a customer paid for is how a bundle entitled nothing."""
+    value = payload.get("entitled_products")
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
+        raise ValueError(f"entitled_products must be a list of product keys, got {value!r}")
+    return list(value)
+
+
+def _subscription_id(envelope: dict[str, Any]) -> uuid.UUID | None:
+    """The providing subscription: the payload names it; older events only as the aggregate."""
+    raw = envelope["payload"].get("subscription_id")
+    if raw is None and envelope.get("aggregate_type") == "subscription":
+        raw = envelope.get("aggregate_id")
+    return uuid.UUID(str(raw)) if raw else None
 
 
 async def project_subscription_event(envelope: dict[str, Any]) -> None:
@@ -78,6 +101,21 @@ async def project_subscription_event(envelope: dict[str, Any]) -> None:
         if await already_processed(session, ProcessedEvent, event_id):
             log.info("subscription.event.duplicate", event_id=str(event_id))
             return
+        members = _entitled_products(payload)
+        if members is None and await _is_bundle(session, payload["product_key"]):
+            # A bundle event from a subscription-service that predates `entitled_products`. The
+            # old fold would project an activation for the bundle's own key, which no route
+            # checks — entitling nothing while looking like it did. Record it and wait for the
+            # event that names the members (the next transition, or the backfill's resync).
+            log.warning(
+                "subscription.projection.bundle_without_members",
+                event_id=str(event_id),
+                organization_id=str(organization_id),
+                product_key=payload["product_key"],
+                hint="run `python -m app.backfill` in subscription-service",
+            )
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+            return
         await services.project_subscription(
             session,
             organization_id=organization_id,
@@ -87,6 +125,8 @@ async def project_subscription_event(envelope: dict[str, Any]) -> None:
             # The envelope's occurred_at, not now(): the out-of-order guard compares event
             # time to event time, so a stale transition folded late is dropped.
             occurred_at=_parse_dt(envelope.get("occurred_at")),
+            entitled_products=members,
+            subscription_id=_subscription_id(envelope),
         )
         mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
     log.info(
@@ -94,8 +134,14 @@ async def project_subscription_event(envelope: dict[str, Any]) -> None:
         event_id=str(event_id),
         organization_id=str(organization_id),
         product_key=payload.get("product_key"),
+        entitled_products=members,
         state=payload.get("state"),
     )
+
+
+async def _is_bundle(session: Any, product_key: str) -> bool:
+    product = await selectors.get_product(session, product_key)
+    return bool(product is not None and product.is_bundle)
 
 
 for _event_type in SUBSCRIPTION_EVENTS:

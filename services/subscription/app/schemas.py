@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -35,6 +36,16 @@ class CatalogPrice(BaseModel):
     meter_key: str | None = None
 
 
+class CatalogFeature(BaseModel):
+    """One row of a catalog version's feature sheet. `value` is whatever JSON catalog stored;
+    this service reads exactly one key of it (`bundled_products`) and ignores the rest."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    feature_key: str
+    value: Any = None
+
+
 class CatalogPlanVersion(BaseModel):
     """A catalog plan version as the pin lookup sees it — unfiltered, including the audience
     pointer, so this service can apply the published-and-visible rule itself."""
@@ -50,6 +61,11 @@ class CatalogPlanVersion(BaseModel):
     currency: str
     restricted_to_org_id: uuid.UUID | None = None
     prices: list[CatalogPrice] = Field(default_factory=list)
+    #: The feature sheet, parsed so a bundle's members can be read off the version being pinned.
+    features: list[CatalogFeature] = Field(default_factory=list)
+
+    def feature_pairs(self) -> list[tuple[str, Any]]:
+        return [(f.feature_key, f.value) for f in self.features]
 
 
 # --------------------------------------------------------------------- customer input
@@ -163,6 +179,10 @@ class SubscriptionOut(BaseModel):
     current_period_end: datetime | None = None
     cancel_at: datetime | None = None
     currency: str
+    #: The products this subscription switches on. One key for an ordinary subscription; a
+    #: bundle's members for a bundle — snapshotted from the pinned catalog version at subscribe
+    #: and change-plan, never taken from the client.
+    entitled_products: list[str] = Field(default_factory=list)
     items: list[SubscriptionItemOut] = Field(default_factory=list)
     #: Null unless a dunning cycle is open against this subscription.
     dunning: DunningOut | None = None

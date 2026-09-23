@@ -30,8 +30,11 @@ hours late from pushing the whole remaining ladder three hours out.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
 
 from app.models import (
     STATE_ACTIVE,
@@ -57,6 +60,12 @@ EVT_CANCELLED = EVT_PREFIX + "cancelled"
 #: `_EVENT_BY_TARGET` and product-service does not bind it: nothing about entitlement changes
 #: when a retry is asked for. payment-service consumes it and raises the charge.
 EVT_PAYMENT_RETRY_DUE = EVT_PREFIX + "payment_retry_due"
+
+#: Not a lifecycle transition either: the one-off backfill (`app/backfill.py`) emits it for a
+#: bundle subscription that predates `entitled_products`, so the projection downstream learns the
+#: members it has been entitled to all along. It carries the same payload as every lifecycle
+#: event — state, pin, members — so product- and account-service fold it with the same handler.
+EVT_ENTITLEMENTS_RESYNCED = EVT_PREFIX + "entitlements_resynced"
 
 #: Reasons that override the target-state default event. An upgrade and a downgrade keep the
 #: subscription `active`, so the target alone cannot tell them apart or from a renewal.
@@ -146,6 +155,55 @@ def decide(*, from_state: str | None, to_state: str, reason: str | None = None) 
         event_type=event_for(to_state, reason=reason),
         reason=reason,
     )
+
+
+# ------------------------------------------------------------------- bundles (commerce-packaging)
+
+#: The feature key a bundle version declares its members in. Catalog's vocabulary, named here
+#: rather than imported because one process may only ever hold one service's `app`.
+FEATURE_BUNDLED_PRODUCTS = "bundled_products"
+
+#: The shape of a product key — the gateway prefix, the permission prefix, the `ent` claim.
+_PRODUCT_KEY = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
+
+
+class MalformedBundle(BusinessRuleProblem):
+    """A version whose `bundled_products` cannot be read as a list of product keys.
+
+    Refused at subscribe rather than pinned: a bundle nobody can name the members of would be a
+    subscription that bills for products it entitles nobody to — the exact failure this code
+    exists to end. Catalog validates the declaration when it is authored; this is the net under
+    that, for a version authored before the validation existed.
+    """
+
+
+def entitled_products(product_key: str, features: Iterable[tuple[str, Any]]) -> list[str]:
+    """The product keys a subscription to this version entitles, in declaration order.
+
+    A version that declares `bundled_products` entitles exactly its members — **not** the
+    bundle's own key, which routes nowhere and would sit in the `ent` claim meaning nothing. Any
+    other version entitles the product it was bought under, which is every subscription that
+    existed before bundles fanned out.
+
+    The list comes only from the pinned catalog version's feature sheet. The caller never gets a
+    say: a member list read from a request body would let a customer buy the duo and name four
+    products.
+    """
+    for key, value in features:
+        if key != FEATURE_BUNDLED_PRODUCTS:
+            continue
+        if not isinstance(value, list) or not value:
+            raise MalformedBundle(f"{FEATURE_BUNDLED_PRODUCTS} must be a non-empty list")
+        members: list[str] = []
+        for member in value:
+            if not isinstance(member, str) or not _PRODUCT_KEY.match(member):
+                raise MalformedBundle(
+                    f"{FEATURE_BUNDLED_PRODUCTS} names {member!r}, which is not a product key"
+                )
+            if member not in members:
+                members.append(member)
+        return members
+    return [product_key]
 
 
 # --------------------------------------------------------------------------- dunning (ADR-0005)

@@ -17,6 +17,10 @@ class Settings(ServiceSettings):
     #: scaffold — catalog emits `catalog.plan_version.published` and `catalog.plan.retired`.
     db_outbox_role: str | None = "opsgrids_outbox"
 
+    #: Where product-service answers the registry read. Authoring a bundle validates its
+    #: `bundled_products` against the registry there; nothing else catalog does calls out.
+    product_service_url: str = "http://localhost:8112"
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

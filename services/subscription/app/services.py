@@ -132,6 +132,29 @@ def _replace_items(subscription: Subscription, version: CatalogPlanVersion) -> N
     _append_items(subscription, version)
 
 
+def _lifecycle_payload(subscription: Subscription) -> dict[str, Any]:
+    """What every `commerce.subscription.*` lifecycle event carries.
+
+    `entitled_products` is the fan-out a bundle needs: product-service projects one activation
+    source per member, account-service installs each member's manifest. Additive — a consumer
+    written before it existed reads `product_key` as it always did, and one written after falls
+    back to `[product_key]` when an older event lacks it. `subscription_id` names the source the
+    projection records; it is also the envelope's `aggregate_id`, stated here so the payload is
+    self-describing.
+    """
+    return {
+        "organization_id": str(subscription.organization_id),
+        "subscription_id": str(subscription.id),
+        "product_key": subscription.product_key,
+        "plan_version_id": str(subscription.plan_version_id),
+        "state": subscription.state,
+        "trial_ends_at": subscription.trial_ends_at.isoformat()
+        if subscription.trial_ends_at
+        else None,
+        "entitled_products": subscription.entitled_products,
+    }
+
+
 def _transition(
     session: AsyncSession,
     subscription: Subscription,
@@ -184,15 +207,7 @@ def _transition(
         acting_as=actor.get("id") if actor.get("type") == "operator" else None,
         request=request,
     )
-    payload: dict[str, Any] = {
-        "organization_id": str(subscription.organization_id),
-        "product_key": subscription.product_key,
-        "plan_version_id": str(subscription.plan_version_id),
-        "state": subscription.state,
-        "trial_ends_at": subscription.trial_ends_at.isoformat()
-        if subscription.trial_ends_at
-        else None,
-    }
+    payload = _lifecycle_payload(subscription)
     if extra:
         payload.update(extra)
     publish_event(
@@ -237,6 +252,12 @@ async def subscribe(
             f"plan version belongs to product {version.product_key!r}, not {payload.product_key!r}"
         )
 
+    # Read off the pinned version and nothing else — never the request body (MalformedBundle is
+    # a 422 before any row exists).
+    members = domain.entitled_products(
+        version.product_key or payload.product_key, version.feature_pairs()
+    )
+
     now = datetime.now(UTC)
     to_state = STATE_TRIAL if payload.trial_days else STATE_ACTIVE
     trial_ends_at = now + timedelta(days=payload.trial_days) if payload.trial_days else None
@@ -250,6 +271,7 @@ async def subscribe(
         current_period_start=now,
         current_period_end=_period_end(now, version.billing_interval),
         currency=version.currency.upper(),
+        entitled_products_snapshot=members,
     )
     # Appended while the subscription is transient, so the collection is available without a lazy
     # load (async forbids one), and populated for the response the route serializes.
@@ -296,6 +318,15 @@ async def change_plan(
     )
     if new_version.id == subscription.plan_version_id:
         raise BusinessRuleProblem("the subscription is already pinned to that plan version")
+    if new_version.product_key and new_version.product_key != subscription.product_key:
+        # A change-plan moves along one product's ladder. Re-pinning a `suite` subscription to an
+        # `hrms` version would change what the row is *for* while keeping its key — and with
+        # bundles, silently change which products it entitles.
+        raise BusinessRuleProblem(
+            f"plan version belongs to product {new_version.product_key!r}, "
+            f"not {subscription.product_key!r}"
+        )
+    members = domain.entitled_products(subscription.product_key, new_version.feature_pairs())
     if new_version.currency.upper() != subscription.currency:
         # One currency per subscription for now (ADR-0004 defaults). A cross-currency change is a
         # cancel-and-resubscribe decision, not a silent re-pin.
@@ -317,6 +348,10 @@ async def change_plan(
 
     from_pin = subscription.plan_version_id
     subscription.plan_version_id = new_version.id
+    # Re-snapshotted with the pin, in the same transaction: the event below carries the new
+    # member set, and product-service diffs it against what this source entitled before — a
+    # trio→duo downgrade de-sources the member the duo does not include.
+    subscription.entitled_products_snapshot = members
 
     # Rebuild the items against the new pin. The old items go with the old pin, but that pin is
     # preserved on the transition row below, so history stays intact (ADR-0004 §2).
@@ -728,3 +763,74 @@ async def require_subscription(session: AsyncSession, subscription_id: uuid.UUID
         # tenant's id is a 404, never a disclosure.
         raise NotFoundProblem("No such subscription")
     return subscription
+
+
+# ------------------------------------------------------------------ bundles (commerce-packaging)
+
+#: The service actor on the one-off snapshot backfill. No human and no customer: an operator ran a
+#: reviewed deploy step, and what it writes is derived entirely from the pinned catalog version.
+_BACKFILL_ACTOR = {"type": "service", "id": "subscription-backfill"}
+
+
+async def resync_entitlements(
+    session: AsyncSession,
+    subscription: Subscription,
+    version: CatalogPlanVersion | None,
+    *,
+    request: Request | None = None,
+) -> bool:
+    """Fill in `entitled_products` for a subscription that predates it. True if it wrote.
+
+    A no-op for a row that already has its snapshot — so the backfill is safe to re-run, and safe
+    to run while the API is writing snapshots of its own. For a non-bundle the snapshot is just
+    `[product_key]`, which is what the projection already believed, so nothing is emitted. For a
+    **bundle** it is the fix: before this, product-service projected a single activation for the
+    bundle's own key, which no route checks — the customer paid for three products and was
+    entitled to none. `commerce.subscription.entitlements_resynced` carries the full lifecycle
+    payload, so the projection fans the members out (and retires the dead bundle-key activation)
+    with the same handler it uses for every transition, and account installs their manifests.
+
+    Not a transition: the state and the pin are unchanged, so no transition row is written and
+    the operator console's MRR/churn stream is not disturbed by a data repair.
+    """
+    if subscription.entitled_products_snapshot is not None:
+        return False
+    if version is None:
+        # The pin no longer resolves in catalog. There is nothing honest to snapshot; leave the
+        # row NULL (read as `[product_key]`) and let the operator see it in the report.
+        log.warning(
+            "entitlements.resync.unresolvable_pin",
+            subscription_id=str(subscription.id),
+            plan_version_id=str(subscription.plan_version_id),
+        )
+        return False
+
+    members = domain.entitled_products(subscription.product_key, version.feature_pairs())
+    subscription.entitled_products_snapshot = members
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=subscription.organization_id,
+        actor_id=None,
+        acting_as=_BACKFILL_ACTOR["id"],
+        action=domain.EVT_ENTITLEMENTS_RESYNCED,
+        entity="subscription",
+        entity_id=subscription.id,
+        after={"entitled_products": members, "plan_version_id": str(subscription.plan_version_id)},
+        reason="entitled_products_backfill",
+        request=request,
+    )
+    if members != [subscription.product_key]:
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=subscription.organization_id,
+            event_type=domain.EVT_ENTITLEMENTS_RESYNCED,
+            aggregate_type="subscription",
+            aggregate_id=subscription.id,
+            payload=_lifecycle_payload(subscription),
+            actor=_BACKFILL_ACTOR,
+        )
+    await session.flush()
+    return True

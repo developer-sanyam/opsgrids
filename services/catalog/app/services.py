@@ -19,8 +19,9 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import selectors
+from app import domain, selectors
 from app.models import (
+    FEATURE_BUNDLED_PRODUCTS,
     PLAN_RETIRED,
     PLATFORM_ORG,
     PRICE_PER_SEAT,
@@ -34,6 +35,7 @@ from app.models import (
     Price,
     SeatClass,
 )
+from app.registry import ProductRegistry
 from app.schemas import PlanCreateIn, PlanPatchIn, SeatClassIn, VersionCreateIn
 from platform_core.audit import record_audit
 from platform_core.auth import Principal
@@ -170,7 +172,8 @@ async def create_version(
     plan: Plan,
     payload: VersionCreateIn,
     *,
-    request: Request,
+    request: Request | None,
+    registry: ProductRegistry | None = None,
 ) -> PlanVersion:
     """Clone the plan's latest version into a new **draft**, never mutating a published one.
 
@@ -185,6 +188,16 @@ async def create_version(
     # the latest and clone nothing.
     supplied = bool(payload.prices or payload.features or payload.seat_classes)
     source = None if supplied else await selectors.clone_source(session, plan.id)
+
+    # A bundle's members are checked before anything is written, while this is still a draft an
+    # operator is looking at: once published, a mistake in the list is immutable and the first
+    # person to find it is a customer entitled to less than they paid for.
+    declared = (
+        [(f.feature_key, f.value) for f in payload.features]
+        if supplied
+        else [(f.feature_key, f.value) for f in (source.features if source else [])]
+    )
+    await _validate_bundle(plan, declared, registry)
 
     version = PlanVersion(
         plan_id=plan.id,
@@ -250,6 +263,29 @@ async def create_version(
         request=request,
     )
     return version
+
+
+async def _validate_bundle(
+    plan: Plan, declared: list[tuple[str, Any]], registry: ProductRegistry | None
+) -> None:
+    """Refuse a `bundled_products` declaration product-service's registry cannot vouch for.
+
+    Only a version that declares one pays for the registry read; every other version authors
+    exactly as before. With no registry to ask, a bundle is refused rather than trusted.
+    """
+    members = next((v for k, v in declared if k == FEATURE_BUNDLED_PRODUCTS), None)
+    if members is None:
+        return
+    if registry is None:
+        raise BusinessRuleProblem(
+            "a bundle cannot be authored without the product registry to check its members"
+        )
+    products = await registry.products()
+    problems = domain.bundle_member_problems(
+        products.get(plan.product_key), plan.product_key, members, products
+    )
+    if problems:
+        raise BusinessRuleProblem("bundled_products: " + "; ".join(problems))
 
 
 def _clone_children(
