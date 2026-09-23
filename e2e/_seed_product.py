@@ -64,7 +64,14 @@ async def main() -> None:
         connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}},
     )
     async with engine.begin() as conn:
-        await conn.execute(text(f'TRUNCATE "{SCHEMA}"."activations", "{SCHEMA}"."outbox" CASCADE'))
+        # The sources go with the activations: a leftover source from a previous run would be
+        # ORed back into an activation this run expects to be off.
+        await conn.execute(
+            text(
+                f'TRUNCATE "{SCHEMA}"."activations", "{SCHEMA}"."activation_sources", '
+                f'"{SCHEMA}"."outbox" CASCADE'
+            )
+        )
         # The only interpolation is `SCHEMA`, a constant this service defines; the product
         # keys are bound.
         await conn.execute(

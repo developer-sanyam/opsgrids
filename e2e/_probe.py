@@ -15,7 +15,10 @@ underneath it, so a failure says which hop broke instead of only that the last o
 Reads only, as the migration role, from **inside the service's own directory** — one
 interpreter can hold only one service's `app`.
 
-Usage: `_probe.py <service_dir> <product|account> <organization_id>`
+`product` reads whichever service directory it runs in, so the bundle journey points it at
+subscription's outbox, with an optional event-type pattern (SQL `LIKE`) as the fourth argument.
+
+Usage: `_probe.py <service_dir> <product|account> <organization_id> [event_type_pattern]`
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ sys.path.insert(0, str(SERVICE_DIR))
 from app.config import settings  # noqa: E402
 from app.models import SCHEMA  # noqa: E402
 
-EVENT_TYPE = "core.product.activated"
+EVENT_TYPE = sys.argv[4] if len(sys.argv) > 4 else "core.product.activated"
 
 
 async def main() -> None:
@@ -54,7 +57,7 @@ async def main() -> None:
                     text(
                         f"SELECT id, event_type, published_at, attempts, last_error "  # noqa: S608
                         f'FROM "{SCHEMA}"."outbox" '
-                        f"WHERE organization_id = :org AND event_type = :evt"
+                        f"WHERE organization_id = :org AND event_type LIKE :evt"
                     ),
                     {"org": ORG_ID, "evt": EVENT_TYPE},
                 )
@@ -78,7 +81,7 @@ async def main() -> None:
                 await conn.execute(
                     text(
                         f'SELECT event_id, event_type FROM "{SCHEMA}"."processed_events" '  # noqa: S608
-                        f"WHERE event_type = :evt"
+                        f"WHERE event_type LIKE :evt"
                     ),
                     {"evt": EVENT_TYPE},
                 )
