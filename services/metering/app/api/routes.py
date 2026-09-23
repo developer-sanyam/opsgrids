@@ -28,7 +28,7 @@ router = APIRouter(tags=["metering"])
 
 #: **The tenancy chokepoint.** Opens the transaction and binds it to the caller's organization
 #: before the route body runs, so the usage read cannot see another tenant's events.
-SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 
 #: Viewing your own metered consumption is a read on the commercial side of your product
 #: activations, so it reuses the seeded `core.product.activation.read` permission — held by the

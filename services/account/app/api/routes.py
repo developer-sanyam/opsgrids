@@ -58,7 +58,7 @@ router = APIRouter(tags=["account"])
 #: **The tenancy chokepoint.** Opens the transaction and binds it to the caller's
 #: organization before the route body runs, so no route can read or write without one.
 #: Routes therefore do not open transactions of their own.
-SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 
 #: The cross-tenant, SELECT-only bypass session. Used by exactly one public route,
 #: `accept_invitation`, to resolve an invitation's organization before any tenant is bound —
