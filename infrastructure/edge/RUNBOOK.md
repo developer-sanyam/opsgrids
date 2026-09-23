@@ -487,7 +487,8 @@ schema, but the **order the services come up in** decides whether a bundle sold 
 rollout gets its members or silently does not:
 
 1. **catalog** — validates a bundle's members against product-service when one is authored.
-   No migration. Until product is up, authoring a *bundle* answers 503; every other plan authors
+   Migration `c5f1e8a2b7d4` retires the seeded `suite/full` plan, whose `projects` member is
+   still `soon`. Until product is up, authoring a *bundle* answers 503; every other plan authors
    as before.
 2. **product** — migration `b3d5f7a9c1e2`: `products.is_bundle`, the `suite` registry row
    (`status = soon`), `activation_sources` under a forced tenant policy, and one source row per
@@ -516,6 +517,22 @@ For a non-bundle it only writes `[product_key]`. For each bundle it emits
 `unresolved > 0` means a pinned version no longer resolves in catalog — that row stays NULL and
 reads as its own product; look at it by hand. If an account consumer on old code ate a bundle
 event, `tools/wire_product.py <org> <member>` installs the missing member's roles.
+
+**Deploy check — every deploy, not just this one.** Re-judge every sellable bundle against the
+registry as it now is (a member rolled back to `soon`, a product folded into the platform):
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm -T catalog python -m app.bundle_audit
+```
+
+Exit 1 means an **offered** bundle names a member the registry cannot vouch for: retire that plan
+or launch the member before selling it. A retired plan's problems are printed as warnings and do
+not fail the check. Changing a product's `status` on the box is exactly the edit that can make
+this fail, so run it after that too.
+
+Bundles are sold only through subscription's operator routes (`POST /internal/v1/subscriptions`,
+`…/{id}/change-plan`, service token); the customer route answers 403. A trial's length is the
+plan version's `trial_days` feature (14 when absent), never the customer's.
 
 ### Deploying from the pipeline
 

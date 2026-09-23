@@ -187,6 +187,23 @@ service that owns it.
 > source, shared with its standalone subscription exactly as the two always shared the row; a
 > hand deactivation of a product a bundle still feeds is refused rather than answered with a 200
 > that changes nothing. Details: [commerce-packaging.md](../commerce-packaging.md).
+>
+> **Concurrency.** Both the recompute and the watermark are read-then-write, so each fold holds
+> transaction-scoped advisory locks — on the source first, then on every activation it feeds now
+> or fed before, in key order — and the hand activate/deactivate paths take the same activation
+> lock. Without them two replicas folding at once each OR together a view missing the other's
+> uncommitted write, and the later *commit* wins rather than the later *event*. Two-connection
+> regression tests pin the three shapes that race (a leak, a lockout, an ordering bypass).
+>
+> **Decisions taken with it, each the safe default and each reversible.** (1) Bundles are
+> **sales-led**: customer routes refuse to subscribe to or re-pin a bundle; the platform team
+> sells one over subscription's service-token operator routes, which re-check the members against
+> product's registry at the moment of sale. Opening self-serve is one guard. (2) **The plan
+> version decides a trial's length** (`trial_days`, default 14, 0 for none); a customer's request
+> is capped at it, closing the self-granted 365-day trial on every product. (3) **A `soon`
+> product is never a member**: catalog refuses it at authoring, subscription at sale, product at
+> projection, and the seeded `suite/full` rung, which includes `projects`, is retired until
+> Projects launches. (4) A member list is honoured only on a bundle product's subscription.
 
 ### 6. Razorpay first, Stripe later — build against the more constrained provider
 

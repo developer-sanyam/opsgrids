@@ -77,10 +77,16 @@ through the same three services every entitlement already did, each doing its ow
 
 | Service | What it does with a bundle |
 |---|---|
-| **catalog** | Refuses to author a `bundled_products` list that names an unregistered product, a platform product, another bundle, or the same product twice, or that sits on a plan whose product is not a registered bundle — checked against product-service's registry while the version is still a draft, because a published version is immutable. |
-| **subscription** | Reads `bundled_products` off the **pinned** version at subscribe and at change-plan and snapshots it as `subscriptions.entitled_products`. The member list comes from catalog only; a list in the request body is ignored. Every `commerce.subscription.*` event carries `entitled_products` (additive: a consumer defaults a missing one to `[product_key]`). A change-plan may not hop to another product's version. |
-| **product** | One **source** per member (`activation_sources`), and an activation is on while any of its sources is live — [ADR-0004 §5 addendum](adr/0004-commercial-model.md). A plan change diffs the old member set against the new one: duo→trio adds `finance`, trio→duo tombstones it. `suite` is registered as a bundle product: listed in the marketplace, never routed, and refused by the hand-activation path. |
+| **catalog** | Refuses to author a `bundled_products` list that names an unregistered product, a platform product, another bundle, a product still `soon`, or the same product twice, or that sits on a plan whose product is not a registered bundle — checked against product-service's registry while the version is still a draft, because a published version is immutable. The key's presence is what counts: an explicit `null` is refused, not read as "not a bundle". `python -m app.bundle_audit` re-judges every sellable bundle against the live registry at deploy. |
+| **subscription** | Reads `bundled_products` off the **pinned** version at subscribe and at change-plan and snapshots it as `subscriptions.entitled_products`. The member list comes from catalog only; a list in the request body is ignored. Every `commerce.subscription.*` event carries `entitled_products` (additive: a consumer defaults a missing one to `[product_key]`). A change-plan may not hop to another product's version, and a version whose catalog read names no product is refused. **A bundle is sold only through the operator path** (`POST /internal/v1/subscriptions`, `…/{id}/change-plan`, service token), which re-checks the members against the registry at the moment of sale; the customer routes answer 403. |
+| **product** | One **source** per member (`activation_sources`), and an activation is on while any of its sources is live — [ADR-0004 §5 addendum](adr/0004-commercial-model.md). A plan change diffs the old member set against the new one: duo→trio adds `finance`, trio→duo tombstones it. Every fold runs under advisory locks (the source, then each activation in key order), so concurrent folds and an owner's hand deactivation serialise. A member list is honoured only on a bundle product's subscription, and a member that is unregistered, platform, a bundle or still `soon` is never projected. `suite` is registered as a bundle product: listed in the marketplace, never routed, and refused by the hand-activation path. |
 | **account** | Installs each member's permission manifest and grants each member's admin templates to the owners. `suite` has no manifest and never will. |
+
+**Trials come from the plan, not the caller.** A subscription's trial length is the pinned
+version's `trial_days` feature — 14 days when the version names none, 0 for a version that sells
+no trial. A customer's `trial_days` is only a request to trial, capped at that number; it used to
+be taken as given, which let any customer grant themselves a 365-day trial of any product. The
+decision is reversible the same way: a longer trial is a new version with a larger `trial_days`.
 
 Snapshotting is safe for the same reason a pin is: the version is immutable, so its members
 cannot change under the subscription, only by re-pinning — which re-snapshots in the same
@@ -96,9 +102,16 @@ What a bundle still does not do, deliberately:
   is two subscriptions — the standalone one keeps its own source until it is cancelled, and the
   activation stays on throughout because the trio feeds it too. Crediting the unused standalone
   period against the trio is billing's proration, not an entitlement concern, and is not built.
-- **Selling one from the marketplace.** The dashboard lists the rungs and their members and marks
-  a member "Included in Suite Trio"; starting a bundle is still a sales-led subscribe, because
-  the marketplace's self-serve trial sells flat prices (ADR-0013 §2) and a bundle is per seat.
+- **Selling one self-serve.** Bundles are **sales-led**: a customer cannot subscribe to one
+  or move a bundle between rungs, and the platform team sells it through the operator path. The
+  dashboard lists the rungs and their members and marks a member "Included in Suite Trio" while
+  the bundle is active or on trial. This is a default, not a limit of the design — letting
+  customers buy a bundle is a change to one guard in `subscription.services._check_bundle`, and
+  the registry re-check it keeps would still apply.
+- **The `full` rung.** Seeded with `projects`, which is still `soon` on this deployment, so the
+  `suite/full` plan is retired (migration `c5f1e8a2b7d4`) rather than sold for a product that
+  answers 404. Its published version is untouched; reversing the migration, or reactivating the
+  plan in the staff console once Projects launches, makes it sellable again.
 - **Legacy rows.** A subscription that predates the snapshot reads as `[product_key]`. A bundle
   among them is fixed by `python -m app.backfill` in subscription-service, a one-off deploy step
   (RUNBOOK, "Bundle entitlement").
