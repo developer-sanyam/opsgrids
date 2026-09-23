@@ -76,8 +76,11 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 #: What `/health/billing-drafts` counts on the outbox role (review round 3, m6): SELECT on these
-#: columns of `invoices` only — never an amount, a number or a subscription.
-DRAFTS_PROBE_COLUMNS = ("id", "organization_id", "state", "created_at")
+#: columns of `invoices` only — never an id, a tenant, an amount, a number or a subscription.
+DRAFTS_PROBE_COLUMNS = ("state", "created_at")
+#: Columns an earlier revision of this hook granted, revoked on every run so an existing database
+#: narrows to the list above rather than keeping both (final review, minor 4).
+DRAFTS_PROBE_REVOKED = ("id", "organization_id")
 
 
 def _grant_drafts_probe(connection: Connection) -> None:
@@ -101,12 +104,17 @@ def _grant_drafts_probe(connection: Connection) -> None:
             {"s": SCHEMA},
         ).scalars()
     )
+    # Identifiers from the constants above and the configured role — never input.
+    revoked = [c for c in DRAFTS_PROBE_REVOKED if c in present]
+    if revoked:
+        cols = ", ".join(f'"{c}"' for c in revoked)
+        connection.execute(
+            text(f'REVOKE SELECT ({cols}) ON "{SCHEMA}"."invoices" FROM "{reader}"')  # noqa: S608
+        )
     columns = [c for c in DRAFTS_PROBE_COLUMNS if c in present]
-    if not columns:
-        return
-    # Identifiers from the constant above and the configured role — never input.
-    cols = ", ".join(f'"{c}"' for c in columns)
-    connection.execute(text(f'GRANT SELECT ({cols}) ON "{SCHEMA}"."invoices" TO "{reader}"'))
+    if columns:
+        cols = ", ".join(f'"{c}"' for c in columns)
+        connection.execute(text(f'GRANT SELECT ({cols}) ON "{SCHEMA}"."invoices" TO "{reader}"'))
     connection.commit()
 
 

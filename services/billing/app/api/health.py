@@ -7,8 +7,8 @@ counts `finalize_pending` claims, but a claim that was lost or rolled back past 
 (RUNBOOK, the `f5a7b9c1d3e6` downgrade) leaves the draft visible only here. `drafts_stale` is the
 number to alert on (review round 3, m6).
 
-Counted on the outbox engine (BYPASSRLS, SELECT on `invoices(id, organization_id, state,
-created_at)` only), because the NOBYPASSRLS app role with no tenant bound would count nothing.
+Counted on the outbox engine (BYPASSRLS, SELECT on `invoices(state, created_at)` only — not even
+an id or a tenant), because the NOBYPASSRLS app role with no tenant bound would count nothing.
 **It returns counts and an age, never an id.** Like every `/health/*` route it is reachable on the
 back network only, and it is not part of readiness.
 """

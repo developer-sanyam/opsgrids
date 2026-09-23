@@ -195,7 +195,7 @@ async def billing_drafts_health(
     — the subscription side's record committed and its finalize retry is stuck or gone — and a
     period its customer is not being charged for (review round 3, m6). Counts and an age only:
     nothing here names a tenant, an invoice or an amount. Runs on the outbox engine, whose role
-    may read `invoices(id, organization_id, state, created_at)` and nothing else.
+    may read `invoices(state, created_at)` and nothing else.
     """
     stale = now - stale_after
     row = (

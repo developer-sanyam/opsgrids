@@ -1184,3 +1184,37 @@ async def test_the_drafts_probe_counts_stale_drafts_and_names_nobody(
     assert body["drafts"] == 2
     assert body["drafts_stale"] == 1
     assert body["oldest_draft_seconds"] >= 2 * 3600 - 60
+
+
+async def test_the_drafts_probe_role_reads_state_and_age_only(admin_session: AsyncSession) -> None:
+    """The outbox role may count drafts and their age — and read nothing that names an invoice
+    or a tenant (final review, minor 4): `SELECT id` is refused, and the grant is exactly two
+    columns, narrowed on an existing database that an earlier revision granted more."""
+    admin_session.expunge_all()
+    async with admin_session.begin():
+        granted = set(
+            (
+                await admin_session.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.column_privileges "
+                        "WHERE table_schema = :s AND table_name = 'invoices' AND grantee = :r "
+                        "AND privilege_type = 'SELECT'"
+                    ),
+                    {"s": SCHEMA, "r": settings().db_outbox_role},
+                )
+            ).scalars()
+        )
+    assert granted == {"state", "created_at"}
+
+    engine = create_async_engine(settings().outbox_dsn)
+    try:
+        async with engine.connect() as conn:
+            count = (
+                await conn.execute(text("SELECT count(*), max(created_at) FROM billing.invoices"))
+            ).one()
+            assert count[0] >= 0
+        with pytest.raises(DBAPIError, match="permission denied"):
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT id FROM billing.invoices LIMIT 1"))
+    finally:
+        await engine.dispose()
