@@ -231,55 +231,35 @@ else
 	# found. `docker compose up` starts what a newly-enabled profile adds; it never tears down
 	# what a shrunk one no longer lists (H2). Pricing only what is *running* today would miss a
 	# profile this deploy is about to turn on; pricing only the *declared* profile list would
-	# miss an orphan a previous, incomplete change left behind. `post_deploy_container_names`
-	# (lib/memory_budget_totals.py) is the union of both: containers running today that the new
-	# compose file still defines, plus whatever the declared profiles configure — see that
-	# function's own docstring for the full argument, and `tests/infra/
-	# test_memory_budget_totals_containers.py::TestPostDeployContainerNames` for the cases.
-	#
-	# The Docker daemon's own compose-project label is ground truth for "running", independent
-	# of this box's env file — `compose.prod.yml`'s own `name:` is the fixed project name to
-	# filter on, so this does not depend on the directory this repository is checked out into.
-	running_container_names=$(docker ps --filter "label=com.docker.compose.project=opsgrids-edge" \
-		--filter "status=running" --format '{{.Label "com.docker.compose.service"}}' 2>/dev/null || echo "")
-	# `declared_service_names`: what the box's own declared profiles configure — the exported
-	# COMPOSE_PROFILES set earlier in this script (== declared_profiles) is what `docker compose
-	# config` resolves against here. `all_service_names`: every service the new compose FILE can
-	# define, any profile at all (a one-off override of COMPOSE_PROFILES for this single command
-	# only — it is not re-exported), exactly the set memory-budget.json's own `profiles` key
-	# names. This second query is what lets a running container survive being priced when its
-	# profile was disabled (H2) while still correctly dropping one whose *service* was deleted
-	# outright (which `--remove-orphans` on `up` really does tear down).
-	all_profiles=$(python3 -c "import json,sys; print(','.join(json.load(open(sys.argv[1]))['profiles']))" "$budget_file")
-	declared_service_names=$(docker compose -f compose.prod.yml --env-file .env config --services 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-	all_service_names=$(COMPOSE_PROFILES="$all_profiles" docker compose -f compose.prod.yml --env-file .env config --services 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-	running_csv=$(echo "$running_container_names" | tr '\n' ',' | sed 's/,$//')
-	expected_mb=$(python3 lib/memory_budget_totals.py "$budget_file" --post-deploy \
-		--running "$running_csv" --all-services "$all_service_names" \
-		--declared-services "$declared_service_names") || {
+	# miss an orphan a previous, incomplete change left behind. `post_deploy_compute`
+	# (lib/memory-budget.sh — the same function remote.sh's `record_budget` calls, so what a deploy
+	# is judged against and what gets recorded afterwards can never be priced two ways) takes the
+	# union of both: containers running today that the new compose file still defines, plus
+	# whatever the declared profiles configure. See lib/memory_budget_totals.py's
+	# `post_deploy_container_names` for the full argument and tests/infra/
+	# test_memory_budget_totals_containers.py::TestPostDeployContainerNames for the cases.
+	# shellcheck disable=SC1091  # sourced, not executed — see the file's own header
+	. ./lib/memory-budget.sh
+	expected_mb=""
+	if post_deploy_compute "$budget_file"; then
+		expected_mb="$POST_DEPLOY_MB"
+	else
 		bad "could not compute the post-deploy expected memory budget from $budget_file"
-		expected_mb=""
-	}
-	priced_as="post-deploy (running that the new compose still defines, union declared profiles)"
+	fi
+	priced_as="post-deploy: running that the new compose still defines, plus declared profiles"
 
 	# M7: an unpriced but definitely-ours container (the label filter already scopes `docker ps`
 	# to this compose project) is a gap in memory-budget.json, not a foreign container to ignore
-	# — named here so it gets fixed, priced conservatively above rather than as free.
-	unpriced=$(python3 -c "
-import json, sys
-sys.path.insert(0, 'lib')
-from memory_budget_totals import load_budget, post_deploy_container_names, unpriced_container_names
-budget = load_budget(sys.argv[1])
-names = post_deploy_container_names(
-	running={n for n in sys.argv[2].split(',') if n},
-	all_services={n for n in sys.argv[3].split(',') if n},
-	declared_services={n for n in sys.argv[4].split(',') if n},
-)
-print(' '.join(sorted(unpriced_container_names(budget, names))))
-" "$budget_file" "$running_csv" "$all_service_names" "$declared_service_names" 2>/dev/null) || unpriced=""
-	if [ -n "$unpriced" ]; then
-		echo "  warn  container(s) running with no memory-budget.json entry, priced as an estimate (kinds.background):$unpriced — add them to memory-budget.json's 'containers'." >&2
+	# — named here so it gets fixed; priced conservatively above (kinds.background) rather than
+	# as free.
+	if [ -n "${POST_DEPLOY_UNPRICED:-}" ]; then
+		echo "  warn  container(s) with no memory-budget.json entry, priced as an estimate (kinds.background): ${POST_DEPLOY_UNPRICED} — add them to memory-budget.json's 'containers'." >&2
 	fi
+	# A ceiling that is not a plain whole number of MB is a typo, not a decision — said out loud
+	# rather than silently ignored (it is treated as unset below, so the deploy would refuse).
+	case "${EDGE_BUDGET_ACCEPTED_MB:-}" in
+	*[!0-9]*) bad "EDGE_BUDGET_ACCEPTED_MB (${EDGE_BUDGET_ACCEPTED_MB}) must be a whole number of megabytes" ;;
+	esac
 
 	# Read from the budget file itself rather than hardcoded here — this file's own
 	# `host.soft_budget_percent`/`hard_budget_percent` is what `tests/infra/
@@ -288,10 +268,8 @@ print(' '.join(sorted(unpriced_container_names(budget, names))))
 	soft_percent=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['host']['soft_budget_percent'])" "$budget_file")
 	hard_percent=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['host']['hard_budget_percent'])" "$budget_file")
 	if [ -n "$expected_mb" ]; then
-		mem_total_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo "")
+		mem_total_kb=$(awk '/^MemTotal:/ {print $2}' "${EDGE_MEMINFO_FILE:-/proc/meminfo}" 2>/dev/null || echo "")
 		if [ -n "$mem_total_kb" ]; then
-			# shellcheck disable=SC1091  # sourced, not executed — see the file's own header
-			. ./lib/memory-budget.sh
 			verdict_line=$(memory_budget_verdict "$mem_total_kb" "$expected_mb" "$soft_percent" "$hard_percent")
 			verdict=${verdict_line%% *}
 			percent=${verdict_line#* }
@@ -455,9 +433,15 @@ if docker compose -f compose.prod.yml --env-file .env ps --status running postgr
 	done
 
 	# ---- the real-customer-impact advisory (H2/H3) ----
+	# L12 (review round 2): only an activation that is actually live counts — `trial` or `active`,
+	# not a `suspended` row nobody is being served for — and never an end-to-end test
+	# organization (`e2e/conftest.py` names every one it creates `e2e-…`; a seeded test org must
+	# not be the reason a real product profile looks "in use", or a real customer-impact refusal
+	# fire over a fixture). Read-only, across schemas, as the box's own superuser — there is no
+	# foreign key between the two, only this join.
 	activations_rc=0
 	activated_keys=$(docker compose -f compose.prod.yml --env-file .env exec -T postgres \
-		psql -U opsgrids -d opsgrids -Atc "select distinct product_key from product.activations" 2>/dev/null) || activations_rc=$?
+		psql -U opsgrids -d opsgrids -Atc "select distinct a.product_key from product.activations a where a.status in ('trial','active') and not exists (select 1 from account.organizations o where o.id = a.organization_id and o.slug like 'e2e-%')" 2>/dev/null) || activations_rc=$?
 	if [ "$activations_rc" -ne 0 ]; then
 		# H3: a query failure is not evidence of zero activations — it is evidence of nothing at
 		# all, and must never be read as "safe to turn this profile off". Skipped with a warning,

@@ -56,10 +56,8 @@ def _enabled_profiles() -> set[str]:
     """`.env.example`'s COMPOSE_PROFILES. Deliberately empty since the memory-headroom slice
     (2026-09-23): re-measuring `kinds.background` (see memory-budget.json's own header) showed
     every profile on at once no longer fits this box's hard budget line at all, so the example
-    stopped modelling that as a safe default — an empty COMPOSE_PROFILES plus an empty
-    EDGE_PROFILES is exactly the signal that means "compute it from the catalogue's own
-    activations" (the zero-activation profile auto-off, `infrastructure/edge/lib/
-    active-profiles.sh`)."""
+    stopped modelling that as a safe default. Empty means core only; a real box's list is written
+    by hand (review round 1, H2/M4 — nothing computes it from the catalogue)."""
     for line in ENV_EXAMPLE.read_text().splitlines():
         if line.startswith("COMPOSE_PROFILES="):
             return {p for p in line.split("=", 1)[1].split(",") if p}

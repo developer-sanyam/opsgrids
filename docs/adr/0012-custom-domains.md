@@ -1601,7 +1601,8 @@ organizations on `opsgrids_storefront_directory` — the same BYPASSRLS reader `
 and the buyer's bootstrap already use, no new grant — and advances each under
 `session_scope`, one transaction per tenant, with a system actor on every audited transition.
 `storefront-cron` now runs under the `storefront` compose profile rather than its own `sweep`
-profile: a box that sells the storefront product always needs the sweep, and one that does not
+profile *(and, since 2026-09-24 — ADR-0013's fix round 2 — not as a container at all: the sweep
+runs inside the `storefront` API process, `RUN_SWEEPS_IN_API`)*: a box that sells the storefront product always needs the sweep, and one that does not
 never needs a cron container with nothing to check. The known gap this leaves: `StorePut`'s
 older `custom_domain` field (ADR-0011) still writes `storefronts.custom_domain` directly and
 creates no claim row, so a domain set that way sits at `unverified` with no token until the

@@ -197,6 +197,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "profiles (`docker compose config --services`)",
     )
     parser.add_argument(
+        "--list-unpriced",
+        action="store_true",
+        help="with --post-deploy/--containers: print the names with no memory-budget.json entry "
+        "(space separated) instead of a total",
+    )
+    parser.add_argument(
         "--with-planned",
         action="store_true",
         help="add every backlog placeholder in the budget's planned key on top (projected, never"
@@ -217,6 +223,7 @@ def _main(argv: list[str]) -> int:
     except (OSError, json.JSONDecodeError) as exc:
         print(f"memory_budget_totals: could not read {args.budget_file}: {exc}", file=sys.stderr)
         return 1
+    names: set[str] | None
     if args.post_deploy:
         if args.running is None or args.all_services is None or args.declared_services is None:
             print(
@@ -230,9 +237,21 @@ def _main(argv: list[str]) -> int:
             all_services=_csv_set(args.all_services),
             declared_services=_csv_set(args.declared_services),
         )
-        total = expected_total_for_names(budget, names)
     elif args.containers is not None:
-        total = expected_total_for_names(budget, _csv_set(args.containers))
+        names = _csv_set(args.containers)
+    else:
+        if args.list_unpriced:
+            print(
+                "memory_budget_totals: --list-unpriced needs --post-deploy or --containers",
+                file=sys.stderr,
+            )
+            return 2
+        names = None
+    if args.list_unpriced and names is not None:
+        print(" ".join(sorted(unpriced_container_names(budget, names))))
+        return 0
+    if names is not None:
+        total = expected_total_for_names(budget, names)
     else:
         total = expected_total_mb(budget, _csv_set(args.profiles))
     if args.with_planned:

@@ -36,6 +36,8 @@ source lib/health-check.sh
 source lib/role-reconcile.sh
 # shellcheck source=lib/active-profiles.sh
 source lib/active-profiles.sh
+# shellcheck source=lib/memory-budget.sh
+source lib/memory-budget.sh
 
 COMPOSE=(docker compose -f compose.prod.yml --env-file .env)
 
@@ -323,24 +325,43 @@ record_ref() {
 	record_budget
 }
 
-# B1(a), the memory-headroom slice's 2026-09-23 fix round: the number `preflight.sh`'s own
-# grandfather clause (`grandfathered_verdict`, lib/memory-budget.sh) compares a *future* deploy
-# against — this box's own steady-state total, priced the same way preflight prices it (by the
-# containers actually running, not by COMPOSE_PROFILES: see preflight.sh's own comment on why).
-# Written here, after `health` has already proved this deploy is the one actually serving, so a
-# deploy that failed health never gets to lower the bar the next one is measured against.
+# What this box was priced at the last time a deploy went healthy — **informational only**
+# (B2, review round 2). It used to be the number `preflight.sh` compared a future deploy against
+# (a "grandfather" ratchet), which meant the last deploy to happen to succeed silently set the bar
+# for the next one and nobody ever actually decided anything. The bar is now
+# `EDGE_BUDGET_ACCEPTED_MB` in `.env` (the owner's explicit ceiling — see RUNBOOK.md, 'the memory
+# budget'), which is static; this file is only printed by preflight for reference, so a deploy that
+# failed health can never lower anything and recovery after one needs nothing special.
+#
+# Priced by `post_deploy_compute` (lib/memory-budget.sh) — the same function preflight's gate uses,
+# so the two can never disagree about what a box is worth. Written atomically (temp file in the
+# same directory, then `mv`): a reader never sees a half-written number. L8: every reason this is
+# skipped is said out loud, on stderr — a `return 0` with no message would look identical to a
+# recording that worked, and the "last successful deploy priced at" line would quietly go stale.
 record_budget() {
-	local budget_file="memory-budget.json" running_container_names containers_csv mb
-	[ -f "$budget_file" ] || return 0
-	command -v python3 >/dev/null 2>&1 || return 0
-	running_container_names=$(docker ps --filter "label=com.docker.compose.project=opsgrids-edge" \
-		--filter "status=running" --format '{{.Label "com.docker.compose.service"}}' 2>/dev/null || echo "")
-	[ -n "$running_container_names" ] || return 0
-	containers_csv=$(echo "$running_container_names" | tr '\n' ',' | sed 's/,$//')
-	mb=$(python3 lib/memory_budget_totals.py "$budget_file" --containers "$containers_csv") || return 0
-	mkdir -p "$STATE_DIR"
-	echo "$mb" >"$STATE_DIR/edge-budget.last-ok"
-	echo "recorded memory budget: ${mb}M (this box's own grandfather line for the next deploy)"
+	local budget_file="memory-budget.json" tmp
+	if [ ! -f "$budget_file" ]; then
+		echo "record-budget: no $budget_file — not recorded" >&2
+		return 0
+	fi
+	if ! command -v python3 >/dev/null 2>&1; then
+		echo "record-budget: no python3 on this box — not recorded" >&2
+		return 0
+	fi
+	if ! post_deploy_compute "$budget_file" || [ -z "${POST_DEPLOY_MB:-}" ]; then
+		echo "record-budget: could not price the running box — not recorded" >&2
+		return 0
+	fi
+	if ! mkdir -p "$STATE_DIR" || ! tmp=$(mktemp "$STATE_DIR/.edge-budget.last-ok.XXXXXX"); then
+		echo "record-budget: cannot write to $STATE_DIR — not recorded" >&2
+		return 0
+	fi
+	if echo "$POST_DEPLOY_MB" >"$tmp" && mv -f "$tmp" "$STATE_DIR/edge-budget.last-ok"; then
+		echo "recorded memory budget: ${POST_DEPLOY_MB}M (informational — the gate is EDGE_BUDGET_ACCEPTED_MB, not this)"
+	else
+		rm -f "$tmp"
+		echo "record-budget: could not write $STATE_DIR/edge-budget.last-ok — not recorded" >&2
+	fi
 }
 
 # The ref to roll back TO: the most recent one that served before the one serving now.

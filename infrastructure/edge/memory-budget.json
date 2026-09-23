@@ -28,15 +28,23 @@
     "close. This single correction is large enough to explain, on its own, why this box has",
     "needed a swapfile since before this slice: the previously-documented ~94% full-profile",
     "figure was optimistic. See ADR-0013's memory-headroom addendum for the full table and what",
-    "this slice did about it (the notification-cron merge, profile auto-off, and what is still",
-    "left for the owner to decide).",
+    "this slice did about it and what is still left for the owner to decide.",
+    "",
+    "Review fix round 2 (2026-09-24): `preflight.sh` prices the POST-deploy set — running",
+    "containers the new compose still defines, unioned with what the declared profiles",
+    "configure (`post_deploy_compute`, lib/memory-budget.sh) — and a deploy over the hard line",
+    "refuses unless the owner has set `EDGE_BUDGET_ACCEPTED_MB` in .env to a number at or above",
+    "it (`apply_accepted_ceiling`). operations-cron, storefront-cron and document-cron were",
+    "removed as containers: their sweeps now run inside their own API container (RUN_SWEEPS_IN_API),",
+    "3 x 85 MB. A running container with no entry in `containers` is priced at `kinds.background`",
+    "and named in a warning, never treated as free.",
     "",
     "`tests/infra/test_compose_memory_budget.py` is the gate: every service compose.prod.yml",
     "defines must have a `containers` entry here, and vice versa, or the test fails by name.",
     "`preflight.sh` sums this file against the box's live /proc/meminfo through",
     "`infrastructure/edge/lib/memory_budget_totals.py` and",
     "`infrastructure/edge/lib/memory-budget.sh`'s `memory_budget_verdict`, and refuses a",
-    "deploy over `hard_budget_percent`.",
+    "deploy over `hard_budget_percent` unless `EDGE_BUDGET_ACCEPTED_MB` covers it.",
     "",
     "`planned` (below `containers`) prices services that do not exist in compose.prod.yml yet —",
     "backlog items with a rough shape (an api, a worker) but no code. `preflight.sh` and",
@@ -45,10 +53,10 @@
   ],
 
   "host": {
-    "mem_total_mb_reference": 3800,
+    "mem_total_mb_reference": 3862,
     "soft_budget_percent": 85,
     "hard_budget_percent": 100,
-    "notes": "mem_total_mb_reference documents the box this was measured against; preflight.sh reads the box's own /proc/meminfo at deploy time and does not use this number. Soft: warn and let the deploy proceed — the box is allowed to run tight. Hard: refuse — past this, the kernel starts reclaiming from things that must not be reclaimed from (see datastores' mem_reservation) or the OOM killer picks a victim. Raised from 80 to 85 by the memory-headroom slice (2026-09-23) to match the 15%-margin target the backlog set for planned services — see the ADR-0013 addendum."
+    "notes": "mem_total_mb_reference documents the box this was measured against (3862 MB, from a read-only look at the production VM during review fix round 2 — it was 3800, a round number, before that); preflight.sh reads the box's own /proc/meminfo at deploy time and does not use this number. Soft: warn and let the deploy proceed — the box is allowed to run tight. Hard: refuse — past this, the kernel starts reclaiming from things that must not be reclaimed from (see datastores' mem_reservation) or the OOM killer picks a victim. Raised from 80 to 85 by the memory-headroom slice (2026-09-23) to match the 15%-margin target the backlog set for planned services — see the ADR-0013 addendum."
   },
 
   "kinds": {

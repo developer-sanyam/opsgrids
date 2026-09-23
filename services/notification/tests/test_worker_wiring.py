@@ -88,6 +88,9 @@ async def test_campaign_smtp_executor_is_shut_down_even_when_run_supervised_rais
     monkeypatch.setattr(worker.dispatcher, "register", lambda *a, **kw: None)
 
     async def fake_run_supervised(**named_coroutines: Any) -> None:
+        # Close what was handed in rather than leave never-awaited coroutines to warn at GC.
+        for coro in named_coroutines.values():
+            coro.close()
         raise RuntimeError("a loop died")
 
     monkeypatch.setattr(worker, "run_supervised", fake_run_supervised)

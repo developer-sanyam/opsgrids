@@ -457,7 +457,10 @@ services:
       # bucket's own policy out from under `minio-init`.
       DOCUMENT_S3_ACCESS_KEY: ${DOCUMENT_S3_ACCESS_KEY}
       DOCUMENT_S3_SECRET_KEY: ${DOCUMENT_S3_SECRET_KEY}
-      # The second scoped credential, held only by `document-cron` (ADR-0009 §9 addendum):
+      # The second scoped credential, held by no always-on container (ADR-0009 §9 addendum) — only
+      # ever handed to a one-off `docker compose run --rm --no-deps document ./bin/cron` an operator
+      # starts by hand for an orphan scan (the purge sweep itself runs inside the `document` API now,
+      # without it; see `document`'s own block, below):
       # `s3:ListBucket` plus `s3:DeleteObject`, so the orphan sweep can list the bucket and
       # remove what it finds. The API's own `document` container never receives this
       # credential and never calls `ListBucket` (`app/storage.py`'s `ObjectStore` vs.
@@ -528,9 +531,9 @@ services:
 
         # The orphan sweep's own user (ADR-0009 §9 addendum): `s3:ListBucket` on the bucket
         # itself plus `s3:DeleteObject` on its objects — the one capability the write-path
-        # user above deliberately does not hold. `document-cron` is the only process this
-        # credential is ever handed to (`compose.prod.yml`'s `document-cron`, below); the API
-        # container reads only `DOCUMENT_S3_ACCESS_KEY`/`_SECRET_KEY`.
+        # user above deliberately does not hold. No always-on container is ever handed this
+        # credential — only a one-off `docker compose run` an operator starts by hand for an orphan
+        # scan; the API container reads only `DOCUMENT_S3_ACCESS_KEY`/`_SECRET_KEY`.
         mc admin user add og "$$DOCUMENT_S3_ORPHAN_ACCESS_KEY" "$$DOCUMENT_S3_ORPHAN_SECRET_KEY"
         cat > /tmp/document-orphan-sweep.json <<JSON
         {
@@ -866,8 +869,8 @@ services:
   # `edge-relay` below). An idle worker holding an open broker channel for nothing is 30 MB this
   # box does not have to give away.
   #
-  # `bin/cron` runs the purge sweep (ADR-0009 §8, and its 2026-09-23 addendum's §9 orphan
-  # pass) — see `document-cron`, below, for that container. This block is the API only.
+  # The purge sweep (ADR-0009 §8) runs inside this container now (`RUN_SWEEPS_IN_API`, below —
+  # `document-cron` no longer exists); `bin/cron` still runs it, and the orphan pass (§9), by hand.
   document:
     <<: *service-common
     profiles: ['storefront']
