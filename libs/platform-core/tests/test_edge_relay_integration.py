@@ -87,7 +87,9 @@ class _FakeConnection:
     async def __aexit__(self, *exc: object) -> bool:
         return False
 
-    async def channel(self, *, publisher_confirms: bool = True) -> _FakeChannel:
+    async def channel(
+        self, *, publisher_confirms: bool = True, on_return_raises: bool = False
+    ) -> _FakeChannel:
         return _FakeChannel(self._published)
 
 
