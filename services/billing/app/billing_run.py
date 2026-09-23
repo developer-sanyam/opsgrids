@@ -224,6 +224,18 @@ async def bill_subscription_period(
     own and makes its network calls between them.
     """
     period = domain.Period(payload.period_start, payload.period_end)
+    if (
+        payload.kind == "close"
+        and payload.usage_period_start is not None
+        and payload.usage_period_end is not None
+    ):
+        # A closing period bills usage and nothing else, so its dates — the invoice's period, the
+        # day its tax rate is read on, its number — are the usage window's. They differ from the
+        # claim's only when the billing cutover moved the window's start past the claim's (the
+        # key still names the claim, so a retry lands on the same invoice): taxing on the
+        # pre-cutover day would find no rate when the rate row starts at go-live, and fail the
+        # close permanently (second post-review fixup).
+        period = domain.Period(payload.usage_period_start, payload.usage_period_end)
     key = claim_key(payload)
     currency = payload.currency.upper()
 

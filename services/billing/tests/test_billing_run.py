@@ -877,6 +877,59 @@ class TestProrationAndCloseRoute:
         assert [line["amount_minor"] for line in invoice["lines"]] == [700]
         assert metering.asked == [domain.Period(PERIOD_START, close_end)]
 
+    async def test_a_close_clamped_to_the_cutover_is_taxed_and_dated_on_its_usage_window(
+        self,
+        wired: AsyncClient,
+        catalog: FakeCatalog,
+        metering: FakeMetering,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The subscription's billing cutover moved this close's usage window to start at go-live,
+        after the claim's own start (second post-review fixup). The tax rate row starts at
+        go-live too. Taxed on the claim's start, the close would find no rate and fail forever;
+        it is taxed, dated and numbered on the usage window instead — and keyed on the claim."""
+        go_live = PERIOD_START
+        async with admin_session.begin():
+            admin_session.add(
+                TaxRate(
+                    code="gst",
+                    jurisdiction="IN",
+                    name="GST",
+                    rate_bps=1800,
+                    effective_from=go_live.date(),
+                )
+            )
+        monkeypatch.setattr(app.state.settings, "billing_tax_code", "gst")
+        monkeypatch.setattr(app.state.settings, "billing_tax_jurisdiction", "IN")
+        version, items = _version(flat=149900, usage_micros=1_000_000)
+        catalog.versions[version.id] = version
+        metering.usage = {"api_call": 10}
+        claim_start = go_live - timedelta(days=10)
+        close_end = go_live + timedelta(days=9)
+        body = _body(org_id, version, items, usage=False)
+        body.update(
+            kind="close",
+            period_start=claim_start.isoformat(),
+            period_end=close_end.isoformat(),
+            usage_period_start=go_live.isoformat(),
+            usage_period_end=close_end.isoformat(),
+        )
+        r = await wired.post("/internal/v1/subscription-invoices", json=body, headers=_headers())
+        assert r.status_code == 201, r.text
+        invoice = r.json()["invoice"]
+        assert invoice["total_minor"] == 1000 + 180
+        assert any(line["description"] == "GST 18.00%" for line in invoice["lines"])
+        assert datetime.fromisoformat(invoice["period_start"]) == go_live
+        assert datetime.fromisoformat(invoice["period_end"]) == close_end
+        assert metering.asked == [domain.Period(go_live, close_end)]
+
+        again = await wired.post(
+            "/internal/v1/subscription-invoices", json=body, headers=_headers()
+        )
+        assert again.json()["invoice"]["id"] == invoice["id"], "the key is still the claim's"
+
 
 class TestVoidByKey:
     async def test_a_superseded_period_invoice_is_voided_by_its_key(
