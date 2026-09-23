@@ -9,18 +9,23 @@ from app.api.routes import router
 from app.catalog import HttpPlanCatalog
 from app.config import settings
 from app.models import OutboxEvent
+from app.registry import HttpProductRegistry
 from platform_core.app import create_app
 
 
 async def _start(application: FastAPI) -> None:
     cfg = settings()
     application.state.catalog = HttpPlanCatalog(cfg.catalog_service_url, cfg)
+    application.state.product_registry = HttpProductRegistry(cfg.product_service_url, cfg)
 
 
 async def _stop(application: FastAPI) -> None:
     catalog = getattr(application.state, "catalog", None)
     if isinstance(catalog, HttpPlanCatalog):
         await catalog.aclose()
+    registry = getattr(application.state, "product_registry", None)
+    if isinstance(registry, HttpProductRegistry):
+        await registry.aclose()
 
 
 app = create_app(

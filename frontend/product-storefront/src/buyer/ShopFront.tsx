@@ -35,7 +35,7 @@ import type { StoreContextOut } from "@/api/storeContext";
 import { fetchPublicCatalogue } from "@/api/publicClient";
 import type { CategoryPublic, ProductPublic } from "@/api/publicClient";
 import { useElementWidth } from "@/lib/useElementWidth";
-import type { PageDoc, StoreDoc, ThemeTokens } from "@/theme/schema";
+import type { Brand, PageDoc, StoreDoc, ThemeTokens } from "@/theme/schema";
 import { StoreRenderer } from "@/theme/render";
 import { NO_PAGES_BODY, NO_PAGES_TITLE, otherAddressNotice } from "./copy";
 
@@ -112,21 +112,29 @@ function initialWidth(): number {
   return document.documentElement.clientWidth || window.innerWidth;
 }
 
-/** The theme's own tokens/pages, plus the brand this bundle already has — composed once per
- *  render rather than stored, since the buyer bundle holds no document state of its own. */
+/** The theme's own tokens/pages — composed once per render rather than stored, since the buyer
+ *  bundle holds no document state of its own. The brand is a sibling, not a field of this: see
+ *  `brandFor`. */
 function composeStoreDoc(context: StoreContextOut): StoreDoc {
   const theme = context.theme;
   if (theme === null) throw new Error("composeStoreDoc called with no theme");
   return {
     themeKey: theme.theme_key,
     mode: theme.mode === "retail" ? "retail" : "trade",
-    brand: {
-      name: context.name,
-      tagline: context.tagline ?? "",
-      logoText: context.logo_text ?? "",
-    },
     tokens: theme.tokens as unknown as ThemeTokens,
     pages: theme.pages as unknown as PageDoc[],
+  };
+}
+
+/** The identity row, as the store's chrome draws it. `logo_text` empty falls back to `name` — the
+ *  renderer's decision, applied once here (mirrors `markFor` above, which does the same for the
+ *  pre-theme brand bar). */
+function brandFor(context: StoreContextOut): Brand {
+  const logoText = context.logo_text?.trim();
+  return {
+    name: context.name,
+    tagline: context.tagline ?? "",
+    logoText: logoText && logoText !== "" ? logoText : context.name,
   };
 }
 
@@ -167,6 +175,7 @@ function ThemedShop({ context }: { context: StoreContextOut }) {
       <div ref={frameRef} data-live-store className="grid min-h-dvh w-full">
         <StoreRenderer
           store={store}
+          brand={brandFor(context)}
           route={location.pathname === "" ? "/" : location.pathname}
           products={catalogue.products}
           categories={catalogue.categories}

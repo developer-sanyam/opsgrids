@@ -348,12 +348,28 @@ export interface RegularizationSummary {
   to: AttendanceStatus;
 }
 
+/** `summary` for `request_type = "hrms.time.leave"` (HRMS leave slice 1) — the same "structured
+ *  facts only, no free text" rule ADR-0006 §3 states for regularisation's identical split;
+ *  `leave.app.consumers.on_leave_requested` builds this exact shape. */
+export interface LeaveApprovalSummary {
+  leave_type_id: string;
+  start_date: string;
+  end_date: string;
+  half_day_start: boolean;
+  half_day_end: boolean;
+  total_half_days: number;
+}
+
+/** The union every approval surface actually receives — discriminate on the sibling
+ *  `request_type` field, never on shape alone (both objects are plain JSON with no `kind` tag). */
+export type ApprovalSummary = RegularizationSummary | LeaveApprovalSummary;
+
 /** Mirrors `InboxItemOut` — one `GET /approvals/inbox` row. */
 export interface InboxItemOut {
   id: string;
   request_type: string;
   source_ref: string;
-  summary: RegularizationSummary;
+  summary: ApprovalSummary;
   request_note: string | null;
   opened_at: string;
   requester_employee_id: string;
@@ -370,7 +386,7 @@ export interface RequestListItemOut {
   id: string;
   request_type: string;
   source_ref: string;
-  summary: RegularizationSummary;
+  summary: ApprovalSummary;
   status: RequestStatus;
   opened_at: string;
   requester_employee_id: string;
@@ -406,7 +422,7 @@ export interface RequestDetailOut {
   id: string;
   request_type: string;
   source_ref: string;
-  summary: RegularizationSummary;
+  summary: ApprovalSummary;
   request_note: string | null;
   status: RequestStatus;
   opened_at: string;
@@ -558,3 +574,128 @@ export interface TrendPoint {
 }
 
 export type TrendRange = "monthly" | "quarterly" | "yearly";
+
+/* ------------------------------------------------------------------------------------- leave */
+
+export type LeaveRequestStatus = "pending" | "approved" | "rejected" | "cancelled" | "failed";
+export type LeaveLedgerEntryType = "grant" | "accrual" | "consumption" | "reversal" | "adjustment";
+/** What `POST /leave/balances/grant` accepts — `consumption` and `reversal` are posted only by
+ *  the service itself, from the approval-decision and cancellation paths (never a client). */
+export type GrantableLeaveEntryType = "grant" | "accrual" | "adjustment";
+
+/** Mirrors `LeaveTypeOut`. */
+export interface LeaveTypeOut {
+  id: string;
+  code: string;
+  name: string;
+  is_paid: boolean;
+  annual_quota_half_days: number | null;
+  monthly_accrual_half_days: number | null;
+  carry_forward_cap_half_days: number | null;
+  active: boolean;
+  created_at: string;
+}
+
+/** Mirrors `LeaveTypeIn` — `POST /leave/types`. */
+export interface LeaveTypeIn {
+  code: string;
+  name: string;
+  is_paid?: boolean;
+  annual_quota_half_days?: number | null;
+  monthly_accrual_half_days?: number | null;
+  carry_forward_cap_half_days?: number | null;
+}
+
+/** Mirrors `LeaveTypePatch` — `PATCH /leave/types/{id}`. Absent means "leave alone". */
+export interface LeaveTypePatch {
+  name?: string;
+  is_paid?: boolean;
+  annual_quota_half_days?: number | null;
+  monthly_accrual_half_days?: number | null;
+  carry_forward_cap_half_days?: number | null;
+  active?: boolean;
+}
+
+/** Mirrors `LeaveBalanceOut` — one `(employee, leave type)` row of `GET /leave/balances`. */
+export interface LeaveBalanceOut {
+  employee_id: string;
+  leave_type_id: string;
+  leave_type_code: string;
+  balance_half_days: number;
+}
+
+/** Mirrors `LeaveBalanceGrantIn` — `POST /leave/balances/grant`. */
+export interface LeaveBalanceGrantIn {
+  employee_id: string;
+  leave_type_id: string;
+  entry_type?: GrantableLeaveEntryType;
+  half_days: number;
+  idempotency_key?: string | null;
+  note?: string | null;
+}
+
+/** Mirrors `LeaveLedgerEntryOut` — one row of `GET /leave/balances/ledger`. */
+export interface LeaveLedgerEntryOut {
+  id: string;
+  employee_id: string;
+  leave_type_id: string;
+  entry_type: LeaveLedgerEntryType;
+  delta_half_days: number;
+  leave_request_id: string | null;
+  note: string | null;
+  created_at: string;
+}
+
+/** Mirrors `LeaveRequestIn` — `POST /leave/requests`. No `employee_id`: a person applies for
+ *  their own leave, the same shape `CheckInIn` uses for a self-service write. */
+export interface LeaveRequestIn {
+  leave_type_id: string;
+  start_date: string;
+  end_date: string;
+  half_day_start?: boolean;
+  half_day_end?: boolean;
+  reason: string;
+}
+
+/** Mirrors `LeaveCancelIn` — the body of both `.../cancel` and `.../force-cancel`. */
+export interface LeaveCancelIn {
+  reason?: string | null;
+}
+
+/** Mirrors `LeaveRequestOut`. */
+export interface LeaveRequestOut {
+  id: string;
+  employee_id: string;
+  leave_type_id: string;
+  start_date: string;
+  end_date: string;
+  half_day_start: boolean;
+  half_day_end: boolean;
+  total_half_days: number;
+  reason: string;
+  status: LeaveRequestStatus;
+  approval_request_id: string | null;
+  approval_opened_at: string | null;
+  approver_employee_id: string | null;
+  approver_name: string | null;
+  approver_unassigned: boolean | null;
+  decided_at: string | null;
+  decision_comment: string | null;
+  decided_by_name: string | null;
+  failure_reason: string | null;
+  cancelled_at: string | null;
+  cancellation_reason: string | null;
+  created_at: string;
+}
+
+/** Mirrors `LeaveSettingsOut` — `GET /leave/settings`. */
+export interface LeaveSettingsOut {
+  organization_id: string;
+  timezone: string;
+  updated_at: string;
+}
+
+/** Mirrors `LeaveSettingsIn` — `PUT /leave/settings`. */
+export interface LeaveSettingsIn {
+  timezone: string;
+}

@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import services
 from app.main import app
 from app.models import ApprovalPolicy, ApprovalStep
-from app.services import REQUEST_TYPE_REGULARIZATION
+from app.services import REQUEST_TYPE_LEAVE, REQUEST_TYPE_REGULARIZATION
 from platform_core.auth import Principal, get_principal
 from tests.helpers import open_request, principal_for, seed_person
 
@@ -56,7 +56,8 @@ class TestPolicyReadDefaults:
         assert response.status_code == 200
         body = response.json()
         assert body == [
-            {"request_type": REQUEST_TYPE_REGULARIZATION, "sla_minutes": 1440, "enabled": True}
+            {"request_type": REQUEST_TYPE_REGULARIZATION, "sla_minutes": 1440, "enabled": True},
+            {"request_type": REQUEST_TYPE_LEAVE, "sla_minutes": 1440, "enabled": True},
         ]
 
 
@@ -80,7 +81,8 @@ class TestPolicyRoundTrip:
             get_response = await client.get(POLICIES_URL)
         assert get_response.status_code == 200
         assert get_response.json() == [
-            {"request_type": REQUEST_TYPE_REGULARIZATION, "sla_minutes": 60, "enabled": False}
+            {"request_type": REQUEST_TYPE_REGULARIZATION, "sla_minutes": 60, "enabled": False},
+            {"request_type": REQUEST_TYPE_LEAVE, "sla_minutes": 1440, "enabled": True},
         ]
 
     async def test_a_second_write_updates_the_same_row_rather_than_creating_another(
@@ -330,7 +332,8 @@ class TestPolicyCrossTenantIsolation:
         assert response.status_code == 200
         # `org_id`'s own read sees the honest default, not `other_org`'s written row.
         assert response.json() == [
-            {"request_type": REQUEST_TYPE_REGULARIZATION, "sla_minutes": 1440, "enabled": True}
+            {"request_type": REQUEST_TYPE_REGULARIZATION, "sla_minutes": 1440, "enabled": True},
+            {"request_type": REQUEST_TYPE_LEAVE, "sla_minutes": 1440, "enabled": True},
         ]
 
     async def test_writing_in_one_organization_does_not_touch_another(

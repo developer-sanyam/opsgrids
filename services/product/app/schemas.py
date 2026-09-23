@@ -30,6 +30,9 @@ class ProductOut(BaseModel):
     connects_to: list[str] = Field(default_factory=list)
     features: list[str] = Field(default_factory=list)
     is_platform: bool = False
+    #: Sold and listed, never routed and never activated: a subscription to it entitles its
+    #: members instead. A client shows it as a bundle, not as a product with a console.
+    is_bundle: bool = False
 
 
 class ActivationOut(BaseModel):
@@ -48,6 +51,10 @@ class ActivationOut(BaseModel):
     activated_at: datetime
     trial_ends_at: datetime | None = None
     deactivated_at: datetime | None = None
+    #: The keys of the subscriptions currently entitling this product: its own key for a
+    #: standalone subscription or a hand activation, a bundle's key (`suite`) for a member of a
+    #: bundle. Empty when nothing entitles it. What lets a client say "included in your Suite".
+    entitled_by: list[str] = Field(default_factory=list)
 
 
 class ActivateIn(BaseModel):

@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -32,10 +34,11 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.cron import PurgeSweep
 from app.main import app
-from app.storage import ObjectStore, get_object_store
+from app.storage import ObjectStore, OrphanScanner, get_object_store
 from platform_core.cache import close_redis, init_redis
-from platform_core.db import get_session
+from platform_core.db import get_outbox_sessionmaker, get_session, init_outbox_engine
 from tests.helpers import READ, WRITE, make_image, make_image_with_gps, principal_for
 
 pytestmark = pytest.mark.integration
@@ -176,6 +179,79 @@ class TestTheRealBucket:
                 still_there = await anon.get(created["public_url"])
             assert still_there.status_code == 200
             assert still_there.headers["content-type"] == "image/webp"
+        finally:
+            with as_principal(principal_for(org_id, BOTH)):
+                await minio_client.delete(f"/api/v1/documents/assets/{created['id']}?purge=true")
+
+
+class TestTheOrphanSweepAgainstTheRealBucket:
+    """ADR-0009 §9 addendum: the orphan sweep's own `ListObjectsV2`, against a genuine bucket
+    rather than `FakeOrphanScanner`'s in-memory dict (`tests/test_orphan_sweep.py`). Proves the
+    one thing a fake cannot: that the credential this settings block names can actually list,
+    and that listing turns up an object with no row without disturbing one that has one.
+    """
+
+    async def test_the_sweep_finds_an_unreferenced_object_and_leaves_a_referenced_one_alone(
+        self,
+        session: AsyncSession,
+        org_id: uuid.UUID,
+        minio_client,
+        as_principal,
+        real_store: ObjectStore,
+    ) -> None:
+        cfg = settings()
+        scanner = OrphanScanner(cfg)
+        if not scanner.is_configured():
+            pytest.skip("S3_ORPHAN_ACCESS_KEY / S3_ORPHAN_SECRET_KEY are not set")
+
+        with as_principal(principal_for(org_id, BOTH)):
+            created = (
+                await minio_client.post(
+                    "/api/v1/documents/assets",
+                    files={"file": ("referenced.png", make_image("PNG"), "image/png")},
+                )
+            ).json()
+        referenced_key = f"{org_id}/{created['id']}"
+
+        # An object this service would have written, but with no row behind it — put directly
+        # through the real store, the same "object first" step `create_asset` takes, minus the
+        # row commit that should have followed it (ADR-0009 §9's own failure mode).
+        orphan_id = uuid.uuid4()
+        orphan_key = f"{org_id}/{orphan_id}"
+        await real_store.put(
+            orphan_key, make_image("PNG"), content_type="image/png", organization_id=org_id
+        )
+
+        init_outbox_engine(cfg)
+
+        @asynccontextmanager
+        async def _work_scope(organization_id: uuid.UUID):
+            raise AssertionError("the orphan pass never opens a tenant-bound write session")
+            yield  # pragma: no cover
+
+        sweep = PurgeSweep(
+            discovery_factory=get_outbox_sessionmaker(),
+            work_scope=_work_scope,
+            store=real_store,
+            scanner=scanner,
+            retention=timedelta(days=30),
+            orphan_enabled=True,
+            orphan_dry_run=False,
+            # Zero margin: both objects were just written, and this test wants them
+            # immediately eligible rather than waiting on the production safety window.
+            orphan_min_age=timedelta(seconds=0),
+        )
+
+        try:
+            report = await sweep.tick(now=datetime.now(UTC))
+
+            assert report.orphan_deleted >= 1
+            async with httpx.AsyncClient(timeout=10.0) as anon:
+                # The orphan is gone.
+                base = cfg.public_asset_base_url.rstrip("/")
+                assert (await anon.get(f"{base}/{orphan_key}")).status_code == 404
+                # The referenced object survives untouched.
+                assert (await anon.get(f"{base}/{referenced_key}")).status_code == 200
         finally:
             with as_principal(principal_for(org_id, BOTH)):
                 await minio_client.delete(f"/api/v1/documents/assets/{created['id']}?purge=true")

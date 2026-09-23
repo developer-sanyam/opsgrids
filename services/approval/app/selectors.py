@@ -309,6 +309,26 @@ async def get_request_by_source(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_request_by_source_for_update(
+    session: AsyncSession, organization_id: uuid.UUID, request_type: str, source_ref: uuid.UUID
+) -> ApprovalRequest | None:
+    """The same lookup as `get_request_by_source`, `SELECT ... FOR UPDATE` — the lock
+    `withdraw_request` takes so a product's withdrawal (leave's own cancellation of a request
+    nobody has decided yet) and `decide_request` can never both act on the same request: whichever
+    transaction gets here first serialises the other, which then re-checks `status` under its own
+    lock exactly the way `decide_request` already does for a concurrent second decision."""
+    stmt = (
+        select(ApprovalRequest)
+        .where(
+            ApprovalRequest.organization_id == organization_id,
+            ApprovalRequest.request_type == request_type,
+            ApprovalRequest.source_ref == source_ref,
+        )
+        .with_for_update()
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def get_open_step(
     session: AsyncSession, organization_id: uuid.UUID, request_id: uuid.UUID
 ) -> ApprovalStep | None:

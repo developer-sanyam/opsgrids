@@ -33,7 +33,7 @@ from app.models import SCHEMA
 from platform_core.db import TENANT_GUC, get_directory_session, get_session
 
 #: Tenant-scoped tables only — the catalogue survives.
-TENANT_TABLES = ("activations", "audit_logs", "outbox", "processed_events")
+TENANT_TABLES = ("activations", "activation_sources", "audit_logs", "outbox", "processed_events")
 
 
 def _connect_args() -> dict:
@@ -85,6 +85,37 @@ async def admin_session() -> AsyncIterator[AsyncSession]:
     maker = async_sessionmaker(engine, expire_on_commit=False)
     async with maker() as s:
         yield s
+    await engine.dispose()
+
+
+#: The members the bundle tests sell. Seeded `soon` (launch status is deployment data), and a
+#: `soon` member is never projected — so the tests launch them, and put the seed back after.
+LAUNCHED = ("hrms", "crm", "finance")
+
+
+@pytest_asyncio.fixture
+async def launched() -> AsyncIterator[tuple[str, ...]]:
+    engine = create_async_engine(settings().admin_dsn, connect_args=_connect_args())
+    async with engine.begin() as conn:
+        before = dict(
+            (
+                await conn.execute(
+                    text("SELECT key, status FROM product.products WHERE key = ANY(:k)"),
+                    {"k": list(LAUNCHED)},
+                )
+            ).all()
+        )
+        await conn.execute(
+            text("UPDATE product.products SET status = 'available' WHERE key = ANY(:k)"),
+            {"k": list(LAUNCHED)},
+        )
+    yield LAUNCHED
+    async with engine.begin() as conn:
+        for key, status in before.items():
+            await conn.execute(
+                text("UPDATE product.products SET status = :s WHERE key = :k"),
+                {"s": status, "k": key},
+            )
     await engine.dispose()
 
 

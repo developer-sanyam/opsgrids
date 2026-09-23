@@ -4,10 +4,10 @@ import { Link } from "react-router-dom";
 import { usePermissions, usePermissionStatus } from "@opsgrids/client";
 import { Announcer, Card, EmptyState, ErrorState, PageHeader, Skeleton } from "@opsgrids/ui";
 
-import { getStore, listCategories, listProducts, saveStore } from "@/api/client";
+import { getStore, getStoreBrand, listCategories, listProducts, saveStore } from "@/api/client";
 import type { Category, Product } from "@/api/types";
 import { SECTION_DEFS } from "@/theme/sections";
-import type { StoreDoc } from "@/theme/schema";
+import type { Brand, StoreDoc } from "@/theme/schema";
 
 import { EditorShell } from "./EditorShell";
 
@@ -22,7 +22,13 @@ import { EditorShell } from "./EditorShell";
 type LoadState =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ready"; store: StoreDoc | null; products: Product[]; categories: Category[] };
+  | {
+      status: "ready";
+      store: StoreDoc | null;
+      brand: Brand | null;
+      products: Product[];
+      categories: Category[];
+    };
 
 /** The grant the storefront service requires to write a store document — reused from
  *  `storefront.store.settings.*` rather than a new code (ADR-0011 §3): anyone who can publish
@@ -43,9 +49,10 @@ function EditorScreen() {
   const load = useCallback(() => {
     setState({ status: "loading" });
     Promise.all([getStore(), listProducts(), listCategories()])
-      .then(([store, products, categories]) =>
-        setState({ status: "ready", store, products: products.items, categories }),
-      )
+      .then(async ([store, products, categories]) => {
+        const brand = store ? await getStoreBrand(store.themeKey) : null;
+        setState({ status: "ready", store, brand, products: products.items, categories });
+      })
       .catch((error: unknown) =>
         setState({
           status: "error",
@@ -106,9 +113,10 @@ function EditorScreen() {
         </Card>
       ) : null}
 
-      {state.status === "ready" && state.store !== null ? (
+      {state.status === "ready" && state.store !== null && state.brand !== null ? (
         <EditorShell
           store={state.store}
+          brand={state.brand}
           library={SECTION_DEFS}
           products={state.products}
           categories={state.categories}

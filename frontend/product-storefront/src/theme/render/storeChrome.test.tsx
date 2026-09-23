@@ -19,6 +19,8 @@ import { adoptTheme } from "../store";
 import { foundry, suggestedBrand } from "../themes";
 import { StoreRenderer } from "./StoreRenderer";
 
+const BRAND = suggestedBrand(foundry.key);
+
 function instance(type: string): SectionInstance {
   return { id: `sec-${type}`, type, settings: defaultSettings(type), layout: { x: 0, y: 0, w: 12, h: 8 } };
 }
@@ -29,7 +31,7 @@ function instance(type: string): SectionInstance {
  * able to quietly delete the assertion.
  */
 function storeWithSections(sections: SectionInstance[]): StoreDoc {
-  const store = adoptTheme(foundry, suggestedBrand(foundry.key));
+  const store = adoptTheme(foundry);
   const [home, ...rest] = store.pages;
   if (!home) throw new Error("a theme must ship a home page");
   return { ...store, pages: [{ ...home, sections }, ...rest] };
@@ -40,6 +42,7 @@ function renderStore(store: StoreDoc, { at = "/store", base }: { at?: string; ba
     <MemoryRouter initialEntries={[at]}>
       <StoreRenderer
         store={store}
+        brand={BRAND}
         route="/"
         products={PRODUCTS}
         categories={CATEGORY_LIST}
@@ -93,6 +96,7 @@ describe("the navigation's base", () => {
       <MemoryRouter initialEntries={["/live/catalogue"]}>
         <StoreRenderer
           store={store}
+          brand={BRAND}
           route="/catalogue"
           products={PRODUCTS}
           categories={CATEGORY_LIST}

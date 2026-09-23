@@ -7,6 +7,7 @@ Part of the OpsGrids platform. Owns the `document` schema. Fronted by `app-gatew
 make run SERVICE=document PORT=8150   # API
 make worker SERVICE=document          # event consumer
 make relay SERVICE=document           # outbox relay
+make cron SERVICE=document            # the purge sweep (ADR-0009 §8, §9)
 ```
 
 ## Read this before the name misleads you
@@ -91,10 +92,19 @@ Locally, `make infra` creates `opsgrids-public` and applies its anonymous read-o
 production that is a bucket policy granting `s3:GetObject` (and **not** `s3:ListBucket`) to `*`,
 with `BlockPublicAccess` disabled for that bucket only.
 
+## The purge sweep
+
+`bin/cron` runs `app/cron.py` (ADR-0009 §8, and its 2026-09-23 addendum's §9): every asset
+soft-deleted more than `ASSET_PURGE_RETENTION_DAYS` (default 30) days ago has its object
+removed from the bucket and `purged_at` set, and — only when `ORPHAN_SWEEP_ENABLED=true` — the
+bucket is listed for objects with no `assets` row at all, at least `orphan_sweep_min_age_hours`
+old, reported (`ORPHAN_SWEEP_DRY_RUN=true`, the default) or actually deleted. See the ADR
+addendum for the credential the orphan pass needs and why it is a second, narrower one than the
+API process ever holds, and `infrastructure/edge/RUNBOOK.md`'s "The purge sweep" for how to
+check it and run it once by hand in production.
+
 ## Not built here, and named so it is not rediscovered
 
-- **The purge sweep** (`bin/cron`): objects of assets soft-deleted more than 30 days ago, plus
-  orphan objects older than 24 hours. The retention window is only real once it exists.
 - **A request-body cap in `build_gateway`**, owned by `libs/platform-core`: the gateway buffers
   whole bodies, so this service's 5 MiB limit protects this service and not the gateway.
 - **`S3_PRIVATE_BUCKET`** and everything behind it.

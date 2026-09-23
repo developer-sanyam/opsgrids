@@ -6,7 +6,9 @@ import type { ZoneLookup } from "@opsgrids/ui";
 
 import { decideRequest } from "@/api/approvals";
 import type { RequestDetailOut } from "@/api/types";
+import { isLeaveSummary } from "@/lib/approvalCopy";
 import { attendanceStatusLabel } from "@/lib/format";
+import { formatLeaveRange, formatHalfDays } from "@/lib/leaveCopy";
 
 // §4.B: "Comment (optional) — multiline, 500 characters" — the server's own limit is 2000
 // (`comment` on `POST .../decision`), but the screen spec fixes this field's limit at 500; the
@@ -72,10 +74,11 @@ export function DecisionDialog({
     request.requester_location_code,
     zoneLookup ?? { locations: {}, organizationZone: "UTC" },
   ).zone;
-  const day = formatInZone(`${request.summary.date}T00:00:00Z`, zone, "date");
-  const from = attendanceStatusLabel(request.summary.from);
-  const to = attendanceStatusLabel(request.summary.to);
+  const summary = request.summary;
   const requesterName = request.requester_name ?? "This employee";
+  const changeDescription = isLeaveSummary(summary)
+    ? `${requesterName}'s leave for ${formatLeaveRange(summary.start_date, summary.end_date)} (${formatHalfDays(summary.total_half_days)})`
+    : `${requesterName}'s attendance for ${formatInZone(`${summary.date}T00:00:00Z`, zone, "date")} ${outcome === "approve" ? `will change from ${attendanceStatusLabel(summary.from)} to ${attendanceStatusLabel(summary.to)}` : `stays ${attendanceStatusLabel(summary.from)}`}`;
 
   async function confirm() {
     if (submitting) return;
@@ -110,11 +113,9 @@ export function DecisionDialog({
     }
   }
 
-  const title = outcome === "approve" ? "Approve this correction?" : "Reject this correction?";
-  const body =
-    outcome === "approve"
-      ? `${requesterName}'s attendance for ${day} will change from ${from} to ${to}. This can't be undone.`
-      : `${requesterName}'s attendance for ${day} stays ${from}. This can't be undone.`;
+  const noun = isLeaveSummary(summary) ? "leave request" : "correction";
+  const title = outcome === "approve" ? `Approve this ${noun}?` : `Reject this ${noun}?`;
+  const body = `${changeDescription}. This can't be undone.`;
   const helper =
     outcome === "approve"
       ? "The requester can see this."

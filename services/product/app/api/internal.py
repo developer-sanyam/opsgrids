@@ -1,8 +1,10 @@
 """The internal API — service-to-service, never reachable from outside the cluster.
 
-One endpoint, and it is the source of truth for every 402 in the platform. auth-service calls
-it while minting a token; the resulting list becomes the `ent` claim, and the gateway compares
-a route's product against that claim on every request.
+Two endpoints. The registry read (`/products`) is the minor one — catalog validates a bundle's
+member keys against it. The entitlements read is the other, and it is the source of truth for
+every 402 in the platform. auth-service calls it while minting a token; the resulting list
+becomes the `ent` claim, and the gateway compares a route's product against that claim on every
+request.
 
 Cross-tenant by necessity: auth asks about an organization it is issuing a token *for*, at a
 moment when there is no tenant context yet — the token being minted is what would establish
@@ -14,8 +16,9 @@ reader"). The application role would be wrong here — `activations` carries a f
 security policy `USING (organization_id = current_org())`, and with no tenant GUC `current_org()`
 is NULL, so the organization's real activation row is invisible and the endpoint returns only
 the platform products. That is the 402 blocker: an org that activated a product still signs in
-without it. Entitlements is the only route in this module that reads across tenants, so it is
-the only one on the directory session.
+without it. Entitlements is the only route in this module that reads across tenants; the
+registry read shares the directory session because it is SELECT-only on the global `products`
+table, which that role is already granted, and a read-only role is the right one for it.
 
 Mounted at the root rather than under `/api/v1`, and excluded from the OpenAPI document: this
 is not public API and must not appear as though it were.
@@ -73,3 +76,27 @@ async def entitlements(session: SessionDep, organization_id: uuid.UUID) -> dict[
     keys = await selectors.entitlements_for(session, organization_id)
     log.info("entitlements.resolved", organization_id=str(organization_id), count=len(keys))
     return {"entitlements": keys}
+
+
+@router.get("/products", summary="The product registry, for a sibling validating a product key")
+async def registry(session: SessionDep) -> dict[str, Any]:
+    """Every registered product key and the two flags a caller needs to judge it.
+
+    Catalog asks this when a bundle is authored: every key a `bundled_products` list names must
+    be a registered product, must not be a platform product (every customer already has those),
+    and must not itself be a bundle. `products` is global platform vocabulary with no tenant in
+    it, so there is nothing to bind; it is read on this router's SELECT-only session like the
+    entitlements read beside it.
+    """
+    products = await selectors.list_products(session)
+    return {
+        "products": [
+            {
+                "key": p.key,
+                "status": p.status,
+                "is_platform": p.is_platform,
+                "is_bundle": p.is_bundle,
+            }
+            for p in products
+        ]
+    }

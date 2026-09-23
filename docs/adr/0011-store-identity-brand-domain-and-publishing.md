@@ -481,10 +481,13 @@ and support adjudicating one should not have to read it out of a generic update'
   need one, and it will need to think about the abandoned name.
 - **The brand's move is not reversible by a downgrade.** Rolling this migration back loses names,
   taglines, logo text and domain claims.
-- **The theme document still holds a `brand` key on the front end** until the frontend unit
-  removes it. Until then the same three strings exist in two places, and the identity row is the
-  one that is true. That overlap is the residue of this change and it should not survive the next
-  frontend slice.
+- **Done: the frontend no longer holds a `brand` key anywhere.** `StoreDoc` (`theme/schema.ts`)
+  has no `brand` field, `adoptTheme` no longer takes or forks one, and every screen that draws a
+  store's chrome — the buyer route, the console preview, the theme editor, the buyer bundle's
+  `ShopFront` — reads name/tagline/logo text from the identity row (`getStoreBrand` /
+  `brandFromIdentity`), falling back to a theme's own suggestion only before an identity exists.
+  The editor's theme panel shows the brand read-only with a link to `/settings`, which is the only
+  place it is written. The residue this bullet used to describe is gone.
 
 ## Revisit when
 

@@ -27,6 +27,8 @@ import {
   detailStatusCopy,
   dueLineCopy,
   inboxReasonChip,
+  isLeaveSummary,
+  requestTypeCopy,
 } from "@/lib/approvalCopy";
 import { attendanceStatusLabel } from "@/lib/format";
 import { getMyEmployeeId } from "@/lib/subject";
@@ -148,18 +150,33 @@ function RequestDetailScreen() {
   // request is pending (§2.10); a decided request has none, so the line does not render at all.
   const openStep = detail.steps.find((s) => s.outcome === "open");
   const dueLine = openStep ? dueLineCopy(openStep.due_at, (iso) => formatAt(iso).text) : null;
-  const requesterDay = attendanceStatusLabel(detail.summary.from);
-  const requesterTargetDay = attendanceStatusLabel(detail.summary.to);
-  const dateLabel = formatInstant(`${detail.summary.date}T00:00:00Z`, detail.requester_location_code, zoneLookup ?? { locations: {}, organizationZone: "UTC" }, "date").text;
+  const typeCopy = requestTypeCopy(detail.request_type);
+  const summary = detail.summary;
+  const summaryIsLeave = isLeaveSummary(summary);
+  const requesterDay = isLeaveSummary(summary) ? null : attendanceStatusLabel(summary.from);
+  const requesterTargetDay = isLeaveSummary(summary) ? null : attendanceStatusLabel(summary.to);
+  const fmtDate = (isoDate: string) =>
+    formatInstant(
+      `${isoDate}T00:00:00Z`,
+      detail.requester_location_code,
+      zoneLookup ?? { locations: {}, organizationZone: "UTC" },
+      "date",
+    ).text;
+  const dateLabel = isLeaveSummary(summary)
+    ? summary.start_date === summary.end_date
+      ? fmtDate(summary.start_date)
+      : `${fmtDate(summary.start_date)} – ${fmtDate(summary.end_date)}`
+    : fmtDate(summary.date);
   const raised = formatAt(detail.opened_at);
 
   function afterDecision(next: RequestDetailOut) {
     setDecisionOutcome(null);
     setStatus({ kind: "ready", detail: next });
+    const noun = typeCopy.title.toLowerCase();
     const message =
       next.status === "approved"
-        ? `Approved ${next.requester_name ?? "this employee"}'s attendance correction for ${dateLabel}.`
-        : `Rejected ${next.requester_name ?? "this employee"}'s attendance correction for ${dateLabel}.`;
+        ? `Approved ${next.requester_name ?? "this employee"}'s ${noun} for ${dateLabel}.`
+        : `Rejected ${next.requester_name ?? "this employee"}'s ${noun} for ${dateLabel}.`;
     if (cameFromMine) {
       // An ORG reader deciding a request opened from "My requests" stays on the detail — the
       // requester is never a decider, so this only happens for them (§1.4).
@@ -181,7 +198,7 @@ function RequestDetailScreen() {
       </Link>
 
       <PageHeader
-        eyebrow="Attendance correction"
+        eyebrow={typeCopy.title}
         title={detail.requester_name ?? "Employee record unavailable"}
         actions={
           <span
@@ -209,20 +226,29 @@ function RequestDetailScreen() {
                 </dd>
               </div>
               <div className="flex justify-between gap-4">
-                <dt className="text-muted">Date</dt>
+                <dt className="text-muted">{summaryIsLeave ? "Dates" : "Date"}</dt>
                 <dd className="text-ink font-semibold tnum">{dateLabel}</dd>
               </div>
-              <div className="flex justify-between gap-4">
-                <dt className="text-muted">Change</dt>
-                <dd className="flex items-center gap-2">
-                  <span className="sr-only">{`from ${requesterDay} to ${requesterTargetDay}`}</span>
-                  <span aria-hidden className="flex items-center gap-2">
-                    <Tag>{requesterDay}</Tag>
-                    <span aria-hidden>→</span>
-                    <Tag>{requesterTargetDay}</Tag>
-                  </span>
-                </dd>
-              </div>
+              {summaryIsLeave ? (
+                <div className="flex justify-between gap-4">
+                  <dt className="text-muted">Half-days</dt>
+                  <dd className="text-ink font-semibold tnum">
+                    {isLeaveSummary(summary) ? summary.total_half_days : null}
+                  </dd>
+                </div>
+              ) : (
+                <div className="flex justify-between gap-4">
+                  <dt className="text-muted">Change</dt>
+                  <dd className="flex items-center gap-2">
+                    <span className="sr-only">{`from ${requesterDay} to ${requesterTargetDay}`}</span>
+                    <span aria-hidden className="flex items-center gap-2">
+                      <Tag>{requesterDay}</Tag>
+                      <span aria-hidden>→</span>
+                      <Tag>{requesterTargetDay}</Tag>
+                    </span>
+                  </dd>
+                </div>
+              )}
               {detail.request_note ? (
                 <div className="flex flex-col gap-1 border-t border-line pt-3">
                   <dt className="text-muted">Reason</dt>

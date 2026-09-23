@@ -116,6 +116,22 @@ export interface Theme {
   pages: PageDoc[];
 }
 
+/**
+ * A store's name, tagline and header wordmark, as rendered.
+ *
+ * **Not part of `StoreDoc`.** ADR-0011 moved these off the theme document and onto the store's
+ * own identity (`StoreOut.name` / `.tagline` / `.logo_text`) — a merchant's name is theirs, not a
+ * property of the theme they happened to pick, so re-adopting a theme can no longer carry it
+ * through a copy step. Every screen that draws chrome takes this as its own prop, resolved from
+ * the identity row (`@/settings/api`'s `brandFromIdentity`) with the theme's own suggestion as the
+ * fallback before a merchant has set one (`@/theme/themes`' `suggestedBrand`).
+ */
+export interface Brand {
+  name: string;
+  tagline: string;
+  logoText: string;
+}
+
 /** One merchant's store — a COPY of a theme, then edited. */
 export interface StoreDoc {
   themeKey: string;
@@ -125,7 +141,6 @@ export interface StoreDoc {
    * a theme key this build no longer ships. Render code reads it through `resolveMode`.
    */
   mode: StoreMode;
-  brand: { name: string; tagline: string; logoText: string };
   tokens: ThemeTokens;
   pages: PageDoc[];
 }

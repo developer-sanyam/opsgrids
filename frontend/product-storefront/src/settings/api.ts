@@ -9,11 +9,28 @@
 
 import { ApiError, apiRequest, settle } from "@opsgrids/client";
 
-import { USE_FIXTURES } from "@/api/client";
+import { USE_FIXTURES } from "@/api/mode";
 import { FIXTURE_STORE } from "@/delivery/fixtures";
+import type { Brand } from "@/theme/schema";
 import type { StoreOut, StorePut } from "./types";
 
 let fixtureStore: StoreOut | null = { ...FIXTURE_STORE };
+
+/**
+ * The identity row, as a store's chrome draws it (ADR-0011 §2).
+ *
+ * **`logo_text` empty falls back to `name`** — the renderer's decision, not stored on the row
+ * (`StoreOut.logo_text`'s own doc comment). Every reader of a store's brand goes through this one
+ * function so that fallback is made exactly once.
+ */
+export function brandFromIdentity(identity: StoreOut): Brand {
+  const logoText = identity.logo_text?.trim();
+  return {
+    name: identity.name,
+    tagline: identity.tagline ?? "",
+    logoText: logoText && logoText !== "" ? logoText : identity.name,
+  };
+}
 
 /** `GET /storefront/store` → `StoreOut`, 404 when the organization has no store yet. */
 export async function getStoreIdentity(): Promise<StoreOut | null> {

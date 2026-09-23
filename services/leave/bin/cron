@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Scheduled work. Nothing here yet: a service with a sweep replaces this line with
+# `exec python -m app.cron` (subscription, storefront). The relay has its own entrypoint.
+echo "$(basename "$(dirname "$(dirname "$0")")") bin/cron: no scheduled work in this service" >&2
+exit 78
