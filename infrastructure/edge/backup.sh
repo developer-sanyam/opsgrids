@@ -15,6 +15,18 @@
 #     no automatic recovery. Skipped when the `storefront` profile is off, because there is then
 #     no MinIO container and nothing to read the volume from.
 #
+# Order is deliberate, and it is the fix for a real incident: the database dump and the
+# certificate archive are created and uploaded FIRST, unconditionally, under `set -e` — if
+# either fails, the script dies loudly and nothing pretends to have backed up. The MinIO
+# archive runs LAST and its failure is contained: `quay.io/minio/minio` has no shell and no
+# `tar` (`docker run --entrypoint tar quay.io/minio/minio --version` exits 127, "executable
+# file not found in $PATH" — verified, not assumed), so archiving it can never reuse the
+# `minio` service the way the certs step reuses `caddy`. Before this was fixed, that 127 ran
+# under `set -e` ahead of every upload, so the script died before the Postgres dump — the one
+# backup that actually matters at 3am — ever reached the bucket. A MinIO archive/upload
+# failure now still ends the script non-zero (cron mails it, same as any other failure), but
+# only after the dump and the certificates are already off-box.
+#
 # Exit codes matter: cron mails non-zero output to the box's local user, and in slice 1 that
 # is the only thing resembling an alert. Read RUNBOOK.md "how a human finds out" before
 # deciding that is enough.
@@ -59,25 +71,17 @@ echo "  database: $dump ($size bytes)"
 # --- Caddy's certificates and ACME account key --------------------------------
 # Read from the volume through a throwaway container, so nothing needs to know where Docker
 # keeps it. The archive holds private keys: it goes to the same bucket and inherits the same
-# access policy, which must not be public.
+# access policy, which must not be public. `caddy:2.10.0-alpine` has both `sh` and `tar`.
 "${COMPOSE[@]}" run --rm --no-deps -T --entrypoint sh -v "$dir:/backup" caddy \
 	-c "tar czf /backup/$(basename "$certs") -C /data ." >/dev/null
 echo "  certificates: $certs"
 
-# --- MinIO's uploaded images (ADR-0009) ----------------------------------------
-# Only when the storefront profile actually started it: `run` against a service whose profile
-# is off fails with "no such service", and there is nothing on the volume to lose anyway.
-assets=""
-if "${COMPOSE[@]}" ps --status running minio 2>/dev/null | grep -q minio; then
-	assets="$dir/minio-data-$stamp.tar.gz"
-	"${COMPOSE[@]}" run --rm --no-deps -T --entrypoint sh -v "$dir:/backup" minio \
-		-c "tar czf /backup/$(basename "$assets") -C /data ." >/dev/null
-	echo "  object storage: $assets"
-else
-	echo "  object storage: minio is not running on this box (storefront profile off) — skipped"
-fi
-
-# --- off the box --------------------------------------------------------------
+# --- off the box: the database and the certificates, unconditionally ----------
+# These two happen BEFORE the MinIO archive below, on purpose: they are created under `set -e`
+# above, so a failure in either has already stopped the script — nothing past this point runs
+# on a box whose dump did not gzip cleanly or whose certs did not tar. Everything from here
+# down is the box's *object storage* backup, which is real but strictly less critical than the
+# database, and its failure must not retroactively un-upload what already succeeded.
 if [ -z "${BACKUP_S3_BUCKET:-}" ] || [ -z "${BACKUP_S3_ACCESS_KEY_ID:-}" ]; then
 	echo "backup: no off-box destination configured — these files are ON THE SAME DISK as the" >&2
 	echo "        database they back up. Set BACKUP_S3_* in .env." >&2
@@ -105,12 +109,56 @@ upload() {
 
 upload "$dump"
 upload "$certs"
-# `if` rather than `[ … ] && …`: under `set -e` the second form exits the script when $assets
-# is empty (minio off), which is the normal case on a box that does not sell storefront.
-if [ -n "$assets" ]; then
-	upload "$assets"
+echo "  uploaded database + certificates to s3://$BACKUP_S3_BUCKET/${BACKUP_S3_PREFIX:-edge}/"
+
+# --- MinIO's uploaded images (ADR-0009), archived and uploaded LAST -----------
+# Only when the storefront profile actually started it: there is then no MinIO container and
+# nothing on the volume to lose anyway.
+#
+# `quay.io/minio/minio` has no shell and no `tar` — confirmed by running
+# `docker run --entrypoint tar quay.io/minio/minio:RELEASE.2024-01-16T16-07-38Z --version`,
+# which exits 127, "executable file not found in $PATH". Reusing the `minio` service the way
+# the certs step above reuses `caddy` is therefore not available, and running it that way is
+# exactly the bug this comment replaces: it failed with exit 127 *before* either upload above,
+# and under `set -e` that killed the whole backup — including the database dump — every single
+# night the `storefront` profile was on.
+#
+# The fix reads the volume's real name off the running container instead of assuming a naming
+# convention (`docker inspect`, not a hardcoded `<project>_minio_data`; RUNBOOK.md's restore
+# drill still uses the literal name for a human typing at a terminal, which is a different
+# situation from a script that must not guess), and archives it with `caddy:2.10.0-alpine` —
+# already pinned and already pulled for the step above, so this adds no new image to trust or
+# to fail to pull at 3am.
+#
+# A failure anywhere in this block is caught and reported, never allowed to raise: the database
+# and the certificates are already safely off-box by the time this runs, and that must stay
+# true regardless of what MinIO does tonight.
+minio_backup_failed=0
+assets=""
+if "${COMPOSE[@]}" ps --status running minio 2>/dev/null | grep -q minio; then
+	assets="$dir/minio-data-$stamp.tar.gz"
+	minio_volume=$(docker inspect \
+		-f '{{ range .Mounts }}{{ if eq .Destination "/data" }}{{ .Name }}{{ end }}{{ end }}' \
+		"$("${COMPOSE[@]}" ps -q minio)" 2>/dev/null || true)
+	if [ -z "$minio_volume" ]; then
+		echo "backup: FAILED to find MinIO's /data volume — object storage is NOT backed up off-box tonight" >&2
+		minio_backup_failed=1
+	elif ! docker run --rm --entrypoint sh \
+		-v "$minio_volume:/data:ro" \
+		-v "$dir:/backup" \
+		caddy:2.10.0-alpine \
+		-c "tar czf /backup/$(basename "$assets") -C /data ." >/dev/null; then
+		echo "backup: FAILED to archive MinIO's data volume — object storage is NOT backed up off-box tonight" >&2
+		minio_backup_failed=1
+	elif ! upload "$assets"; then
+		echo "backup: FAILED to upload $assets — object storage is NOT backed up off-box tonight" >&2
+		minio_backup_failed=1
+	else
+		echo "  object storage: $assets, uploaded"
+	fi
+else
+	echo "  object storage: minio is not running on this box (storefront profile off) — skipped"
 fi
-echo "  uploaded to s3://$BACKUP_S3_BUCKET/${BACKUP_S3_PREFIX:-edge}/"
 
 # --- prune the local copies ---------------------------------------------------
 keep="${BACKUP_LOCAL_KEEP:-7}"
@@ -118,4 +166,8 @@ find "$dir" -name 'opsgrids-*.sql.gz' -type f | sort | head -n -"$keep" | xargs 
 find "$dir" -name 'caddy-data-*.tar.gz' -type f | sort | head -n -"$keep" | xargs -r rm -f
 find "$dir" -name 'minio-data-*.tar.gz' -type f | sort | head -n -"$keep" | xargs -r rm -f
 
+if [ "$minio_backup_failed" -ne 0 ]; then
+	echo "backup: database and certificates are safely off-box. MinIO's object storage backup FAILED — see above." >&2
+	exit 1
+fi
 echo "backup: ok ($(du -sh "$dir" | cut -f1) kept locally, $keep newest of each)"
