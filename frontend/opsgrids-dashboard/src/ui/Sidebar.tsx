@@ -2,6 +2,7 @@ import { useAuth, useCan } from "@opsgrids/client";
 import {
   BoxIcon,
   BuildingIcon,
+  GlobeIcon,
   KeyIcon,
   LifeBuoyIcon,
   MapPinIcon,
@@ -41,6 +42,7 @@ const ROLES_ITEM: NavEntry = { to: "/admin/roles", label: "Roles", icon: ShieldI
 const ORGANIZATION_ITEM: NavEntry = { to: "/admin/organization", label: "Organization", icon: BuildingIcon };
 const UNITS_ITEM: NavEntry = { to: "/admin/org-units", label: "Org units", icon: NetworkIcon };
 const LOCATIONS_ITEM: NavEntry = { to: "/admin/locations", label: "Locations", icon: MapPinIcon };
+const DOMAINS_ITEM: NavEntry = { to: "/admin/domains", label: "Domains", icon: GlobeIcon };
 
 const PINNED: NavEntry[] = [
   { to: "/account/security", label: "Security", icon: KeyIcon },
@@ -62,6 +64,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const canReadOrganization = useCan("core.org.organization.read");
   const canReadUnits = useCan("core.org.unit.read");
   const canReadLocations = useCan("core.org.location.read");
+  const canReadDomains = useCan("core.identity.domain.read");
 
   const adminItems: NavEntry[] = [
     ...(canReadMembers ? [MEMBERS_ITEM] : []),
@@ -69,6 +72,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     ...(canReadOrganization ? [ORGANIZATION_ITEM] : []),
     ...(canReadUnits ? [UNITS_ITEM] : []),
     ...(canReadLocations ? [LOCATIONS_ITEM] : []),
+    ...(canReadDomains ? [DOMAINS_ITEM] : []),
   ];
 
   const groups: NavGroup[] =

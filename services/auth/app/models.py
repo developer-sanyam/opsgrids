@@ -120,6 +120,15 @@ class Session(Base):
     auth_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     mfa_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     idp: Mapped[str] = mapped_column(String(60), nullable=False, default="local")
+    #: The email domain `sso_callback` proved before minting this session — `None` for a
+    #: password session, which proved nothing about any domain. Round 3: `idp` alone
+    #: (`"oidc:<org>"`) says *which organization* a federated session is pinned to, but not
+    #: *which domain* made that true, so `rotate_refresh`'s periodic re-validation of a pinned
+    #: session (the domain must still be verified, and the org's IdP must still be enabled —
+    #: both can change after the session was minted) had nothing to re-check *against*. Stored
+    #: once, at sign-in, and never updated: a session's own history of what it proved does not
+    #: change after the fact, only whether that proof still holds right now.
+    sso_domain: Mapped[str | None] = mapped_column(String(253))
 
     ip: Mapped[str | None] = mapped_column(INET)
     user_agent: Mapped[str | None] = mapped_column(Text)

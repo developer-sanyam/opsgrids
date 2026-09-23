@@ -338,7 +338,11 @@ async def mfa_enrol(
     if user is None:
         raise UnauthorizedProblem("That session is no longer valid.")
     factor, secret, uri = await services.begin_mfa_enrolment(
-        session, principal.sub, account_email=user.email, cfg=settings()
+        session,
+        principal.sub,
+        account_email=user.email,
+        cfg=settings(),
+        session_id=principal.session_id,
     )
     return MfaEnrolStart(factor_id=factor.id, secret=secret, otpauth_uri=uri)
 
@@ -357,6 +361,7 @@ async def mfa_confirm(
         user_id=principal.sub,
         code=payload.code,
         cfg=settings(),
+        session_id=principal.session_id,
     )
     # Shown once. Stored hashed, and never retrievable again.
     return MfaEnrolled(recovery_codes=codes)
