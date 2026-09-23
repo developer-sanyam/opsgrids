@@ -112,10 +112,12 @@ async def sources_for(
 
 
 async def sources_from(
-    session: AsyncSession, org_id: uuid.UUID, source_product_key: str
+    session: AsyncSession, org_id: uuid.UUID, source_product_key: str, *, fresh: bool = False
 ) -> list[ActivationSource]:
     """Every activation one subscription feeds, tombstones included — the projection's diff and
-    its per-source ordering watermark both read this."""
+    its per-source ordering watermark both read this. `fresh` overwrites rows this session has
+    already loaded, for the read taken after the locks, which must see what committed while it
+    waited."""
     stmt = (
         select(ActivationSource)
         .where(
@@ -124,6 +126,8 @@ async def sources_from(
         )
         .order_by(ActivationSource.product_key)
     )
+    if fresh:
+        stmt = stmt.execution_options(populate_existing=True)
     return list((await session.execute(stmt)).scalars().all())
 
 

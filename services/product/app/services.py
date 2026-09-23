@@ -16,6 +16,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -72,6 +73,59 @@ def _members(product_key: str, entitled_products: list[str] | None) -> list[str]
     return members
 
 
+async def _lock(session: AsyncSession, organization_id: uuid.UUID, kind: str, key: str) -> None:
+    """A transaction-scoped advisory lock on `org:kind:key`, released at commit or rollback.
+
+    `src` locks serialise every event for one subscription; `act` locks serialise every write
+    that recomputes one activation. Callers that need several take them in a fixed order —
+    the source first, then activations sorted by key — so two folds can never wait on each
+    other in a cycle.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"{organization_id}:{kind}:{key}"},
+    )
+
+
+async def _honoured_members(
+    session: AsyncSession, product_key: str, entitled_products: list[str] | None
+) -> list[str]:
+    """The members an event may actually switch on, judged against the product registry.
+
+    A member list is only honoured on a subscription bought under a **bundle** product — a plain
+    product's event speaks for that product alone, whatever list it carries. And a member that is
+    not a registered, sellable (`status != 'soon'`), non-platform, non-bundle product is dropped
+    rather than activated: catalog refuses such a bundle when it is authored, and this is the net
+    under that for a version authored before the rule, or a product whose launch was rolled back.
+    """
+    members = _members(product_key, entitled_products)
+    if members == [product_key]:
+        return members
+    registry = {p.key: p for p in await selectors.list_products(session)}
+    source = registry.get(product_key)
+    if source is None or not source.is_bundle:
+        log.warning(
+            "subscription.projection.members_ignored",
+            source=product_key,
+            reason="not a bundle product",
+            entitled_products=members,
+        )
+        return [product_key]
+    honoured = []
+    for member in members:
+        entry = registry.get(member)
+        if entry is None or entry.is_platform or entry.is_bundle or entry.status == "soon":
+            log.warning(
+                "subscription.projection.member_refused",
+                source=product_key,
+                member=member,
+                status=entry.status if entry else None,
+            )
+            continue
+        honoured.append(member)
+    return honoured
+
+
 async def project_subscription(
     session: AsyncSession,
     *,
@@ -96,20 +150,37 @@ async def project_subscription(
        `occurred_at`, the whole event is stale and is dropped. Idempotency (the processed-events
        ledger) catches an exact redelivery; this catches a *distinct older* event folded late —
        multi-replica relays, consumers sharing a queue, a DLQ replay. It is per source because a
-       standalone subscription and a bundle are independent histories.
+       standalone subscription and a bundle are independent histories. The guard is only sound
+       because the read and the write it permits happen under a transaction-scoped advisory
+       lock on the source: without it, two consumer replicas folding an older and a newer event
+       at once both read the same watermark and the later *commit* wins, not the later *event*.
     2. **Upsert one source row per member** at the state the event carries.
     3. **De-source what the event no longer names.** A trio→duo downgrade names two members; the
        third member's row of this source becomes `removed` — a tombstone stamped with this event's
        time, so an older trio event arriving late is dropped by step 1 rather than re-adding it.
     4. **Recompute every activation touched**, as the OR over its sources. An activation another
-       live source still feeds — the standalone HRMS under a cancelled suite — stays on.
+       live source still feeds — the standalone HRMS under a cancelled suite — stays on. Each
+       recompute runs under an advisory lock on that activation, which the hand activate and
+       deactivate paths take too, so two sources folding at once (or a fold racing an owner's
+       deactivation) cannot each OR together a view that excludes the other's uncommitted write.
 
     Driven by the subscription's `state`, not the event name, so renew/upgrade/downgrade all fold
     as `active`. No product outbox event is emitted: this is a projection *of* the lifecycle, and
     re-emitting would risk a loop. De-entitlement is **eventual** — see the consumer.
     """
-    members = _members(product_key, entitled_products)
-    rows = await selectors.sources_from(session, organization_id, product_key)
+    members = await _honoured_members(session, product_key, entitled_products)
+
+    # Serialise before reading anything. The source lock orders every event for this
+    # subscription (so the watermark read below cannot be overtaken by a concurrent older or
+    # newer event), and the activation locks — taken in sorted order over the union of the
+    # members this source feeds now and fed before — order this fold against every other
+    # source's fold and the hand activate/deactivate paths for the same products.
+    await _lock(session, organization_id, "src", product_key)
+    previous = await selectors.sources_from(session, organization_id, product_key)
+    for member in sorted({*members, *(r.product_key for r in previous)}):
+        await _lock(session, organization_id, "act", member)
+
+    rows = await selectors.sources_from(session, organization_id, product_key, fresh=True)
     watermark = max((r.state_occurred_at for r in rows if r.state_occurred_at), default=None)
     if occurred_at is not None and watermark is not None and occurred_at <= watermark:
         log.info(
@@ -299,6 +370,8 @@ async def activate(
         )
 
     trial_ends = datetime.now(UTC) + timedelta(days=trial_days) if trial_days is not None else None
+    # The same activation lock the projection takes, before anything is read.
+    await _lock(session, ctx.organization_id, "act", product_key)
     # `state_occurred_at` is left alone: this path is not event-driven and carries no ordering to
     # guard, exactly as it never stamped the activation.
     source = await selectors.get_source(session, ctx.organization_id, product_key, product_key)
@@ -362,6 +435,9 @@ async def deactivate(
     switching off the product's own source would leave it on anyway, and a 200 that changes
     nothing is a lie.
     """
+    # The same activation lock the projection takes, before anything is read: a suite fold
+    # committing between the check below and the write would otherwise be ORed away.
+    await _lock(session, ctx.organization_id, "act", product_key)
     activation = await selectors.get_activation(session, ctx.organization_id, product_key)
     if activation is None:
         raise NotFoundProblem(f"{product_key} is not activated for this organization")

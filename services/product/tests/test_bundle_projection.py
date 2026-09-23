@@ -45,8 +45,9 @@ T0 = datetime(2026, 9, 1, tzinfo=UTC)
 
 
 @pytest.fixture(autouse=True)
-async def _engine() -> Any:
-    """The consumer opens its own `session_scope`, which needs the process engine."""
+async def _engine(launched: tuple[str, ...]) -> Any:
+    """The consumer opens its own `session_scope`, which needs the process engine. Every test
+    here sells the trio, so its members are launched (see conftest `launched`)."""
     init_engine(settings())
     yield
     await dispose_engine()
@@ -160,6 +161,35 @@ class TestFanOut:
         await project_subscription_event(_event(org_id, state="active", with_members=False))
         assert await _entitled(session, org_id) == set()
         assert await _sources(session, org_id) == {}
+
+
+class TestWhatAMemberListMayName:
+    async def test_a_soon_member_is_never_projected(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """`projects` is seeded `soon`: selling it would sell a customer 404s."""
+        await project_subscription_event(
+            _event(org_id, state="active", members=[*TRIO, "projects"])
+        )
+        assert await _entitled(session, org_id) == set(TRIO)
+        assert ("projects", "suite") not in await _sources(session, org_id)
+
+    async def test_platform_and_bundle_members_are_refused(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        await project_subscription_event(
+            _event(org_id, state="active", members=["hrms", "core", "suite"])
+        )
+        assert set(await _sources(session, org_id)) == {("hrms", "suite")}
+
+    async def test_a_plain_products_event_speaks_only_for_itself(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """A member list is honoured only on a bundle product's subscription."""
+        await project_subscription_event(
+            _event(org_id, state="active", product_key="crm", members=["crm", "hrms", "finance"])
+        )
+        assert await _entitled(session, org_id) == {"crm"}
 
 
 class TestOrOfSources:
