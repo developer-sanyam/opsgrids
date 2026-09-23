@@ -112,6 +112,15 @@
     {
       "action": "read",
       "default_scope": "ORG",
+      "description": "See the input-tax-credit ledger and its balance",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "compliance",
+      "resource": "itc"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
       "description": "See the organization's GST registration",
       "is_dangerous": false,
       "max_scope": "ORG",
@@ -238,6 +247,10 @@
           "scope": "ORG"
         },
         {
+          "code": "finance.compliance.itc.read",
+          "scope": "ORG"
+        },
+        {
           "code": "finance.compliance.registration.read",
           "scope": "ORG"
         },
@@ -301,6 +314,10 @@
         },
         {
           "code": "finance.compliance.ims.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "finance.compliance.itc.read",
           "scope": "ORG"
         },
         {

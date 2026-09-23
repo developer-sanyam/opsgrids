@@ -34,6 +34,7 @@ const STATUS_FILTERS: { value: ReturnStatusFilter; label: string }[] = [
 const TYPE_FILTERS: { value: ReturnTypeFilter; label: string }[] = [
   { value: "all", label: "Every type" },
   { value: "gstr1", label: "GSTR-1" },
+  { value: "gstr3b", label: "GSTR-3B" },
   { value: "gstr7", label: "GSTR-7" },
 ];
 
@@ -50,12 +51,12 @@ const STATUS_TONE: Record<string, string> = {
 
 function GenerateReturnDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (ret: GstReturn) => void }) {
   const [period, setPeriod] = useState("");
-  const [returnType, setReturnType] = useState<"gstr1" | "gstr7">("gstr1");
+  const [returnType, setReturnType] = useState<"gstr1" | "gstr3b" | "gstr7">("gstr1");
   const [periodError, setPeriodError] = useState<string | undefined>(undefined);
   const periodRef = useRef<HTMLInputElement>(null);
 
   const generate = useMutation(
-    (input: { period: string; return_type: "gstr1" | "gstr7" }) => generateReturn(input),
+    (input: { period: string; return_type: "gstr1" | "gstr3b" | "gstr7" }) => generateReturn(input),
     { onSuccess: (ret) => onSaved(ret) },
   );
 
@@ -100,9 +101,10 @@ function GenerateReturnDialog({ onClose, onSaved }: { onClose: () => void; onSav
       <Select
         label="Return type"
         value={returnType}
-        onChange={(e) => setReturnType(e.target.value as "gstr1" | "gstr7")}
+        onChange={(e) => setReturnType(e.target.value as "gstr1" | "gstr3b" | "gstr7")}
         options={[
           { value: "gstr1", label: "GSTR-1" },
+          { value: "gstr3b", label: "GSTR-3B" },
           { value: "gstr7", label: "GSTR-7" },
         ]}
       />

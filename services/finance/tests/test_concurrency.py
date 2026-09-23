@@ -32,18 +32,22 @@ from sqlalchemy.ext.asyncio import (
 
 from app import selectors, services
 from app.config import settings
-from app.models import SCHEMA, Customer, Invoice
+from app.models import SCHEMA, Customer, GstReturn, ImsDocument, Invoice, ItcLedgerEntry
 from app.schemas import (
     CustomerCreate,
+    FileReturnIn,
+    GenerateReturnIn,
     GstRegistrationUpsert,
+    ImsDecisionCreate,
     InvoiceCreate,
     InvoiceLineCreate,
     PaymentAllocationCreate,
     PaymentCreate,
+    PurchaseDocumentCreate,
 )
 from platform_core.db import TENANT_GUC
 from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
-from tests.helpers import admin_ctx
+from tests.helpers import admin_ctx, service_token_headers
 
 pytestmark = pytest.mark.integration
 
@@ -334,3 +338,230 @@ class TestConcurrentCustomerArchive:
             has_invoice = await selectors.customer_has_references(session, org_id, customer_id)
         if refreshed.deleted_at is not None:
             assert not has_invoice
+
+
+# --------------------------------------------------------------------- IMS decisions
+#
+# Before the fix, `record_ims_decision` read the document with a plain `SELECT` and derived
+# `before_status` from that unlocked read. Two concurrent decisions on the same document each read
+# the same `before_status`, each computed a posting of their own, and the ledger accrued (or
+# reversed) the same document twice.
+
+MERIDIAN = "24AABCM1234F1Z3"  # Gujarat, inter-state from the Maharashtra seller below — IGST.
+
+
+async def _ims_register(session: AsyncSession, ctx) -> None:
+    await services.set_gst_registration(
+        session, ctx, GstRegistrationUpsert(gstin=SELLER, legal_name="OpsGrids Industries Pvt Ltd")
+    )
+
+
+async def _ims_seed_and_sync(client, org_id: uuid.UUID, session: AsyncSession, ctx) -> uuid.UUID:
+    """One accepted-purchase-matched document, synced from the stub portal — real IMS ingest, the
+    same path `test_ims.py` exercises, so the race is against the real accrual code and not a
+    hand-built fixture row."""
+    async with session.begin():
+        await services.record_purchase_document(
+            session,
+            ctx,
+            PurchaseDocumentCreate(
+                supplier_gstin=MERIDIAN,
+                number="MT-4471",
+                document_date=date(2026, 8, 1),
+                taxable_minor=4_50_000,
+                tax_rate_pct=18,
+                supplier_name="Meridian",
+            ),
+        )
+    res = await client.post(
+        "/internal/v1/ims/sync",
+        headers=service_token_headers(),
+        json={"organization_id": str(org_id), "period": "2026-08"},
+    )
+    assert res.status_code == 200
+    async with session.begin():
+        stmt = select(ImsDocument).where(
+            ImsDocument.organization_id == org_id, ImsDocument.source_ref == "2026-08/0001"
+        )
+        document = (await session.execute(stmt)).scalar_one()
+    return document.id
+
+
+async def _itc_rows(session: AsyncSession, org_id: uuid.UUID) -> list[ItcLedgerEntry]:
+    stmt = select(ItcLedgerEntry).where(ItcLedgerEntry.organization_id == org_id)
+    return list((await session.execute(stmt)).scalars().all())
+
+
+class TestConcurrentImsDecisions:
+    async def test_two_concurrent_accepts_accrue_only_once(
+        self, client, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _ims_register(session, ctx)
+        document_id = await _ims_seed_and_sync(client, org_id, session, ctx)
+
+        async def _accept(session: AsyncSession):
+            ctx = admin_ctx(org_id)
+            async with session.begin():
+                return await services.record_ims_decision(
+                    session, ctx, document_id, ImsDecisionCreate(action="accept")
+                )
+
+        s1, e1 = await _org_session(org_id)
+        s2, e2 = await _org_session(org_id)
+        try:
+            results = await asyncio.gather(_accept(s1), _accept(s2), return_exceptions=True)
+        finally:
+            await s1.close()
+            await s2.close()
+            await e1.dispose()
+            await e2.dispose()
+
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
+        async with session.begin():
+            rows = await _itc_rows(session, org_id)
+            balance = await selectors.itc_document_net_accrued(session, org_id, document_id)
+        accruals = [r for r in rows if r.kind == "accrual"]
+        assert len(accruals) == 1, rows
+        assert balance.igst_minor == accruals[0].amount_minor
+        assert balance.igst_minor != 2 * accruals[0].amount_minor
+
+    async def test_two_concurrent_rejects_after_acceptance_reverse_only_once(
+        self, client, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _ims_register(session, ctx)
+        document_id = await _ims_seed_and_sync(client, org_id, session, ctx)
+        async with session.begin():
+            await services.record_ims_decision(
+                session, ctx, document_id, ImsDecisionCreate(action="accept")
+            )
+
+        async def _reject(session: AsyncSession):
+            ctx = admin_ctx(org_id)
+            async with session.begin():
+                return await services.record_ims_decision(
+                    session, ctx, document_id, ImsDecisionCreate(action="reject")
+                )
+
+        s1, e1 = await _org_session(org_id)
+        s2, e2 = await _org_session(org_id)
+        try:
+            results = await asyncio.gather(_reject(s1), _reject(s2), return_exceptions=True)
+        finally:
+            await s1.close()
+            await s2.close()
+            await e1.dispose()
+            await e2.dispose()
+
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
+        async with session.begin():
+            rows = await _itc_rows(session, org_id)
+            balance = await selectors.itc_document_net_accrued(session, org_id, document_id)
+        reversals = [r for r in rows if r.kind == "reversal"]
+        assert len(reversals) == 1, rows
+        assert balance.total_minor == 0
+
+
+class TestConcurrentDecisionAndFiling:
+    """Repro from review round 3, BLOCKER 1. `record_ims_decision` used to resolve the
+    registration with a plain, unlocked read before asking `selectors.claim_period_for` (née
+    `services._claim_period_for`) whether the document's own period was already filed. A decision
+    racing a filing for that exact period could read "not filed yet" a moment before the filing
+    committed, post its reversal straight into the period the filing was about to freeze, and take
+    that period's IGST balance to -81,000 — after the fact, in a return already gone to the
+    government.
+
+    `record_ims_decision` now locks the same registration row `FOR UPDATE` before computing the
+    claim period, the same row `file_return` locks before it recomputes and posts. Two-way race,
+    two safe outcomes depending only on which transaction reaches the lock first — never a third:
+
+    * The filing wins the lock: it commits first, so by the time the decision's claim period is
+      computed, the period is genuinely filed and the reversal is correctly redirected to the next
+      one open.
+    * The decision wins the lock: it posts into the still-open period first, so the filing's own
+      recompute-against-the-ledger check (guard 4 of `file_return`) sees a ledger that has moved
+      since generation and refuses with a 409 — the return is never actually filed with a
+      reversal landing inside it.
+
+    Never: a reversal recorded inside a period this test also observes as `filed`.
+    """
+
+    async def test_a_decision_racing_a_filing_never_reverses_into_the_filed_period(
+        self, client, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _ims_register(session, ctx)
+        document_id = await _ims_seed_and_sync(client, org_id, session, ctx)
+        async with session.begin():
+            await services.record_ims_decision(
+                session, ctx, document_id, ImsDecisionCreate(action="accept")
+            )
+            ret = await services.generate_return(
+                session, ctx, GenerateReturnIn(period="2026-08", return_type="gstr3b")
+            )
+        ret_id = ret.id
+
+        async def _file(session: AsyncSession):
+            ctx = admin_ctx(org_id)
+            async with session.begin():
+                return await services.file_return(
+                    session, ctx, ret_id, FileReturnIn(arn="AA0708000000900")
+                )
+
+        async def _reject(session: AsyncSession):
+            ctx = admin_ctx(org_id)
+            async with session.begin():
+                return await services.record_ims_decision(
+                    session, ctx, document_id, ImsDecisionCreate(action="reject")
+                )
+
+        s1, e1 = await _org_session(org_id)
+        s2, e2 = await _org_session(org_id)
+        try:
+            results = await asyncio.gather(_file(s1), _reject(s2), return_exceptions=True)
+        finally:
+            await s1.close()
+            await s2.close()
+            await e1.dispose()
+            await e2.dispose()
+
+        file_result, decision_result = results
+        # The decision itself is never refused by this race — only the filing can be, and only
+        # with the specific conflict `file_return`'s own ledger-drift guard raises.
+        if isinstance(decision_result, BaseException):
+            raise decision_result
+        if isinstance(file_result, BaseException) and not isinstance(file_result, ConflictProblem):
+            raise file_result
+
+        # `ret` and the ledger rows this session already knows about were loaded before the race —
+        # `expire_all` forces a real reload rather than the identity map's stale, pre-race copies.
+        session.expire_all()
+        async with session.begin():
+            rows = await _itc_rows(session, org_id)
+            refreshed = (
+                await session.execute(select(GstReturn).where(GstReturn.id == ret_id))
+            ).scalar_one()
+        reversal = next(r for r in rows if r.kind == "reversal")
+        if refreshed.status == "filed":
+            # The filing won the race: the decision's claim period must have been computed
+            # *after* seeing the filing as done, and redirected forward past it.
+            assert reversal.period != "2026-08"
+        else:
+            # The decision won the race and posted into the still-open period; the filing then
+            # correctly refused rather than freezing a period whose ledger had just moved.
+            assert isinstance(file_result, ConflictProblem)
+            assert reversal.period == "2026-08"
+        # Whichever branch ran, an accept fully reversed nets the document back to zero — never
+        # negative, which is exactly the shape `-81,000` would have taken.
+        balance = await selectors.itc_document_net_accrued(session, org_id, document_id)
+        assert balance.total_minor == 0

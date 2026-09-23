@@ -1,5 +1,6 @@
 """Mint a real, validly-signed Engage unsubscribe token. Run **inside `services/notification`**
-as a subprocess — see `_seed_auth.py`'s docstring for why this cannot be a plain import.
+as a subprocess — see `_seed_crm.py`'s docstring for why this cannot be a plain import: every
+service exposes a top-level `app`, so one interpreter can only ever hold one of them.
 
 Usage: _mint_unsubscribe_token.py <service_dir> <org_id> <email>
 
