@@ -220,15 +220,19 @@ async def get_company_by_name(
     deterministic "the oldest one wins" (and two created in the same instant still resolve the
     same way every time) rather than an unhandled `MultipleResultsFound` on a read.
 
-    Both sides of the comparison are folded by Postgres's own `lower(btrim(...))`, the same
-    expression `services._lock_company_name` hashes — a Python-side `str.lower()` on the input
-    would disagree with the column's own SQL `lower` on exactly the inputs ("İ") where it
-    matters most.
+    **Both** sides of the comparison are folded by Postgres's own `lower(btrim(...))` — the
+    stored column as well as the input — the same expression `services._lock_company_name`
+    hashes. Trimming only the input is a bug this function already had once: stored names are
+    never trimmed on the way in, so "Acme " (kept as typed) compared against `btrim("Acme ")`
+    never matched itself, the check missed, and the insert hit `uq_companies_org_name` as an
+    unhandled `IntegrityError` instead of a 409. A Python-side `str.lower()` would disagree
+    with the column's own SQL `lower` on exactly the inputs ("İ") where it matters most.
+    `ix_companies_org_name_ci` is on this same `lower(btrim(name))` expression.
     """
     stmt = (
         select(Company)
         .where(
-            func.lower(Company.name) == func.lower(func.btrim(name)),
+            func.lower(func.btrim(Company.name)) == func.lower(func.btrim(name)),
             Company.organization_id == org_id,
             Company.deleted_at.is_(None),
         )

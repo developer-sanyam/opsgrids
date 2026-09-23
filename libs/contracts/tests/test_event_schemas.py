@@ -81,7 +81,7 @@ def _lead_aborted_event_type() -> str:
     """`crm.lead.conversion_aborted`, read off the constant `services.py` stages it under,
     from a fresh interpreter with lead's own directory as cwd — the same reason and the same
     trick as `_notification_engage_event_types`."""
-    result = subprocess.run(  # noqa: S603 - this interpreter, a literal script, a path we chose
+    result = subprocess.run(
         [sys.executable, "-c", "import app.services as s\nprint(s.EVT_LEAD_CONVERSION_ABORTED)\n"],
         cwd=LEAD,
         check=True,

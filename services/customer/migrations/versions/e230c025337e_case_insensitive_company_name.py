@@ -13,8 +13,10 @@ by someone who can actually see them.
 
 So this migration does less than it first tried to: the original `uq_companies_org_name` stays
 exactly as it was (case-sensitive, unique, live rows only) -- untouched, not dropped and
-recreated -- and this only *adds* a plain, non-unique index on `(organization_id, lower(name))`
-for the lookup `get_company_by_name` needs to find "Acme Ltd" when asked about "acme ltd".
+recreated -- and this only *adds* a plain, non-unique index on
+`(organization_id, lower(btrim(name)))` for the lookup `get_company_by_name` needs to find
+"Acme Ltd" when asked about "acme ltd". That is the exact expression the lookup compares, on
+both sides: stored names are never trimmed on the way in, so the lookup has to trim them.
 Refusing a *new* case-insensitive duplicate going forward is `services.create_company`'s job now
 (a `pg_advisory_xact_lock` keyed on the organization and the lowercased name), not this index's.
 """
@@ -38,7 +40,7 @@ def upgrade() -> None:
     op.create_index(
         "ix_companies_org_name_ci",
         "companies",
-        ["organization_id", sa.literal_column("lower(name)")],
+        ["organization_id", sa.literal_column("lower(btrim(name))")],
         unique=False,
         schema=SCHEMA,
         postgresql_where=sa.text("deleted_at IS NULL"),

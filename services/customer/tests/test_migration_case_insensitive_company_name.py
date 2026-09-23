@@ -142,7 +142,8 @@ async def test_upgrade_succeeds_over_an_existing_case_variant_duplicate(admin) -
     # The new index exists and is *not* unique.
     assert ci_index is not None
     assert "UNIQUE" not in ci_index
-    assert "lower(" in ci_index and "name" in ci_index
+    # The same expression the lookup compares on both sides (stored names are never trimmed).
+    assert "lower(" in ci_index and "btrim(" in ci_index
     # The original case-sensitive constraint is untouched, not dropped and recreated.
     assert original_constraint is not None
     assert "UNIQUE" in original_constraint

@@ -146,7 +146,7 @@ class Company(Base, TenantBase):
         Index(
             "ix_companies_org_name_ci",
             "organization_id",
-            text("lower(name)"),
+            text("lower(btrim(name))"),
             postgresql_where=text("deleted_at IS NULL"),
         ),
         Index("ix_companies_org_status", "organization_id", "status"),
