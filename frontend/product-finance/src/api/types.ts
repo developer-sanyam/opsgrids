@@ -91,8 +91,12 @@ export interface InvoiceLine {
 /** How a supply is classified for GST. B2C is the one that needs no IRN. */
 export type SupplyType = "b2b" | "b2c" | "export" | "sez";
 
-/** One attempt at registering a document with the Invoice Registration Portal. */
-export type FilingStatus = "pending" | "filed" | "failed" | "cancelled";
+/**
+ * One attempt at registering a document with the Invoice Registration Portal. `cancelling` is a
+ * withdrawal the platform has asked for and not yet seen confirmed — it is only ever the newest
+ * row while that is true; once answered, the history shows the answer instead.
+ */
+export type FilingStatus = "pending" | "filed" | "failed" | "cancelled" | "cancelling";
 
 /**
  * An invoice's current e-invoice position, derived server-side from its newest filing attempt.
@@ -127,8 +131,12 @@ export interface EInvoiceState {
   remedy?: FilingRemedy | null;
 }
 
-/** The two corrections for a filed document. Mutually exclusive in time. */
-export type FilingRemedy = "cancel" | "credit_note";
+/**
+ * The corrections for a filed document. Mutually exclusive in time. `contact_support` follows a
+ * withdrawal the platform could not confirm before the window shut: the IRN may or may not still
+ * stand at the portal, and only a look there says which.
+ */
+export type FilingRemedy = "cancel" | "credit_note" | "contact_support";
 
 /** One row of a document's filing history. Append-only server-side: a retry is a further row. */
 export interface EInvoiceFiling {
@@ -758,7 +766,21 @@ export interface FileReturnIn {
 
 /* --------------------------------------------------------------------- e-Way bills */
 
-export type EwayStatus = "pending" | "generated" | "failed" | "cancelled" | "expired";
+/**
+ * `submitting` and `cancelling` are a generation or a withdrawal the platform has asked for and not
+ * yet seen answered — shown only while that is true.
+ */
+export type EwayStatus =
+  | "pending"
+  | "generated"
+  | "failed"
+  | "cancelled"
+  | "expired"
+  | "submitting"
+  | "cancelling";
+
+/** `contact_support` follows a withdrawal the platform could not confirm before the window shut. */
+export type EwayRemedy = "cancel" | "contact_support";
 
 /** One recorded attempt to raise an e-Way bill. Append-only: a retry is a further row. */
 export interface EwayBill {
@@ -779,7 +801,7 @@ export interface EwayBill {
   valid_from: string | null;
   valid_until: string | null;
   /** `cancel` while the 24-hour window is open, null once it has closed. Read-only in this app. */
-  remedy: "cancel" | null;
+  remedy: EwayRemedy | null;
   error_code: string | null;
   error: string | null;
   attempted_at: string;
@@ -801,7 +823,7 @@ export interface EwayState {
   valid_until: string | null;
   terminal: boolean;
   cancellable_until: string | null;
-  remedy: "cancel" | null;
+  remedy: EwayRemedy | null;
   attempts: number;
 }
 

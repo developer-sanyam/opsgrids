@@ -329,11 +329,14 @@ fetches with no transaction, then ingests (idempotent at the database on `(organ
 source_ref)`) and reconciles in one.
 
 This touches the scheduler in exactly one place. A `pending` e-invoice row's retry is scheduled
-here (§4), and finance may not read the scheduler's table, so `app/cron.py`'s reclaim sweep infers
-a *lost* job from time alone: a `pending` row that has outlived its retry's own delay plus
-`FILING_RECLAIM_AFTER`, with no `filing_requested` staged since, is re-queued at the next attempt
-number. A redundant re-queue is harmless (the consumer's claim asks `live_registration` first,
-and the attempt budget still bounds the chain). The same sweep resumes stale claims under a
+here (§4), and finance may not read the scheduler's table, so the reclaim sweep (`app/cron.py`,
+run inside `finance-worker` beside the consumer — `app/worker.py`) infers a *lost* job from time
+alone: a `pending` row older than the longest retry it could have scheduled plus grace, with no
+`filing_requested` staged since that is still backing off, is re-queued at the next attempt
+number. A redundant re-queue is harmless (the consumer's claim asks `live_registration` first).
+Re-queues are counted by the outbox rows they stage, so an invoice nothing ever answers — an
+organization without a registration is excluded outright — ends at `MAX_FILING_ATTEMPTS` in a
+terminal `retry_exhausted` row instead of looping. The same sweep resumes stale claims under a
 bounded backoff, a lease (each re-drive appends a fresh claim row; `FOR UPDATE SKIP LOCKED` on the
 invoice) and a poisoned-step guard (`MAX_COMPLIANCE_RESUMES` drives, then a terminal
 `retry_exhausted` row). The "e-Way outage retries" item under *Deliberately out of scope* is

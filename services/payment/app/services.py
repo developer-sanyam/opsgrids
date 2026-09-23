@@ -14,14 +14,18 @@ any `commerce.payment.*` event it stages all commit or all roll back together.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import func, literal, or_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import domain, selectors
+from app.config import settings
 from app.models import (
     CHARGE_AUTHORIZED,
     CHARGE_CAPTURED,
@@ -41,6 +45,9 @@ from app.schemas import ChargeIn, WebhookAck
 from platform_core.audit import record_audit
 from platform_core.db import assert_tenant, set_tenant
 from platform_core.errors import BusinessRuleProblem, NotFoundProblem, ProblemError
+from platform_core.logging import get_logger
+
+log = get_logger("payment.services")
 
 
 class WebhookSignatureProblem(ProblemError):
@@ -116,10 +123,26 @@ async def _require_usable_mandate(session: AsyncSession, payload: ChargeIn) -> M
     return mandate
 
 
+def _lease_values(*, now: datetime, attempts: int, lease: timedelta) -> dict[str, Any]:
+    """The columns a claim of the right to call the provider writes: one more attempt, a lease
+    covering the call, and the earliest moment the next may be claimed."""
+    return {
+        "attempts": attempts,
+        "lease_until": now + lease,
+        "next_attempt_at": now + domain.charge_retry_backoff(attempts),
+    }
+
+
+def _lease() -> timedelta:
+    return timedelta(seconds=settings().charge_reclaim_after_seconds)
+
+
 async def stage_charge(
     session: AsyncSession,
     provider: PaymentProvider,
     payload: ChargeIn,
+    *,
+    now: datetime | None = None,
 ) -> tuple[Charge, bool]:
     """Claim a charge idempotently — the *first* of three acts, and the only one with a write
     before the provider is ever asked.
@@ -132,15 +155,18 @@ async def stage_charge(
     invariant. The mandate id is persisted on the charge so the authority a debit ran under is a
     column, not a reconstruction.
 
-    Returns `(charge, needs_call)`. `needs_call` is true whenever nobody has recorded a provider
-    result yet: the ordinary case for a freshly staged charge, and also the case for a charge
-    whose staging transaction committed but whose process died before the provider answered or
-    before `finalize_charge` recorded it — the caller (the route, the consumer, or the stuck-charge
-    reconciler) is expected to call the provider and finalize in that case too. It is exactly the
-    platform idempotency key that makes calling the provider again here safe: Razorpay has no
-    native one (ADR-0004 §6), so `call_provider_charge` always sends ours, and a second call for
-    the same key returns the same provider payment rather than raising a second debit.
+    Returns `(charge, needs_call)`, and `needs_call` is **the right to call the provider**, held
+    by at most one caller at a time (D3):
+
+    * a freshly staged charge is inserted already holding it — `attempts = 1` and a lease of
+      `charge_reclaim_after_seconds` — and audited `payment.charge.staged`;
+    * an existing charge that is still `created` with no provider payment is handed the right only
+      if its lease has lapsed and its backoff has passed (`claim_charge_lease`, one conditional
+      `UPDATE … RETURNING`). So a caller's HTTP retry of a key whose first call is still in flight
+      gets `needs_call=False` and the charge as it stands, instead of a second provider call;
+    * a charge that already has a provider payment, or has moved on, is never called again.
     """
+    now = now or datetime.now(UTC)
     await _require_usable_mandate(session, payload)
     charge_id = uuid.uuid4()
     stmt = (
@@ -157,44 +183,140 @@ async def stage_charge(
             currency=payload.currency.upper(),
             state=CHARGE_CREATED,
             idempotency_key=payload.idempotency_key,
+            **_lease_values(now=now, attempts=1, lease=_lease()),
         )
         .on_conflict_do_nothing(index_elements=["organization_id", "idempotency_key"])
         .returning(Charge.id)
     )
     inserted_id = (await session.execute(stmt)).scalar_one_or_none()
     if inserted_id is None:
-        # The key was already used — return the charge it created, unchanged. One key, one charge,
-        # one collection attempt: a retry must not raise a second payment.
+        # The key was already used — the charge it created, unchanged. One key, one charge, one
+        # collection attempt in flight at a time: a retry must not raise a second payment.
         existing = await selectors.get_charge_by_idempotency_key(
             session, payload.organization_id, payload.idempotency_key
         )
         if existing is None:  # pragma: no cover - the row exists by construction of the conflict
             raise BusinessRuleProblem("charge idempotency conflict with no visible row")
-        return existing, existing.provider_payment_id is None
+        if existing.state != CHARGE_CREATED or existing.provider_payment_id is not None:
+            return existing, False
+        claimed = await claim_charge_lease(session, existing.id, now=now)
+        return (claimed, True) if claimed is not None else (existing, False)
 
     charge = await selectors.get_charge(session, inserted_id)
     if charge is None:  # pragma: no cover - just inserted in this transaction
         raise BusinessRuleProblem("charge vanished immediately after insert")
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=charge.organization_id,
+        actor_id=None,
+        acting_as="billing",
+        action="payment.charge.staged",
+        entity="charge",
+        entity_id=charge.id,
+        after={
+            "state": charge.state,
+            "amount_minor": charge.amount_minor,
+            "currency": charge.currency,
+            "invoice_id": str(charge.invoice_id) if charge.invoice_id else None,
+        },
+    )
     return charge, True
 
 
-def call_provider_charge(provider: PaymentProvider, charge: Charge) -> ChargeResult:
-    """The *second* act — the one stubbed seam — called with no session and therefore no
-    transaction open. No keys, no socket in this platform's stub; a real adapter's outbound HTTP
-    happens here and only here, never while `stage_charge` or `finalize_charge` hold a connection
-    and a row.
+async def claim_charge_lease(
+    session: AsyncSession, charge_id: uuid.UUID, *, now: datetime
+) -> Charge | None:
+    """Take the right to call the provider for one charge, or learn that somebody else has it.
 
-    Idempotent on `charge.idempotency_key`, which travels to the provider on every call: a retry
-    after a crash between this and `finalize_charge` lands on the provider's own already-created
-    payment (Razorpay's `X-Idempotency`/receipt story) rather than a second debit.
+    One conditional `UPDATE … RETURNING`: the row is updated only if the charge is still
+    unresolved, no call is in flight (`lease_until` passed), its backoff has passed
+    (`next_attempt_at`) and it is inside its attempt budget. Two callers racing it serialize on
+    the row, and the second's `WHERE` no longer holds — so an in-flight key can never trigger a
+    second call. Returns the charge (re-read) when claimed, else None.
     """
+    max_attempts = settings().charge_max_attempts
+    lease = _lease()
+    stmt = (
+        update(Charge)
+        .where(
+            Charge.id == charge_id,
+            Charge.state == CHARGE_CREATED,
+            Charge.provider_payment_id.is_(None),
+            Charge.deleted_at.is_(None),
+            Charge.attempts < max_attempts,
+            or_(Charge.lease_until.is_(None), Charge.lease_until <= now),
+            or_(Charge.next_attempt_at.is_(None), Charge.next_attempt_at <= now),
+        )
+        .values(
+            attempts=Charge.attempts + 1,
+            lease_until=now + lease,
+            # `domain.charge_retry_backoff(attempts + 1)`, in SQL: `attempts` on the right-hand
+            # side of a SET is the value before this update, so `2 ** attempts` is the new
+            # attempt's doubling.
+            next_attempt_at=now
+            + func.least(
+                literal(domain.CHARGE_RETRY_BASE) * func.power(2, Charge.attempts),
+                literal(domain.CHARGE_RETRY_CEILING),
+            ),
+        )
+        .returning(Charge)
+        .execution_options(populate_existing=True, synchronize_session=False)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def call_provider_charge(provider: PaymentProvider, charge: Charge) -> ChargeResult:
+    """The *second* act, called with no session and therefore no transaction open — a real
+    adapter's outbound HTTP happens here and only here.
+
+    **Lookup before create** (ADR-0004 §6, addendum): Razorpay has no idempotency key on a payment
+    create, so this never simply creates. It ensures the charge's Order (`receipt` = the
+    platform's idempotency key — found by it if a previous call already made it), asks whether a
+    payment already exists against that Order, and only if none does creates one. A call resumed
+    after a crash between this and `finalize_charge` therefore lands on the payment the first
+    call made, never a second debit.
+    """
+    notes = _notes_for_charge(charge)
+    order = provider.ensure_order(
+        receipt=charge.idempotency_key,
+        amount_minor=charge.amount_minor,
+        currency=charge.currency,
+        notes=notes,
+    )
+    existing = provider.find_payment(order_id=order.provider_order_id, charge_id=str(charge.id))
+    if existing is not None:
+        return existing
     return provider.charge(
         idempotency_key=charge.idempotency_key,
         amount_minor=charge.amount_minor,
         currency=charge.currency,
         mandate_id=str(charge.mandate_id) if charge.mandate_id else None,
-        notes=_notes_for_charge(charge),
+        notes=notes,
+        order_id=order.provider_order_id,
     )
+
+
+async def call_provider_charge_off_loop(
+    provider: PaymentProvider, charge: Charge
+) -> ChargeResult | None:
+    """`call_provider_charge` on a worker thread, bounded by `provider_call_timeout_seconds`, so a
+    slow provider never blocks the event loop. None means it did not answer in time: the charge
+    stays `created` and its lease expires into the stuck-charge sweep, whose lookup-before-create
+    finds whatever the abandoned call achieved (the thread cannot be cancelled, only left)."""
+    timeout = settings().provider_call_timeout_seconds
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(call_provider_charge, provider, charge), timeout=timeout
+        )
+    except TimeoutError:
+        log.warning(
+            "payment.charge.provider_timeout",
+            charge_id=str(charge.id),
+            organization_id=str(charge.organization_id),
+            timeout_seconds=timeout,
+        )
+        return None
 
 
 async def finalize_charge(
@@ -205,38 +327,123 @@ async def finalize_charge(
     request: Request | None = None,
 ) -> Charge:
     """Record what the provider said — the *third* act, in its own transaction opened only after
-    the call has returned. The terminal captured/failed outcome is **not** decided here either
-    way — it arrives by webhook, as it does in production; this records whatever the synchronous
-    create call answered (typically `authorized`).
+    the call has returned.
 
-    Refetches the charge rather than trusting a caller's possibly-stale instance, because the
-    stuck-charge reconciler (`app/cron.py`) calls this from a different transaction, sometimes a
-    different process, than the one that staged it.
+    Takes the charge `FOR UPDATE` and re-reads it (`populate_existing`), because a signed webhook
+    may have moved it while the call was out — and this step must never undo that:
+
+    * `provider_payment_id` is set **only if it is still NULL**. A different id already recorded
+      is an inconsistency between two answers from the provider: it is logged and audited
+      (`payment.charge.provider_id_mismatch`) and nothing is overwritten.
+    * the state moves **only from `created`**, only along a legal edge, and only to a
+      non-terminal state (`authorized`). The terminal captured/failed outcome arrives by webhook
+      — as it does in production — and carries its `commerce.payment.*` event; a charge the
+      webhook already captured stays captured.
+    * the lease is released, and `payment.charge.created` is audited once — by whichever
+      recorder first sets the provider payment id — never twice.
     """
-    charge = await selectors.get_charge(session, charge_id)
+    charge = await selectors.lock_charge(session, charge_id)
     if charge is None:  # pragma: no cover - defensive; staging committed before the call ran
         raise BusinessRuleProblem("charge vanished before its result could be recorded")
-    charge.provider_payment_id = result.provider_payment_id
-    charge.state = result.state
 
-    record_audit(
-        session,
-        AuditLog,
-        organization_id=charge.organization_id,
-        actor_id=None,
-        acting_as="billing",
-        action="payment.charge.created",
-        entity="charge",
-        entity_id=charge.id,
-        after={
-            "state": charge.state,
-            "amount_minor": charge.amount_minor,
-            "provider_payment_id": charge.provider_payment_id,
-        },
-        request=request,
-    )
+    first_record = charge.provider_payment_id is None
+    if first_record:
+        charge.provider_payment_id = result.provider_payment_id
+    elif charge.provider_payment_id != result.provider_payment_id:
+        log.error(
+            "payment.charge.provider_id_mismatch",
+            charge_id=str(charge.id),
+            organization_id=str(charge.organization_id),
+        )
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=charge.organization_id,
+            actor_id=None,
+            acting_as="billing",
+            action="payment.charge.provider_id_mismatch",
+            entity="charge",
+            entity_id=charge.id,
+            before={"provider_payment_id": charge.provider_payment_id},
+            after={"provider_payment_id": result.provider_payment_id},
+            request=request,
+        )
+    if charge.provider_order_id is None and result.provider_order_id is not None:
+        charge.provider_order_id = result.provider_order_id
+    if (
+        charge.state == CHARGE_CREATED
+        and not domain.is_terminal(result.state)
+        and domain.is_legal(charge.state, result.state)
+    ):
+        charge.state = result.state
+    charge.lease_until = None
+
+    if first_record:
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=charge.organization_id,
+            actor_id=None,
+            acting_as="billing",
+            action="payment.charge.created",
+            entity="charge",
+            entity_id=charge.id,
+            after={
+                "state": charge.state,
+                "amount_minor": charge.amount_minor,
+                "provider_payment_id": charge.provider_payment_id,
+            },
+            request=request,
+        )
     await session.flush()
     return charge
+
+
+async def claim_stuck_charge(
+    session: AsyncSession, charge_id: uuid.UUID, *, now: datetime
+) -> tuple[str, Charge | None]:
+    """The stuck-charge sweep's first act for one charge, under the tenant binding.
+
+    `("call", charge)` — the sweep holds the lease and may call the provider.
+    `("exhausted", charge)` — the attempt budget (`charge_max_attempts`) is spent: the charge is
+    failed, audited, and `commerce.payment.failed` is staged so the subscription's dunning ladder
+    proceeds rather than waiting on a charge nothing will ever resolve.
+    `("not_due", None)` — resolved meanwhile, locked by somebody else, leased, or backing off.
+    """
+    charge = await selectors.lock_charge(session, charge_id, skip_locked=True)
+    if (
+        charge is None
+        or charge.state != CHARGE_CREATED
+        or charge.provider_payment_id is not None
+        or charge.deleted_at is not None
+        or (charge.lease_until is not None and charge.lease_until > now)
+        or (charge.next_attempt_at is not None and charge.next_attempt_at > now)
+    ):
+        return "not_due", None
+    if charge.attempts >= settings().charge_max_attempts:
+        before = charge.state
+        charge.state = CHARGE_FAILED
+        charge.failure_reason = (
+            f"the provider never confirmed this charge after {charge.attempts} attempts"
+        )[:200]
+        charge.lease_until = None
+        await session.flush()
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=charge.organization_id,
+            actor_id=None,
+            acting_as="stuck-charge-sweep",
+            action="payment.charge.failed",
+            entity="charge",
+            entity_id=charge.id,
+            before={"state": before},
+            after={"state": charge.state, "failure_reason": charge.failure_reason},
+        )
+        _publish_payment_event(session, charge, domain.EVT_FAILED)
+        return "exhausted", charge
+    claimed = await claim_charge_lease(session, charge.id, now=now)
+    return ("call", claimed) if claimed is not None else ("not_due", None)
 
 
 async def create_charge(
@@ -250,9 +457,9 @@ async def create_charge(
 
     Kept for the unit tests in `tests/test_mandates_and_refunds.py` that exercise the mandate
     guard against a hand-built session and do not care about the transaction boundary. Every real
-    caller — the internal route and both consumers — calls `stage_charge`, `call_provider_charge`
-    and `finalize_charge` as three separate acts with **no transaction open across the middle
-    one**; see `app/api/internal.py` and `app/consumers.py`.
+    caller — the internal route and both consumers — calls `stage_charge`, the provider call and
+    `finalize_charge` as three separate acts with **no transaction open across the middle one**;
+    see `app/api/internal.py` and `app/consumers.py`.
     """
     charge, needs_call = await stage_charge(session, provider, payload)
     if not needs_call:

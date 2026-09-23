@@ -15,22 +15,36 @@ while the remote side may have acted.
 1. **Claim** — one short transaction. Refuse everything answerable locally (404, 409, 422);
    write what the call needs to be resumed from, if anything must be written (see "claim rows"
    below); commit.
-2. **Call** — no session, no transaction. The provider's answer is folded into a plain outcome
-   value (`filed` / `generated` / `cancelled`, `rejected`, `unavailable`).
+2. **Call** — no session, no transaction, and **off the event loop**: every provider client here
+   is synchronous, so the call runs on a worker thread bounded by a timeout
+   (`finance.services.off_loop`, `payment.services.call_provider_charge_off_loop`). The answer is
+   folded into a plain outcome value (`filed` / `generated` / `cancelled`, `rejected`,
+   `unavailable`); a call that outlives its timeout is an `unavailable` (the thread is abandoned,
+   not cancelled — the claim stands and the resume finds whatever it achieved).
 3. **Record** — a second short transaction. Append the row the outcome decided, audit, stage
    events on the outbox. Idempotent against a second recorder of the same claim.
 
 A crash between (2) and (3) is recovered by a sweep that finds the claim (or the absence of any
-row) past a deadline and runs the same three acts again; the provider's own idempotency is what
-makes the repeat call safe.
+row) past a deadline and runs the same three acts again; the provider's own idempotency — or,
+where the provider has none (Razorpay), **lookup before create** — is what makes the repeat call
+safe. Consumers mark their message processed in the *claim* transaction, so the queue never
+retries a crashed claim: **the sweep is the only recovery, and it runs inside the service's
+existing worker process** (`finance-worker`, `payment-worker`, supervised — `app/worker.py`), not
+a container of its own. `tests/infra/test_sweeps_run_somewhere.py` fails if any service's sweep
+runs nowhere on the edge.
 
 **The guard.** `tests/infra/test_io_outside_transaction.py` scans every service for a call that
 reaches a provider seam (`IrpClient`, `EwayClient`, `ImsClient`, `PaymentProvider`,
-`ProductRegistry`, `ObjectStore`, `Resolver`, `ProbeSet`, `HierarchySource`, `IdpClient`) from
-inside `session.begin()`, `session_scope(...)`, a sweep's `_work_scope(...)`, or a route wrapped
-end to end by a committing dependency (`get_tenant_session` and its siblings). Anything it finds
-must be fixed or sit on its `ALLOWLIST` with the fix it needs; an allow-list entry that no longer
-reproduces fails the suite, so a fixed instance cannot linger there.
+`ProductRegistry`, `ObjectStore`, `Resolver`, `ProbeSet`, `HierarchySource`, `IdpClient`,
+`Transport`, any `httpx.AsyncClient`) from inside `session.begin()`, `session_scope(...)`, a
+sweep's `_work_scope(...)`, an autobegun `async with factory() as session:` block after its first
+query, or a route wrapped end to end by a committing dependency (`get_tenant_session` and its
+siblings, matched by exact name). Since round 3 it follows import aliases, function references
+handed to `asyncio.to_thread` and friends, and locals bound to a seam or to a seam factory
+(`get_*_client()`, `get_provider()`, `_default_resolver()`), and it flags a seam called inline
+in the transaction block itself (`client.register(...)`), not only one behind a helper. Anything it finds must be fixed or sit on its `ALLOWLIST` with the fix it
+needs; an allow-list entry that no longer reproduces fails the suite, so a fixed instance cannot
+linger there.
 
 ## The instance table
 
@@ -39,13 +53,15 @@ Status: **fixed** — split, with a test proving no transaction is open during t
 **routed** — belongs to another slice's owner, reported there, not changed here.
 
 Rows #1–#5 are round 1 of this slice; the catalogue this table was cut from does not number
-them in-repo, so they are numbered here in the order they landed.
+them in-repo, so they are numbered here in the order they landed. #19, #20 and #22–#24 were found
+by the round-3 scanner (new seams, seam locals, aliases); all are in already-merged code owned by
+other slices, and are routed rather than changed here.
 
 | # | Service | Where | Remote call | Status | Fix, and the test that proves it |
 |---|---|---|---|---|---|
 | 1 | finance | `POST /internal/v1/einvoice/filings` (`api/internal.py:file_invoice`) | `IrpClient.register` | fixed (round 1) | `claim_manual_filing` → `call_irp_register` → `record_manual_filing`. `test_filing_transaction_boundary.py::TestNoTransactionDuringTheIrpCall::test_the_internal_route_holds_no_transaction_while_the_portal_is_called` |
 | 2 | finance | consumer `file_requested_invoice` | `IrpClient.register` | fixed (round 1) | `claim_autofile_attempt` → call → `record_autofile_result`, each in its own `session_scope`. `…::test_the_consumer_holds_no_transaction_while_the_portal_is_called`; crash recovery `TestCrashBetweenCallAndRecord` |
-| 3 | payment | `POST /internal/v1/charges` (`api/internal.py:create_charge`) | `PaymentProvider.charge` | fixed (round 1) | `stage_charge` → `call_provider_charge` → `finalize_charge`; stuck-charge sweep in `app/cron.py`. `payment/tests/test_charge_transaction_boundary.py` |
+| 3 | payment | `POST /internal/v1/charges` (`api/internal.py:create_charge`) | `PaymentProvider.charge` | fixed (round 1; hardened round 3) | `stage_charge` (takes the call **lease**) → `call_provider_charge` (**lookup before create**: Order by receipt, payment by Order, then create; on a worker thread, bounded) → `finalize_charge` (charge `FOR UPDATE`; provider id set only if NULL; state moves only from `created`, never to a terminal state — a webhook's `captured` is never regressed); stuck-charge sweep in `payment-worker`, bounded by `charge_max_attempts` then `failed` + `commerce.payment.failed`. `payment/tests/test_charge_transaction_boundary.py`; round 3: `test_charge_lease_and_recovery.py` — `TestAWebhookIsNeverRegressed`, `TestOneCallAtATime`, `TestLookupBeforeCreate`, `TestTheSweepIsBounded`, `TestDiscoveryIsColumnScoped`; worker: `test_worker.py` |
 | 4 | payment | consumers `charge_on_invoice_finalized`, `charge_on_dunning_retry` | `PaymentProvider.charge` | fixed (round 1) | same split. `…::test_the_consumer_holds_no_transaction_while_the_provider_is_called` |
 | 5 | notification | Engage `verify_domain` | DNS `Resolver` | fixed (round 1) | read, resolve with no session, record. `notification/tests/test_domain_verify_transaction_boundary.py` |
 | 6 | finance | `POST /internal/v1/einvoice/filings:cancel` (`cancel_filing`) | `IrpClient.cancel` | **fixed (round 2)** | `claim_irn_cancellation` (a `cancelling` row: reason, actor, audited `einvoice.cancel_requested`) → `call_irp_cancel` → `record_irn_cancellation`; the sweep resumes `cancelling`; "already cancelled" (`IrpAlreadyCancelled`) is success-by-fetch. `test_compliance_transaction_boundary.py::TestIrnCancellation` — `test_the_route_holds_no_transaction_while_the_portal_is_called`, `test_a_crash_after_the_portal_withdrew_it_is_recorded_as_cancelled`, `test_an_outage_answers_with_the_claim_and_the_sweep_finishes_it`, `test_a_claim_nobody_can_finish_becomes_a_visible_failure`, `test_two_recorders_of_one_claim_write_one_withdrawal`, `test_a_claim_a_request_is_holding_is_skipped_not_waited_on` |
@@ -61,9 +77,14 @@ them in-repo, so they are numbered here in the order they landed.
 | 16 | storefront | `cron.py:_advance_one` | DNS/TLS `ProbeSet` inside `session_scope` | allow-listed | same shape as #15 |
 | 17 | subscription | `create_subscription`, `change_plan`, `subscribe_as_operator`, `change_plan_as_operator` | plan-version pin lookup against catalog over HTTP | routed (subscription slice), allow-listed | resolve the pin before the transaction opens, then write the subscription/change |
 | 18 | auth | `api/routes.py:save_sso_config` | OIDC discovery via `IdpClient` | routed (auth slice), allow-listed | run discovery and validate endpoints untransacted; open the transaction only to seal the secret, write, audit and stage the event |
-| 21 | payment | `services.create_refund` | `PaymentProvider.refund` | routed (payment owner) | not flagged by the guard today because nothing calls it — there is no refund endpoint yet. The day one is added it must be split like `create_charge` (#3): stage a `refunds` row keyed `refund:{refund_id}` (already the provider idempotency key) in a short transaction, call with none open, record the provider's answer, and extend the stuck-charge sweep to resume a staged refund |
+| 19 | notification | `api/engage.py:send_test_message` | SMTP via `Transport.send` inside `get_tenant_session` | routed (notification), allow-listed | claim (rate limit, load sender and connection), send with no transaction open, record the receipt and flip the sender usable in a second short transaction |
+| 20 | notification | `connect_whatsapp`, `replace_whatsapp` (`whatsapp_provider.verify_ownership`, two Graph API GETs); `assign_conversation` (`memberships.membership_is_active`, HTTP to account) | httpx inside `get_tenant_session` | routed (notification — WhatsApp/Engage slices, merged), allow-listed | verify ownership / resolve the membership before the transaction opens (neither reads a row); open it only to seal and write, or to lock and assign |
+| 21 | payment | `services.create_refund` | `PaymentProvider.refund` | routed (payment owner) | not flagged by the guard today because nothing calls it — there is no refund endpoint yet. The day one is added it must be split like `create_charge` (#3): stage a `refunds` row keyed `refund:{refund_id}` (already the provider idempotency key) in a short transaction, call with none open, record the provider's answer, and extend the stuck-charge sweep to resume a staged refund. The lease and lookup-before-create of #3 apply unchanged (Razorpay refunds are looked up by the payment and `notes.refund_id`) |
+| 22 | account | `api/routes.py:verify_domain`, `cron.py:_recheck_one` | DNS TXT via `dns_check.check_txt` (`r = resolver or _default_resolver()`) inside the request / `session_scope` | routed (account — domain verification, merged), allow-listed | read the claim and its token, resolve with no transaction, re-lock and record — per domain in the recheck |
+| 23 | lead | `put_assignment_rule`, `create_lead`, `update_lead` | `clients.invalid_owner_ids` (httpx to customer) inside `get_tenant_session` | routed (lead — CRM, merged), allow-listed | validate the owner ids (request input, not rows) before the transaction opens, then write; `:convert` already runs claim/call/record |
+| 24 | notification | `connect_provider`, `replace_provider` | the dial guard (`dns_check.assert_dialable` → `resolve_public_addresses`) resolves the SMTP host inside `get_tenant_session` | routed (notification), allow-listed | resolve and vet the host before the transaction opens; the transaction only seals the credentials and writes the row |
 
-## The filing contract (finance, round 2)
+## The filing contract (finance, rounds 2–3)
 
 Three government portals, two ledgers (`einvoice_filings`, `eway_bills`), both append-only; the
 newest row for an invoice is its current position. Newest means `attempted_at`, then
@@ -77,12 +98,12 @@ too.
 |---|---|---|---|---|
 | e-invoice | *(no row)* | — | — | registration claims write nothing: the IRN is a pure function of the document, so a repeat call is safe and `IrpDuplicate` is the portal saying so |
 | e-invoice | `pending` | outcome | record (outage) | the portal did not answer; a retry is owed (scheduled by the consumer, or — for a manual attempt — owed to the sweep) |
-| e-invoice | `filed` / `failed` | outcome | record | registered / refused (or `retry_exhausted`) |
+| e-invoice | `filed` / `failed` | outcome | record | registered / refused (or `retry_exhausted`). A `failed` row that carries `ack_no`/`ack_date` is a **failed withdrawal** — the registration still stands |
 | e-invoice | `cancelling` | **claim** | `claim_irn_cancellation`, sweep lease | a withdrawal was asked for: reason code in `error_code`, remark in `error`, the acknowledgement it withdraws in `ack_no`/`ack_date`; actor in `created_by` and the `einvoice.cancel_requested` audit row. No IRN on the row (the `(org, irn)` unique index) |
 | e-invoice | `cancelled` | outcome | record | withdrawn |
 | e-Way | `submitting` | **claim** | `claim_eway_generation`, sweep lease | a generation was asked for; the row carries the transport facts, which are on no invoice |
 | e-Way | `pending` | outcome | record (outage) | the portal did not answer; owed to the sweep |
-| e-Way | `generated` / `failed` | outcome | record | a bill number and its computed validity / a refusal (or `retry_exhausted`) |
+| e-Way | `generated` / `failed` | outcome | record | a bill number and its computed validity / a refusal (`retry_exhausted`, `stale`). A `failed` row that carries `valid_from` is a **failed withdrawal** — the bill still stands |
 | e-Way | `cancelling` | **claim** | `claim_eway_cancellation`, sweep lease | a withdrawal was asked for; no bill number on the row (the `(org, eway_bill_no)` unique index) — the bill is the `generated` row behind it (`selectors.generation_under_claim`) |
 | e-Way | `cancelled` | outcome | record | withdrawn |
 
@@ -95,7 +116,18 @@ it is its document's newest row — an attempt in flight — never once answered
 (`selectors.visible_attempts`, and the same rule in SQL for the paged list). `attempts` on
 `EInvoiceState` / `EwayState` counts outcome rows only. So a resolved withdrawal still reads
 `cancelled, filed`; a withdrawal the portal has not yet confirmed reads `cancelling, filed`, with
-`status: "cancelling"`, `terminal: false`, `remedy: null` on the invoice's e-invoice state.
+`status: "cancelling"`, `terminal: false`, `remedy: null` on the invoice's e-invoice state. A
+**failed withdrawal** is not "nothing to do": `terminal: false`, `cancellable_until` set, and
+`remedy` is `cancel` inside the window or `contact_support` outside it (the portal may hold a
+withdrawal the platform never saw confirmed). product-finance renders `cancelling` as "Cancelling
+IRN" (in flight) and a failed withdrawal as "Withdrawal failed — the IRN still stands".
+
+**Ordering.** An outcome is stamped `max(attempt clock, newest row's attempted_at)`, so a late
+answer — a request whose call outlived the sweep's lease — is never sorted behind a row the sweep
+wrote meanwhile. Every record step row-locks the invoice and re-reads the ledger; a registration
+recorder that finds a live registration already standing (the consumer and the manual route
+racing) returns it and appends nothing — no `uq_einvoice_filings_org_irn` violation, and no late
+outage `pending` on top of a `filed` row.
 
 ### What the route returns
 
@@ -105,31 +137,45 @@ it is its document's newest row — an attempt in flight — never once answered
 * generate e-Way: **201** with `generated`, `failed`, or `pending` (outage).
 * IMS sync: **200**; a portal outage is **503** and writes nothing.
 
-### Who resumes what (`app/cron.py`, `FilingReclaimSweep`, one process, `bin/cron`)
+### Who resumes what (`FilingReclaimSweep`, inside `finance-worker`)
 
-| Found (newest row, cross-tenant discovery) | Deadline, re-checked under the tenant binding | Action |
-|---|---|---|
-| reportable invoice with **no filing row** (`due_filing_reclaims`) | invoice older than `FILING_RECLAIM_AFTER` (5 min) and no `filing_requested` staged since its creation within the last 5 min | re-publish `filing_requested` (attempt 1); the consumer claims, calls, records |
-| e-invoice `pending` (`due_stale_filings`) | `pending_redrive_after(n)` = the retry's scheduled delay + 5 min grace, and no `filing_requested` staged since the row within the last 5 min — "no live scheduler job", inferred because the scheduler's table is not finance's to read | re-publish `filing_requested` at attempt `n + 1` (capped at `MAX_FILING_ATTEMPTS`); the consumer's outage on the last attempt is terminal |
-| e-invoice `cancelling` | `resume_after(n)` | append a fresh `cancelling` (the lease), call `IrpClient.cancel` with no transaction, record |
-| e-Way `submitting` or `pending` | `resume_after(n)`, `n` = `submitting` rows in the leading chain | append a fresh `submitting` (the lease), call `EwayClient.generate` under the same key, record |
-| e-Way `cancelling` | `resume_after(n)` | append a fresh `cancelling`, call `EwayClient.cancel`, record |
+| Found (cross-tenant discovery) | Discovered only if | Re-checked under the tenant binding | Action |
+|---|---|---|---|
+| reportable invoice with **no filing row** (`due_filing_reclaims`) | invoice older than 5 min; the organization **has a live GST registration**; no `filing_requested` staged since the invoice was created is still inside its backoff `resume_after(n)` | still no row; still auto-fileable; registration; request count `n` | `n ≥ MAX_FILING_ATTEMPTS` → terminal `failed` `retry_exhausted` (+ `filing_failed`, terminal); else re-publish `filing_requested` at attempt `n + 1` |
+| e-invoice `pending` (`due_stale_filings`) | older than `pending_redrive_after(MAX_FILING_ATTEMPTS)` (37 min — the longest its own scheduled retry can be); registration; not backing off (as above, counted since the row) | `pending_redrive_after(k)`; registration; request count | exhausted → terminal `retry_exhausted`; else re-publish at attempt `k + 1` (the consumer's outage on the last attempt is terminal) |
+| e-invoice `cancelling` | older than 5 min | `resume_after(n)`; **24-hour window from the acknowledgement** | window shut → terminal `failed` `window_closed` (no portal call); `n ≥ MAX_COMPLIANCE_RESUMES` → `retry_exhausted`; else fresh `cancelling` (the lease), call, record |
+| e-Way `submitting` or `pending` | older than 5 min | `resume_after(n)`; **chain age ≤ 24 h** from its first row; registration | too old → terminal `failed` `stale` (no portal call); exhausted → `retry_exhausted`; else fresh `submitting`, call under the same key, record |
+| e-Way `cancelling` | older than 5 min | `resume_after(n)`; **24-hour window from `valid_from`** | window shut → `window_closed`; exhausted → `retry_exhausted`; else fresh `cancelling`, call, record |
 
+* **Nothing un-actionable reaches the batch.** An organization without a registration, and an
+  invoice whose re-queue is still backing off, are excluded **in the discovery SQL**, not skipped
+  under the tenant binding — so a handful of them can never fill `batch_size` and hide another
+  organization's lost invoice (head-of-line blocking). `pending` rows inside their own retry
+  window are not discovered at all.
 * **Bounded backoff.** `resume_after(n)` = 5 min for the first re-drive, then the filing retry's
-  own capped exponential (7, 11, 19, 35 min … capped at 63).
-* **Lease.** Each re-drive appends a fresh claim row, so "newest row older than its deadline" is
-  itself the lease; the invoice is taken `FOR UPDATE SKIP LOCKED`, so one a request or another
-  replica holds is skipped this tick rather than waited on. Claims and records lock it plainly.
-* **Poisoned-step guard.** After `MAX_COMPLIANCE_RESUMES` (5) drives a claim becomes a terminal
-  `failed` row carrying `retry_exhausted` (plus `eway.failed` / `EVT_EWAY_FAILED retryable:false`
-  for a generation), visible on the read model as `terminal: true`. An exception on one invoice is
-  logged with its identifiers and counted; the tick continues.
-* **Discovery role.** The three discovery queries run on `opsgrids_outbox` (BYPASSRLS), which
-  holds **column-scoped** `SELECT` on exactly `invoices(organization_id, id, supply_type,
-  document_type, status, created_at, deleted_at)`, `einvoice_filings(organization_id, id,
-  invoice_id, status, attempted_at, created_at, deleted_at)` and `eway_bills(` the same seven `)`
-  — granted after every alembic run by `services/finance/migrations/env.py:grant_sweep_reader`,
-  `REVOKE ALL` first. Every write runs on the app role under `session_scope(organization_id=…)`.
+  own capped exponential (7, 11, 19, 35 min … capped at 63). The same function, in SQL, gates a
+  re-queue.
+* **Lease.** A claim re-drive appends a fresh claim row, so "newest row older than its deadline"
+  is itself the lease; a re-queue's lease is the `filing_requested` outbox row it staged (read on
+  the database's clock). The invoice is taken `FOR UPDATE SKIP LOCKED`, so one a request or another
+  replica holds is skipped this tick rather than waited on.
+* **Poisoned-step guard.** Every path ends: `MAX_FILING_ATTEMPTS` unanswered re-queues,
+  `MAX_COMPLIANCE_RESUMES` claim drives, the statutory window, the 24-hour age cap. A tick that
+  raises backs off (capped) and tries again — it shares a process with the consumer, and the
+  worker's supervisor ends the process only when a loop *ends*. The clock is read per invoice.
+* **Tests.** `services/finance/tests/test_reclaim_bounds.py` — `TestNoRegistrationIsNeverRequeued`,
+  `TestAnUnansweredInvoiceIsBounded`, `TestDiscoveryIsNotHeadOfLineBlocked`,
+  `TestTwoRegistrationDriversRecordOne`, `TestAgeAndWindowCaps`, `TestReadModelAndOrdering`,
+  `TestTheStubEwayPortalAnswersRepeatsForReal`, `TestThePortalCallIsOffTheLoop`,
+  `TestTheSweepReadsTheClockPerInvoice`; `test_worker.py` (both loops start, a returning loop ends
+  the process, a poisoned tick does not end the consumer).
+* **Discovery role.** The discovery queries run on `opsgrids_outbox` (BYPASSRLS), which holds
+  **column-scoped** `SELECT` on exactly `invoices(organization_id, id, supply_type, document_type,
+  status, created_at, deleted_at)`, `einvoice_filings` and `eway_bills(organization_id, id,
+  invoice_id, status, attempted_at, created_at, deleted_at)`, and
+  `gst_registrations(organization_id, id, is_primary, deleted_at)` — granted after every alembic
+  run by `services/finance/migrations/env.py:grant_sweep_reader`, `REVOKE ALL` first. Every write
+  runs on the app role under `session_scope(organization_id=…)`.
 
 ### Provider idempotency
 
@@ -137,7 +183,7 @@ it is its document's newest row — an attempt in flight — never once answered
 |---|---|---|---|
 | `IrpClient.register` | the document (IRN = hash of GSTIN, type, number, FY) | `IrpDuplicate(ack)` | `filed` |
 | `IrpClient.cancel` | the IRN | `IrpAlreadyCancelled(ack)` | `cancelled` |
-| `EwayClient.generate` | `EwayPayload.idempotency_key` = `domain.eway_idempotency_key`: invoice, Part B (mode, vehicle, transporter, transport document) and the generation ordinal (count of earlier `generated` rows + 1) | `EwayAlreadyGenerated(ack)` | `generated` with the portal's original number |
+| `EwayClient.generate` | `EwayPayload.idempotency_key` = `domain.eway_idempotency_key`: invoice, Part B (mode, vehicle, transporter, transport document — case- and space-insensitive), the two validity inputs (distance, over-dimensional) and the generation ordinal (count of earlier `generated` rows + 1) | `EwayAlreadyGenerated(ack)` | `generated` with the portal's original number |
 | `EwayClient.cancel` | the bill number | `EwayAlreadyCancelled(ack)` | `cancelled` |
 | `ImsClient.fetch` | read-only | — | ingest is idempotent on `(organization_id, source_ref)` at the database |
 
@@ -146,3 +192,29 @@ onto `…Rejected`; that mapping is what turns a crash-then-resume into a succes
 spurious failure. Each `record_*` is also idempotent on our side: the invoice is row-locked, the
 newest row re-read, and an outcome that somebody else already recorded (the same bill number, a
 `cancelled` row, a claim already resolved) appends nothing.
+
+The stub e-Way client numbers a bill **from its idempotency key** and remembers what it issued, so
+a resumed generation is answered `EwayAlreadyGenerated` by the stub itself — the "already
+generated" path runs for real in tests, not only through a fake.
+
+## The payment contract (round 3)
+
+Razorpay has no idempotency key on a payment create (ADR-0004 §6 and its addendum), so:
+
+* **Lookup before create.** `call_provider_charge` ensures the charge's provider Order
+  (`receipt` = the charge idempotency key, found by it before any create), asks for a payment
+  already made against that Order, and only then creates one. `charges.provider_order_id` records
+  the Order at finalize. A resumed call finds the payment a crashed one made.
+* **One call at a time.** `charges.attempts`, `next_attempt_at`, `lease_until`: the stager holds
+  the lease from insert; anyone else — the caller's own HTTP retry, the sweep — takes it only by a
+  conditional `UPDATE … RETURNING` once it has lapsed and the backoff has passed. A retry of an
+  in-flight key gets the charge as it stands and makes no provider call.
+* **Finalize never regresses.** The charge is locked and re-read; the provider payment id is set
+  only if NULL (a different one is logged and audited `payment.charge.provider_id_mismatch`, never
+  written); state moves only from `created` and only to a non-terminal state — captured/failed come
+  by webhook with their events. `payment.charge.staged` is audited at insert and
+  `payment.charge.created` once, by the first recorder.
+* **The sweep is bounded.** It discovers only charges with no call in flight and not backing off
+  (in SQL, so none can block the batch), claims the lease, and at `charge_max_attempts` (5) fails
+  the charge and emits `commerce.payment.failed` so dunning proceeds. Discovery reads a
+  column-scoped grant on `charges` (`selectors.SWEEP_READER_CHARGE_COLUMNS`).

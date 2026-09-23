@@ -108,7 +108,7 @@ async def file_invoice(
         await _bind(session, payload.organization_id, request)
         claim = await services.claim_manual_filing(session, ctx, payload)
 
-    call_outcome = services.call_irp_register(client, claim.irp_payload)
+    call_outcome = await services.call_irp_register_off_loop(client, claim.irp_payload)
 
     async with session.begin():
         await _bind(session, payload.organization_id, request)
@@ -157,7 +157,7 @@ async def cancel_filing(
         await _bind(session, payload.organization_id, request)
         claim = await services.claim_irn_cancellation(session, ctx, payload, request=request)
 
-    outcome = services.call_irp_cancel(client, claim.facts)
+    outcome = await services.call_irp_cancel_off_loop(client, claim.facts)
 
     async with session.begin():
         await _bind(session, payload.organization_id, request)
@@ -205,7 +205,7 @@ async def generate_eway_bill(
         await _bind(session, payload.organization_id, request)
         claim = await services.claim_eway_generation(session, ctx, payload, request=request)
 
-    outcome = services.call_eway_generate(client, claim.payload)
+    outcome = await services.call_eway_generate_off_loop(client, claim.payload)
 
     async with session.begin():
         await _bind(session, payload.organization_id, request)
@@ -249,7 +249,7 @@ async def cancel_eway_bill(
         await _bind(session, payload.organization_id, request)
         claim = await services.claim_eway_cancellation(session, ctx, payload, request=request)
 
-    outcome = services.call_eway_cancel(client, claim)
+    outcome = await services.call_eway_cancel_off_loop(client, claim)
 
     async with session.begin():
         await _bind(session, payload.organization_id, request)
@@ -297,7 +297,7 @@ async def sync_ims(
         await _bind(session, payload.organization_id, request)
         target = await services.claim_ims_sync(session, ctx, period=payload.period)
 
-    fetched = services.fetch_ims_period(client, target)
+    fetched = await services.fetch_ims_period_off_loop(client, target)
 
     async with session.begin():
         await _bind(session, payload.organization_id, request)

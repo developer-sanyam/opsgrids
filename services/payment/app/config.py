@@ -43,6 +43,14 @@ class Settings(ServiceSettings):
     #: genuinely mid-flight in the request that staged it is never mistaken for stuck.
     charge_reclaim_after_seconds: int = 300
     charge_sweep_poll_interval_seconds: float = 60.0
+    #: How many provider calls one charge may claim (the stager's included) before the sweep
+    #: stops, fails it, and emits `commerce.payment.failed` so dunning takes over (D3).
+    charge_max_attempts: int = 5
+    #: How long one synchronous provider call may take before the caller stops waiting (D3). The
+    #: call runs on a worker thread (`services.call_provider_charge_off_loop`); a call that
+    #: outlives this leaves the charge `created`, and the sweep resumes it once the lease expires
+    #: — lookup-before-create finding whatever the abandoned call achieved.
+    provider_call_timeout_seconds: float = 30.0
 
 
 def settings() -> Settings:

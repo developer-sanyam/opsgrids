@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# The filing-reclaim sweep (D3): resumes compliance work a crash or an outage left unfinished — a
-# reportable invoice the automatic filing pipeline lost track of entirely, a `pending` filing whose
-# scheduled retry was lost, and an IRN withdrawal or e-Way generation/withdrawal whose claim was
-# committed but whose portal answer was never recorded (see docs/io-outside-transactions.md). The
-# scaffold pointed this at the outbox relay because no service work had a schedule yet; this one
-# does, and it is a distinct process from both the API and the consumer — a poll loop must not
-# share a pool with request traffic.
+# The filing-reclaim sweep (D3) on its own, for local debugging. In production it runs inside
+# `finance-worker` (app/worker.py), supervised alongside the filing consumer — there is no
+# `finance-cron` container. See docs/io-outside-transactions.md for what it resumes.
 exec python -m app.cron

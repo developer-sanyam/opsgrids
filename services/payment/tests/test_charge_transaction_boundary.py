@@ -171,7 +171,9 @@ class TestCrashBetweenCallAndRecord:
             provider_factory=lambda: provider,
             reclaim_after=timedelta(seconds=0),
         )
-        report = await sweep.tick(now=datetime.now(UTC) + timedelta(seconds=1))
+        # Past the stager's lease: until it lapses, the charge's own call may still be in flight
+        # and nobody else may make one (D3 round 3).
+        report = await sweep.tick(now=datetime.now(UTC) + timedelta(minutes=10))
         assert report.considered == 1
         assert report.resumed == 1
         assert report.failed == 0
@@ -265,7 +267,9 @@ class TestCrashBetweenCallAndRecord:
             provider_factory=lambda: provider,
             reclaim_after=timedelta(seconds=0),
         )
-        report = await sweep.tick(now=datetime.now(UTC) + timedelta(seconds=1))
+        # Past the stager's lease: until it lapses, the charge's own call may still be in flight
+        # and nobody else may make one (D3 round 3).
+        report = await sweep.tick(now=datetime.now(UTC) + timedelta(minutes=10))
 
         assert report.considered == 2
         assert report.resumed == 1

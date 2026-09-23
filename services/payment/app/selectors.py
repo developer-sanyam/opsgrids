@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import CHARGE_CREATED, REFUND_FAILED, Charge, Mandate, ProviderEvent, Refund
@@ -20,6 +20,24 @@ from app.models import CHARGE_CREATED, REFUND_FAILED, Charge, Mandate, ProviderE
 async def get_charge(session: AsyncSession, charge_id: uuid.UUID) -> Charge | None:
     """One charge by id, under the bound tenant. Another organization's id is invisible (a None)."""
     return await session.get(Charge, charge_id)
+
+
+async def lock_charge(
+    session: AsyncSession, charge_id: uuid.UUID, *, skip_locked: bool = False
+) -> Charge | None:
+    """One charge by id, row-locked, **re-read from the database** (`populate_existing`) rather
+    than trusted from the session's identity map — the recording step and the sweep both decide
+    from what the row says *now*, which a webhook may have changed since this session last looked.
+
+    `skip_locked` returns None for a row somebody else holds instead of waiting behind them —
+    what the sweep wants."""
+    stmt = (
+        select(Charge)
+        .where(Charge.id == charge_id)
+        .with_for_update(skip_locked=skip_locked)
+        .execution_options(populate_existing=True)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
 
 
 async def get_charge_by_idempotency_key(
@@ -74,33 +92,53 @@ async def get_mandate(
     return result.scalar_one_or_none()
 
 
+#: Exactly the columns `due_stuck_charges` reads — and so exactly what the outbox role is granted
+#: on `charges` (`migrations/env.py`): identifiers, the state it filters on and the lease/backoff
+#: clocks, never an amount, an idempotency key or a failure reason.
+SWEEP_READER_CHARGE_COLUMNS: tuple[str, ...] = (
+    "organization_id",
+    "id",
+    "state",
+    "provider_payment_id",
+    "provider_order_id",
+    "created_at",
+    "deleted_at",
+    "attempts",
+    "next_attempt_at",
+    "lease_until",
+)
+
+
 async def due_stuck_charges(
-    session: AsyncSession, *, older_than: datetime, limit: int = 100
+    session: AsyncSession, *, now: datetime, older_than: datetime, limit: int = 100
 ) -> list[tuple[uuid.UUID, uuid.UUID]]:
-    """Every charge staged but never resolved, as `(organization_id, charge_id)`.
+    """Every charge staged but never resolved and **actionable now**, as
+    `(organization_id, charge_id)`.
 
-    **The one cross-tenant read in this service, and the only one it needs.** It exists to
-    discover *which* organizations have a charge stuck between `stage_charge` and
-    `finalize_charge` — a process that died between calling the provider and recording what it
-    said — so there is no tenant to bind while asking, exactly the outbox relay's and
-    subscription's dunning sweep's shape. Run on the BYPASSRLS outbox role
-    (`get_outbox_sessionmaker`); as the NOBYPASSRLS app role it would return nothing, log nothing,
-    and a charge orphaned by a crash would sit `created` forever with money either never asked for
-    or asked for and never recorded.
+    **The one cross-tenant read in this service.** It exists to discover *which* organizations
+    have a charge stuck between `stage_charge` and `finalize_charge` — a process that died
+    between calling the provider and recording what it said — so there is no tenant to bind while
+    asking. Run on the BYPASSRLS outbox role, which holds column-scoped `SELECT` on exactly the
+    columns read here (`migrations/env.py`); as the NOBYPASSRLS app role it would return nothing,
+    and a charge orphaned by a crash would sit `created` forever.
 
-    `older_than` is the poisoned-step guard: a charge staged moments ago is very likely still
-    between `stage_charge`'s commit and `call_provider_charge`'s return in the very request that
-    created it, not actually stuck, so the sweep leaves it alone until it has had time to fail on
-    its own.
+    Only charges the sweep can act on are returned, so the batch is never filled by ones it
+    cannot (a head-of-line block across organizations): not soft-deleted, no call in flight
+    (`lease_until` passed), not backing off (`next_attempt_at` passed), and — for rows staged
+    before the lease columns existed — older than `older_than`. Charges past their attempt budget
+    are returned too: the sweep's next act for them is to fail them.
     """
     stmt = (
         select(Charge.organization_id, Charge.id)
         .where(
             Charge.state == CHARGE_CREATED,
             Charge.provider_payment_id.is_(None),
+            Charge.deleted_at.is_(None),
             Charge.created_at <= older_than,
+            or_(Charge.lease_until.is_(None), Charge.lease_until <= now),
+            or_(Charge.next_attempt_at.is_(None), Charge.next_attempt_at <= now),
         )
-        .order_by(Charge.created_at)
+        .order_by(func.coalesce(Charge.next_attempt_at, Charge.created_at))
         .limit(limit)
     )
     return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]

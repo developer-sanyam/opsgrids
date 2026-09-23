@@ -24,7 +24,9 @@ consumer holding a connection and a row open for however long a payment processo
 the pool-exhaustion risk this shape exists to avoid. A process that dies after the call but before
 `finalize_charge` leaves the charge `created` with no `provider_payment_id`; the event itself will
 never be redelivered for it (this transaction already marked it processed), so `app/cron.py`'s
-stuck-charge sweep is what resumes it, not a queue retry.
+stuck-charge sweep — running in this same process, `app/worker.py` — is what resumes it, not a
+queue retry. The call itself runs on a worker thread, bounded
+(`services.call_provider_charge_off_loop`), so a slow provider never blocks the event loop.
 """
 
 from __future__ import annotations
@@ -95,9 +97,10 @@ async def charge_on_invoice_finalized(envelope: dict[str, Any]) -> None:
         # No transaction open here: this redelivery is already marked processed, so a crash
         # between this line and the finalize below is resumed by app/cron.py's stuck-charge
         # sweep, never by the queue.
-        result = services.call_provider_charge(provider, charge)
-        async with session_scope(organization_id=organization_id) as session:
-            await services.finalize_charge(session, charge.id, result)
+        result = await services.call_provider_charge_off_loop(provider, charge)
+        if result is not None:  # None: timed out — the lease lapses into the sweep
+            async with session_scope(organization_id=organization_id) as session:
+                await services.finalize_charge(session, charge.id, result)
 
     log.info(
         "invoice.finalized.charged",
@@ -166,9 +169,10 @@ async def charge_on_dunning_retry(envelope: dict[str, Any]) -> None:
     if needs_call and charge is not None:
         # No transaction open here — see charge_on_invoice_finalized above for why, and why a
         # crash after this point is the stuck-charge sweep's job, not a queue retry.
-        result = services.call_provider_charge(provider, charge)
-        async with session_scope(organization_id=organization_id) as session:
-            await services.finalize_charge(session, charge.id, result)
+        result = await services.call_provider_charge_off_loop(provider, charge)
+        if result is not None:  # None: timed out — the lease lapses into the sweep
+            async with session_scope(organization_id=organization_id) as session:
+                await services.finalize_charge(session, charge.id, result)
 
     log.info(
         "dunning.retry.charged",

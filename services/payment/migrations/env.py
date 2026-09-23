@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import settings
 from app.models import SCHEMA, Base
+from app.selectors import SWEEP_READER_CHARGE_COLUMNS
 from platform_core.db import apply_schema_grants
 
 config = context.config
@@ -31,18 +32,20 @@ target_metadata = Base.metadata
 
 
 def grant_sweep_reader(connection: Connection) -> None:
-    """Cross-tenant SELECT on `charges`, for the stuck-charge sweep's discovery query.
+    """Column-level cross-tenant `SELECT` on `charges` for the stuck-charge sweep's discovery
+    (`app/cron.py`, D3) — `SWEEP_READER_CHARGE_COLUMNS` and nothing else.
 
-    The sweep (`app/cron.py`, D3) has the outbox relay's problem exactly: its query exists to
-    discover *which* organizations have a charge staged but never finalized, so there is no
-    tenant to bind while asking, and as the NOBYPASSRLS app role it would select nothing, log
-    nothing, and a charge orphaned by a crash between the provider call and recording it would
-    stay `created` forever. It therefore reads on the relay's role — the platform's already
-    provisioned "cross-tenant discovery, nothing else" identity — rather than a new BYPASSRLS
-    role added to the bootstrap for one table. Mirrors `services/subscription/migrations/env.py`.
+    The sweep has the outbox relay's problem exactly: its query exists to discover *which*
+    organizations have a charge staged but never finalized, so there is no tenant to bind while
+    asking, and as the NOBYPASSRLS app role it would select nothing and a charge orphaned by a
+    crash between the provider call and recording it would stay `created` forever. It reads on
+    the relay's role — the platform's "cross-tenant discovery, nothing else" identity.
 
-    **SELECT only, and one table.** Every write the sweep makes runs back on the app role inside
-    a tenant-bound transaction; the bypass buys discovery and never authority.
+    **Column-scoped**, mirroring `services/finance/migrations/env.py` and approval's: a future
+    `SELECT *` in discovery fails loudly with `42501` instead of widening a BYPASSRLS surface onto
+    amounts and keys. `REVOKE ALL` first, then the grant, on every alembic run: the round-1 grant
+    here was table-wide, and a `GRANT`-only version would leave it in place forever. Every write
+    the sweep makes runs back on the app role inside a tenant-bound transaction.
     """
     reader = cfg.db_outbox_role
     if not reader:
@@ -54,7 +57,20 @@ def grant_sweep_reader(connection: Connection) -> None:
     if connection.execute(
         text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.charges"}
     ).scalar():
-        connection.execute(text(f'GRANT SELECT ON "{SCHEMA}"."charges" TO "{reader}"'))
+        connection.execute(text(f'REVOKE ALL ON "{SCHEMA}"."charges" FROM "{reader}"'))
+        # Only the columns that exist at this revision: this runs after a downgrade too, and a
+        # downgrade past the lease migration removes four of them.
+        present = set(
+            connection.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = :s AND table_name = 'charges'"
+                ),
+                {"s": SCHEMA},
+            ).scalars()
+        )
+        columns = ", ".join(c for c in SWEEP_READER_CHARGE_COLUMNS if c in present)
+        connection.execute(text(f'GRANT SELECT ({columns}) ON "{SCHEMA}"."charges" TO "{reader}"'))
     connection.commit()
 
 

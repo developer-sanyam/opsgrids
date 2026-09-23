@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# The stuck-charge sweep (D3): resumes a charge staged but never finalized because the process
-# that called the provider died before recording what it said. The scaffold pointed this at the
-# outbox relay because no service work had a schedule yet; this one does, and it is a distinct
-# process from both the API and the consumer — a poll loop must not share a pool with request
-# traffic.
+# The stuck-charge sweep (D3) on its own, for local debugging. In production it runs inside
+# `payment-worker` (app/worker.py), supervised alongside the charge consumers — there is no
+# `payment-cron` container.
 exec python -m app.cron

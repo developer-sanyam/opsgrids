@@ -59,7 +59,9 @@ async def create_charge(
     organization and finalize what the provider said. A process that dies between the call and the
     record leaves the charge `created` with no `provider_payment_id`, which is exactly what
     `app/cron.py`'s stuck-charge sweep resumes; `call_provider_charge` is safe to run again because
-    the platform's own idempotency key travels to the provider on every call.
+    it looks the payment up (by the Order whose receipt is the platform's key) before it creates
+    one. A retry of the same key while the first call is still in flight is answered with the
+    charge as it stands — `stage_charge` hands the right to call to one caller at a time.
     """
     settings: ServiceSettings = request.app.state.settings
     async with session.begin():
@@ -69,12 +71,15 @@ async def create_charge(
         charge, needs_call = await services.stage_charge(session, provider, payload)
 
     if needs_call:
-        result = services.call_provider_charge(provider, charge)
-        async with session.begin():
-            await set_tenant(session, payload.organization_id)
-            if not settings.is_production:
-                await assert_tenant(session, payload.organization_id)
-            charge = await services.finalize_charge(session, charge.id, result, request=request)
+        # On a worker thread, bounded: a provider that does not answer in time leaves the charge
+        # `created` under its lease, and the stuck-charge sweep resumes it once the lease lapses.
+        result = await services.call_provider_charge_off_loop(provider, charge)
+        if result is not None:
+            async with session.begin():
+                await set_tenant(session, payload.organization_id)
+                if not settings.is_production:
+                    await assert_tenant(session, payload.organization_id)
+                charge = await services.finalize_charge(session, charge.id, result, request=request)
 
     result_out = ChargeOut.model_validate(charge)
     log.info(

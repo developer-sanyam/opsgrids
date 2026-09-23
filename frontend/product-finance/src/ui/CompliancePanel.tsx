@@ -6,6 +6,7 @@ import type { EInvoiceFiling, EInvoiceState, Invoice } from "@/api/types";
 import {
   CANCELLATION_REASONS,
   filingErrorSentence,
+  filingRowLabel,
   filingView,
   remedyView,
 } from "@/data/compliance";
@@ -150,15 +151,7 @@ function FilingTimeline({ filings }: { filings: EInvoiceFiling[] }) {
             />
             <div className="flex min-w-0 flex-col gap-0.5">
               <div className="flex flex-wrap items-baseline gap-x-2">
-                <span className="text-sm font-bold text-ink">
-                  {registered
-                    ? "Registered"
-                    : failed
-                      ? "Refused"
-                      : filing.status === "cancelled"
-                        ? "Withdrawn"
-                        : "Submitted"}
-                </span>
+                <span className="text-sm font-bold text-ink">{filingRowLabel(filing)}</span>
                 <time className="text-xs text-muted tnum" dateTime={filing.attempted_at}>
                   {formatDateTime(filing.attempted_at)}
                 </time>
@@ -206,6 +199,15 @@ function RemedyCard({ invoice, state }: { invoice: Invoice; state: EInvoiceState
   const deadline = state.cancellable_until ?? null;
   const reasonLabel =
     CANCELLATION_REASONS.find((r) => r.code === reasonCode)?.label ?? "";
+
+  if (remedy.key === "contact_support") {
+    return (
+      <div className="flex flex-col gap-2 rounded-tile border border-line p-4">
+        <h3 className="text-sm font-bold text-ink">{remedy.headline}</h3>
+        <p className="max-w-prose text-sm text-muted">{remedy.consequence}</p>
+      </div>
+    );
+  }
 
   if (remedy.key === "credit_note") {
     return (

@@ -54,6 +54,14 @@ _SWEEP_READER_COLUMNS: dict[str, tuple[str, ...]] = {
         "created_at",
         "deleted_at",
     ),
+    # due_filing_reclaims / due_stale_filings: skip an organization with no registration to file
+    # under (the consumer writes nothing for it, so re-queueing would loop).
+    "gst_registrations": (
+        "organization_id",
+        "id",
+        "is_primary",
+        "deleted_at",
+    ),
     # due_stale_eway's newest-row test.
     "eway_bills": (
         "organization_id",
@@ -68,7 +76,8 @@ _SWEEP_READER_COLUMNS: dict[str, tuple[str, ...]] = {
 
 
 def grant_sweep_reader(connection: Connection) -> None:
-    """Column-level cross-tenant `SELECT` on `invoices`, `einvoice_filings` and `eway_bills`, for
+    """Column-level cross-tenant `SELECT` on `invoices`, `einvoice_filings`, `gst_registrations`
+    and `eway_bills`, for
     the filing-reclaim sweep's discovery queries (`app/cron.py`, D3).
 
     The sweep has the outbox relay's problem exactly: its queries exist to discover *which*
@@ -104,9 +113,21 @@ def grant_sweep_reader(connection: Connection) -> None:
         ).scalar():
             continue
         connection.execute(text(f'REVOKE ALL ON "{SCHEMA}"."{table}" FROM "{reader}"'))
-        connection.execute(
-            text(f'GRANT SELECT ({", ".join(columns)}) ON "{SCHEMA}"."{table}" TO "{reader}"')
+        # Only the columns that exist at this revision — this runs after a downgrade too.
+        present = set(
+            connection.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = :s AND table_name = :t"
+                ),
+                {"s": SCHEMA, "t": table},
+            ).scalars()
         )
+        granted = ", ".join(c for c in columns if c in present)
+        if granted:
+            connection.execute(
+                text(f'GRANT SELECT ({granted}) ON "{SCHEMA}"."{table}" TO "{reader}"')
+            )
     connection.commit()
 
 

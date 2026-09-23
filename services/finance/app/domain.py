@@ -43,6 +43,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
 # --------------------------------------------------------------------- vocabularies
 
@@ -118,7 +119,10 @@ IRN_CANCELLATION_WINDOW: timedelta = timedelta(hours=24)
 #: time: `cancel` while the portal's window is open, `credit_note` once it has closed. Named as a
 #: vocabulary because a screen must offer exactly one of them, and offering both is how a user
 #: learns which is right by having the other fail.
-FILING_REMEDIES: frozenset[str] = frozenset({"cancel", "credit_note"})
+#: `contact_support` is the one a person cannot resolve from a screen: a withdrawal the platform
+#: asked for, never saw confirmed, and can no longer ask again because the window has shut — the
+#: portal may or may not hold it, and only a look at the portal says which (D3).
+FILING_REMEDIES: frozenset[str] = frozenset({"cancel", "credit_note", "contact_support"})
 
 
 # --------------------------------------------------------------------- the retry policy
@@ -202,9 +206,15 @@ def pending_redrive_after(attempts: int) -> timedelta:
 ERR_PORTAL_UNAVAILABLE: str = "unavailable"
 ERR_RETRY_EXHAUSTED: str = "retry_exhausted"
 ERR_NO_REGISTRATION: str = "no_registration"
+#: A withdrawal the reclaim sweep found still owed after the portal's own 24-hour window shut:
+#: asking now can only be refused, so it stops and says so (D3).
+ERR_WINDOW_CLOSED: str = "window_closed"
+#: An e-Way generation chain older than `EWAY_REDRIVE_MAX_AGE`: goods that were meant to move a
+#: day ago are not given a bill automatically now (D3).
+ERR_STALE: str = "stale"
 
 PLATFORM_ERROR_CODES: frozenset[str] = frozenset(
-    {ERR_PORTAL_UNAVAILABLE, ERR_RETRY_EXHAUSTED, ERR_NO_REGISTRATION}
+    {ERR_PORTAL_UNAVAILABLE, ERR_RETRY_EXHAUSTED, ERR_NO_REGISTRATION, ERR_WINDOW_CLOSED, ERR_STALE}
 )
 
 
@@ -251,16 +261,31 @@ def cancellation_deadline(ack_date: datetime) -> datetime:
     return ack_date + IRN_CANCELLATION_WINDOW
 
 
+def is_failed_withdrawal(status: str | None, ack_date: datetime | None) -> bool:
+    """A `failed` row that carries an acknowledgement is a withdrawal that did not happen — the
+    portal refused it, the window shut, or the reclaim sweep gave up — so **the registration it
+    was withdrawing still stands**. A failed *registration* never carries one (D3)."""
+    return status == "failed" and ack_date is not None
+
+
 def remedy_for(*, status: str | None, ack_date: datetime | None, at: datetime) -> str | None:
     """Which correction is available for a document's current filing position at `at`.
 
     `cancel` only while a live registration is still inside the window; `credit_note` once it has
     closed. None when there is nothing to correct — an unfiled or already-withdrawn document has
     no registration standing against it.
+
+    A failed withdrawal leaves the registration standing, so it is never "nothing to do": inside
+    the window the answer is to ask again (`cancel`); outside it, the platform cannot know whether
+    the portal holds a withdrawal it never confirmed, so a person has to look (`contact_support`).
     """
-    if status != "filed" or ack_date is None:
+    if ack_date is None:
         return None
-    return "cancel" if cancellation_window_open(ack_date, at) else "credit_note"
+    if status == "filed":
+        return "cancel" if cancellation_window_open(ack_date, at) else "credit_note"
+    if is_failed_withdrawal(status, ack_date):
+        return "cancel" if cancellation_window_open(ack_date, at) else "contact_support"
+    return None
 
 
 # --------------------------------------------------------------------- GST identity
@@ -2231,6 +2256,12 @@ def eway_cancellation_window_open(generated_at: datetime, at: datetime) -> bool:
     return at - generated_at <= EWAY_CANCELLATION_WINDOW
 
 
+#: How old the first row of a stuck e-Way generation chain may be before the reclaim sweep stops
+#: re-driving it and records a terminal `stale` row instead. A bill is a licence for goods to be
+#: on the road now; a consignment that should have moved a day ago is a person's call (D3).
+EWAY_REDRIVE_MAX_AGE: timedelta = timedelta(hours=24)
+
+
 def eway_idempotency_key(
     *,
     invoice_id: uuid.UUID,
@@ -2240,6 +2271,8 @@ def eway_idempotency_key(
     transporter_id: str | None,
     transport_doc_no: str | None,
     transport_doc_date: date | None,
+    distance_km: int,
+    over_dimensional: bool,
 ) -> str:
     """The key one e-Way generation is idempotent by: **(document, transporter/vehicle part)**,
     plus which bill of the document's life this is.
@@ -2248,6 +2281,11 @@ def eway_idempotency_key(
     * **transporter/vehicle part** — "Part B" of the bill: how the goods move and who moves them.
       The same consignment asked for twice with the same Part B is one bill; a different vehicle
       is a different request, and must not be answered with the first one's number.
+    * **distance and over-dimensional cargo** — not Part B, but the two inputs this platform
+      computes validity from (`eway_valid_until`). A repeat answered "already generated" is
+      recorded against the *resuming* row's stored distance; were the distance not in the key, a
+      corrected distance could be answered with a bill raised for the old one, and the deadline
+      a screen shows would no longer be the portal's.
     * **generation** — 1 for the document's first bill, 2 once that one was cancelled or expired
       and another is raised, and so on (the count of `generated` rows before this claim, plus
       one). Without it a document legitimately re-raised on the same lorry after a cancellation
@@ -2263,14 +2301,33 @@ def eway_idempotency_key(
     part_b = "|".join(
         [
             transport_mode,
-            (vehicle_no or "").upper().replace(" ", ""),
-            (transporter_id or "").upper(),
-            transport_doc_no or "",
+            _normalised_ref(vehicle_no),
+            _normalised_ref(transporter_id),
+            _normalised_ref(transport_doc_no),
             transport_doc_date.isoformat() if transport_doc_date else "",
+            str(distance_km),
+            "odc" if over_dimensional else "",
         ]
     )
     digest = hashlib.sha256(part_b.encode()).hexdigest()[:24]
     return f"eway:{invoice_id}:{generation}:{digest}"
+
+
+def _normalised_ref(value: str | None) -> str:
+    """A vehicle number, transporter id or transport document number as the portal compares it:
+    case- and whitespace-insensitive, so `mh12 ab1234` and `MH12AB1234` are one request."""
+    return "".join((value or "").split()).upper()
+
+
+def chain_start(rows: Sequence[Any], *, chain: frozenset[str]) -> Any | None:
+    """The oldest row of the run of `chain` statuses at the head of a newest-first history — when
+    the stuck attempt was first made, which is what the age cap on re-driving it measures."""
+    first = None
+    for row in rows:
+        if row.status not in chain:
+            break
+        first = row
+    return first
 
 
 def leading_claim_attempts(statuses: Sequence[str], *, claim: str, chain: frozenset[str]) -> int:
@@ -2310,10 +2367,18 @@ def eway_remedy_for(*, status: str, generated_at: datetime | None, at: datetime)
     Named as a single answer rather than a set of flags for the same reason `remedy_for` is: a
     screen must offer the one action that will work, and offering both is how a user learns
     which is right by having the other fail.
+
+    A failed *withdrawal* (a `failed` row carrying the bill's `valid_from` — a failed generation
+    never has one) leaves the bill standing: ask again inside the window, `contact_support`
+    outside it, where only the portal knows whether it holds a withdrawal never confirmed (D3).
     """
-    if status != "generated" or generated_at is None:
+    if generated_at is None:
         return None
-    return "cancel" if eway_cancellation_window_open(generated_at, at) else None
+    if status == "generated":
+        return "cancel" if eway_cancellation_window_open(generated_at, at) else None
+    if status == "failed":
+        return "cancel" if eway_cancellation_window_open(generated_at, at) else "contact_support"
+    return None
 
 
 # --------------------------------------------------------------------- withholding: TDS and TCS

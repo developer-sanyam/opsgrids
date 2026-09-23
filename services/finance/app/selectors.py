@@ -19,7 +19,8 @@ position, the overview rollups — are reads, computed from the same `app.domain
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import Select, and_, case, func, literal, or_, select
@@ -265,10 +266,17 @@ def to_einvoice_state(
         error=latest.error,
         attempted_at=latest.attempted_at,
         attempts=attempts,
-        terminal=domain.is_terminal_filing(latest.status),
+        # A failed *withdrawal* is not the platform having given up on the document: the
+        # registration stands, and `remedy` says what a person can still do about it.
+        terminal=domain.is_terminal_filing(latest.status)
+        and not domain.is_failed_withdrawal(latest.status, latest.ack_date),
         cancellable_until=(
             domain.cancellation_deadline(latest.ack_date)
-            if latest.status == "filed" and latest.ack_date is not None
+            if latest.ack_date is not None
+            and (
+                latest.status == "filed"
+                or domain.is_failed_withdrawal(latest.status, latest.ack_date)
+            )
             else None
         ),
         remedy=domain.remedy_for(status=latest.status, ack_date=latest.ack_date, at=at or _now()),
@@ -574,33 +582,90 @@ async def filings_for_invoice(
     return list((await session.execute(stmt)).scalars().all())
 
 
+#: `services.EVT_INVOICE_FILING_REQUESTED`, named here because selectors sit below services and may
+#: not import them. A test pins the two together.
+FILING_REQUESTED_EVENT = "finance.compliance.invoice.filing_requested"
+
+
+def _request_backoff(requests: Any) -> Any:
+    """SQL: `domain.resume_after(n)` for an integer SQL expression `n` — the same bounded backoff
+    the Python side computes, so discovery and the tenant-bound re-check agree on when a re-queued
+    invoice is due again."""
+    return (
+        literal(domain.FILING_RECLAIM_AFTER)
+        + func.least(
+            literal(domain.FILING_RETRY_BASE) * func.power(2, requests - 1),
+            literal(domain.FILING_RETRY_CEILING),
+        )
+        - literal(domain.FILING_RETRY_BASE)
+    )
+
+
+def _requests_backing_off(org_col: Any, invoice_col: Any, after_col: Any) -> Any:
+    """SQL: this invoice has had `filing_requested` staged on the outbox since `after_col`, and the
+    newest of them is still inside `resume_after(count)` — a re-queue that nobody has answered yet,
+    backing off. Measured on the database's clock (`created_at` is `now()` at insert).
+
+    An aggregate with `HAVING` and no `GROUP BY` yields one row when the condition holds and none
+    otherwise (no requests at all gives a NULL `max`, and the comparison is not true), so the
+    whole thing is an `EXISTS`. This is what keeps a re-queued or backing-off invoice **out of the
+    discovery batch** instead of occupying one of its `limit` slots every tick."""
+    return (
+        select(literal(1))
+        .select_from(OutboxEvent)
+        .where(
+            OutboxEvent.organization_id == org_col,
+            OutboxEvent.aggregate_id == invoice_col,
+            OutboxEvent.event_type == FILING_REQUESTED_EVENT,
+            OutboxEvent.created_at > after_col,
+        )
+        .having(func.max(OutboxEvent.created_at) + _request_backoff(func.count()) > func.now())
+        .exists()
+    )
+
+
+def _has_live_registration(org_col: Any) -> Any:
+    """SQL: the organization has a primary, live GST registration. Without one nothing can be
+    filed — the consumer answers `no_registration` and writes no row — so re-queueing its
+    invoices would only loop. Read on the outbox role's column grant on `gst_registrations`."""
+    return (
+        select(GstRegistration.id)
+        .where(
+            GstRegistration.organization_id == org_col,
+            GstRegistration.is_primary.is_(True),
+            GstRegistration.deleted_at.is_(None),
+        )
+        .exists()
+    )
+
+
 async def due_filing_reclaims(
     session: AsyncSession, *, older_than: datetime, limit: int = 100
 ) -> list[tuple[uuid.UUID, uuid.UUID]]:
     """Every reportable, unfiled invoice with no filing row at all, as `(organization_id,
     invoice_id)` — the automatic filing pipeline having lost track of it entirely.
 
-    **The one cross-tenant read in this service, and the only one it needs.** It exists to
-    discover *which* organizations have such an invoice, so there is no tenant to bind while
-    asking — exactly the outbox relay's, subscription's dunning sweep's, and payment's
-    stuck-charge sweep's shape. Run on the BYPASSRLS outbox role (`get_outbox_sessionmaker`); as
-    the NOBYPASSRLS app role it would return nothing, log nothing, and a document whose
-    `filing_requested` event never arrived — or whose one attempt crashed between calling the
-    portal and recording what it said, leaving no row behind at all (`app/domain.py`'s
-    `FILING_STATUSES` docstring explains why there is nothing *to* record) — would sit unfiled
-    past its reporting window, silently.
+    **Cross-tenant**, like the outbox relay's, subscription's dunning sweep's and payment's
+    stuck-charge sweep's discovery: it exists to discover *which* organizations have such an
+    invoice, so there is no tenant to bind while asking. Run on the BYPASSRLS outbox role
+    (`get_outbox_sessionmaker`), which holds column-scoped `SELECT` on exactly what this reads
+    (`migrations/env.py`); as the NOBYPASSRLS app role it would return nothing, and a document
+    whose `filing_requested` never arrived — or whose one attempt crashed between calling the
+    portal and recording it, leaving no row at all — would sit unfiled past its window, silently.
 
-    Deliberately **not** every invoice with a non-terminal newest filing row: a `pending` row
-    already has its own scheduled retry (`services.request_filing`, ADR-0015), and re-kicking it
-    on the same deadline would race that schedule. This targets only the narrower, harder failure
-    — an invoice the pipeline has no record of trying at all — which is exactly what `stage_
-    registration_attempt` writing nothing before the call (D3) can leave behind. A `pending` or
-    `cancelling` row that has outlived its own deadline is `due_stale_filings`' question, on a
-    longer clock (`domain.pending_redrive_after`, `domain.resume_after`).
+    Only invoices the sweep can actually move are returned, so the batch is never filled by ones it
+    cannot (a head-of-line block across organizations):
 
-    `older_than` is the poisoned-step guard: an invoice finalized moments ago is very likely still
-    waiting on its own first attempt, not lost, so the sweep leaves it alone until it has had time
-    to fail on its own.
+    * the organization has a live GST registration (`_has_live_registration`) — without one the
+      consumer files nothing and writes nothing, and re-queueing would loop forever;
+    * no `filing_requested` staged since the invoice was created is still inside its backoff
+      (`_requests_backing_off`) — a re-queue already in flight is not re-queued, and each further
+      one waits `domain.resume_after(n)`. The tenant-bound re-check (`services.claim_lost_filing`)
+      stops at `domain.MAX_FILING_ATTEMPTS` with a terminal row.
+
+    Deliberately **not** every invoice with a non-terminal newest filing row: that is
+    `due_stale_filings`' question, on its own clock. `older_than` is the floor below which an
+    invoice is simply still waiting on its own first attempt.
     """
     reportable_document_types = tuple(domain.IRP_DOCUMENT_TYPES)
     stmt = (
@@ -611,7 +676,15 @@ async def due_filing_reclaims(
             Invoice.status.not_in(domain.UNREPORTED_STATUSES),
             Invoice.deleted_at.is_(None),
             Invoice.created_at <= older_than,
-            ~select(EInvoiceFiling.id).where(EInvoiceFiling.invoice_id == Invoice.id).exists(),
+            ~select(EInvoiceFiling.id)
+            .where(
+                EInvoiceFiling.organization_id == Invoice.organization_id,
+                EInvoiceFiling.invoice_id == Invoice.id,
+                EInvoiceFiling.deleted_at.is_(None),
+            )
+            .exists(),
+            _has_live_registration(Invoice.organization_id),
+            ~_requests_backing_off(Invoice.organization_id, Invoice.id, Invoice.created_at),
         )
         .order_by(Invoice.created_at)
         .limit(limit)
@@ -622,97 +695,121 @@ async def due_filing_reclaims(
 def _stale_newest_stmt(
     model: type[EInvoiceFiling] | type[EwayBill],
     *,
-    statuses: tuple[str, ...],
-    older_than: datetime,
+    floors: dict[str, datetime],
     limit: int,
+    extra: Any = None,
 ) -> Select[Any]:
     """`(organization_id, invoice_id)` for every document whose **newest** attempt row has one of
-    `statuses` and was made at or before `older_than`.
+    the statuses in `floors`, made at or before that status's floor.
 
-    "Newest" is a `NOT EXISTS` over a later row for the same document, ordered exactly as
-    `filings_for_invoice` / `eway_bills_for_invoice` order it (`attempted_at`, then `created_at`,
-    then an outcome ahead of a claim at a tie — `_newest_first`), so the sweep and the read model
-    can never disagree about which row is current. Filtering by
-    status first keeps the scan to the handful of rows in a claim or outage state rather than the
-    whole ledger.
+    "Newest" is `_is_newest`, ordered exactly as `filings_for_invoice` / `eway_bills_for_invoice`
+    order it, so the sweep and the read model can never disagree about which row is current.
+    Filtering by status first keeps the scan to the handful of rows in a claim or outage state
+    rather than the whole ledger. Oldest first: a row backing off after a re-drive was re-stamped
+    by it (every re-drive appends a fresh claim), so it sorts behind rows that are genuinely due.
     """
-    return (
+    stmt = (
         select(model.organization_id, model.invoice_id)
         .where(
-            model.status.in_(statuses),
+            or_(
+                *(
+                    and_(model.status == status, model.attempted_at <= floor)
+                    for status, floor in floors.items()
+                )
+            ),
             model.deleted_at.is_(None),
-            model.attempted_at <= older_than,
             _is_newest(model),
         )
         .order_by(model.attempted_at)
         .limit(limit)
     )
+    if extra is not None:
+        stmt = stmt.where(extra)
+    return stmt
 
 
 async def due_stale_filings(
-    session: AsyncSession, *, statuses: tuple[str, ...], older_than: datetime, limit: int = 100
+    session: AsyncSession, *, floors: dict[str, datetime], limit: int = 100
 ) -> list[tuple[uuid.UUID, uuid.UUID]]:
     """Every invoice whose newest e-invoice filing row is a stale `pending` or `cancelling` — an
     outage answer whose scheduled retry may have been lost, or a cancellation claim whose process
     died between the portal call and recording it.
 
-    **Cross-tenant, like `due_filing_reclaims`**, and on the same BYPASSRLS outbox role for the
-    same reason (`migrations/env.py` grants it SELECT on `einvoice_filings`). `older_than` is only
-    the coarse floor: the exact per-attempt deadline (`domain.resume_after`,
-    `domain.pending_redrive_after`) is re-checked under the tenant binding before anything is
-    driven, so a row discovered here that is not actually due is skipped, not acted on.
+    **Cross-tenant, like `due_filing_reclaims`**, on the same role and column grant. `floors` is
+    per status: a `pending` row's own retry may be scheduled up to
+    `domain.pending_redrive_after(MAX_FILING_ATTEMPTS)` out, so it is not even discovered before
+    then — hundreds of rows inside their own retry window during a portal outage must not fill the
+    batch. A `pending` row is further excluded while a re-queue of it is backing off, or when its
+    organization has no registration to file under (the same two filters `due_filing_reclaims`
+    applies). The exact per-attempt deadline is re-checked under the tenant binding before
+    anything is driven.
     """
-    stmt = _stale_newest_stmt(EInvoiceFiling, statuses=statuses, older_than=older_than, limit=limit)
+    pending_is_actionable = or_(
+        EInvoiceFiling.status != "pending",
+        and_(
+            _has_live_registration(EInvoiceFiling.organization_id),
+            ~_requests_backing_off(
+                EInvoiceFiling.organization_id, EInvoiceFiling.invoice_id, EInvoiceFiling.created_at
+            ),
+        ),
+    )
+    stmt = _stale_newest_stmt(
+        EInvoiceFiling, floors=floors, limit=limit, extra=pending_is_actionable
+    )
     return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
 
 
 async def due_stale_eway(
-    session: AsyncSession, *, statuses: tuple[str, ...], older_than: datetime, limit: int = 100
+    session: AsyncSession, *, floors: dict[str, datetime], limit: int = 100
 ) -> list[tuple[uuid.UUID, uuid.UUID]]:
     """The e-Way twin of `due_stale_filings`: newest row `submitting` (a generation claim whose
     process died), `pending` (an outage nothing else retries) or `cancelling` (a withdrawal claim).
-    Cross-tenant on the outbox role, which `migrations/env.py` grants SELECT on `eway_bills`."""
-    stmt = _stale_newest_stmt(EwayBill, statuses=statuses, older_than=older_than, limit=limit)
+    Cross-tenant on the outbox role's column grant on `eway_bills`. No outbox lease is needed here:
+    every re-drive appends a fresh claim row, which is itself the lease."""
+    stmt = _stale_newest_stmt(EwayBill, floors=floors, limit=limit)
     return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
 
 
-async def filing_request_in_flight(
-    session: AsyncSession,
-    org_id: uuid.UUID,
-    invoice_id: uuid.UUID,
-    *,
-    event_type: str,
-    after: datetime,
-    lease: timedelta,
-) -> bool:
-    """Whether a `filing_requested` event for this invoice was staged on the outbox after the
-    `pending` row written at `after`, and within the last `lease` — the sweep's **lease** on a
-    `pending` row it has already re-driven.
+@dataclass(frozen=True, slots=True)
+class RequestHistory:
+    """`filing_requested` staged for one invoice since some moment, read under the tenant binding:
+    how many, the newest, and the database's own clock to compare the newest against."""
 
-    A `pending` row is never rewritten (the ledger is append-only), so "I re-armed this a minute
-    ago" cannot be recorded on it. The outbox row the re-drive itself staged is the record: while
-    one exists that is newer than the `pending` row it answers, the consumer has not yet produced
-    a successor row, and the next tick leaves the invoice alone instead of publishing again every
-    minute until the consumer gets to it. Bounded by `lease` so a request the broker lost does not
-    hold the invoice forever.
+    count: int
+    newest_at: datetime | None
+    db_now: datetime
 
-    Both comparisons are on the **database's** clock (`created_at` is `now()` at insert, and the
-    lease is measured back from `now()`), never the sweep's: the two rows being compared were
-    both stamped by it. Runs under the tenant binding, on the app role, against this service's
-    own outbox — no cross-schema read.
+    def backing_off(self) -> bool:
+        """Still inside `domain.resume_after(count)` of the newest — exactly `_requests_backing_
+        off`'s SQL, so discovery and the re-check agree."""
+        if self.count == 0 or self.newest_at is None:
+            return False
+        return self.newest_at + domain.resume_after(self.count) > self.db_now
+
+
+async def filing_requests_since(
+    session: AsyncSession, org_id: uuid.UUID, invoice_id: uuid.UUID, *, after: datetime
+) -> RequestHistory:
+    """How many `filing_requested` events this service staged for the invoice after `after` (a
+    filing row's, or the invoice's own, `created_at`) — the sweep's **lease and budget** for a
+    re-queue.
+
+    A re-queue cannot be recorded on the ledger (a `pending` row is never rewritten, and a lost
+    invoice has no row at all), so the outbox rows the re-queues themselves staged are the record:
+    while the newest is inside its backoff the invoice is left alone, and at
+    `domain.MAX_FILING_ATTEMPTS` the sweep stops with a terminal row. The finalize request is
+    staged in the invoice's own transaction, so it is never newer than `invoice.created_at` and
+    never counts. Runs under the tenant binding, on the app role, against this service's own
+    outbox — no cross-schema read.
     """
-    stmt = (
-        select(func.count())
-        .select_from(OutboxEvent)
-        .where(
-            OutboxEvent.organization_id == org_id,
-            OutboxEvent.event_type == event_type,
-            OutboxEvent.aggregate_id == invoice_id,
-            OutboxEvent.created_at > after,
-            OutboxEvent.created_at >= func.now() - lease,
-        )
+    stmt = select(func.count(), func.max(OutboxEvent.created_at), func.now()).where(
+        OutboxEvent.organization_id == org_id,
+        OutboxEvent.event_type == FILING_REQUESTED_EVENT,
+        OutboxEvent.aggregate_id == invoice_id,
+        OutboxEvent.created_at > after,
     )
-    return int((await session.execute(stmt)).scalar_one()) > 0
+    count, newest_at, db_now = (await session.execute(stmt)).one()
+    return RequestHistory(count=int(count), newest_at=newest_at, db_now=db_now)
 
 
 async def latest_filings(
@@ -2306,11 +2403,14 @@ def to_eway_state(
         valid_from=latest.valid_from,
         valid_until=latest.valid_until,
         # A refusal stands until the consignment changes, and an expired bill cannot be revived —
-        # both are the platform having stopped, which is what a screen needs to say out loud.
-        terminal=effective in ("failed", "cancelled", "expired"),
+        # both are the platform having stopped, which is what a screen needs to say out loud. A
+        # failed *withdrawal* (a `failed` row carrying the bill's `valid_from`) is neither: the
+        # bill stands, and `remedy` says what can still be done.
+        terminal=effective in ("failed", "cancelled", "expired")
+        and not (effective == "failed" and latest.valid_from is not None),
         cancellable_until=(
             domain.eway_cancellation_deadline(latest.valid_from)
-            if effective == "generated" and latest.valid_from is not None
+            if effective in ("generated", "failed") and latest.valid_from is not None
             else None
         ),
         remedy=domain.eway_remedy_for(status=effective, generated_at=latest.valid_from, at=now),

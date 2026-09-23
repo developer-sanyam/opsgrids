@@ -172,7 +172,9 @@ class EInvoiceState(BaseModel):
     cancellable_until: datetime | None = None
     #: `cancel` while the window is open, `credit_note` once it has closed, null when there is
     #: nothing to correct. Exactly one of the two is ever available, and offering both is how a
-    #: user discovers which by having the other fail.
+    #: user discovers which by having the other fail. After a failed withdrawal (`status` `failed`
+    #: with `ack_date` set — the registration still stands) it is `cancel` inside the window and
+    #: `contact_support` outside it: the portal may hold a withdrawal it never confirmed.
     remedy: str | None = None
 
 

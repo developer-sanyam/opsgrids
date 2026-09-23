@@ -11,9 +11,13 @@ So the shape here encodes Razorpay's constraints as first-class:
 
 * `create_mandate` takes a **cap** (`max_amount_minor`) and returns a mandate whose activation is
   a separate, later moment — an eMandate is not debitable the instant it is created.
-* `charge` takes a caller-supplied **`idempotency_key`**, because the platform must supply one:
-  the provider has none of its own, so a retried charge is de-duplicated by *us*, keyed on a
-  string *we* chose. A Stripe adapter simply forwards it to Stripe's native idempotency header.
+* **Lookup before create.** The provider has no idempotency key of its own, so a charge is made
+  against a provider **Order** whose `receipt` is the platform's idempotency key:
+  `ensure_order` finds the Order by that receipt before it would create one, and `find_payment`
+  finds a payment already made against it before `charge` makes another. A resumed call (after
+  a crash between the call and recording it, D3) therefore lands on the payment the first call
+  made instead of debiting twice. `charge` still carries the key; a Stripe adapter forwards it
+  to Stripe's native idempotency header and may answer the lookups trivially.
 * `verify_webhook` is signature-first: a provider callback is trusted because it carries the
   provider's HMAC over the raw body, never because it carries a session or a token.
 
@@ -48,6 +52,16 @@ class MandateResult:
 
 
 @dataclass(frozen=True, slots=True)
+class OrderResult:
+    """A provider Order: what a payment is created against. `receipt` is the platform's charge
+    idempotency key — the handle the Order is found again by."""
+
+    provider: str
+    provider_order_id: str
+    receipt: str
+
+
+@dataclass(frozen=True, slots=True)
 class ChargeResult:
     """What a provider returns when a charge is created.
 
@@ -61,6 +75,8 @@ class ChargeResult:
     amount_minor: int
     currency: str
     failure_reason: str | None = None
+    #: The Order the payment was made against, when the provider has one.
+    provider_order_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +137,24 @@ class PaymentProvider(Protocol):
         """Register a standing mandate with the provider, capped at `max_amount_minor`."""
         ...
 
+    def ensure_order(
+        self,
+        *,
+        receipt: str,
+        amount_minor: int,
+        currency: str,
+        notes: dict[str, str],
+    ) -> OrderResult:
+        """The Order whose `receipt` is `receipt` — **looked up first**, created only if the
+        provider holds none. Idempotent by receipt: calling it twice is one Order."""
+        ...
+
+    def find_payment(self, *, order_id: str, charge_id: str) -> ChargeResult | None:
+        """The payment already made against `order_id` (Razorpay: `GET /orders/{id}/payments`,
+        matched on the `notes.charge_id` the platform stamped), or None. What turns a resumed
+        call into a lookup instead of a second debit."""
+        ...
+
     def charge(
         self,
         *,
@@ -129,9 +163,10 @@ class PaymentProvider(Protocol):
         currency: str,
         mandate_id: str | None,
         notes: dict[str, str],
+        order_id: str | None = None,
     ) -> ChargeResult:
-        """Create a charge. `idempotency_key` is platform-supplied — the provider has no native
-        one (ADR-0004 §6), so the same key must yield the same charge on the provider side too."""
+        """Create a payment, against `order_id` when given. Only ever called after
+        `find_payment` found none for that Order (`services.call_provider_charge`)."""
         ...
 
     def refund(

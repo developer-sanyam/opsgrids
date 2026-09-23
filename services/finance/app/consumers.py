@@ -168,7 +168,7 @@ async def file_requested_invoice(envelope: dict[str, Any]) -> None:
 
         # No transaction open here at all (D3): the claim above already committed, and the
         # record transaction below opens only after the portal has answered.
-        call_outcome = services.call_irp_register(client, claim.irp_payload)
+        call_outcome = await services.call_irp_register_off_loop(client, claim.irp_payload)
 
         async with session_scope(organization_id=organization_id) as session:
             result = await services.record_autofile_result(

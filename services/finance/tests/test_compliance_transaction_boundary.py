@@ -629,6 +629,8 @@ class TestTheEwayIdempotencyKey:
             "transporter_id": None,
             "transport_doc_no": None,
             "transport_doc_date": None,
+            "distance_km": 150,
+            "over_dimensional": False,
         }
         fields.update(over)
         return domain.eway_idempotency_key(**fields)
@@ -643,6 +645,18 @@ class TestTheEwayIdempotencyKey:
 
     def test_a_re_raised_bill_is_a_different_generation(self) -> None:
         assert self._key(generation=2) != self._key()
+
+    def test_the_validity_inputs_are_part_of_the_request(self) -> None:
+        """Distance and over-dimensional cargo are what validity is computed from; a corrected
+        distance must not be answered with a bill raised for the old one."""
+        assert self._key(distance_km=151) != self._key()
+        assert self._key(over_dimensional=True) != self._key()
+
+    def test_transport_references_compare_case_and_space_insensitively(self) -> None:
+        assert self._key(transport_doc_no="lr 1234") == self._key(transport_doc_no="LR1234")
+        assert self._key(transporter_id=" 27aabct1234f1z5") == self._key(
+            transporter_id="27AABCT1234F1Z5"
+        )
 
     def test_generations_are_one_based(self) -> None:
         with pytest.raises(ValueError):
@@ -969,13 +983,12 @@ class TestDiscoveryIsColumnScoped:
                     await s.execute(text(f'SELECT {column} FROM finance."{table}" LIMIT 1'))  # noqa: S608
 
     async def test_the_discovery_columns_are_readable(self) -> None:
+        now = datetime.now(UTC)
         async with get_outbox_sessionmaker()() as s, s.begin():
-            await selectors.due_filing_reclaims(s, older_than=datetime.now(UTC))
-            await selectors.due_stale_filings(
-                s, statuses=("pending", "cancelling"), older_than=datetime.now(UTC)
-            )
+            await selectors.due_filing_reclaims(s, older_than=now)
+            await selectors.due_stale_filings(s, floors={"pending": now, "cancelling": now})
             await selectors.due_stale_eway(
-                s, statuses=("submitting", "pending", "cancelling"), older_than=datetime.now(UTC)
+                s, floors={"submitting": now, "pending": now, "cancelling": now}
             )
 
 
