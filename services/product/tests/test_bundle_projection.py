@@ -162,6 +162,13 @@ class TestFanOut:
         assert await _entitled(session, org_id) == set()
         assert await _sources(session, org_id) == {}
 
+    async def test_a_bundle_naming_only_itself_projects_nothing(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        await project_subscription_event(_event(org_id, state="active", members=["suite"]))
+        assert await _entitled(session, org_id) == set()
+        assert await _sources(session, org_id) == {}
+
 
 class TestWhatAMemberListMayName:
     async def test_a_soon_member_is_never_projected(
@@ -294,14 +301,26 @@ class TestPlanChanges:
         assert await _entitled(session, org_id) == set(TRIO)
 
     async def test_the_dead_suite_activation_from_before_the_fix_is_retired(
-        self, session: AsyncSession, org_id: uuid.UUID
+        self, session: AsyncSession, admin_session: AsyncSession, org_id: uuid.UUID
     ) -> None:
         """An organization that bought a suite under the old fold has an activation for `suite`
         and, after the migration's backfill, a `('suite', 'suite')` source. The first event that
         names the members is a member set without `suite` in it, so the diff retires it."""
-        await project_subscription_event(
-            _event(org_id, state="active", product_key="suite", members=["suite"], minutes=0)
-        )
+        from app.models import Activation
+
+        async with admin_session.begin():
+            admin_session.add_all(
+                [
+                    Activation(organization_id=org_id, product_key="suite", status="active"),
+                    ActivationSource(
+                        organization_id=org_id,
+                        product_key="suite",
+                        source_product_key="suite",
+                        status="active",
+                        state_occurred_at=T0,
+                    ),
+                ]
+            )
         await project_subscription_event(_event(org_id, state="active", members=TRIO, minutes=1))
         assert await _entitled(session, org_id) == set(TRIO)
         assert (await _sources(session, org_id))[("suite", "suite")] == "removed"

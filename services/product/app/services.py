@@ -99,10 +99,14 @@ async def _honoured_members(
     under that for a version authored before the rule, or a product whose launch was rolled back.
     """
     members = _members(product_key, entitled_products)
-    if members == [product_key]:
-        return members
     registry = {p.key: p for p in await selectors.list_products(session)}
     source = registry.get(product_key)
+    if source is not None and source.is_bundle and members == [product_key]:
+        # A bundle speaking only for itself entitles a key no route checks. Nothing to project.
+        log.warning("subscription.projection.bundle_without_members", source=product_key)
+        return []
+    if members == [product_key]:
+        return members
     if source is None or not source.is_bundle:
         log.warning(
             "subscription.projection.members_ignored",
