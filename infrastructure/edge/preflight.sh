@@ -43,7 +43,12 @@ optional_empty="PII_DECRYPT_KEYS SENTRY_DSN BACKUP_S3_ENDPOINT BACKUP_S3_ACCESS_
 # Email and payments may be unconfigured on a box that is being stood up: the services are
 # inert without them (notification logs, payment reaches no network) and each is warned about
 # below. WhatsApp is optional until a Meta app exists. COMPOSE_PROFILES empty means core only.
-optional_empty="$optional_empty SMTP_HOST SMTP_USERNAME SMTP_PASSWORD RAZORPAY_KEY_ID RAZORPAY_KEY_SECRET"
+# OPS_ALERT_EMAIL is the same shape: ops-monitor still runs and still logs `ops.alert.firing`
+# with nothing configured, it just pages nobody — warned about below, not refused.
+optional_empty="$optional_empty SMTP_HOST SMTP_USERNAME SMTP_PASSWORD RAZORPAY_KEY_ID RAZORPAY_KEY_SECRET OPS_ALERT_EMAIL"
+# Empty means "check only the always-on core" (compose.prod.yml's own default for each) — a
+# perfectly valid state on a box that sells nothing beyond core, not a placeholder to fill in.
+optional_empty="$optional_empty OPS_MONITOR_API_CONTAINERS OPS_MONITOR_DLQ_QUEUES"
 optional_empty="$optional_empty WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN WHATSAPP_PHONE_NUMBER_ID WHATSAPP_ACCESS_TOKEN COMPOSE_PROFILES"
 # A box with no floating IP yet (or a provider that does not offer one) has nothing to put here;
 # storefront's own settings default it to empty and print "the platform address" instead of a
@@ -222,6 +227,18 @@ if [ -z "${RAZORPAY_KEY_ID:-}" ]; then
 	echo "  warn  RAZORPAY_KEY_ID empty: payments are inert. Trials end in past_due, never active." >&2
 else
 	ok "payment provider keys present"
+fi
+
+# ops-monitor (C10) always runs and always checks; this is only about whether a firing check
+# reaches a human. Without both, it still does the right thing — `ops.alert.firing` at error
+# in the logs, and `/status` says "disabled" in so many words — but nobody not already
+# watching logs finds out. Same shape as the EMAIL_TRANSPORT warning above: loud, not fatal.
+if [ -z "${OPS_ALERT_EMAIL:-}" ] || [ -z "${SMTP_HOST:-}" ]; then
+	echo "  warn  OPS_ALERT_EMAIL/SMTP_HOST not fully set: ops-monitor logs alerts but sends" >&2
+	echo "        NONE. Nobody is paged. Set OPS_ALERT_EMAIL and the SMTP_* values — see" >&2
+	echo "        RUNBOOK.md, 'alerts and what each means'." >&2
+else
+	ok "ops-monitor alerts email: $OPS_ALERT_EMAIL"
 fi
 
 # The send gate itself refuses a campaign outside local/test/ci while this is still

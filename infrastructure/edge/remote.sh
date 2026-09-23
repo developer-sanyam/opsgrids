@@ -341,6 +341,20 @@ status)
 	echo "checked out:   $(git -C ../.. rev-parse HEAD)"
 	echo
 	df -h .
+	echo
+	echo "ops-monitor /status:"
+	# `ops-monitor` runs the `product` image (debian-slim), which has python3 and no wget/curl
+	# — the same interpreter its own healthcheck story leans on elsewhere in this file. `-T`:
+	# no terminal over ssh. `.env` is read directly (remote.sh does not `source` it wholesale,
+	# the same reason `reconcile_roles` above reads OPSGRIDS_DB_PASSWORD this way) rather than
+	# assumed to be exported. A non-zero exit (container not up, or this box predates C10)
+	# prints nothing worse than "unreachable" and does not fail the rest of `status`.
+	ops_monitor_port=$(sed -n 's/^OPS_MONITOR_PORT=//p' .env | head -1 | tr -d '"'"'"' \r')
+	"${COMPOSE[@]}" exec -T ops-monitor python3 -c "
+import json, urllib.request
+with urllib.request.urlopen('http://127.0.0.1:${ops_monitor_port:-9110}/status', timeout=5) as r:
+    print(json.dumps(json.load(r), indent=2, sort_keys=True))
+" 2>/dev/null || echo "  (unreachable — is ops-monitor running? make edge-logs SERVICE=ops-monitor)"
 	;;
 logs)
 	# `logs [lines] [service...]`. Taken as arguments rather than read from the environment:

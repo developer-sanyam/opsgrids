@@ -1,16 +1,16 @@
 # The edge VM — runbook
 
 One Linux VM serves every merchant's storefront and every other product this platform sells:
-Caddy, Postgres+PostGIS, Redis, RabbitMQ, and one compose profile per product (44 containers
+Caddy, Postgres+PostGIS, Redis, RabbitMQ, and one compose profile per product (45 containers
 with every profile on — see [the memory budget](#the-memory-budget) and ADR-0013's memory-budget
 erratum, not "five service containers plus one sweep", which was true only of slice 1). ADR-0012
 §1 is the decision and its reasoning; this file is what you do about it at 3am.
 
 **Read this first, once, before the box exists.** The parts you will actually need in an
-incident are [roll back a bad deploy](#roll-back-a-bad-deploy), [the box is out of
-disk](#the-box-is-out-of-disk), [the memory budget](#the-memory-budget), [restore from
-backup](#restore-from-backup) and [is it the app, the database, Caddy or
-DNS](#is-it-the-app-the-database-caddy-or-dns).
+incident are [alerts and what each means](#alerts-and-what-each-means), [roll back a bad
+deploy](#roll-back-a-bad-deploy), [the box is out of disk](#the-box-is-out-of-disk), [the memory
+budget](#the-memory-budget), [restore from backup](#restore-from-backup) and [is it the app, the
+database, Caddy or DNS](#is-it-the-app-the-database-caddy-or-dns).
 
 ---
 
@@ -24,8 +24,13 @@ DNS](#is-it-the-app-the-database-caddy-or-dns).
   site exactly as it was. The recreate that follows is a few seconds of downtime per changed
   container, and longer if Caddy itself changed. **This is not zero downtime and slice 1 does
   not pretend to be.** Blue/green is slice 2's problem and needs a second box.
-- **Nobody is paged.** There is no alerting. If certificate issuance fails at 3am, nothing
-  wakes anybody; see [certificates](#certificates-and-how-a-human-ever-finds-out).
+- **A human is paged, by email, within a few minutes of most things going wrong.**
+  `ops-monitor` (C10) polls outbox lag, DLQ depth, API readiness, disk, backup freshness and
+  certificate expiry every 60s and emails `OPS_ALERT_EMAIL` when one fires — see
+  [alerts and what each means](#alerts-and-what-each-means). What it does **not** cover:
+  Caddy's own TLS handshake failing on a name nothing else is watching (still Let's Encrypt's
+  expiry email, the same as before) and anything that needs a human's judgment rather than a
+  threshold.
 - **No secret is in the repository.** Everything secret lives in `infrastructure/edge/.env` on
   this box and in the key file it points at, both mode 600, neither ever committed, printed in
   CI, or pasted into a ticket.
@@ -41,7 +46,7 @@ All of these run from a clone on your laptop, and **all of them require you to n
 | `make deploy HOST=… CONFIRM=… [REF=origin/main]` | preflight → build → `caddy validate` → migrate → recreate → health |
 | `make edge-preflight HOST=… CONFIRM=…` | Every check the deploy would run, changing nothing |
 | `make edge-validate HOST=… CONFIRM=… [REF=…]` | Puts a ref on the box and loads the Caddyfile with the pinned Caddy. Restarts nothing |
-| `make edge-status HOST=… CONFIRM=…` | What is running, which ref, how much disk is left |
+| `make edge-status HOST=… CONFIRM=…` | What is running, which ref, how much disk is left, and `ops-monitor`'s own `/status` (every check's current state) |
 | `make edge-logs HOST=… CONFIRM=… [SERVICE=caddy] [TAIL=500]` | Tail logs |
 | `make edge-rollback HOST=… CONFIRM=… [TO=<sha>]` | Redeploy the previous ref that actually served |
 | `make edge-web HOST=… CONFIRM=… [PLACEHOLDER=1]` | Build the buyer bundle here, ship it, swap the symlink |
@@ -171,8 +176,11 @@ chmod 600 /srv/opsgrids/secrets/jwt-ed25519.pem
 
 Then edit `.env`: fill every empty value, set `EDGE_HOST` to this box's name, `EDGE_RESERVED_IP`
 to the real address, `TLS_PLATFORM_HOSTS` to every platform name from the DNS table above
-(comma-separated, no wildcard), and `ACME_EMAIL` to **an inbox a human reads** — in slice 1
-Let's Encrypt's expiry warning is the only unsolicited notification that exists.
+(comma-separated, no wildcard), `ACME_EMAIL` to **an inbox a human reads** (Let's Encrypt's
+expiry warning is still the only channel for a *merchant* domain's renewal trouble — see
+[alerts and what each means](#alerts-and-what-each-means)), and `OPS_ALERT_EMAIL` to the same
+kind of inbox — that is where `ops-monitor` sends everything else. Neither is a secret; both go
+unread at the platform's expense.
 
 `BACKUP_S3_ACCESS_KEY_ID` and `BACKUP_S3_SECRET_ACCESS_KEY` may both be left empty to stand the
 box up before a bucket exists. Preflight warns in capitals and `backup.sh` exits non-zero every
@@ -244,6 +252,11 @@ curl -si https://edge.opsgrids.com/api/v1/auth/health # through Caddy to the gat
 Then a real store: create one, publish it, and open
 `https://<slug>.stores.opsgrids.com`. The first request for a new name waits two to five
 seconds while Caddy obtains a certificate; that is on-demand TLS working, not a fault.
+
+Then `make edge-status HOST=… CONFIRM=…` and read the `ops-monitor` block at the bottom. On a
+box this fresh, expect `backup: "no marker yet"` (step 8 has not run yet) and everything else
+either `ok` or still `pending` (fewer than 3 polls old) — `firing` this early usually means a
+profile is enabled in `COMPOSE_PROFILES` whose API isn't actually up yet.
 
 ### 8. The nightly backup
 
@@ -630,17 +643,58 @@ call.
 
 ---
 
+## Alerts and what each means
+
+`ops-monitor` (C10) is one always-on container, `python -m platform_core.ops_monitor` in the
+same `product` image `edge-relay` reuses. Every 60s it runs six checks, feeds the results
+through a small state machine (`libs/platform-core/src/platform_core/ops_monitor/state.py`) and
+emails `OPS_ALERT_EMAIL` — direct SMTP, reusing the box's own `EMAIL_FROM`/`SMTP_*`,
+**deliberately not through notification-service**, which is one of the things being watched.
+
+**Hysteresis, so a single blip does not page anyone:** a check needs 3 consecutive failing
+polls (about 3 minutes) before it *opens* and sends one email; once open it *reminds* every 6
+hours for as long as it keeps failing; 3 consecutive good polls *resolves* it and sends one more
+email. Every check that changes state in the same poll goes out in **one** email, not one each.
+
+| Check | Fires when | Where to look |
+|---|---|---|
+| `outbox.<schema>` | oldest unpublished row ≥ 900s (warns at 300s, in `/status` but not emailed), or any row has exhausted its attempts | `make edge-logs SERVICE=edge-relay`; `tools/outbox.py --service <schema> --reset` **after** fixing the cause, not instead of it |
+| `dlq.<queue>` | one or more messages parked on `{queue}.dlq` | `tools/dlq.py peek --queue <queue>`; `tools/dlq.py replay ...` after fixing the cause |
+| `api.<name>` | `GET /health/ready` failed on 3 consecutive polls | `make edge-logs SERVICE=<name>` — usually its database or Redis is unreachable, which `/health/ready`'s own body already names |
+| `disk` | less than 15% free on `/` | [the box is out of disk](#the-box-is-out-of-disk) |
+| `backup` | no successful `backup.sh` run in the last 26h. **"no marker yet" is its own state, not this alarm** — a box that has never backed up successfully (or predates this check) says so plainly in `/status` without emailing anyone | run `make edge-backup` by hand and read its output; RUNBOOK's [restore from backup](#restore-from-backup) |
+| `cert` | the TLS handshake to `EDGE_HOST` itself (not a merchant domain — see below) expires in under 14 days | see "Certificates" below |
+| a daily digest, `check: "*"` | once a day at a fixed hour, **only when nothing is firing** | not a problem — it is the dead-man's switch: a day with no digest and no other mail is a stopped monitor, not a quiet one |
+
+**How to check it yourself, any time:** `make edge-status HOST=… CONFIRM=…` prints `ops-monitor`'s
+own `/status` — every check's current state, detail and how long it has been that way — alongside
+everything else that command already showed. `make edge-logs HOST=… CONFIRM=… SERVICE=ops-monitor`
+is its own log; `ops_monitor.notification` is the line for every email actually sent.
+
+**If nothing is delivered at all:** `/status`'s `email` field says `"disabled — SMTP_HOST/
+OPS_ALERT_EMAIL/EMAIL_FROM not set"` in so many words, and `preflight.sh` warns about the same
+gap in capitals before every deploy. Every firing check is still logged at error
+(`ops.alert.firing`) even with email off — `make edge-logs SERVICE=ops-monitor | grep alert.firing`
+finds them.
+
+**What this does not cover**, named so nobody assumes otherwise: a merchant's *own* custom
+domain's certificate (that is the claim row and the sweep, next section), and anything that
+needs a human's judgment rather than a threshold — this pages on symptoms, not root causes.
+
 ## Certificates, and how a human ever finds out
 
-Nothing is paged. These are the only instruments that exist in slice 1:
+`ops-monitor`'s `cert` check (above) covers `EDGE_HOST`'s own certificate. A **merchant's**
+custom domain is different — nobody configured its expiry into a check, because on-demand TLS
+means each one is issued and renewed independently, on the first handshake, by Caddy itself.
+These are the instruments for *that*:
 
 1. **The merchant's own domain screen.** Every failed probe writes a reason and a
    `next_check_at` onto the claim row, and the merchant sees exactly what we looked for and
    what we found. This is the fastest path to discovery and it is a customer doing the
-   noticing, which is not good enough and is why slice 2 is the pager.
+   noticing, which is not as good as a check that pages someone here directly.
 2. **Let's Encrypt's expiry email** to `ACME_EMAIL`, roughly 20 and 7 days before a
    certificate expires, but only when renewal has already been failing. **If that address is
-   not read by a human, this design has no alerting at all.**
+   not read by a human, a merchant domain's renewal failure has no other alert.**
 3. **Caddy's log**, which is the only place a refusal is written in full:
 
 ```bash
@@ -893,7 +947,11 @@ Expect 60–90 minutes, most of it the first build.
 
 Named here so nobody discovers them during an incident:
 
-- **No alerting and no pager.** Slice 2.
+- **Resolved 2026-09-23 (C10): `ops-monitor` alerts by email.** See
+  [alerts and what each means](#alerts-and-what-each-means). What is still true: no pager
+  rotation, no SMS/Slack/PagerDuty integration — one mailbox, checked by a human. And it covers
+  the paths named in that table only; a symptom nowhere on that list still needs someone to
+  notice it the old way.
 - **No zero-downtime deploy.** Every deploy that changes a container restarts it.
 - **The box does not resize to fit the container count (2026-09-23, ADR-0013's memory-budget
   erratum).** §5's own sizing said this box moves to 4 vCPU / 8-16 GB before slice 1 goes live;
@@ -977,7 +1035,8 @@ Named here so nobody discovers them during an incident:
 
 | When | What |
 |---|---|
-| After every deploy | `make edge-status` — everything up, disk sane |
+| After every deploy | `make edge-status` — everything up, disk sane, `ops-monitor`'s own `/status` |
+| Daily | The `ops-monitor` all-quiet digest arrives (dead-man's switch) — if a day goes by with neither a digest nor an alert, the monitor itself may be stuck |
 | Weekly | Caddy log for ACME errors; `storefront-cron` alive; disk |
 | Monthly | `apt-get update && apt-get upgrade` and **a planned reboot window** — kernel updates are a full outage, so choose when rather than having it chosen for you |
 | Quarterly | The restore drill above. A backup nobody has restored is a hypothesis |
