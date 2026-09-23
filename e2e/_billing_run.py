@@ -58,6 +58,8 @@ async def main() -> None:
         billing=HttpBilling(cfg.billing_service_url, cfg),
         payment=HttpPayment(cfg.payment_service_url, cfg),
         batch_size=500,
+        # The cutover the worker would run with (`BILLING_RUN_NOT_BEFORE`, from the harness).
+        not_before=cfg.billing_run_not_before,
     )
     async with factory() as session, session.begin():
         at = (

@@ -147,6 +147,9 @@ async def _run(
     history.pins.append((started, version.id))
 
     waiting: list[uuid.UUID | None] = [None]
+    #: Who put the subscription in its current suspension — what decides whether a payment may
+    #: lift it.
+    suspended_by: list[str | None] = [None]
 
     async def observe() -> Any:
         sub = await _subscription(session, subscription_id)
@@ -258,6 +261,7 @@ async def _run(
                 async with session.begin():
                     s = await services.require_subscription(session, subscription_id)
                     await services.suspend(session, s, operator_id="ops")
+                suspended_by[0] = "operator"
             elif op == "dunning" and sub.state == STATE_PAST_DUE:
                 # The window runs out: the clock reaches its end and the sweep suspends. Service
                 # stopped at the window's stored end, which is when the history records it.
@@ -271,9 +275,14 @@ async def _run(
                         await services.suspend_for_dunning(session, s, locked, now=CLOCK[0])
                     stopped = max(cycle.grace_ends_at, history.states[-1][0])
                     history.states.append((stopped, STATE_SUSPENDED))
+                    suspended_by[0] = "dunning"
             elif op == "resume" and sub.state == STATE_SUSPENDED:
                 cycle = await last_cycle()
-                dunned = cycle is not None and cycle.closed_reason == "grace_expired"
+                dunned = (
+                    suspended_by[0] == "dunning"
+                    and cycle is not None
+                    and cycle.closed_reason == "grace_expired"
+                )
                 other = await latest_charged_invoice()
                 if other is not None and (cycle is None or other != cycle.invoice_id):
                     # Any other invoice paid — the run's closing-usage invoice, typically — must
@@ -281,6 +290,13 @@ async def _run(
                     await captured(other)
                     if (await _subscription(session, subscription_id)).state != STATE_SUSPENDED:
                         history.violations.append(("resumed_by_another_invoice", dunned))
+                        await observe()
+                if not dunned and cycle is not None and cycle.invoice_id is not None:
+                    # An operator's hold after an earlier dunning episode: paying that episode's
+                    # invoice again must not lift it either.
+                    await captured(cycle.invoice_id)
+                    if (await _subscription(session, subscription_id)).state != STATE_SUSPENDED:
+                        history.violations.append(("operator_hold_lifted_by_old_invoice",))
                         await observe()
                 if dunned and cycle is not None:
                     await captured(cycle.invoice_id)

@@ -818,7 +818,12 @@ def billing_tenant(platform: Platform, tenants: dict[str, Any]) -> dict[str, Any
 @pytest.fixture(scope="session")
 def billing_run(platform: Platform) -> Any:
     """One pass of subscription's real billing run, `seconds_ahead` past PostgreSQL's `now()`,
-    calling the running billing and payment services with the run's shared signing key."""
+    calling the running billing and payment services with the run's shared signing key — with a
+    billing cutover, as production must have one (`BILLING_RUN_NOT_BEFORE`): the moment this
+    fixture is first used. The journey's trial ends after it, so it is invoiced as before."""
+    from datetime import UTC, datetime
+
+    cutover = datetime.now(UTC).isoformat()
 
     def _tick(seconds_ahead: int) -> dict[str, Any]:
         raw = _seed(
@@ -829,6 +834,7 @@ def billing_run(platform: Platform) -> Any:
                 "BILLING_SERVICE_URL": platform.url("billing"),
                 "PAYMENT_SERVICE_URL": platform.url("payment"),
                 "INTERNAL_SERVICE_TOKEN": INTERNAL_TOKEN,
+                "BILLING_RUN_NOT_BEFORE": cutover,
             },
         )
         return dict(json.loads(raw.splitlines()[-1]))
