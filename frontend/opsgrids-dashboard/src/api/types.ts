@@ -370,3 +370,34 @@ export interface Permission {
   max_scope: Scope;
   is_dangerous: boolean;
 }
+
+// ------------------------------------------------------------------ email domains (SSO)
+
+/**
+ * `DomainOut`. `verification_host`/`verification_value` are what to publish as a DNS TXT
+ * record; `expires_at` is `null` once `verified_at` is set — the claim clock stops being read
+ * at all past that point.
+ */
+export interface Domain {
+  id: string;
+  domain: string;
+  is_primary: boolean;
+  auto_join: boolean;
+  verified_at: string | null;
+  created_at: string;
+  expires_at: string | null;
+  verification_host: string;
+  verification_value: string;
+  /** The periodic re-check's own findings. All three `null` means "never re-checked yet" —
+   * never an enforcement signal, since sign-in still gates on `verified_at` alone. */
+  last_checked_at: string | null;
+  last_check_ok: boolean | null;
+  /** Set once a re-check first finds the record missing after previously finding it; cleared
+   * the moment it is found again. Never means the domain was silently unverified. */
+  failing_since: string | null;
+}
+
+/** `DomainIn`. */
+export interface DomainCreate {
+  domain: string;
+}

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import uuid
 from typing import Protocol
+from urllib.parse import quote
 
 import httpx
 
@@ -62,7 +63,8 @@ class HttpEntitlements:
 
         try:
             response = await self._client.get(
-                f"/internal/v1/organizations/{organization_id}/entitlements", headers=headers
+                f"/internal/v1/organizations/{quote(str(organization_id), safe='')}/entitlements",
+                headers=headers,
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:

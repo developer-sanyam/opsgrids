@@ -119,7 +119,11 @@
 
     "edge-relay": { "kind": "background", "profile": null },
     "ops-monitor": { "kind": "ops_monitor", "profile": null },
-    "account-worker": { "kind": "background", "profile": null },
+    "account-worker": {
+      "kind": "background",
+      "profile": null,
+      "note": "runs both the event consumer and the periodic domain re-verification sweep since ADR-0013's memory-budget erratum (2026-09-23) merged account-cron into it, the same merge subscription-worker already documents."
+    },
     "product-worker": { "kind": "background", "profile": null },
     "subscription-worker": {
       "kind": "background",

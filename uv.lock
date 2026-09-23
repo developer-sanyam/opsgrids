@@ -1613,6 +1613,7 @@ dependencies = [
     { name = "idna" },
     { name = "pillow" },
     { name = "platform-core" },
+    { name = "publicsuffixlist" },
     { name = "python-multipart" },
 ]
 
@@ -1645,6 +1646,7 @@ requires-dist = [
     { name = "idna", specifier = ">=3.10" },
     { name = "pillow", specifier = ">=11.0" },
     { name = "platform-core", editable = "libs/platform-core" },
+    { name = "publicsuffixlist", specifier = "==1.0.2.20260922" },
     { name = "python-multipart", specifier = ">=0.0.20" },
 ]
 
@@ -2014,6 +2016,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/88/fb/46dad6c0ae49ed230ab1b16c890c2b6314e2403e6c412976f4a72d64a527/propcache-0.5.2-cp314-cp314t-win_amd64.whl", hash = "sha256:d447bb0b3054be5818458fbb171208b1d9ff11eba14e18ca18b90cbb45767370", size = 47764, upload-time = "2026-05-08T21:02:07.353Z" },
     { url = "https://files.pythonhosted.org/packages/e7/c4/a47d0a63aa309d10d59ede6e9d4cff03a344a79d1f0f4cd0cd74997b53e0/propcache-0.5.2-cp314-cp314t-win_arm64.whl", hash = "sha256:fe67a3d11cd9b4efabfa45c3d00ffba2b26811442a73a581a94b67c2b5faccf6", size = 41140, upload-time = "2026-05-08T21:02:09.065Z" },
     { url = "https://files.pythonhosted.org/packages/3a/ed/1cdcab6ba3d6ab7feca11fc14f0eeea80755bb53ef4e892079f31b10a25f/propcache-0.5.2-py3-none-any.whl", hash = "sha256:be1ddfcbb376e3de5d2e2db1d58d6d67463e6b4f9f040c000de8e300295465fe", size = 14036, upload-time = "2026-05-08T21:02:10.673Z" },
+]
+
+[[package]]
+name = "publicsuffixlist"
+version = "1.0.2.20260922"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e0/2b/4233b6022599eb25a11bb5e0613de2efe9f2a8d2919b02e024a9e383e5ea/publicsuffixlist-1.0.2.20260922.tar.gz", hash = "sha256:f471784adb84337d9b96e9d237faa7f0bf9497bd7f44cc4fe52140a834fd0035", size = 109235, upload-time = "2026-09-22T08:27:33.86Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d8/00/8a3c7982c489ac26d5058763d76a764bca66e9cf08a1208b79597640c3f7/publicsuffixlist-1.0.2.20260922-py2.py3-none-any.whl", hash = "sha256:49b2e687205d4ee63791a2bce89d6f3e186dcf9049438de5c654e41466393eae", size = 108913, upload-time = "2026-09-22T08:27:32.512Z" },
 ]
 
 [[package]]
