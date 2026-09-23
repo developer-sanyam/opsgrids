@@ -1,19 +1,12 @@
-import { useEffect, useId, useRef } from "react";
+import { useId, useRef } from "react";
 import type { ReactNode, RefObject } from "react";
+import { createPortal } from "react-dom";
 
 import { cn } from "../lib/cn";
-import { closeDialogLayer, isTopDialogLayer, openDialogLayer } from "../lib/dialogStack";
+import { isTopDialogLayer } from "../lib/dialogStack";
 import type { DialogLayer } from "../lib/dialogStack";
+import { useFocusTrap } from "../lib/useFocusTrap";
 import { CloseIcon } from "../icons";
-
-const FOCUSABLE = [
-  "a[href]",
-  "button:not([disabled])",
-  "input:not([disabled])",
-  "select:not([disabled])",
-  "textarea:not([disabled])",
-  '[tabindex]:not([tabindex="-1"])',
-].join(", ");
 
 interface DialogProps {
   open: boolean;
@@ -77,75 +70,20 @@ export function Dialog({
   const headingId = `${base}-title`;
   const descriptionId = description ? `${base}-description` : undefined;
 
-  // `onClose` is an inline arrow at almost every call site, so its identity changes on every
-  // parent render — including the ones a controlled field inside the dialog triggers on each
-  // keystroke. Reading it from a ref, kept current here, lets the effect below key on `open`
-  // alone: the keydown handler always calls the latest `onClose` without that effect
-  // tearing the listener down and refocusing the heading on every render of the parent.
-  const onCloseRef = useRef(onClose);
-  useEffect(() => {
-    onCloseRef.current = onClose;
+  // The heading is where focus lands when the caller hasn't asked for a field — right for a
+  // confirmation, where the consequence should be read before the actions.
+  const focusTarget = initialFocusRef ?? headingRef;
+
+  useFocusTrap({
+    open,
+    panelRef,
+    onClose,
+    initialFocusRef: focusTarget,
+    lockBodyScroll: true,
+    onLayerChange: (layer) => {
+      layerRef.current = layer;
+    },
   });
-
-  useEffect(() => {
-    if (!open) return;
-    // This dialog is the topmost one from here until its cleanup runs. A dialog opened from
-    // inside it pushes a layer above and takes the keyboard until *it* closes.
-    const layer = openDialogLayer();
-    layerRef.current = layer;
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    // One frame later: the panel is mounted and the caller's field ref is populated.
-    const target = initialFocusRef?.current ?? headingRef.current;
-    target?.focus();
-
-    function onKeyDown(event: KeyboardEvent) {
-      // A dialog opened from inside this one owns Escape and the trap while it is up.
-      if (!isTopDialogLayer(layer)) return;
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        onCloseRef.current();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const panel = panelRef.current;
-      if (!panel) return;
-      const focusable = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
-        (element) => element.offsetParent !== null || element === document.activeElement,
-      );
-      if (focusable.length === 0) {
-        event.preventDefault();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!first || !last) return;
-      const active = document.activeElement;
-      if (event.shiftKey && (active === first || active === headingRef.current)) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-
-    document.addEventListener("keydown", onKeyDown, true);
-    const { body } = document;
-    const previousOverflow = body.style.overflow;
-    body.style.overflow = "hidden";
-    return () => {
-      document.removeEventListener("keydown", onKeyDown, true);
-      // Off the stack before focus moves: the dialog underneath must already be topmost when it
-      // receives the focus that comes back to its own control.
-      closeDialogLayer(layer);
-      layerRef.current = null;
-      body.style.overflow = previousOverflow;
-      previouslyFocused?.focus();
-    };
-    // `initialFocusRef` is a ref object callers hold in `useRef`, stable across renders; `onClose`
-    // is read from `onCloseRef` above. Keying on `open` alone is intentional — see comment above.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
 
   if (!open) return null;
 
@@ -160,7 +98,19 @@ export function Dialog({
     onClose();
   }
 
-  return (
+  /*
+   * Portalled to `<body>`, and it has to be.
+   *
+   * `Dialog` positions itself with `position: fixed`, which is relative to the viewport only
+   * while no ancestor is transformed, filtered, or otherwise given a containing block of its
+   * own — and pages routinely are: `.rise`/`.cascade` (`console.css`) run a page-load animation
+   * with `animation-fill-mode: both`, which holds the keyframe's final `transform` on the
+   * element for good once the animation ends. A dialog mounted underneath that becomes trapped
+   * inside it instead of the viewport — the backdrop stops at the transformed ancestor's edge
+   * and the panel can be pushed off-screen top or bottom. Rendering through a portal means no
+   * ancestor, present or future, can do that to it.
+   */
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-6">
       <div
         className="absolute inset-0 bg-ink/50"
@@ -216,6 +166,7 @@ export function Dialog({
           </div>
         ) : null}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

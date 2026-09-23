@@ -4,6 +4,42 @@
     {
       "action": "read",
       "default_scope": "ORG",
+      "description": "See the organization's contacts, with addresses masked",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "audience",
+      "resource": "contact"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Add, edit, import and delete contacts",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "audience",
+      "resource": "contact"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See which addresses may not be mailed, and why",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "audience",
+      "resource": "suppression"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Suppress an address by hand, or lift a manual suppression",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "audience",
+      "resource": "suppression"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
       "description": "See how the organization sends email",
       "is_dangerous": false,
       "max_scope": "ORG",
@@ -54,6 +90,24 @@
       "max_scope": "ORG",
       "module": "setup",
       "resource": "sender"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See how the organization sends WhatsApp messages",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "setup",
+      "resource": "whatsapp"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Connect or replace the organization's WhatsApp Business account",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "setup",
+      "resource": "whatsapp"
     }
   ],
   "product": "engage",
@@ -63,6 +117,22 @@
       "cross_product": false,
       "description": "Owns how the organization sends: the provider connection, its domains and its senders. Built from the Engage catalogue alone.",
       "grants": [
+        {
+          "code": "engage.audience.contact.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.audience.contact.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.audience.suppression.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.audience.suppression.write",
+          "scope": "ORG"
+        },
         {
           "code": "engage.setup.connection.read",
           "scope": "ORG"
@@ -86,6 +156,14 @@
         {
           "code": "engage.setup.sender.write",
           "scope": "ORG"
+        },
+        {
+          "code": "engage.setup.whatsapp.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.setup.whatsapp.write",
+          "scope": "ORG"
         }
       ],
       "is_admin": true,
@@ -98,6 +176,14 @@
       "description": "Every person with an Engage seat. Reads the sending setup without being able to change it \u2014 a new seat should not be able to repoint the organization's mail.",
       "grants": [
         {
+          "code": "engage.audience.contact.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.audience.suppression.read",
+          "scope": "ORG"
+        },
+        {
           "code": "engage.setup.connection.read",
           "scope": "ORG"
         },
@@ -107,6 +193,10 @@
         },
         {
           "code": "engage.setup.sender.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.setup.whatsapp.read",
           "scope": "ORG"
         }
       ],

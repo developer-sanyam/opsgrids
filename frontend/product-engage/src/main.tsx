@@ -15,10 +15,12 @@ import { LoginPage } from "./routes/Login";
 import { NotFoundPage } from "./routes/NotFound";
 import { OverviewPage } from "./routes/Overview";
 import { SendersPage } from "./routes/Senders";
+import { WhatsAppConnectionPage } from "./routes/WhatsAppConnection";
+import { WhatsAppTemplatesPage } from "./routes/WhatsAppTemplates";
 
 /**
- * Four screens, which is every screen Phase 1 has. There is no "coming soon" route for campaigns,
- * templates or reporting: the sidebar does not offer them, so nothing routes to them, and a URL
+ * Six screens, which is every screen Phase 1 has. There is no "coming soon" route for campaigns,
+ * lists or reporting: the sidebar does not offer them, so nothing routes to them, and a URL
  * somebody guesses lands on the 404 that tells the truth rather than on a panel that promises.
  *
  * `/connection` is singular because the resource is: one organization gets one connection, and the
@@ -47,6 +49,8 @@ const router = createBrowserRouter([
           { path: "connection", element: <ConnectionPage /> },
           { path: "domains", element: <DomainsPage /> },
           { path: "senders", element: <SendersPage /> },
+          { path: "whatsapp/connection", element: <WhatsAppConnectionPage /> },
+          { path: "whatsapp/templates", element: <WhatsAppTemplatesPage /> },
           { path: "*", element: <NotFoundPage /> },
         ],
       },

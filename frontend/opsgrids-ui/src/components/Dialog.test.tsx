@@ -243,4 +243,45 @@ describe("Dialog", () => {
     );
     expect(screen.queryByRole("dialog")).toBeNull();
   });
+
+  /**
+   * The bug this guards: a page wrapper carrying `.rise` (`animation-fill-mode: both`) keeps a
+   * `transform` on itself after the animation ends, which makes it the containing block for any
+   * `position: fixed` descendant. A dialog rendered inside that wrapper — rather than portalled
+   * past it — gets sized and positioned against the wrapper's box instead of the viewport, which
+   * is how "New deal"'s footer and "New contact"'s header end up off-screen. Portalling to
+   * `document.body` is what keeps a transformed ancestor, present or future, from being able to
+   * do that.
+   */
+  it("renders outside any transformed ancestor, even one that carries the page's own container", () => {
+    const onClose = vi.fn();
+    const { container } = render(
+      <div style={{ transform: "translateY(0px)" }}>
+        <Dialog open onClose={onClose} title="New deal">
+          <p>Body</p>
+        </Dialog>
+      </div>,
+    );
+    const dialog = screen.getByRole("dialog", { name: "New deal" });
+    expect(container.contains(dialog)).toBe(false);
+    expect(document.body.contains(dialog)).toBe(true);
+  });
+
+  it("keeps nesting working once both dialogs render into document.body", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<NestedHarness />);
+    await user.click(screen.getByRole("button", { name: "New deal" }));
+    await user.click(screen.getByRole("button", { name: "Add a team member" }));
+
+    const outer = screen.getByRole("dialog", { name: "New deal" });
+    const inner = screen.getByRole("dialog", { name: "Add a team member" });
+    // Both portalled straight to `<body>`, as siblings — not one nested inside the other's DOM,
+    // even though "Add a team member" is opened from a control inside "New deal".
+    expect(container.contains(outer)).toBe(false);
+    expect(container.contains(inner)).toBe(false);
+    // The panel's grandparent is the portal's own root node (`fixed inset-0` wrapper), which
+    // `createPortal` appends straight to `<body>`.
+    expect(outer.parentElement?.parentElement).toBe(document.body);
+    expect(inner.parentElement?.parentElement).toBe(document.body);
+  });
 });

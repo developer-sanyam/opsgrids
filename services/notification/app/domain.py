@@ -7,7 +7,12 @@ retry decision. `services.py` and `dispatcher.py` do the I/O around them.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
+import hmac
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -804,3 +809,62 @@ def fold_domain_status(records: list[dict[str, Any]]) -> str:
     if required and all(r.get("verified") for r in required):
         return "verified"
     return "pending"
+
+
+# --------------------------------------------------------------------- engage unsubscribe links
+#
+# A link in a marketing email that lets the recipient leave without signing in. The recipient
+# has no account and no token of ours, so the link itself is the credential: it names the
+# organization and the address, and an HMAC-SHA256 over both proves we minted it. Anything that
+# does not verify is refused before a single row is read — a forged link must not be able to
+# suppress somebody else's address, nor learn whether that address is a contact.
+#
+# Layout: `<org uuid, 16 bytes>.<address, utf-8>.<mac, 32 bytes>`, each part base64url without
+# padding. The address travels in the link rather than being looked up because the link goes to
+# that address and nowhere else; the recipient is the one party it tells nothing new.
+
+_UNSUBSCRIBE_MAX_LEN: Final = 1024
+
+
+def _b64e(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _b64d(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def _unsubscribe_mac(organization_id: uuid.UUID, email: str, key: bytes) -> bytes:
+    # A separator that cannot occur in either part, so ("ab", "c") and ("a", "bc") cannot
+    # collide. The uuid is canonical text; the address is already normalised.
+    message = f"engage.unsubscribe.v1\n{organization_id}\n{email}".encode()
+    return hmac.new(key, message, hashlib.sha256).digest()
+
+
+def make_unsubscribe_token(organization_id: uuid.UUID, email: str, key: bytes) -> str:
+    """The unsubscribe token for one address in one organization. `email` must be normalised."""
+    mac = _unsubscribe_mac(organization_id, email, key)
+    return f"{_b64e(organization_id.bytes)}.{_b64e(email.encode())}.{_b64e(mac)}"
+
+
+def verify_unsubscribe_token(token: str, key: bytes) -> tuple[uuid.UUID, str] | None:
+    """`(organization_id, email)` if `token` is one we minted, else None.
+
+    Never raises on bad input — every malformed shape gets the same answer as a wrong MAC, so
+    whoever sent it cannot tell "not base64" from "forged". The MAC comparison is constant-time.
+    """
+    if not token or len(token) > _UNSUBSCRIBE_MAX_LEN:
+        return None
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        org_raw, email_raw, mac = (_b64d(p) for p in parts)
+        organization_id = uuid.UUID(bytes=org_raw)
+        email = email_raw.decode("utf-8")
+    except (ValueError, binascii.Error, UnicodeDecodeError):
+        return None
+    expected = _unsubscribe_mac(organization_id, email, key)
+    if not hmac.compare_digest(expected, mac):
+        return None
+    return organization_id, email

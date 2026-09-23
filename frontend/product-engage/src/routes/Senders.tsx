@@ -64,7 +64,7 @@ function SenderRow({
       </td>
       <td className="py-3 pr-4">
         <SenderStatusTag usable={sender.usable} />
-        <span className="mt-1 block max-w-56 text-xs text-muted">
+        <span className="mt-1 block text-xs text-muted">
           {sender.verified_at === null
             ? "No campaign can send as this address until a test message is delivered."
             : `Delivered ${formatInstant(sender.verified_at)}`}

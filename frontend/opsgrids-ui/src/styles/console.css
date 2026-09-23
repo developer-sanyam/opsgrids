@@ -146,7 +146,16 @@ body {
   border-radius: 8px;
 }
 
-/* One page-load orchestration: a soft staggered rise, honoured only when motion is welcome. */
+/*
+ * One page-load orchestration: a soft staggered rise, honoured only when motion is welcome.
+ *
+ * The end state is `transform: none`, not `translateY(0)` — the two look identical, but any
+ * computed transform other than `none` gives the element a containing block of its own, and
+ * `animation-fill-mode: both` holds that end state on the element forever once the animation
+ * finishes. A `position: fixed` overlay mounted underneath — a dialog, a toast — then gets
+ * trapped positioning itself against this element instead of the viewport. `none` leaves
+ * nothing behind for a later descendant to be caught by.
+ */
 @keyframes rise {
   from {
     opacity: 0;
@@ -154,7 +163,7 @@ body {
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import { CloseIcon } from "./icons";
 
@@ -41,7 +42,13 @@ export function Modal({ open, onClose, title, description, icon, children }: Mod
 
   if (!open) return null;
 
-  return (
+  /*
+   * Portalled to `<body>`. This is mounted from routes (`Plans.tsx`, `Grants.tsx`) that wrap
+   * their content in `.rise`, whose page-load animation leaves a `transform` on the page
+   * wrapper — which makes that wrapper the containing block for a `position: fixed` descendant
+   * and traps the modal inside the page instead of the viewport. A portal has no such ancestor.
+   */
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center p-3 sm:items-center sm:p-6">
       <div
         className="absolute inset-0 bg-ink/50 backdrop-blur-[2px]"
@@ -79,6 +86,7 @@ export function Modal({ open, onClose, title, description, icon, children }: Mod
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
