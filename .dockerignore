@@ -26,6 +26,11 @@
 **/.pytest_cache
 **/.ruff_cache
 
+# JSON contracts, not a workspace package. Account's permission manifests reach it by bind mount
+# (compose.prod.yml), so no image needs them — and leaving them in made a regenerated OpenAPI file
+# a new layer under every image, which `remote.sh` then had to treat as "rebuild everything".
+libs/contracts
+
 # Node. No service image contains any frontend code.
 **/node_modules
 **/.next
