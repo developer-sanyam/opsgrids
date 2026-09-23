@@ -468,3 +468,35 @@ GUC is set on every transaction, with no policy anywhere.
 - The generated cross-org acceptance suite that the delivery plan calls the acceptance gate
   becomes meaningful for the first time. Until RLS is real, that suite can only test the
   application filter.
+
+---
+
+## Decisions on open questions (2026-09-24)
+
+The four questions decided above were this ADR's own. One more was left as "decide rather than
+discover it", under *Global unique indexes leak existence across tenants*. It is now decided. The
+two remaining obligations in "Consequences" are backlog items and not open questions: alerting on
+`ALTER ROLE … BYPASSRLS` is **R7** ("BYPASSRLS drift"), and calling `record_sensitive_read` on
+cross-tenant reads is **P4**. The register of every ADR question is
+[open-questions-register.md](open-questions-register.md).
+
+### Q5. `org_domains.domain UNIQUE` lets one customer probe which domains another has claimed — **DECIDED: verified-only exclusivity (ADR-0018, built)**
+
+**Decision.** As built by the domain-verification slice (P1,
+[ADR-0018](0018-domain-verification-lifecycle.md)):
+- The global unique index is gone. `uq_org_domains_org_domain` is
+  `UNIQUE (organization_id, domain)`, so a claim can only ever collide with the organization's own
+  row.
+- `uq_org_domains_domain_verified` is a partial `UNIQUE (domain) WHERE verified_at IS NOT NULL`
+  (`services/account/app/models.py`, migration `0e58153b83e3`).
+
+**A pending claim therefore reveals nothing about any other tenant.** The one remaining signal is
+the anonymous 409 when a *verify* loses to a domain another organization has already **verified**.
+That is accepted: a verified domain selects an identity provider on the public `sso/start` path
+(ADR-0000 §1), so the fact is observable anyway, and the 409 names no organization.
+
+**Rejected.** Keeping a global unique index on every claim, which is both the leak and a squatting
+vector. Scoping uniqueness per tenant with no verified lock, under which two organizations could
+each hold the same verified domain and SSO routing would become ambiguous.
+
+**Consequences.** Nothing is left to build.

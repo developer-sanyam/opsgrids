@@ -506,3 +506,45 @@ and support adjudicating one should not have to read it out of a generic update'
   the organization — which is already where this ADR put it.
 - **The entitlement-lapse consumer finds an owner.** It writes `suspended`, and §4's refusals are
   what make that state mean something.
+
+---
+
+## Decisions on open questions (2026-09-24)
+
+Other ADRs have since settled most of this ADR's "Revisit when" list. The storefront-document work
+now persists `theme_documents` behind `/storefront/theme`. ADR-0012 built domain serving and
+verification. The entitlement-lapse consumer has an owner (ADR-0010's decisions section, backlog
+R14). One item waits deliberately on demand and is recorded here as **NOT-TRIGGERED**. The
+register of every ADR question is [open-questions-register.md](open-questions-register.md).
+
+### A second store per organization — **NOT-TRIGGERED**
+
+**Trigger:** an organization says in writing that it needs a **second live storefront**, such as a
+second brand or a second country. Two slugs for one store is not the trigger; that is a slug
+rename, covered by §7's "Revisit when". Today `uq_storefronts_organization_id` enforces one store
+per organization, and every storefront route is singular.
+
+**What to build when it fires. It supersedes §4's and ADR-0010 erratum 2's single-store premise,
+so it ships with its own ADR:**
+- **Drop `uq_storefronts_organization_id`.** Add `storefronts.is_primary` (a partial unique index,
+  at most one per organization), backfilled `true` for the existing store.
+- **Re-key every per-store table from the organization to the store.** `delivery_zones`,
+  `zone_postal_codes`, `serviceability_demand`, `theme_documents`, `categories`, `products`,
+  `product_variants` and `enquiries` each gain a `NOT NULL storefront_id` (an in-schema FK),
+  backfilled from the single store. `custom_domain_claims` already carries one. Each unique
+  constraint becomes `(organization_id, storefront_id, …)`: `uq_delivery_zones_org_code`,
+  `uq_zone_postal_codes_org_postal_code`, the demand counter's upsert key, and
+  `uq_custom_domain_claims_organization_id`, which becomes unique per store. The index-timing
+  register is re-issued with those.
+- **Authenticated routes become collections**: `/storefront/stores` and
+  `/storefront/stores/{id}/…`. Authenticated routes may carry path variables. The singular routes
+  stay for one release as aliases for the primary store, then go.
+- **The anonymous surface does not change shape.** Every public call already names the store by
+  slug in the body (ADR-0010 §4), and the host resolver already returns one store.
+- **Entitlement stays per organization.** The number of stores sold is a catalog plan-feature limit
+  (`storefront.stores`, C6's declarations). Creating a store past the limit is a 402.
+- **The brand already sits on the store row (§1)**, so it moves with the store and nothing more is
+  needed.
+
+This is a schema re-key across nine tables with live tenant rows. That is exactly why it waits for
+a real merchant rather than being built on speculation.
