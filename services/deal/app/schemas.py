@@ -230,3 +230,25 @@ class SummaryOut(BaseModel):
     trend: list[TrendPointOut] = Field(default_factory=list)
     #: The by-stage funnel over the four open stages, in board order.
     funnel: list[StageRollupOut] = Field(default_factory=list)
+
+
+# ------------------------------------------------------------------ lead conversion (internal)
+
+
+class LeadConversionDealIn(BaseModel):
+    """What lead-service sends `:convert` — its own deterministic `deal_id`, so opening a
+    deal is idempotent by id (`app/api/internal.py`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    deal_id: uuid.UUID
+    company_id: uuid.UUID
+    contact_id: uuid.UUID | None = None
+    owner_id: uuid.UUID
+    name: str = Field(min_length=1, max_length=200)
+    close_date: date
+    source: str = Field(default="lead", max_length=60)
+
+
+class LeadConversionDealOut(BaseModel):
+    deal_id: str

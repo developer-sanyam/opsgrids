@@ -34,7 +34,7 @@ from app import domain, selectors
 from app.models import Activity, AuditLog, Deal, OutboxEvent
 from app.schemas import DealPatch
 from platform_core.audit import record_audit
-from platform_core.auth import ScopeContext
+from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem
 from platform_core.events import publish_event
 from platform_core.models import utcnow
@@ -64,6 +64,28 @@ def _actor(ctx: ScopeContext) -> dict[str, Any]:
         "id": str(ctx.principal.sub),
         "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
     }
+
+
+#: The permission `:convert`'s internal call runs under — only to give the write path a
+#: `ScopeContext`, not to gate anything: `require_service_token` on the internal route already
+#: gated the call, the same shape customer-service's `lead_conversion_ctx` takes.
+_LEAD_CONVERSION_PERMISSION = "crm.pipeline.deal.write"
+
+
+def lead_conversion_ctx(organization_id: uuid.UUID) -> ScopeContext:
+    """The scope context `:convert`'s internal call runs under. A stable all-zero `sub` so
+    the write is attributable to "the platform", ORG scope because there is no caller-owned
+    row to narrow a brand-new deal to."""
+    principal = Principal(
+        sub=uuid.UUID(int=0),
+        organization_id=organization_id,
+        membership_id=None,
+        perms=[f"{_LEAD_CONVERSION_PERMISSION}:ORG"],
+        entitlements=["crm"],
+    )
+    return ScopeContext(
+        principal=principal, scope=Scope.ORG, permission=_LEAD_CONVERSION_PERMISSION
+    )
 
 
 # ------------------------------------------------------------------ deals

@@ -1,3 +1,9 @@
+> **Superseded by [ADR-0017](../adr/0017-crm-lead-service-and-pipeline-scaffold-removal.md).**
+> `services/pipeline` has been deleted, not built. `deal` already owns `crm.pipeline.*` — deals
+> and the activity timeline, migrated and shipped — and two services claiming the same bounded
+> context is exactly the second-source-of-truth risk the ADR walks through. None of the cards
+> below should be started.
+
 # Dev B — the pipeline service
 
 **You own `services/pipeline/` and nothing else.**

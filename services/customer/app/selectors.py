@@ -61,6 +61,38 @@ async def get_owner_by_email(session: AsyncSession, org_id: uuid.UUID, email: st
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def count_open_records_for_owner(
+    session: AsyncSession, org_id: uuid.UUID, owner_id: uuid.UUID
+) -> int:
+    """How many live companies and contacts this rep still owns — the check that refuses
+    `deactivate_owner` rather than leaving `owner_id` pointing at someone no longer active.
+    Deal-service's deals are out of reach here (no cross-schema read), so a rep's open deals
+    are not part of this count; recorded as an accepted gap rather than silently checked."""
+    company_count = (
+        await session.execute(
+            select(func.count())
+            .select_from(Company)
+            .where(
+                Company.organization_id == org_id,
+                Company.owner_id == owner_id,
+                Company.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    contact_count = (
+        await session.execute(
+            select(func.count())
+            .select_from(Contact)
+            .where(
+                Contact.organization_id == org_id,
+                Contact.owner_id == owner_id,
+                Contact.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    return int(company_count) + int(contact_count)
+
+
 # ------------------------------------------------------------------ companies
 
 
@@ -197,7 +229,13 @@ async def get_contact_by_email(
 
 
 def owner_out(owner: Owner) -> OwnerOut:
-    return OwnerOut(id=str(owner.id), full_name=owner.full_name, email=owner.email, role=owner.role)
+    return OwnerOut(
+        id=str(owner.id),
+        full_name=owner.full_name,
+        email=owner.email,
+        role=owner.role,
+        is_active=owner.is_active,
+    )
 
 
 def company_out(company: Company) -> CompanyOut:

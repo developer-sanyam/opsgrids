@@ -100,9 +100,7 @@ BEGIN
     -- PulseBoard
     'opsgrids_project', 'opsgrids_timesheet', 'opsgrids_standup', 'opsgrids_quotation',
     -- CRM
-    'opsgrids_customer', 'opsgrids_deal', 'opsgrids_marketing', 'opsgrids_support',
-    -- Sales CRM
-    'opsgrids_lead', 'opsgrids_pipeline', 'opsgrids_activity',
+    'opsgrids_customer', 'opsgrids_deal', 'opsgrids_lead', 'opsgrids_marketing', 'opsgrids_support',
     -- Platform (shared)
     'opsgrids_document', 'opsgrids_notification', 'opsgrids_scheduler',
     'opsgrids_eventbridge', 'opsgrids_config', 'opsgrids_approval',
@@ -128,8 +126,7 @@ $$;
 GRANT USAGE ON SCHEMA public, tiger, tiger_data, topology
   TO opsgrids_admin, opsgrids_account, opsgrids_auth, opsgrids_product, opsgrids_employee, opsgrids_attendance,
      opsgrids_project, opsgrids_timesheet, opsgrids_standup, opsgrids_quotation,
-     opsgrids_customer, opsgrids_deal, opsgrids_marketing, opsgrids_support,
-     opsgrids_lead, opsgrids_pipeline, opsgrids_activity,
+     opsgrids_customer, opsgrids_deal, opsgrids_lead, opsgrids_marketing, opsgrids_support,
      opsgrids_document, opsgrids_notification, opsgrids_scheduler,
      opsgrids_eventbridge, opsgrids_config, opsgrids_catalog, opsgrids_billing, opsgrids_metering, opsgrids_subscription,
      opsgrids_console, opsgrids_payment, opsgrids_approval,

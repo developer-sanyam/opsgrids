@@ -617,6 +617,10 @@
             "title": "Id",
             "type": "string"
           },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
           "role": {
             "title": "Role",
             "type": "string"
@@ -626,9 +630,67 @@
           "id",
           "full_name",
           "email",
-          "role"
+          "role",
+          "is_active"
         ],
         "title": "OwnerOut",
+        "type": "object"
+      },
+      "OwnerPatch": {
+        "additionalProperties": false,
+        "description": "Edit a rep, or deactivate one. Absent means \"leave alone\". Setting `is_active` to\n`False` is the deactivation path (`services.deactivate_owner`) and refuses while the rep\nstill owns a live company or contact \u2014 reassign those first.",
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "format": "email",
+                "maxLength": 254,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          }
+        },
+        "title": "OwnerPatch",
         "type": "object"
       },
       "Page_CompanyOut_": {
@@ -1355,6 +1417,60 @@
           }
         },
         "summary": "Add a rep to the directory",
+        "tags": [
+          "customer"
+        ]
+      }
+    },
+    "/api/v1/customers/owners/{owner_id}": {
+      "patch": {
+        "description": "One route for both edits and deactivation, distinguished by whether `is_active` is\npresent. Deactivating refuses (409) while the rep still owns a live company or contact \u2014\nreassign first. Reactivating has no such guard: a returning rep starts with an empty\nbook.",
+        "operationId": "update_owner_api_v1_customers_owners__owner_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "owner_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Owner Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a rep, or deactivate one",
         "tags": [
           "customer"
         ]

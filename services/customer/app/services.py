@@ -32,7 +32,7 @@ from starlette.requests import Request
 from app import selectors
 from app.config import settings
 from app.models import AuditLog, Company, Contact, OutboxEvent, Owner
-from app.schemas import CompanyPatch, ContactPatch
+from app.schemas import CompanyPatch, ContactPatch, OwnerPatch
 from platform_core.audit import record_audit, record_sensitive_read
 from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.errors import (
@@ -85,13 +85,40 @@ def service_ctx(organization_id: uuid.UUID) -> ScopeContext:
     return ScopeContext(principal=principal, scope=Scope.ORG, permission=_ACTIVITY_TOUCH_PERMISSION)
 
 
+#: The permission `ensure_company_and_contact_for_lead` runs under, for the same reason
+#: `_ACTIVITY_TOUCH_PERMISSION` exists: to give an internal-API write a `ScopeContext`, not to
+#: gate anything — `require_service_token` on the route is what already gated the call.
+_LEAD_CONVERSION_PERMISSION = "crm.book.company.write"
+
+
+def lead_conversion_ctx(organization_id: uuid.UUID) -> ScopeContext:
+    """The scope context `:convert`'s internal call runs under. Same shape as `service_ctx`:
+    a stable all-zero `sub` so the write is attributable to "the platform", ORG scope
+    because there is no caller-owned row to narrow a lead's brand-new company to."""
+    principal = Principal(
+        sub=uuid.UUID(int=0),
+        organization_id=organization_id,
+        membership_id=None,
+        perms=[f"{_LEAD_CONVERSION_PERMISSION}:ORG"],
+        entitlements=["crm"],
+    )
+    return ScopeContext(
+        principal=principal, scope=Scope.ORG, permission=_LEAD_CONVERSION_PERMISSION
+    )
+
+
 async def _assert_owner_assignable(
     session: AsyncSession, ctx: ScopeContext, owner_id: uuid.UUID
 ) -> None:
-    """`owner_id` must resolve to a rep in this organization, and an OWN-scoped caller may
-    only assign their own accounts to themselves — they may not hand a company to another
-    rep any more than they could already see another rep's book."""
-    if await selectors.get_owner(session, ctx.organization_id, owner_id) is None:
+    """`owner_id` must resolve to an active rep in this organization, and an OWN-scoped
+    caller may only assign their own accounts to themselves — they may not hand a company to
+    another rep any more than they could already see another rep's book. A deactivated rep
+    reads the same as a rep who does not exist: `deactivate_owner` already refused to leave
+    one holding a live record, so an assignment reaching one here is either stale client
+    state or a former rep's id resurfacing, and either way starting a new assignment on it
+    should fail the same way a nonexistent id does."""
+    owner = await selectors.get_owner(session, ctx.organization_id, owner_id)
+    if owner is None or not owner.is_active:
         raise NotFoundProblem("That owner is not part of this organization")
     if ctx.scope is Scope.OWN and ctx.subject_ref != owner_id:
         raise ForbiddenProblem("You can only assign companies you own to yourself")
@@ -136,6 +163,114 @@ async def create_owner(
         entity="owner",
         entity_id=owner.id,
         after={"full_name": full_name, "email": email, "role": role},
+    )
+    return owner
+
+
+async def update_owner(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    owner: Owner,
+    payload: OwnerPatch,
+) -> Owner:
+    """Edit a rep's plain fields. Renaming onto another live rep's email refuses, the same
+    conflict `create_owner` already guards against. Reference data, so no domain event —
+    unchanged from `create_owner`'s own reasoning."""
+    changes = payload.model_dump(exclude_unset=True, exclude={"is_active"})
+
+    if "email" in changes and changes["email"] != owner.email:
+        existing = await selectors.get_owner_by_email(
+            session, ctx.organization_id, changes["email"]
+        )
+        if existing is not None and existing.id != owner.id:
+            raise ConflictProblem(f"An owner with email {changes['email']!r} already exists")
+
+    before = {field: getattr(owner, field) for field in changes}
+    for field, value in changes.items():
+        setattr(owner, field, value)
+    owner.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="owner.updated",
+        entity="owner",
+        entity_id=owner.id,
+        before=before,
+        after=changes,
+    )
+    return owner
+
+
+async def deactivate_owner(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    owner: Owner,
+) -> Owner:
+    """Deactivate a rep. Refuses (409) while they still own a live company or contact —
+    reassign those first (`update_company`/`update_contact`'s `owner_id`), deactivate second.
+    The smaller, safer choice over cascading a reassignment automatically: this service has
+    no way to know who *should* inherit the book, and guessing is how an account silently
+    changes hands. A rep already inactive is a no-op, not an error — deactivating twice is
+    exactly the retry a client should be free to make."""
+    if not owner.is_active:
+        return owner
+
+    open_records = await selectors.count_open_records_for_owner(
+        session, ctx.organization_id, owner.id
+    )
+    if open_records > 0:
+        noun = "company" if open_records == 1 else "companies"
+        raise ConflictProblem(
+            f"{owner.full_name} still owns {open_records} live {noun} or contact(s). "
+            "Reassign them to another rep before deactivating."
+        )
+
+    owner.is_active = False
+    owner.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="owner.deactivated",
+        entity="owner",
+        entity_id=owner.id,
+        before={"is_active": True},
+        after={"is_active": False},
+    )
+    return owner
+
+
+async def reactivate_owner(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    owner: Owner,
+) -> Owner:
+    """The reverse of `deactivate_owner`. No guard on the way back in — a rep who left and
+    returned starts with an empty book, so there is nothing to conflict with."""
+    if owner.is_active:
+        return owner
+
+    owner.is_active = True
+    owner.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="owner.reactivated",
+        entity="owner",
+        entity_id=owner.id,
+        before={"is_active": False},
+        after={"is_active": True},
     )
     return owner
 
@@ -656,6 +791,67 @@ async def unmask_contact_phone(
         request=request,
     )
     return plaintext
+
+
+async def ensure_company_and_contact_for_lead(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    company_id: uuid.UUID,
+    contact_id: uuid.UUID,
+    company_name: str,
+    owner_id: uuid.UUID,
+    contact_full_name: str,
+    contact_email: str | None,
+    contact_raw_phone: str | None,
+) -> tuple[Company, Contact | None]:
+    """Ensure a company (+ contact) exists for a converting lead — idempotent by id first,
+    by name/email second, so retrying `:convert` with the same deterministic ids never
+    creates a second row (ADR-0017).
+
+    Order of checks, per entity: the caller's id (a replay of a call that already
+    succeeded), then the natural key (a lead converting into a company or person this book
+    already has, under a *different* id — reused rather than duplicated), then a fresh
+    insert. `contact_email` absent skips the contact entirely: `Contact.email` is not
+    nullable, so a lead with no email becomes a company with no contact yet, not a contact
+    with a placeholder address.
+    """
+    await _assert_owner_assignable(session, ctx, owner_id)
+
+    company = await selectors.get_company(session, ctx.organization_id, company_id)
+    if company is None:
+        company = await selectors.get_company_by_name(session, ctx.organization_id, company_name)
+    if company is None:
+        company = await create_company(
+            session,
+            ctx,
+            name=company_name,
+            owner_id=owner_id,
+            status="prospect",
+            company_id=company_id,
+        )
+
+    contact: Contact | None = None
+    if contact_email:
+        contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
+        if contact is None:
+            contact = await selectors.get_contact_by_email(
+                session, ctx.organization_id, contact_email
+            )
+        if contact is None:
+            contact = await create_contact(
+                session,
+                ctx,
+                full_name=contact_full_name,
+                email=contact_email,
+                company_id=company.id,
+                owner_id=owner_id,
+                raw_phone=contact_raw_phone,
+                status="customer",
+                contact_id=contact_id,
+            )
+
+    return company, contact
 
 
 async def resolve_messaging_phone(

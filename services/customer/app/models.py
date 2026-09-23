@@ -33,6 +33,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -76,6 +77,12 @@ class Owner(Base, TenantBase):
     email: Mapped[str] = mapped_column(String(254), nullable=False)
     #: Display role, e.g. "Enterprise AE" — a label, not a permission.
     role: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    #: False once a rep leaves. `services.deactivate_owner` is the only writer, and it
+    #: refuses while the rep still owns a live company or contact — reassign first
+    #: (`services.update_company`/`update_contact`'s existing `owner_id` path), deactivate
+    #: second. A deactivated owner is kept, never deleted: every row that already carries
+    #: their id as `owner_id` must keep resolving to a name.
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     __table_args__ = (
         # Every index leads with `organization_id`: the RLS policy qual is ANDed into every

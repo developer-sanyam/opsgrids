@@ -33,7 +33,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
 from app.config import settings
-from app.schemas import ContactResolveIn, ContactResolveOut, MessagingTargetOut
+from app.schemas import (
+    ContactResolveIn,
+    ContactResolveOut,
+    LeadConversionIn,
+    LeadConversionOut,
+    MessagingTargetOut,
+)
 from platform_core.auth import require_service_token
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
@@ -173,3 +179,57 @@ async def resolve_contact(
     # phone number, so a log full of them is a log that correlates customers across lines.
     log.info("customer.resolve.done", matched=contact is not None)
     return ContactResolveOut(contact_id=str(contact.id) if contact else None)
+
+
+@router.post(
+    "/organizations/{organization_id}/leads:convert",
+    response_model=LeadConversionOut,
+    status_code=status.HTTP_200_OK,
+    summary="Ensure a company (+ contact) exists for a converting lead",
+)
+async def convert_lead(
+    organization_id: uuid.UUID,
+    payload: LeadConversionIn,
+    session: SessionDep,
+    request: Request,
+) -> LeadConversionOut:
+    """The customer-side half of `POST /leads/{id}:convert`.
+
+    Idempotent by the caller's own ids first (`services.ensure_company_and_contact_for_lead`):
+    lead-service derives `company_id`/`contact_id` deterministically from the lead's own id, so
+    calling this twice with the same lead reuses the same rows rather than creating a second
+    company — the guarantee ADR-0017 asks for ("same lead converted twice -> one company").
+
+    404 when `owner_id` does not resolve to an active rep in this organization's directory —
+    lead-service maps that to a 422 telling its own caller to assign an owner first, the same
+    way `_assert_owner_assignable` already refuses an unknown or deactivated owner on every
+    other write here.
+    """
+    async with session.begin():
+        await _bind(session, organization_id, request)
+
+        ctx = services.lead_conversion_ctx(organization_id)
+        # `NotFoundProblem` here (an unknown or deactivated owner) reaches FastAPI's
+        # problem-detail handler unchanged, exactly as it would for a request from a human —
+        # lead-service is the one that knows how to translate "no such owner" into its own
+        # caller's 422.
+        company, contact = await services.ensure_company_and_contact_for_lead(
+            session,
+            ctx,
+            company_id=payload.company_id,
+            contact_id=payload.contact_id,
+            company_name=payload.company_name,
+            owner_id=payload.owner_id,
+            contact_full_name=payload.contact_full_name,
+            contact_email=payload.contact_email,
+            contact_raw_phone=payload.contact_raw_phone,
+        )
+
+    log.info(
+        "customer.lead_conversion.ensured",
+        company_id=str(company.id),
+        contact_id=str(contact.id) if contact else None,
+    )
+    return LeadConversionOut(
+        company_id=str(company.id), contact_id=str(contact.id) if contact else None
+    )

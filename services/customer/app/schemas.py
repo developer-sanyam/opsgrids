@@ -44,6 +44,19 @@ class OwnerIn(BaseModel):
     role: str = Field(default="", max_length=120)
 
 
+class OwnerPatch(BaseModel):
+    """Edit a rep, or deactivate one. Absent means "leave alone". Setting `is_active` to
+    `False` is the deactivation path (`services.deactivate_owner`) and refuses while the rep
+    still owns a live company or contact — reassign those first."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str | None = Field(default=None, min_length=1, max_length=160)
+    email: EmailStr | None = Field(default=None, max_length=254)
+    role: str | None = Field(default=None, max_length=120)
+    is_active: bool | None = None
+
+
 class OwnerOut(BaseModel):
     """Mirrors the SPA's `Owner`. The `id` is what every `owner_id` in the product carries,
     including deal-service's — the SPA resolves display names from this list client-side."""
@@ -52,6 +65,7 @@ class OwnerOut(BaseModel):
     full_name: str
     email: str
     role: str
+    is_active: bool
 
 
 # ------------------------------------------------------------------ companies
@@ -225,4 +239,32 @@ class ContactResolveOut(BaseModel):
     """Only the id. Returning any part of the contact would make this a read-around for the
     permission-guarded routes, and the caller already has the number it asked with."""
 
+    contact_id: str | None
+
+
+# ------------------------------------------------------------------ lead conversion (internal)
+
+
+class LeadConversionIn(BaseModel):
+    """What lead-service sends `:convert` — its own deterministic ids, so ensuring is
+    idempotent by id before either natural key is even considered (`services
+    .ensure_company_and_contact_for_lead`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    company_id: uuid.UUID
+    contact_id: uuid.UUID
+    company_name: str = Field(min_length=1, max_length=200)
+    owner_id: uuid.UUID
+    contact_full_name: str = Field(min_length=1, max_length=160)
+    #: Raw, not masked — lead-service opens its own sealed copy before this call and the
+    #: value travels once, service-to-service, to be re-sealed here under this schema's own
+    #: key. Absent when the lead carried none; a contact is then not created at all (a
+    #: contact's `email` column is not nullable — see `app/models.py`).
+    contact_email: str | None = Field(default=None, max_length=320)
+    contact_raw_phone: str | None = Field(default=None, min_length=4, max_length=40)
+
+
+class LeadConversionOut(BaseModel):
+    company_id: str
     contact_id: str | None

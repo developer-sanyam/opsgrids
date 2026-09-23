@@ -707,7 +707,7 @@ services:
     command: ['python', '-m', 'platform_core.edge_relay']
     environment:
       <<: *service-env
-      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,customer,deal,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm}
+      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,customer,deal,lead,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm}
     depends_on:
       product:
         condition: service_started
@@ -998,9 +998,11 @@ services:
   # COMPOSE_PROFILES reads as the list of products this box sells. Every product service runs
   # its API (`edge-relay` drains its outbox); a worker runs only where it consumes other services'
   # events (attendance follows approvals, finance follows filings) — an idle worker is 30 MB of
-  # RAM holding a broker channel for nothing. Helper services that are still scaffolds (lead,
-  # pipeline, activity, quotation) are deliberately absent: a prefix that is not routed is an
-  # honest 404, a service that answers only /info is a 404 dressed as a product.
+  # RAM holding a broker channel for nothing. Helper services still just the generated scaffold
+  # (quotation) are deliberately absent: a prefix that is not routed is an honest 404, a service
+  # that answers only /info is a 404 dressed as a product. `pipeline` and `activity` are not
+  # scaffolds pending a build — ADR-0017 deletes them outright, since `deal` already owns
+  # `crm.pipeline.*` end to end; `lead` graduated out of this list and runs below, under `crm`.
   # ---------------------------------------------------------------- OpsGrids People (profile `hrms`)
   # The approval engine is core, not an HRMS feature — but People is the only product on this
   # box that routes requests through it (attendance regularisation, and the app's approvals
@@ -1070,6 +1072,17 @@ services:
     networks:
       - back
 
+  # Binds `crm.pipeline.activity.logged` (deal-service) to advance `contacts.last_activity_at`
+  # (app/consumers.py). The consumer has existed since deal started publishing that event, but
+  # this container was never added — ADR-0017 closes that gap. No relay of its own: it consumes,
+  # it does not publish, so it runs NOBYPASSRLS on the per-message tenant GUC like every consumer.
+  customer-worker:
+    <<: *background
+    profiles: ['crm']
+    image: opsgrids-edge/customer
+    command: ['./bin/worker']
+    environment: *service-env
+
   deal:
     <<: *service-common
     profiles: ['crm']
@@ -1078,6 +1091,25 @@ services:
       context: ../..
       dockerfile: services/deal/Dockerfile
     environment: *service-env
+    networks:
+      - back
+
+  # The lead half of the `crm` product (ADR-0017). Publishes only — `crm.lead.converted` — and
+  # consumes nothing, so no dedicated worker: `edge-relay` drains its outbox like every other
+  # service that has no consumer of its own. Calls customer's and deal's `/internal/v1` on
+  # `:convert`, under a short-lived service token, the same shape notification uses to call
+  # customer today.
+  lead:
+    <<: *service-common
+    profiles: ['crm']
+    image: opsgrids-edge/lead
+    build:
+      context: ../..
+      dockerfile: services/lead/Dockerfile
+    environment:
+      <<: *service-env
+      CUSTOMER_INTERNAL_URL: http://customer:8000
+      DEAL_INTERNAL_URL: http://deal:8000
     networks:
       - back
 
