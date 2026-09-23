@@ -1,0 +1,12 @@
+{
+  "name": "@opsgrids/frontend-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Workspace root: tools that look across every package at once. `pnpm -r` does not run these.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "devDependencies": {
+    "dependency-cruiser": "18.4.0",
+    "typescript": "^5.7.0"
+  }
+}
