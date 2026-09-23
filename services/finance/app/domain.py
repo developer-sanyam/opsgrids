@@ -70,6 +70,16 @@ EINVOICE_SUPPLY_TYPES: frozenset[str] = frozenset({"b2b", "export", "sez"})
 #: The lifecycle of one filing attempt. `pending` is an attempt recorded before an answer came
 #: back; `filed` carries an IRN; `failed` carries the portal's error; `cancelled` records that a
 #: previously registered IRN was withdrawn (the IRP allows this within 24 hours).
+#:
+#: There is deliberately **no** "submitting"/claim status here. `stage_registration_attempt`
+#: (D3) writes nothing at all before the portal is asked — the claim is a read-only transaction
+#: — so a process that dies between the call and `record_registration_result` leaves *no* row
+#: behind, not a half-written one. That is safe only because registering a document is itself
+#: idempotent (the IRN is a pure function of the document, `IrpDuplicate` handles a real portal
+#: saying so): a resumed attempt calls the portal again from scratch and gets the same answer, so
+#: there is nothing a claim row would need to protect. `app/cron.py`'s filing-reclaim sweep
+#: therefore looks for the *absence* of a terminal row past a deadline, not for a claim to pick
+#: up.
 FILING_STATUSES: frozenset[str] = frozenset({"pending", "filed", "failed", "cancelled"})
 
 #: The statutory GST rate bands. 0.25 % and 3 % are the precious-stones and precious-metals
@@ -131,6 +141,14 @@ FILING_RETRY_CEILING: timedelta = timedelta(hours=1)
 #: arriving *meaningfully* early (a hand redelivery, a DLQ replay), not to reject one the ordinary
 #: last few seconds of scheduling latency produced.
 FILING_EARLY_ARRIVAL_TOLERANCE: timedelta = timedelta(seconds=30)
+
+#: How long a reportable, unfiled invoice may sit with no filing row newer than this before the
+#: filing-reclaim sweep (`app/cron.py`) treats the automatic pipeline as having lost track of it
+#: — the `filing_requested` event never arrived, or a process died between calling the portal and
+#: recording what it said, leaving no row behind at all (see `FILING_STATUSES`). Comfortably
+#: longer than the finalize-to-first-attempt path and a single portal call are ever expected to
+#: take together, so an invoice genuinely still in flight is never mistaken for lost.
+FILING_RECLAIM_AFTER: timedelta = timedelta(minutes=5)
 
 #: Error codes this *platform* writes, as opposed to the numbered ones the portal returns. Kept
 #: distinct from the portal's namespace (which is numeric) so "who said this" is never ambiguous

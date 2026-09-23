@@ -58,6 +58,26 @@ class IrpUnavailable(Exception):
     """
 
 
+class IrpDuplicate(Exception):
+    """The portal already holds an IRN for this document — success wearing a refusal's shape.
+
+    A document number is the portal's own idempotency key (`compute_irn` is a pure function of
+    it), so the real NIC/GSP answer to a second registration of the same document is its numbered
+    "Duplicate IRN" error (`2150`, the code `EInvoiceFiling.error_code` documents), carrying the
+    IRN it already issued. That is exactly the shape a resumed call takes after a crash between
+    `call_irp_register` and `record_registration_result` (D3): the platform's own claim row never
+    saw an answer, but the portal did the work anyway. A real adapter raises this — carrying the
+    ack the portal returned instead of a fresh one — rather than `IrpRejected`, so the caller
+    records the resumed attempt as `filed`, not `failed`. `StubIrpClient.register` never needs to
+    raise it: computing the same IRN from the same document is what makes calling it again safe
+    without a portal round trip to ask.
+    """
+
+    def __init__(self, ack: IrpAck) -> None:
+        super().__init__(f"duplicate: IRN already issued as {ack.irn}")
+        self.ack = ack
+
+
 @dataclass(frozen=True, slots=True)
 class IrpLine:
     """One line of the document as the portal validates it.
@@ -168,8 +188,11 @@ class IrpClient(Protocol):
     def register(self, payload: IrpInvoicePayload) -> IrpAck:
         """Register a document and return its IRN.
 
-        Raises `IrpRejected` when the portal refuses the contents, and `IrpUnavailable` when it
-        cannot be reached. Those two are the whole error surface; anything else is a bug.
+        Raises `IrpRejected` when the portal refuses the contents, `IrpUnavailable` when it
+        cannot be reached, and `IrpDuplicate` when it reports the document is already registered
+        — the resumed-after-a-crash case (D3), which a real adapter must map onto `IrpDuplicate`
+        rather than `IrpRejected` so it is recorded as the success it is. Those three are the
+        whole error surface; anything else is a bug.
         """
         ...
 

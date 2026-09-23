@@ -26,7 +26,7 @@ from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import selectors, services
+from app import dns_check, selectors, services
 from app.domain import UnsubscribeTarget
 from app.models import (
     Campaign,
@@ -73,7 +73,8 @@ from app.schemas import (
     WhatsAppConnectionOut,
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
-from platform_core.db import get_session, get_tenant_session, set_tenant
+from platform_core.config import ServiceSettings
+from platform_core.db import assert_tenant, get_session, get_tenant_session, set_tenant
 from platform_core.errors import NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 from platform_core.pii import mask as mask_pii
@@ -83,6 +84,11 @@ router = APIRouter(tags=["engage"])
 #: **The tenancy chokepoint.** Opens the transaction and binds it to the caller's organization
 #: before the route body runs, so no route can read or write without one.
 SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
+
+#: The one route in this file that does **not** take `SessionDep` — see `verify_domain` below.
+#: A raw, untransacted session; the route binds its own two short transactions around the DNS
+#: lookup, the same idiom payment's and finance's internal APIs use for the same reason (D3).
+RawSessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 #: The `engage` entitlement gate, applied to every route here as well as at the gateway. It is
 #: deliberately not `notification`: a customer paying for transactional plumbing has not bought
@@ -395,11 +401,38 @@ async def add_domain(
     dependencies=[Entitled],
 )
 async def verify_domain(
-    domain_id: uuid.UUID, session: SessionDep, ctx: DomainWrite, request: Request
+    domain_id: uuid.UUID, session: RawSessionDep, ctx: DomainWrite, request: Request
 ) -> DomainOut:
     """Takes the write permission although it publishes nothing: it rewrites `records` and
-    `status`, and a domain flipping to verified is what lets mail go out as that name."""
-    row = await services.verify_domain(session, ctx, domain_id=domain_id, request=request)
+    `status`, and a domain flipping to verified is what lets mail go out as that name.
+
+    **Not `SessionDep`.** Every other route in this file runs its whole body inside the one
+    transaction the chokepoint opens before the handler starts; this is the one place that would
+    hold it across a DNS lookup, and a resolver that is slow or simply cannot be reached
+    (`NoNameservers`, `Timeout`) would then pin a pool connection for however long it takes to
+    give up (D3). So this route binds two short transactions of its own instead — the same idiom
+    payment's and finance's internal APIs use, and for the same reason — with the lookups
+    themselves running between them, with no session and no transaction open at all.
+    """
+    settings: ServiceSettings = request.app.state.settings
+
+    async def _bind() -> None:
+        await set_tenant(session, ctx.organization_id)
+        if not settings.is_production:
+            await assert_tenant(session, ctx.organization_id)
+
+    async with session.begin():
+        await _bind()
+        loaded = await services.load_domain_for_check(session, ctx, domain_id=domain_id)
+        records = list(loaded.records)
+
+    checked = await dns_check.check_records(records)
+
+    async with session.begin():
+        await _bind()
+        row = await services.record_domain_check(
+            session, ctx, domain_id=domain_id, checked=checked, request=request
+        )
     return _domain_out(row)
 
 

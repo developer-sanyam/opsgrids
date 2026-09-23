@@ -37,6 +37,13 @@ class Settings(ServiceSettings):
     razorpay_key_secret: SecretStr | None = None
     razorpay_webhook_secret: SecretStr = SecretStr("dev-only-razorpay-webhook-secret")
 
+    # --- the stuck-charge sweep (app/cron.py) ---------------------------------------
+    #: How long a charge may sit `created` with no `provider_payment_id` before the sweep
+    #: resumes it. Comfortably longer than any provider call is expected to take, so a charge
+    #: genuinely mid-flight in the request that staged it is never mistaken for stuck.
+    charge_reclaim_after_seconds: int = 300
+    charge_sweep_poll_interval_seconds: float = 60.0
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

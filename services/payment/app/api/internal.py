@@ -50,19 +50,37 @@ ProviderDep = Annotated[PaymentProvider, Depends(get_provider)]
 async def create_charge(
     payload: ChargeIn, session: SessionDep, request: Request, provider: ProviderDep
 ) -> ChargeOut:
-    """Raise a charge, idempotently on the platform key. The transaction is bound to the payload's
-    organization as its first statement; RLS then isolates the write."""
+    """Raise a charge, idempotently on the platform key.
+
+    Three acts, at most two transactions, and the provider call spans neither. **Claim**: bind the
+    transaction to the payload's organization and stage the charge row; commit. **Call**: ask the
+    provider, with no session and no transaction open — a slow or hanging provider then holds
+    nothing from this service's pool. **Record**: bind a fresh transaction to the same
+    organization and finalize what the provider said. A process that dies between the call and the
+    record leaves the charge `created` with no `provider_payment_id`, which is exactly what
+    `app/cron.py`'s stuck-charge sweep resumes; `call_provider_charge` is safe to run again because
+    the platform's own idempotency key travels to the provider on every call.
+    """
     settings: ServiceSettings = request.app.state.settings
     async with session.begin():
         await set_tenant(session, payload.organization_id)
         if not settings.is_production:
             await assert_tenant(session, payload.organization_id)
-        charge = await services.create_charge(session, provider, payload, request=request)
-        result = ChargeOut.model_validate(charge)
+        charge, needs_call = await services.stage_charge(session, provider, payload)
+
+    if needs_call:
+        result = services.call_provider_charge(provider, charge)
+        async with session.begin():
+            await set_tenant(session, payload.organization_id)
+            if not settings.is_production:
+                await assert_tenant(session, payload.organization_id)
+            charge = await services.finalize_charge(session, charge.id, result, request=request)
+
+    result_out = ChargeOut.model_validate(charge)
     log.info(
         "payment.charge.created",
-        charge_id=str(result.id),
+        charge_id=str(result_out.id),
         organization_id=str(payload.organization_id),
-        state=result.state,
+        state=result_out.state,
     )
-    return result
+    return result_out

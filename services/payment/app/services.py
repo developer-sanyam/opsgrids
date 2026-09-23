@@ -36,7 +36,7 @@ from app.models import (
     ProviderEvent,
     Refund,
 )
-from app.providers.base import PaymentProvider, WebhookEvent
+from app.providers.base import ChargeResult, PaymentProvider, WebhookEvent
 from app.schemas import ChargeIn, WebhookAck
 from platform_core.audit import record_audit
 from platform_core.db import assert_tenant, set_tenant
@@ -72,6 +72,19 @@ def _notes(charge_id: uuid.UUID, payload: ChargeIn) -> dict[str, str]:
     return notes
 
 
+def _notes_for_charge(charge: Charge) -> dict[str, str]:
+    """The same metadata as `_notes`, read off an already-staged charge rather than the inbound
+    payload — what `finalize_charge` and the stuck-charge reconciler call the provider with, since
+    neither holds the original `ChargeIn` (the reconciler in particular runs well after the
+    request that raised it is gone)."""
+    notes = {"organization_id": str(charge.organization_id), "charge_id": str(charge.id)}
+    if charge.subscription_id is not None:
+        notes["subscription_id"] = str(charge.subscription_id)
+    if charge.product_key is not None:
+        notes["product_key"] = charge.product_key
+    return notes
+
+
 async def _require_usable_mandate(session: AsyncSession, payload: ChargeIn) -> Mandate | None:
     """The mandate named by a charge, refused unless it can actually authorize the debit.
 
@@ -103,26 +116,30 @@ async def _require_usable_mandate(session: AsyncSession, payload: ChargeIn) -> M
     return mandate
 
 
-async def create_charge(
+async def stage_charge(
     session: AsyncSession,
     provider: PaymentProvider,
     payload: ChargeIn,
-    *,
-    request: Request | None = None,
-) -> Charge:
-    """Raise a charge for an invoice, idempotently on the platform-supplied key.
+) -> tuple[Charge, bool]:
+    """Claim a charge idempotently — the *first* of three acts, and the only one with a write
+    before the provider is ever asked.
 
     The insert is `ON CONFLICT DO NOTHING` against `(organization_id, idempotency_key)`, so a
-    retried billing run or a redelivered `commerce.invoice.finalized` yields exactly one charge and
-    calls the provider exactly once. The provider call (stubbed HTTP) assigns the
-    `provider_payment_id` the webhook will later reconcile against; the terminal captured/failed
-    outcome is **not** decided here — it arrives by webhook, as it does in production.
-
-    A charge that names a mandate is validated against it **before anything is written**: the
+    retried billing run or a redelivered `commerce.invoice.finalized` yields exactly one row. A
+    charge that names a mandate is validated against it **before anything is written**: the
     mandate must exist in this organization, be `active` (bank-confirmed, `activated_at` set),
     match the charge currency, and its cap must cover the amount — the model's own stated
-    invariant, previously enforced nowhere. The mandate id is persisted on the charge so the
-    authority a debit ran under is a column, not a reconstruction.
+    invariant. The mandate id is persisted on the charge so the authority a debit ran under is a
+    column, not a reconstruction.
+
+    Returns `(charge, needs_call)`. `needs_call` is true whenever nobody has recorded a provider
+    result yet: the ordinary case for a freshly staged charge, and also the case for a charge
+    whose staging transaction committed but whose process died before the provider answered or
+    before `finalize_charge` recorded it — the caller (the route, the consumer, or the stuck-charge
+    reconciler) is expected to call the provider and finalize in that case too. It is exactly the
+    platform idempotency key that makes calling the provider again here safe: Razorpay has no
+    native one (ADR-0004 §6), so `call_provider_charge` always sends ours, and a second call for
+    the same key returns the same provider payment rather than raising a second debit.
     """
     await _require_usable_mandate(session, payload)
     charge_id = uuid.uuid4()
@@ -153,28 +170,59 @@ async def create_charge(
         )
         if existing is None:  # pragma: no cover - the row exists by construction of the conflict
             raise BusinessRuleProblem("charge idempotency conflict with no visible row")
-        return existing
+        return existing, existing.provider_payment_id is None
 
     charge = await selectors.get_charge(session, inserted_id)
     if charge is None:  # pragma: no cover - just inserted in this transaction
         raise BusinessRuleProblem("charge vanished immediately after insert")
+    return charge, True
 
-    # The one stubbed seam. No keys, no socket — a deterministic fake id keyed on the platform
-    # idempotency key, exactly what a real idempotent create would return on a retry.
-    result = provider.charge(
-        idempotency_key=payload.idempotency_key,
-        amount_minor=payload.amount_minor,
-        currency=payload.currency.upper(),
-        mandate_id=str(payload.mandate_id) if payload.mandate_id else None,
-        notes=_notes(charge_id, payload),
+
+def call_provider_charge(provider: PaymentProvider, charge: Charge) -> ChargeResult:
+    """The *second* act — the one stubbed seam — called with no session and therefore no
+    transaction open. No keys, no socket in this platform's stub; a real adapter's outbound HTTP
+    happens here and only here, never while `stage_charge` or `finalize_charge` hold a connection
+    and a row.
+
+    Idempotent on `charge.idempotency_key`, which travels to the provider on every call: a retry
+    after a crash between this and `finalize_charge` lands on the provider's own already-created
+    payment (Razorpay's `X-Idempotency`/receipt story) rather than a second debit.
+    """
+    return provider.charge(
+        idempotency_key=charge.idempotency_key,
+        amount_minor=charge.amount_minor,
+        currency=charge.currency,
+        mandate_id=str(charge.mandate_id) if charge.mandate_id else None,
+        notes=_notes_for_charge(charge),
     )
+
+
+async def finalize_charge(
+    session: AsyncSession,
+    charge_id: uuid.UUID,
+    result: ChargeResult,
+    *,
+    request: Request | None = None,
+) -> Charge:
+    """Record what the provider said — the *third* act, in its own transaction opened only after
+    the call has returned. The terminal captured/failed outcome is **not** decided here either
+    way — it arrives by webhook, as it does in production; this records whatever the synchronous
+    create call answered (typically `authorized`).
+
+    Refetches the charge rather than trusting a caller's possibly-stale instance, because the
+    stuck-charge reconciler (`app/cron.py`) calls this from a different transaction, sometimes a
+    different process, than the one that staged it.
+    """
+    charge = await selectors.get_charge(session, charge_id)
+    if charge is None:  # pragma: no cover - defensive; staging committed before the call ran
+        raise BusinessRuleProblem("charge vanished before its result could be recorded")
     charge.provider_payment_id = result.provider_payment_id
     charge.state = result.state
 
     record_audit(
         session,
         AuditLog,
-        organization_id=payload.organization_id,
+        organization_id=charge.organization_id,
         actor_id=None,
         acting_as="billing",
         action="payment.charge.created",
@@ -189,6 +237,28 @@ async def create_charge(
     )
     await session.flush()
     return charge
+
+
+async def create_charge(
+    session: AsyncSession,
+    provider: PaymentProvider,
+    payload: ChargeIn,
+    *,
+    request: Request | None = None,
+) -> Charge:
+    """All three acts run back to back, inside whatever transaction the caller already holds.
+
+    Kept for the unit tests in `tests/test_mandates_and_refunds.py` that exercise the mandate
+    guard against a hand-built session and do not care about the transaction boundary. Every real
+    caller — the internal route and both consumers — calls `stage_charge`, `call_provider_charge`
+    and `finalize_charge` as three separate acts with **no transaction open across the middle
+    one**; see `app/api/internal.py` and `app/consumers.py`.
+    """
+    charge, needs_call = await stage_charge(session, provider, payload)
+    if not needs_call:
+        return charge
+    result = call_provider_charge(provider, charge)
+    return await finalize_charge(session, charge.id, result, request=request)
 
 
 async def ingest_webhook(

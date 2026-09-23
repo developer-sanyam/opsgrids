@@ -1639,20 +1639,40 @@ async def create_domain(
     return row
 
 
-async def verify_domain(
+async def load_domain_for_check(
+    session: AsyncSession, ctx: ScopeContext, *, domain_id: uuid.UUID
+) -> EmailDomain:
+    """The first of two acts a domain re-check takes: read what is on file, and nothing else.
+
+    `record_domain_check` is the second. The DNS lookups run between the two with **no
+    transaction open at all** (D3) — a resolver having a bad day (`NoNameservers`, `Timeout`)
+    must not hold a pool connection for however long it takes to time out, and unlike a portal
+    charge or an e-invoice filing there is nothing here to leave inconsistent: a lookup that never
+    gets its answer recorded because the process died has changed nothing anywhere, so a person
+    pressing *verify* again (or the campaign path re-checking a sender's domain) is the whole
+    recovery story — no reconciler is needed for a read of somebody else's DNS.
+    """
+    row = await selectors.get_domain(session, ctx.organization_id, domain_id)
+    if row is None:
+        raise NotFoundProblem("No such sending domain")
+    return row
+
+
+async def record_domain_check(
     session: AsyncSession,
     ctx: ScopeContext,
     *,
     domain_id: uuid.UUID,
+    checked: list[dict[str, Any]],
     request: Request | None = None,
-    resolver: dns_check.Resolver | None = None,
 ) -> EmailDomain:
-    """Re-read what DNS actually publishes for one domain and fold the answer into its status.
+    """Fold an already-completed DNS answer into the domain's status — the second act, in its
+    own transaction opened only after the lookups have returned.
 
-    The lookups happen inside the caller's transaction, which is the one place in this service
-    that is true. It is a bounded read of a handful of names, run because an operator pressed
-    *verify* and is waiting for the answer; splitting it into two transactions would mean a route
-    that commits twice and a row that can be left claiming it was checked when it was not.
+    Re-reads the row rather than trusting a caller's instance from the first act's now-closed
+    transaction — the same discipline every other "claim, call, record" split in this platform
+    applies (payment's `finalize_charge`, finance's filing record step), because nothing handed
+    across a network call in between can be assumed still current.
 
     `records` is replaced rather than mutated: `check_records` returns a copy, and JSONB only
     notices a reassignment.
@@ -1662,7 +1682,6 @@ async def verify_domain(
         raise NotFoundProblem("No such sending domain")
 
     was = row.status
-    checked = await dns_check.check_records(row.records, resolver=resolver)
     row.records = checked
     row.status = _rules.fold_domain_status(checked)
     row.last_checked_at = datetime.now(UTC)
@@ -1704,6 +1723,29 @@ async def verify_domain(
             actor=_actor(ctx),
         )
     return row
+
+
+async def verify_domain(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    domain_id: uuid.UUID,
+    request: Request | None = None,
+    resolver: dns_check.Resolver | None = None,
+) -> EmailDomain:
+    """Both acts run back to back, inside whatever transaction the caller already holds.
+
+    Kept for the unit tests that verify the DNS-folding rules against a hand-built session and do
+    not care about the transaction boundary. The real caller —
+    `POST /engage/domains/{id}/verify` — calls `load_domain_for_check`, awaits
+    `dns_check.check_records` with **no session and no transaction open**, and then calls
+    `record_domain_check`; see `app/api/engage.py`.
+    """
+    row = await load_domain_for_check(session, ctx, domain_id=domain_id)
+    checked = await dns_check.check_records(row.records, resolver=resolver)
+    return await record_domain_check(
+        session, ctx, domain_id=domain_id, checked=checked, request=request
+    )
 
 
 async def create_sender(

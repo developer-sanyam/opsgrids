@@ -31,7 +31,14 @@ from app.config import settings
 from app.main import app
 from app.models import SCHEMA
 from app.providers.razorpay import RazorpayProvider
-from platform_core.db import TENANT_GUC, get_session
+from platform_core.db import (
+    TENANT_GUC,
+    dispose_engine,
+    dispose_outbox_engine,
+    get_session,
+    init_engine,
+    init_outbox_engine,
+)
 
 #: Everything payment owns. Tenant-scoped or global-and-test-empty, so all are safe to truncate.
 #: `refunds` before `charges` for the foreign key; TRUNCATE CASCADE would handle it too.
@@ -99,6 +106,24 @@ async def session(org_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
 
         yield s
     await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def engines() -> AsyncIterator[None]:
+    """The real process-wide application and **outbox** engines, for `app/cron.py`'s
+    stuck-charge sweep: its discovery query runs on `get_outbox_sessionmaker`, which is `None`
+    (and silently falls back to the app engine — the untested, unsplit configuration) until
+    `init_outbox_engine` has run.
+
+    Per test rather than per session: an engine binds itself to the event loop it was created on,
+    and pytest-asyncio gives each test a fresh one.
+    """
+    cfg = settings()
+    init_engine(cfg)
+    init_outbox_engine(cfg)
+    yield
+    await dispose_outbox_engine()
+    await dispose_engine()
 
 
 @pytest_asyncio.fixture
