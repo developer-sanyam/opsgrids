@@ -173,6 +173,33 @@ class TestDirectoryContract:
         )
         assert response.json()["memberships"][0]["locations"] == ["MUM"]
 
+    async def test_citext_folds_a_dotted_capital_i_to_plain_i(
+        self, client: AsyncClient, session: AsyncSession, org: Organization
+    ) -> None:
+        """Round 3's finding, reproduced against the real route: Postgres `CITEXT` (this
+        column's actual type) folds `İ` (U+0130, LATIN CAPITAL LETTER I WITH DOT ABOVE) to
+        plain `i` under its default collation — a different fold than Python's own casefold or
+        `idna`'s UTS-46 mapping use. This is a fact about the column, not a bug in this route;
+        it is *why* `auth-service`'s `sso_callback` may no longer trust a non-ASCII identity at
+        all (see `services/auth/app/services.py::sso_callback`, round 3, BLOCKER)."""
+        async with session.begin():
+            await services.add_member(
+                session,
+                org_id=org.id,
+                email="victim@victim.com",
+                full_name="Victim",
+                actor_user_id=None,
+                role_codes=["MEMBER"],
+            )
+
+        response = await client.get(
+            "/internal/v1/users/by-email",
+            params={"email": "victim@vİctim.com"},
+            headers=internal(),
+        )
+        assert response.status_code == 200
+        assert response.json()["email"] == "victim@victim.com"
+
     async def test_an_unknown_email_is_404_not_an_empty_body(self, client: AsyncClient) -> None:
         """`HttpDirectory` maps 404 to None, which sign-in turns into the same
         "wrong email or password" a bad password gets — so an attacker cannot use the

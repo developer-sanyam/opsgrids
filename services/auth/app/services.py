@@ -27,7 +27,9 @@ transaction bound to the caller's organization, and it is the one that ends it
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -58,6 +60,7 @@ from app.models import (
 )
 from platform_core import pii
 from platform_core.audit import record_audit
+from platform_core.cache import cache_get, cache_set
 from platform_core.db import set_tenant
 from platform_core.errors import (
     BusinessRuleProblem,
@@ -219,6 +222,7 @@ async def start_session(
     cfg: Settings,
     amr: list[str],
     idp: str = "local",
+    sso_domain: str | None = None,
     request: Request | None = None,
 ) -> Session:
     row = Session(
@@ -226,6 +230,7 @@ async def start_session(
         amr=amr,
         auth_time=datetime.now(UTC),
         idp=idp,
+        sso_domain=sso_domain,
         expires_at=datetime.now(UTC) + timedelta(days=cfg.session_ttl_days),
         ip=request.client.host if request and request.client else None,
         user_agent=request.headers.get("user-agent") if request else None,
@@ -254,7 +259,17 @@ async def issue_for(
     list through all five is five chances for one of them to pass an empty list and silently
     strip a customer's products. Resolving once, where the organization is already known,
     makes that impossible rather than merely unlikely.
+
+    **The federated-session pin is asserted here too** (round 3, NIT), not only by the two
+    callers (`switch_organization`, `rotate_refresh`) that already check it before reaching
+    this point. Those early checks stay — `switch_organization`'s runs before it revokes the
+    old organization's refresh tokens, and `rotate_refresh`'s has its own bespoke
+    theft-response (revoking the whole family, not just refusing) — but this is the one
+    function every path that mints a token actually calls, so it is also the one place a
+    *future* caller cannot forget to check it: minting for the wrong organization from a
+    federated session is refused here even if whatever called this never thought to ask.
     """
+    _assert_organization_unpinned_or_matches(auth_session, membership.organization_id)
     granted = await entitlements.for_organization(membership.organization_id)
     auth_session.active_org_id = membership.organization_id
 
@@ -557,6 +572,29 @@ async def rotate_refresh(
         )
         await session.commit()
         raise UnauthorizedProblem("That session has expired. Please sign in again.")
+
+    if pinned is not None and not await _pinned_sso_still_valid(
+        session,
+        directory=directory,
+        organization_id=pinned,
+        sso_domain=auth_session.sso_domain,
+    ):
+        # The pin itself (above) still held — this is the periodic re-validation of what made
+        # it true in the first place. Either the domain is no longer verified to this
+        # organization (released, demoted, lost a re-verification race) or the organization
+        # turned its identity provider off — either way, a session this refresh would keep
+        # alive was minted by a fact that is no longer true, and continuing to trust it would
+        # outlive the very thing that once justified it.
+        await _revoke_family(session, stored.family, reason="sso_no_longer_valid")
+        log.warning(
+            "auth.refresh_sso_no_longer_valid",
+            session_id=str(auth_session.id),
+            family=stored.family,
+            organization_id=str(pinned),
+        )
+        await session.commit()
+        raise UnauthorizedProblem("That session has expired. Please sign in again.")
+
     membership = user.membership_for(org_id) if org_id else None
     if membership is None:
         # They were removed from the organization while signed in. Ending the session is
@@ -687,6 +725,67 @@ def _assert_organization_unpinned_or_matches(
             "This session was started through single sign-on and is bound to one "
             "organization. Sign in again to reach a different one."
         )
+
+
+def _pinned_sso_cache_key(organization_id: uuid.UUID) -> str:
+    return f"auth:sso_pin_ok:{organization_id}"
+
+
+async def _pinned_sso_still_valid(
+    session: AsyncSession,
+    *,
+    directory: Directory,
+    organization_id: uuid.UUID,
+    sso_domain: str | None,
+) -> bool:
+    """Whether a federated session's own pin is still something real, right now.
+
+    Being pinned (`_federated_organization_pin`) only ever proved that a sign-in *once*
+    happened through this organization's identity provider, for a domain that was verified
+    *then*. `rotate_refresh` mints a fresh access token on every call, often for weeks after
+    that original sign-in, and neither fact is permanent: the domain can be released or lose
+    its verification (`account`'s own demotion sweep, ADR-0018), and the organization can turn
+    its provider off (`save_sso_config(enabled=False)`) without ever touching this session.
+    Without this check, a session pinned to an organization that no longer has any working SSO
+    path for it would still refresh forever — the pin would keep it out of every *other*
+    organization, correctly, but say nothing about whether it still belongs in *this* one.
+
+    `sso_domain is None` — a session minted before this column existed — cannot be re-checked
+    against anything and is passed as valid: the pin itself is still enforced
+    (`_assert_organization_unpinned_or_matches`), this is only the *additional*, periodic
+    re-validation on top of it, and refusing every pre-existing federated session the moment
+    this deploys would be a self-inflicted, blanket sign-out with no real finding behind it.
+
+    Cached for up to five minutes per organization (`platform_core.cache`, soft — a Redis
+    outage falls through to the real check below, never to "valid"): this runs on every single
+    refresh for every federated session in the platform, and "did this organization's SSO just
+    get turned off" does not need a fresher answer than that. A stale `True` for a few minutes
+    only delays a revocation that was always going to need the *next* refresh anyway; a stale
+    `False` never happens on a cache miss, only ever computed fresh.
+    """
+    if sso_domain is None:
+        return True
+
+    key = _pinned_sso_cache_key(organization_id)
+    cached = await cache_get(key)
+    if cached is not None:
+        return cached == "1"
+
+    resolved = await directory.resolve_domain(sso_domain)
+    domain_ok = (
+        resolved is not None and resolved.is_usable and resolved.organization_id == organization_id
+    )
+    idp_ok = False
+    if domain_ok:
+        # Bypass-then-narrow, same as `sso_start`: `org_idp_configs` is RLS-protected and this
+        # organization is already the one this session is pinned to, not the caller's claim.
+        await set_tenant(session, organization_id)
+        config = await get_sso_config(session, organization_id)
+        idp_ok = config is not None and config.enabled and _usable_for_oidc(config)
+
+    ok = domain_ok and idp_ok
+    await cache_set(key, "1" if ok else "0", ttl=300)
+    return ok
 
 
 def _decode_pre_auth(
@@ -832,10 +931,38 @@ async def mfa_required(session: AsyncSession, credential: Credential, user_id: u
     return (await session.execute(stmt)).first() is not None
 
 
+async def _require_primary_session(session: AsyncSession, session_id: str | None) -> None:
+    """Refuse an MFA-management call whose access token was minted from a federated session.
+
+    Enrolling, confirming or (once it exists) disabling a second factor or regenerating
+    recovery codes changes how *every* organization this person belongs to can be reached —
+    it is an account-wide credential change, not something scoped to the one organization a
+    federated session is pinned to. A session that only ever proved "this organization's
+    identity provider vouches for this person, for this one sign-in" has no standing to make
+    an account-wide decision like that; a primary (password) sign-in is required first, the
+    same way a password change already requires re-entering the current one.
+
+    `session_id is None` (a token minted before session ids were carried, or a test that never
+    set one) is let through rather than refused — refusing on a missing fact would be a fail
+    open in exactly the wrong direction reading of what "missing" ought to mean here, but the
+    session ID has been on every token this service has ever minted, so in practice this is
+    unreachable, not a gap left deliberately.
+    """
+    if session_id is None:
+        return
+    auth_session = await session.get(Session, uuid.UUID(session_id))
+    if auth_session is not None and _federated_organization_pin(auth_session) is not None:
+        raise ForbiddenProblem(
+            "This requires a password sign-in. Sign in with your password to manage "
+            "two-factor authentication."
+        )
+
+
 async def begin_mfa_enrolment(
-    session: AsyncSession, user_id: uuid.UUID, *, account_email: str
+    session: AsyncSession, user_id: uuid.UUID, *, account_email: str, session_id: str | None = None
 ) -> tuple[MfaFactor, str, str]:
     """Create an unconfirmed factor and hand back the secret and its QR URI."""
+    await _require_primary_session(session, session_id)
     secret = security.generate_totp_secret()
     factor = MfaFactor(user_id=user_id, type="totp", label="Authenticator app")
     # Envelope encryption belongs here; the dev path stores the secret directly and the
@@ -849,13 +976,19 @@ async def begin_mfa_enrolment(
 
 
 async def confirm_mfa_enrolment(
-    session: AsyncSession, *, factor_id: uuid.UUID, user_id: uuid.UUID, code: str
+    session: AsyncSession,
+    *,
+    factor_id: uuid.UUID,
+    user_id: uuid.UUID,
+    code: str,
+    session_id: str | None = None,
 ) -> list[str]:
     """Prove the factor works, turn it on, and issue recovery codes.
 
     Requiring a working code before enabling is what stops somebody locking themselves out
     with a mis-scanned QR.
     """
+    await _require_primary_session(session, session_id)
     factor = await session.get(MfaFactor, factor_id)
     if factor is None or factor.user_id != user_id or factor.secret_enc is None:
         raise NotFoundProblem("No such enrolment")
@@ -1270,6 +1403,17 @@ def domain_of(email: str) -> str:
     return domain if sep else ""
 
 
+#: What an IDNA A-label, and nothing else, ever looks like. Enforced on `normalise_sso_domain`'s
+#: own output, not just trusted from `idna.encode` succeeding: the round-3 review found that a
+#: string `idna` refuses outright used to come back from this function *unchanged* (see the
+#: "never raises" note this docstring used to carry), and unchanged means "whatever the caller
+#: typed" — including a path segment like `../users/by-email?email=...`, which `directory.py`'s
+#: `resolve_domain` then spliced straight into an internal URL. A domain that cannot be made to
+#: match this can never have been verified by account-service either, so refusing it here as
+#: firmly as a bare 404 costs nothing real.
+_DOMAIN_SHAPE = re.compile(r"^[a-z0-9.-]+$")
+
+
 def normalise_sso_domain(raw: str) -> str:
     """Lower-cased, every trailing dot stripped, IDNA/UTS-46 A-label — the same normalisation
     account-service applies to a domain it claims (`services/account/app/domain.py`), so a
@@ -1278,10 +1422,16 @@ def normalise_sso_domain(raw: str) -> str:
     handed to `directory.resolve_domain`, and the domain half of the ID token's `email` in
     `sso_callback` all go through this one function.
 
-    Never raises: a string that fails to encode is returned lower-cased and de-dotted exactly
-    as given rather than blown up here, so the failure surfaces a moment later as an honest
-    "not configured" / "no access" refusal instead of a 500 on a request nobody can retry their
-    way out of.
+    Never raises, but as of round 3 no longer ever returns anything an IDNA A-label could not
+    actually be either: on any failure to encode, or on an encoded result that still is not
+    `_DOMAIN_SHAPE`, this returns `""` — the same "nothing entered" a caller already has to
+    handle — rather than the raw input verbatim. Returning the raw string used to let a value
+    that was never going to resolve to anything (a URL, a query string, a path-traversal
+    payload) travel on into `directory.resolve_domain`, which built an internal URL by
+    f-string; that call site is now also defended on its own (`HttpDirectory.resolve_domain`
+    percent-encodes its path segment regardless), but a domain-shaped value is the contract
+    this function exists to guarantee, and it should not depend on every caller downstream
+    getting its own defence right too.
     """
     value = raw.strip().lower().rstrip(".")
     if not value:
@@ -1289,8 +1439,11 @@ def normalise_sso_domain(raw: str) -> str:
     try:
         encoded = idna.encode(value, uts46=True).decode("ascii")
     except (idna.IDNAError, UnicodeError):
-        return value
-    return encoded.rstrip(".")
+        return ""
+    encoded = encoded.rstrip(".")
+    if not encoded or not _DOMAIN_SHAPE.match(encoded):
+        return ""
+    return encoded
 
 
 async def _config_for_domain(
@@ -1535,6 +1688,30 @@ async def sso_callback(
         "That account cannot sign in to this organization. Ask an administrator to invite it."
     )
 
+    # **The asserted email must be ASCII, after NFKC.** Round 3's finding: Postgres's `CITEXT`
+    # (what `find_by_email`, below, ultimately compares against) folds case with the database's
+    # collation, and Python's own casefold/IDNA path folds Unicode by a different table entirely
+    # — `İ` (U+0130, LATIN CAPITAL LETTER I WITH DOT ABOVE) is one concrete example: Postgres's
+    # default collation lower-cases it to plain `i`, while `idna`'s UTS-46 mapping keeps its
+    # combining dot and encodes an entirely different A-label. A provider that controls its own
+    # oddly-accented domain (verified honestly — the account-takeover check above still holds)
+    # could still assert an email whose domain half is *this* function's normal form but whose
+    # *Postgres-folded* form matches some unrelated real user's plain-ASCII address, and reach
+    # `find_by_email` with it. Refusing any non-ASCII identity outright removes the mismatch
+    # entirely: two representations of the same string cannot disagree if only one encoding is
+    # ever allowed through. An organization whose real, legitimate directory needs a
+    # non-ASCII address is not served by this — but nothing does yet, in either direction, and a
+    # generic refusal is the safe default until it does. **Document for operators wiring up an
+    # IdP:** the domain half of every asserted email must already be the IDNA A-label
+    # (`xn--...`) form, never the Unicode one — the same form account-service stores.
+    if not unicodedata.normalize("NFKC", identity.email).isascii():
+        log.warning(
+            "sso.callback_refused",
+            reason="non_ascii_identity",
+            organization_id=str(organization_id),
+        )
+        raise no_access
+
     # **The identity provider's own email must belong to the domain this flow proved, not
     # merely to some domain or other.** `verify_id_token` already refuses an email the
     # provider itself does not claim is verified — but "verified by the provider" says
@@ -1588,6 +1765,37 @@ async def sso_callback(
         )
         raise no_access
 
+    # **Defence in depth against `find_by_email` itself matching the wrong person.** The ASCII
+    # requirement above closes the concrete IDNA-vs-`CITEXT` mismatch this round found, but
+    # this does not depend on that being the only such mismatch that will ever exist — a
+    # directory lookup implemented on top of a case-insensitive column is a fold, and every
+    # fold has its own edges (locale, width, some future collation change). Two checks, both
+    # against the row `find_by_email` actually returned rather than the identity asserted:
+    #
+    # (1) the **matched user's own stored email** must itself belong to `pending.domain` — the
+    # domain this flow proved, independent of what the identity provider claimed. A lookup that
+    # matched someone whose real, stored address is under a different domain entirely proves
+    # the fold found the wrong person, not that the right person changed domains.
+    if normalise_sso_domain(domain_of(user.email)) != pending.domain:
+        log.warning(
+            "sso.callback_refused",
+            reason="matched_user_domain_mismatch",
+            organization_id=str(organization_id),
+        )
+        raise no_access
+    # (2) the **matched user's stored email** must equal the asserted one under a plain ASCII
+    # casefold — not "some resolver's idea of equal enough". Both sides are already known-ASCII
+    # (the assertion, by the check above; anything account-service stores is already an ASCII
+    # local part over an ASCII A-label domain), so a straight `casefold()` comparison here needs
+    # no further normalisation and cannot itself become a second fold to attack.
+    if user.email.strip().casefold() != identity.email.strip().casefold():
+        log.warning(
+            "sso.callback_refused",
+            reason="matched_user_email_mismatch",
+            organization_id=str(organization_id),
+        )
+        raise no_access
+
     membership = user.membership_for(organization_id)
     if membership is None:
         log.warning(
@@ -1604,7 +1812,13 @@ async def sso_callback(
     )
 
     auth_session = await start_session(
-        session, user_id=user.user_id, cfg=cfg, amr=[SSO_AMR], idp=provider, request=request
+        session,
+        user_id=user.user_id,
+        cfg=cfg,
+        amr=[SSO_AMR],
+        idp=provider,
+        sso_domain=pending.domain,
+        request=request,
     )
     record_audit(
         session,

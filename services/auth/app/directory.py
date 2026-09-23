@@ -14,13 +14,16 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+from urllib.parse import quote
 
 import httpx
 
 from platform_core.config import ServiceSettings
 from platform_core.errors import UpstreamUnavailableProblem
 from platform_core.internal_auth import mint_service_token
-from platform_core.logging import correlation_id_ctx
+from platform_core.logging import correlation_id_ctx, get_logger
+
+log = get_logger("auth.directory")
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,11 +159,15 @@ class HttpDirectory:
         )
 
     async def find_by_email(self, email: str) -> DirectoryUser | None:
+        # `email` travels as a query parameter, which httpx already percent-encodes — this one
+        # was never the traversal risk. Kept alongside the two below for the same reason they
+        # are fixed: a reviewer should not have to know which internal calls are safe from
+        # first principles.
         body = await self._fetch("/internal/v1/users/by-email", {"email": email})
         return self._parse(body) if body else None
 
     async def get(self, user_id: uuid.UUID) -> DirectoryUser | None:
-        body = await self._fetch(f"/internal/v1/users/{user_id}")
+        body = await self._fetch(f"/internal/v1/users/{quote(str(user_id), safe='')}")
         return self._parse(body) if body else None
 
     async def resolve_domain(self, domain: str) -> DirectoryDomain | None:
@@ -169,14 +176,34 @@ class HttpDirectory:
         `None` means nobody has claimed it. A claimed-but-unverified domain comes back with
         `verified=False` rather than as `None`, because the caller refuses both with one
         message and logs which it was — see `services.sso_start`.
+
+        **The path segment is percent-encoded, always** — round 3's finding: `domain` used to
+        be spliced into the path by f-string, and `services.normalise_sso_domain` used to
+        return an unencodeable input *unchanged* rather than refusing it, so a `domain` value
+        like `../users/by-email?email=victim@example.com` reached this call, and httpx's own
+        URL-joining collapsed the `..` before the request ever left the process — landing on a
+        *different* internal route than the one this method calls, with account-service's real
+        response from that other route reaching `_parse` below and failing in whatever way
+        that route's response shape happens to fail in. `normalise_sso_domain` is now refusing
+        that input itself (nothing not shaped like a domain survives it), but this is fixed
+        here too, independently: whatever reaches this method, `quote` guarantees it can only
+        ever address *this* path segment, never another route.
         """
-        body = await self._fetch(f"/internal/v1/domains/{domain}")
+        body = await self._fetch(f"/internal/v1/domains/{quote(domain, safe='')}")
         if not body:
             return None
-        return DirectoryDomain(
-            domain=body["domain"],
-            organization_id=uuid.UUID(body["organization_id"]),
-            organization_slug=body["organization_slug"],
-            organization_status=body["organization_status"],
-            verified=bool(body["verified"]),
-        )
+        try:
+            return DirectoryDomain(
+                domain=body["domain"],
+                organization_id=uuid.UUID(body["organization_id"]),
+                organization_slug=body["organization_slug"],
+                organization_status=body["organization_status"],
+                verified=bool(body["verified"]),
+            )
+        except (KeyError, ValueError, TypeError):
+            # A body that does not have this shape is not a domain answer — reaching here
+            # would mean the request landed on some other endpoint, or account-service
+            # answered something malformed. Either way "not configured" is the honest and
+            # safe reading: never a 500 on a request that was never going to succeed anyway.
+            log.error("directory.resolve_domain_malformed_body", domain=domain)
+            return None

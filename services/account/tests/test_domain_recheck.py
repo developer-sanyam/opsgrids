@@ -19,8 +19,8 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import dns_check, selectors, services
 from app import domain as domain_module
-from app import selectors, services
 from app.config import settings
 from app.cron import DomainRecheckSweep
 from app.models import AuditLog, Membership, Organization, OrgDomain
@@ -68,6 +68,14 @@ async def _verified_domain(
         row = await selectors.get_domain(session, ctx.organization_id, row.id)
         assert row is not None
     return row
+
+
+class _ResolverErrorResolver:
+    """A `dns_check.Resolver` that always fails to get an answer at all — never a confirmed
+    absence. Round 3: this must never be mistaken for a failed check by `recheck_domain`."""
+
+    async def resolve(self, host: str, rtype: str) -> list[str]:
+        raise dns_check.DnsLookupError("simulated: our own resolver could not be reached")
 
 
 def StubResolverFactory(row: OrgDomain) -> StubResolver:
@@ -184,6 +192,61 @@ class TestRecheckDomain:
             )
         assert len(recovered_rows) == 1
 
+    async def test_a_resolver_error_moves_only_last_checked_at(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        """Round 3, MINOR: our own resolver failing to get an answer at all is not a fact
+        about the customer's domain — `consecutive_failures` and `failing_since` must be
+        untouched, and `last_check_ok` must keep whatever it last genuinely was, not become
+        `False` for a check that never actually happened."""
+        ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
+        row = await _verified_domain(session, ctx, "acme.example.com")
+        domain_id = row.id
+        before_at = row.last_checked_at
+
+        async with session.begin():
+            fresh = await selectors.get_domain(session, org.id, domain_id)
+            assert fresh is not None
+            checked = await services.recheck_domain(
+                session, fresh, resolver=_ResolverErrorResolver()
+            )
+
+        assert checked.last_checked_at is not None
+        assert checked.last_checked_at != before_at
+        assert checked.last_check_ok is None  # never checked yet, still true — no answer came
+        assert checked.consecutive_failures == 0
+        assert checked.failing_since is None
+        assert checked.verified_at is not None
+
+    async def test_a_resolver_error_does_not_disturb_an_existing_failing_streak(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        """A domain already failing for a real reason must not have its streak reset, nor
+        pushed forward, by a tick where the outage was on our own side."""
+        ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
+        row = await _verified_domain(session, ctx, "acme.example.com")
+        domain_id = row.id
+        start = datetime.now(UTC) - timedelta(days=1)
+
+        async with session.begin():
+            fresh = await selectors.get_domain(session, org.id, domain_id)
+            assert fresh is not None
+            failing = await services.recheck_domain(
+                session, fresh, resolver=StubResolver({}), now=start
+            )
+        assert failing.consecutive_failures == 1
+        assert failing.failing_since == start
+
+        async with session.begin():
+            fresh = await selectors.get_domain(session, org.id, domain_id)
+            assert fresh is not None
+            after_error = await services.recheck_domain(
+                session, fresh, resolver=_ResolverErrorResolver(), now=start + timedelta(hours=1)
+            )
+        assert after_error.consecutive_failures == 1  # unchanged, not incremented
+        assert after_error.failing_since == start  # unchanged, not reset
+        assert after_error.last_checked_at == start + timedelta(hours=1)  # still moved
+
 
 class TestDemotion:
     """MAJOR2: a sustained run of failures — long in wall-clock time *and* repeated on
@@ -289,6 +352,40 @@ class TestDemotion:
         assert checked.verified_at is not None, (
             "too recent a streak to demote, however many failures"
         )
+
+    async def test_our_own_resolver_being_down_never_demotes_a_domain(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        """Round 3, MINOR: the same shape as `test_a_long_failing_streak_with_enough_checks_
+        demotes` above — enough distinct checks, spanning well over the 14-day bar — except
+        every one of them is a resolver error, never a confirmed absence. `should_demote` must
+        never even be asked, because `consecutive_failures` and `failing_since` never move."""
+        ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
+        row = await _verified_domain(session, ctx, "acme.example.com")
+        domain_id = row.id
+        start = datetime.now(UTC) - timedelta(days=20)
+
+        for i in range(domain_module.DEMOTION_MIN_CONSECUTIVE_FAILURES + 5):
+            async with session.begin():
+                fresh = await selectors.get_domain(session, org.id, domain_id)
+                assert fresh is not None
+                checked = await services.recheck_domain(
+                    session,
+                    fresh,
+                    resolver=_ResolverErrorResolver(),
+                    now=start + timedelta(hours=i),
+                )
+        async with session.begin():
+            fresh = await selectors.get_domain(session, org.id, domain_id)
+            assert fresh is not None
+            checked = await services.recheck_domain(
+                session, fresh, resolver=_ResolverErrorResolver(), now=datetime.now(UTC)
+            )
+
+        assert checked.consecutive_failures == 0
+        assert checked.failing_since is None
+        assert checked.verified_at is not None
+        assert checked.demoted_at is None
 
     async def test_a_demoted_domain_is_no_longer_returned_by_the_internal_sso_lookup(
         self,

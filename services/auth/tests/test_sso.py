@@ -39,14 +39,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import oidc, services
 from app.config import Settings
 from app.deps import get_idp
-from app.directory import DirectoryDomain
+from app.directory import DirectoryDomain, DirectoryUser, HttpDirectory
 from app.keys import KeyPair
 from app.main import app
 from app.models import AuditLog, ExternalIdentity, OrgIdpConfig, OutboxEvent, Session
 from platform_core import pii
 from platform_core.auth import Principal, get_principal
 from platform_core.db import set_tenant
-from platform_core.errors import BusinessRuleProblem, ForbiddenProblem, UpstreamUnavailableProblem
+from platform_core.errors import (
+    BusinessRuleProblem,
+    ForbiddenProblem,
+    UnauthorizedProblem,
+    UpstreamUnavailableProblem,
+)
 from tests.conftest import (
     MEMBERSHIP_A,
     ORG_A,
@@ -56,6 +61,7 @@ from tests.conftest import (
     FakeDirectory,
     FakeEntitlements,
     FakeRedis,
+    membership,
     user_in_one_org,
     user_in_two_orgs,
 )
@@ -312,6 +318,109 @@ class TestDomainResolution:
         await _install_config(session, cfg, allowed_domains=["somewhere.else"])
         with pytest.raises(oidc.SsoNotConfiguredProblem):
             await _start(session, cfg, directory, store)
+
+
+class TestPathTraversalEnumeration:
+    """The reviewer's own repro (round 3, MAJOR): a `domain` shaped like
+    `../users/by-email?email=<address>` used to reach a *different* internal route than
+    `resolve_domain` meant to call, and account-service's real answer from that other route —
+    200 for a known address, 404 for an unknown one — leaked back out through two different
+    exception types. That made `sso_start` an unauthenticated user-enumeration oracle: anyone
+    could learn whether an email address exists in the system with no credential at all.
+
+    Uses the real `HttpDirectory` against a mock transport standing in for account-service —
+    `FakeDirectory` never had this bug, because it never built a URL by f-string in the first
+    place.
+    """
+
+    KNOWN_EMAIL = "victim@victim.com"
+
+    @staticmethod
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/internal/v1/users/by-email":
+            if request.url.params.get("email") == TestPathTraversalEnumeration.KNOWN_EMAIL:
+                return httpx.Response(
+                    200,
+                    json={
+                        "user_id": "00000000-0000-0000-0000-000000000001",
+                        "email": TestPathTraversalEnumeration.KNOWN_EMAIL,
+                        "full_name": "Victim",
+                        "is_active": True,
+                        "memberships": [],
+                    },
+                )
+            return httpx.Response(404, json={})
+        return httpx.Response(404, json={})
+
+    def _directory(self) -> HttpDirectory:
+        from app.config import settings
+
+        directory = HttpDirectory("http://account", settings())
+        directory._client = httpx.AsyncClient(
+            base_url="http://account", transport=httpx.MockTransport(self._handler)
+        )
+        return directory
+
+    async def test_a_known_email_in_the_payload_is_refused_the_same_as_an_unknown_one(
+        self, session, cfg, store
+    ) -> None:
+        directory = self._directory()
+        try:
+            with pytest.raises(oidc.SsoNotConfiguredProblem) as known:
+                await services.sso_start(
+                    session,
+                    cfg=cfg,
+                    directory=directory,
+                    store=store,
+                    domain=f"../users/by-email?email={self.KNOWN_EMAIL}",
+                )
+            with pytest.raises(oidc.SsoNotConfiguredProblem) as unknown:
+                await services.sso_start(
+                    session,
+                    cfg=cfg,
+                    directory=directory,
+                    store=store,
+                    domain="../users/by-email?email=nobody@victim.com",
+                )
+        finally:
+            await directory.aclose()
+
+        # Not merely the same exception type — the same status, type and message, so nothing
+        # about which of the two branches was taken travels back to the caller at all.
+        assert known.value.detail == unknown.value.detail
+        assert known.value.status_code == unknown.value.status_code
+
+    async def test_the_traversal_payload_never_reaches_the_directory_at_all(
+        self, session, cfg, store
+    ) -> None:
+        """Belt and suspenders: `normalise_sso_domain` now refuses anything not domain-shaped
+        before `sso_start` ever calls `directory.resolve_domain` — the payload is refused on
+        `target` being empty, not merely refused *after* still being sent somewhere."""
+        called = False
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal called
+            called = True
+            return httpx.Response(404, json={})
+
+        from app.config import settings
+
+        directory = HttpDirectory("http://account", settings())
+        directory._client = httpx.AsyncClient(
+            base_url="http://account", transport=httpx.MockTransport(handler)
+        )
+        try:
+            with pytest.raises(oidc.SsoNotConfiguredProblem):
+                await services.sso_start(
+                    session,
+                    cfg=cfg,
+                    directory=directory,
+                    store=store,
+                    domain=f"../users/by-email?email={self.KNOWN_EMAIL}",
+                )
+        finally:
+            await directory.aclose()
+        assert called is False
 
 
 # --------------------------------------------------------------------- state and PKCE
@@ -714,6 +823,242 @@ class TestOrganizationPinning:
         )
         assert second.organization_id == ORG_A
 
+    async def test_issue_for_itself_refuses_a_pinned_session_minting_for_another_org(
+        self, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        """NIT (round 3): the pin is asserted inside `issue_for` itself now, not only by its
+        two callers — proved by calling it directly, bypassing `switch_organization`'s own
+        earlier check (and its side effects) entirely."""
+        directory.users = [user_in_two_orgs()]
+        issued = await _sign_in(session, cfg, pair, directory, idp, store)
+
+        auth_session = await session.get(Session, issued.session_id)
+        assert auth_session is not None
+        user = await directory.get(USER)
+        assert user is not None
+        membership_b = user.membership_for(ORG_B)
+        assert membership_b is not None
+
+        with pytest.raises(ForbiddenProblem):
+            await services.issue_for(
+                session,
+                pair=pair,
+                cfg=cfg,
+                auth_session=auth_session,
+                membership=membership_b,
+                entitlements=FakeEntitlements(),
+                audience="app",
+            )
+
+
+class TestPinnedRefreshRevalidation:
+    """MINOR5 (round 3): the pin (`_federated_organization_pin`) only ever proves a session
+    was *once* minted through this organization's provider. `rotate_refresh` now re-checks,
+    on every refresh, that the domain it was minted for is still verified to this
+    organization and that the organization's IdP configuration is still enabled — both can
+    change long after the original sign-in, and neither one changing was previously reflected
+    in a session that would otherwise refresh forever."""
+
+    async def test_a_domain_no_longer_verified_ends_the_session(
+        self, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        issued = await _sign_in(session, cfg, pair, directory, idp, store)
+
+        # The domain stops being verified — released, or demoted by account-service's own
+        # sweep (ADR-0018) — some time after the sign-in that trusted it.
+        directory.domains = [
+            _domain(VERIFIED_DOMAIN, ORG_A, "acme", verified=False)
+            if d.domain == VERIFIED_DOMAIN
+            else d
+            for d in directory.domains
+        ]
+
+        with pytest.raises(UnauthorizedProblem):
+            await services.rotate_refresh(
+                session,
+                entitlements=FakeEntitlements(),
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                raw_token=issued.refresh_token,
+            )
+
+    async def test_a_released_domain_ends_the_session(
+        self, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        issued = await _sign_in(session, cfg, pair, directory, idp, store)
+        directory.domains = [d for d in directory.domains if d.domain != VERIFIED_DOMAIN]
+
+        with pytest.raises(UnauthorizedProblem):
+            await services.rotate_refresh(
+                session,
+                entitlements=FakeEntitlements(),
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                raw_token=issued.refresh_token,
+            )
+
+    async def test_a_disabled_idp_configuration_ends_the_session(
+        self, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        issued = await _sign_in(session, cfg, pair, directory, idp, store)
+
+        async with session.begin():
+            # `org_idp_configs` is RLS-protected; the tenant GUC `sso_callback` set is
+            # transaction-local and cleared by its own commit, so this read needs its own.
+            await set_tenant(session, ORG_A)
+            row = (
+                await session.execute(
+                    select(OrgIdpConfig).where(OrgIdpConfig.organization_id == ORG_A)
+                )
+            ).scalar_one()
+            row.enabled = False
+
+        with pytest.raises(UnauthorizedProblem):
+            await services.rotate_refresh(
+                session,
+                entitlements=FakeEntitlements(),
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                raw_token=issued.refresh_token,
+            )
+
+    async def test_an_untouched_pinned_session_still_refreshes(
+        self, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        """The control: the re-check must not refuse a federated session whose domain and IdP
+        configuration are both still exactly as they were at sign-in."""
+        issued = await _sign_in(session, cfg, pair, directory, idp, store)
+
+        rotated = await services.rotate_refresh(
+            session,
+            entitlements=FakeEntitlements(),
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            raw_token=issued.refresh_token,
+        )
+        assert rotated.refresh_token != issued.refresh_token
+
+    async def test_the_result_is_cached_for_the_next_refresh(
+        self, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        """A federated session refreshes often; the re-check must not cost a fresh directory
+        round trip and a fresh RLS-bound read on every single one. Demoting the domain right
+        after a first, successful refresh must not be visible to the *very next* refresh —
+        only once the (five-minute) cache entry expires, which a unit test has no business
+        waiting out."""
+        issued = await _sign_in(session, cfg, pair, directory, idp, store)
+
+        first = await services.rotate_refresh(
+            session,
+            entitlements=FakeEntitlements(),
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            raw_token=issued.refresh_token,
+        )
+
+        directory.domains = [d for d in directory.domains if d.domain != VERIFIED_DOMAIN]
+
+        # Still cached "ok" from the check the first refresh just made — this one must not
+        # re-derive a fresh, now-negative answer from the directory it just changed.
+        second = await services.rotate_refresh(
+            session,
+            entitlements=FakeEntitlements(),
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            raw_token=first.refresh_token,
+        )
+        assert second.refresh_token != first.refresh_token
+
+
+class _CitextDirectory(FakeDirectory):
+    """`find_by_email` compares the way account-service's real `/users/by-email` route does:
+    through Postgres `CITEXT`, not Python's own casefold — the mismatch round 3 found."""
+
+    def __init__(
+        self, users: list[DirectoryUser], domains: list[DirectoryDomain], session: AsyncSession
+    ) -> None:
+        super().__init__(users, domains)
+        self._session = session
+
+    async def find_by_email(self, email: str) -> DirectoryUser | None:
+        for u in self.users:
+            same = (
+                await self._session.execute(
+                    text("select cast(:a as citext) = cast(:b as citext)"),
+                    {"a": u.email, "b": email},
+                )
+            ).scalar_one()
+            if same:
+                return u
+        return None
+
+
+class TestUnicodeCasefoldBypass:
+    """Postgres's `CITEXT` folds case with the database's collation; `idna`'s UTS-46 folds
+    Unicode by an entirely different table. `İ` (U+0130, LATIN CAPITAL LETTER I WITH DOT ABOVE)
+    is the concrete case round 3 found: `normalise_sso_domain("vİctim.com")` encodes to
+    `xn--victim-qyd.com` — a real, distinct domain an attacker's own honestly-configured IdP
+    could verify and use — while Postgres's default collation lower-cases the same character to
+    plain `i`, so `find_by_email` can still match a *completely unrelated* real user whose
+    stored address is the plain-ASCII `victim@victim.com`.
+    """
+
+    async def test_the_dotted_capital_i_casefold_is_refused(
+        self, session, cfg, pair, store
+    ) -> None:
+        attacker_domain = services.normalise_sso_domain("vİctim.com")
+        assert attacker_domain == "xn--victim-qyd.com"
+
+        victim_id = uuid.uuid4()
+        victim = DirectoryUser(
+            user_id=victim_id,
+            email="victim@victim.com",
+            full_name="Victim",
+            is_active=True,
+            # A real member of ORG_A, through a domain that has nothing to do with the one
+            # the attacker's provider actually proved — reached here through the matching
+            # function disagreeing with Postgres, rather than through an outright mismatch.
+            memberships=[membership(ORG_A, uuid.uuid4(), "acme", "Acme Technologies")],
+        )
+        fake_directory = _CitextDirectory(
+            [victim], [_domain(attacker_domain, ORG_A, "acme")], session
+        )
+        await _install_config(session, cfg)
+        idp = FakeIdp()
+
+        redirect = await _start(
+            session, cfg, fake_directory, store, email=None, domain=attacker_domain
+        )
+        idp.next_id_token = idp.issue_id_token(
+            nonce=_query(redirect.authorization_url)["nonce"], email="victim@vİctim.com"
+        )
+
+        with pytest.raises(oidc.SsoNoAccessProblem):
+            await _callback(session, cfg, pair, fake_directory, idp, store, state=redirect.state)
+
+        # Nothing was minted as the real victim.
+        sessions = (await session.execute(select(Session))).scalars().all()
+        await session.rollback()
+        assert sessions == []
+
+    async def test_an_ascii_only_assertion_still_signs_in_normally(
+        self, session, cfg, pair, store
+    ) -> None:
+        """The control: the ASCII-only requirement must not refuse an ordinary, all-ASCII
+        sign-in — only a non-ASCII identity."""
+        fake_directory = _CitextDirectory(
+            [user_in_one_org()], [_domain(VERIFIED_DOMAIN, ORG_A, "acme")], session
+        )
+        await _install_config(session, cfg)
+        issued = await _sign_in(session, cfg, pair, fake_directory, FakeIdp(), store, email=EMAIL)
+        assert issued.access_token
+
 
 # --------------------------------------------------------------------- what comes out
 
@@ -955,6 +1300,32 @@ class TestTheEgressGuard:
         with pytest.raises(UpstreamUnavailableProblem):
             await client.discover("http://idp.example.test/.well-known/openid-configuration")
         await client.aclose()
+
+
+class TestNormaliseSsoDomain:
+    """Round 3: this function's own contract — a domain-shaped ASCII A-label, or `""`, never
+    the raw input verbatim. `""` is what let a path-traversal payload sail through unrefused
+    all the way to `directory.resolve_domain`'s own f-string (`TestPathTraversalEnumeration`,
+    above, closes that end to end); this is the unit-level version."""
+
+    def test_a_normal_domain_round_trips(self) -> None:
+        assert services.normalise_sso_domain("Acme.COM.") == "acme.com"
+
+    def test_a_unicode_domain_becomes_its_a_label(self) -> None:
+        assert services.normalise_sso_domain("köln.de") == "xn--kln-sna.de"
+
+    def test_a_string_idna_refuses_outright_is_empty_not_unchanged(self) -> None:
+        """The exact regression: this used to return the raw string verbatim."""
+        assert services.normalise_sso_domain("../users/by-email?email=x") == ""
+
+    def test_a_query_string_appended_to_a_real_domain_is_empty(self) -> None:
+        assert services.normalise_sso_domain("acme.com?x=../../users/by-email") == ""
+
+    def test_blank_input_is_empty(self) -> None:
+        assert services.normalise_sso_domain("   ") == ""
+
+    def test_nothing_but_dots_is_empty(self) -> None:
+        assert services.normalise_sso_domain("...") == ""
 
 
 # --------------------------------------------------------------------- administration

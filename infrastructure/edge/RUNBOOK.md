@@ -930,7 +930,7 @@ Named here so nobody discovers them during an incident:
   a non-zero count with the `scheduler` container up means the sweep itself is stuck (`make
   edge-logs SERVICE=scheduler`); a non-zero count with it down or restarting is the container.
   `scheduler.outbox` fills exactly like any other service's if `edge-relay` is not draining it.
-- **A verified SSO domain can be automatically demoted (2026-09-23, ADR-0017).** `account`'s
+- **A verified SSO domain can be automatically demoted (2026-09-23, ADR-0018).** `account`'s
   worker re-checks every verified email domain's DNS on a schedule; if a domain has been
   failing for at least 14 days *and* failed at least 3 checks in a row, the sweep clears its
   `verified_at` itself, stamps `demoted_at`, writes an audit row, and publishes

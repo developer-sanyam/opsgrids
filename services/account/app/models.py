@@ -163,8 +163,14 @@ class OrgDomain(Base):
     #: `None` for a domain never re-checked yet — a fresh verification, or a deployment that
     #: predates the sweep — which is a different fact from a check that ran and failed.
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    #: What the most recent re-check found. `None` alongside `last_checked_at is None` means
-    #: "never checked"; `True`/`False` alongside a timestamp is a real answer. Never used to
+    #: What the most recent re-check found — a fact about the *record*, not about whether a
+    #: check ran at all. `None` alongside `last_checked_at is None` means "never checked";
+    #: `True`/`False` alongside a timestamp is a real answer about the record. `None` alongside
+    #: a **timestamp** is the third case (round 3): a tick where DNS itself could not be asked
+    #: (`dns_check.Outcome.RESOLVER_ERROR`) still moves `last_checked_at` — an administrator
+    #: watching this column should be able to tell "we tried and it is missing" from "we tried
+    #: and could not even ask" — but leaves this column exactly as it was, because a resolver
+    #: outage on our side is not evidence about the customer's record either way. Never used to
     #: gate SSO on its own — `verified_at` still is, per the docstring above — this is a
     #: signal for an administrator, not an enforcement column (see `services.recheck_domain`).
     last_check_ok: Mapped[bool | None] = mapped_column(Boolean)

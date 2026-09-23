@@ -612,6 +612,55 @@ class TestMfa:
         assert await services._accept_second_factor(session, USER, codes[0]) is True
         assert await services._accept_second_factor(session, USER, codes[0]) is False
 
+    async def test_a_federated_session_may_not_enrol_mfa(self, session, cfg, registered) -> None:
+        """NIT (round 3): enrolling a second factor is an account-wide credential change — a
+        federated session only ever proved that one organization's identity provider
+        vouches for this person, for one sign-in, and has no standing to make it."""
+        auth_session = await services.start_session(
+            session, user_id=USER, cfg=cfg, amr=["sso"], idp=f"oidc:{uuid.uuid4()}"
+        )
+        await session.commit()
+
+        with pytest.raises(ForbiddenProblem, match="password sign-in"):
+            await services.begin_mfa_enrolment(
+                session,
+                USER,
+                account_email="sam@example.com",
+                session_id=str(auth_session.id),
+            )
+
+    async def test_a_federated_session_may_not_confirm_mfa_either(
+        self, session, cfg, registered
+    ) -> None:
+        factor, secret, _ = await services.begin_mfa_enrolment(
+            session, USER, account_email="sam@example.com"
+        )
+        await session.commit()
+        auth_session = await services.start_session(
+            session, user_id=USER, cfg=cfg, amr=["sso"], idp=f"oidc:{uuid.uuid4()}"
+        )
+        await session.commit()
+        code = security._totp_at(secret, int(datetime.now(UTC).timestamp()) // 30)
+
+        with pytest.raises(ForbiddenProblem, match="password sign-in"):
+            await services.confirm_mfa_enrolment(
+                session,
+                factor_id=factor.id,
+                user_id=USER,
+                code=code,
+                session_id=str(auth_session.id),
+            )
+
+    async def test_a_password_session_may_still_enrol_mfa(self, session, cfg, registered) -> None:
+        """The control: an ordinary password session (and a caller that passes no session id
+        at all — a request predating this check) is unaffected."""
+        auth_session = await services.start_session(session, user_id=USER, cfg=cfg, amr=["pwd"])
+        await session.commit()
+        _factor, _secret, uri = await services.begin_mfa_enrolment(
+            session, USER, account_email="sam@example.com", session_id=str(auth_session.id)
+        )
+        assert uri.startswith("otpauth://totp/")
+
 
 class TestSessionsAndEvents:
     async def test_signing_in_stages_an_event_for_the_relay(

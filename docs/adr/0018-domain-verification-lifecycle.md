@@ -1,4 +1,4 @@
-# ADR-0017 — Email-domain verification: takeover safety and the demotion policy
+# ADR-0018 — Email-domain verification: takeover safety and the demotion policy
 
 Status: **accepted** · Date: 2026-09-23
 
@@ -126,3 +126,30 @@ suspended organization.
   prefix ahead of time, but nothing mints one yet.
 - The 14-day / 3-check demotion bars turn out to be miscalibrated in practice — they are
   constants in `app/domain.py`, not schema, and moving them costs no migration.
+
+## Addendum (round 3): the domain-match check had its own casefold gap
+
+§1's domain-match check (`identity_domain == pending.domain`) closes the takeover as long as
+"the domain a provider proved" and "the domain a matched user's stored address belongs to" are
+computed by the same rule. They were not: `normalise_sso_domain` folds Unicode by IDNA/UTS-46,
+while `find_by_email`'s eventual comparison happens through Postgres `CITEXT`, which folds case
+with the database's own collation. `İ` (U+0130, LATIN CAPITAL LETTER I WITH DOT ABOVE) is a
+concrete case where the two disagree: UTS-46 keeps its combining dot and encodes a distinct,
+real A-label an attacker's own provider could honestly verify, while `CITEXT`'s default
+collation drops the dot and folds it to plain `i`, potentially matching an unrelated real
+user's plain-ASCII address.
+
+Rather than trying to keep two independent case-folding implementations in permanent
+agreement, the identity itself is now required to be ASCII after NFKC — `sso_callback` refuses
+outright before either comparison runs. Two representations of the same string cannot disagree
+if only one encoding is ever allowed through. Belt and suspenders on top: the *matched* user's
+own stored email is independently re-checked against `pending.domain` and against the asserted
+address (ASCII casefold) after `find_by_email` returns — so even a future, different fold
+mismatch this round did not anticipate still cannot mint a session for the wrong person.
+
+Also from round 3, addressed independently of the domain-match logic: `directory.py`'s
+internal HTTP calls now percent-encode every path segment, and `normalise_sso_domain` returns
+`""` rather than its input verbatim on anything that does not encode to a domain shape — an
+unencodeable `domain` (a path-traversal payload, a query string) used to reach
+`resolve_domain`'s f-string unrefused, which is a second, unrelated way the same function's
+weak contract caused a real problem downstream.

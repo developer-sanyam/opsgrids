@@ -254,6 +254,81 @@ class TestClaimDomain:
         assert second.id == first_id, "re-claiming must reuse the same row, not create another"
         assert second.verification_token != first_token
 
+    async def test_a_concurrent_verify_is_never_undone_by_a_racing_reclaim(
+        self,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+    ) -> None:
+        """Round 3, MINOR4: the re-claim path's own token rotation used to be a plain ORM
+        attribute assignment, with nothing guarding against a concurrent `verify_domain` call
+        having already set `verified_at` in the gap between the read and the write. Raced for
+        real, with two independent sessions: whichever call actually lands, the domain must
+        never end up both verified *and* holding a token that is not the one DNS was actually
+        checked against — the corrupt, permanently-unverifiable state a naive rotation would
+        leave behind."""
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.config import settings
+        from platform_core.db import TENANT_GUC
+
+        write_ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
+        domain_name = "race-reclaim.example.com"
+        async with session.begin():
+            row = await services.claim_domain(session, write_ctx, DomainIn(domain=domain_name))
+        original_token = row.verification_token
+        domain_id = row.id
+        resolver = StubResolver(
+            {
+                (domain_module.verification_txt_host(row.domain), "TXT"): [
+                    domain_module.verification_txt_value(original_token)
+                ]
+            }
+        )
+
+        engine = create_async_engine(settings().app_dsn)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+
+        async def _verify() -> Exception | None:
+            try:
+                async with maker() as s, s.begin():
+                    await s.execute(sa_text(f"SELECT set_config('{TENANT_GUC}', '{org.id}', true)"))
+                    fresh = await selectors.get_domain(s, org.id, domain_id)
+                    assert fresh is not None
+                    await services.verify_domain(s, write_ctx, fresh, resolver=resolver)
+            except Exception as exc:
+                return exc
+            return None
+
+        async def _reclaim() -> Exception | None:
+            try:
+                async with maker() as s, s.begin():
+                    await s.execute(sa_text(f"SELECT set_config('{TENANT_GUC}', '{org.id}', true)"))
+                    await services.claim_domain(s, write_ctx, DomainIn(domain=domain_name))
+            except Exception as exc:
+                return exc
+            return None
+
+        try:
+            results = await asyncio.gather(_verify(), _reclaim())
+        finally:
+            await engine.dispose()
+
+        # Neither side may raise anything unnamed — a `ConflictProblem` from whichever call
+        # lost the race is an accepted, safe outcome; anything else is a bug.
+        for outcome in results:
+            if outcome is not None:
+                assert isinstance(outcome, ConflictProblem), outcome
+
+        async with admin_session.begin():
+            final = await selectors.get_domain(admin_session, org.id, domain_id)
+            assert final is not None
+        if final.verified_at is not None:
+            # Verified with the token that was actually checked against DNS — never a token
+            # a racing reclaim rotated to underneath it.
+            assert final.verification_token == original_token
+
     async def test_reclaiming_an_already_verified_domain_is_a_no_op(
         self, session: AsyncSession, org: Organization, people: dict[str, Membership]
     ) -> None:
@@ -342,6 +417,67 @@ class TestClaimDomain:
             )
         assert reclaimed.domain == "acme-0.example.com"
 
+    async def test_the_cap_cannot_be_raced_past_by_concurrent_claims(
+        self,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Round 3, NIT: `pg_advisory_xact_lock` serialises the count-check against the insert
+        per organization — proved the same way `TestTakeoverSafety`'s own verify race is, with
+        two real, independent sessions racing to claim two *different* new domains for the
+        same organization, one slot under a (lowered, for speed) cap."""
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.config import settings
+        from platform_core.db import TENANT_GUC
+
+        monkeypatch.setattr(domain_module, "MAX_DOMAINS_PER_ORGANIZATION", 2)
+        write_ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
+        async with session.begin():
+            await services.claim_domain(session, write_ctx, DomainIn(domain="first.example.com"))
+        # The organization now holds one of its two (lowered, for speed) slots. Two more,
+        # different domains, race for the one slot that remains.
+
+        engine = create_async_engine(settings().app_dsn)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+
+        async def _claim(domain_name: str) -> Exception | None:
+            try:
+                async with maker() as s, s.begin():
+                    await s.execute(sa_text(f"SELECT set_config('{TENANT_GUC}', '{org.id}', true)"))
+                    await services.claim_domain(s, write_ctx, DomainIn(domain=domain_name))
+            except Exception as exc:
+                return exc
+            return None
+
+        try:
+            results = await asyncio.gather(
+                _claim("second.example.com"),
+                _claim("third.example.com"),
+            )
+        finally:
+            await engine.dispose()
+
+        outcomes = list(results)
+        winners = [r for r in outcomes if r is None]
+        losers = [r for r in outcomes if r is not None]
+        assert len(winners) == 1, f"expected exactly one winner, got {outcomes}"
+        assert len(losers) == 1
+        assert isinstance(losers[0], ValidationProblem)
+
+        async with admin_session.begin():
+            count = (
+                await admin_session.execute(
+                    sa_text("SELECT count(*) FROM account.org_domains WHERE organization_id = :o"),
+                    {"o": org.id},
+                )
+            ).scalar_one()
+        # The pre-existing domain, plus exactly one winner — never both racers.
+        assert count == 2
+
 
 class TestTakeoverSafety:
     """`uq_org_domains_org_domain` (per-organization) and `uq_org_domains_domain_verified`
@@ -421,6 +557,87 @@ class TestTakeoverSafety:
                 DomainIn(domain="pending-elsewhere.example.com"),
             )
         assert row.verified_at is None
+
+    async def test_a_domain_demoted_from_one_org_can_be_verified_by_another(
+        self,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+    ) -> None:
+        """A demotion (ADR-0018) clears `verified_at` exactly the way a release would — the
+        partial unique index only ever excludes *other organizations'* verified rows, so once
+        this org's own row stops being one of them, a genuinely different owner of the same
+        domain is free to claim and verify it, the same as if the first org had released it
+        outright. The first org's own row must stay demoted throughout — nobody else's
+        success resurrects it."""
+        from app import domain as _domain_module
+
+        ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
+        domain_name = "handoff.example.com"
+
+        async with session.begin():
+            row = await services.claim_domain(session, ctx, DomainIn(domain=domain_name))
+        resolver = StubResolver(
+            {
+                (_domain_module.verification_txt_host(row.domain), "TXT"): [
+                    _domain_module.verification_txt_value(row.verification_token)
+                ]
+            }
+        )
+        async with session.begin():
+            fresh = await selectors.get_domain(session, org.id, row.id)
+            assert fresh is not None
+            await services.verify_domain(session, ctx, fresh, resolver=resolver)
+
+        # Demote it: enough distinct failures, spanning well past the 14-day bar — the same
+        # shape `test_domain_recheck.py::TestDemotion` proves in detail.
+        domain_id = row.id
+        start = datetime.now(UTC) - timedelta(days=20)
+        for i in range(_domain_module.DEMOTION_MIN_CONSECUTIVE_FAILURES):
+            async with session.begin():
+                fresh = await selectors.get_domain(session, org.id, domain_id)
+                assert fresh is not None
+                await services.recheck_domain(
+                    session, fresh, resolver=StubResolver({}), now=start + timedelta(hours=i)
+                )
+        async with session.begin():
+            fresh = await selectors.get_domain(session, org.id, domain_id)
+            assert fresh is not None
+            demoted = await services.recheck_domain(
+                session, fresh, resolver=StubResolver({}), now=datetime.now(UTC)
+            )
+        assert demoted.verified_at is None
+        assert demoted.demoted_at is not None
+
+        # A different organization now claims and verifies the very same domain string.
+        other, owner = await self._other_org(admin_session, name="Second Holder", slug="second")
+        other_ctx = ctx_for(other, owner, "core.identity.domain.write")
+        async with admin_session.begin():
+            other_row = await services.claim_domain(
+                admin_session, other_ctx, DomainIn(domain=domain_name)
+            )
+        other_resolver = StubResolver(
+            {
+                (_domain_module.verification_txt_host(other_row.domain), "TXT"): [
+                    _domain_module.verification_txt_value(other_row.verification_token)
+                ]
+            }
+        )
+        async with admin_session.begin():
+            fresh_other = await selectors.get_domain(admin_session, other.id, other_row.id)
+            assert fresh_other is not None
+            verified_by_other = await services.verify_domain(
+                admin_session, other_ctx, fresh_other, resolver=other_resolver
+            )
+        assert verified_by_other.verified_at is not None
+
+        # The first organization's own row is untouched — still demoted, not resurrected.
+        async with session.begin():
+            still_demoted = await selectors.get_domain(session, org.id, domain_id)
+            assert still_demoted is not None
+            assert still_demoted.verified_at is None
+            assert still_demoted.demoted_at is not None
 
     async def test_verifying_after_another_org_already_verified_is_a_generic_409(
         self,

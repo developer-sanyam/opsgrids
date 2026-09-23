@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, delete, update
+from sqlalchemy import CursorResult, delete, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -1338,6 +1338,18 @@ async def claim_domain(
     organization double-submitting the same brand-new domain in a race with itself, which
     `uq_org_domains_org_domain` catches and this function answers with the same anonymous 409
     `verify_domain`'s cross-organization race does.
+
+    **The re-claim's own token rotation is itself a conditional `UPDATE`, not an ORM attribute
+    assignment** (round 3): `existing` was read a moment ago on a plain `SELECT`, and this
+    organization's own concurrent `verify_domain` call — a second browser tab, a slow request
+    retried — could complete and set `verified_at` in the gap between that read and this write.
+    Without the `WHERE verified_at IS NULL` guard, this call would happily rotate the token
+    *after* the domain had genuinely been verified, leaving `verified_at` set (true) but
+    `verification_token` pointing at a value nobody has published — the domain would look
+    verified right up until the next periodic re-check, at which point it would fail against a
+    TXT record that was only ever the *old* proof, and start counting toward demotion for a
+    domain that was never actually broken. Zero rows updated means exactly that race happened;
+    the fix is to answer with the now-verified row instead of a token nobody can use.
     """
     normalised = domain_module.normalise_domain(payload.domain)
 
@@ -1345,9 +1357,25 @@ async def claim_domain(
     if existing is not None:
         if existing.verified_at is not None:
             return existing
-        existing.verification_token = domain_module.generate_verification_token()
-        existing.created_at = utcnow()
-        await session.flush()
+        new_token = domain_module.generate_verification_token()
+        now = utcnow()
+        stmt = (
+            update(OrgDomain)
+            .where(
+                OrgDomain.id == existing.id,
+                OrgDomain.organization_id == ctx.organization_id,
+                OrgDomain.verified_at.is_(None),
+            )
+            .values(verification_token=new_token, created_at=now)
+        )
+        result = cast("CursorResult[Any]", await session.execute(stmt))
+        if result.rowcount == 0:
+            fresh = await selectors.get_domain(session, ctx.organization_id, existing.id)
+            if fresh is None:
+                raise NotFoundProblem("No such domain")
+            return fresh
+        existing.verification_token = new_token
+        existing.created_at = now
         record_audit(
             session,
             AuditLog,
@@ -1375,6 +1403,18 @@ async def claim_domain(
         )
         return existing
 
+    # **Serialised per organization, transaction-scoped** (round 3): two concurrent claims for
+    # two *different* new domains from the same organization could both read the count below
+    # as one under the cap and both insert, over-running `MAX_DOMAINS_PER_ORGANIZATION` by
+    # however many requests raced. `pg_advisory_xact_lock` is not a security boundary — nothing
+    # downstream trusts the count alone — but it is what makes the count read here still true
+    # at the moment the row below is inserted. Released automatically at commit or rollback,
+    # so there is nothing to remember to release and nothing held across requests or the
+    # existing-domain branch above, which never changes the count and does not need it.
+    await session.execute(
+        text("select pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"domains:{ctx.organization_id}"},
+    )
     current = await selectors.list_domains(session, ctx.organization_id)
     if len(current) >= domain_module.MAX_DOMAINS_PER_ORGANIZATION:
         raise ValidationProblem(
@@ -1642,8 +1682,25 @@ async def recheck_domain(
     at = now or utcnow()
     host = domain_module.verification_txt_host(row.domain)
     expected = domain_module.verification_txt_value(row.verification_token)
-    found = await dns_check.txt_contains(host, expected, resolver=resolver)
+    outcome = await dns_check.check_txt(host, expected, resolver=resolver)
 
+    if outcome is dns_check.Outcome.RESOLVER_ERROR:
+        # **Our own resolver failing to answer is not a fact about the customer's domain.**
+        # Only `last_checked_at` moves — `last_check_ok` stays whatever it last genuinely was,
+        # `consecutive_failures` and `failing_since` are untouched, and `should_demote` is never
+        # even asked. An outage on this side of the connection must never be able to demote a
+        # domain on its own; see `dns_check.py`'s own docstring on `_RESOLVER_ERROR` for the
+        # round-3 finding this closes.
+        row.last_checked_at = at
+        log.warning(
+            "account.domain.recheck_resolver_error",
+            organization_id=str(row.organization_id),
+            domain_id=str(row.id),
+        )
+        await session.flush()
+        return row
+
+    found = outcome is dns_check.Outcome.FOUND
     was_failing = row.failing_since is not None
     row.last_checked_at = at
     row.last_check_ok = found

@@ -3,7 +3,7 @@
 Adds `consecutive_failures` and `demoted_at` to `org_domains` — MAJOR2's automatic-demotion
 policy (`app.domain.should_demote`, `services.recheck_domain`) needs both to decide whether a
 sustained run of failed periodic re-checks should clear `verified_at`. See
-`docs/adr/0017-domain-verification-lifecycle.md` for the decision and
+`docs/adr/0018-domain-verification-lifecycle.md` for the decision and
 `infrastructure/edge/RUNBOOK.md` for the operator-facing side.
 
 `consecutive_failures` is added `NOT NULL` with a server-side default of `0` so every existing

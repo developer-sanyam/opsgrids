@@ -269,7 +269,7 @@ def is_claim_expired(claimed_at: datetime, *, now: datetime | None = None) -> bo
 # routing sign-in the instant it happens, silently to the browser but never silently to the
 # organization — the event and the audit row exist so an administrator finds out. Re-earning
 # `verified_at` after a demotion is an ordinary re-claim and re-verify; nothing here does it
-# for them. See docs/adr/0017-domain-verification-lifecycle.md for the decision record and
+# for them. See docs/adr/0018-domain-verification-lifecycle.md for the decision record and
 # infrastructure/edge/RUNBOOK.md for what an operator does when this fires.
 DEMOTION_FAILING_FOR: Final = timedelta(days=14)
 DEMOTION_MIN_CONSECUTIVE_FAILURES: Final = 3
