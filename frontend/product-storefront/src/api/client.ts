@@ -27,6 +27,7 @@ import type { StoreDoc, Theme } from "@/theme/schema";
 import { quickcart, suggestedBrand, themeByKey, THEMES } from "@/theme/themes";
 import { getStoreIdentity } from "@/settings/api";
 import { CATEGORY_LIST, PRODUCTS, RETAIL_CATEGORY_LIST, RETAIL_PRODUCTS } from "./fixtures";
+import { LIVE, USE_FIXTURES } from "./mode";
 import type { Asset, Category, Page, Product, StoreResponse } from "./types";
 
 /**
@@ -50,14 +51,9 @@ export type {
   StoreContextOut,
 } from "./storeContext";
 
-/** Default source. Fixtures unless `VITE_USE_FIXTURES=false` pins the app to the live gateway.
- *  Dev builds only: `import.meta.env.DEV` compiles to `false` in production, so a stray
- *  CI/production env var can never ship fixture mode — an app rendering fabricated data
- *  with the "Sample data" markers suppressed. */
-export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES !== "false";
-
-/** True when the app is talking to the real gateway. */
-export const LIVE = !USE_FIXTURES;
+/** Fixture mode. Defined in `./mode`, which imports nothing, so `@/settings/api` can read it
+ *  without importing this module back (see that file). Re-exported for every existing caller. */
+export { LIVE, USE_FIXTURES } from "./mode";
 
 /** A generous page size — one request returns the whole (small) catalogue for the theme
  *  renderer's own preview. The dedicated Products/Categories screens page for real. */

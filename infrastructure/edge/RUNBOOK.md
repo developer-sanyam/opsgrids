@@ -633,13 +633,13 @@ docker run --rm \
   -e AWS_ACCESS_KEY_ID="$BACKUP_S3_ACCESS_KEY_ID" \
   -e AWS_SECRET_ACCESS_KEY="$BACKUP_S3_SECRET_ACCESS_KEY" \
   -e AWS_DEFAULT_REGION="$BACKUP_S3_REGION" \
-  -v /srv/opsgrids/backups:/backup amazon/aws-cli:latest \
+  -v /srv/opsgrids/backups:/backup amazon/aws-cli:2.36.50 \
   s3 ls "s3://$BACKUP_S3_BUCKET/$BACKUP_S3_PREFIX/"     # pick the newest name, then:
 docker run --rm \
   -e AWS_ACCESS_KEY_ID="$BACKUP_S3_ACCESS_KEY_ID" \
   -e AWS_SECRET_ACCESS_KEY="$BACKUP_S3_SECRET_ACCESS_KEY" \
   -e AWS_DEFAULT_REGION="$BACKUP_S3_REGION" \
-  -v /srv/opsgrids/backups:/backup amazon/aws-cli:latest \
+  -v /srv/opsgrids/backups:/backup amazon/aws-cli:2.36.50 \
   s3 cp "s3://$BACKUP_S3_BUCKET/$BACKUP_S3_PREFIX/<newest>.sql.gz" /backup/
 
 # 2. Restore it into a scratch database.

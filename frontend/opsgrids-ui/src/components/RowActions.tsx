@@ -148,6 +148,7 @@ export function RowActions({ actions, label, inlineLimit = 3, className }: RowAc
   if (visible.length === 0) return null;
 
   return (
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- an event barrier, not a control: every interactive thing inside is a real <button>; this only stops their clicks and keys reaching a clickable DataTable row.
     <div
       // `gap-2`, not `gap-1`: the 44px hit areas below grow up to 6px past each control, and an
       // 8px gap keeps two of them from overlapping — a thumb must never land on Delete while
@@ -207,6 +208,9 @@ export function RowActions({ actions, label, inlineLimit = 3, className }: RowAc
             <div
               ref={menuRef}
               role="menu"
+              // Focusable by script, not by Tab — the WAI-ARIA menu pattern. Focus lives on the
+              // items; this lets the container own the arrow-key handler above.
+              tabIndex={-1}
               aria-label={`More actions for ${label}`}
               onKeyDown={onMenuKeyDown}
               className={cn(

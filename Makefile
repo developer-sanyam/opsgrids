@@ -164,18 +164,23 @@ typecheck-services: ## mypy per service — they cannot share a process
 	$(call fan_out,app,strict,uv run mypy app)
 
 .PHONY: test
-test: test-libs test-infra test-services ## Everything CI runs
+test: test-libs test-infra test-services ## Every Python suite: libs, repository tooling, services
 
 .PHONY: test-libs
 test-libs: ## Shared library tests
 	uv run pytest libs
 
 .PHONY: test-infra
-test-infra: ## Deploy-tooling tests: remote.sh's rebuild rule, ci-plan.sh's path logic
+test-infra: ## Repository-tooling tests: deploy scripts' path logic, the gate's own checkers
 	# No database, no broker, no `make infra` — each test builds its own throwaway git repo
-	# in a temp dir and drives the real scripts against it. Safe and fast enough to run in
-	# the static job alongside lint and typecheck.
+	# or temp dir and drives the real scripts and functions against it. Safe and fast enough
+	# to run in the static job alongside lint and typecheck.
 	uv run pytest tests/infra -q
+
+.PHONY: shard-verify
+shard-verify: ## Assert SHARDS=3 partitions the service list exactly (no service dropped)
+	@test -n "$(SHARDS)" || (echo "SHARDS= is required" && exit 1)
+	tools/shard-verify.sh $(SHARDS)
 
 .PHONY: test-shard
 test-shard: ## Tests for one shard of services: make test-shard SHARD=1 SHARDS=3
@@ -269,25 +274,86 @@ e2e: e2e-db ## Boot the real services and drive one ordered journey over HTTP
 .PHONY: check
 check: lint typecheck test ## lint + typecheck + test — the fast path
 
-# The frontend's equivalent of `check`, and exactly what the CI frontend job runs. `-r` walks
-# the pnpm workspace, so a new product app is covered the day it is added rather than when
-# somebody remembers to list it here. Needs `pnpm install` in frontend/ once.
+# ---------------------------------------------------------------- the frontend gate
+# One target per row, so a failure names the row, and the CI frontend and supply-chain jobs
+# call exactly these. `-r` walks the pnpm workspace, so a new product app is covered the day it
+# is added rather than when somebody remembers to list it here. `--no-bail` lets every package
+# report before the row fails, the same reason the backend fan-out runs every service.
+#
+# Needs Node 22 and pnpm 11 on PATH, and `make frontend-install` once.
+FRONTEND_PACKAGES := $(notdir $(wildcard frontend/opsgrids-* frontend/product-*))
+
+.PHONY: frontend-install
+frontend-install: ## pnpm install from the lockfile, exactly (fails if package.json and the lock disagree)
+	cd frontend && pnpm install --frozen-lockfile
+
+.PHONY: frontend-typecheck
+frontend-typecheck: ## tsc --noEmit, every app and package
+	cd frontend && pnpm -r --no-bail typecheck
+
+# ESLint through the one shared preset (opsgrids-config/eslint.preset.js): typescript-eslint,
+# react-hooks, jsx-a11y, and the vitest guard against .only / .skip / .todo left in a test.
+# `--max-warnings=0` in every package's script, so a warning is not a way past this row.
+.PHONY: frontend-lint
+frontend-lint: ## ESLint (incl. jsx-a11y and no focused/skipped tests) + unique dev/preview ports
+	cd frontend && pnpm -r --no-bail lint
+	uv run --no-project python tools/frontend_ports.py
+
+# The frontend's `.importlinter`: which package may import which (ADR-0001), and no cycles.
+# One cruise per package because each maps `@/` to its own src/ — see .dependency-cruiser.cjs.
+.PHONY: frontend-boundaries
+frontend-boundaries: ## dependency-cruiser: apps independent, shared packages via exports, no cycles
+	@cd frontend && rc=0; for p in $(FRONTEND_PACKAGES); do \
+	  [ -d "$$p/src" ] || continue; \
+	  echo "→ $$p"; \
+	  DEPCRUISE_PACKAGE=$$p pnpm exec depcruise --config .dependency-cruiser.cjs "$$p" || rc=1; \
+	done; exit $$rc
+
+# `--passWithNoTests` survives only where a package genuinely has no tests yet (opsgrids-internal),
+# so a suite that stops being collected fails here instead of passing with zero.
+.PHONY: frontend-test
+frontend-test: ## vitest, every app and package
+	cd frontend && pnpm -r --no-bail test
+
+# `build:buyer` is the storefront's second bundle — the one buyers actually load on a merchant's
+# own domain (ADR-0012 §2) — and nothing built it before this row did. `--if-present` so any
+# package that grows a second bundle the same way is covered by naming its script build:buyer.
+.PHONY: frontend-build
+frontend-build: ## Production builds, including the storefront's buyer bundle
+	cd frontend && pnpm -r build && pnpm -r --if-present build:buyer
+
+# pnpm audit over the production tree, with an allow-list that expires (tools/npm_audit.py).
+# Needs the network, like `make audit`.
+.PHONY: frontend-audit
+frontend-audit: ## Known high/critical vulnerabilities in what ships to a browser (pnpm audit --prod)
+	uv run --no-project python tools/npm_audit.py
+
+.PHONY: frontend-licenses
+frontend-licenses: ## Every production npm package's licence is on the [npm] allow-list
+	uv run --no-project python tools/licenses.py --npm
+
+.PHONY: frontend-gate
+frontend-gate: frontend-typecheck frontend-lint frontend-boundaries frontend-test frontend-build frontend-audit frontend-licenses ## Every frontend row
+
+# The name this had before the gate was split into rows. Kept so muscle memory still works.
 .PHONY: frontend
-frontend: ## Frontend: typecheck + lint + test + build, every app and package
-	cd frontend && pnpm -r typecheck && pnpm -r lint && pnpm -r test && pnpm -r build
+frontend: frontend-gate ## Alias for frontend-gate
 
 # ---------------------------------------------------------------- the rest of the gate
 # Each of these is one row of the quality gate that used to be reported "N/A — no tooling".
 # They are separate targets, and separate CI steps, so a failure names the row that failed.
 
 # The lock file is what gets audited, not whatever happens to be installed: `uv export` is
-# exactly what uv.lock resolves to, and --no-deps stops pip-audit re-resolving it. This is
-# the one target that needs the network, for the advisory database.
+# exactly what uv.lock resolves to, and --no-deps stops pip-audit re-resolving it. The export
+# is fully pinned (`==` on every line), so --disable-pip is safe: without it pip-audit still
+# builds a throwaway venv with pip in it just to read the file, which is slow and — on a
+# uv-managed Python whose ensurepip aborts — fails the row for a reason unrelated to any
+# vulnerability. This (and frontend-audit) are the targets that need the network.
 .PHONY: audit
 audit: ## Known vulnerabilities in the locked dependency set (pip-audit)
 	uv export --frozen --no-hashes --no-emit-project --no-emit-workspace --color never \
 	  --format requirements-txt \
-	  | uv run pip-audit --no-deps --progress-spinner off -r /dev/stdin
+	  | uv run pip-audit --no-deps --disable-pip --progress-spinner off -r /dev/stdin
 
 .PHONY: licenses
 licenses: ## Every dependency's licence is on the allow-list in tools/licenses.toml
@@ -355,8 +421,85 @@ openapi-check: ## Fail if a committed OpenAPI document or permission manifest is
 contracts-check: ## Every event schema is valid and covers what its service actually emits
 	uv run pytest libs/contracts -q
 
+# ---------------------------------------------------------------- shell scripts and Dockerfiles
+# Both run the pinned version and only the pinned version: a local binary is used when it is
+# exactly that version, otherwise the pinned image. A linter whose rules change with whatever
+# the laptop or the runner happens to have installed gives two answers for one commit —
+# ubuntu-latest ships an older shellcheck than Homebrew, and they disagree.
+#
+# Install locally with `brew install shellcheck hadolint`; without them, Docker is enough.
+SHELLCHECK_VERSION := 0.11.0
+HADOLINT_VERSION   := 2.15.1
+
+# Every tracked *.sh, plus the service entrypoints (services/*/bin/*) that are shell by shebang.
+#
+# `-S style` — every severity, the strictest there is. There are ~150 scripts and the deploy
+# path runs as root on the production box: the cost of reading one more note is lower than the
+# cost of the `A && B || C` that runs C after B succeeded (SC2015, found and fixed in
+# preflight.sh when this row was added). A finding that is deliberate is disabled on its own
+# line with `# shellcheck disable=SCxxxx # reason`, never here. `-x` follows `source`, so
+# remote.sh is checked together with the lib/ it loads.
+.PHONY: shellcheck
+shellcheck: ## shellcheck (pinned) over every shell script, every severity
+	@files=$$( { git ls-files '*.sh'; \
+	  git ls-files 'services/*/bin/*' | xargs awk 'FNR == 1 && /^#!.*[\/ ](ba|da)?sh( |$$)/ { print FILENAME }'; } \
+	  | sort -u ); \
+	args="-x --source-path=SCRIPTDIR -S style"; \
+	echo "→ $$(echo "$$files" | wc -l | tr -d ' ') scripts"; \
+	if shellcheck --version 2>/dev/null | grep -qx 'version: $(SHELLCHECK_VERSION)'; then \
+	  shellcheck $$args $$files; \
+	else \
+	  echo "  (shellcheck $(SHELLCHECK_VERSION) not on PATH — using koalaman/shellcheck:v$(SHELLCHECK_VERSION))"; \
+	  docker run --rm -v "$(CURDIR):/mnt:ro" -w /mnt koalaman/shellcheck:v$(SHELLCHECK_VERSION) $$args $$files; \
+	fi
+
+# Every tracked Dockerfile. The threshold and the reasoned ignores are in .hadolint.yaml.
+.PHONY: hadolint
+hadolint: ## hadolint (pinned) over every Dockerfile
+	@files=$$(git ls-files '*Dockerfile' '*.Dockerfile'); \
+	echo "→ $$(echo "$$files" | wc -l | tr -d ' ') Dockerfiles"; \
+	if hadolint --version 2>/dev/null | grep -q ' $(HADOLINT_VERSION)$$'; then \
+	  hadolint $$files; \
+	else \
+	  echo "  (hadolint $(HADOLINT_VERSION) not on PATH — using hadolint/hadolint:v$(HADOLINT_VERSION))"; \
+	  docker run --rm -v "$(CURDIR):/mnt:ro" -w /mnt hadolint/hadolint:v$(HADOLINT_VERSION) hadolint $$files; \
+	fi
+
+# ---------------------------------------------------------------- the gate
+# `gate` is every row that runs against a database you already have (`make infra` + migrated),
+# in the order that fails cheapest first. It is the union of what the CI jobs run — every CI
+# step calls one of these targets — so a green `make gate` is the same claim as a green CI run,
+# and with GitHub Actions unavailable it is the only one there is.
+#
+# The static rows need nothing but the toolchain; the database rows are last:
+#   migration-roundtrip  upgrade → downgrade → upgrade, every service (CI: migrations shards)
+#   migration-check      models match migrations; needs the schemas at head, which the
+#                        roundtrip leaves them at — so it must stay after it (CI: same shard,
+#                        same order)
+#   smoke                the real entrypoint's /health and /health/ready
+#
+# Not parallel-safe as a whole (`make -j gate`): migration-check depends on the roundtrip's end
+# state. Each row parallelises internally through JOBS instead.
+GATE_STATIC := lint hygiene boundaries typecheck test-infra shard-verify openapi-check \
+               contracts-check shellcheck hadolint audit licenses secrets frontend-gate
+GATE_DB     := test-libs test-services migration-roundtrip migration-check smoke
+
 .PHONY: gate
-gate: check audit licenses secrets hygiene boundaries openapi-check contracts-check migration-roundtrip smoke ## The whole quality gate — everything CI runs
+gate: SHARDS = 3
+gate: $(GATE_STATIC) $(GATE_DB) ## The whole quality gate: every row CI runs, run locally
+	@echo "gate: every row passed"
+
+# `gate` plus the rows too slow or too stateful for every change. Later rows land here, not in
+# `gate`, each as its own target:
+#   e2e       the real services over HTTP (needs `make infra` + opsgrids_wt migrated; see e2e)
+#   images    container image scan                       (extension point — not yet a target)
+#   visual    visual regression over the component stories (extension point — not yet a target)
+#   a11y      axe over the component stories              (extension point — not yet a target)
+GATE_FULL_EXTRA := e2e
+
+.PHONY: gate-full
+gate-full: gate $(GATE_FULL_EXTRA) ## gate + the slow rows (end-to-end today; images/visual/a11y later)
+	@echo "gate-full: every row passed"
 
 # ---------------------------------------------------------------- the edge (ADR-0012)
 # One Linux VM, Docker Compose and Caddy. Deploys are `ssh` from a laptop with the engineer's
