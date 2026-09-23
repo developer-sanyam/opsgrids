@@ -470,6 +470,12 @@ async def get_tenant_session(
     Opens the transaction and binds it to the caller's organization as its *first*
     statement, then yields. Commits on a clean return, rolls back on an exception.
 
+    **Declare it with `Depends(get_tenant_session, scope="function")`.** With FastAPI's
+    default scope the exit code — the commit — runs after the response has been sent, so a
+    client can be told 201 for a row its next request cannot see, or for a commit that then
+    fails. `tests/infra/test_session_dependency_scope.py` enforces this for every dependency
+    that opens a transaction and yields.
+
     It has to be the transaction opener rather than something that runs before one. A
     dependency that merely set the GUC and yielded would autobegin a transaction, and the
     route's own `async with session.begin()` would then raise "a transaction is already

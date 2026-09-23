@@ -58,7 +58,7 @@ router = APIRouter(tags=["support"])
 
 #: **The tenancy chokepoint.** Opens the transaction and binds it to the caller's organization
 #: before the route body runs, so no route can read or write without one.
-SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 
 #: The `support` entitlement gate, applied to every principal route as well as at the gateway.
 Entitled = Depends(require_product("support"))
