@@ -55,6 +55,12 @@ class CompanyDeleted(ConversionRejected):
     is gone, point this lead somewhere else"."""
 
 
+class ContactDeleted(ConversionRejected):
+    """The contact-side twin of `CompanyDeleted`: the contact an earlier attempt created for
+    this lead has since been deleted. Same handling — permanent for *these* ids, recoverable
+    by converting again under a fresh generation of them."""
+
+
 def _problem_type(response: httpx.Response) -> str | None:
     """The RFC 7807 `type` field off a JSON error body, or `None` on anything that is not
     one — never the body itself, and never raises. `type` is a small, fixed enum-like string
@@ -122,9 +128,14 @@ async def ensure_company_and_contact(
     if response.status_code == 404:
         log.warning("lead.clients.owner_unknown", status=response.status_code)
         raise OwnerUnknown("that owner is not an active rep in this organization's CRM book")
-    if response.status_code == 409 and (_problem_type(response) or "").endswith("/company-deleted"):
-        log.warning("lead.clients.company_deleted", status=response.status_code)
-        raise CompanyDeleted("that company has been deleted from the CRM book")
+    if response.status_code == 409:
+        problem_type = _problem_type(response) or ""
+        if problem_type.endswith("/company-deleted"):
+            log.warning("lead.clients.company_deleted", status=response.status_code)
+            raise CompanyDeleted("that company has been deleted from the CRM book")
+        if problem_type.endswith("/contact-deleted"):
+            log.warning("lead.clients.contact_deleted", status=response.status_code)
+            raise ContactDeleted("that contact has been deleted from the CRM book")
     if response.status_code >= 500:
         log.error("lead.clients.customer_upstream_error", status=response.status_code)
         raise ConversionUnavailable("customer-service is temporarily unavailable")

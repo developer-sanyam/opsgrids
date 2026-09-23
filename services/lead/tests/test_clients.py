@@ -149,6 +149,38 @@ class TestEnsureCompanyAndContact:
                 ),
             )
 
+    async def test_a_contact_deleted_problem_type_raises_contact_deleted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                409,
+                json={
+                    "type": "https://errors.opsgrids.dev/contact-deleted",
+                    "title": "That contact has been deleted",
+                    "status": 409,
+                    "detail": "gone",
+                },
+            )
+
+        with pytest.raises(clients.ContactDeleted) as excinfo:
+            await _with_transport(
+                handler,
+                monkeypatch,
+                lambda: clients.ensure_company_and_contact(
+                    _settings(),
+                    uuid.uuid4(),
+                    company_id=uuid.uuid4(),
+                    contact_id=uuid.uuid4(),
+                    company_name="Stellar Robotics",
+                    owner_id=uuid.uuid4(),
+                    contact_full_name="Priya Sharma",
+                    contact_email="priya@stellar.example",
+                    contact_raw_phone=None,
+                ),
+            )
+        assert not isinstance(excinfo.value, clients.CompanyDeleted)
+
     async def test_an_ordinary_409_is_not_confused_with_company_deleted(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

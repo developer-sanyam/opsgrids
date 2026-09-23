@@ -118,7 +118,9 @@ def _aware(dt: datetime) -> datetime:
 _CONVERSION_NAMESPACE = uuid.UUID("6f2e6f3a-6d1e-4b6a-9c8e-2f7a5b1d4c90")
 
 
-def conversion_ids(lead_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+def conversion_ids(
+    lead_id: uuid.UUID, generation: int = 0
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
     """The `(company_id, contact_id, deal_id)` a lead converts into — deterministic from the
     lead's own id, so calling `:convert` twice computes the *same* three ids both times.
 
@@ -128,11 +130,18 @@ def conversion_ids(lead_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]
     instead of duplicating them. `uuid5` rather than a stored counter or a random id — no
     coordination needed, and the ids are reproducible from `lead_id` alone even if the first
     attempt's response was lost before this service saw it.
+
+    `generation` is the one stored counter, and it exists for exactly one case: a record an
+    earlier attempt created was deleted afterwards, so its deterministic id can never be
+    reused (`Lead.conversion_generation`). Generation `0` derives exactly the ids this
+    function always has — nothing already handed out changes — and each later generation is a
+    fresh, equally reproducible set.
     """
+    suffix = "" if generation == 0 else f":{generation}"
     return (
-        uuid.uuid5(_CONVERSION_NAMESPACE, f"{lead_id}:company"),
-        uuid.uuid5(_CONVERSION_NAMESPACE, f"{lead_id}:contact"),
-        uuid.uuid5(_CONVERSION_NAMESPACE, f"{lead_id}:deal"),
+        uuid.uuid5(_CONVERSION_NAMESPACE, f"{lead_id}:company{suffix}"),
+        uuid.uuid5(_CONVERSION_NAMESPACE, f"{lead_id}:contact{suffix}"),
+        uuid.uuid5(_CONVERSION_NAMESPACE, f"{lead_id}:deal{suffix}"),
     )
 
 

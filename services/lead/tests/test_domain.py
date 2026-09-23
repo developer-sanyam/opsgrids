@@ -58,6 +58,25 @@ class TestConversionIds:
         ids = domain.conversion_ids(uuid.uuid4())
         assert len(set(ids)) == 3
 
+    def test_generation_zero_derives_exactly_the_ids_the_function_always_has(self) -> None:
+        """Nothing already handed out may change: a lead converted before generations existed
+        must still derive the same three ids from its own id."""
+        lead_id = uuid.uuid4()
+        ns = domain._CONVERSION_NAMESPACE
+        assert domain.conversion_ids(lead_id) == domain.conversion_ids(lead_id, 0)
+        assert domain.conversion_ids(lead_id, 0) == (
+            uuid.uuid5(ns, f"{lead_id}:company"),
+            uuid.uuid5(ns, f"{lead_id}:contact"),
+            uuid.uuid5(ns, f"{lead_id}:deal"),
+        )
+
+    def test_each_generation_is_a_fresh_reproducible_set(self) -> None:
+        lead_id = uuid.uuid4()
+        first = domain.conversion_ids(lead_id, 1)
+        assert first == domain.conversion_ids(lead_id, 1)
+        assert set(first).isdisjoint(domain.conversion_ids(lead_id, 0))
+        assert set(first).isdisjoint(domain.conversion_ids(lead_id, 2))
+
 
 class TestDealName:
     def test_a_short_name_is_returned_with_its_lead_id_suffix_untouched(self) -> None:

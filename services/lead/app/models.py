@@ -122,6 +122,16 @@ class Lead(Base, TenantBase):
     #: attempt start with no lease to wait out.
     conversion_claim_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     conversion_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Folded into the input `domain.conversion_ids` derives this lead's company, contact and
+    #: deal ids from — `0` for every lead that has never hit the case below, so every id already
+    #: handed out stays exactly what it was. `services.fail_conversion` bumps it when customer
+    #: reports the record an *earlier* attempt created has since been deleted: the ids are
+    #: deterministic on purpose (that is the whole idempotency mechanism), which means a
+    #: deleted record at a lead's deterministic id would otherwise refuse every future attempt
+    #: forever. A new generation is a new set of ids — fresh records, same lead.
+    conversion_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
 
     __table_args__ = (
         # Every index leads with `organization_id`: the RLS policy qual is ANDed into every

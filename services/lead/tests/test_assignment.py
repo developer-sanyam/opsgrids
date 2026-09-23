@@ -185,6 +185,45 @@ class TestRoundRobinSkipsInactiveOwners:
             lead = await _create(session, write, "Nobody left")
         assert lead.owner_id is None
 
+    async def test_an_unreachable_directory_falls_back_to_the_last_confirmed_answer_even_if_stale(
+        self, session, org_id, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """m2, fix round 3 (reverses the earlier fail-open): when the directory cannot be
+        asked, the last *confirmed* active set for this exact owner set is used however old it
+        is — never "everyone is active", and not "nobody" either while a real answer exists."""
+        write = ctx_for(org_id, "crm.lead.lead.write", Scope.ORG)
+        good_a, gone_bad, good_b = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        async with session.begin():
+            await services.set_assignment_rule(
+                session, write, mode="round_robin", owner_ids=[good_a, gone_bad, good_b]
+            )
+
+        async def _one_inactive(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
+            return [gone_bad]
+
+        monkeypatch.setattr(clients, "invalid_owner_ids", _one_inactive)
+        async with session.begin():
+            await _create(session, write, "Confirms the directory once")
+
+        # Age the confirmed answer past its TTL without touching what it says.
+        key, active, _expired_at = services._assignment_active_cache[org_id]
+        services._assignment_active_cache[org_id] = (key, active, 0.0)
+
+        async def _unreachable(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
+            raise clients.OwnersValidateUnavailable("down")
+
+        monkeypatch.setattr(clients, "invalid_owner_ids", _unreachable)
+
+        assigned = []
+        for i in range(4):
+            async with session.begin():
+                lead = await _create(session, write, f"During the outage {i}")
+            assigned.append(lead.owner_id)
+
+        assert gone_bad not in assigned
+        assert None not in assigned
+        assert set(assigned) <= {good_a, good_b}
+
     async def test_the_directory_is_not_asked_again_within_the_cache_window(
         self, session, org_id, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -266,3 +305,111 @@ class TestRoundRobinConcurrency:
             rule = await selectors.get_assignment_rule(session, org_id)
         assert rule is not None
         assert rule.cursor == 2
+
+
+class TestOwnerDirectoryNeverBlocksTheRotationLock:
+    """M1, fix round 3: resolving which of the rule's owners are still active is a network
+    call, and it used to run *after* the assignment rule's row was locked — so a hanging
+    customer-service serialized every concurrent lead capture for the organization behind
+    that one row, each holding a pooled connection for as long as the call took. It now
+    resolves against a plain, unlocked read before the rule is ever locked."""
+
+    def _connect_args(self) -> dict:
+        return {"server_settings": {"search_path": f"{SCHEMA},public"}}
+
+    async def test_the_rotations_row_is_not_locked_while_the_directory_is_being_asked(
+        self, org_id, session, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        owners = [uuid.uuid4(), uuid.uuid4()]
+        write = ctx_for(org_id, "crm.lead.lead.write", Scope.ORG)
+
+        async def _none_invalid_fast(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
+            return []
+
+        monkeypatch.setattr(clients, "invalid_owner_ids", _none_invalid_fast)
+        async with session.begin():
+            await services.set_assignment_rule(session, write, mode="round_robin", owner_ids=owners)
+
+        release_directory_call = asyncio.Event()
+        directory_call_started = asyncio.Event()
+
+        async def _slow_directory(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
+            directory_call_started.set()
+            await release_directory_call.wait()
+            return []
+
+        monkeypatch.setattr(clients, "invalid_owner_ids", _slow_directory)
+
+        cfg = settings()
+        engine_a = create_async_engine(cfg.app_dsn, connect_args=self._connect_args())
+        engine_b = create_async_engine(cfg.app_dsn, connect_args=self._connect_args())
+        maker_a = async_sessionmaker(engine_a, expire_on_commit=False)
+        maker_b = async_sessionmaker(engine_b, expire_on_commit=False)
+
+        def _bind(org: uuid.UUID):
+            def _listener(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+                connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org}', true)")
+
+            return _listener
+
+        try:
+            async with maker_a() as session_a, maker_b() as session_b:
+                sa_event.listen(session_a.sync_session, "after_begin", _bind(org_id))
+                sa_event.listen(session_b.sync_session, "after_begin", _bind(org_id))
+
+                async def _create_a() -> None:
+                    async with session_a.begin():
+                        await _create(session_a, write, "Waits on the directory")
+
+                async def _lock_rule_from_b() -> None:
+                    # Proves the row is free: a second, independent session can take the same
+                    # FOR UPDATE lock while A's directory call is still in flight. Under the
+                    # old shape (lock, then call out) this would hang until A's call finished.
+                    await directory_call_started.wait()
+                    async with session_b.begin():
+                        rule = await selectors.get_assignment_rule_for_update(session_b, org_id)
+                        assert rule is not None
+
+                task_a = asyncio.create_task(_create_a())
+                task_b = asyncio.create_task(_lock_rule_from_b())
+                await asyncio.wait_for(task_b, timeout=2.0)
+                release_directory_call.set()
+                await asyncio.wait_for(task_a, timeout=2.0)
+        finally:
+            await engine_a.dispose()
+            await engine_b.dispose()
+
+    async def test_an_unreachable_directory_is_not_waited_out_a_second_time(
+        self, org_id, session, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        owners = [uuid.uuid4(), uuid.uuid4()]
+        write = ctx_for(org_id, "crm.lead.lead.write", Scope.ORG)
+
+        async def _none_invalid(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
+            return []
+
+        monkeypatch.setattr(clients, "invalid_owner_ids", _none_invalid)
+        async with session.begin():
+            await services.set_assignment_rule(session, write, mode="round_robin", owner_ids=owners)
+
+        calls = 0
+
+        async def _always_unreachable(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0.05)
+            raise clients.OwnersValidateUnavailable("down")
+
+        monkeypatch.setattr(clients, "invalid_owner_ids", _always_unreachable)
+
+        async with session.begin():
+            lead_1 = await _create(session, write, "During the outage 1")
+        async with session.begin():
+            lead_2 = await _create(session, write, "During the outage 2")
+
+        # Nobody validated -> nobody assigned (m2's fail-closed decision), for both captures.
+        assert lead_1.owner_id is None
+        assert lead_2.owner_id is None
+        # But the second capture did not wait out its own timeout against the still-down
+        # directory -- the cached "unavailable" outcome answered it instead.
+        assert calls == 1

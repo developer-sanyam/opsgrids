@@ -13,13 +13,20 @@ record — three steps, three transactions, with the two calls to customer's and
 own docstring for why holding a row lock (or worse, a whole request's transaction) across two
 network calls was the bug this shape replaces.
 
-`set_assignment_rule`, `create_lead` and `update_lead`'s owner validation (`_ensure_owners_
-active`) are a smaller, accepted version of the same trade-off: they call customer-service's
-`owners:validate` from inside the request's one transaction, holding it open for the round
-trip. Unlike `:convert`, none of these sits on a hot path a rep repeats constantly, and none of
-them opens a sealed value first — a live database transaction blocked on a single fast internal
-call from a low-frequency write is a smaller cost than the extra transaction-splitting `:convert`
-needed to keep decrypted PII off an open connection.
+`set_assignment_rule`, `create_lead` and `update_lead`'s explicit-`owner_id` validation
+(`_ensure_owners_active`) are a smaller, accepted version of the same trade-off: they call
+customer-service's `owners:validate` from inside the request's one transaction, holding it
+open for the round trip. Unlike `:convert`, none of these sits on a hot path a rep repeats
+constantly, and none of them opens a sealed value first — a live database transaction blocked
+on a single fast internal call from a low-frequency write is a smaller cost than the extra
+transaction-splitting `:convert` needed to keep decrypted PII off an open connection.
+
+Round-robin assignment (`_resolve_round_robin_snapshot`/`_assign_owner`) does **not** take
+that trade — a lead capture with no explicit owner is exactly the hot path the paragraph above
+distinguishes itself from, and the row it would otherwise hold locked across the same network
+call is the *whole organization's* rotation, not this one write's own row. Its owner-directory
+call runs against a plain, unlocked read, before `create_lead` ever locks the assignment rule;
+see `_resolve_round_robin_snapshot`'s own docstring.
 """
 
 from __future__ import annotations
@@ -61,6 +68,10 @@ log = get_logger("lead.services")
 EVT_LEAD_CREATED = "crm.lead.created"
 EVT_LEAD_UPDATED = "crm.lead.updated"
 EVT_LEAD_CONVERTED = "crm.lead.converted"
+#: Staged when `finalize_conversion` refuses to write "converted" — the records customer and
+#: deal already created for the attempt are still there, and this is the hook a consumer would
+#: use to clean them up (see ADR-0017's note: no consumer acts on it yet).
+EVT_LEAD_CONVERSION_ABORTED = "crm.lead.conversion_aborted"
 
 #: How far out a converted lead's deal defaults to closing. A lead carries no close date of
 #: its own (ecosystem-gaps.md §2 — that is exactly why it is not modelled as a deal), so
@@ -193,18 +204,42 @@ async def set_assignment_rule(
     return rule
 
 
-#: How long `_active_owner_ids_for_assignment` trusts its last answer for a given
+#: How long `_active_owner_ids_for_assignment` trusts its last *confirmed* answer for a given
 #: (organization, exact owner set) before asking customer-service again. A lead capture is a
 #: hot path in a way an explicit `owner_id` write or a rule reconfiguration is not, so this
 #: exists to spare customer-service a round trip per lead rather than per minute; see that
 #: function's own docstring for the trade this makes.
 _ASSIGNMENT_ACTIVE_CACHE_TTL_SECONDS = 60
 
+#: How long a *failed* attempt to reach the directory is remembered, separately from a
+#: confirmed answer's own TTL above. Short, on purpose: long enough that a burst of lead
+#: captures during a genuine outage does not each wait out their own timeout against a
+#: customer-service that is still down, short enough that service coming back is noticed soon
+#: after.
+_ASSIGNMENT_UNAVAILABLE_CACHE_TTL_SECONDS = 15
+
 #: Process-local, not shared across workers or restarts — a stale entry only ever means a
 #: newly-inactive owner keeps a slot in the rotation for up to a minute longer than it should,
 #: never the other direction (an active owner wrongly skipped), so a cold cache or a
 #: multi-process deployment degrades to "revalidate more often", not to an incorrect answer.
 _assignment_active_cache: dict[uuid.UUID, tuple[frozenset[uuid.UUID], set[uuid.UUID], float]] = {}
+
+#: Which (organization, owner set) the directory most recently refused to answer, and until
+#: when that failure is still remembered — `_active_owner_ids_for_assignment`'s own circuit
+#: breaker, so a hanging customer-service costs one timeout per org per
+#: `_ASSIGNMENT_UNAVAILABLE_CACHE_TTL_SECONDS`, not one per lead captured in that window.
+_assignment_unavailable_cache: dict[uuid.UUID, tuple[frozenset[uuid.UUID], float]] = {}
+
+
+def _last_confirmed_active(organization_id: uuid.UUID, key: frozenset[uuid.UUID]) -> set[uuid.UUID]:
+    """The most recent *confirmed* answer for this exact owner set, regardless of how long ago
+    it expired — used only when the directory cannot be asked again right now. Never a value
+    for a *different* owner set: a reconfigure invalidates the cache the same way it always
+    has, because a different set never matches here either."""
+    cached = _assignment_active_cache.get(organization_id)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    return set()
 
 
 async def _active_owner_ids_for_assignment(
@@ -221,19 +256,33 @@ async def _active_owner_ids_for_assignment(
     reconfigure, an owner added or removed), because a different set never matches a cached
     one.
 
-    Fails open on `OwnersValidateUnavailable` — an explicit `owner_id` write refuses outright
-    when the directory cannot be reached (`_ensure_owners_active`), but that write has a
-    caller right there to tell "try again"; a lead capture behind an unreachable directory has
-    none, and failing every capture along with the directory is a worse outage than assigning
-    a lead to a rep who turns out, rarely, to have just been deactivated.
+    Fails **closed** on `OwnersValidateUnavailable` (reversed from this function's first
+    version, which failed open): an owner this function cannot actually confirm is active is
+    never handed out. Falls back to the last *confirmed* answer for this exact set if one
+    exists, however stale, and to an empty set — nobody assigned, `_assign_owner`'s own
+    all-inactive path — if there has never been one. A failure is itself remembered for
+    `_ASSIGNMENT_UNAVAILABLE_CACHE_TTL_SECONDS`, so a customer-service outage costs this
+    function one attempt per organization per that window, not one per lead captured in it —
+    the same reasoning `_ASSIGNMENT_ACTIVE_CACHE_TTL_SECONDS` already gives a healthy answer,
+    just shorter, because a recovering directory should be noticed sooner than that.
+
+    Must never run with the assignment rule's row locked — see `create_lead`'s own call site.
     """
     key = frozenset(owner_ids)
     now = time.monotonic()
+
     cached = _assignment_active_cache.get(organization_id)
-    if cached is not None:
-        cached_key, cached_active, expires_at = cached
-        if cached_key == key and now < expires_at:
-            return cached_active
+    if cached is not None and cached[0] == key and now < cached[2]:
+        return cached[1]
+
+    unavailable = _assignment_unavailable_cache.get(organization_id)
+    if unavailable is not None and unavailable[0] == key and now < unavailable[1]:
+        log.warning(
+            "lead.assignment.owner_directory_unreachable",
+            organization_id=str(organization_id),
+            cached=True,
+        )
+        return _last_confirmed_active(organization_id, key)
 
     cfg = settings()
     try:
@@ -242,8 +291,13 @@ async def _active_owner_ids_for_assignment(
         log.warning(
             "lead.assignment.owner_directory_unreachable",
             organization_id=str(organization_id),
+            cached=False,
         )
-        return set(owner_ids)
+        _assignment_unavailable_cache[organization_id] = (
+            key,
+            now + _ASSIGNMENT_UNAVAILABLE_CACHE_TTL_SECONDS,
+        )
+        return _last_confirmed_active(organization_id, key)
 
     active = set(owner_ids) - invalid
     _assignment_active_cache[organization_id] = (
@@ -254,8 +308,41 @@ async def _active_owner_ids_for_assignment(
     return active
 
 
+async def _resolve_round_robin_snapshot(
+    session: AsyncSession, ctx: ScopeContext
+) -> tuple[list[uuid.UUID], set[uuid.UUID]]:
+    """The owner-set snapshot `_assign_owner` needs, read and resolved **before any row is
+    locked**.
+
+    This is the fix for the finding that mattered most here: the old shape read the rule
+    *locked*, then asked customer-service which of its owners were still active while still
+    holding that lock — so a hanging customer-service serialized every concurrent lead
+    creation for the organization on this one row, each holding a database connection out of
+    the pool for however long the network call took. A plain, unlocked read costs the same one
+    round trip (or, within the cache window, none) without blocking anyone else's read of the
+    same row while it happens.
+
+    Returns `(owner_ids, active)` as read *right now* — `_assign_owner` re-reads the rule
+    locked afterwards and compares; if a concurrent reconfigure changed `owner_ids` in the
+    gap, the snapshot resolved here is simply not for the row it ends up locking, and
+    `_assign_owner` falls back to its own cache-or-empty rule rather than resolving again
+    while holding the lock.
+    """
+    rule = await selectors.get_assignment_rule(session, ctx.organization_id)
+    if rule is None or rule.mode != "round_robin" or not rule.owner_ids:
+        return [], set()
+    owner_ids = list(rule.owner_ids)
+    active = await _active_owner_ids_for_assignment(ctx.organization_id, owner_ids)
+    return owner_ids, active
+
+
 async def _assign_owner(
-    session: AsyncSession, ctx: ScopeContext, rule: AssignmentRule
+    session: AsyncSession,
+    ctx: ScopeContext,
+    rule: AssignmentRule,
+    *,
+    snapshot_owner_ids: list[uuid.UUID],
+    snapshot_active: set[uuid.UUID],
 ) -> uuid.UUID | None:
     """Round-robin's write half: `domain.next_owner` picks, this advances the cursor in the
     same transaction as the lead it assigns. `rule` must already be row-locked
@@ -264,12 +351,33 @@ async def _assign_owner(
     `owner_ids[0]` and both advancing the cursor to `1`, the same rep twice with the rotation
     never having moved. Returns `None` under `manual` mode, an empty rotation, or one whose
     every owner has since gone inactive (logged, once, the moment it happens rather than
-    silently) — a lead with no owner is a valid, unassigned lead, not an error."""
+    silently) — a lead with no owner is a valid, unassigned lead, not an error.
+
+    `snapshot_owner_ids`/`snapshot_active` come from `_resolve_round_robin_snapshot`, resolved
+    *before* `rule` was locked. Never calls out to customer-service itself — that is exactly
+    what would hold this row's lock across a network round trip again. If the now-locked
+    `rule.owner_ids` still matches the snapshot, its already-resolved active set is used
+    directly; if a concurrent reconfigure changed it in the gap between the snapshot and the
+    lock, this falls back to a cached answer for the *new* set if one happens to exist, or
+    treats the lead as unassigned for this one capture rather than resolving inline.
+    """
     if rule.mode != "round_robin":
         return None
     if not rule.owner_ids:
         return None
-    active = await _active_owner_ids_for_assignment(ctx.organization_id, rule.owner_ids)
+    if list(rule.owner_ids) == snapshot_owner_ids:
+        active = snapshot_active
+    else:
+        key = frozenset(rule.owner_ids)
+        cached = _assignment_active_cache.get(ctx.organization_id)
+        if cached is not None and cached[0] == key and time.monotonic() < cached[2]:
+            active = cached[1]
+        else:
+            log.warning(
+                "lead.assignment.owner_set_changed_under_lock",
+                organization_id=str(ctx.organization_id),
+            )
+            active = set()
     rotation = [owner_id for owner_id in rule.owner_ids if owner_id in active]
     if not rotation:
         log.warning("lead.assignment.all_owners_inactive", organization_id=str(ctx.organization_id))
@@ -333,8 +441,19 @@ async def create_lead(
 
     resolved_owner_id = owner_id
     if resolved_owner_id is None:
+        # Resolved *before* the rule's row is locked (M1, fix round 3) — asking
+        # customer-service which owners are still active is a network call, and the row this
+        # locks is the whole organization's rotation; holding that lock across a hanging
+        # customer-service would serialize every other concurrent lead capture behind it.
+        snapshot_owner_ids, snapshot_active = await _resolve_round_robin_snapshot(session, ctx)
         rule = await _get_or_create_rule(session, ctx)
-        resolved_owner_id = await _assign_owner(session, ctx, rule)
+        resolved_owner_id = await _assign_owner(
+            session,
+            ctx,
+            rule,
+            snapshot_owner_ids=snapshot_owner_ids,
+            snapshot_active=snapshot_active,
+        )
 
     lead = Lead(
         organization_id=ctx.organization_id,
@@ -626,7 +745,7 @@ async def claim_conversion(
         lead.updated_by = str(ctx.principal.sub)
         await session.flush()
 
-        company_id, contact_id, deal_id = domain.conversion_ids(lead.id)
+        company_id, contact_id, deal_id = domain.conversion_ids(lead.id, lead.conversion_generation)
 
         return ConversionClaim(
             lead_id=lead.id,
@@ -650,6 +769,7 @@ async def finalize_conversion(
     *,
     lead_id: uuid.UUID,
     claim_id: uuid.UUID,
+    owner_id: uuid.UUID,
     company_id: uuid.UUID,
     contact_id: uuid.UUID | None,
     deal_id: uuid.UUID,
@@ -663,20 +783,27 @@ async def finalize_conversion(
     owns (the second attempt's own `finalize_conversion` is the one that gets to write the
     outcome; this one's caller should treat the 409 as "someone else finished this").
 
-    Also requires the row's own `status` still be `"qualified"` before writing "converted" —
-    the claim/lease pair stops a *second `:convert`* from racing this one, and `update_lead`'s
-    own claim check stops an ordinary PATCH from doing it while this attempt's lease is live,
-    but neither is airtight against every future caller of this row (an admin tool, a bulk
-    script) and this is the last place before "converted" is written that can still say no. A
-    status other than `"qualified"` here aborts the claim instead of overwriting whatever it
-    moved to, and records why.
+    Also requires the row's own `status` still be `"qualified"` and its `owner_id` still be the
+    one `claim_conversion` snapshotted (`owner_id` here) before writing "converted" — the
+    records customer and deal created were opened *for that owner*, so a reassignment in the
+    gap means they no longer describe this lead. The claim/lease pair stops a *second
+    `:convert`* from racing this one, and `update_lead`'s own claim check stops an ordinary
+    PATCH from doing either while this attempt's lease is live, but neither is airtight
+    against every future caller of this row (an admin tool, a bulk script) and this is the
+    last place before "converted" is written that can still say no. Either mismatch aborts the
+    claim instead of overwriting whatever it moved to, and records why — including the ids of
+    the records the calls already created, which nothing here can take back — and stages
+    `crm.lead.conversion_aborted` so something that can (a consumer, later) knows they are
+    now orphans.
     """
-    # `aborted`/`missing_claim` decide what to raise *after* the `async with` below exits —
+    # `abort_reason`/`missing_claim` decide what to raise *after* the `async with` below exits —
     # never from inside it. Raising from inside a `session.begin()` block rolls the whole
     # transaction back, which for the abort path would silently undo the very things this
-    # function exists to make durable: the cleared claim and the audit row explaining why.
+    # function exists to make durable: the cleared claim, the audit row explaining why, and
+    # the event.
     missing_claim = False
-    aborted_status: str | None = None
+    abort_reason: str | None = None
+    detail = ""
 
     async with session.begin():
         await _bind_tenant(session, ctx.organization_id)
@@ -687,11 +814,22 @@ async def finalize_conversion(
         else:
             before_status = lead.status
             if before_status != "qualified":
-                aborted_status = before_status
+                abort_reason = "status_changed"
+                detail = f"lead moved to {before_status!r} before the conversion finished"
+            elif lead.owner_id != owner_id:
+                abort_reason = "owner_changed"
+                detail = "lead was reassigned before the conversion finished"
+
+            if abort_reason is not None:
                 lead.conversion_claim_id = None
                 lead.conversion_claimed_at = None
                 lead.updated_by = str(ctx.principal.sub)
                 await session.flush()
+                orphans = {
+                    "company_id": str(company_id),
+                    "contact_id": str(contact_id) if contact_id else None,
+                    "deal_id": str(deal_id),
+                }
                 record_audit(
                     session,
                     AuditLog,
@@ -700,11 +838,27 @@ async def finalize_conversion(
                     action="lead.conversion_aborted",
                     entity="lead",
                     entity_id=lead.id,
-                    before={"status": before_status},
-                    after={
-                        "reason": f"lead moved to {before_status!r} before the conversion finished"
+                    before={
+                        "status": before_status,
+                        "owner_id": str(lead.owner_id) if lead.owner_id else None,
                     },
+                    after={"reason": detail, **orphans},
                     request=request,
+                )
+                publish_event(
+                    session,
+                    OutboxEvent,
+                    organization_id=ctx.organization_id,
+                    event_type=EVT_LEAD_CONVERSION_ABORTED,
+                    aggregate_type="lead",
+                    aggregate_id=lead.id,
+                    payload={
+                        "organization_id": str(ctx.organization_id),
+                        "lead_id": str(lead.id),
+                        "reason": abort_reason,
+                        **orphans,
+                    },
+                    actor=_actor(ctx),
                 )
             else:
                 lead.status = "converted"
@@ -756,10 +910,15 @@ async def finalize_conversion(
             "This lead's conversion claim was taken over by another attempt. "
             "Call :convert again to get the current result."
         )
-    if aborted_status is not None:
+    if abort_reason == "status_changed":
         raise ConflictProblem(
             "This lead's status changed before the conversion could complete. "
             "Check its current status and try again."
+        )
+    if abort_reason == "owner_changed":
+        raise ConflictProblem(
+            "This lead was reassigned before the conversion could complete. "
+            "Check its current owner and try again."
         )
 
 
@@ -770,6 +929,7 @@ async def fail_conversion(
     lead_id: uuid.UUID,
     claim_id: uuid.UUID,
     reason: str,
+    bump_generation: bool = False,
     request: Request | None = None,
 ) -> None:
     """The other half of Tx2: clear a claim that will not be finalized, so the *next* attempt
@@ -779,6 +939,12 @@ async def fail_conversion(
     of `app/clients.py`'s own fixed, generic exception messages — never an upstream response
     body — recorded so the audit trail says *that* a conversion attempt failed and roughly
     why, without carrying anything either target service said back to us.
+
+    `bump_generation` is for the one failure that would otherwise be permanent: customer
+    reporting that the company or contact an *earlier* attempt created for this lead was
+    deleted. The ids `domain.conversion_ids` derives are deterministic, so a deleted record at
+    one of them refuses every future attempt on the same ids forever — bumping
+    `Lead.conversion_generation` makes the next attempt derive a fresh set instead.
 
     A no-op if the claim has already been taken over or cleared by someone else — there is
     nothing left for this attempt to fail on the row's behalf.
@@ -793,6 +959,10 @@ async def fail_conversion(
         lead.conversion_claim_id = None
         lead.conversion_claimed_at = None
         lead.updated_by = str(ctx.principal.sub)
+        after: dict[str, Any] = {"reason": reason}
+        if bump_generation:
+            lead.conversion_generation += 1
+            after["conversion_generation"] = lead.conversion_generation
         await session.flush()
 
         record_audit(
@@ -803,7 +973,7 @@ async def fail_conversion(
             action="lead.conversion_failed",
             entity="lead",
             entity_id=lead.id,
-            after={"reason": reason},
+            after=after,
             request=request,
         )
 
@@ -881,16 +1051,23 @@ async def convert_lead(
         raise ValidationProblem(
             "Assign an owner known to the CRM book before converting this lead"
         ) from exc
-    except clients.CompanyDeleted as exc:
-        # Checked by exception type (customer's own `company-deleted` problem type,
-        # `clients._problem_type`), never by re-deriving it from a bare 404 or 409 alone —
-        # a 404 here means "unknown owner" (`OwnerUnknown`, above), not a deleted company.
+    except (clients.CompanyDeleted, clients.ContactDeleted) as exc:
+        # Checked by exception type (customer's own `company-deleted` / `contact-deleted`
+        # problem types, `clients._problem_type`), never by re-deriving it from a bare 404 or
+        # 409 alone — a 404 here means "unknown owner" (`OwnerUnknown`, above), not a deleted
+        # record. Bumps the generation so the *next* attempt derives fresh ids rather than
+        # hitting the same deleted record at the same deterministic id forever.
         await fail_conversion(
-            session, ctx, lead_id=claim.lead_id, claim_id=claim_id, reason=str(exc)
+            session,
+            ctx,
+            lead_id=claim.lead_id,
+            claim_id=claim_id,
+            reason=str(exc),
+            bump_generation=True,
         )
         raise ValidationProblem(
-            "The company was deleted in the CRM book. Assign this lead to a different "
-            "company before converting it."
+            "The CRM record created by an earlier attempt was deleted — convert again to "
+            "create fresh records."
         ) from exc
     except clients.ConversionRejected as exc:
         await fail_conversion(
@@ -912,6 +1089,7 @@ async def convert_lead(
         ctx,
         lead_id=claim.lead_id,
         claim_id=claim_id,
+        owner_id=owner_id,
         company_id=company_id,
         contact_id=contact_id,
         deal_id=deal_id,

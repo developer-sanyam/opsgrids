@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from pathlib import Path
 
 import pytest
 from sqlalchemy import event as sa_event
@@ -36,6 +37,7 @@ from app.schemas import LeadPatch
 from platform_core.auth import Scope
 from platform_core.db import TENANT_GUC
 from platform_core.errors import ConflictProblem
+from platform_core.events import validate_event_schema
 from platform_core.models import utcnow
 from tests.helpers import ctx_for
 
@@ -68,6 +70,7 @@ class TestPatchCannotOutrunAnInFlightConvert:
             convert_ctx,
             lead_id=data["lead_a_id"],
             claim_id=claim.claim_id,
+            owner_id=claim.owner_id,
             company_id=claim.company_id,
             contact_id=claim.contact_id,
             deal_id=claim.deal_id,
@@ -129,6 +132,7 @@ class TestConvertedIsTerminalEvenWithoutTheLiteralStatus:
             convert_ctx,
             lead_id=data["lead_a_id"],
             claim_id=claim.claim_id,
+            owner_id=claim.owner_id,
             company_id=claim.company_id,
             contact_id=claim.contact_id,
             deal_id=claim.deal_id,
@@ -167,6 +171,7 @@ class TestFinalizeRefusesToOverwriteAMovedStatus:
                 convert_ctx,
                 lead_id=data["lead_a_id"],
                 claim_id=claim.claim_id,
+                owner_id=claim.owner_id,
                 company_id=claim.company_id,
                 contact_id=claim.contact_id,
                 deal_id=claim.deal_id,
@@ -189,6 +194,108 @@ class TestFinalizeRefusesToOverwriteAMovedStatus:
         assert lead.converted_company_id is None
         assert lead.conversion_claim_id is None
         assert aborted == 1
+
+
+CONTRACTS_ROOT = Path(__file__).resolve().parents[3] / "libs" / "contracts"
+
+
+class TestAnAbortedConversionLeavesATrail:
+    """m7, fix round 3. When `finalize_conversion` refuses to write "converted" the records
+    customer and deal already created for the attempt are still there, so the abort has to say
+    which — in the audit row, and as `crm.lead.conversion_aborted` for whatever may later clean
+    them up — and it has to notice a reassignment as well as a status change."""
+
+    async def _abort(self, session, org_id, lead_id, *, sql: str, params: dict, match: str):
+        ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
+        claim = await services.claim_conversion(session, ctx, lead_id)
+        async with session.begin():
+            await session.execute(text(sql), {"id": lead_id, **params})
+        with pytest.raises(ConflictProblem, match=match):
+            await services.finalize_conversion(
+                session,
+                ctx,
+                lead_id=lead_id,
+                claim_id=claim.claim_id,
+                owner_id=claim.owner_id,
+                company_id=claim.company_id,
+                contact_id=claim.contact_id,
+                deal_id=claim.deal_id,
+            )
+        return claim
+
+    async def _trail(self, session, org_id, lead_id):
+        async with session.begin():
+            audit = (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "lead.conversion_aborted",
+                        AuditLog.entity_id == lead_id,
+                    )
+                )
+            ).scalar_one()
+            event = (
+                await session.execute(
+                    select(OutboxEvent).where(
+                        OutboxEvent.event_type == "crm.lead.conversion_aborted",
+                        OutboxEvent.aggregate_id == lead_id,
+                    )
+                )
+            ).scalar_one()
+            lead = await selectors.get_lead(session, org_id, lead_id)
+        return audit, event, lead
+
+    async def test_a_status_abort_names_the_orphaned_records_and_stages_the_event(
+        self, session, org_id, data
+    ) -> None:
+        claim = await self._abort(
+            session,
+            org_id,
+            data["lead_a_id"],
+            sql='UPDATE "lead"."leads" SET status = \'disqualified\' WHERE id = :id',
+            params={},
+            match="status changed",
+        )
+        audit, event, lead = await self._trail(session, org_id, data["lead_a_id"])
+
+        expected = {
+            "company_id": str(claim.company_id),
+            "contact_id": str(claim.contact_id),
+            "deal_id": str(claim.deal_id),
+        }
+        assert {k: audit.after[k] for k in expected} == expected
+        assert event.payload["reason"] == "status_changed"
+        assert {k: event.payload[k] for k in expected} == expected
+        validate_event_schema(
+            "crm.lead.conversion_aborted", 1, dict(event.payload), contracts_root=CONTRACTS_ROOT
+        )
+        assert lead is not None
+        assert lead.conversion_claim_id is None
+        assert lead.converted_company_id is None
+
+    async def test_a_reassignment_between_claim_and_finalize_aborts_the_same_way(
+        self, session, org_id, data
+    ) -> None:
+        new_owner = uuid.uuid4()
+        claim = await self._abort(
+            session,
+            org_id,
+            data["lead_a_id"],
+            sql='UPDATE "lead"."leads" SET owner_id = :owner WHERE id = :id',
+            params={"owner": new_owner},
+            match="reassigned",
+        )
+        audit, event, lead = await self._trail(session, org_id, data["lead_a_id"])
+
+        assert event.payload["reason"] == "owner_changed"
+        assert audit.after["deal_id"] == str(claim.deal_id)
+        validate_event_schema(
+            "crm.lead.conversion_aborted", 1, dict(event.payload), contracts_root=CONTRACTS_ROOT
+        )
+        assert lead is not None
+        assert lead.status == "qualified"
+        assert lead.owner_id == new_owner
+        assert lead.conversion_claim_id is None
+        assert lead.converted_company_id is None
 
 
 class TestPatchVersusFinalizeConcurrency:
@@ -230,6 +337,7 @@ class TestPatchVersusFinalizeConcurrency:
                         convert_ctx,
                         lead_id=data["lead_a_id"],
                         claim_id=claim.claim_id,
+                        owner_id=claim.owner_id,
                         company_id=claim.company_id,
                         contact_id=claim.contact_id,
                         deal_id=claim.deal_id,
@@ -319,6 +427,7 @@ class TestIdentityMapCannotServeAStaleClaim:
             ctx,
             lead_id=data["lead_a_id"],
             claim_id=claim_b.claim_id,
+            owner_id=claim_b.owner_id,
             company_id=claim_b.company_id,
             contact_id=claim_b.contact_id,
             deal_id=claim_b.deal_id,
@@ -332,6 +441,7 @@ class TestIdentityMapCannotServeAStaleClaim:
                 ctx,
                 lead_id=data["lead_a_id"],
                 claim_id=claim_a.claim_id,
+                owner_id=claim_a.owner_id,
                 company_id=claim_a.company_id,
                 contact_id=claim_a.contact_id,
                 deal_id=claim_a.deal_id,

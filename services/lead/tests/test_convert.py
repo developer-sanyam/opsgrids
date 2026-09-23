@@ -274,6 +274,51 @@ class TestConvertRefusals:
         assert lead.conversion_claim_id is None
         assert lead.status == "qualified"
 
+    @pytest.mark.parametrize("deleted", ["company", "contact"])
+    async def test_a_deleted_record_is_not_a_permanent_dead_end(
+        self, session, org_id, data, monkeypatch: pytest.MonkeyPatch, deleted: str
+    ) -> None:
+        """m3, fix round 3. The ids a lead converts into are deterministic, so a company or
+        contact an earlier attempt created and someone then deleted used to refuse *every*
+        future attempt, forever, on the same ids. The failing attempt now bumps the lead's
+        `conversion_generation`, and the next one derives a fresh set of ids and succeeds."""
+        exc_type = clients.CompanyDeleted if deleted == "company" else clients.ContactDeleted
+        seen_company_ids: list[uuid.UUID] = []
+
+        async def _first_refuses(settings, organization_id, **kwargs):
+            seen_company_ids.append(kwargs["company_id"])
+            raise exc_type("gone")
+
+        monkeypatch.setattr(clients, "ensure_company_and_contact", _first_refuses)
+        ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
+        with pytest.raises(ValidationProblem, match="convert again to create fresh records"):
+            await services.convert_lead(session, ctx, data["lead_a_id"])
+
+        async with session.begin():
+            lead = await selectors.get_lead(session, org_id, data["lead_a_id"])
+        assert lead is not None
+        assert lead.conversion_claim_id is None
+        assert lead.conversion_generation == 1
+
+        calls: list = []
+        company_id, contact_id = _fake_ensure_company_and_contact(monkeypatch, calls)
+        deal_id = _fake_ensure_deal(monkeypatch, calls)
+        result = await services.convert_lead(session, ctx, data["lead_a_id"])
+
+        assert result == (company_id, contact_id, deal_id)
+        retry_company_id = next(kw["company_id"] for name, kw in calls if name == "company")
+        retry_deal_id = next(kw["deal_id"] for name, kw in calls if name == "deal")
+        expected_company, _contact, expected_deal = domain.conversion_ids(data["lead_a_id"], 1)
+        assert retry_company_id == expected_company
+        assert retry_deal_id == expected_deal
+        # Genuinely fresh: not the ids the deleted record sat at.
+        assert retry_company_id != seen_company_ids[0]
+
+        async with session.begin():
+            lead = await selectors.get_lead(session, org_id, data["lead_a_id"])
+        assert lead is not None
+        assert lead.status == "converted"
+
     async def test_a_permanent_rejection_becomes_a_validation_problem(
         self, session, org_id, data, monkeypatch: pytest.MonkeyPatch
     ) -> None:
