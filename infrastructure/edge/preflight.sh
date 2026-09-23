@@ -54,11 +54,61 @@ optional_empty="$optional_empty EDGE_RESERVED_IP"
 # generating a MinIO user for a pass that is not yet turned on is a step an operator should
 # take deliberately, not one preflight forces on every box the day this shipped.
 optional_empty="$optional_empty DOCUMENT_S3_ORPHAN_ACCESS_KEY DOCUMENT_S3_ORPHAN_SECRET_KEY"
+# EDGE_PROFILES is the explicit override for the zero-activation profile auto-off, below — most
+# boxes never set it (COMPOSE_PROFILES, or nothing yet, is the common case).
+optional_empty="$optional_empty EDGE_PROFILES"
 
 set -a
 # shellcheck disable=SC1091 # .env is data, generated on the box from .env.example
 . ./.env
 set +a
+
+# ---------------------------------------------------------------- which profiles actually run
+# ADR-0013's memory-budget erratum, "zero-activation profile auto-off": a profile is a container
+# group, and a container group with no organization ever activating that product is pure cost.
+# EDGE_PROFILES (if set) is an explicit, authoritative declaration and always wins over
+# COMPOSE_PROFILES — remote.sh applies the identical precedence before invoking docker compose,
+# so this is what will actually run, not a guess. Neither set: fall back to the catalogue's own
+# activations rather than treating "unset" as "run nothing", which is what a genuinely fresh box
+# — or one where COMPOSE_PROFILES was simply never written — would otherwise silently do.
+# shellcheck source=lib/active-profiles.sh
+. ./lib/active-profiles.sh
+if [ -n "${EDGE_PROFILES:-}" ]; then
+	COMPOSE_PROFILES="$EDGE_PROFILES"
+	ok "COMPOSE_PROFILES overridden by EDGE_PROFILES: $COMPOSE_PROFILES"
+fi
+if docker compose -f compose.prod.yml --env-file .env ps --status running postgres 2>/dev/null | grep -q postgres; then
+	activated_keys=$(docker compose -f compose.prod.yml --env-file .env exec -T postgres \
+		psql -U opsgrids -d opsgrids -Atc "select distinct product_key from product.activations" 2>/dev/null) || activated_keys=""
+	# shellcheck disable=SC2086 # word-splitting activated_keys (one product key per line) on purpose
+	activated_list=$(activated_profiles $activated_keys)
+	if [ -z "${COMPOSE_PROFILES:-}" ]; then
+		computed=$(echo "$activated_list" | tr '\n' ',' | sed 's/,$//;s/^,//')
+		if [ -n "$computed" ]; then
+			COMPOSE_PROFILES="$computed"
+			echo "  info  no EDGE_PROFILES/COMPOSE_PROFILES set — computed from activations: $COMPOSE_PROFILES"
+		else
+			echo "  info  no EDGE_PROFILES/COMPOSE_PROFILES set and no product has an activation yet — core only"
+		fi
+	else
+		unused=""
+		activated_set=" $(echo "$activated_list" | tr '\n' ' ') "
+		for profile in $(echo "$COMPOSE_PROFILES" | tr ',' ' '); do
+			case "$activated_set" in
+			*" $profile "*) ;;
+			*) unused="$unused $profile" ;;
+			esac
+		done
+		if [ -z "$unused" ]; then
+			ok "every enabled profile has at least one activation"
+		else
+			echo "  warn  profile(s) enabled with zero activations, costing a container group for nothing:$unused" >&2
+			echo "        drop from COMPOSE_PROFILES/EDGE_PROFILES to reclaim the memory (RUNBOOK.md, 'the memory budget')." >&2
+		fi
+	fi
+else
+	echo "  info  Postgres not running yet: the zero-activation profile check is skipped on this deploy" >&2
+fi
 
 missing=""
 placeholder=""
@@ -186,12 +236,20 @@ else
 		bad "could not compute the expected memory budget from $budget_file for COMPOSE_PROFILES=${COMPOSE_PROFILES:-}"
 		expected_mb=""
 	}
+	# Read from the budget file itself rather than hardcoded here — this file's own
+	# `host.soft_budget_percent`/`hard_budget_percent` is what `tests/infra/
+	# test_compose_memory_budget.py` pins, and a hardcoded copy here would silently drift from
+	# it the next time either threshold changes (as happened when this line still said 80 after
+	# the memory-headroom slice raised the JSON's own soft line to 85 — this box would have kept
+	# warning a whole 5 points later than the file it claims to be reading from).
+	soft_percent=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['host']['soft_budget_percent'])" "$budget_file")
+	hard_percent=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['host']['hard_budget_percent'])" "$budget_file")
 	if [ -n "$expected_mb" ]; then
 		mem_total_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo "")
 		if [ -n "$mem_total_kb" ]; then
 			# shellcheck disable=SC1091  # sourced, not executed — see the file's own header
 			. ./lib/memory-budget.sh
-			verdict_line=$(memory_budget_verdict "$mem_total_kb" "$expected_mb" 80 100)
+			verdict_line=$(memory_budget_verdict "$mem_total_kb" "$expected_mb" "$soft_percent" "$hard_percent")
 			verdict=${verdict_line%% *}
 			percent=${verdict_line#* }
 			mem_total_mb=$((mem_total_kb / 1024))
@@ -199,12 +257,21 @@ else
 			ok) ok "memory budget: ${expected_mb}M expected of ${mem_total_mb}M MemTotal (${percent}%)" ;;
 			warn)
 				echo "  warn  memory budget: ${expected_mb}M expected of ${mem_total_mb}M MemTotal (${percent}%)" >&2
-				echo "        — over the 80% soft line. Still deploying; see RUNBOOK.md, 'the memory budget'." >&2
+				echo "        — over the ${soft_percent}% soft line. Still deploying; see RUNBOOK.md, 'the memory budget'." >&2
 				;;
 			refuse)
 				bad "memory budget: ${expected_mb}M expected of ${mem_total_mb}M MemTotal (${percent}%) — over the hard budget. Trim COMPOSE_PROFILES or consolidate a service before deploying (ADR-0013's memory-budget erratum)."
 				;;
 			esac
+			# Informational only — never gates a deploy, and never mixed into $expected_mb above:
+			# a backlog placeholder in memory-budget.json's `planned` key must not be able to fail
+			# a real deploy. This is what tells whoever is watching a deploy whether the box is
+			# still projected to have room for what is coming, not just for what is running now.
+			planned_mb=$(python3 lib/memory_budget_totals.py "$budget_file" "${COMPOSE_PROFILES:-}" --with-planned) || planned_mb=""
+			if [ -n "$planned_mb" ] && [ "$planned_mb" -gt "$expected_mb" ]; then
+				projected_percent=$((planned_mb * 100 / mem_total_mb))
+				echo "  info  projected with the planned backlog too: ${planned_mb}M of ${mem_total_mb}M (${projected_percent}%) — see memory-budget.json's 'planned' key"
+			fi
 		else
 			echo "  warn  could not read /proc/meminfo — memory budget check skipped" >&2
 		fi
@@ -270,15 +337,8 @@ done < <(grep -oE 'reverse_proxy [a-z-]+:[0-9]+' caddy/Caddyfile | awk '{print $
 # The catalogue says which products are sold; COMPOSE_PROFILES says which product services
 # run. They must agree (ADR-0013 §5): an `available` product with no service behind it is a
 # 504 the customer finds. Only checkable once Postgres exists — on the first deploy it does
-# not, and the row comes from a migration that has not run yet.
-profile_for() {
-	case "$1" in
-	operations) echo inventory ;;
-	storefront) echo storefront ;;
-	hrms|crm|pulseboard|projects|support|marketing|finance|itsm) echo "$1" ;;
-	*) echo "" ;;
-	esac
-}
+# not, and the row comes from a migration that has not run yet. `profile_for` came from
+# lib/active-profiles.sh, sourced above for the zero-activation check.
 if docker compose -f compose.prod.yml --env-file .env ps --status running postgres 2>/dev/null | grep -q postgres; then
 	catalogue_rc=0
 	available=$(docker compose -f compose.prod.yml --env-file .env exec -T postgres \

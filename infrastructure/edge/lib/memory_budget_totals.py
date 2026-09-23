@@ -67,12 +67,34 @@ def expected_total_mb(budget: dict[str, Any], enabled_profiles: set[str]) -> int
     return total
 
 
+def planned_entries(budget: dict[str, Any]) -> dict[str, Any]:
+    """The `planned` mapping, minus its own `$comment` — every backlog placeholder this file
+    prices ahead of any code existing for it. Empty if the budget file predates this key."""
+    return {k: v for k, v in budget.get("planned", {}).items() if k != "$comment"}
+
+
+def planned_total_mb(budget: dict[str, Any]) -> int:
+    """Every `planned` entry's `kind`, summed — the *projected* addition to the budget once
+    every backlog placeholder here becomes a real container. Never added to
+    `expected_total_mb`'s own enforced total: a placeholder must never be able to fail a real
+    deploy, only to be reported as headroom that is about to be spent."""
+    total = 0
+    for meta in planned_entries(budget).values():
+        total += int(budget["kinds"][meta["kind"]]["expected_rss_mb"])
+    return total
+
+
 def _main(argv: list[str]) -> int:
-    """CLI: `memory_budget_totals.py <budget.json> <profiles-csv>` prints the expected total
-    (MB) to stdout and exits 0. `<profiles-csv>` is exactly a box's `COMPOSE_PROFILES` value
-    (comma-separated, may be empty for "core only")."""
-    if len(argv) != 3:
-        print("usage: memory_budget_totals.py <budget.json> <profiles-csv>", file=sys.stderr)
+    """CLI: `memory_budget_totals.py <budget.json> <profiles-csv> [--with-planned]` prints the
+    expected total (MB) to stdout and exits 0. `<profiles-csv>` is exactly a box's
+    `COMPOSE_PROFILES` value (comma-separated, may be empty for "core only"). `--with-planned`
+    adds every backlog placeholder in `planned` on top — the projected total, never the enforced
+    one preflight.sh refuses a deploy over."""
+    if len(argv) not in (3, 4):
+        print(
+            "usage: memory_budget_totals.py <budget.json> <profiles-csv> [--with-planned]",
+            file=sys.stderr,
+        )
         return 2
     try:
         budget = load_budget(Path(argv[1]))
@@ -80,7 +102,13 @@ def _main(argv: list[str]) -> int:
         print(f"memory_budget_totals: could not read {argv[1]}: {exc}", file=sys.stderr)
         return 1
     enabled = {p for p in argv[2].split(",") if p}
-    print(expected_total_mb(budget, enabled))
+    total = expected_total_mb(budget, enabled)
+    if len(argv) == 4:
+        if argv[3] != "--with-planned":
+            print(f"memory_budget_totals: unknown option {argv[3]!r}", file=sys.stderr)
+            return 2
+        total += planned_total_mb(budget)
+    print(total)
     return 0
 
 

@@ -277,3 +277,143 @@ Each slice ends green through the full gate and deployed to the edge, or is reve
 | 5 | **WhatsApp as an add-on** | add-on item + metered conversations; the channel gated on the item | slice 4 |
 
 The end-to-end suite from 2026-09-20 grows one journey per slice, and runs against the edge.
+
+---
+
+## Addendum — memory headroom, measured (2026-09-23)
+
+The previous erratum named the levers; this slice pulled two of them, measured the box for real
+instead of estimating it, and found the estimate had been wrong in a way that mattered.
+
+### The measurement
+
+**Method.** For each of the two container *kinds* `memory-budget.json` prices (`api`,
+`background`), the real production Dockerfile image was built (`docker build`, the same
+Dockerfile `compose.prod.yml` uses) and run against an **isolated** Postgres/Redis/RabbitMQ — a
+fresh `docker network`, fresh containers, `tools/dev-bootstrap/init-db.sql` applied to a
+database created for the purpose (never the shared development database, and never a database
+one of these processes could see another session's real traffic through). The container was
+warmed with a few dozen health-check probes, then `docker exec <container> cat /proc/1/status`
+was read for `VmRSS` once the number stopped moving. `account` (built as both the `api` image and
+`python -m app.consumers` for `background`) and `product` (`python -m platform_core.edge_relay`,
+`background`, draining all 27 schemas at once) were the two services measured — chosen because
+one is a small, ordinary service and the other is the platform's single busiest background
+process, bracketing the range.
+
+| kind | previous `expected_rss_mb` | measured | new `expected_rss_mb` | verdict |
+|---|---|---|---|---|
+| `api` (account) | 85 (range 70-100, never independently confirmed) | 92-95 MB VmRSS | 85 (unchanged) | within range — not wildly off |
+| `background` (account-worker, one consumer) | 42 (range 35-50, a comment's guess, never measured) | 88 MB VmRSS | 85 | **wildly off — corrected** |
+| `background` (edge-relay, 27 schemas) | 42 (same guess) | 93 MB VmRSS | 85 | **wildly off — corrected** |
+| `caddy`, `postgres`, `rabbitmq`, `redis` | unchanged | not remeasured this slice | unchanged | out of scope — see "left undone" |
+
+**Why background was wrong, and why the two measured values agree with each other.** A consumer
+or a relay imports almost the same module graph an API does — SQLAlchemy's async engine,
+pydantic-settings, structlog, cryptography (PII), aio-pika — because that graph is where the
+service's actual business logic (`services.py`, `selectors.py`, `models.py`) lives, and a worker
+needs that code exactly as much as the API does. The only thing it does *not* import is the
+ASGI/uvicorn stack, which turns out to be a smaller share of the total than the "consumers are
+lighter" assumption implied. The old 35-50 MB figure traces to a compose comment ("idle consumers
+at ~35 MB each") that was itself never measured — it was carried forward from before any of this
+platform's services existed in their current, dependency-heavy form. This single correction — not
+a new container, not a new product, just pricing an existing container kind at what it actually
+costs — moved the full-"every profile"-at-once total from ~3589 MB (94%) to ~4149 MB (109%): a
+combination that was already, on paper, passing preflight's hard line is not one that should have
+been.
+
+**What this does not mean.** It does not mean the box got smaller or the situation got worse
+today — the box was *always* costing this much; the number describing it was wrong. It explains,
+better than the previous number did, why this box has needed a swapfile since before this slice:
+"94% of 3.8 GB, mostly idle" should not swap; "109%" does.
+
+### The decision
+
+1. **Correct `kinds.background` from 42 → 85 MB**, matching `kinds.api`, with the measurement
+   above cited in `memory-budget.json` itself. Not "wildly off in a way that helps" — the honest
+   number is worse news, and reporting it is the point of this file existing.
+2. **Merge `notification-cron` into `notification-worker`**, the same shape ADR-0013's original
+   erratum already used for `subscription` and `approval`: `app/cron.py`'s `CampaignDriver`
+   joined the `asyncio.gather` in `app/worker.py`, and gained the same poisoned-step guard
+   `scheduler.app.cron.Sweep.run()` uses (ADR-0015 review finding) — required here, and not
+   optional the way it might look in isolation, because sharing a `gather` means an uncaught
+   exception in the driver's discovery query would otherwise take the event consumer and the
+   dispatcher down with it too. One fewer container; ~85 MB back at the corrected price.
+3. **Zero-activation profile auto-off**, implemented rather than left as a lever on paper:
+   `infrastructure/edge/lib/active-profiles.sh` maps a catalogue product key to its compose
+   profile and reduces a list of activated product keys to a deduplicated profile list.
+   `preflight.sh` and `remote.sh` both apply the same precedence — `EDGE_PROFILES` (explicit,
+   always wins) → `COMPOSE_PROFILES` (an operator's existing explicit choice, left alone) →
+   computed from `product.activations` (the new default when neither is set) — so what preflight
+   checks is what remote.sh actually runs. `preflight.sh` also warns, without refusing, when a
+   profile is enabled with zero activations.
+4. **`.env.example`'s `COMPOSE_PROFILES` ships empty**, not "every product at once." The old
+   default was already wrong before this slice (§5's own sizing was wrong, per the previous
+   erratum); it is now actively unsafe to hand a fresh box, because the corrected numbers put
+   that combination over the hard budget line outright.
+   `tests/infra/test_compose_memory_budget.py::test_every_sellable_profile_at_once_is_refused_
+   not_silently_allowed` asserts this is refused on purpose — a regression there is not a bug in
+   the test, it is a reason to revisit whether `.env.example` should default wider again.
+5. **`host.soft_budget_percent` raised 80 → 85**, to express the backlog's own 15%-margin target
+   as the number preflight actually warns against, and **`preflight.sh` reads both thresholds
+   from `memory-budget.json` instead of a second, hardcoded copy** — the previous hardcoded `80
+   100` would have silently stopped matching the file it claimed to be reading from the moment
+   this line changed.
+6. **A `planned` key in `memory-budget.json`** prices backlog items that have no code and no
+   `compose.prod.yml` entry yet, at their kind's measured price, so headroom for what is coming
+   is a number instead of a feeling. `preflight.sh` reports it informationally (never gates a
+   deploy on it — a placeholder must not be able to fail a real deploy);
+   `tests/infra/test_planned_headroom.py` is the gate that keeps the projection honest.
+
+### The projected budget
+
+Against the box's realistic deployment today (ADR-0013 §5's own slice plan: core plus `inventory`
+alone, the only product ever actually sold) rather than the "every product at once" worst case:
+
+| scenario | expected MB | % of 3800 MB reference | verdict |
+|---|---|---|---|
+| core only | 1964 | 52% | ok |
+| core + `inventory` (today's real deployment) | 2134 | 56% | ok |
+| + every `planned` backlog item (ops-monitor, CRM lead api + customer-worker, payroll, recruit, config-service, operator/staff console, analytics, marketplace, workflow — one api or background container each at the corrected 85 MB, ops-monitor at its own 48 MB) | 3202 | **84%** | ok, under the 85% soft line — barely |
+| every sellable profile at once (the old `.env.example` default) | 4149 | 109% | **refuse** |
+
+**84% is the honest number, not a comfortable one.** It clears the 85%-soft / 15%-margin bar the
+backlog set, by about three quarters of one percentage point. It assumes every planned item is
+priced at exactly one container of its kind — if any of `payroll`, `recruit`, `analytics`,
+`marketplace` or `workflow` turns out to need a worker AND a cron the way `subscription` did
+before its own merge, this projection is wrong in the expensive direction the moment that
+service's own slice adds the second container. Treat 84% as "there is room for the backlog as
+currently scoped," not as "there is room to spare."
+
+### What this does not fix — left for the owner, or a future slice
+
+- **`caddy`, `postgres`, `rabbitmq` and `redis` were not re-measured this slice.** They are
+  estimated (caddy) or measured against their own compose comment (postgres, rabbitmq, redis)
+  from before this slice existed. If a future slice re-measures them with the same isolated-image
+  method used here and finds a similar gap, the projected 84% above moves with it.
+- **`operations-cron`, `storefront-cron` and `document-cron` have no worker to merge into** (none
+  of those three services has a consumer at all today) — ADR-0015's scheduler is the named
+  candidate for absorbing a pure time-triggered sweep like these, but ADR-0015 §"Deliberately out
+  of scope" explicitly deferred "making scheduler platform core" until a second producer needs it
+  outside the `finance` profile. Moving these three sweeps onto `scheduler` is a real design
+  change (scheduler would need to run under `inventory`/`storefront`'s own profiles or move to
+  core), not a wiring change, and was left undone rather than done in a hurry.
+- **CI-built, registry-pulled images** (the previous erratum's own suggestion) would remove the
+  build-time CPU/memory spike a deploy causes on this box, which is orthogonal to the steady-state
+  numbers above but is the spike that turns "tight" into "briefly out of memory" during a deploy.
+  Still not done; still real.
+- **`services/lead`, `services/customer` (its worker), `services/deal`, `services/subscription`,
+  `services/billing` and `services/account`** were out of scope for this slice by instruction.
+  Two concrete, in-scope-shaped follow-ups for whoever owns those services next: (1) `customer`
+  and `deal` have no worker at all today — when Q3's `customer-worker` (already priced in
+  `planned`) lands, give it the campaign-driver treatment from day one (one background container,
+  not a worker-plus-cron pair) rather than adding a `customer-cron` to merge away later; (2) if
+  `subscription`'s own `DunningSweep.run()` and `approval`'s `EscalationSweep.run()` (merged into
+  their workers by the *previous* erratum, before this one identified the poisoned-step guard
+  pattern) do not already catch an exception out of `tick()` the way
+  `scheduler.app.cron.Sweep.run()` and (now) `notification.app.cron.CampaignDriver.run()` do, they
+  are missing the same guard `notification`'s merge added here, for the same reason: a discovery
+  failure in either would currently take that service's whole worker process — its consumer
+  included — down with it.
+- **`ops-monitor`** (slice/ops-monitor, e812d44, in review) is priced in `planned` at the
+  coordinator-supplied 48 MB and is not otherwise touched by this slice — its own code and compose
+  block belong to that slice, not this one.

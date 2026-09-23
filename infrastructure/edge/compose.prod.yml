@@ -1,15 +1,17 @@
 # The production edge — one Linux VM, ADR-0012 §1.
 #
 # Every product this platform sells can run here, one compose profile per product (ADR-0013
-# §5). That is 44 containers with every profile on (down from 46: ADR-0013's memory-budget
+# §5). That is 43 containers with every profile on (down from 46: ADR-0013's memory-budget
 # erratum, 2026-09-23, folded subscription's and approval's `bin/cron` sweep into their
-# `bin/worker` the way `notification/app/worker.py` already combines two consumers), plus
-# Postgres, Redis, RabbitMQ and Caddy. This is not "five service containers" and not "~35
-# processes" — that described slice 1, one profile in, and stayed in comments long after it
-# stopped being true. `memory-budget.json` in this directory is the source of truth for what
-# each container actually costs; `preflight.sh` sums it against the box's live MemTotal and
-# refuses a deploy whose enabled `COMPOSE_PROFILES` do not fit (see the erratum for why the box
-# does not grow to meet them instead — the owner will not resize it).
+# `bin/worker`; the memory-headroom slice, 2026-09-23, folded notification's own `bin/cron` the
+# same way — it already combined two consumers before this), plus Postgres, Redis, RabbitMQ and
+# Caddy. This is not "five service containers" and not "~35 processes" — that described slice 1,
+# one profile in, and stayed in comments long after it stopped being true. `memory-budget.json`
+# in this directory is the source of truth for what each container actually costs;
+# `preflight.sh` sums it against the box's live MemTotal and refuses a deploy whose enabled
+# `COMPOSE_PROFILES` do not fit (see the erratum for why the box does not grow to meet them
+# instead — the owner will not resize it). The measurement behind that file's numbers is real,
+# not estimated: see ADR-0013's 2026-09-23 memory-headroom addendum for the method and the table.
 #
 # Read `RUNBOOK.md` before touching this file on a box that is serving. Once one real domain
 # points at this address there is a production and there is no second box.
@@ -850,20 +852,16 @@ services:
       - back
 
   # notification's `bin/worker` runs its two consumers (events → messages, and the dispatcher)
-  # in one process; see services/notification/app/worker.py.
+  # and the campaign send driver (app/cron.py's CampaignDriver) in one process; see
+  # services/notification/app/worker.py. Two containers used to run this — `notification-worker`
+  # on the consumers and `notification-cron` on the driver — at 192m apiece for processes that
+  # are each idle almost all the time (ADR-0013's memory-budget erratum, 2026-09-23), the same
+  # shape `subscription-worker` and `approval-worker` already collapsed. `bin/cron` is unchanged
+  # and still runs `app.cron` standalone for local debugging; only `bin/worker` moved.
   notification-worker:
     <<: *background
     image: opsgrids-edge/notification
     command: ['./bin/worker']
-    environment: *notification-env
-
-  # The campaign send driver (app/cron.py). Its own process for the same reason every other
-  # sweep here is: a poll loop must not share a pool with request traffic, and `docker compose
-  # ps` should answer "is anything sending campaigns" without reading code.
-  notification-cron:
-    <<: *background
-    image: opsgrids-edge/notification
-    command: ['./bin/cron']
     environment: *notification-env
 
   # ---------------------------------------------------------------- document (platform asset store; ADR-0009)

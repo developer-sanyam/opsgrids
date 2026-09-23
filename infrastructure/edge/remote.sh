@@ -34,8 +34,50 @@ source lib/rebuild-decision.sh
 source lib/health-check.sh
 # shellcheck source=lib/role-reconcile.sh
 source lib/role-reconcile.sh
+# shellcheck source=lib/active-profiles.sh
+source lib/active-profiles.sh
 
 COMPOSE=(docker compose -f compose.prod.yml --env-file .env)
+
+# Zero-activation profile auto-off (ADR-0013's memory-budget erratum, 2026-09-23), the same
+# precedence preflight.sh applies so what preflight checked is what this actually runs.
+# EDGE_PROFILES in .env, if set, is an explicit, authoritative override — it always wins.
+# Neither EDGE_PROFILES nor COMPOSE_PROFILES set: compute from the catalogue's own activations
+# rather than defaulting to "run nothing", which is what an unset COMPOSE_PROFILES would
+# otherwise silently mean on a fresh box or one where it was never written. Exported, so it
+# takes precedence over the (possibly stale, possibly absent) COMPOSE_PROFILES line in .env for
+# every "${COMPOSE[@]}" call below — docker compose resolves an exported shell variable ahead of
+# one read from --env-file.
+resolve_profiles() {
+	[ -f .env ] || return 0
+	local edge_profiles compose_profiles activated_keys computed
+	edge_profiles=$(sed -n 's/^EDGE_PROFILES=//p' .env | head -1 | tr -d '"'"'"' \r')
+	if [ -n "$edge_profiles" ]; then
+		export COMPOSE_PROFILES="$edge_profiles"
+		echo "profiles: EDGE_PROFILES set — running $COMPOSE_PROFILES"
+		return 0
+	fi
+	compose_profiles=$(sed -n 's/^COMPOSE_PROFILES=//p' .env | head -1 | tr -d '"'"'"' \r')
+	if [ -n "$compose_profiles" ]; then
+		# An operator already made an explicit choice; leave it exactly as .env has it.
+		return 0
+	fi
+	if ! "${COMPOSE[@]}" ps --status running postgres 2>/dev/null | grep -q postgres; then
+		echo "profiles: no EDGE_PROFILES/COMPOSE_PROFILES set and Postgres is not up yet — core only"
+		return 0
+	fi
+	activated_keys=$("${COMPOSE[@]}" exec -T postgres psql -U opsgrids -d opsgrids -Atc \
+		"select distinct product_key from product.activations" 2>/dev/null) || activated_keys=""
+	# shellcheck disable=SC2086 # word-splitting activated_keys (one product key per line) on purpose
+	computed=$(activated_profiles $activated_keys | tr '\n' ',' | sed 's/,$//')
+	if [ -n "$computed" ]; then
+		export COMPOSE_PROFILES="$computed"
+		echo "profiles: no EDGE_PROFILES/COMPOSE_PROFILES set — computed from activations: $COMPOSE_PROFILES"
+	else
+		echo "profiles: no EDGE_PROFILES/COMPOSE_PROFILES set and no product has an activation yet — core only"
+	fi
+}
+resolve_profiles
 
 # What the gateway's container is keyed on (see ROUTES_SHA in compose.prod.yml): the content of
 # the route table at this ref. Exported so every compose call below renders the same value.

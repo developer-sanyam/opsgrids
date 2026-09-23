@@ -1,45 +1,71 @@
 {
   "$comment": [
-    "The production edge's memory budget (ADR-0013's memory-budget erratum, 2026-09-23).",
+    "The production edge's memory budget (ADR-0013's memory-budget erratum, 2026-09-23; the",
+    "measured numbers below were corrected by the memory-headroom slice, 2026-09-23 addendum).",
     "The box is one Azure VM, 2 vCPU / 3.8 GB RAM (+4 GB swapfile), and the owner will not",
     "resize it — see the erratum for why that means fewer processes, not a bigger box.",
     "",
     "`expected_rss_mb` is a steady-state (idle, no load) planning figure, not a ceiling — the",
-    "ceilings are `mem_limit_mb`/`mem_reservation_mb`, applied in compose.prod.yml. Every",
-    "number here is anchored to a measurement already recorded as a comment in",
-    "compose.prod.yml (an API idles at 70-100 MB; a background consumer or sweep at 35-50 MB;",
-    "postgres/rabbitmq/redis/caddy are each sized against their own compose comment) — this",
-    "file exists so those numbers are summed by a script instead of eyeballed. `api` and",
-    "`background` use the midpoint of their measured range: summed across the box's default",
-    "COMPOSE_PROFILES (.env.example), the total lands at ~3.4 GB — inside the 3.4-3.6 GB idle",
-    "range the audit that started this slice measured directly, which is the sanity check for",
-    "using a midpoint rather than either end of the range.",
+    "ceilings are `mem_limit_mb`/`mem_reservation_mb`, applied in compose.prod.yml.",
+    "",
+    "`kinds.api` and `kinds.background` were re-measured directly (not estimated) for the",
+    "memory-headroom slice: the production Dockerfile image for `account` (api, and `python -m",
+    "app.consumers` as the background worker) and for `product` (`python -m",
+    "platform_core.edge_relay`, background, draining all 27 schemas) were built and run against",
+    "an isolated Postgres/Redis/RabbitMQ (never the shared dev database), and `/proc/1/status`'s",
+    "`VmRSS` read after startup settled. Method: `docker build` the real service Dockerfile,",
+    "`docker run` it on an isolated `docker network` with fresh postgres/redis/rabbitmq",
+    "containers seeded from `tools/dev-bootstrap/init-db.sql`, warm it with health-check probes,",
+    "then `docker exec <container> cat /proc/1/status | grep VmRSS` once the number stopped",
+    "moving. Result: api idled at 92-95 MB (confirms the previous 70-100 MB range and its 85 MB",
+    "midpoint — no change); background idled at 87-93 MB (account-worker: 88 MB; edge-relay",
+    "servicing all 27 schemas: 93 MB) — **not** the previously assumed 35-50 MB. The gap is not a",
+    "measurement error: a consumer or relay imports essentially the same dependency graph an API",
+    "does (SQLAlchemy's async engine, pydantic-settings, structlog, cryptography for PII,",
+    "aio-pika) minus the smaller-than-assumed ASGI/uvicorn increment, so the two kinds cost",
+    "almost the same. The old 35-50 MB figure traces to a comment ('idle consumers at ~35 MB",
+    "each') that was itself a guess, never a measurement — exactly the gap this file exists to",
+    "close. This single correction is large enough to explain, on its own, why this box has",
+    "needed a swapfile since before this slice: the previously-documented ~94% full-profile",
+    "figure was optimistic. See ADR-0013's memory-headroom addendum for the full table and what",
+    "this slice did about it (the notification-cron merge, profile auto-off, and what is still",
+    "left for the owner to decide).",
     "",
     "`tests/infra/test_compose_memory_budget.py` is the gate: every service compose.prod.yml",
     "defines must have a `containers` entry here, and vice versa, or the test fails by name.",
     "`preflight.sh` sums this file against the box's live /proc/meminfo through",
     "`infrastructure/edge/lib/memory_budget_totals.py` and",
     "`infrastructure/edge/lib/memory-budget.sh`'s `memory_budget_verdict`, and refuses a",
-    "deploy over `hard_budget_percent`."
+    "deploy over `hard_budget_percent`.",
+    "",
+    "`planned` (below `containers`) prices services that do not exist in compose.prod.yml yet —",
+    "backlog items with a rough shape (an api, a worker) but no code. `preflight.sh` and",
+    "`tests/infra/test_planned_headroom.py` report it as *projected* headroom, never as part of",
+    "the enforced budget: a placeholder must never be able to fail a real deploy."
   ],
 
   "host": {
     "mem_total_mb_reference": 3800,
-    "soft_budget_percent": 80,
+    "soft_budget_percent": 85,
     "hard_budget_percent": 100,
-    "notes": "mem_total_mb_reference documents the box this was measured against; preflight.sh reads the box's own /proc/meminfo at deploy time and does not use this number. Soft: warn and let the deploy proceed — the box is allowed to run tight. Hard: refuse — past this, the kernel starts reclaiming from things that must not be reclaimed from (see datastores' mem_reservation) or the OOM killer picks a victim."
+    "notes": "mem_total_mb_reference documents the box this was measured against; preflight.sh reads the box's own /proc/meminfo at deploy time and does not use this number. Soft: warn and let the deploy proceed — the box is allowed to run tight. Hard: refuse — past this, the kernel starts reclaiming from things that must not be reclaimed from (see datastores' mem_reservation) or the OOM killer picks a victim. Raised from 80 to 85 by the memory-headroom slice (2026-09-23) to match the 15%-margin target the backlog set for planned services — see the ADR-0013 addendum."
   },
 
   "kinds": {
     "api": {
       "expected_rss_mb": 85,
       "mem_limit_mb": 256,
-      "source": "compose.prod.yml's x-service-common comment: 'An API here idles at 70-100 MB.' 85 is the midpoint. mem_limit lowered from 320m to 256m in the same erratum this file introduces — still ~3x expected idle."
+      "source": "Re-measured (memory-headroom slice, 2026-09-23): the built `account` production image idled at 92-95 MB VmRSS after startup on an isolated Postgres/Redis, confirming the existing 70-100 MB range and its 85 MB midpoint. No change. mem_limit stays 256m (~3x expected idle)."
     },
     "background": {
-      "expected_rss_mb": 42,
+      "expected_rss_mb": 85,
       "mem_limit_mb": 192,
-      "source": "compose.prod.yml's x-background comment and the edge-relay comment ('~35 MB each'): a consumer, sweep or relay idles at 35-50 MB. 42 is the midpoint. mem_limit lowered from 256m to 192m in the same erratum — ~4.5x expected idle."
+      "source": "CORRECTED (memory-headroom slice, 2026-09-23): the built `account` image running `python -m app.consumers` idled at 88 MB VmRSS; the built `product` image running `python -m platform_core.edge_relay` across all 27 schemas idled at 93 MB. Both isolated Postgres/Redis/RabbitMQ, never the shared dev database. Raised from the previous 42 MB (35-50 MB assumed range, itself never actually measured — see this file's top-level $comment) to 85 MB, matching `kinds.api`: a background process imports nearly the same module graph an API does and is not meaningfully lighter. mem_limit stays 192m; that is now ~2.3x expected idle rather than ~4.5x, still a real fuse."
+    },
+    "ops_monitor": {
+      "expected_rss_mb": 48,
+      "mem_limit_mb": 128,
+      "source": "Not measured by this slice — figure supplied by slice/ops-monitor (coordinator message, 2026-09-23) for its always-on health/alerting container, landing separately. Priced here only so `planned` (below) can account for it in the projected headroom total; this slice does not add an `ops-monitor` entry to `containers` because that container does not exist in this branch's compose.prod.yml yet (see the ADR addendum's coordination note)."
     }
   },
 
@@ -121,8 +147,11 @@
       "note": "runs both the payment-event consumer and the dunning/trial-end sweep since ADR-0013's memory-budget erratum (2026-09-23) merged subscription-cron into it."
     },
     "payment-worker": { "kind": "background", "profile": null },
-    "notification-worker": { "kind": "background", "profile": null },
-    "notification-cron": { "kind": "background", "profile": null },
+    "notification-worker": {
+      "kind": "background",
+      "profile": null,
+      "note": "runs the events consumer, the dispatcher and the campaign send driver since the memory-headroom slice (2026-09-23) merged notification-cron into it, the same shape ADR-0013's erratum already used for subscription-worker and approval-worker."
+    },
 
     "minio": { "kind": "datastore", "datastore": "minio", "profile": "storefront" },
     "minio-init": { "kind": "datastore", "datastore": "minio-init", "profile": "storefront" },
@@ -162,5 +191,82 @@
     "scheduler": { "kind": "background", "profile": "finance" },
 
     "itsm": { "kind": "api", "profile": "itsm" }
+  },
+
+  "planned": {
+    "$comment": [
+      "Backlog items with no code and no compose.prod.yml entry yet, priced at their kind's",
+      "measured `expected_rss_mb` so `preflight.sh` and `tests/infra/test_planned_headroom.py`",
+      "can report projected headroom before a slice lands, not after. A name here is a rough",
+      "shape (api, background, or ops_monitor), not a commitment to exactly one container: the",
+      "slice that actually builds each of these replaces its placeholder with real `containers`",
+      "entries, which is when `test_every_compose_service_is_in_the_budget` starts pricing it for",
+      "real. Never summed into the enforced budget `expected_mb` preflight.sh refuses a deploy",
+      "over — only into the separate projected total this file's own header describes."
+    ],
+    "ops-monitor": {
+      "kind": "ops_monitor",
+      "note": "slice/ops-monitor (e812d44, in review 2026-09-23): an always-on health/alerting container. Landing on release before this slice; this branch's compose.prod.yml does not have it yet, so it is priced here rather than in `containers`."
+    },
+    "lead-api": {
+      "kind": "api",
+      "profile": "crm",
+      "note": "CRM lead service (services/lead) going from scaffold to a real API this quarter — the ADR-0013 comment naming it 'deliberately absent' stops being true once this lands."
+    },
+    "customer-worker": {
+      "kind": "background",
+      "profile": "crm",
+      "note": "customer-service gaining its first consumer this quarter (Q3 lead/customer work). customer and deal today have no worker at all — this is the first background container that profile would add."
+    },
+    "payroll-api": {
+      "kind": "api",
+      "profile": "hrms",
+      "note": "backlog: payroll, folded into HRMS. No service directory yet."
+    },
+    "payroll-worker": {
+      "kind": "background",
+      "profile": "hrms",
+      "note": "backlog: payroll's payslip/compliance run, assumed to need its own sweep the way approval and attendance do."
+    },
+    "recruit-api": {
+      "kind": "api",
+      "profile": "hrms",
+      "note": "backlog: recruiting/ATS, folded into HRMS. No service directory yet."
+    },
+    "config-service-api": {
+      "kind": "api",
+      "profile": null,
+      "note": "backlog: a platform config surface (feature flags / org-level settings) named core rather than product-profiled, since every product would read it. No service directory yet — priced against core so a future slice adding it to `containers` with `profile: null` matches this placeholder."
+    },
+    "operator-console-api": {
+      "kind": "api",
+      "profile": null,
+      "note": "the operator/staff console backend (this repository's own slice/operator-console-backend branch) — internal tooling used across every product, assumed core rather than profiled."
+    },
+    "analytics-api": {
+      "kind": "api",
+      "profile": "analytics",
+      "note": "backlog: cross-product analytics/reporting. New profile; no service directory yet."
+    },
+    "analytics-worker": {
+      "kind": "background",
+      "profile": "analytics",
+      "note": "backlog: analytics' rollup/aggregation sweep, assumed to run on a schedule against event data the way finance's e-Invoice retry does."
+    },
+    "marketplace-api": {
+      "kind": "api",
+      "profile": "marketplace",
+      "note": "backlog: a partner/integration marketplace. New profile; no service directory yet."
+    },
+    "workflow-api": {
+      "kind": "api",
+      "profile": "workflow",
+      "note": "backlog: a cross-product workflow/automation engine. New profile; no service directory yet."
+    },
+    "workflow-worker": {
+      "kind": "background",
+      "profile": "workflow",
+      "note": "backlog: workflow's own event-triggered automation runs, assumed to need a consumer the way approval and subscription do."
+    }
   }
 }

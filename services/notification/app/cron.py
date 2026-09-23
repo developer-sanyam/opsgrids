@@ -132,8 +132,23 @@ class CampaignDriver:
             poll_interval=self._poll_interval,
             batch_size=self._batch_size,
         )
+        backoff = self._poll_interval
         while not self._stop:
-            report = await self.tick()
+            try:
+                report = await self.tick()
+            except Exception:
+                # Discovery itself failed — a DB restart, a deadlock, a connection blip. Not
+                # one campaign's problem, all of them: logged and backed off exactly like
+                # `scheduler.app.cron.Sweep.run()`'s own guard (ADR-0015 review finding), never
+                # propagated. Since ADR-0013's memory-budget erratum (2026-09-23) folded this
+                # sweep into `app/worker.py`'s `asyncio.gather`, an uncaught exception here would
+                # take the event consumer and the dispatcher down with it — the reason every
+                # merged loop needs this guard, not just this one.
+                log.exception("notification.cron.tick_failed")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, self._max_backoff_seconds)
+                continue
+            backoff = self._poll_interval
             if report.considered or report.failed:
                 log.info(
                     "notification.cron.pass",
