@@ -55,6 +55,21 @@ async def get_lead(session: AsyncSession, org_id: uuid.UUID, lead_id: uuid.UUID)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_lead_for_update(
+    session: AsyncSession, org_id: uuid.UUID, lead_id: uuid.UUID
+) -> Lead | None:
+    """The same fetch as `get_lead`, row-locked for the rest of this transaction —
+    `services.claim_conversion` and `services.finalize_conversion`/`fail_conversion` all read
+    then write this row, and without the lock two concurrent `:convert` calls on the same
+    lead would both read "not yet claimed" and both proceed."""
+    stmt = (
+        select(Lead)
+        .where(Lead.id == lead_id, Lead.organization_id == org_id, Lead.deleted_at.is_(None))
+        .with_for_update()
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def get_lead_by_email_index(
     session: AsyncSession, org_id: uuid.UUID, email_index: str
 ) -> Lead | None:
@@ -94,6 +109,22 @@ async def get_assignment_rule(session: AsyncSession, org_id: uuid.UUID) -> Assig
     stmt = select(AssignmentRule).where(
         AssignmentRule.organization_id == org_id,
         AssignmentRule.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_assignment_rule_for_update(
+    session: AsyncSession, org_id: uuid.UUID
+) -> AssignmentRule | None:
+    """The same fetch as `get_assignment_rule`, row-locked for the rest of this transaction —
+    the pick-and-advance step `services._assign_owner` runs needs the read and the cursor
+    write to be one atomic step, or two concurrent lead creates can both read cursor `0`, both
+    pick `owner_ids[0]`, and both write cursor `1` — the same rep twice, the rotation never
+    having moved."""
+    stmt = (
+        select(AssignmentRule)
+        .where(AssignmentRule.organization_id == org_id, AssignmentRule.deleted_at.is_(None))
+        .with_for_update()
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 

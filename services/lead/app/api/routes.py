@@ -36,7 +36,7 @@ from app.schemas import (
     ServiceInfo,
 )
 from platform_core.auth import ScopeContext, require, require_product
-from platform_core.db import get_tenant_session
+from platform_core.db import get_session, get_tenant_session
 from platform_core.errors import NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
@@ -50,6 +50,14 @@ router = APIRouter(tags=["lead"])
 #: **The tenancy chokepoint.** Opens the transaction and binds it to the caller's
 #: organization before the route body runs, so no route can read or write without one.
 SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+
+#: `:convert` alone uses the raw, unwrapped session — `services.convert_lead`'s claim / call /
+#: record shape needs three separate transactions on one session, with the calls to customer's
+#: and deal's `/internal/v1` running between them with no transaction open at all. Binding the
+#: whole route in `get_tenant_session`'s one request-long transaction (every other route here
+#: does, and should) would hold that transaction open across two network round trips — the
+#: transaction-in-a-transaction problem `services.py`'s own module docstring explains.
+RawSessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 #: The `crm` entitlement gate, applied to every principal route as well as at the gateway.
 Entitled = Depends(require_product("crm"))
@@ -185,21 +193,25 @@ async def update_lead(
 )
 async def convert_lead(
     lead_id: uuid.UUID,
-    session: SessionDep,
+    session: RawSessionDep,
     ctx: LeadConvert,
     request: Request,
 ) -> LeadConvertOut:
     """Idempotent: converting an already-converted lead returns the same ids rather than
-    erroring or duplicating anything (`services.convert_lead`, `domain.conversion_ids`)."""
-    lead = await selectors.get_lead(session, ctx.organization_id, lead_id)
-    if lead is None:
-        raise NotFoundProblem("That lead is not part of this organization")
-    ctx.assert_can_touch(owner_id=lead.owner_id)
+    erroring or duplicating anything (`services.convert_lead`, `domain.conversion_ids`).
+
+    Uses the raw session rather than the tenant chokepoint's one-transaction-per-request —
+    `services.convert_lead` opens and binds its own three transactions (claim, then the two
+    calls to customer's and deal's `/internal/v1` with no transaction open, then record), so
+    no transaction should already be open when it is called. `NotFoundProblem` for an unknown
+    lead and the OWN-scope object-level check both happen inside `services.claim_conversion`
+    now, the same checks the old single-transaction version made here before calling in.
+    """
     company_id, contact_id, deal_id = await services.convert_lead(
-        session, ctx, lead, request=request
+        session, ctx, lead_id, request=request
     )
     return LeadConvertOut(
-        lead_id=str(lead.id),
+        lead_id=str(lead_id),
         company_id=str(company_id),
         contact_id=str(contact_id) if contact_id else None,
         deal_id=str(deal_id),

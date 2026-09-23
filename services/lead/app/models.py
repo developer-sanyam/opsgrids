@@ -111,6 +111,18 @@ class Lead(Base, TenantBase):
     converted_deal_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     converted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    #: The claim-lease pair `services.claim_conversion` uses to serialize concurrent
+    #: `:convert` calls on the *same* lead without holding a row lock across the network calls
+    #: that follow. `conversion_claim_id` is a fresh id per attempt (never the lead's own id,
+    #: so it cannot be guessed and replayed); `conversion_claimed_at` is when that attempt
+    #: took the claim. A second call while the lease is still live (`domain
+    #: .CONVERSION_LEASE_SECONDS`) is refused with a 409; once the lease expires, a new
+    #: attempt takes over. Cleared (`NULL`) by `services.finalize_conversion` and
+    #: `services.fail_conversion` alike — a cleared claim is what lets the *next* legitimate
+    #: attempt start with no lease to wait out.
+    conversion_claim_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    conversion_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     __table_args__ = (
         # Every index leads with `organization_id`: the RLS policy qual is ANDed into every
         # query, so an index that did not lead with the tenant column would scan the whole

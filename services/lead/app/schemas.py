@@ -4,6 +4,13 @@ This module is the published API surface: a change here is a change to the OpenA
 and the CRM SPA's client maps onto it — `LeadOut` is the SPA's `Lead`. Ids are opaque row
 UUIDs, exchanged as strings. `email` and `phone` on the wire are always the masked display
 form; the raw value never appears in a response body (see `app/models.py`).
+
+`full_name` and `email` are capped the same as `customer`'s own `full_name`/`email` fields
+(160 / 254) — a lead that converts becomes a company and a contact there, and a value this
+service accepted but that service would refuse is a failure surfacing at `:convert` instead of
+at capture. `phone` is canonicalised to E.164 here too (`domain.canonical_e164`), for the same
+reason: customer-service seals its own copy at conversion and would refuse a malformed number
+then, which is a service-to-service 4xx instead of an ordinary 422 on the form that took it.
 """
 
 from __future__ import annotations
@@ -12,7 +19,9 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+from app import domain
 
 LeadSource = Literal["form", "import", "manual"]
 LeadStatus = Literal["new", "working", "qualified", "disqualified", "converted"]
@@ -38,13 +47,25 @@ class LeadIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    full_name: str = Field(min_length=1, max_length=200)
+    full_name: str = Field(min_length=1, max_length=160)
     company: str | None = Field(default=None, max_length=200)
-    email: str | None = Field(default=None, max_length=320)
+    email: EmailStr | None = Field(default=None, max_length=254)
+    #: Any reasonable human-typed format in; `_canonicalize_phone` below refuses anything
+    #: that does not resolve to E.164 rather than storing it as typed.
     phone: str | None = Field(default=None, max_length=32)
     source: LeadSource = "manual"
     owner_id: uuid.UUID | None = None
     notes: str = Field(default="", max_length=4000)
+
+    @field_validator("phone")
+    @classmethod
+    def _canonicalize_phone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        canonical = domain.canonical_e164(value)
+        if canonical is None:
+            raise ValueError("must be a valid E.164 phone number, with a country code")
+        return canonical
 
 
 class LeadPatch(BaseModel):
@@ -55,7 +76,7 @@ class LeadPatch(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    full_name: str | None = Field(default=None, min_length=1, max_length=200)
+    full_name: str | None = Field(default=None, min_length=1, max_length=160)
     company: str | None = Field(default=None, max_length=200)
     status: LeadStatus | None = None
     owner_id: uuid.UUID | None = None
@@ -99,7 +120,7 @@ class AssignmentRuleIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: AssignmentMode = "round_robin"
-    owner_ids: list[uuid.UUID] = Field(default_factory=list)
+    owner_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
 
 
 class AssignmentRuleOut(BaseModel):
