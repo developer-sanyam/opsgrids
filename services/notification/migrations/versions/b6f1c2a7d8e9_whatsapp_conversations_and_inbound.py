@@ -16,7 +16,9 @@ two columns on an existing one:
 - `inbound_dead_letters` — one row per webhook item that failed with a **permanent** error, so
   one bad item cannot fail the whole `POST`. `error` is the exception's type, SQLSTATE and
   constraint name only, never a raw message; `raw_enc` seals the item's own payload so a parked
-  row can be replayed once the permanent error behind it is fixed.
+  row can be replayed once the permanent error behind it is fixed. Unique per organization, `kind`
+  and `provider_message_id`, upserted with `ON CONFLICT DO NOTHING`, so two redeliveries racing
+  the same permanently-broken item park one row, not two.
 - `messages.direction` and `messages.conversation_id` — so an outbound reply inside a
   conversation can be told apart from a rule-driven notification or a campaign email, and can be
   joined into the thread it belongs to.
@@ -174,6 +176,12 @@ def upgrade() -> None:
         sa.Column("raw_enc", sa.LargeBinary(), nullable=False),
         *_tenant_columns(),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_inbound_dead_letters")),
+        sa.UniqueConstraint(
+            "organization_id",
+            "kind",
+            "provider_message_id",
+            name="uq_inbound_dead_letters_org_kind_provider_id",
+        ),
         schema=SCHEMA,
     )
     op.create_index(

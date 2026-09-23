@@ -26,17 +26,22 @@ Five rules, each with a failure it prevents:
    because Meta happened to batch them together.
 
 5. **One item's failure parks that item — but only when nothing would change on redelivery.**
-   Each status or message folds inside its own `try`/`except`, and `services.
-   is_permanent_fold_error` is what decides what happens next. A **permanent** failure (a value
-   that will never fit a column, a duplicate this exact item already won elsewhere) is parked in
-   `services.record_dead_letter` and the request still returns 200 for it — a single malformed
-   item must not turn into Meta retrying the *whole* body forever over one piece of it that can
-   never succeed. A **transient** failure (a dropped connection, a deadlock, the database
-   restarting) is left to raise: the whole request then answers with a 5xx instead of a 200, so
-   Meta redelivers the body and this item gets a genuine second attempt. Every other item in the
-   batch is still folded first — `processed_events` is what makes that safe to redeliver into:
-   whatever already folded dedupes on the way back, and only the one that actually failed does
-   any work the second time.
+   Each status or message folds inside its own `try`/`except`. A genuine duplicate on
+   `inbound_messages` (`services.is_inbound_dedupe_conflict`) is checked first and treated as
+   **success** — the message is already durably stored by whichever transaction won the race, so
+   this one is marked processed (`_mark_processed`) and nothing is parked. Otherwise, `services.
+   is_permanent_fold_error` decides: a **permanent** failure (a value that will never fit a
+   column, a shape that will never parse) is parked in `services.record_dead_letter` and the
+   request still returns 200 for it — a single malformed item must not turn into Meta retrying the
+   *whole* body forever over one piece of it that can never succeed. A **transient** failure (a
+   dropped connection, a deadlock, the database restarting) is left to raise: the whole request
+   then answers with a 5xx instead of a 200, so Meta redelivers the body and this item gets a
+   genuine second attempt — unless it has already been retried past `webhooks.
+   TRANSIENT_RETRY_CAP`, in which case it is parked the same way a permanent failure is, rather
+   than asking for a 503 forever over a connection problem six hours have not cleared. Every other
+   item in the batch is still folded first — `processed_events` is what makes that safe to
+   redeliver into: whatever already folded dedupes on the way back, and only the one that actually
+   failed does any work the second time.
 
 Mounted outside `/api/v1` and excluded from the OpenAPI document: this is Meta's endpoint, not
 public API, and it must not appear as though anyone else should call it.
@@ -49,6 +54,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services, webhooks
@@ -207,12 +213,32 @@ async def receive(request: Request, directory: DirectorySessionDep) -> Response:
                     )
             except Exception as exc:
                 if not services.is_permanent_fold_error(exc):
+                    if not webhooks.transient_retry_exhausted(update.occurred_at):
+                        log.error(
+                            "webhook.status_fold_transient_error",
+                            provider_message_id=update.provider_message_id,
+                            error_type=type(exc).__name__,
+                        )
+                        had_transient_failure = True
+                        continue
+                    # Retried for longer than `TRANSIENT_RETRY_CAP` already — asking for yet
+                    # another 503 over this one item is a loop that never ends, not a real second
+                    # attempt. Parked the same way a permanent error is, rather than held hostage
+                    # to a connection problem that has had six hours to clear and has not.
                     log.error(
-                        "webhook.status_fold_transient_error",
+                        "webhook.status_fold_transient_retry_exhausted",
                         provider_message_id=update.provider_message_id,
                         error_type=type(exc).__name__,
                     )
-                    had_transient_failure = True
+                    if not await _dead_letter(
+                        organization_id=organization_id,
+                        kind="status",
+                        provider_message_id=update.provider_message_id,
+                        occurred_at=update.occurred_at,
+                        error=exc,
+                        raw=update.raw or {},
+                    ):
+                        had_transient_failure = True
                     continue
                 # No PII in the log line — a provider message id names nothing about the
                 # customer it concerns.
@@ -256,13 +282,48 @@ async def receive(request: Request, directory: DirectorySessionDep) -> Response:
                         )
                     )
             except Exception as exc:
+                if services.is_inbound_dedupe_conflict(exc):
+                    # Another transaction already durably stored this exact message — the
+                    # database's own unique constraint caught the race that `processed_events`
+                    # missed (both read "not yet processed" before either committed). Nothing was
+                    # lost and nothing needs parking: the message this attempt was trying to store
+                    # already exists, so this is success, the same as an ordinary redelivery.
+                    log.info(
+                        "webhook.redelivered",
+                        provider_message_id=inbound.provider_message_id,
+                    )
+                    if not await _mark_processed(
+                        organization_id=organization_id,
+                        dedupe_id=inbound.dedupe_id,
+                        event_type="whatsapp.message.inbound",
+                    ):
+                        had_transient_failure = True
+                    continue
                 if not services.is_permanent_fold_error(exc):
+                    if not webhooks.transient_retry_exhausted(inbound.occurred_at):
+                        log.error(
+                            "webhook.inbound_fold_transient_error",
+                            provider_message_id=inbound.provider_message_id,
+                            error_type=type(exc).__name__,
+                        )
+                        had_transient_failure = True
+                        continue
+                    # See the identical comment in the status loop above — retried longer than
+                    # `TRANSIENT_RETRY_CAP` already, parked rather than held hostage forever.
                     log.error(
-                        "webhook.inbound_fold_transient_error",
+                        "webhook.inbound_fold_transient_retry_exhausted",
                         provider_message_id=inbound.provider_message_id,
                         error_type=type(exc).__name__,
                     )
-                    had_transient_failure = True
+                    if not await _dead_letter(
+                        organization_id=organization_id,
+                        kind="inbound",
+                        provider_message_id=inbound.provider_message_id,
+                        occurred_at=inbound.occurred_at,
+                        error=exc,
+                        raw=inbound.raw,
+                    ):
+                        had_transient_failure = True
                     continue
                 log.error(
                     "webhook.inbound_fold_failed",
@@ -329,6 +390,38 @@ async def _dead_letter(
         log.error(
             "webhook.dead_letter_write_failed",
             provider_message_id=provider_message_id,
+            error_type=type(exc).__name__,
+        )
+        return False
+    return True
+
+
+async def _mark_processed(
+    *, organization_id: uuid.UUID, dedupe_id: uuid.UUID, event_type: str
+) -> bool:
+    """Record one event as processed in its own transaction — for the one case where the fold's
+    own session has already rolled back by the time this runs: the database's own dedupe
+    constraint on `inbound_messages` caught a genuine duplicate before `processed_events` did
+    (`services.is_inbound_dedupe_conflict`). A fresh `session_scope` is deliberate here for the
+    same reason `_dead_letter`'s is.
+
+    `ON CONFLICT DO NOTHING` rather than a plain insert: another loser of the very same race — or
+    the winner's own write, if it has not committed yet — may record this event id first, and that
+    is success too, not a conflict worth raising on. Returns whether the write itself succeeded,
+    the same contract `_dead_letter` uses; the caller treats `False` the same way, as a transient
+    failure that makes the whole request 503 so Meta gives this item a genuine second attempt.
+    """
+    try:
+        async with session_scope(organization_id=organization_id) as session:
+            stmt = (
+                pg_insert(ProcessedEvent)
+                .values(event_id=dedupe_id, event_type=event_type)
+                .on_conflict_do_nothing(index_elements=[ProcessedEvent.event_id])
+            )
+            await session.execute(stmt)
+    except Exception as exc:
+        log.error(
+            "webhook.redelivered_mark_failed",
             error_type=type(exc).__name__,
         )
         return False

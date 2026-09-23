@@ -578,6 +578,11 @@ class InboundDeadLetter(Base, TenantBase):
     patched), so the item's own payload is kept, sealed, rather than discarded — `app/
     replay_dead_letters.py` is the one place that reopens it, and every replay writes its own
     audit row.
+
+    `provider_message_id` is unique per organization and `kind` — `services.record_dead_letter`
+    upserts on it with `ON CONFLICT DO NOTHING` rather than a plain insert, so two redeliveries of
+    the same permanently-broken item (or a replay failing again for a row a concurrent webhook has
+    already re-parked) produce one row here, not two.
     """
 
     __tablename__ = "inbound_dead_letters"
@@ -596,6 +601,16 @@ class InboundDeadLetter(Base, TenantBase):
 
     __table_args__ = (
         Index("ix_inbound_dead_letters_org_created", "organization_id", "created_at"),
+        # The park-side idempotency guard: `services.record_dead_letter` upserts on this rather
+        # than inserting blind, so parking the same broken item twice (two redeliveries racing
+        # each other, or a replay that fails again for a row a concurrent webhook already
+        # re-parked) is one row, not a duplicate worklist entry.
+        UniqueConstraint(
+            "organization_id",
+            "kind",
+            "provider_message_id",
+            name="uq_inbound_dead_letters_org_kind_provider_id",
+        ),
     )
 
 

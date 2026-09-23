@@ -423,6 +423,26 @@ def within_service_window(
     return reference - last_customer_message_at < SERVICE_WINDOW
 
 
+#: How long a transient fold failure is left to raise into a 503 (so Meta redelivers the body)
+#: before the item is parked instead. A dropped connection or a deadlock that is still happening
+#: six hours after the event occurred is not "about to clear on the next redelivery" — Meta's own
+#: retry schedule tapers off well before this — and asking for a 503 forever over one stuck item is
+#: exactly the loop `record_dead_letter` exists to end.
+TRANSIENT_RETRY_CAP: Final = timedelta(hours=6)
+
+
+def transient_retry_exhausted(occurred_at: datetime, *, now: datetime | None = None) -> bool:
+    """Has a transient failure on this item been left to redeliver long enough that parking it —
+    not answering with one more 503 — is the safer default?
+
+    Every other item in the same batch already dead-letters or folds regardless of this; it only
+    changes the outcome for the one item still failing once it is old enough that "ask again in a
+    moment" has stopped being a true description of it.
+    """
+    reference = now or datetime.now(UTC)
+    return reference - occurred_at > TRANSIENT_RETRY_CAP
+
+
 def sender_e164(raw: str) -> str | None:
     """Meta's `from` as E.164, or None when it is not a plausible number.
 

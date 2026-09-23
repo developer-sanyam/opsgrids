@@ -27,7 +27,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy import CursorResult, case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import DataError, DBAPIError, IntegrityError, OperationalError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -1176,11 +1176,22 @@ async def fold_inbound_message(
     return row
 
 
-#: The one `IntegrityError` a redelivery can legitimately hit: two transactions racing the same
-#: provider message id, the loser finding the winner already committed. Nothing to retry into
-#: existing — the message is already durably stored — so this is the one constraint violation
-#: `is_permanent_fold_error` treats as permanent rather than asking Meta to redeliver forever.
+#: The one `IntegrityError` a redelivery — or a concurrent duplicate delivery — can legitimately
+#: hit: two transactions racing the same provider message id, the loser finding the winner
+#: already committed. Nothing to retry into existing — the message is already durably stored — so
+#: `is_inbound_dedupe_conflict` is what the caller (`app/api/webhooks.py`) checks *before*
+#: `is_permanent_fold_error`, and treats as success rather than a failure of any kind.
 _INBOUND_DEDUPE_CONSTRAINT: Final = "uq_inbound_messages_org_provider_id"
+
+#: `inbound_dead_letters`' own dedupe constraint (`organization_id`, `kind`,
+#: `provider_message_id`) — `record_dead_letter` upserts on it with `ON CONFLICT DO NOTHING`, so
+#: two concurrent attempts to park the same item (two redeliveries racing a permanent error, or a
+#: replay that fails again for a row a second webhook already re-parked) produce one row, not two.
+_DEAD_LETTER_DEDUPE_CONSTRAINT: Final = "uq_inbound_dead_letters_org_kind_provider_id"
+
+#: `inbound_dead_letters.provider_message_id`'s column width — see `record_dead_letter`'s
+#: docstring for why the value written there is truncated to it rather than left to overflow.
+_DEAD_LETTER_PROVIDER_ID_MAX: Final = 200
 
 
 def _dbapi_constraint(exc: DBAPIError) -> str | None:
@@ -1214,6 +1225,42 @@ def _dbapi_sqlstate(exc: DBAPIError) -> str | None:
     return str(state) if state is not None else None
 
 
+#: Postgres SQLSTATE class/codes that mean "this exact statement will fail identically forever" —
+#: a value or shape the database itself rejects, not a momentary condition. Class 22 (`22*`) is
+#: "data exception" (a string too long, a value out of range, an invalid input syntax); `23502`
+#: (`not_null_violation`) and `23514` (`check_violation`) are constraint violations that are about
+#: the *value*, not a race with another transaction — unlike `23505` (`unique_violation`), which
+#: can mean a genuine duplicate (`_INBOUND_DEDUPE_CONSTRAINT`, handled separately by
+#: `is_inbound_dedupe_conflict` before this function ever runs) or an unrelated race, so it is
+#: deliberately left out of this set and falls through to "transient" below.
+_PERMANENT_SQLSTATE_PREFIXES: Final = ("22",)
+_PERMANENT_SQLSTATES: Final[frozenset[str]] = frozenset({"23502", "23514"})
+
+#: SQLSTATE class/codes that mean "ask again in a moment": a dropped or refused connection (`08*`),
+#: the server shutting down or refusing new work (`57P*`), a serialization failure or a deadlock
+#: (`40001`, `40P01`), or the server out of some resource — memory, disk, too many connections
+#: (`53*`). Listed explicitly rather than inferred, because "transient" is also this function's
+#: default for anything unrecognised, and calling that out here is what keeps the two from being
+#: confused with each other later.
+_TRANSIENT_SQLSTATE_PREFIXES: Final = ("08", "57P", "53")
+_TRANSIENT_SQLSTATES: Final[frozenset[str]] = frozenset({"40001", "40P01"})
+
+
+def is_inbound_dedupe_conflict(exc: BaseException) -> bool:
+    """Is this the one `IntegrityError` a redelivery — or a concurrent duplicate delivery — can
+    legitimately hit on `inbound_messages`?
+
+    Two transactions racing the same provider message id, the loser finding the winner already
+    committed: the message is already durably stored, so there is nothing left for this attempt to
+    do. `app/api/webhooks.py` checks this **before** `is_permanent_fold_error` and, when it is
+    true, treats the whole attempt as success — logging `webhook.redelivered` and recording
+    `ProcessedEvent` the same as an ordinary redelivery — rather than parking anything: parking a
+    duplicate would be park-and-never-replay-away, since replaying it would only hit this same
+    conflict again.
+    """
+    return isinstance(exc, IntegrityError) and _dbapi_constraint(exc) == _INBOUND_DEDUPE_CONSTRAINT
+
+
 def is_permanent_fold_error(exc: BaseException) -> bool:
     """Will retrying this exact item ever reach a different outcome?
 
@@ -1225,33 +1272,49 @@ def is_permanent_fold_error(exc: BaseException) -> bool:
     (a value that will never fit, a shape that will never parse) is a retry loop that never ends
     and never helps.
 
-      * `IntegrityError` on `_INBOUND_DEDUPE_CONSTRAINT` — a genuine duplicate. Another
-        transaction already won the race and durably stored this exact message; there is nothing
-        left for this attempt to do, and redelivering it would reach the identical conflict every
-        time. Permanent.
-      * Any other `IntegrityError` (a foreign key that does not resolve, an unexpected
-        constraint) — not confidently a duplicate, so treated the same as a connection problem:
-        safer to ask for a retry than to silently drop something that might succeed once whatever
-        it raced against settles. Transient.
-      * `DataError` — a value that does not fit the column or the type (an oversized field, a
-        malformed value Postgres itself rejects). Retrying sends the identical bytes again.
-        Permanent.
-      * `OperationalError` and any other `DBAPIError` (a dropped connection, a pool exhausted, a
-        deadlock, the database restarting) — exactly what a redelivery a few seconds later is
-        for. Transient.
+    Classified on the Postgres **SQLSTATE**, not the Python exception type: SQLAlchemy 2.0's
+    asyncpg dialect only ever raises `IntegrityError`, `ProgrammingError`, `InterfaceError` or a
+    generic `DBAPIError` — it never raises its own `DataError` or `OperationalError` classes, even
+    for a value that does not fit a column or a connection the server dropped, because the asyncpg
+    driver's own exception hierarchy does not map onto those names (`asyncpg.exceptions.DataError`
+    is not translated to `dbapi.DataError`; it comes through as the same generic `Error` a
+    connection failure does). Checking `isinstance(exc, DataError)` or
+    `isinstance(exc, OperationalError)` therefore never matches anything real in production and
+    silently classified every genuine data error as the unmatched, transient default instead —
+    accepted forever, 503, retried forever, since the identical oversized value never becomes any
+    smaller on redelivery. The SQLSTATE the driver attaches (`_dbapi_sqlstate`) survives that
+    translation regardless of which Python exception class wraps it, so it is what this function
+    reads instead.
+
+      * The dedupe constraint (`_INBOUND_DEDUPE_CONSTRAINT`) is handled by
+        `is_inbound_dedupe_conflict`, checked by the caller first — this function never needs to
+        special-case it.
+      * SQLSTATE class 22 (a data exception: too long, out of range, invalid input syntax) or
+        `23502`/`23514` (a not-null or check constraint the *value* violated, not a race) —
+        retrying sends the identical bytes again. Permanent.
+      * A connection-class SQLSTATE (`08*`, `57P*`, `53*`, `40001`, `40P01` — dropped or refused
+        connections, the server shutting down, a serialization failure or deadlock) — exactly what
+        a redelivery a few seconds later is for. Transient.
+      * Any other `DBAPIError`, with or without a SQLSTATE the driver surfaced (an unrecognised
+        constraint, a foreign key that does not yet resolve) — not confidently identified as
+        permanent, so treated the same as a connection problem: safer to ask for a retry than to
+        silently drop something that might succeed once whatever it raced against settles.
+        Transient.
       * A parse/validation error raised by this service's own code before a query ever ran
         (`ValueError`, `TypeError`, `LookupError`) — the shape will not change on redelivery.
         Permanent.
       * Anything else unrecognised — treated as transient. An exception this function has never
         seen is exactly the case where guessing "safe to drop" is the more expensive mistake.
     """
-    if isinstance(exc, IntegrityError):
-        return _dbapi_constraint(exc) == _INBOUND_DEDUPE_CONSTRAINT
-    if isinstance(exc, DataError):
-        return True
-    if isinstance(exc, OperationalError):
-        return False
     if isinstance(exc, DBAPIError):
+        sqlstate = _dbapi_sqlstate(exc)
+        if sqlstate is None:
+            return False
+        if sqlstate.startswith(_PERMANENT_SQLSTATE_PREFIXES) or sqlstate in _PERMANENT_SQLSTATES:
+            return True
+        if sqlstate.startswith(_TRANSIENT_SQLSTATE_PREFIXES) or sqlstate in _TRANSIENT_SQLSTATES:
+            return False
+        # An unrecognised SQLSTATE. Guessing "safe to drop" is the more expensive mistake.
         return False
     return isinstance(exc, (ValueError, TypeError, LookupError))
 
@@ -1285,21 +1348,37 @@ async def record_dead_letter(
     copy of, because unlike the error text it is not free-form (it is exactly the shape
     `webhooks.status_from_raw`/`inbound_from_raw` already parse) and a permanent error is, by
     definition, recoverable: `app/replay_dead_letters.py` is the only place that opens it.
+
+    `provider_message_id` is truncated to this column's own width before it is written -- unlike
+    the dead-lettering path itself, which must survive an oversized id (that is exactly what a
+    256-character `wamid` dead-lettered for being too long for `inbound_messages` looks like), the
+    full value is never lost: it is still whole inside `raw_enc`, which is what `app/
+    replay_dead_letters.py` actually replays from.
+
+    `ON CONFLICT DO NOTHING` on (`organization_id`, `kind`, `provider_message_id`) rather than a
+    plain insert: two redeliveries of the same permanently-broken item racing this function (or a
+    replay that fails again for a row a concurrent webhook has already re-parked) must not raise a
+    second `IntegrityError` here -- a dead-letter write failing *is* treated as transient by the
+    caller (see `app/api/webhooks.py::_dead_letter`), and a permanent error's own park turning into
+    a 503 loop over its own bookkeeping would be exactly the failure this table exists to prevent.
     """
-    session.add(
-        InboundDeadLetter(
+    sealed, _ = pii.seal(
+        json.dumps(raw, separators=(",", ":")), kind="generic", settings=settings()
+    )
+    stmt = (
+        pg_insert(InboundDeadLetter)
+        .values(
             organization_id=organization_id,
             created_by=SYSTEM_ACTOR,
             kind=kind,
-            provider_message_id=provider_message_id,
+            provider_message_id=provider_message_id[:_DEAD_LETTER_PROVIDER_ID_MAX],
             error=_dead_letter_error_text(error),
             occurred_at=occurred_at,
-            raw_enc=pii.seal(
-                json.dumps(raw, separators=(",", ":")), kind="generic", settings=settings()
-            )[0],
+            raw_enc=sealed,
         )
+        .on_conflict_do_nothing(constraint=_DEAD_LETTER_DEDUPE_CONSTRAINT)
     )
-    await session.flush()
+    await session.execute(stmt)
 
 
 def _dead_letter_error_text(error: BaseException) -> str:

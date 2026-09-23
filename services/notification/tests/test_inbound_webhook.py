@@ -13,7 +13,7 @@ import hashlib
 import hmac
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -216,6 +216,33 @@ async def test_redelivery_of_the_same_body_is_a_no_op(client, session, org_id) -
     assert count == 1
 
 
+async def test_concurrent_duplicate_inbound_deliveries_produce_one_message_and_no_dead_letters(
+    client, session, org_id
+) -> None:
+    """`processed_events` cannot catch every duplicate: two concurrent deliveries of the same
+    `wamid` both read "not yet processed" before either commits, so the loser reaches the
+    database's own dedupe constraint (`uq_inbound_messages_org_provider_id`) instead. That is
+    still success, not a permanent failure to park — the message the loser was trying to store
+    already exists, courtesy of the winner."""
+    await _connect_account(session, org_id)
+    body = json.dumps(_payload(messages=[_text_message(wamid="wamid.RACE")])).encode()
+    headers = _headers(body)
+
+    responses = await asyncio.gather(
+        client.post("/webhooks/whatsapp", content=body, headers=headers),
+        client.post("/webhooks/whatsapp", content=body, headers=headers),
+    )
+    assert all(r.status_code == 200 for r in responses)
+
+    async with session.begin():
+        messages = (await session.execute(select(InboundMessage))).scalars().all()
+        dead_letters = (
+            await session.execute(select(func.count()).select_from(InboundDeadLetter))
+        ).scalar_one()
+    assert len(messages) == 1
+    assert dead_letters == 0
+
+
 # --------------------------------------------------------------------- cross-tenant
 
 
@@ -400,6 +427,33 @@ async def test_one_bad_item_is_dead_lettered_and_the_rest_of_the_batch_still_fol
     assert "blows up" not in dead_letters[0].error
 
 
+async def test_a_wamid_longer_than_the_column_is_dead_lettered_exactly_once(
+    client, session, org_id
+) -> None:
+    """No mocking here — a `wamid` this long genuinely overflows `inbound_messages.
+    provider_message_id` (`String(200)`) and Postgres itself raises a real data exception at the
+    insert. SQLAlchemy's asyncpg dialect never raises its own `DataError` for that — it comes back
+    as a generic `DBAPIError` carrying SQLSTATE `22001` — so `is_permanent_fold_error` has to read
+    the SQLSTATE rather than the Python exception type, or this would be misclassified transient
+    and 503 forever instead of being parked once."""
+    await _connect_account(session, org_id)
+    long_wamid = "wamid." + "9" * 250
+    assert len(long_wamid) == 256
+
+    body = json.dumps(_payload(messages=[_text_message(wamid=long_wamid)])).encode()
+    response = await client.post("/webhooks/whatsapp", content=body, headers=_headers(body))
+    assert response.status_code == 200
+
+    async with session.begin():
+        dead_letters = (await session.execute(select(InboundDeadLetter))).scalars().all()
+
+    assert len(dead_letters) == 1
+    # Truncated to fit the dead-letter table's own column; the full id survives inside raw_enc.
+    assert dead_letters[0].provider_message_id == long_wamid[:200]
+    sealed = json.loads(open_sealed(dead_letters[0].raw_enc, settings=services.settings()))
+    assert sealed["id"] == long_wamid
+
+
 # --------------------------------------------------------------------- long bodies
 
 
@@ -510,6 +564,43 @@ async def test_a_transient_fold_error_answers_5xx_and_redelivery_folds_exactly_o
     assert sorted(r.provider_message_id for r in rows) == ["wamid.GOOD", "wamid.TRANSIENT"]
 
 
+async def test_a_stale_transient_failure_is_parked_instead_of_503ing_forever(
+    client, session, org_id, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connection blip six hours old is not "about to clear on the next redelivery" — Meta's own
+    retry schedule has long since tapered off by then. Left to raise a 503 forever, this item
+    would never be redelivered again; parked instead, it is at least recoverable through
+    `app/replay_dead_letters.py`."""
+    await _connect_account(session, org_id)
+    real_fold = services.fold_inbound_message
+
+    async def _flaky_fold(session, *, organization_id, inbound):
+        if inbound.provider_message_id == "wamid.STALE":
+            raise OperationalError("SELECT 1", {}, Exception("connection reset by peer"))
+        return await real_fold(session, organization_id=organization_id, inbound=inbound)
+
+    monkeypatch.setattr(services, "fold_inbound_message", _flaky_fold)
+
+    stale_timestamp = str(int((datetime.now(UTC) - timedelta(hours=7)).timestamp()))
+    payload = _payload(
+        messages=[
+            _text_message(wamid="wamid.STALE", body="stuck for hours", timestamp=stale_timestamp),
+            _text_message(wamid="wamid.GOOD", body="this one is fine"),
+        ]
+    )
+    body = json.dumps(payload).encode()
+    response = await client.post("/webhooks/whatsapp", content=body, headers=_headers(body))
+    assert response.status_code == 200
+
+    async with session.begin():
+        rows = (await session.execute(select(InboundMessage))).scalars().all()
+        dead_letters = (await session.execute(select(InboundDeadLetter))).scalars().all()
+
+    assert {r.provider_message_id for r in rows} == {"wamid.GOOD"}
+    assert len(dead_letters) == 1
+    assert dead_letters[0].provider_message_id == "wamid.STALE"
+
+
 async def test_a_permanent_fold_error_is_parked_sealed_and_replayable(
     client, session, org_id, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -542,7 +633,9 @@ async def test_a_permanent_fold_error_is_parked_sealed_and_replayable(
     assert "will never parse" not in dead_letter.error
 
     monkeypatch.setattr(services, "fold_inbound_message", real_fold)
-    replayed = await replay_dead_letters.replay(organization_id=org_id)
+    replayed = await replay_dead_letters.replay(
+        organization_id=org_id, operator="ops@opsgrids.example"
+    )
     assert replayed == 1
 
     async with session.begin():
@@ -638,9 +731,15 @@ async def test_dead_letter_error_never_carries_a_parameter_value(
             from sqlalchemy.exc import DataError
 
             # A stand-in for a real driver error's own text quoting a parameter back — never an
-            # actual query this test runs.
+            # actual query this test runs. `sqlstate` on the driver-shaped `orig` mirrors what
+            # SQLAlchemy's asyncpg dialect actually attaches (see `is_permanent_fold_error`'s
+            # docstring): classification reads that, never the exception's own Python type or its
+            # message, which is the one place `needle` could otherwise leak from.
+            class _FakeDriverError(Exception):
+                sqlstate = "22001"  # string_data_right_truncation — the value did not fit
+
             statement = "INSERT INTO x (y) VALUES (%(y)s)"
-            raise DataError(statement, {"y": needle}, Exception(needle))
+            raise DataError(statement, {"y": needle}, _FakeDriverError(needle))
         return await real_fold(session, organization_id=organization_id, inbound=inbound)
 
     monkeypatch.setattr(services, "fold_inbound_message", _flaky_fold)
