@@ -50,8 +50,9 @@ from app.config import settings  # noqa: E402
 from app.models import SCHEMA  # noqa: E402
 
 #: The products this suite's journeys activate. `crm` for the CRM journey (two services, two
-#: admin roles); `hrms` for the Wave 0 exit journey (employee + attendance).
-PRODUCTS = ("crm", "hrms")
+#: admin roles); `hrms` for the Wave 0 exit journey (employee + attendance); `finance` for the
+#: bundle journey — the trio's third member, and product-service will not project a `soon` one.
+PRODUCTS = ("crm", "hrms", "finance")
 
 
 async def main() -> None:

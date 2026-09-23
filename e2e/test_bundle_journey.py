@@ -8,7 +8,7 @@ contract said. The defect was the contract *between* them, which is the only kin
 exists to catch.
 
     1  a fresh owner has none of the trio's products        402 on every member
-    2  the owner subscribes to the published trio           201, members from catalog
+    2  the owner is refused; the platform team sells it     403, then 201 over /internal
     3  the event crosses three services                     outbox → projection → manifests
     4  a fresh token carries the members, not the bundle    ent ⊇ {hrms, crm, finance}, no suite
     5  each member answers 200; a non-member still 402s     the gateway, end to end
@@ -104,9 +104,15 @@ class TestBundleJourney:
             )
         bundle_journey["token"] = token
 
-    def test_02_the_owner_subscribes_to_the_trio(
-        self, client: httpx.Client, bundle_tenant: dict[str, Any], bundle_journey: dict
+    def test_02_the_owner_cannot_buy_a_bundle_but_the_platform_team_can_sell_one(
+        self,
+        client: httpx.Client,
+        bundle_tenant: dict[str, Any],
+        bundle_journey: dict,
+        operator_call: Any,
     ) -> None:
+        """Bundles are sales-led: the customer route refuses one with 403, and the operator path
+        — a service token, the organization named, an accountable operator — sells it."""
         headers = auth_header(bundle_journey["token"])
         plans = client.get("/api/v1/plans", params={"product_key": "suite"}, headers=headers)
         assert plans.status_code == 200, plans.text[:300]
@@ -120,13 +126,22 @@ class TestBundleJourney:
             == "trio"
         )
 
-        response = client.post(
+        refused = client.post(
             "/api/v1/subscriptions",
             headers=headers,
-            # A member list in the body is ignored: the pinned version is the only authority.
-            json={
+            json={"product_key": "suite", "plan_version_id": trio["id"], "trial_days": 365},
+        )
+        assert refused.status_code == 403, refused.text[:300]
+
+        response = operator_call(
+            "subscription",
+            "/internal/v1/subscriptions",
+            {
+                "organization_id": bundle_tenant["org_id"],
                 "product_key": "suite",
                 "plan_version_id": trio["id"],
+                "operator_id": "e2e-sales",
+                # A member list in the body is ignored: the pinned version is the only authority.
                 "entitled_products": ["hrms", "crm", "finance", "pulseboard"],
             },
         )

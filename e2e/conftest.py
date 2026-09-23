@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -57,6 +58,7 @@ from typing import Any
 
 import httpx
 import pytest
+from sqlalchemy.engine import make_url
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -71,9 +73,14 @@ ROOT = Path(__file__).resolve().parent.parent
 #: They are deliberately *not* `DATABASE_URL`: nothing in `.env` sets them, so the pin still
 #: cannot be inherited by accident, and the shared `opsgrids` is refused outright.
 _E2E_DATABASE = os.environ.get("E2E_DATABASE", "opsgrids_wt")
-if _E2E_DATABASE == "opsgrids":
-    raise RuntimeError("E2E_DATABASE=opsgrids would drive this suite into the live demo database")
+# A bare identifier and nothing else: `opsgrids?ssl=disable` or `opsgrids/x` would otherwise
+# slip past a string comparison and still resolve to the live database.
+if not re.fullmatch(r"[a-z][a-z0-9_]*", _E2E_DATABASE):
+    raise RuntimeError(f"E2E_DATABASE must be a bare database name, got {_E2E_DATABASE!r}")
 DATABASE_URL = f"postgresql+asyncpg://opsgrids:opsgrids@localhost:5434/{_E2E_DATABASE}"
+# And judged on what the URL actually resolves to, not on what the variable said.
+if make_url(DATABASE_URL).database == "opsgrids":
+    raise RuntimeError("this suite must never run against the live `opsgrids` database")
 
 #: Its own Redis db. The gateway keeps permission versions and rate-limit counters here, and
 #: sharing db 0 with a running stack makes both flaky.
@@ -527,6 +534,34 @@ def event_probe(platform: Platform) -> Any:
         return dict(json.loads(raw.splitlines()[-1]))
 
     return _read
+
+
+@pytest.fixture(scope="session")
+def operator_call(platform: Platform) -> Any:
+    """POST to a service's `/internal/v1` API with a service token, as an operator surface would.
+
+    Bundles are sold only through subscription's internal operator routes (the customer route
+    refuses them), and no operator console in this harness delegates yet — so the journey makes
+    the delegated call itself, with a token minted from the run's shared signing key and
+    addressed to the service by name, exactly as the gateway mints its own.
+    """
+    from platform_core.config import ServiceSettings
+    from platform_core.internal_auth import mint_service_token
+
+    caller = ServiceSettings(
+        service_name="e2e-operator", db_schema="public", internal_service_token=INTERNAL_TOKEN
+    )
+
+    def _post(service: str, path: str, body: dict[str, Any]) -> httpx.Response:
+        token = mint_service_token(caller, audience=service)
+        return httpx.post(
+            f"{platform.url(service)}{path}",
+            json=body,
+            headers={"X-Internal-Token": token, "X-Calling-Service": "e2e-operator"},
+            timeout=15.0,
+        )
+
+    return _post
 
 
 @pytest.fixture(scope="session")
