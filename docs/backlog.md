@@ -20,7 +20,7 @@ idempotent retry no longer conflicts across midnight. **Next: Phase 1** — item
 rolls, locations — waits for the owner's go-ahead. A count below the reserved quantity is refused
 today; that is a documented Phase 1 prerequisite, not a Phase 0 bug.
 
-## Now — as of 2026-09-23 (`main` @ `73176a1`)
+## Now — as of 2026-09-23 (`main` @ `e3c525a`)
 
 > **`main` is ahead of production.** GitHub Actions has refused to start any job since
 > 2026-09-22 (account billing / spending limit), so neither CI nor the Deploy workflow runs.
@@ -37,11 +37,11 @@ today; that is a documented Phase 1 prerequisite, not a Phase 0 bug.
 | 1 | **Storefront custom domains** — claims, the three probes, the sweep (`app/cron.py`), the console panel | **Done — PR #38, awaiting merge** | 584 backend and 986 storefront tests pass; migration round-trips. |
 | 2 | **Document service and MinIO on the edge** | **Done — PR #39, awaiting merge** | Fixes Storefront's console image upload in production. Adds ~448 MiB under the `storefront` profile. |
 | 3 | **Scheduler service, first consumer: finance `not_before`** | In progress | `services/scheduler` is a scaffold. e-Invoice and e-Way retries carry their own delay and are redelivered at once instead. Per-service cron containers move onto it later. |
-| 4 | **Review follow-ups (UI)** | **Done — PR #41, awaiting merge** | `FormDialog` inside another dialog's form also submits the outer form (React events bubble through portals); Combobox's lookup error is not announced to screen readers, and "Try again" drops keyboard focus to `<body>`. |
-| 5 | **Review follow-ups (deploy tooling)** | **Done — PR #42, awaiting merge** | No automated test pins `remote.sh`'s full-rebuild rule; the dev bootstrap still pulls `minio/minio`, which Docker Hub no longer serves (the edge uses `quay.io/minio/minio`). |
+| 4 | **Review follow-ups (UI)** | **Done — merged (#41)** | `FormDialog` inside another dialog's form also submits the outer form (React events bubble through portals); Combobox's lookup error is not announced to screen readers, and "Try again" drops keyboard focus to `<body>`. |
+| 5 | **Review follow-ups (deploy tooling)** | **Done — merged (#42)** | No automated test pins `remote.sh`'s full-rebuild rule; the dev bootstrap still pulls `minio/minio`, which Docker Hub no longer serves (the edge uses `quay.io/minio/minio`). |
 | 6 | **GSTR-3B and the input-tax-credit ledger** | Not started | The next compliance slice that needs no credentials, using the stub-client pattern. Larger than 1 to 5. |
-| 7 | **HRMS: leave, payroll, recruit** | Not started | employee and attendance are live. |
-| 8 | **Engage follow-ups** | Not started | Event contracts for `engage.campaign.*` (repo-wide: `libs/contracts` holds no event schemas yet); erasure of a contact's sealed copies in `campaign_recipients.email_enc`; `GET /engage/unsubscribe/{token}` unsubscribes on a mail scanner's prefetch — it should show a confirm page and leave the one-click `POST` to do the work. |
+| 7 | **HRMS: leave, payroll, recruit** | In progress (leave first) | employee and attendance are live. Leave comes first because payroll consumes it; recruit is independent. |
+| 8 | **Engage follow-ups** | In progress | Event contracts for `engage.campaign.*` (repo-wide: `libs/contracts` holds no event schemas yet); erasure of a contact's sealed copies in `campaign_recipients.email_enc`; `GET /engage/unsubscribe/{token}` unsubscribes on a mail scanner's prefetch — it should show a confirm page and leave the one-click `POST` to do the work. |
 | 9 | **WhatsApp inbound messages** | Started, not committed | An inbound-message parser and the 24-hour customer-service window were drafted on 2026-09-19 in the `wa-inbound` worktree (`services/notification/app/webhooks.py`) and never committed. Nothing stores or shows inbound messages yet. |
 | 10 | **Document purge sweep** (ADR-0009 §8) | Not started | Soft-deleted assets are never purged after their 30-day window. Natural second consumer of the scheduler (3). |
 | 11 | **Off-box backup** | Code done, not enabled | `backup.sh` uploads to S3 once `BACKUP_S3_*` is set in the box `.env`. The owner must provide the bucket. |
@@ -62,9 +62,13 @@ today; that is a documented Phase 1 prerequisite, not a Phase 0 bug.
   campaign can neither block other products' notifications nor strand itself in `sending`.
   No-route campaigns pause with a reason and resume; addresses are masked in logs.
 
-Awaiting merge: #37 (HRMS delegation tests had a hard-coded date that expired on 2026-09-23),
-#38, #39, #41 and #42 (items 1, 2, 4 and 5). #42 also fixes a secret-scan false positive that
-would fail the supply-chain job on `main` as soon as CI runs again.
+- HRMS delegation tests no longer depend on the date they were written (#37)
+- nested dialogs no longer submit the form around them; Combobox announces a failed lookup and
+  keeps focus on retry (#41)
+- deploy tooling: the full-rebuild rule and the CI planner are pinned by tests that CI runs; the
+  dev MinIO image moved off Docker Hub; a secret-scan false positive on `main` fixed (#42)
+
+Awaiting merge: #38 and #39 (items 1 and 2), under review.
 
 **Delivered before that** (#2 to #25):
 - notification service and event-bus wiring (#2)
