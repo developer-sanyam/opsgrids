@@ -165,6 +165,47 @@ if [ "${inodes:-0}" -lt 90 ]; then ok "inodes ${inodes}% used"; else bad "inodes
 
 if docker info >/dev/null 2>&1; then ok "docker daemon responding"; else bad "docker daemon not responding"; fi
 
+# ---------------------------------------------------------------- the memory budget
+# ADR-0013's memory-budget erratum (2026-09-23): the box does not grow to meet the container
+# count; the container count is bounded to what the box actually has. `memory-budget.json` is
+# measured, not guessed (see its own header), and this is the same arithmetic
+# `tests/infra/test_compose_memory_budget.py` pins against `compose.prod.yml` — a service added
+# to one and not the other fails there first, in CI, rather than surprising anyone here.
+budget_file="memory-budget.json"
+if [ ! -f "$budget_file" ]; then
+	echo "  warn  no $budget_file — memory budget check skipped" >&2
+elif ! command -v python3 >/dev/null 2>&1; then
+	echo "  warn  no python3 on this box — memory budget check skipped" >&2
+else
+	expected_mb=$(python3 lib/memory_budget_totals.py "$budget_file" "${COMPOSE_PROFILES:-}") || {
+		bad "could not compute the expected memory budget from $budget_file for COMPOSE_PROFILES=${COMPOSE_PROFILES:-}"
+		expected_mb=""
+	}
+	if [ -n "$expected_mb" ]; then
+		mem_total_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo "")
+		if [ -n "$mem_total_kb" ]; then
+			# shellcheck disable=SC1091  # sourced, not executed — see the file's own header
+			. ./lib/memory-budget.sh
+			verdict_line=$(memory_budget_verdict "$mem_total_kb" "$expected_mb" 80 100)
+			verdict=${verdict_line%% *}
+			percent=${verdict_line#* }
+			mem_total_mb=$((mem_total_kb / 1024))
+			case "$verdict" in
+			ok) ok "memory budget: ${expected_mb}M expected of ${mem_total_mb}M MemTotal (${percent}%)" ;;
+			warn)
+				echo "  warn  memory budget: ${expected_mb}M expected of ${mem_total_mb}M MemTotal (${percent}%)" >&2
+				echo "        — over the 80% soft line. Still deploying; see RUNBOOK.md, 'the memory budget'." >&2
+				;;
+			refuse)
+				bad "memory budget: ${expected_mb}M expected of ${mem_total_mb}M MemTotal (${percent}%) — over the hard budget. Trim COMPOSE_PROFILES or consolidate a service before deploying (ADR-0013's memory-budget erratum)."
+				;;
+			esac
+		else
+			echo "  warn  could not read /proc/meminfo — memory budget check skipped" >&2
+		fi
+	fi
+fi
+
 # ---------------------------------------------------------------- what this box sells
 if [ "${EMAIL_TRANSPORT:-log}" = "log" ]; then
 	echo "  warn  EMAIL_TRANSPORT=log: NO EMAIL IS SENT. A signup cannot set a password and a" >&2

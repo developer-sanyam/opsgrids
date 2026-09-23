@@ -1,0 +1,162 @@
+{
+  "$comment": [
+    "The production edge's memory budget (ADR-0013's memory-budget erratum, 2026-09-23).",
+    "The box is one Azure VM, 2 vCPU / 3.8 GB RAM (+4 GB swapfile), and the owner will not",
+    "resize it — see the erratum for why that means fewer processes, not a bigger box.",
+    "",
+    "`expected_rss_mb` is a steady-state (idle, no load) planning figure, not a ceiling — the",
+    "ceilings are `mem_limit_mb`/`mem_reservation_mb`, applied in compose.prod.yml. Every",
+    "number here is anchored to a measurement already recorded as a comment in",
+    "compose.prod.yml (an API idles at 70-100 MB; a background consumer or sweep at 35-50 MB;",
+    "postgres/rabbitmq/redis/caddy are each sized against their own compose comment) — this",
+    "file exists so those numbers are summed by a script instead of eyeballed. `api` and",
+    "`background` use the midpoint of their measured range: summed across the box's default",
+    "COMPOSE_PROFILES (.env.example), the total lands at ~3.4 GB — inside the 3.4-3.6 GB idle",
+    "range the audit that started this slice measured directly, which is the sanity check for",
+    "using a midpoint rather than either end of the range.",
+    "",
+    "`tests/infra/test_compose_memory_budget.py` is the gate: every service compose.prod.yml",
+    "defines must have a `containers` entry here, and vice versa, or the test fails by name.",
+    "`preflight.sh` sums this file against the box's live /proc/meminfo through",
+    "`infrastructure/edge/lib/memory_budget_totals.py` and",
+    "`infrastructure/edge/lib/memory-budget.sh`'s `memory_budget_verdict`, and refuses a",
+    "deploy over `hard_budget_percent`."
+  ],
+
+  "host": {
+    "mem_total_mb_reference": 3800,
+    "soft_budget_percent": 80,
+    "hard_budget_percent": 100,
+    "notes": "mem_total_mb_reference documents the box this was measured against; preflight.sh reads the box's own /proc/meminfo at deploy time and does not use this number. Soft: warn and let the deploy proceed — the box is allowed to run tight. Hard: refuse — past this, the kernel starts reclaiming from things that must not be reclaimed from (see datastores' mem_reservation) or the OOM killer picks a victim."
+  },
+
+  "kinds": {
+    "api": {
+      "expected_rss_mb": 85,
+      "mem_limit_mb": 256,
+      "source": "compose.prod.yml's x-service-common comment: 'An API here idles at 70-100 MB.' 85 is the midpoint. mem_limit lowered from 320m to 256m in the same erratum this file introduces — still ~3x expected idle."
+    },
+    "background": {
+      "expected_rss_mb": 42,
+      "mem_limit_mb": 192,
+      "source": "compose.prod.yml's x-background comment and the edge-relay comment ('~35 MB each'): a consumer, sweep or relay idles at 35-50 MB. 42 is the midpoint. mem_limit lowered from 256m to 192m in the same erratum — ~4.5x expected idle."
+    }
+  },
+
+  "datastores": {
+    "caddy": {
+      "expected_rss_mb": 64,
+      "mem_limit_mb": 192,
+      "mem_reservation_mb": 96,
+      "source": "No prior measurement existed (caddy had no mem_limit at all before this erratum); estimated from a handful of proxied domains and streamed (not buffered) uploads. Revisit if TLS_PLATFORM_HOSTS or the storefront domain count grows an order of magnitude."
+    },
+    "postgres": {
+      "expected_rss_mb": 350,
+      "mem_limit_mb": 768,
+      "mem_reservation_mb": 512,
+      "source": "compose.prod.yml's postgres command comment: shared_buffers=256MB plus per-backend work_mem across ~25 client processes and OS page cache. mem_reservation protects it from host-wide reclaim ahead of the squeezable api/background containers, which carry none."
+    },
+    "rabbitmq": {
+      "expected_rss_mb": 150,
+      "mem_limit_mb": 256,
+      "mem_reservation_mb": 192,
+      "source": "Erlang VM baseline plus RabbitMQ's own runtime, idle (no -management plugin, per compose.prod.yml's own comment on that choice). rabbitmq/rabbitmq.conf sets vm_memory_high_watermark.relative against this same mem_limit so the broker's own alarm fires inside it."
+    },
+    "redis": {
+      "expected_rss_mb": 40,
+      "mem_limit_mb": 128,
+      "mem_reservation_mb": 64,
+      "source": "maxmemory 64mb (compose.prod.yml) bounds the dataset; this adds client buffers, the AOF rewrite fork and Redis's own bookkeeping. See compose.prod.yml's redis command comment for what is actually stored and why the eviction policy is volatile-lru, not allkeys-lru."
+    },
+    "minio": {
+      "expected_rss_mb": 60,
+      "mem_limit_mb": 128,
+      "mem_reservation_mb": 64,
+      "source": "compose.prod.yml's existing minio mem_limit comment: one small bucket, console disabled, no listing traffic."
+    },
+    "minio-init": {
+      "expected_rss_mb": 16,
+      "mem_limit_mb": 64,
+      "steady_state": false,
+      "source": "A one-shot `mc` client that runs for a few seconds and exits (labelled opsgrids.oneshot=true) — excluded from steady-state sums by memory_budget_totals.py, but still fused."
+    }
+  },
+
+  "profiles": [
+    "storefront",
+    "inventory",
+    "hrms",
+    "crm",
+    "pulseboard",
+    "projects",
+    "support",
+    "marketing",
+    "finance",
+    "itsm"
+  ],
+
+  "containers": {
+    "caddy": { "kind": "datastore", "datastore": "caddy", "profile": null },
+    "postgres": { "kind": "datastore", "datastore": "postgres", "profile": null },
+    "rabbitmq": { "kind": "datastore", "datastore": "rabbitmq", "profile": null },
+    "redis": { "kind": "datastore", "datastore": "redis", "profile": null },
+
+    "auth": { "kind": "api", "profile": null },
+    "account": { "kind": "api", "profile": null },
+    "product": { "kind": "api", "profile": null },
+    "app-gateway": { "kind": "api", "profile": null },
+    "catalog": { "kind": "api", "profile": null },
+    "subscription": { "kind": "api", "profile": null },
+    "billing": { "kind": "api", "profile": null },
+    "metering": { "kind": "api", "profile": null },
+    "payment": { "kind": "api", "profile": null },
+    "notification": { "kind": "api", "profile": null },
+
+    "edge-relay": { "kind": "background", "profile": null },
+    "account-worker": { "kind": "background", "profile": null },
+    "product-worker": { "kind": "background", "profile": null },
+    "subscription-worker": {
+      "kind": "background",
+      "profile": null,
+      "note": "runs both the payment-event consumer and the dunning/trial-end sweep since ADR-0013's memory-budget erratum (2026-09-23) merged subscription-cron into it."
+    },
+    "payment-worker": { "kind": "background", "profile": null },
+    "notification-worker": { "kind": "background", "profile": null },
+    "notification-cron": { "kind": "background", "profile": null },
+
+    "minio": { "kind": "datastore", "datastore": "minio", "profile": "storefront" },
+    "minio-init": { "kind": "datastore", "datastore": "minio-init", "profile": "storefront" },
+    "storefront": { "kind": "api", "profile": "storefront" },
+    "storefront-cron": { "kind": "background", "profile": "storefront" },
+    "document": { "kind": "api", "profile": "storefront" },
+
+    "operations": { "kind": "api", "profile": "inventory" },
+    "operations-cron": { "kind": "background", "profile": "inventory" },
+
+    "approval": { "kind": "api", "profile": "hrms" },
+    "approval-worker": {
+      "kind": "background",
+      "profile": "hrms",
+      "note": "runs both the hierarchy/regularization consumer and the SLA escalation sweep since ADR-0013's memory-budget erratum (2026-09-23) merged approval-cron into it."
+    },
+    "employee": { "kind": "api", "profile": "hrms" },
+    "attendance": { "kind": "api", "profile": "hrms" },
+    "attendance-worker": { "kind": "background", "profile": "hrms" },
+
+    "customer": { "kind": "api", "profile": "crm" },
+    "deal": { "kind": "api", "profile": "crm" },
+
+    "project": { "kind": "api", "profile": "pulseboard" },
+    "timesheet": { "kind": "api", "profile": "pulseboard" },
+    "standup": { "kind": "api", "profile": "pulseboard" },
+
+    "projects": { "kind": "api", "profile": "projects" },
+    "support": { "kind": "api", "profile": "support" },
+    "marketing": { "kind": "api", "profile": "marketing" },
+
+    "finance": { "kind": "api", "profile": "finance" },
+    "finance-worker": { "kind": "background", "profile": "finance" },
+
+    "itsm": { "kind": "api", "profile": "itsm" }
+  }
+}

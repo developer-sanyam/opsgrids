@@ -174,6 +174,94 @@ whenever a product wants them). Mobile apps. A second box. Staff-side approval o
 address with a working inbox may create an organisation; abuse controls are rate limits and the
 trial's own end).
 
+## Erratum — the memory budget (2026-09-23)
+
+**§5's sizing was wrong, and the plan built on top of it never happened.** "This is ~24
+containers. The current 2 vCPU / 3.8 GB VM will not hold it; the box moves to 4 vCPU / 8–16 GB
+before slice 1 goes live" — slice 1 shipped on the un-resized box anyway (2026-09-20), every
+slice since has too, and the owner has since said explicitly: **no resize.** Nothing in this
+document, or in any deploy since, ever refused to proceed for lack of one. The box is still
+2 vCPU / 3.8 GB RAM, plus a 4 GB swapfile added after the fact when it started thrashing.
+
+**The real container count**, counted directly off `compose.prod.yml` rather than estimated, is
+44 with every profile this ADR names turned on at once (`.env.example`'s
+`COMPOSE_PROFILES=inventory,storefront,hrms,crm,pulseboard,projects,support,marketing,finance,itsm`)
+— not ~24. It was 46 before this same erratum folded `subscription-cron` and `approval-cron`
+into their services' `bin/worker` (§"Levers", below). And this ADR's own §5 table already
+undercounted slice 1: it named "catalog, subscription (+worker, +cron, +relay), billing
+(+worker, +relay), metering (+worker, +relay), payment (+worker, +relay), notification (+worker,
++relay)" as core, but billing and metering were never given a worker or a relay of their own —
+one `edge-relay` container drains every service's outbox (the runbook's "one relay, not one per
+service", 2026-09-21) — so even slice 1's own table priced work that was never built. Sizing by
+architecture-diagram arithmetic ("N services, each roughly M containers") is what produced both
+errors; sizing by reading the compose file that actually deploys is `memory-budget.json`'s whole
+reason to exist.
+
+**The method, going forward.** `infrastructure/edge/memory-budget.json` prices every container
+this platform can deploy at a measured (or, where nothing had ever been measured before this
+erratum — caddy, rabbitmq — conservatively estimated and labelled as such) steady-state RSS, and
+`infrastructure/edge/preflight.sh` sums it against the box's actual `COMPOSE_PROFILES` and its
+live `/proc/meminfo`, refusing a deploy that would cross a hard budget line and warning above a
+softer one. `tests/infra/test_compose_memory_budget.py` is the gate that keeps the file honest:
+every container `compose.prod.yml` defines must be priced there, and every future slice that adds
+one and forgets fails that test by name, in CI, before it reaches this box. Postgres, RabbitMQ,
+Redis and Caddy — previously the four processes on this box with no `mem_limit` at all, meaning
+an unbounded one of them is exactly what the OOM killer reaches for first when something else
+spikes — each now carry an explicit `mem_limit` and `mem_reservation`.
+
+**What "no resize" actually implies.** §5 treated the box's size as the variable that would move
+to meet the container count. It will not. The only variable left is the container count itself,
+which means every future slice's memory cost is a real design constraint, not an afterthought
+for whoever eventually did the resize. Concretely, the levers are:
+
+- **Per-service process merges.** A worker (`bin/worker`, a consumer) and a cron (`bin/cron`, a
+  poll-and-drain sweep) are two containers today wherever a service has scheduled work, at
+  ~40–50 MB idle apiece for two processes that are each idle almost all the time.
+  `notification/app/worker.py` already runs two *consumers* in one process this way; this
+  erratum applies the same shape to a consumer plus a sweep for `subscription` and `approval` —
+  the two services where both existed, both had tests, and both tests passed unchanged after the
+  merge (`services/subscription/app/worker.py`, `services/approval/app/worker.py`). `bin/cron`
+  stays standalone-runnable in both for local debugging; only `bin/worker` changed. This is not
+  free for every service with a cron — a service whose sweep needs its own scaling story, or
+  whose worker and cron have genuinely different failure domains, should stay split — but it is
+  free where nothing depended on the split, and it removed two containers here.
+- **Moving crons onto a shared scheduler.** `services/scheduler` is still the empty scaffold §5's
+  neighbour ADR-0006 §8 already deferred to it once. Every per-service `bin/cron` sweep
+  (subscription's dunning ladder, approval's SLA escalation, storefront's domain sweep,
+  operations' reconciler) is a candidate to become one job on one shared scheduler process
+  instead of N poll loops each holding their own idle connection pool — the same argument that
+  already collapsed 24 outbox relays into one `edge-relay` container (2026-09-21). Not done in
+  this erratum: it is a scheduler service, not a compose edit, and deserves its own slice.
+- **CI-built images, pulled rather than built on the box.** Every deploy today builds ~20 images
+  on the box itself before recreating anything — real CPU and real disk I/O on a 2-vCPU box, at
+  the exact moment it is also trying to keep serving traffic. Documented as an option, not done
+  here: build and tag each service's image in CI (the same Dockerfiles, `docker buildx build
+  --push` to a registry keyed by the deployed ref), then have `remote.sh` `docker compose pull`
+  the changed images instead of `docker compose build`. Concretely this needs (1) a registry —
+  GitHub Container Registry costs nothing extra given CI already runs there, (2) a
+  `GHCR_TOKEN`/`GITHUB_TOKEN`-scoped push step added to `.github/workflows/ci.yml` on main after
+  the gate passes, tagged with the commit SHA the same way `remote.sh` already records
+  `last-good-ref`, and (3) `compose.prod.yml`'s `build:` blocks kept (a laptop or a box with no
+  registry access must still be able to build directly) while `remote.sh` prefers `pull` when the
+  configured registry has the tag. It removes a build-time CPU and memory spike from the box, not
+  a steady-state cost — orthogonal to `memory-budget.json`, which only prices steady state — but
+  it is the spike that turns "tight" into "briefly out of memory" during a deploy.
+- **Turning off profiles with zero activations.** `COMPOSE_PROFILES` on the box today is every
+  profile this ADR and its successors have shipped, regardless of whether the catalogue has ever
+  sold a trial of that product. `preflight.sh`'s existing catalogue/profile agreement check
+  (§5, "must agree") only ever catches a product sold with no profile running — it has nothing to
+  say about the opposite waste, a profile running for a product with zero organizations ever
+  activated. That check does not exist yet; it is the next thing this budget should grow, because
+  it is the only lever here that costs nothing to ship (no code change to a product, no new
+  service) and gives back a whole container group.
+
+**What this does not fix.** Even with both merges landed, `.env.example`'s full profile list
+prices at ~3.4 GB expected steady-state RSS against this box's 3.8 GB — inside `preflight.sh`'s
+warn band, not its refuse one, which matches what the box has been doing since 2026-09-21: it
+runs, and it swaps. The remaining lever that actually buys headroom, rather than redistributing
+it, is turning off a profile nobody has activated — or the resize this erratum's own title says
+will not happen.
+
 ---
 
 ## The plan, sliced

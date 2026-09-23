@@ -1,13 +1,16 @@
 # The edge VM — runbook
 
-One Linux VM serves every merchant's storefront: Caddy, Postgres+PostGIS, Redis, and five
-service containers plus one sweep. ADR-0012 §1 is the decision and its reasoning; this file is
-what you do about it at 3am.
+One Linux VM serves every merchant's storefront and every other product this platform sells:
+Caddy, Postgres+PostGIS, Redis, RabbitMQ, and one compose profile per product (44 containers
+with every profile on — see [the memory budget](#the-memory-budget) and ADR-0013's memory-budget
+erratum, not "five service containers plus one sweep", which was true only of slice 1). ADR-0012
+§1 is the decision and its reasoning; this file is what you do about it at 3am.
 
 **Read this first, once, before the box exists.** The parts you will actually need in an
 incident are [roll back a bad deploy](#roll-back-a-bad-deploy), [the box is out of
-disk](#the-box-is-out-of-disk), [restore from backup](#restore-from-backup) and [is it the app,
-the database, Caddy or DNS](#is-it-the-app-the-database-caddy-or-dns).
+disk](#the-box-is-out-of-disk), [the memory budget](#the-memory-budget), [restore from
+backup](#restore-from-backup) and [is it the app, the database, Caddy or
+DNS](#is-it-the-app-the-database-caddy-or-dns).
 
 ---
 
@@ -59,8 +62,15 @@ Roughly 45 minutes, most of it waiting for a build. Steps 1–6 are one-time.
 
 ### 1. The VM and its address
 
-Hetzner CX32 (4 vCPU / 8 GB / 80 GB) or a DigitalOcean 4 GB droplet, **Ubuntu 24.04 LTS**, in
-whichever region your buyers are.
+**Size against `infrastructure/edge/memory-budget.json` for the profiles you actually intend to
+run, not by habit.** This platform's own production box is 2 vCPU / 3.8 GB RAM (+4 GB swapfile)
+and runs every profile it sells on that — tight (`preflight.sh`'s memory-budget check warns at
+this size; see [the memory budget](#the-memory-budget)), but running, and the owner has declined
+to resize it. A CX32-class box (4 vCPU / 8 GB / 80 GB) or a DigitalOcean 4 GB droplet,
+**Ubuntu 24.04 LTS**, gives comfortable headroom for the same profile list if you are standing up
+a fresh box and can choose its size; a smaller one is workable if you also trim
+`COMPOSE_PROFILES` to match — `preflight.sh` will tell you which, and refuse rather than guess if
+you get it wrong.
 
 **Attach a reserved (floating) IPv4 before you do anything else.** Apex merchants put this
 address in their own zone file, so it becomes part of the platform's public contract. A
@@ -606,6 +616,34 @@ bundles, and `docker image prune -af` after a deploy is a good habit that nothin
 
 ---
 
+## The memory budget
+
+`infrastructure/edge/memory-budget.json` prices every container this platform can deploy at a
+measured (or, where noted, conservatively estimated) steady-state RSS. `preflight.sh` sums it
+against whichever `COMPOSE_PROFILES` the box's own `.env` enables and the box's own live
+`/proc/meminfo`, and prints one of:
+
+- **ok** — comfortably under budget.
+- **warn** — over the 80% soft line. The deploy proceeds; this is what the real production box
+  reads today with every profile on (ADR-0013's memory-budget erratum, 2026-09-23) — tight, and
+  already relying on the swapfile, but not refused.
+- **refuse** — over the 100% hard line. The deploy stops. A box this far over budget will not
+  come up cleanly under load even if the deploy itself succeeds.
+
+If you see **refuse**: trim `COMPOSE_PROFILES` to the products this box actually sells (drop one
+with zero activations first — check the catalogue, not habit), or consolidate a service's
+processes the way `subscription` and `approval` already were (ADR-0013's erratum has the list of
+what is left to do this way). **Do not** raise `hard_budget_percent` in `memory-budget.json` to
+make a refuse go away — that number is the line past which the kernel starts reclaiming from
+Postgres, RabbitMQ or Redis instead of an idle API container, and moving it does not move that
+fact.
+
+`tests/infra/test_compose_memory_budget.py` (`make test-infra`) is the same check run in CI,
+against `.env.example`'s profile list and a fixed reference `MemTotal` — so a service added to
+`compose.prod.yml` without a `memory-budget.json` entry fails before it ever reaches a box.
+
+---
+
 ## Restore from backup
 
 If `BACKUP_S3_ENDPOINT` is set (anything other than AWS itself — R2, B2, the provider's own
@@ -691,6 +729,17 @@ Named here so nobody discovers them during an incident:
 
 - **No alerting and no pager.** Slice 2.
 - **No zero-downtime deploy.** Every deploy that changes a container restarts it.
+- **The box does not resize to fit the container count (2026-09-23, ADR-0013's memory-budget
+  erratum).** §5's own sizing said this box moves to 4 vCPU / 8-16 GB before slice 1 goes live;
+  it never did, the owner has since said explicitly it will not, and every slice since has
+  shipped on the same 2 vCPU / 3.8 GB VM regardless. [The memory budget](#the-memory-budget) is
+  the enforcement that exists because of that: `preflight.sh` now refuses a deploy whose
+  `COMPOSE_PROFILES` do not fit, instead of letting the box find out under load. `subscription`
+  and `approval` each lost a container to a worker+cron merge as part of the same erratum
+  (`app/worker.py` in each now runs the consumer and the sweep together, the same `gather`
+  shape `notification/app/worker.py` already used for its two consumers). `notification` is the
+  one remaining service that still runs a matching `-worker` and `-cron` as separate containers
+  — a candidate for the same treatment, not done here because it was out of this slice's scope.
 - **Resolved 2026-09-20 (ADR-0013 slice 1): RabbitMQ, a relay per outbox and the consumers now
   run on this box**, so activation installs a product's roles by event and
   `tools/wire_product.py` is a repair tool again, not a step. The paragraph below is kept as
