@@ -713,3 +713,95 @@ sensitive read and calling it one would dilute the signal on the paths where it 
 - **A key collision is ever observed, or MinIO's conditional-write support is verified.** Then the
   `PutObject` precondition in §10 moves from "not required" to "required", and the guarantee stops
   being probabilistic.
+
+## Addendum (2026-09-23) — MinIO on the edge VM, and a header a public bucket cannot be trusted with
+
+§13's "Bootstrap, Prod" said the production half of this ADR "has no home yet and needs an
+owner." It now does: `infrastructure/edge/` (ADR-0012), `minio` and `document` behind the
+`storefront` compose profile, `minio-init` running the same anonymous-`GetObject`-only bucket
+policy `tools/dev-bootstrap/compose.yml` uses in development. This addendum records what that
+deploy actually needed beyond §13's dev/prod table, because one of the three findings below is a
+stored-XSS-to-account-takeover path and the fix is a Caddy configuration decision this ADR never
+anticipated, not an application change.
+
+**MinIO gets no host port; Caddy is a plain reverse proxy in front of it, and that is still the
+right shape.** §"What this rejects" already refuses an *authorizing* content proxy — a service
+that decides per request whether to serve an object. What runs on the edge is not that: it is an
+unauthenticated `reverse_proxy minio:9000` for `GET`/`HEAD` on `/opsgrids-public/*`, with no
+application logic and no session ever consulted, because the bucket behind it already grants
+`s3:GetObject` to `*` and nothing else. There is nothing for a proxy to authorize that MinIO's own
+anonymous policy has not already decided. This is acceptable precisely because §1's decision — the
+bucket is world-readable by design — has not changed; a proxy in front of a *private* bucket would
+be a different and refused shape.
+
+**What was missing, and it is a real finding, not a hardening nicety: a public-bucket reverse
+proxy cannot be a *bare* one.** MinIO honours `?response-content-type=` (and the sibling
+`response-*` overrides) on an anonymous `GetObject` — a caller may ask MinIO to lie about the
+`Content-Type` of an object it did not write. `services/document` never issues such a query
+itself, but nothing stops a browser from appending one to a URL it already has, and every object
+in this bucket is reachable by anyone who has the URL (§1). Combined with the original Caddy
+route, which imported into *every* site this Caddyfile serves — `app.opsgrids.com`,
+`ops.opsgrids.com`, every other platform hostname, not only the one `PUBLIC_ASSET_BASE_URL` names
+— the consequence was concrete: upload an HTML/JS payload through the ordinary, authorized upload
+endpoint (§4's five validation rules bound *image* formats, not arbitrary bytes rejected outright
+as non-images — see the honest residual below), then fetch it back as
+`/opsgrids-public/<org>/<asset>?response-content-type=text/html` on `app.opsgrids.com`, where the
+`.opsgrids.com`-scoped refresh cookie (ADR-0001) is live. That is stored XSS with a direct path to
+session theft and account takeover, reachable without ever touching an authenticated route.
+
+**The fix, entirely in `infrastructure/edge/caddy/Caddyfile`, no application code:**
+
+1. **The route now lives only on `EDGE_HOST`'s own site block**, not in the shared snippet every
+   platform hostname imports. `PUBLIC_ASSET_BASE_URL` already names exactly one host (§13); the
+   Caddyfile now enforces that it is the *only* host this path resolves on, so a payload served
+   back with a lying content type has no platform cookie to steal even if every other layer below
+   failed.
+2. **The query string is stripped before the request reaches MinIO** (`rewrite * {path}?`) — the
+   trap named in the Caddy documentation and easy to get backwards: `rewrite * {path}` alone does
+   **not** drop the incoming query, only a rewrite target ending in a bare `?` does. This closes
+   `response-content-type` and every other `response-*` override at the edge, not by trusting
+   MinIO to have no more of them.
+3. **Response hardening on top of both**: `Content-Security-Policy: default-src 'none'; sandbox`
+   and `X-Content-Type-Options: nosniff` on every response this route serves, `Cache-Control:
+   public, max-age=86400` (objects are content-addressed UUID keys, written once, ADR-0009 §3 —
+   the honest trade-off is that a `?purge=true` takedown, §8, does not invalidate a cache that
+   already has the object, so the real takedown latency for an already-cached response is bounded
+   by this TTL, not by the API call), `request_header -Authorization` (no session ever belongs on
+   this path; stripping it is one less thing an operator error downstream could turn into a
+   leak), and `-Server` (MinIO's own version banner is not this platform's to publish). None of
+   these is the boundary on its own — the host restriction and the query strip are — but each is
+   free and each is the layer that still holds if a future MinIO version adds an override nobody
+   here has read about yet.
+
+**The honest residual, not closed by this addendum.** §5's validation refuses SVG permanently and
+GIF for now, and every accepted upload is decoded and re-encoded by Pillow before it is ever
+written — a polyglot does not survive that round trip (§5, "neutralises polyglots"). The
+`evilasset` payload used to verify this fix was written directly into a scratch MinIO bucket, not
+through `POST /api/v1/documents/assets` — proving the Caddy-layer fix independently of whether
+`process_upload` would have accepted the bytes in the first place, which it would not (Pillow has
+no HTML/script decoder, so `UnidentifiedImageError` refuses it with 422 before any bytes reach
+S3). The Caddy hardening above exists anyway, for the object that gets into the bucket by some
+path this ADR did not anticipate — a future service sharing the bucket, an operator's `mc cp`, a
+bug in `process_upload` — because "the application validates it" and "the edge cannot serve it as
+HTML regardless" are two different guarantees and only the second one is a boundary a public
+bucket can actually stand behind.
+
+**Verified against the pinned images, not assumed**: `caddy:2.10.0-alpine` serving the production
+Caddyfile (`caddy validate`, clean) and, in a scratch compose project against a real
+`quay.io/minio/minio` with the anonymous-`GetObject` policy `minio-init` applies, the following
+held simultaneously — `?response-content-type=text/html` on a non-image object returns
+`Content-Type: application/octet-stream` (MinIO's own default) with the CSP and `nosniff` headers
+present and no `Server` header; a plain `GET` of a real object still returns its true content
+type; a bucket-root listing still returns `403 AccessDenied`; and a `..`-traversal probe and a
+`POST` both miss the route entirely and hit the same 404 fallback as before this change, so
+nothing about the isolation properties §3 depends on moved.
+
+**The longer-term plan, named here so it is a decision rather than a thing that happens by
+default:** the durable fix is a cookieless asset domain entirely outside `.opsgrids.com` — a
+second-level domain with no cookie ever set on it, so an object served with any content type on
+that host has nothing to steal regardless of what MinIO, a future proxy, or a future contributor
+gets wrong. That is the CDN §"What this rejects" already deferred ("A CDN in slice 1"), and this
+addendum is the concrete argument for not deferring the *domain* choice along with it: when a CDN
+does arrive, its origin should be that cookieless domain, not a `stores.opsgrids.com` or
+`opsgrids.com` subdomain, and `PUBLIC_ASSET_BASE_URL` (§6, §13) is already the one config value
+that changing costs nothing else — the payoff §6 was built for, spent here.

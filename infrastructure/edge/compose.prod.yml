@@ -148,6 +148,13 @@ services:
       # outage must not also stop certificate issuance.
       ACME_EMAIL: ${ACME_EMAIL}
       TLS_ASK_URL: http://storefront:8000/api/v1/storefront/internal/tls-authorize
+      # Names the one site block that proxies uploaded merchant images (ADR-0009 addendum,
+      # 2026-09-23) — see caddy/Caddyfile's "uploaded merchant images" section for why that
+      # route lives on this one host and nowhere else.
+      EDGE_HOST: ${EDGE_HOST}
+      # Drives the @opsgrids_public path matcher, so a bucket rename in `.env` is a one-value
+      # change rather than a second hardcoded path to remember and forget.
+      S3_PUBLIC_BUCKET: ${S3_PUBLIC_BUCKET:-opsgrids-public}
     volumes:
       # A directory, not the file. A single-file bind mount follows the *inode*: when a
       # checkout replaces the file, the container keeps reading the old one, and a deploy
@@ -280,6 +287,152 @@ services:
     networks:
       - back
 
+  # document-service's public asset store (ADR-0009). Profile `storefront`: today document has
+  # exactly one caller — the storefront console's image upload — and this box has no RAM to
+  # spare running a bucket for nobody. ADR-0009's "the service surface" calls
+  # `/api/v1/documents` a platform route with no product key; that is a statement about
+  # entitlement at the gateway, not about which boxes run the service behind it. Move `minio`
+  # and `document` out of this profile the day a second product's frontend uploads through them.
+  #
+  # No host port: a buyer's browser never reaches this container directly. Caddy reverse-proxies
+  # `/opsgrids-public/*` straight to it (`caddy/Caddyfile`) because the bucket is meant to be
+  # world-readable in its entirety (ADR-0009 §1) — that is a plain, unauthorized proxy of a
+  # public bucket, not the authorizing content proxy ADR-0009 §"What this rejects" refuses.
+  # `front` as well as `back`, the same shape `storefront` uses for the TLS ask endpoint: Caddy
+  # reaches it on `front`, `document` writes and deletes objects on `back`.
+  #
+  # `quay.io/minio/minio`, not `minio/minio`: Docker Hub no longer serves MinIO's server image —
+  # `minio/minio` 404s there now (verified against the registry, not assumed). quay.io is
+  # MinIO's own published mirror for the same tags. `tools/dev-bootstrap/compose.yml` already
+  # made the same switch (#42).
+  minio:
+    image: quay.io/minio/minio:RELEASE.2024-01-16T16-07-38Z
+    restart: unless-stopped
+    logging: *logging
+    profiles: ['storefront']
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      # No console in production: nothing here ever needs to browse the bucket by hand, and the
+      # console is a second HTTP surface to secure for zero use.
+      MINIO_BROWSER: 'off'
+    command: ['server', '/data']
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    # A fuse (top-of-file arithmetic): one small bucket, no console, no listing traffic. Capped
+    # well below Postgres's share of this box's 3.8 GB.
+    mem_limit: 128m
+    networks:
+      - front
+      - back
+
+  # One-shot: creates the public asset bucket and its anonymous GetObject-only policy. Without
+  # it the bucket does not exist and the first upload fails at runtime with an opaque
+  # NoSuchBucket (ADR-0009 §13, "Bootstrap"). Same recipe as `tools/dev-bootstrap/compose.yml`'s
+  # `minio-bootstrap` — keep the two in sync — including *why* it is written as a JSON policy
+  # document rather than `mc anonymous set download`: `set download` also grants anonymous
+  # `s3:ListBucket`, which is anonymous enumeration and destroys ADR-0009 §3's isolation
+  # argument (no listing to walk, a v4 UUID is not guessable). Idempotent: `mb --ignore-existing`
+  # and a policy set are both safe to re-run, so a redeploy is a no-op here, not an error.
+  minio-init:
+    image: quay.io/minio/minio:RELEASE.2024-01-16T16-07-38Z
+    profiles: ['storefront']
+    # A one-shot: it does its job and exits 0. `remote.sh`'s `health` step treats "exited" as a
+    # failure for everything EXCEPT a container carrying this label with exit code 0 — without
+    # it, every deploy with the `storefront` profile waited the full HEALTH_TIMEOUT (600s) and
+    # failed, skipping `record_ref` and the apps job, because this container's job is to not be
+    # running by the time health is checked.
+    labels:
+      - 'opsgrids.oneshot=true'
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      # `mc` recognises `MC_HOST_<alias>` on its own — no `mc alias set og http://minio:9000
+      # "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"` call needed, which is what this replaces.
+      # The old form put the root password on the command line of a process running inside
+      # this container for as long as that `mc` invocation ran — readable by anything that can
+      # see this container's process list (`docker top`, a shared PID namespace) for that
+      # window. An env var `mc` reads directly never appears in argv at all.
+      MC_HOST_og: http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000
+      S3_PUBLIC_BUCKET: ${S3_PUBLIC_BUCKET:-opsgrids-public}
+      # The scoped credential `document` actually connects with (below), created here rather
+      # than handing it the root account: a compromised or merely buggy `document` process can
+      # now put and delete objects in this one bucket and nothing more — it cannot list the
+      # bucket, cannot touch a second bucket if one is ever added, and cannot change this
+      # bucket's own policy out from under `minio-init`.
+      DOCUMENT_S3_ACCESS_KEY: ${DOCUMENT_S3_ACCESS_KEY}
+      DOCUMENT_S3_SECRET_KEY: ${DOCUMENT_S3_SECRET_KEY}
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        set -e
+        mc mb --ignore-existing "og/$$S3_PUBLIC_BUCKET"
+        cat > /tmp/public-read.json <<JSON
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {"AWS": ["*"]},
+              "Action": ["s3:GetObject"],
+              "Resource": ["arn:aws:s3:::$$S3_PUBLIC_BUCKET/*"]
+            }
+          ]
+        }
+        JSON
+        mc anonymous set-json /tmp/public-read.json "og/$$S3_PUBLIC_BUCKET"
+        echo "$$S3_PUBLIC_BUCKET ready: anonymous GetObject only, no ListBucket"
+
+        # The scoped user `document` writes and deletes as (finding: root credential shared
+        # with a whole bucket's worth of blast radius). `s3:PutObject` and `s3:DeleteObject`
+        # only — `document` never calls GetObject or ListBucket (see `app/storage.py`), and the
+        # anonymous policy above already covers every read a buyer's browser needs.
+        #
+        # Idempotent the way each step actually behaves, verified against this pinned `mc`,
+        # not assumed: `admin user add` on an existing user resets its secret to this value
+        # rather than erroring, and `admin policy create` on an existing name silently
+        # overwrites it — but `admin policy attach` on an already-attached policy errors
+        # ("already in effect", exit 1) rather than being a no-op, so that one step's result is
+        # checked explicitly instead of trusted to be safe to just re-run.
+        #
+        # The secret is unavoidably a positional argument to `admin user add` — `mc`'s admin
+        # API has no env-var form for it — so it is visible in this container's own process
+        # list for the moment this one line runs, same as any `docker run -e PASSWORD=...`
+        # secret; it never appears in a log, in `docker inspect`, or in this file.
+        mc admin user add og "$$DOCUMENT_S3_ACCESS_KEY" "$$DOCUMENT_S3_SECRET_KEY"
+        cat > /tmp/document-write.json <<JSON
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": ["s3:PutObject", "s3:DeleteObject"],
+              "Resource": ["arn:aws:s3:::$$S3_PUBLIC_BUCKET/*"]
+            }
+          ]
+        }
+        JSON
+        mc admin policy create og document-write /tmp/document-write.json
+        attach_out=$$(mc admin policy attach og document-write --user "$$DOCUMENT_S3_ACCESS_KEY" 2>&1) && echo "$$attach_out" || {
+          case "$$attach_out" in
+          *"already in effect"*) echo "document-write already attached to the scoped user" ;;
+          *)
+            echo "$$attach_out" >&2
+            exit 1
+            ;;
+          esac
+        }
+    restart: on-failure
+    networks:
+      - back
+
   # ---------------------------------------------------------------- services
   # Each image holds exactly one service's code on top of a shared .venv layer: `import app`
   # is ambiguous across services, so one image can only ever hold one of them.
@@ -405,7 +558,7 @@ services:
 
   # ---------------------------------------------------------------- core: workers and the relay
   # ADR-0013 §5. A worker only where the service has event handlers (auth, catalog, billing,
-  # metering, operations and storefront have none today); every outbox is drained, so nothing
+  # metering, operations, storefront and document have none today); every outbox is drained, so nothing
   # a service publishes sits in its table forever — by the one `edge-relay` below. Each worker
   # reuses its API's image by name — the build step builds each image once, and `up` finds it.
   # One process drains every service's outbox (platform_core.edge_relay). A relay per service
@@ -422,7 +575,7 @@ services:
     command: ['python', '-m', 'platform_core.edge_relay']
     environment:
       <<: *service-env
-      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,operations,approval,employee,attendance,customer,deal,project,timesheet,standup,projects,support,marketing,finance,itsm}
+      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,customer,deal,project,timesheet,standup,projects,support,marketing,finance,itsm}
     depends_on:
       product:
         condition: service_started
@@ -582,6 +735,66 @@ services:
     image: opsgrids-edge/notification
     command: ['./bin/cron']
     environment: *notification-env
+
+  # ---------------------------------------------------------------- document (platform asset store; ADR-0009)
+  # `/api/v1/documents` carries no `product` key in routes.prod.json — the same shape as
+  # `/api/v1/members` — because ADR-0009 makes it a platform surface, not a per-product one.
+  # It still sits behind the `storefront` profile here: see the comment on `minio` above for
+  # why that is a compose-deployment decision and not a contradiction of the ADR.
+  #
+  # No `document-worker`: `app/consumers.py` is the generic per-service scaffold and registers
+  # no handler, matching catalog, billing, metering, operations and storefront (the comment on
+  # `edge-relay` below). An idle worker holding an open broker channel for nothing is 30 MB this
+  # box does not have to give away.
+  #
+  # `bin/cron` is the untouched scaffold default (`python -m app.relay`) — ADR-0009 §8's purge
+  # sweep was designed and never built, so there is nothing for a document-cron container to
+  # run. Soft-deleted assets accumulate past their 30-day window until it lands (backlog #3
+  # covers the shared scheduler this and every other per-service cron is meant to retire onto).
+  document:
+    <<: *service-common
+    profiles: ['storefront']
+    image: opsgrids-edge/document
+    build:
+      context: ../..
+      dockerfile: services/document/Dockerfile
+    # `memswap_limit` equal to `mem_limit` gives this container zero swap of its own (the
+    # value is total memory+swap, so setting it equal to `mem_limit` allows none). Every other
+    # service here inherits Docker's default of roughly double `mem_limit` in swap, which is
+    # the right choice for a mostly-idle API — but `document` is the one process on this box
+    # that decodes attacker-sized images (ADR-0009 §5, §11), and swapping a 300+ MB spike onto
+    # this already-swapping 2 vCPU / 3.8 GB box turns one large upload into a slow box for
+    # everyone. Failing fast with an OOM kill (`docker compose logs document` shows exit 137;
+    # `restart: unless-stopped` brings it back, and the request that caused it gets a 503
+    # rather than a slow death for the whole VM) is the trade this container should make.
+    memswap_limit: 320m
+    environment:
+      <<: *service-env
+      # Reached over the compose network, never through Caddy: writes and deletes never need
+      # the public path `/opsgrids-public/*` proxies (that path is anonymous GetObject only).
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_FORCE_PATH_STYLE: 'true'
+      S3_PUBLIC_BUCKET: ${S3_PUBLIC_BUCKET:-opsgrids-public}
+      # The scoped user `minio-init` creates (above), not the MinIO root account: `s3:PutObject`
+      # and `s3:DeleteObject` on this one bucket's objects, nothing else. A compromised or
+      # merely buggy `document` process can no longer list the bucket, touch a second bucket,
+      # or rewrite this bucket's own anonymous-read policy — the blast radius the root
+      # credential used to hand it for free.
+      S3_ACCESS_KEY: ${DOCUMENT_S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${DOCUMENT_S3_SECRET_KEY}
+      # The absolute address returned as `AssetOut.public_url` for the editor's own immediate
+      # preview only (never persisted — ADR-0009 §6). Must be a host Caddy actually proxies
+      # `/opsgrids-public/*` on; see `.env.example`.
+      PUBLIC_ASSET_BASE_URL: ${PUBLIC_ASSET_BASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - back
 
   # ---------------------------------------------------------------- products behind profiles
   # One profile per sellable product (ADR-0013 §5). COMPOSE_PROFILES in the box's .env turns a
@@ -812,3 +1025,4 @@ volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
+  minio_data:

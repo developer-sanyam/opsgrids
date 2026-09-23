@@ -89,6 +89,80 @@
 	}
 }
 
+# ---------------------------------------------------------------------------- uploaded merchant images
+#
+# Public bucket objects (ADR-0009) are served from EDGE_HOST alone — the one host
+# PUBLIC_ASSET_BASE_URL names (.env.example) — and now from NOWHERE else. This used to live in
+# the shared `(edge)` snippet every site above imports, which meant it was reachable on
+# app.opsgrids.com, ops.opsgrids.com and every other platform hostname too.
+#
+# That mattered because MinIO honours `?response-content-type=` (and other `response-*`
+# overrides) on an anonymous GetObject: an attacker who uploads an HTML/JS payload through the
+# storefront console's own upload endpoint could fetch it back as
+# `/opsgrids-public/<uuid>?response-content-type=text/html` and have it rendered as HTML — on a
+# platform host where the `.opsgrids.com`-scoped refresh cookie is live. That is stored XSS with
+# a direct path to account takeover, not a theoretical header-smuggling concern. Restricting the
+# route to this one host removes every other platform host from the attack surface; the query
+# strip and response headers below are the second and third layers, so this survives a future
+# contributor adding the route back to the shared snippet without reading this comment.
+#
+# `minio-init`'s anonymous policy already grants nothing but `s3:GetObject` (no ListBucket) —
+# this is defence in depth on top of that, not a replacement for it.
+https://{$EDGE_HOST} {
+	import edge
+
+	@opsgrids_public {
+		# Driven by S3_PUBLIC_BUCKET (passed into this container's own environment below,
+		# compose.prod.yml), not hardcoded: the URL path a browser fetches always matches
+		# whatever bucket `minio-init` actually created, and renaming the bucket in `.env` is a
+		# one-value change here too rather than a second place to remember. `document`'s
+		# `PUBLIC_ASSET_BASE_URL` must still end in the same bucket name — `.env.example` says
+		# so — because nothing here rewrites the path before proxying to MinIO (§ below).
+		path /{$S3_PUBLIC_BUCKET}/*
+		method GET HEAD
+	}
+	handle @opsgrids_public {
+		# `rewrite * {path}` on its own does NOT drop the query string — Caddy retains the
+		# incoming query unless the rewrite target explicitly ends in a bare `?`. Without this,
+		# `?response-content-type=text/html` (and any other `response-*` override MinIO
+		# honours) rides straight through to MinIO and comes back with that content type.
+		rewrite * {path}?
+
+		# There is no session and no reason for one to travel to an anonymous GetObject; strip
+		# it so an operator error upstream can never turn this into a credential leak.
+		request_header -Authorization
+
+		# Objects are content-addressed UUID keys that are written once and never overwritten
+		# (ADR-0009 §3, §9), so the same URL always names the same bytes or nothing — caching
+		# it for a day costs nothing on the common path. Trade-off, stated plainly: a
+		# `?purge=true` takedown (ADR-0009 §8) does not invalidate a cache that already has the
+		# object, so an immediate takedown's real latency is bounded by this TTL wherever a
+		# browser or intermediate proxy already cached the response, not by the takedown call
+		# itself. Accepted — the alternative is re-fetching every image on every buyer page
+		# view for a bucket whose entire point is that its contents don't change.
+		header Cache-Control "public, max-age=86400"
+		# The response here is always bytes this platform decoded and re-encoded itself
+		# (ADR-0009 §5) or nothing at all — never HTML, and nothing a browser should ever be
+		# invited to sniff into something else. A CSP on an image response is unusual; it costs
+		# nothing and is the layer that still holds if the query strip above is ever bypassed
+		# by a MinIO override nobody has found yet.
+		header Content-Security-Policy "default-src 'none'; sandbox"
+		header X-Content-Type-Options "nosniff"
+		# MinIO's own version banner is not this platform's to publish.
+		header -Server
+
+		reverse_proxy minio:9000
+	}
+
+	handle {
+		respond "Not found" 404
+	}
+
+	handle_errors {
+		respond "Not found" {err.status_code}
+	}
+}
+
 # ---------------------------------------------------------------------------- port 80
 #
 # Caddy installs its own ACME HTTP-01 challenge handler ahead of these routes, so defining

@@ -30,16 +30,35 @@ from __future__ import annotations
 
 import hashlib
 import io
+import threading
 from dataclasses import dataclass
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-#: 50 MP, about 8000x6000. Set **explicitly** rather than left at Pillow's default, and
-#: checked by this module as well: Pillow raises `DecompressionBombError` only at twice this
-#: value and merely warns at it, so relying on the library alone means a 60 MP image decodes
-#: with a logged warning nobody reads.
-MAX_IMAGE_PIXELS = 50_000_000
+#: 24 MP, about 6000x4000 — a legal 7000x7000 PNG (49 MP, under the old 50 MP ceiling) measured
+#: ~489 MB peak RSS in this function against a 320m container `mem_limit`: decoding a PNG that
+#: size fully into memory (Pillow has no partial-decode path for PNG — see the JPEG-only
+#: `draft()` note below), resizing it, and re-encoding it, all before the original buffer is
+#: freed. Lowered here rather than only capped at the API layer, because the bomb check below
+#: runs off the image's declared dimensions before a single pixel is decoded — a request this
+#: size now fails fast with a 4xx naming the limit instead of nearly OOMing the process. Set
+#: **explicitly** rather than left at Pillow's default, and checked by this module as well:
+#: Pillow raises `DecompressionBombError` only at twice this value and merely warns at it, so
+#: relying on the library alone means an over-limit image decodes with a logged warning nobody
+#: reads.
+MAX_IMAGE_PIXELS = 24_000_000
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+
+#: Re-encoding is the only CPU-and-memory-heavy work on any request path in this service
+#: (module docstring, ADR-0009 §11). Two uploads decoding a large image at once roughly doubles
+#: the peak RSS of one — the OOM this module exists to avoid is a function of concurrency as
+#: much as of any single image's size. A semaphore of 1 serialises re-encodes within a process
+#: (each API process already runs several, per `services/document/app/api/routes.py`'s
+#: `anyio.to_thread.run_sync`), trading a little latency under concurrent uploads for a peak
+#: RSS that does not scale with how many merchants happen to upload in the same second. Plain
+#: `threading.Semaphore`, not `anyio`'s: the thread pool `run_sync` dispatches to is real OS
+#: threads, and this must serialise across those threads, not across async tasks in one of them.
+_REENCODE_SEMAPHORE = threading.Semaphore(1)
 
 #: More than any storefront hero needs. Bounds the buyer's download and the re-encode cost.
 MAX_LONG_EDGE = 2560
@@ -173,12 +192,24 @@ def process_upload(raw: bytes) -> ProcessedImage:
     _refuse_bombs_and_animation(image)
 
     try:
-        # Orientation is applied *before* the metadata is dropped. Without this, stripping
-        # EXIF would silently rotate every portrait photo taken on a phone — the re-encode
-        # would be doing visible harm in the name of privacy.
-        image = ImageOps.exif_transpose(image) or image
-        image.thumbnail((MAX_LONG_EDGE, MAX_LONG_EDGE), Image.Resampling.LANCZOS)
-        data = _encode(image, fmt)
+        # `draft()` asks the decoder to produce a version close to this size *as it decodes*,
+        # rather than decoding at full resolution and discarding most of it on the resize
+        # below. It only has an effect for JPEG (and MPO) — Pillow's PNG and WebP plugins have
+        # no partial-decode path, which is exactly why the lower `MAX_IMAGE_PIXELS` above
+        # carries the rest of the bound for those two formats. Must run before anything below
+        # touches a pixel, or the decoder has already committed to full resolution.
+        if fmt == "JPEG":
+            image.draft("RGB", (MAX_LONG_EDGE, MAX_LONG_EDGE))
+        # Orientation is applied *before* the metadata is dropped, and in place: the
+        # alternative (`image = ImageOps.exif_transpose(image) or image`) holds the original
+        # full-size buffer alive until the rotated copy is fully built, doubling the peak for
+        # exactly the images this function most needs to be careful with. Most images have no
+        # orientation tag needing correction, in which case this never forces a decode at all;
+        # when one does, it decodes at the reduced size `draft()` already asked for.
+        ImageOps.exif_transpose(image, in_place=True)
+        with _REENCODE_SEMAPHORE:
+            image.thumbnail((MAX_LONG_EDGE, MAX_LONG_EDGE), Image.Resampling.LANCZOS)
+            data = _encode(image, fmt)
     except ImageRejected:
         raise
     except Exception as exc:
