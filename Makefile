@@ -164,11 +164,18 @@ typecheck-services: ## mypy per service — they cannot share a process
 	$(call fan_out,app,strict,uv run mypy app)
 
 .PHONY: test
-test: test-libs test-services ## Everything CI runs
+test: test-libs test-infra test-services ## Everything CI runs
 
 .PHONY: test-libs
 test-libs: ## Shared library tests
 	uv run pytest libs
+
+.PHONY: test-infra
+test-infra: ## Deploy-tooling tests: remote.sh's rebuild rule, ci-plan.sh's path logic
+	# No database, no broker, no `make infra` — each test builds its own throwaway git repo
+	# in a temp dir and drives the real scripts against it. Safe and fast enough to run in
+	# the static job alongside lint and typecheck.
+	uv run pytest tests/infra -q
 
 .PHONY: test-shard
 test-shard: ## Tests for one shard of services: make test-shard SHARD=1 SHARDS=3

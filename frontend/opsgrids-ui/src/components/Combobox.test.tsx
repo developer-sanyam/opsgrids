@@ -134,8 +134,8 @@ describe("Combobox", () => {
   it("offers a retry when the lookup fails, and keeps the typed text", async () => {
     const user = userEvent.setup();
     // Offline until the test says otherwise, not for exactly one call: on a loaded runner the
-    // debounce can fire mid-typing, and a one-shot rejection spent on "R" let the "Roh" lookup
-    // succeed before the failure was ever on screen.
+    // debounce can fire mid-typing, and a one-shot rejection spent on "Ro" (the first lookup at
+    // `minQueryLength` 2) let the "Roh" lookup succeed before the failure was ever on screen.
     let offline = true;
     const loadOptions = vi.fn<(query: string, signal: AbortSignal) => Promise<ComboboxOption[]>>(
       () => (offline ? Promise.reject(new Error("offline")) : Promise.resolve(CANDIDATES)),
@@ -149,6 +149,57 @@ describe("Combobox", () => {
     offline = false;
     await user.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+    expect(loadOptions).toHaveBeenLastCalledWith("Roh", expect.any(AbortSignal));
+  });
+
+  it("announces a failed lookup to screen readers, not just on screen", async () => {
+    const user = userEvent.setup();
+    const loadOptions = vi.fn(() => Promise.reject(new Error("offline")));
+    render(<Harness loadOptions={loadOptions} />);
+    await user.type(screen.getByRole("combobox", { name: "Delegate" }), "Roh");
+    await waitFor(() => expect(screen.getByText("Couldn't load results.")).toBeDefined());
+
+    // The visible error row and the live region both say it — this asserts the live region,
+    // which is what actually reaches a screen-reader user who never saw the row appear.
+    expect(screen.getByText("Couldn't load results. Try again.")).toBeDefined();
+  });
+
+  it("keeps keyboard focus on the input after clicking Try again", async () => {
+    const user = userEvent.setup();
+    let offline = true;
+    const loadOptions = vi.fn<(query: string, signal: AbortSignal) => Promise<ComboboxOption[]>>(
+      () => (offline ? Promise.reject(new Error("offline")) : Promise.resolve(CANDIDATES)),
+    );
+    render(<Harness loadOptions={loadOptions} />);
+    const input = screen.getByRole("combobox", { name: "Delegate" });
+    await user.type(input, "Roh");
+    await waitFor(() => expect(screen.getByText("Couldn't load results.")).toBeDefined());
+
+    offline = false;
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(document.activeElement).toBe(input);
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("keeps keyboard focus on the input after pressing Enter on Try again", async () => {
+    const user = userEvent.setup();
+    let offline = true;
+    const loadOptions = vi.fn<(query: string, signal: AbortSignal) => Promise<ComboboxOption[]>>(
+      () => (offline ? Promise.reject(new Error("offline")) : Promise.resolve(CANDIDATES)),
+    );
+    render(<Harness loadOptions={loadOptions} />);
+    const input = screen.getByRole("combobox", { name: "Delegate" });
+    await user.type(input, "Roh");
+    await waitFor(() => expect(screen.getByText("Couldn't load results.")).toBeDefined());
+
+    offline = false;
+    const retry = screen.getByRole("button", { name: "Try again" });
+    retry.focus();
+    await user.keyboard("{Enter}");
+    expect(document.activeElement).toBe(input);
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+    expect(document.activeElement).toBe(input);
   });
 
   it("says when the server's cap was reached rather than truncating silently", async () => {

@@ -28,6 +28,9 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+# shellcheck source=lib/rebuild-decision.sh
+source lib/rebuild-decision.sh
+
 COMPOSE=(docker compose -f compose.prod.yml --env-file .env)
 
 # What the gateway's container is keyed on (see ROUTES_SHA in compose.prod.yml): the content of
@@ -93,15 +96,10 @@ build() {
 	[ "${FORCE_PULL:-0}" = "1" ] && pull=(--pull)
 	prev=$(good_ref)
 	# Anything every image is made from changed, or there is no baseline: build them all.
-	#
-	# `libs/contracts` is not something every image is made from, and counting it as one took
-	# the whole box down: it is JSON, not a workspace package, and `.dockerignore` keeps it out
-	# of every image. Its one runtime reader — account's permission manifests — gets it through
-	# a bind mount, read afresh on each activation. But almost every service PR regenerates an
-	# OpenAPI file there, so every such deploy rebuilt and recreated all ~60 containers, which on
-	# this box outlasts any retry window: an invitation accepted mid-deploy got a 502.
-	if [ -z "$prev" ] || [ "${FORCE_PULL:-0}" = "1" ] ||
-		! git -C ../.. diff --quiet "$prev" HEAD -- libs ':!libs/contracts' pyproject.toml uv.lock .dockerignore; then
+	# The pathspec and the reasoning live beside `needs_full_rebuild` in
+	# lib/rebuild-decision.sh, which tests/infra/test_remote_rebuild_decision.py pins down —
+	# a wrong rule here means production silently runs stale images.
+	if [ "${FORCE_PULL:-0}" = "1" ] || needs_full_rebuild ../.. "$prev" HEAD; then
 		"${COMPOSE[@]}" build ${pull[@]+"${pull[@]}"}
 		return
 	fi

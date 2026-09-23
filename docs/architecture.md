@@ -75,7 +75,7 @@ each exposes a top-level `app`, so exactly one can live in a process.
 | PostgreSQL + PostGIS | `postgis/postgis:16-3.4` | 5434 |
 | Redis | `redis:7-alpine` | 6380 |
 | RabbitMQ | `rabbitmq:3-management-alpine` | 5673 |
-| MinIO (S3) | `minio/minio:latest` | 9100 |
+| MinIO (S3) | `quay.io/minio/minio:RELEASE.2024-01-16T16-07-38Z` | 9100 |
 | MailHog (dev SMTP) | `mailhog/mailhog:latest` | 1026 |
 
 Ports are offset from the defaults on purpose so this stack runs beside a legacy one.
