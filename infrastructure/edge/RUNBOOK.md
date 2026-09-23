@@ -1129,3 +1129,43 @@ Named here so nobody discovers them during an incident:
 | Monthly | `apt-get update && apt-get upgrade` and **a planned reboot window** — kernel updates are a full outage, so choose when rather than having it chosen for you |
 | Quarterly | The restore drill above. A backup nobody has restored is a hypothesis |
 | When a merchant asks about uptime in writing | Stop. That is ADR-0012's stated trigger to move off one box |
+
+## Development databases (not the box)
+
+Nothing here touches production; it is recorded in this file only because it is the one runbook
+the repository has.
+
+**CRM branch databases that ran an earlier `slice/crm-leads` migration must be recreated.** Two
+migrations were rewritten in place while that branch was still unmerged and never deployed
+(ADR-0017): customer's `e230c025337e` (first a unique index on `lower(name)`, then a plain
+non-unique index on `lower(name)`, now a plain non-unique index on `lower(btrim(name))` that
+leaves `uq_companies_org_name` alone — so a database from *any* earlier point on the branch is
+stale) and lead's whole chain (the deleted `e6b3c5bf7755` is gone from the tree, so a database
+stamped with it cannot even resolve its own revision). Alembic goes by the revision id in
+`alembic_version`, not by what the migration used to do, so a database that applied the old
+versions is silently wrong (customer) or refuses to migrate at all (lead). The fix is to throw
+the two schemas away and migrate again.
+
+`DROP SCHEMA ... CASCADE` is not undoable, so name the database explicitly and prove which one
+you are connected to *before* the drop — there is deliberately no environment variable to lean
+on here:
+
+```bash
+# 1. The DSN of the branch database you mean to wipe. `psql` wants the plain `postgresql://`
+#    form (the services' own settings use `postgresql+asyncpg://`). Never `opsgrids`, never
+#    anything shared or anything you did not create for this branch.
+BRANCH_DSN='postgresql://<admin-role>:<password>@<host>:<port>/<branch-database-name>'
+
+# 2. Prove it. This must print exactly the branch database's name — stop if it prints anything
+#    else, or if the connection fails.
+psql "$BRANCH_DSN" -Atc 'SELECT current_database()'
+
+# 3. Only then: drop the two schemas and migrate again, pointing the services at the same
+#    database (`DATABASE_URL` in the `postgresql+asyncpg://` form of the DSN above).
+psql "$BRANCH_DSN" -c 'DROP SCHEMA customer CASCADE' -c 'DROP SCHEMA lead CASCADE'
+make migrate
+```
+
+`DROP SCHEMA ... CASCADE` deletes that service's `alembic_version` table with everything else,
+which is what makes the re-migrate start from nothing. Development data only — seed it again
+afterwards. A database created fresh from the branch as it stands needs none of this.

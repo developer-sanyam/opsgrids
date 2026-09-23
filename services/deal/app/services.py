@@ -34,7 +34,7 @@ from app import domain, selectors
 from app.models import Activity, AuditLog, Deal, OutboxEvent
 from app.schemas import DealPatch
 from platform_core.audit import record_audit
-from platform_core.auth import ScopeContext
+from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem
 from platform_core.events import publish_event
 from platform_core.models import utcnow
@@ -66,6 +66,32 @@ def _actor(ctx: ScopeContext) -> dict[str, Any]:
     }
 
 
+#: The permission `:convert`'s internal call runs under — only to give the write path a
+#: `ScopeContext`, not to gate anything: `require_service_token` on the internal route already
+#: gated the call, the same shape customer-service's `lead_conversion_ctx` takes.
+_LEAD_CONVERSION_PERMISSION = "crm.pipeline.deal.write"
+
+
+def lead_conversion_ctx(organization_id: uuid.UUID, actor_id: uuid.UUID | None) -> ScopeContext:
+    """The scope context `:convert`'s internal call runs under. ORG scope because there is no
+    caller-owned row to narrow a brand-new deal to.
+
+    `actor_id` is the human who asked lead-service to convert, carried in the service token's
+    `sub` claim (`app/api/internal.py` checks the token names this organization before this is
+    ever called) — the same shape customer-service's own `lead_conversion_ctx` takes. Falls
+    back to the stable all-zero id when the token carried none."""
+    principal = Principal(
+        sub=actor_id if actor_id is not None else uuid.UUID(int=0),
+        organization_id=organization_id,
+        membership_id=None,
+        perms=[f"{_LEAD_CONVERSION_PERMISSION}:ORG"],
+        entitlements=["crm"],
+    )
+    return ScopeContext(
+        principal=principal, scope=Scope.ORG, permission=_LEAD_CONVERSION_PERMISSION
+    )
+
+
 # ------------------------------------------------------------------ deals
 
 
@@ -87,16 +113,22 @@ async def create_deal(
     deal_id: uuid.UUID | None = None,
     created_at: datetime | None = None,
     request: Request | None = None,
+    acting_as: str | None = None,
 ) -> Deal:
     """The core deal writer. Inserts the deal, records the audit row and stages the
     `created` event — all in the caller's transaction. `value_minor` is integer minor
-    units of `currency`; no float is accepted anywhere on this path."""
+    units of `currency`; no float is accepted anywhere on this path.
+
+    `acting_as` names the calling *service* on the audit row when this write was not a
+    person clicking a button but a service holding a token addressed to deal by name
+    (`lead_conversion_ctx`'s caller) — `ctx.principal.sub` still carries the human who
+    ultimately asked for it, when the caller has one to give."""
     if stage not in domain.STAGE_ORDER:
         raise ConflictProblem(f"{stage!r} is not a pipeline stage")
     if value_minor < 0:
         raise ConflictProblem("A deal's value cannot be negative")
     if await selectors.get_deal_by_name(session, ctx.organization_id, name):
-        raise ConflictProblem(f"A deal named {name!r} already exists")
+        raise ConflictProblem("A deal with that name already exists")
 
     deal = Deal(
         organization_id=ctx.organization_id,
@@ -126,6 +158,7 @@ async def create_deal(
         AuditLog,
         organization_id=ctx.organization_id,
         actor_id=ctx.principal.sub,
+        acting_as=acting_as,
         action="deal.created",
         entity="deal",
         entity_id=deal.id,

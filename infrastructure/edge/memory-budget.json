@@ -157,7 +157,9 @@
     "attendance-worker": { "kind": "background", "profile": "hrms" },
 
     "customer": { "kind": "api", "profile": "crm" },
+    "customer-worker": { "kind": "background", "profile": "crm" },
     "deal": { "kind": "api", "profile": "crm" },
+    "lead": { "kind": "api", "profile": "crm" },
 
     "project": { "kind": "api", "profile": "pulseboard" },
     "timesheet": { "kind": "api", "profile": "pulseboard" },

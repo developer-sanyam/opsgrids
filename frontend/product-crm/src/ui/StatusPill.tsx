@@ -1,4 +1,4 @@
-import type { CompanyStatus, ContactStatus, DealStage } from "@/api/types";
+import type { CompanyStatus, ContactStatus, DealStage, LeadStatus } from "@/api/types";
 import { stageLabel } from "@/data/stages";
 import { cn } from "@opsgrids/ui";
 
@@ -73,6 +73,34 @@ export function StagePill({ stage }: { stage: DealStage }) {
     <span className={cn(PILL_BASE, STAGE_TONE[stage])}>
       <span className="size-1.5 rounded-full bg-current" aria-hidden />
       {stageLabel(stage)}
+    </span>
+  );
+}
+
+/* ---------------------------------- lead ---------------------------------- */
+
+const LEAD_TONE: Record<LeadStatus, string> = {
+  new: "bg-info-soft text-info",
+  working: "bg-accent-soft text-accent-ink",
+  qualified: "bg-late-soft text-late",
+  disqualified: "bg-ground text-muted",
+  converted: "bg-present-soft text-present",
+};
+
+const LEAD_LABEL: Record<LeadStatus, string> = {
+  new: "New",
+  working: "Working",
+  qualified: "Qualified",
+  disqualified: "Disqualified",
+  converted: "Converted",
+};
+
+/** A lead's place in the intake lifecycle. */
+export function LeadStatusPill({ status }: { status: LeadStatus }) {
+  return (
+    <span className={cn(PILL_BASE, LEAD_TONE[status])}>
+      <span className="size-1.5 rounded-full bg-current" aria-hidden />
+      {LEAD_LABEL[status]}
     </span>
   );
 }

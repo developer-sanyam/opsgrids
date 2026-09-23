@@ -88,7 +88,7 @@ describe("activityFromWire", () => {
 
 describe("ownerFromWire", () => {
   it("maps an OwnerOut row 1:1 — the rep directory GET /customers/owners returns", () => {
-    const wire = { id: "own-1", full_name: "Sofia Marchetti", email: "sofia@example.com", role: "AE" };
+    const wire = { id: "own-1", full_name: "Sofia Marchetti", email: "sofia@example.com", role: "AE", is_active: true };
     expect(ownerFromWire(wire)).toEqual(wire);
   });
 });

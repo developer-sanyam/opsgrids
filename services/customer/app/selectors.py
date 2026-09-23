@@ -61,6 +61,79 @@ async def get_owner_by_email(session: AsyncSession, org_id: uuid.UUID, email: st
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_owner_for_update(
+    session: AsyncSession, org_id: uuid.UUID, owner_id: uuid.UUID
+) -> Owner | None:
+    """The same fetch as `get_owner`, row-locked for the rest of this transaction.
+
+    `deactivate_owner` and `_assert_owner_assignable` both read-then-write this row (check
+    `is_active`/open-record count, then flip a flag or use the id elsewhere in the same
+    transaction) — without the lock, two concurrent requests against the same owner race: one
+    deactivating while the other assigns them a new company both read a stale `is_active` and
+    neither one's check ever sees the other's write.
+
+    `populate_existing=True`: a caller that has already fetched this owner earlier in the same
+    session (the internal `leads:convert` route reads owners while validating, for instance)
+    would otherwise get the identity map's cached object back unrefreshed by this lock's own
+    read — real for the row Postgres locked, stale for the attributes this function returns.
+    """
+    stmt = (
+        select(Owner)
+        .where(Owner.id == owner_id, Owner.organization_id == org_id, Owner.deleted_at.is_(None))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def active_owner_ids(
+    session: AsyncSession, org_id: uuid.UUID, owner_ids: list[uuid.UUID]
+) -> set[uuid.UUID]:
+    """Which of `owner_ids` resolve to an active rep in this organization — one query, not
+    N, for `owners:validate`'s batch check."""
+    if not owner_ids:
+        return set()
+    stmt = select(Owner.id).where(
+        Owner.organization_id == org_id,
+        Owner.id.in_(owner_ids),
+        Owner.is_active.is_(True),
+        Owner.deleted_at.is_(None),
+    )
+    return set((await session.execute(stmt)).scalars().all())
+
+
+async def count_open_records_for_owner(
+    session: AsyncSession, org_id: uuid.UUID, owner_id: uuid.UUID
+) -> int:
+    """How many live companies and contacts this rep still owns — the check that refuses
+    `deactivate_owner` rather than leaving `owner_id` pointing at someone no longer active.
+    Deal-service's deals are out of reach here (no cross-schema read), so a rep's open deals
+    are not part of this count; recorded as an accepted gap rather than silently checked."""
+    company_count = (
+        await session.execute(
+            select(func.count())
+            .select_from(Company)
+            .where(
+                Company.organization_id == org_id,
+                Company.owner_id == owner_id,
+                Company.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    contact_count = (
+        await session.execute(
+            select(func.count())
+            .select_from(Contact)
+            .where(
+                Contact.organization_id == org_id,
+                Contact.owner_id == owner_id,
+                Contact.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    return int(company_count) + int(contact_count)
+
+
 # ------------------------------------------------------------------ companies
 
 
@@ -106,6 +179,17 @@ async def get_company(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_company_by_id_any_state(
+    session: AsyncSession, org_id: uuid.UUID, company_id: uuid.UUID
+) -> Company | None:
+    """Org-scoped fetch by id, soft-deleted or not — for an idempotency check that must
+    recognise "this id was already used" even after the row it named was deleted, rather than
+    attempting a second `INSERT` with a primary key Postgres already holds
+    (`ensure_company_and_contact_for_lead`)."""
+    stmt = select(Company).where(Company.id == company_id, Company.organization_id == org_id)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def count_contacts_for_company(
     session: AsyncSession, org_id: uuid.UUID, company_id: uuid.UUID
 ) -> int:
@@ -126,12 +210,35 @@ async def count_contacts_for_company(
 async def get_company_by_name(
     session: AsyncSession, org_id: uuid.UUID, name: str
 ) -> Company | None:
-    stmt = select(Company).where(
-        Company.name == name,
-        Company.organization_id == org_id,
-        Company.deleted_at.is_(None),
+    """Case-insensitive: "Acme Ltd" and "ACME LTD" name the same account, backed by the
+    non-unique `ix_companies_org_name_ci` index.
+
+    Not unique at the database level (see that index's own comment in `models.py` and the
+    migration that added it) — an organization from before this lookup existed may already
+    hold two rows differing only by case. `scalars().first()` ordered by `created_at`, then
+    `id` as the tiebreak, never `scalar_one_or_none()`, so a pre-existing duplicate is a
+    deterministic "the oldest one wins" (and two created in the same instant still resolve the
+    same way every time) rather than an unhandled `MultipleResultsFound` on a read.
+
+    **Both** sides of the comparison are folded by Postgres's own `lower(btrim(...))` — the
+    stored column as well as the input — the same expression `services._lock_company_name`
+    hashes. Trimming only the input is a bug this function already had once: stored names are
+    never trimmed on the way in, so "Acme " (kept as typed) compared against `btrim("Acme ")`
+    never matched itself, the check missed, and the insert hit `uq_companies_org_name` as an
+    unhandled `IntegrityError` instead of a 409. A Python-side `str.lower()` would disagree
+    with the column's own SQL `lower` on exactly the inputs ("İ") where it matters most.
+    `ix_companies_org_name_ci` is on this same `lower(btrim(name))` expression.
+    """
+    stmt = (
+        select(Company)
+        .where(
+            func.lower(func.btrim(Company.name)) == func.lower(func.btrim(name)),
+            Company.organization_id == org_id,
+            Company.deleted_at.is_(None),
+        )
+        .order_by(Company.created_at.asc(), Company.id.asc())
     )
-    return (await session.execute(stmt)).scalar_one_or_none()
+    return (await session.execute(stmt)).scalars().first()
 
 
 # ------------------------------------------------------------------ contacts
@@ -182,6 +289,15 @@ async def get_contact(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_contact_by_id_any_state(
+    session: AsyncSession, org_id: uuid.UUID, contact_id: uuid.UUID
+) -> Contact | None:
+    """Same reasoning as `get_company_by_id_any_state`, for the contact half of the same
+    idempotency check."""
+    stmt = select(Contact).where(Contact.id == contact_id, Contact.organization_id == org_id)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def get_contact_by_email(
     session: AsyncSession, org_id: uuid.UUID, email: str
 ) -> Contact | None:
@@ -197,7 +313,13 @@ async def get_contact_by_email(
 
 
 def owner_out(owner: Owner) -> OwnerOut:
-    return OwnerOut(id=str(owner.id), full_name=owner.full_name, email=owner.email, role=owner.role)
+    return OwnerOut(
+        id=str(owner.id),
+        full_name=owner.full_name,
+        email=owner.email,
+        role=owner.role,
+        is_active=owner.is_active,
+    )
 
 
 def company_out(company: Company) -> CompanyOut:
