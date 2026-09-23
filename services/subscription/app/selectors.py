@@ -110,6 +110,17 @@ async def get_open_cycle(session: AsyncSession, subscription_id: uuid.UUID) -> D
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_cycle(
+    session: AsyncSession, organization_id: uuid.UUID, cycle_id: uuid.UUID
+) -> DunningCycle | None:
+    """One cycle, unlocked — the sweep reads which subscription it belongs to before locking
+    that subscription and then the cycle, in the order every writer takes."""
+    stmt = select(DunningCycle).where(
+        DunningCycle.organization_id == organization_id, DunningCycle.id == cycle_id
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def latest_cycle(
     session: AsyncSession, organization_id: uuid.UUID, subscription_id: uuid.UUID
 ) -> DunningCycle | None:

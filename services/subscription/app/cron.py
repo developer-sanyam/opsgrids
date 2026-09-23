@@ -201,6 +201,24 @@ class DunningSweep:
         from app import selectors, services
 
         async with self._work_scope(organization_id) as session:
+            # Lock order is subscription, then cycle — the order every other writer takes
+            # (cancel, suspend, a payment, the billing run). Taking the cycle first and the
+            # subscription inside `suspend_for_dunning` deadlocked against a cancel that held the
+            # subscription and was closing the cycle (final money review).
+            unlocked = await selectors.get_cycle(session, organization_id, cycle_id)
+            if unlocked is None:
+                report.skipped += 1
+                return
+            subscription = None
+            if await selectors.get_subscription(session, unlocked.subscription_id) is not None:
+                subscription = await selectors.lock_subscription(
+                    session, organization_id, unlocked.subscription_id, skip_locked=True
+                )
+                if subscription is None:
+                    # A cancel, a payment or the billing run holds it: this cycle waits for the
+                    # next pass, and whatever that writer did is what the pass then decides from.
+                    report.skipped += 1
+                    return
             cycle = await selectors.lock_open_cycle(session, cycle_id)
             if cycle is None:
                 # Held by another replica, or closed between discovery and here — a payment
@@ -213,7 +231,6 @@ class DunningSweep:
                 report.skipped += 1
                 return
 
-            subscription = await selectors.get_subscription(session, cycle.subscription_id)
             if subscription is None:
                 # The subscription is gone but its cycle is not. Close it rather than leave a row
                 # the sweep will pick up on every pass forever.

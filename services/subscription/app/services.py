@@ -845,6 +845,24 @@ async def _close_open_cycle(
     return cycle
 
 
+async def _lock_for_payment(
+    session: AsyncSession, subscription: Subscription
+) -> Subscription | None:
+    """Take the subscription's row lock and re-read it — the payment handlers' first statement.
+
+    Every writer of a subscription (cancel, suspend, change-plan, the billing run's claim and
+    record, the dunning sweep) locks the row before it reads anything, so they serialise and each
+    decides from committed state. The payment consumer arrives with a row it read unlocked;
+    `populate_existing` on the lock refreshes that instance, so the state and the open cycle read
+    after this are the ones the last committed writer left. None if the row is gone.
+    """
+    from app import selectors
+
+    return await selectors.lock_subscription(
+        session, subscription.organization_id, subscription.id, skip_locked=False
+    )
+
+
 async def record_payment_failure(
     session: AsyncSession,
     subscription: Subscription,
@@ -876,6 +894,14 @@ async def record_payment_failure(
       read time. Retrying the conversion is the ladder's job only once the subscription is paid.
     """
     from app import selectors
+
+    # First, before any state is read: the row lock every other writer takes first (final money
+    # review). The consumer read the row unlocked; a cancel committing meanwhile must be seen
+    # here, or a cancelled customer is put into dunning.
+    locked = await _lock_for_payment(session, subscription)
+    if locked is None:
+        return subscription
+    subscription = locked
 
     at = now or datetime.now(UTC)
     if subscription.state in (STATE_TRIAL, STATE_SUSPENDED, STATE_CANCELLED):
@@ -974,9 +1000,17 @@ async def record_payment_captured(
     worked — and is deliberately not a transition: nothing changed, so nothing is emitted, and the
     projection is not woken to write the row it already holds.
     """
-    at = now or datetime.now(UTC)
     from app import selectors
 
+    # First, before any state is read (final money review): an operator's suspension or a cancel
+    # committing while this capture was in flight must be what it decides from — otherwise a
+    # fraud hold is lifted, or a cancelled subscription revived, by a payment that raced it.
+    locked = await _lock_for_payment(session, subscription)
+    if locked is None:
+        return subscription
+    subscription = locked
+
+    at = now or datetime.now(UTC)
     open_cycle = await selectors.get_open_cycle(session, subscription.id)
     captured_invoice = outcome.invoice_id if outcome is not None else None
     if open_cycle is not None and open_cycle.invoice_id != captured_invoice:
