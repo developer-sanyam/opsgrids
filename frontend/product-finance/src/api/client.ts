@@ -77,6 +77,7 @@ import type {
   ImsDecision,
   ImsDocument,
   ImsDocumentDetail,
+  ImsExpenseCategory,
   ImsReason,
   ImsStatus,
   LedgerReport,
@@ -378,6 +379,12 @@ export interface DecideImsParams {
   action: ImsAction;
   note: string | null;
   /**
+   * What the document was for. Decides whether accepting it accrues any input tax credit — a
+   * category s. 17(5) blocks accrues nothing, which the person accepting has to say rather than
+   * the platform guessing from a document that carries no HSN or description to guess from.
+   */
+  expenseCategory: ImsExpenseCategory;
+  /**
    * Who decided. Live, the service takes this from the bearer token and ignores anything a client
    * says — it travels here only so fixture mode can write a history row that names a real person
    * instead of inventing one.
@@ -395,14 +402,17 @@ export interface DecideImsParams {
  */
 export async function decideImsDocument(
   documentId: string,
-  { action, note, decidedBy }: DecideImsParams,
+  { action, note, expenseCategory, decidedBy }: DecideImsParams,
 ): Promise<ImsDecision> {
   if (USE_FIXTURES) {
-    return settle(recordFixtureDecision(documentId, action, note, decidedBy), 320);
+    return settle(
+      recordFixtureDecision(documentId, action, note, expenseCategory, decidedBy),
+      320,
+    );
   }
   return apiRequest<ImsDecision>(
     `/finance/ims/documents/${encodeURIComponent(documentId)}/decisions`,
-    { method: "POST", body: { action, note } },
+    { method: "POST", body: { action, note, expense_category: expenseCategory } },
   );
 }
 

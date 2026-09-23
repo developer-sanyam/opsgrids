@@ -84,7 +84,10 @@ def _wait_for_registration(probe: Any, org_id: str, *, timeout: float = 45.0) ->
     deadline = time.monotonic() + timeout
     staged: dict[str, Any] = {}
     while time.monotonic() < deadline:
-        staged = probe("product", org_id)
+        # Scoped to engage specifically — see `_probe.py` and `test_journey.py::test_04`'s
+        # comment: an organization that has already activated a different product would
+        # otherwise satisfy this wait on that product's already-published event.
+        staged = probe("product", org_id, PRODUCT)
         if staged.get("published", 0) >= 1:
             break
         time.sleep(0.5)
@@ -453,7 +456,7 @@ class TestEngageJourney:
         )
 
         viewer_password = "viewer-Sufficiently-Long-Passw0rd!"  # pragma: allowlist secret
-        seed_password(member["user_id"], viewer_password)
+        seed_password(invitee_email, viewer_password)
         viewer_token = login(client, invitee_email, viewer_password, alpha["org_id"])
 
         read = client.get("/api/v1/engage/connection", headers=auth_header(viewer_token))
