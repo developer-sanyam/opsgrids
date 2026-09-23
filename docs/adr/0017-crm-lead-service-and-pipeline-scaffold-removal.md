@@ -158,6 +158,33 @@ the `crm` profile and to `memory-budget.json`.
   history. The contact's `company_id` is never reassigned by a reuse either, for the same
   reason: the book already has an opinion about which company this person belongs to, and a
   converting lead is not grounds to override it.
+- **An aborted conversion leaves orphaned records behind, and nothing cleans them up yet.**
+  `:convert` calls customer and deal *before* it records anything (claim, call, record), so when
+  `finalize_conversion` refuses to write "converted" — the lead's status or owner changed in
+  the gap — the company, contact and deal those calls already created stay in customer and deal.
+  Lead-service cannot take them back (it has no write path into either schema), so it does the
+  two things it can: the `lead.conversion_aborted` audit row names all three ids, and it stages
+  `crm.lead.conversion_aborted` (contract: `libs/contracts/events/crm.lead.conversion_aborted/`)
+  as the hook. **Nothing consumes it today** — deal has a consumer scaffold with no handler and
+  no deployed worker process, customer's worker handles other events — so the orphans are
+  visible in the audit trail and the outbox but stay in the book until a person deletes them. A
+  future deal-side consumer that marks the orphaned deal lost, and a customer-side one that
+  removes the company and contact if nothing else references them, would subscribe to that
+  event; the idempotent-by-id design means a retried conversion of the same lead reuses them
+  rather than duplicating them in the meantime.
+- **A deleted record no longer permanently blocks a lead's conversion.** The ids a lead
+  converts into are derived from its own id, so a company or contact an earlier attempt created
+  and someone then deleted would refuse every later attempt on the same ids. `Lead
+  .conversion_generation` is folded into that derivation (generation `0` derives exactly the
+  ids it always has, so nothing already converted changes); `fail_conversion` bumps it when
+  customer answers `company-deleted` or `contact-deleted`, and the next `:convert` derives a
+  fresh set. The records the earlier attempt created stay deleted; this attempt makes new ones.
+- **Databases that ran an earlier version of this branch's migrations must be recreated.**
+  customer's `e230c025337e` and lead's whole migration chain were rewritten in place while the
+  branch was unmerged and undeployed; a dev or branch database that applied the earlier versions
+  is silently wrong (customer) or cannot resolve its own revision (lead). `DROP SCHEMA customer
+  CASCADE`, `DROP SCHEMA lead CASCADE`, `make migrate` — see the runbook's "Development
+  databases" section (`infrastructure/edge/RUNBOOK.md`).
 
 ## Consequences
 
