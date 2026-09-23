@@ -21,6 +21,7 @@ from platform_core.config import ServiceSettings
 from platform_core.errors import UnauthorizedProblem
 from platform_core.internal_auth import (
     GATEWAY_AUDIENCE,
+    canonical_query,
     mint_service_token,
     sign_admin_hop,
     verify_admin_hop,
@@ -179,3 +180,46 @@ class TestAdminGatewayHop:
             "not-even-shaped-right", "POST", "/api/v1/auth/operator/login", key=self.KEY
         )
         assert not verify_admin_hop("abc.def", "POST", "/api/v1/auth/operator/login", key=self.KEY)
+
+    def test_a_different_body_refuses(self) -> None:
+        """m2: the digest of the body is signed, so a captured header cannot be replayed
+        against the same path with a payload of the attacker's choosing."""
+        path = "/api/v1/auth/operator/login"
+        signed = sign_admin_hop("POST", path, key=self.KEY, body=b'{"email": "a"}')
+        assert verify_admin_hop(signed, "POST", path, key=self.KEY, body=b'{"email": "a"}')
+        assert not verify_admin_hop(signed, "POST", path, key=self.KEY, body=b'{"email": "b"}')
+        assert not verify_admin_hop(signed, "POST", path, key=self.KEY)
+
+    def test_a_different_query_refuses(self) -> None:
+        path = "/api/v1/auth/operator/login"
+        signed = sign_admin_hop("GET", path, key=self.KEY, query=canonical_query([("x", "1")]))
+        assert verify_admin_hop(
+            signed, "GET", path, key=self.KEY, query=canonical_query([("x", "1")])
+        )
+        assert not verify_admin_hop(
+            signed, "GET", path, key=self.KEY, query=canonical_query([("x", "2")])
+        )
+
+    def test_the_canonical_query_ignores_order_but_not_content(self) -> None:
+        assert canonical_query([("b", "2"), ("a", "1")]) == canonical_query(
+            [("a", "1"), ("b", "2")]
+        )
+        assert canonical_query([("a", "1")]) != canonical_query([("a", "2")])
+
+    def test_every_signature_carries_a_fresh_nonce(self) -> None:
+        """Without this the callee's nonce store would have nothing to tell two legitimate
+        identical requests apart from a replay."""
+        path = "/api/v1/auth/operator/login"
+        first = verify_admin_hop(
+            sign_admin_hop("POST", path, key=self.KEY), "POST", path, key=self.KEY
+        )
+        second = verify_admin_hop(
+            sign_admin_hop("POST", path, key=self.KEY), "POST", path, key=self.KEY
+        )
+        assert first and second and first != second
+
+    def test_verification_returns_the_nonce_the_header_carries(self) -> None:
+        path = "/api/v1/auth/operator/login"
+        signed = sign_admin_hop("POST", path, key=self.KEY)
+        nonce = verify_admin_hop(signed, "POST", path, key=self.KEY)
+        assert nonce == signed.split(".")[1]

@@ -38,10 +38,13 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import secrets
 import time
 import uuid
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlencode
 
 import jwt
 
@@ -148,54 +151,85 @@ ADMIN_HOP_HEADER = "x-admin-gateway-hop"
 #: short for a captured value to be worth anything once it has been logged or cached anywhere.
 ADMIN_HOP_TTL_SECONDS = 30
 
+#: How long the callee remembers a nonce it has accepted. Must exceed the signature's own
+#: validity window in *both* directions (a timestamp up to `ADMIN_HOP_TTL_SECONDS` in the past
+#: or the future still verifies), or a nonce could expire from the store while its signature is
+#: still good and be replayed inside the gap.
+ADMIN_HOP_NONCE_TTL_SECONDS = 2 * ADMIN_HOP_TTL_SECONDS
 
-def sign_admin_hop(method: str, path: str, *, key: str) -> str:
+
+def canonical_query(pairs: Iterable[tuple[str, str]]) -> str:
+    """One canonical spelling of a query string: the pairs sorted, then URL-encoded. The
+    gateway and the callee each build it from the pairs *they* see, so a request whose query
+    was reordered or percent-encoded differently in transit still verifies, and one whose
+    query was actually changed does not."""
+    return urlencode(sorted(pairs))
+
+
+def _hop_mac(key: str, method: str, path: str, query: str, body: bytes, ts: str, nonce: str) -> str:
+    material = "\n".join([method.upper(), path, query, hashlib.sha256(body).hexdigest(), ts, nonce])
+    return hmac.new(key.encode(), material.encode(), hashlib.sha256).hexdigest()
+
+
+def sign_admin_hop(method: str, path: str, *, key: str, query: str = "", body: bytes = b"") -> str:
     """BLOCKER 2 of the 2026-09-24 security review: defence in depth for the operator surface,
     on top of every gateway's route table blocking `/api/v1/auth/operator` outright.
 
-    A plain HMAC of `method:path:timestamp` under a key that is **not** the general
-    `internal_service_token` — deliberately a separate secret (`ADMIN_GATEWAY_HOP_KEY`), so a
-    leak of the everyday internal-token secret does not also hand over this one. admin-gateway
-    signs every request it proxies to auth's `/api/v1/auth/operator` prefix; auth's operator
-    routes refuse any request that does not carry a fresh, valid one, so a request that reached
-    auth by some path other than through admin-gateway (a routing bug, a compromised sibling
-    service replaying a captured request) is refused even though it is otherwise a
-    well-formed, correctly-authenticated call.
+    An HMAC over `METHOD \n path \n canonical_query \n sha256(body) \n ts \n nonce` (m2 of the
+    third-round review — the first version bound only method, path and timestamp, so a captured
+    header could be replayed against the same path with a different body or query) under a key
+    that is **not** the general `internal_service_token`: a deliberately separate secret
+    (`ADMIN_GATEWAY_HOP_KEY`), so a leak of the everyday internal-token secret does not also
+    hand over this one. The header value is `ts.nonce.mac`; the callee refuses a nonce it has
+    already accepted (`platform_core.cache.reserve_once`), which is what turns "valid for 30
+    seconds" into "valid once".
+
+    Only a gateway whose `GatewayPolicy.sign_admin_hop` is set (admin-gateway) ever calls this.
     """
     ts = str(int(time.time()))
-    mac = hmac.new(
-        key.encode(), f"{method.upper()}:{path}:{ts}".encode(), hashlib.sha256
-    ).hexdigest()
-    return f"{ts}.{mac}"
+    nonce = secrets.token_hex(16)
+    return f"{ts}.{nonce}.{_hop_mac(key, method, path, query, body, ts, nonce)}"
 
 
 def verify_admin_hop(
-    header_value: str | None, method: str, path: str, *, key: str, now: float | None = None
-) -> bool:
-    """Check a hop signature `sign_admin_hop` produced. `False` for anything wrong — missing,
-    malformed, expired, or simply signed by a different key — never an exception, so a caller
-    can turn every failure into the same 401 without special-casing shapes of bad input."""
-    if not header_value or "." not in header_value:
-        return False
-    ts_raw, _, mac = header_value.partition(".")
-    if not ts_raw.isdigit():
-        return False
-    ts = int(ts_raw)
+    header_value: str | None,
+    method: str,
+    path: str,
+    *,
+    key: str,
+    query: str = "",
+    body: bytes = b"",
+    now: float | None = None,
+) -> str | None:
+    """Check a hop signature `sign_admin_hop` produced. Returns the header's **nonce** when it
+    is valid (truthy, so `assert verify_admin_hop(...)` still reads naturally) and `None` for
+    anything wrong — missing, malformed, expired, signed under a different key, or signed for a
+    different method, path, query or body. Never raises, so a caller can turn every failure into
+    the same 401 without special-casing shapes of bad input. It does **not** check the nonce
+    against a store: that is the caller's job, after this passes, because it needs Redis."""
+    if not header_value:
+        return None
+    parts = header_value.split(".")
+    if len(parts) != 3:
+        return None
+    ts_raw, nonce, mac = parts
+    if not ts_raw.isdigit() or not nonce:
+        return None
     current = now if now is not None else time.time()
-    if abs(current - ts) > ADMIN_HOP_TTL_SECONDS:
-        return False
-    expected = hmac.new(
-        key.encode(), f"{method.upper()}:{path}:{ts_raw}".encode(), hashlib.sha256
-    ).hexdigest()
-    return hmac.compare_digest(expected, mac)
+    if abs(current - int(ts_raw)) > ADMIN_HOP_TTL_SECONDS:
+        return None
+    expected = _hop_mac(key, method, path, query, body, ts_raw, nonce)
+    return nonce if hmac.compare_digest(expected, mac) else None
 
 
 __all__ = [
     "ADMIN_HOP_HEADER",
+    "ADMIN_HOP_NONCE_TTL_SECONDS",
     "ADMIN_HOP_TTL_SECONDS",
     "ALGORITHM",
     "DEFAULT_TTL_SECONDS",
     "GATEWAY_AUDIENCE",
+    "canonical_query",
     "mint_service_token",
     "sign_admin_hop",
     "verify_admin_hop",

@@ -22,7 +22,7 @@ never actually proven a second factor.
 MINOR 10 of the 2026-09-24 security review: an environment that ran the pre-fix version of this
 slice — where a wrong MFA code could share the same lockout counter a correct password reset,
 see `5ba575e36b1a` — should not trust whatever factors and recovery codes it already enrolled
-under that bug to be the real owner's. `bin/reset-staff-mfa --all` (dev/staging only) wipes every
+under that bug to be the real owner's. `bin/reset-staff-mfa --all` (local/test/ci only) wipes every
 staff account's factors and recovery codes outright, forcing a clean re-enrolment through the
 audited code flow rather than leaving a factor of uncertain provenance live.
 

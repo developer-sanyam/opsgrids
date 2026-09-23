@@ -68,6 +68,16 @@ class TestAudienceAndRoleBoundary:
             response = await client.get("/api/v1/admin/credit-ledger")
         assert response.status_code == 403
 
+    async def test_an_operator_token_that_never_completed_mfa_gets_403(
+        self, client: AsyncClient
+    ) -> None:
+        """m8 of the third-round security review: the right audience and the right role are not
+        enough without `otp` in `amr` — `require_operator` refuses a session that only ever
+        proved its password, at the route, not just in the dependency's own unit tests."""
+        with as_principal(operator_principal(roles=["owner"], amr=["pwd"])):
+            response = await client.get("/api/v1/admin/credit-ledger")
+        assert response.status_code == 403
+
     async def test_a_product_audience_token_gets_404(self, client: AsyncClient) -> None:
         with as_principal(operator_principal(staff=False)):
             response = await client.get("/api/v1/admin/credit-ledger")

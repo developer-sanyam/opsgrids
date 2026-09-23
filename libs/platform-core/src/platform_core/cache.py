@@ -77,6 +77,29 @@ async def cache_delete(*keys: str) -> None:
         log.warning("cache.delete.failed", error=str(exc)[:120])
 
 
+# --------------------------------------------------------------------- one-shot reservations
+
+
+async def reserve_once(key: str, *, ttl: int) -> bool:
+    """`SET key 1 NX EX ttl`: `True` when this call is the first to claim `key`, `False` when
+    someone already has. The primitive behind "valid once" — auth's operator routes use it to
+    refuse a replayed admin-gateway hop nonce.
+
+    **Fails closed**, unlike `cache_get`/`cache_set`: those are caches whose fallback is the
+    source of truth, so swallowing an outage is right. Here the reservation *is* the check, and
+    treating "Redis is down" as "not seen before" would let a replay through exactly when the
+    store that would have caught it is unavailable.
+    """
+    try:
+        claimed = await get_redis().set(key, "1", ex=ttl, nx=True)
+    except Exception as exc:
+        log.error("reserve_once.unavailable", error=str(exc)[:120])
+        raise UpstreamUnavailableProblem(
+            "Cannot verify this request right now. Please retry shortly."
+        ) from exc
+    return bool(claimed)
+
+
 # --------------------------------------------------------------------- rate limiting
 
 

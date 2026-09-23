@@ -849,16 +849,25 @@ async def _open_factor_secret(
     request: Request | None = None,
 ) -> str | None:
     """The TOTP secret behind a sealed factor, or `None` for a factor with none or one this
-    call cannot make sense of.
+    call cannot (or, by policy, will not) make sense of.
 
-    MAJOR 3 of the 2026-09-24 security review: a tolerant read. Rows written before this schema
-    sealed TOTP secrets hold the raw base32 value instead of a `pii.seal` envelope; that shape
-    is recognised and treated as legacy rather than a hard failure, then **resealed in place**
-    with the per-row AAD (MINOR 8) — audited as `auth.mfa_factor_resealed` — so the next read
-    takes the fast, sealed path and the plaintext stops sitting in the table. `pii.PiiError` is
-    caught here, not propagated: one unopenable or malformed factor must skip *that* factor,
-    never crash the sign-in outright and never skip the recovery-code fallback the caller still
-    tries afterwards.
+    MAJOR 3 of the 2026-09-24 security review, tightened in the third round: a tolerant read
+    with three tiers, each resealed in place with the per-row AAD (MINOR 8) and audited as
+    `auth.mfa_factor_resealed`, so the next read takes the fast path:
+
+    1. **Sealed with the row's AAD** — the normal case; returned as is.
+    2. **Sealed with no AAD** (m5) — an envelope written before the AAD was introduced. It is
+       authentic (GCM verified it under a key we hold), so it is accepted unconditionally and
+       resealed with the AAD.
+    3. **Raw base32 plaintext** (m4) — a row from before PII sealing existed. Unlike the other
+       two, nothing authenticates it: anyone able to write `mfa_factors.secret_enc` could pick a
+       factor's secret. So it is honoured only while `cfg.mfa_accept_legacy_plaintext` is set —
+       a box turns that on deliberately, until `bin/reseal-mfa-factors` prints 0, then removes it.
+       Otherwise it is refused and logged, like any other unreadable row.
+
+    `pii.PiiError` is caught here, not propagated: one unopenable or malformed factor must skip
+    *that* factor, never crash the sign-in outright and never skip the recovery-code fallback
+    the caller still tries afterwards.
     """
     if factor.secret_enc is None:
         return None
@@ -868,12 +877,20 @@ async def _open_factor_secret(
     except pii.PiiError:
         pass
 
-    legacy = _legacy_totp_secret(factor.secret_enc)
-    if legacy is None:
+    secret: str | None = None
+    try:
+        secret = pii.open_sealed(factor.secret_enc, settings=cfg)
+    except pii.PiiError:
+        if cfg.mfa_accept_legacy_plaintext:
+            secret = _legacy_totp_secret(factor.secret_enc)
+        elif _legacy_totp_secret(factor.secret_enc) is not None:
+            log.error("auth.mfa_factor_plaintext_refused", factor_id=str(factor.id))
+            return None
+    if secret is None:
         log.error("auth.mfa_factor_unreadable", factor_id=str(factor.id))
         return None
 
-    factor.secret_enc, _mask = pii.seal(legacy, kind="generic", settings=cfg, aad=aad)
+    factor.secret_enc, _mask = pii.seal(secret, kind="generic", settings=cfg, aad=aad)
     record_audit(
         session,
         AuditLog,
@@ -884,7 +901,7 @@ async def _open_factor_secret(
         entity_id=factor.id,
         request=request,
     )
-    return legacy
+    return secret
 
 
 async def reseal_legacy_mfa_factors(session: AsyncSession, *, cfg: Settings) -> int:
@@ -1004,6 +1021,12 @@ async def verify_mfa(
         credential.mfa_failed_attempts += 1
         if credential.mfa_failed_attempts >= cfg.max_failed_attempts:
             credential.mfa_locked_until = now + timedelta(minutes=cfg.lockout_minutes)
+            # m7: restart the count with the lock, so expiry is a real unlock (see the
+            # operator-side `_register_operator_mfa_failure`). For a tenant member the lock
+            # expiring after `lockout_minutes` *is* the unlock — there is deliberately no
+            # org-admin "clear this member's MFA lock" endpoint: it would need a new
+            # permission and a cross-service membership check to guard a fifteen-minute wait.
+            credential.mfa_failed_attempts = 0
             auth_session.revoked_at = now
             auth_session.revoked_reason = "mfa_failed_attempts"
             await _revoke_session_refresh_tokens(session, auth_session.id)
@@ -1415,7 +1438,7 @@ async def reset_staff_mfa(
 
     Refuses to reset the caller's own MFA — the one case this route exists for is a *colleague*
     who cannot get in, not a way to bypass one's own second factor. An owner who has locked
-    themself out is a `bin/reset-staff-mfa` (dev/staging) or an incident, not a self-service
+    themself out is a `bin/reset-staff-mfa` (local/test/ci only) or an incident, not a self-service
     button in the product.
     """
     if target_staff_id == actor_id:
@@ -1427,6 +1450,11 @@ async def reset_staff_mfa(
 
     await session.execute(delete(MfaRecoveryCode).where(MfaRecoveryCode.user_id == target_staff_id))
     await session.execute(delete(MfaFactor).where(MfaFactor.user_id == target_staff_id))
+    # m7: a colleague locked out of MFA *because* they lost their device is the whole reason
+    # this route exists — leaving the lock (or a near-threshold counter) behind would make the
+    # reset unusable until it expired on its own.
+    staff.mfa_failed_attempts = 0
+    staff.mfa_locked_until = None
 
     live_session_ids = (
         (
@@ -1586,6 +1614,10 @@ async def _register_operator_mfa_failure(
     staff.mfa_failed_attempts += 1
     if staff.mfa_failed_attempts >= cfg.max_failed_attempts:
         staff.mfa_locked_until = datetime.now(UTC) + timedelta(minutes=cfg.lockout_minutes)
+        # m7: the count restarts from zero when the lock trips. Left at the threshold, the
+        # first wrong code after the lock expired would push it straight back over and re-lock
+        # the account for one typo — the lock's expiry would be a formality, not an unlock.
+        staff.mfa_failed_attempts = 0
         auth_session.revoked_at = datetime.now(UTC)
         auth_session.revoked_reason = "operator_mfa_failed_attempts"
         await _revoke_session_refresh_tokens(session, auth_session.id)

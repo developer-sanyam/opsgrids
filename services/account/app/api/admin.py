@@ -1,24 +1,26 @@
 """Operator HTTP surface for account-service — one organization's directory record.
 
-**Service-to-service reachability, bearer-verified authorization.** This is the **only** staff
-read into account-service's directory data — the composite console serves at
-`GET /admin/organizations/{id}` calls it — and it is never listed in
-`admin-gateway/routes.json`: console calls account-service directly on its own port, the same
-shape auth-service and both gateways already use to reach account-service (ADR-0003 §2), and
-never `/internal/v1`, which authorizes no individual caller at all and would let any
-operator-audience caller read every organization on the platform.
+**Two credentials, both required.** This is the **only** staff read into account-service's
+directory data — the composite console serves at `GET /admin/organizations/{id}` calls it — and
+it is never listed in `admin-gateway/routes.json`: console calls account-service directly on its
+own port, the same shape auth-service and both gateways already use to reach account-service
+(ADR-0003 §2), and never `/internal/v1`, which authorizes no individual caller at all and would
+let any operator-audience caller read every organization on the platform.
 
-MINOR 7 of the 2026-09-24 security review reversed this route's original shape. It used to trust
-console's own *assertion* of the calling operator's identity (`sub`, `operator_roles`, `amr`)
-inside a service token — which meant a service token forged or replayed from anywhere holding
-the shared internal-token secret could name **any** operator identity it liked, and this route
-had no way to tell. Console now forwards the operator's own bearer access token verbatim in
-`X-Operator-Token`, and this route verifies it the same way any operator-audience route
-verifies one — via JWKS, checking `aud == "operator"` and `"otp" in amr` — rather than trusting
-anyone's word for who is calling. The audit row is bound to the token's own `sub`, not a claim
-console handed over. A missing, malformed, non-UUID, or otherwise-unverifiable token is a flat
-401: this route does not distinguish *why* a token failed, the same enumeration-resistance
-principle every other bearer check on the platform follows.
+1. **A service token from console** (`X-Internal-Token`, `aud="account"`, `iss="console"`) — *who
+   is calling*. It is what keeps the operator's own bearer token, on its own, from being enough:
+   a stolen or replayed operator access token presented straight to account, bypassing console
+   entirely, is refused here because it does not arrive with console's service token.
+2. **The operator's own access token** (`X-Operator-Token`), verified via JWKS — *on whose
+   behalf*. MINOR 7 of the 2026-09-24 security review: console does not *assert* an identity (a
+   service token can be minted by anything holding the shared secret, and naming any operator in
+   one would have been believed); it forwards the token itself, and this route checks
+   `aud == "operator"`, `"otp" in amr` and the role exactly as any operator-audience route does,
+   and binds the audit row to the token's own `sub`. A missing, malformed, non-UUID or
+   otherwise-unverifiable token is a flat 401 — no distinction between *why*.
+
+m6 of the third-round review restored the service-token half that the second round dropped: with
+only the operator token required, the operator's access token alone opened a cross-tenant read.
 
 The read runs on the **directory session**: BYPASSRLS, SELECT-only, because the operator looks
 *across* organizations and the tenant-bound application role sees nothing without one already
@@ -39,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import selectors, services
 from app.config import settings
 from app.schemas import OrganizationDirectoryOut
-from platform_core.auth import OPERATOR_AUDIENCE, decode_token
+from platform_core.auth import OPERATOR_AUDIENCE, decode_token, require_service_token
 from platform_core.db import get_directory_session, session_scope
 from platform_core.errors import ForbiddenProblem, NotFoundProblem, UnauthorizedProblem
 
@@ -49,6 +51,10 @@ router = APIRouter(prefix="/admin/directory", tags=["account-admin"])
 #: routinely starts with "what does this account look like" before anyone knows whether it is
 #: a billing or a catalog question.
 OPERATOR_ROLES_FOR_READ = frozenset({"owner", "billing_ops", "support"})
+
+#: Only console composes this call: a service token from anywhere else — however genuine — is
+#: not a call this route recognises, whatever operator token rides along with it.
+TRUSTED_CALLER = "console"
 
 DirectorySessionDep = Annotated[AsyncSession, Depends(get_directory_session)]
 
@@ -89,15 +95,26 @@ def require_operator_token(request: Request) -> uuid.UUID:
 OperatorSubDep = Annotated[uuid.UUID, Depends(require_operator_token)]
 
 
+def require_console_service_token(request: Request) -> None:
+    """The service-token half (m6): valid, addressed to account, and issued by console."""
+    require_service_token(request)
+    if getattr(request.state, "service_caller", None) != TRUSTED_CALLER:
+        raise UnauthorizedProblem("Valid service token required")
+
+
+ConsoleServiceDep = Annotated[None, Depends(require_console_service_token)]
+
+
 @router.get(
     "/organizations/{organization_id}",
     response_model=OrganizationDirectoryOut,
-    summary="One organization's directory record — reachable only from console, bearer-verified",
+    summary="One organization's directory record — console's service token and the operator's own",
 )
 async def get_organization_for_operator(
     organization_id: uuid.UUID,
     request: Request,
     session: DirectorySessionDep,
+    _console: ConsoleServiceDep,
     operator_sub: OperatorSubDep,
 ) -> OrganizationDirectoryOut:
     org = await selectors.get_organization(session, organization_id)

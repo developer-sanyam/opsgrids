@@ -84,6 +84,16 @@ class TestAudienceBoundary:
             response = await client.get("/api/v1/admin/organizations")
         assert response.status_code == 404
 
+    async def test_an_operator_token_that_never_completed_mfa_gets_403(
+        self, client: AsyncClient
+    ) -> None:
+        """m8 of the third-round security review: the right audience and an `owner` role are
+        not enough without `otp` in `amr` — refused at the route, 403 (not the audience
+        boundary's 404: the caller has already proven they are staff)."""
+        with as_principal(operator_principal(staff=True, roles=["owner"], amr=["pwd"])):
+            response = await client.get("/api/v1/admin/organizations")
+        assert response.status_code == 403
+
     async def test_an_unauthenticated_caller_is_rejected(self, client: AsyncClient) -> None:
         response = await client.get("/api/v1/admin/organizations")
         assert response.status_code == 401
@@ -305,7 +315,17 @@ class TestOrganizationDetail:
         # account-service can verify it independently rather than trust console's word.
         call = captured.calls[0]
         assert call.headers["x-operator-token"] == "the-operators-own-access-token"
-        assert "x-internal-token" not in call.headers
+        # ... and, separately (m6 of the third-round review), console's own service token:
+        # addressed to account, issued by console, and asserting nothing about the operator.
+        claims = jwt.decode(
+            call.headers["x-internal-token"],
+            settings().internal_service_token.get_secret_value(),
+            algorithms=["HS256"],
+            audience="account",
+            options={"require": ["exp", "iss", "aud", "jti"]},
+        )
+        assert claims["iss"] == "console"
+        assert not {"operator_sub", "operator_roles", "operator_amr"} & claims.keys()
 
     async def test_an_organization_account_service_does_not_know_is_404(
         self, client: AsyncClient, org_id: uuid.UUID

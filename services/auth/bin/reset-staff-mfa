@@ -3,7 +3,7 @@ set -euo pipefail
 # bin/reset-staff-mfa --all
 #
 # MINOR 10 of the 2026-09-24 security review: wipe every staff account's MFA factors and
-# recovery codes, forcing a clean re-enrolment through the audited flow. Dev/test only — refuses
+# recovery codes, forcing a clean re-enrolment through the audited flow. local/test/ci only — refuses
 # outright anywhere else, see app/mfa_maintenance.py. Exists for an environment that ran the
 # pre-fix version of this slice (before 5ba575e36b1a separated the MFA lockout counter from the
 # password one) and should not trust whatever factors it already enrolled under that bug.

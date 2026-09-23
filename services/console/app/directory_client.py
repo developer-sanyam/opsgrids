@@ -14,6 +14,11 @@ any role. It now forwards the operator's own bearer access token verbatim in `X-
 account-service verifies it itself, the same way any operator-audience route verifies one (JWKS,
 `aud="operator"`, `"otp" in amr`), and uses the token's own `sub` for its audit row rather than
 trusting console's word for who is calling.
+
+The second half (m6 of the third-round review): the call **also** carries a plain service token
+(`X-Internal-Token`, `aud="account"`, `iss="console"`) that asserts nothing about the operator —
+only *who is calling*. account-service requires both, so an operator access token presented
+straight to account, bypassing console, is refused.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ import uuid
 import httpx
 
 from app.config import Settings
+from platform_core.internal_auth import mint_service_token
 from platform_core.logging import get_logger
 
 log = get_logger("console.directory_client")
@@ -50,7 +56,17 @@ async def get_organization(
     """
     url = f"{settings.account_public_url}/api/v1/admin/directory/organizations/{organization_id}"
     try:
-        response = await client.get(url, headers={"X-Operator-Token": operator_token})
+        response = await client.get(
+            url,
+            headers={
+                # Who is calling: console, addressed to account (m6).
+                "X-Internal-Token": mint_service_token(
+                    settings, audience="account", caller="console"
+                ),
+                # On whose behalf: the operator's own token, for account to verify itself.
+                "X-Operator-Token": operator_token,
+            },
+        )
     except httpx.HTTPError as exc:
         raise DirectoryLookupError(f"account-service was unreachable: {exc}") from exc
     if response.status_code == 404:

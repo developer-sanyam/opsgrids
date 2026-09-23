@@ -769,6 +769,56 @@ class TestMfa:
         assert failing_session.revoked_at is not None
         assert failing_session.revoked_reason == "mfa_failed_attempts"
 
+    async def test_the_tenant_count_restarts_when_the_lock_trips(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """m7, tenant side: after the lock expires, one wrong code is one strike — not an
+        immediate re-lock. Expiry *is* the unlock for a tenant member."""
+        factor, secret, _ = await services.begin_mfa_enrolment(
+            session, USER, account_email="sam@example.com", cfg=cfg
+        )
+        step = int(datetime.now(UTC).timestamp()) // 30
+        await services.confirm_mfa_enrolment(
+            session,
+            factor_id=factor.id,
+            user_id=USER,
+            code=security._totp_at(secret, step),
+            cfg=cfg,
+        )
+        outcome = await _login(session, cfg, pair, directory)
+        for _ in range(cfg.max_failed_attempts):
+            with pytest.raises(UnauthorizedProblem):
+                await services.verify_mfa(
+                    session,
+                    cfg=cfg,
+                    pair=pair,
+                    directory=directory,
+                    entitlements=FakeEntitlements(),
+                    pre_auth_token=outcome.pre_auth_token,
+                    code="000000",
+                )
+        credential = await session.get(Credential, USER)
+        assert credential is not None
+        assert credential.mfa_locked_until is not None
+        assert credential.mfa_failed_attempts == 0
+
+        credential.mfa_locked_until = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+
+        fresh = await _login(session, cfg, pair, directory)
+        with pytest.raises(UnauthorizedProblem, match="not valid"):
+            await services.verify_mfa(
+                session,
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                entitlements=FakeEntitlements(),
+                pre_auth_token=fresh.pre_auth_token,
+                code="000000",
+            )
+        await session.refresh(credential)
+        assert credential.mfa_failed_attempts == 1
+
 
 class TestSessionsAndEvents:
     async def test_signing_in_stages_an_event_for_the_relay(

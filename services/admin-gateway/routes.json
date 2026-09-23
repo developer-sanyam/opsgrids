@@ -26,11 +26,12 @@
     "account-service's own directory route",
     "(GET /api/v1/admin/directory/organizations/{id}) is deliberately NOT listed here: it is",
     "called by console directly on account-service's own port, the same service-to-service",
-    "shape auth-service and both gateways already use to reach account-service. It is a",
-    "service-token route, not a bearer one — console asserts the calling operator's identity",
-    "(sub, roles, amr) in a short-lived token addressed to account (aud=account,",
-    "caller=console) rather than forwarding the operator's own bearer token onward, and",
-    "account-service re-checks the asserted role and second factor itself. The operator",
+    "shape auth-service and both gateways already use to reach account-service. It requires",
+    "BOTH credentials: a plain service token from console (X-Internal-Token, aud=account,",
+    "iss=console) saying who is calling, and the operator's own access token forwarded",
+    "verbatim (X-Operator-Token), which account-service verifies itself via JWKS (aud=operator,",
+    "otp in amr, role) and audits under its own sub. Console asserts nothing about the",
+    "operator, and the operator's token alone is not enough to open the route. The operator",
     "console (opsgrids-internal) never calls it itself."
   ],
   "routes": [

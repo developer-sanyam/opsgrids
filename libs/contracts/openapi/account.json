@@ -1828,7 +1828,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "One organization's directory record \u2014 reachable only from console, bearer-verified",
+        "summary": "One organization's directory record \u2014 console's service token and the operator's own",
         "tags": [
           "account-admin"
         ]

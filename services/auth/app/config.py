@@ -54,6 +54,46 @@ class Settings(ServiceSettings):
     refresh_cookie_name: str = "opsgrids_refresh"
     refresh_cookie_domain: str | None = None
 
+    # --- MFA ------------------------------------------------------------------------
+    #: M4 of the third-round security review: MAJOR 3's tolerant legacy-plaintext read
+    #: (`_open_factor_secret`) is opt-in. A raw base32 value sitting in `secret_enc` is only a
+    #: legitimate legacy row on a box that predates PII sealing; anywhere else it is a
+    #: tampered or hand-inserted row, and silently accepting it would let whoever can write
+    #: that column choose a factor's secret. `False` by default everywhere; set `True` on a
+    #: box only until `bin/reseal-mfa-factors` prints 0, then remove it (RUNBOOK, "Operator
+    #: MFA"). Tests and `local`/`test`/`ci` set it freely to exercise the legacy path.
+    mfa_accept_legacy_plaintext: bool = False
+
+    def model_post_init(self, _: object) -> None:
+        """M1(a) of the third-round security review: the admin-gateway hop signature
+        (`require_admin_hop`) is a no-op when `admin_gateway_hop_key` is unset — deliberately,
+        so a dev box that has never provisioned one still signs in. That same silence is fatal
+        in a real deployment: an operator with the fix-round-2 code but no key configured gets
+        no defence in depth at all, and nothing about that failure is loud. Refused here,
+        the same way the base class refuses a placeholder secret.
+
+        A hop key equal to `internal_service_token` is refused everywhere, not only in
+        production — the whole point of a distinct secret is that a leak of one does not
+        also open the other, and a developer who copy-pasted the same value into both should
+        find out immediately rather than the day one of them leaks.
+        """
+        super().model_post_init(_)
+        if self.admin_gateway_hop_key is not None and (
+            self.admin_gateway_hop_key.get_secret_value()
+            == self.internal_service_token.get_secret_value()
+        ):
+            raise ValueError(
+                "admin_gateway_hop_key must not equal internal_service_token: a leak of one "
+                "must not also hand over the other."
+            )
+        real_deployment = self.environment in ("production", "staging", "uat")
+        if real_deployment and self.admin_gateway_hop_key is None:
+            raise ValueError(
+                "admin_gateway_hop_key must be set in production, staging and uat: auth's "
+                "operator routes require a valid admin-gateway hop signature "
+                "(require_admin_hop), and an unset key silently turns that defence off."
+            )
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

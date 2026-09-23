@@ -70,6 +70,9 @@ policy = GatewayPolicy(
     rate_limit=cfg.rate_limit_per_minute,
     anonymous_rate_limit=cfg.anonymous_rate_limit_per_minute,
     upstream_timeout=cfg.upstream_timeout_seconds,
+    # The one gateway that signs the hop header auth's operator routes verify (M1(b)): a
+    # property of this policy, not of whichever process happens to hold `ADMIN_GATEWAY_HOP_KEY`.
+    sign_admin_hop=True,
 )
 
 resolver = PermissionResolver(cfg.account_service_url, cfg)

@@ -25,7 +25,7 @@ from platform_core import cache
 from platform_core.app import create_app
 from platform_core.config import ServiceSettings
 from platform_core.gateway import GatewayPolicy, Route, RouteTable, build_gateway
-from platform_core.internal_auth import ADMIN_HOP_HEADER, verify_admin_hop
+from platform_core.internal_auth import ADMIN_HOP_HEADER, canonical_query, verify_admin_hop
 
 UPSTREAM = "http://upstream-service:9999"
 OPERATOR_LOGIN = "/api/v1/auth/operator/login"
@@ -85,10 +85,14 @@ def redis() -> Any:
     cache._redis = None
 
 
-def _build_app(upstream: _EchoUpstream, hop_key: str | None) -> FastAPI:
+def _build_app(upstream: _EchoUpstream, hop_key: str | None, *, sign_admin_hop: bool) -> FastAPI:
     cfg = _Settings(admin_gateway_hop_key=hop_key)
     application = create_app(cfg, title="probe-gateway", database=False, redis=False)
-    policy = GatewayPolicy(audience="operator", public_paths=frozenset({OPERATOR_LOGIN}))
+    policy = GatewayPolicy(
+        audience="operator",
+        public_paths=frozenset({OPERATOR_LOGIN}),
+        sign_admin_hop=sign_admin_hop,
+    )
     routes = RouteTable([Route("/api/v1/auth", UPSTREAM)])
     build_gateway(application, settings=cfg, routes=routes, policy=policy)
     application.state.http = httpx.AsyncClient(transport=httpx.MockTransport(upstream.handler))
@@ -98,7 +102,7 @@ def _build_app(upstream: _EchoUpstream, hop_key: str | None) -> FastAPI:
 @pytest_asyncio.fixture
 async def signing_client(upstream: _EchoUpstream, redis: Any) -> AsyncIterator[AsyncClient]:
     """Stands in for admin-gateway: configured with the hop key, so it signs."""
-    app = _build_app(upstream, HOP_KEY)
+    app = _build_app(upstream, HOP_KEY, sign_admin_hop=True)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
     await app.state.http.aclose()
@@ -107,7 +111,7 @@ async def signing_client(upstream: _EchoUpstream, redis: Any) -> AsyncIterator[A
 @pytest_asyncio.fixture
 async def non_signing_client(upstream: _EchoUpstream, redis: Any) -> AsyncIterator[AsyncClient]:
     """Stands in for app-gateway: no hop key configured, so it never signs."""
-    app = _build_app(upstream, None)
+    app = _build_app(upstream, None, sign_admin_hop=False)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
     await app.state.http.aclose()
@@ -121,7 +125,9 @@ class TestTheSigningGateway:
         assert response.status_code == 200
         header = upstream.last["headers"].get(ADMIN_HOP_HEADER)
         assert header is not None
-        assert verify_admin_hop(header, "POST", OPERATOR_LOGIN, key=HOP_KEY)
+        assert verify_admin_hop(
+            header, "POST", OPERATOR_LOGIN, key=HOP_KEY, body=json.dumps({}).encode()
+        )
 
     async def test_a_client_supplied_hop_header_is_overwritten_not_forwarded(
         self, signing_client: AsyncClient, upstream: _EchoUpstream
@@ -136,7 +142,56 @@ class TestTheSigningGateway:
         assert response.status_code == 200
         header = upstream.last["headers"].get(ADMIN_HOP_HEADER)
         assert header != "forged.forged"
-        assert verify_admin_hop(header, "POST", OPERATOR_LOGIN, key=HOP_KEY)
+        assert verify_admin_hop(
+            header, "POST", OPERATOR_LOGIN, key=HOP_KEY, body=json.dumps({}).encode()
+        )
+
+
+@pytest_asyncio.fixture
+async def keyed_non_signing_client(
+    upstream: _EchoUpstream, redis: Any
+) -> AsyncIterator[AsyncClient]:
+    """M1(b): app-gateway in development, where every service reads the same `.env` and so
+    *holds* the key — its policy still does not sign."""
+    app = _build_app(upstream, HOP_KEY, sign_admin_hop=False)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        yield c
+    await app.state.http.aclose()
+
+
+class TestTheKeyedButNonSigningGateway:
+    async def test_holding_the_key_is_not_enough_to_sign(
+        self, keyed_non_signing_client: AsyncClient, upstream: _EchoUpstream
+    ) -> None:
+        response = await keyed_non_signing_client.post(OPERATOR_LOGIN, content=json.dumps({}))
+        assert response.status_code == 200
+        assert ADMIN_HOP_HEADER not in upstream.last["headers"]
+
+    async def test_a_client_supplied_header_is_still_stripped(
+        self, keyed_non_signing_client: AsyncClient, upstream: _EchoUpstream
+    ) -> None:
+        response = await keyed_non_signing_client.post(
+            OPERATOR_LOGIN, content=json.dumps({}), headers={ADMIN_HOP_HEADER: "1.abc.def"}
+        )
+        assert response.status_code == 200
+        assert ADMIN_HOP_HEADER not in upstream.last["headers"]
+
+
+class TestTheSignatureBindsWhatWasForwarded:
+    async def test_the_signature_verifies_against_the_body_and_query_actually_sent(
+        self, signing_client: AsyncClient, upstream: _EchoUpstream
+    ) -> None:
+        body = json.dumps({"email": "ops@opsgrids.tech"})
+        response = await signing_client.post(OPERATOR_LOGIN + "?b=2&a=1", content=body)
+        assert response.status_code == 200
+        header = upstream.last["headers"][ADMIN_HOP_HEADER]
+        query = canonical_query([("a", "1"), ("b", "2")])
+        assert verify_admin_hop(
+            header, "POST", OPERATOR_LOGIN, key=HOP_KEY, query=query, body=body.encode()
+        )
+        assert not verify_admin_hop(
+            header, "POST", OPERATOR_LOGIN, key=HOP_KEY, query=query, body=b"{}"
+        )
 
 
 class TestTheNonSigningGateway:

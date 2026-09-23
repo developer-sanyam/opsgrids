@@ -59,6 +59,7 @@ from platform_core.errors import (
 from platform_core.internal_auth import (
     ADMIN_HOP_HEADER,
     GATEWAY_AUDIENCE,
+    canonical_query,
     mint_service_token,
     sign_admin_hop,
 )
@@ -289,6 +290,13 @@ class GatewayPolicy:
     #: Request bodies larger than this are refused with 413 before being read into memory.
     #: A route may raise its own ceiling; see `Route.max_body_bytes`.
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
+    #: Sign every proxied request with the admin-gateway hop signature (`sign_admin_hop`).
+    #: M1(b) of the third-round security review: this used to key off "`ADMIN_GATEWAY_HOP_KEY`
+    #: is set in this process's settings", which made *any* gateway that happened to see the
+    #: key — every service reads the same `.env` in development — a signer. Now a property of
+    #: the gateway's own policy, set `True` in exactly one place (admin-gateway's `main.py`),
+    #: so holding the key is necessary but no longer sufficient.
+    sign_admin_hop: bool = False
 
     def __post_init__(self) -> None:
         # A prefix without a trailing slash is a bug waiting to widen: refused at construction
@@ -699,15 +707,6 @@ async def _forward(
 ) -> Response:
     client: httpx.AsyncClient = request.app.state.http
 
-    if settings.admin_gateway_hop_key is not None:
-        # Only a gateway configured with this key ever writes the header — app-gateway leaves
-        # it unset, so its outbound requests carry none, and any copy a client attached to its
-        # *inbound* request was already stripped above with the rest of `SPOOFABLE`.
-        headers[ADMIN_HOP_HEADER] = sign_admin_hop(
-            request.method,
-            full_path,
-            key=settings.admin_gateway_hop_key.get_secret_value(),
-        )
     # The *normalised* path `proxy` already routed and authorized on — never `request.url.path`
     # again here. httpx's own URL parsing would resolve a raw `..`/`//` the same way on its way
     # to the wire regardless, but building the request from the same string the routing
@@ -734,11 +733,27 @@ async def _forward(
         )
         raise
 
+    params = dict(request.query_params)
+    if policy.sign_admin_hop and settings.admin_gateway_hop_key is not None:
+        # Signed here, after the body is buffered, because the signature binds the method, the
+        # normalised path, the canonical query and the body's digest (m2 of the third-round
+        # review) — a captured header cannot be replayed with a different body or query. Only a
+        # gateway whose *policy* says so signs: holding the key is not enough. Any copy of the
+        # header a client attached to its inbound request was already stripped with the rest of
+        # `SPOOFABLE`, so a non-signing gateway forwards none at all.
+        headers[ADMIN_HOP_HEADER] = sign_admin_hop(
+            request.method,
+            full_path,
+            key=settings.admin_gateway_hop_key.get_secret_value(),
+            query=canonical_query(params.items()),
+            body=body,
+        )
+
     upstream_request = client.build_request(
         request.method,
         url,
         headers=headers,
-        params=dict(request.query_params),
+        params=params,
         content=body,
     )
     try:

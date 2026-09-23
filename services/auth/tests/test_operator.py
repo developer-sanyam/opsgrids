@@ -1000,6 +1000,49 @@ class TestOperatorMfaVerify:
         )
         assert revoked, "crossing the threshold must revoke the session that produced the failures"
 
+    async def test_the_count_restarts_when_the_lock_trips_so_expiry_is_a_real_unlock(
+        self, session, cfg, pair
+    ) -> None:
+        """m7 of the third-round security review: the counter used to stay at the threshold
+        after the lock tripped, so the first wrong code after the lock *expired* pushed it
+        straight back over and re-locked the account for a single typo."""
+        from datetime import timedelta
+
+        await _make_staff(session)
+        await _enrol_operator_mfa(session, cfg, pair)
+        outcome = await services.operator_login(
+            session, cfg=cfg, pair=pair, email=STAFF_EMAIL, password=STAFF_PASSWORD
+        )
+        for _ in range(cfg.max_failed_attempts):
+            with pytest.raises(UnauthorizedProblem):
+                await services.operator_verify_mfa(
+                    session,
+                    cfg=cfg,
+                    pair=pair,
+                    pre_auth_token=outcome.pre_auth_token,
+                    code="000000",
+                )
+        staff = (
+            await session.execute(select(StaffAccount).where(StaffAccount.email == STAFF_EMAIL))
+        ).scalar_one()
+        assert staff.mfa_locked_until is not None
+        assert staff.mfa_failed_attempts == 0, "the count restarts with the lock"
+
+        # The lock runs out.
+        staff.mfa_locked_until = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+
+        fresh = await services.operator_login(
+            session, cfg=cfg, pair=pair, email=STAFF_EMAIL, password=STAFF_PASSWORD
+        )
+        with pytest.raises(UnauthorizedProblem, match="not valid"):
+            await services.operator_verify_mfa(
+                session, cfg=cfg, pair=pair, pre_auth_token=fresh.pre_auth_token, code="000000"
+            )
+        await session.refresh(staff)
+        assert staff.mfa_failed_attempts == 1, "one typo after expiry is one strike, not a re-lock"
+        assert not services._staff_locked(staff)
+
 
 class TestOperatorAuditTrail:
     async def test_password_verification_and_sign_in_are_both_audited(
@@ -1260,6 +1303,38 @@ class TestMfaResetRoute:
         finally:
             fastapi_app.dependency_overrides.pop(get_principal, None)
         assert response.status_code == 422
+
+    async def test_resetting_mfa_also_clears_the_lock_and_counter(self, session, client) -> None:
+        """m7: a colleague locked out *because* they lost their device is what this route is
+        for — the lock must not outlive the reset."""
+        from datetime import timedelta
+
+        from app.main import app as fastapi_app
+        from platform_core.auth import Principal, get_principal
+
+        owner = await _make_staff(session, email="owner-unlock@opsgrids.tech", roles=["owner"])
+        locked = await _make_staff(session, email="locked-unlock@opsgrids.tech", roles=["support"])
+        locked.mfa_failed_attempts = 4
+        locked.mfa_locked_until = datetime.now(UTC) + timedelta(minutes=10)
+        await session.commit()
+
+        principal = Principal(
+            sub=owner.id,
+            organization_id=services.PLATFORM_ORG,
+            audience="operator",
+            roles=["owner"],
+            amr=["pwd", "otp"],
+        )
+        fastapi_app.dependency_overrides[get_principal] = lambda: principal
+        try:
+            response = await client.post(f"/api/v1/auth/operator/staff/{locked.id}/mfa:reset")
+        finally:
+            fastapi_app.dependency_overrides.pop(get_principal, None)
+        assert response.status_code == 204, response.text
+
+        await session.refresh(locked)
+        assert locked.mfa_failed_attempts == 0
+        assert locked.mfa_locked_until is None
 
 
 class TestBootstrap:

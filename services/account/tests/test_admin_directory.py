@@ -3,15 +3,19 @@
 
 The one read into account-service's directory data console is allowed to make for this —
 never `/internal/v1`, which authorizes no individual caller at all (ADR-0003 §2,
-`app/api/admin.py`'s module docstring). Since MINOR 7 of the 2026-09-24 security review, this
-route trusts nobody's *assertion* about who is calling: console forwards the operator's own
-bearer access token verbatim in `X-Operator-Token`, and this route verifies it itself via JWKS
-— `decode_token` is stubbed here to a plain claims lookup, the same shape
-`test_gateway_body_limit.py` uses for the identical reason: exercising the *verification logic*
-(audience, amr, role, sub) without standing up a real signing key and JWKS endpoint.
+`app/api/admin.py`'s module docstring). Two credentials, both required: console's service token
+(`X-Internal-Token`, `iss="console"`, `aud="account"`) says *who is calling* (m6 of the
+third-round security review), and — since MINOR 7 of the 2026-09-24 review — the operator's own
+bearer access token, forwarded verbatim in `X-Operator-Token`, says *on whose behalf*; this route
+verifies it itself via JWKS. `decode_token` is stubbed here to a plain claims lookup, the same
+shape `test_gateway_body_limit.py` uses for the identical reason: exercising the *verification
+logic* (audience, amr, role, sub) without standing up a real signing key and JWKS endpoint.
 
 Properties:
 
+0. **Either credential missing is refused** — an operator token with no service token, and a
+   service token with no operator token, are both 401; so is a service token from any caller
+   other than console, or addressed to any other service.
 1. **A missing token is refused** — 401, before any lookup.
 2. **A wrong-audience token is refused** — a product-audience token proves nothing about being
    staff.
@@ -34,8 +38,10 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 import app.api.admin as admin_module
+from app.config import settings
 from app.models import AuditLog, Organization
 from platform_core.errors import UnauthorizedProblem
+from platform_core.internal_auth import mint_service_token
 
 pytestmark = pytest.mark.integration
 
@@ -79,8 +85,64 @@ def _stub_jwks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(admin_module, "decode_token", _fake_decode_token)
 
 
-def _headers(token: str) -> dict[str, str]:
-    return {"X-Operator-Token": token}
+def _service_token(*, caller: str = "console", audience: str = "account") -> str:
+    return mint_service_token(settings(), audience=audience, caller=caller)
+
+
+def _headers(token: str, *, service: bool = True) -> dict[str, str]:
+    """The operator token, plus — by default — console's service token, the way console sends
+    both. `service=False` is the operator-token-only shape m6 refuses."""
+    headers = {"X-Operator-Token": token}
+    if service:
+        headers["X-Internal-Token"] = _service_token()
+    return headers
+
+
+class TestBothCredentialsAreRequired:
+    """m6: the operator's access token alone must not open a cross-tenant read, and console's
+    service token alone must not either."""
+
+    async def test_an_operator_token_without_a_service_token_is_refused(
+        self, client: AsyncClient, org: Organization
+    ) -> None:
+        response = await client.get(
+            f"/api/v1/admin/directory/organizations/{org.id}",
+            headers=_headers(_token(), service=False),
+        )
+        assert response.status_code == 401
+
+    async def test_a_service_token_without_an_operator_token_is_refused(
+        self, client: AsyncClient, org: Organization
+    ) -> None:
+        response = await client.get(
+            f"/api/v1/admin/directory/organizations/{org.id}",
+            headers={"X-Internal-Token": _service_token()},
+        )
+        assert response.status_code == 401
+
+    async def test_a_service_token_from_a_caller_other_than_console_is_refused(
+        self, client: AsyncClient, org: Organization
+    ) -> None:
+        response = await client.get(
+            f"/api/v1/admin/directory/organizations/{org.id}",
+            headers={
+                "X-Operator-Token": _token(),
+                "X-Internal-Token": _service_token(caller="billing"),
+            },
+        )
+        assert response.status_code == 401
+
+    async def test_a_service_token_addressed_to_another_service_is_refused(
+        self, client: AsyncClient, org: Organization
+    ) -> None:
+        response = await client.get(
+            f"/api/v1/admin/directory/organizations/{org.id}",
+            headers={
+                "X-Operator-Token": _token(),
+                "X-Internal-Token": _service_token(audience="billing"),
+            },
+        )
+        assert response.status_code == 401
 
 
 class TestAdminDirectoryRoute:

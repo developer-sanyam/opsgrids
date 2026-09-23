@@ -541,8 +541,8 @@ plan version's `trial_days` feature (14 when absent), never the customer's.
 ### Operator MFA: mandatory rollout, the one-off codes, and the legacy reseal
 
 The 2026-09-24 security review made a second factor mandatory for every staff account
-(ADR-0003 addendum) and closed several holes in how it is enforced. Three one-off steps, run
-once each, after the deploy that ships `auth`'s migrations through `5ba575e36b1a`:
+(ADR-0003 addendum) and closed several holes in how it is enforced. Two one-off deploy steps,
+run once each, after the deploy that ships `auth`'s migrations through `5ba575e36b1a`:
 
 1. **`bin/issue-enrollment-codes`** — every staff account that predates mandatory MFA has no
    confirmed factor and needs an out-of-band enrolment code before it can enrol one (a password
@@ -558,37 +558,56 @@ once each, after the deploy that ships `auth`'s migrations through `5ba575e36b1a
    phone call — anything that is not this box's own logs). Skips any account that already has a
    confirmed factor, so re-running after some staff have enrolled issues codes only for the rest.
 
-2. **`bin/reseal-mfa-factors`** (MAJOR 3) — if this box enrolled any staff MFA factor before PII
-   sealing covered TOTP secrets, that row still holds the plaintext base32 secret. Every read
-   already resealed it lazily and tolerantly, but running this once forces every remaining
-   legacy row through that path immediately rather than waiting for each account's next sign-in:
+2. **`bin/reseal-mfa-factors`** (MAJOR 3, m4/m5) — if this box enrolled any staff MFA factor
+   before PII sealing covered TOTP secrets, that row still holds the plaintext base32 secret.
+   Nothing authenticates such a row, so auth **refuses** it unless
+   `MFA_ACCEPT_LEGACY_PLAINTEXT=true` is set (default `false`). Pass it to this one run only —
+   not into `.env` and not into the running container — and run until it prints `0`:
 
    ```bash
-   docker compose -f compose.prod.yml --env-file .env run --rm -T auth \
+   docker compose -f compose.prod.yml --env-file .env run --rm -T \
+     -e MFA_ACCEPT_LEGACY_PLAINTEXT=true auth \
      python -c "from app.mfa_maintenance import reseal_main; reseal_main()"
    ```
 
-   Idempotent — prints a count, and a second run against an already-resealed database prints 0.
+   Each row it touches is resealed under the current key with a per-row AAD and audited
+   (`auth.mfa_factor_resealed`). Envelopes that were sealed before the AAD existed are resealed
+   too, and those need no flag — GCM already authenticated them. Idempotent: it prints a count,
+   and a second run against an already-resealed database prints `0`. Once it does, the flag is
+   no longer needed anywhere; if you set it on a live container to let a legacy factor sign in
+   before this ran, **remove it now**.
 
-3. **`bin/reset-staff-mfa --all`** (MINOR 10, dev/staging only) — an environment that ran the
-   pre-fix version of this slice — before `5ba575e36b1a` separated the MFA lockout counter from
-   the password one (BLOCKER 1) — may hold staff factors and recovery codes enrolled under that
-   bug and should not trust their provenance. Wipes every staff account's MFA outright, forcing a
-   clean re-enrolment through step 1 above:
+Not a deploy step — **`bin/reset-staff-mfa --all`** (MINOR 10). This exists only for a
+development, test or CI environment that ran the pre-fix version of this slice (before
+`5ba575e36b1a` separated the MFA lockout counter from the password one) and should not trust
+the factors and recovery codes it enrolled under that bug. It wipes every staff account's MFA
+and clears their MFA locks, forcing a clean re-enrolment through step 1. It accepts exactly the
+environment names `local`, `test` and `ci` and **refuses in every other one — `staging`, `uat`
+and `production` included** — so there is nothing to run on this box. A production account
+recovered from that bug, or one whose owner lost their device, goes through the audited
+`POST /auth/operator/staff/{id}/mfa:reset` owner route instead, one account at a time; that
+route also clears the account's MFA lock.
 
-   ```bash
-   docker compose -f compose.prod.yml --env-file .env run --rm -T auth \
-     python -c "from app.mfa_maintenance import reset_main; reset_main()" --all
-   ```
+**`ADMIN_GATEWAY_HOP_KEY` — auth refuses to start without it.** In `production`, `staging` and
+`uat` auth's settings refuse to load — the service does not start — if it is unset, and also if it equals
+`INTERNAL_SERVICE_TOKEN` (in any environment): the hop signature auth's operator routes verify
+is the second lock behind the route table's own block of `/api/v1/auth/operator`, and an unset
+key would silently switch it off. `compose.prod.yml` passes it to the `auth` service only, as
+`${ADMIN_GATEWAY_HOP_KEY:?}`, so compose itself aborts `up` when it is missing; it is **not** in
+the shared service environment, so no other container — app-gateway included — receives it.
+Generate it as `INTERNAL_SERVICE_TOKEN` is in "Secrets — generate them here, now, and never
+anywhere else" above: a fresh, separate 32+ byte value, never reused from that or any other
+key. Preflight refuses to deploy without it, like every other required secret. (admin-gateway,
+the only signer, is not in this compose file, so operator sign-in is unreachable on this box —
+which is the intent; the key is here so that stays true if a signer is ever added.)
 
-   Refuses outright in production and staging — this is a `local`/`test`-only escape hatch, not
-   a production remediation. Production accounts recovered from that bug go through the audited
-   `POST /auth/operator/staff/{id}/mfa:reset` owner route instead, one at a time.
-
-`ADMIN_GATEWAY_HOP_KEY` (BLOCKER 2) is generated the same way `INTERNAL_SERVICE_TOKEN` is in
-"Secrets — generate them here, now, and never anywhere else" above — a fresh, separate 32+ byte
-value, never reused from that or any other key. Only admin-gateway and auth read it; preflight
-refuses to deploy without it, the same as every other required secret.
+**A locked-out MFA is unlocked by waiting, or by an owner.** After
+`LOCKOUT_MINUTES` (default 15) of a lock the failure count starts from zero, so one typo
+afterwards is one strike, not an immediate re-lock. A staff account can be unlocked sooner by an
+owner through `POST /auth/operator/staff/{id}/mfa:reset` (which also wipes the factors). A
+tenant member's MFA lock has no admin endpoint by design — it would need a new permission and a
+cross-service membership check to guard a fifteen-minute wait — so expiry *is* the unlock. The
+lock refuses recovery codes as well as authenticator codes, so there is nothing to do but wait.
 
 ### Deploying from the pipeline
 

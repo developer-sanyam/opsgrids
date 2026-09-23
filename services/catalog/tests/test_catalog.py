@@ -402,6 +402,16 @@ class TestOperatorAudienceBoundary:
         assert resp.status_code == 201
         assert resp.json()["code"] == "authored"
 
+    async def test_an_operator_token_that_never_completed_mfa_gets_403(self, client) -> None:
+        """m8 of the third-round security review: right audience, right role (`owner`), but
+        `amr` is `["pwd"]` — no second factor — so the route refuses it."""
+        with as_principal(operator_principal(staff=True, roles=["owner"], amr=["pwd"])):
+            resp = await client.post(
+                "/api/v1/admin/catalog/plans",
+                json={"product_key": "hrms", "code": "no-mfa", "name": "No MFA"},
+            )
+        assert resp.status_code == 403
+
     async def test_a_product_audience_token_gets_404_not_403(self, client) -> None:
         """404, deliberately: a customer token learns nothing about whether this surface
         exists — the same rule the operator gateway enforces at the edge."""
