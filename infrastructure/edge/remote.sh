@@ -184,8 +184,7 @@ up() {
 	log "reloading Caddy with the Caddyfile from this ref (graceful, no downtime)"
 	# If this deploy recreated Caddy itself, it may not accept an exec for a moment; one failed
 	# exec must not abort the deploy before `health` and `record_ref` run.
-	local try
-	for try in 1 2 3 4 5; do
+	for _ in 1 2 3 4 5; do
 		"${COMPOSE[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile && return 0
 		sleep 2
 	done
