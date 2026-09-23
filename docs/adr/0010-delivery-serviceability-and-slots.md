@@ -1028,3 +1028,109 @@ against the service rather than assuming.
 unrecognised case. `excluded` drops it, because **"yet" for an area the merchant deliberately
 excluded is a promise nobody intends to keep**; `zone_inactive` reads "right now". A zone's own
 `buyer_note` still overrides all three.
+
+---
+
+## Decisions on open questions (2026-09-24)
+
+Two questions left open are decided below, and two items that wait deliberately on demand are
+recorded as **NOT-TRIGGERED**, each with its exact trigger and what to build when it fires. Slices
+2 to 5 are sequenced by other work (R16 for slice 2; the cart and order engine R17 for slices 3 to
+5) and are not repeated here. The register of every ADR question is
+[open-questions-register.md](open-questions-register.md).
+
+### Q1. The entitlement-lapse consumer: "no owner" (§4, errata "Still unowned") — **DECIDED: storefront owns it, backlog R14**
+
+**Decision.** `services/storefront` owns it, and it listens to **the activation, not the
+subscription**. An activation is the OR of its sources (ADR-0004 §5 addendum). A standalone
+storefront subscription can still entitle after a bundle that included storefront is cancelled,
+so no single subscription event is the signal.
+
+Today only the hand `deactivate` path publishes `core.product.deactivated`
+(`product/app/services.py`); `project_subscription` deliberately emits nothing. So:
+1. Product-service publishes `core.product.deactivated` or `core.product.activated`, from
+   `project_subscription`, **only when the recomputed activation actually flips** between entitling
+   and not entitling. The payload carries `reason: "subscription"`. A fold that leaves the
+   status unchanged emits nothing, so there is no loop. Account's existing consumer of
+   `core.product.activated` is idempotent, so a second announcement costs nothing.
+2. Storefront's consumer binds both events for product `storefront`:
+   - `core.product.deactivated` sets `storefronts.status = 'suspended'`. The CHECK constraint
+     already allows that state, and no merchant transition can leave it (ADR-0011 §4).
+   - `core.product.activated` moves `suspended` to `draft`, never to `published`: the merchant
+     republishes deliberately.
+
+   Each transition writes an audit row with a system actor and deletes the slug and host cache
+   keys **after commit** (ADR-0012 erratum 22). The consumer is idempotent by event id, and the
+   tenant comes from the envelope.
+3. `storefront-worker` joins the `storefront` compose profile, priced in `memory-budget.json`.
+
+**Why.** Three ADRs deferred this (ADR-0012 erratum 9). A published store keeps answering
+anonymous traffic, and holding a certificate we renew, after the merchant stops paying. The state
+and the refusal to leave it already exist; only the writer is missing.
+
+**Consequences.** **Implemented by R14** (in PLAT-B, with Q9's per-product lifecycle consumers).
+
+### Q2. API errata 7–9: line numbers on rejects, the demand aggregate, the whole postal-code map — **DECIDED: all three server-side**
+
+**Decision.**
+- `ImportResultOut` gains `rejected_lines: [{line, postal_code, reason}]`, capped at 1,000 with a
+  `rejected_truncated` flag.
+- `GET /delivery/demand` gains `?from=&to=&group=postal_code` and returns a server-side
+  `GROUP BY` over the range, sorted by count. The paged raw rows stay available for export.
+- `GET /delivery/postal-codes` returns the whole map (`postal_code → zone_code`), keyset-paged at
+  5,000.
+
+All three are behind `zone.read`/`zone.write` as today.
+
+**Consequences.** **Implemented by R16** (with "API errata").
+
+### Slice 6: sub-postal-code precision — **NOT-TRIGGERED**
+
+**Trigger (both conditions):**
+1. A merchant with a **published** store states in writing that a postal code must be split —
+   part served, part not — for a zone they operate.
+2. **A coordinate source exists on the buyer path.** That means a saved buyer address with a
+   geocode (slice 5, which waits on R17's buyer identity), or a deliberate product decision to ask
+   for browser geolocation.
+
+Without the second, a radius can never apply to the anonymous check. §2 has already refused a
+geocoder on the hot path.
+
+**What to build when it fires:**
+- `delivery_nodes` (slice 2) gains optional `lat`, `lng` (`Numeric(9,6)`, the `attendance`
+  pattern, no geometry column).
+- `zone_nodes` gains an optional `radius_m`.
+- `resolve_serviceability(session, org, postal_code, point=None)` applies a raw
+  `ST_DWithin(point::geography, node::geography, radius_m)` **only when a point is supplied and
+  the zone has a radius**, and returns `UNSERVED` with a new reason `outside_radius` on a miss.
+  With no point, the postal-code answer is unchanged.
+- The public body accepts optional `lat`/`lng`. They are never stored: the demand counter keeps
+  counting postal codes only (§6, §7).
+
+Polygons stay refused until a merchant needs a boundary a circle cannot draw, because that needs a
+map editor. The index register gains nothing: the radius test runs on the one to three nodes of an
+already-resolved zone.
+
+### Public paths by prefix (§4, "Revisit when") — **NOT-TRIGGERED for the storefront; the platform capability has landed**
+
+**What changed.** `GatewayPolicy.public_path_prefixes` now exists (`platform_core/gateway.py`, added
+2026-09-23 for `/api/v1/engage/unsubscribe/`). It is checked against the normalised path, and each
+prefix must end in `/`. So the platform can now express an anonymous path with a variable in it.
+
+**Why the storefront has not moved.** Every anonymous storefront endpoint still fits §4's rule:
+`serviceability`, `store-context`, `catalogue` and `enquiry` are all exact paths, with variables in
+the body (`services/app-gateway/app/main.py`, `STOREFRONT_PUBLIC_PATHS`). Nothing needs a path
+variable, and exact paths are the list a human reads.
+
+**Trigger:** the first anonymous buyer endpoint that must be **addressed by URL**. That means a
+GET a crawler, a CDN or a shared link must reach, such as a product page by slug for search, or R17's
+order-status link carrying a signed token. A new body-carried POST is not the trigger.
+
+**What to build when it fires:**
+- A `STOREFRONT_PUBLIC_PATH_PREFIXES` set in `services/app-gateway/app/main.py` naming **that one
+  resource's** prefix, for example `/api/v1/storefront/public/products/`. It is never the whole
+  `/api/v1/storefront/public/` subtree, so each anonymous resource stays an explicit decision.
+- The same entry in `infrastructure/edge/routes.prod.json`, to keep the parity test honest.
+- A gateway test showing that a `..` escape from the prefix is refused (the Engage prefix already
+  has one).
+- The existing exact paths stay as they are. There is no migration of the wire format.

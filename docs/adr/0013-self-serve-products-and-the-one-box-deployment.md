@@ -174,6 +174,47 @@ whenever a product wants them). Mobile apps. A second box. Staff-side approval o
 address with a working inbox may create an organisation; abuse controls are rate limits and the
 trial's own end).
 
+#### Decisions on the items above (2026-09-24)
+
+Each of the four is now decided. The register of every ADR question is
+[open-questions-register.md](open-questions-register.md). This subsection sits here rather than
+at the end of the document because the memory-headroom work (D4b) appends to the erratum below.
+
+- **Per-seat or usage pricing — DECIDED (default; owner may revise the numbers).** Self-serve
+  products stay **flat per product per month** (§2).
+  - **Per-seat** pricing arrives only as a new plan version that sells **seat classes** (catalog
+    already models `seat_classes` with `can_write`). Account enforces it through an assignment
+    rule and role templates, never a second grant writer (ADR-0007, "Decisions" Q2). **Implemented
+    by O2** after **C6**.
+  - **Usage** pricing's first real line is WhatsApp conversations (§2, slice 5), **R4**.
+  - New per-seat and usage versions are **sales-led first**: operator subscribe, as bundles are
+    (ADR-0004 §5 addendum). Self-serve opens per version once one has been sold and billed
+    correctly through a full period. Amounts are deployment data set by the owner in the staff
+    console, never in the repository.
+- **Mobile apps — DECIDED: no native app in this backlog.** "Mobile is another client"
+  (ADR-0003 §6) needs the mobile token audience first, which is **R31**. Until a customer asks for
+  a native app, the responsive web apps are the mobile experience. ADR-0001's one-app-per-product
+  shape still applies when one is built.
+- **A second box — DECIDED: not yet; when forced, the first split is the stateful tier.** The owner
+  has refused a resize (the erratum below), so container count is the variable. **Trigger**, either
+  of:
+  - `preflight.sh` refuses a deploy and there is **no profile left with zero activations to
+    de-list**;
+  - ADR-0012 slice 4's triggers fire (an uptime clause, ~200 domains, `caddy_data` lost).
+
+  **What to build then:** move Postgres, the largest single container (350 MB expected, 768 MB
+  limit in `memory-budget.json`), to a managed Postgres or a second VM with the same image. Application containers
+  stay on one box. That also gives backups a home off the application disk (B3). A second
+  *application* box behind a load balancer is ADR-0012 slice 4's second option, and it is decided
+  there with the numbers at the time.
+- **Staff approval of signups — DECIDED: none; the abuse controls are the rate limit, the
+  set-password link and the trial's end.** Signup stays open (§3). The per-IP anonymous limit
+  becomes a real client-IP limit with a global ceiling on the unauthenticated surface (**R1**).
+  **Trigger to revisit:** a wave of junk organizations, more than 20 a day from signups that never
+  set a password. **What to build then:** a per-email-domain daily signup cap and an operator
+  "suspend organization" override. It is never a manual approval queue, which would put a human on
+  every legitimate customer's first minute.
+
 ## Erratum — the memory budget (2026-09-23)
 
 **§5's sizing was wrong, and the plan built on top of it never happened.** "This is ~24

@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[3]
 CONTRACTS = ROOT / "libs" / "contracts"
 EVENTS = CONTRACTS / "events"
 NOTIFICATION = ROOT / "services" / "notification"
+LEAD = ROOT / "services" / "lead"
 
 
 def _schema_files() -> list[Path]:
@@ -74,6 +75,33 @@ def _notification_engage_event_types() -> list[str]:
         text=True,
     )
     return [line for line in result.stdout.splitlines() if line]
+
+
+def _lead_aborted_event_type() -> str:
+    """`crm.lead.conversion_aborted`, read off the constant `services.py` stages it under,
+    from a fresh interpreter with lead's own directory as cwd — the same reason and the same
+    trick as `_notification_engage_event_types`."""
+    result = subprocess.run(
+        [sys.executable, "-c", "import app.services as s\nprint(s.EVT_LEAD_CONVERSION_ABORTED)\n"],
+        cwd=LEAD,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def test_the_lead_conversion_abort_event_has_a_committed_schema() -> None:
+    """The one `crm.lead.*` event with a committed contract so far — it is the hook a later
+    consumer would clean up orphaned records from, so its shape is a promise before anything
+    reads it. (`crm.lead.created`/`updated`/`converted` predate this and have none yet.)"""
+    event_type = _lead_aborted_event_type()
+    assert event_type == "crm.lead.conversion_aborted"
+    committed = {path.parent.name for path in _schema_files()}
+    assert event_type in committed, (
+        f"no committed schema for {event_type} — add "
+        "libs/contracts/events/crm.lead.conversion_aborted/v1.schema.json"
+    )
 
 
 def test_every_engage_event_notification_emits_has_a_committed_schema() -> None:

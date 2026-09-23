@@ -25,11 +25,12 @@ import {
   companyFromWire,
   contactFromWire,
   dealFromWire,
+  leadFromWire,
   mapPage,
   ownerFromWire,
   summaryFromWire,
 } from "./mappers";
-import { ACTIVITIES, COMPANIES, CONTACTS, DEALS, OWNERS } from "./fixtures";
+import { ACTIVITIES, COMPANIES, CONTACTS, DEALS, LEADS, OWNERS } from "./fixtures";
 import type {
   ActivityIn,
   ActivityOut,
@@ -43,8 +44,13 @@ import type {
   DealIn,
   DealOut,
   DealPatch,
+  LeadConvertOut,
+  LeadIn,
+  LeadOut,
+  LeadPatch,
   OwnerIn,
   OwnerOut,
+  OwnerPatch,
   StageMoveIn,
   SummaryOut,
   WirePage,
@@ -58,6 +64,9 @@ import type {
   ContactStatus,
   Deal,
   DealStage,
+  Lead,
+  LeadConvertResult,
+  LeadStatus,
   Owner,
   Page,
   Summary,
@@ -647,8 +656,7 @@ export async function getOwners(): Promise<Owner[]> {
 }
 
 /** `POST /customers/owners` — `crm.book.owner.write`. The prerequisite for every other create: a
- *  production org starts with zero owners. Owner edit/deactivate was not built server-side — the
- *  Team screen never offers it. */
+ *  production org starts with zero owners. */
 export async function createOwner(input: OwnerIn): Promise<Owner> {
   if (USE_FIXTURES) {
     if (OWNERS.some((o) => o.email.toLowerCase() === input.email.toLowerCase())) {
@@ -659,10 +667,184 @@ export async function createOwner(input: OwnerIn): Promise<Owner> {
       full_name: input.full_name,
       email: input.email,
       role: input.role ?? "",
+      is_active: true,
     };
     OWNERS.push(owner);
     return settle(owner);
   }
   const row = await apiRequest<OwnerOut>("/customers/owners", { method: "POST", body: input });
   return ownerFromWire(row);
+}
+
+/** `PATCH /customers/owners/{id}` — `crm.book.owner.write` (ORG scope). Edits a rep's plain
+ *  fields, and — via `is_active` — deactivates or reactivates them. Deactivating refuses (409)
+ *  while the rep still owns a live company or contact; reassign those first. */
+export async function updateOwner(id: string, patch: OwnerPatch): Promise<Owner> {
+  if (USE_FIXTURES) {
+    const index = OWNERS.findIndex((o) => o.id === id);
+    if (index === -1) throw new Error("That team member could not be found.");
+    const current = OWNERS[index];
+    if (!current) throw new Error("That team member could not be found.");
+    if (
+      patch.email !== undefined &&
+      OWNERS.some((o) => o.id !== id && o.email.toLowerCase() === patch.email?.toLowerCase())
+    ) {
+      throw new Error("A team member with that email already exists.");
+    }
+    const owner: Owner = {
+      ...current,
+      ...(patch.full_name !== undefined ? { full_name: patch.full_name } : {}),
+      ...(patch.email !== undefined ? { email: patch.email } : {}),
+      ...(patch.role !== undefined ? { role: patch.role } : {}),
+      ...(patch.is_active !== undefined ? { is_active: patch.is_active } : {}),
+    };
+    OWNERS[index] = owner;
+    return settle(owner);
+  }
+  const row = await apiRequest<OwnerOut>(`/customers/owners/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: patch,
+  });
+  return ownerFromWire(row);
+}
+
+/* ---------------------------------- leads --------------------------------- */
+//
+// `services/lead` mounted at `/api/v1/leads` — the intake ahead of the pipeline. A lead's
+// `email` / `phone` are always the masked display form on this client; the raw value is sealed
+// server-side and never returned. `converted_*` are set together, once, by `convertLead`.
+
+export interface ListLeadsParams {
+  status?: LeadStatus | "all";
+  ownerId?: string | "all";
+  page?: number;
+  size?: number;
+}
+
+export async function listLeads(params: ListLeadsParams = {}): Promise<Page<Lead>> {
+  const page = params.page ?? 1;
+  const size = params.size ?? DEFAULT_PAGE_SIZE;
+  if (USE_FIXTURES) {
+    const filtered = LEADS.filter((l) => {
+      const matchesStatus = !params.status || params.status === "all" || l.status === params.status;
+      const matchesOwner =
+        !params.ownerId || params.ownerId === "all" || l.owner_id === params.ownerId;
+      return matchesStatus && matchesOwner;
+    });
+    return settle(paginateFixture(filtered, page, size));
+  }
+  const query = new URLSearchParams({ page: String(page), size: String(size) });
+  if (params.status && params.status !== "all") query.set("status", params.status);
+  if (params.ownerId && params.ownerId !== "all") query.set("owner_id", params.ownerId);
+  const result = await apiRequest<WirePage<LeadOut>>(`/leads?${query.toString()}`);
+  return mapPage(result, leadFromWire);
+}
+
+export async function getLead(id: string): Promise<Lead> {
+  if (USE_FIXTURES) {
+    const lead = LEADS.find((l) => l.id === id);
+    if (!lead) throw new Error("That lead could not be found.");
+    return settle(lead);
+  }
+  const row = await apiRequest<LeadOut>(`/leads/${encodeURIComponent(id)}`);
+  return leadFromWire(row);
+}
+
+/** `POST /leads` — `crm.lead.lead.write`. `owner_id` omitted assigns from the organization's
+ *  round-robin — fixtures mode leaves it unassigned, since there is no rule to simulate. */
+export async function createLead(input: LeadIn): Promise<Lead> {
+  if (USE_FIXTURES) {
+    const lead: Lead = {
+      id: fixtureId("lead"),
+      full_name: input.full_name,
+      company: input.company ?? null,
+      email: input.email ?? null,
+      phone: input.phone ?? null,
+      source: input.source ?? "manual",
+      status: "new",
+      owner_id: input.owner_id ?? null,
+      notes: input.notes ?? "",
+      converted_company_id: null,
+      converted_contact_id: null,
+      converted_deal_id: null,
+      converted_at: null,
+      created_at: new Date().toISOString(),
+    };
+    LEADS.unshift(lead);
+    return settle(lead);
+  }
+  const row = await apiRequest<LeadOut>("/leads", { method: "POST", body: input });
+  return leadFromWire(row);
+}
+
+/** `PATCH /leads/{id}` — `crm.lead.lead.write`. No path to `status: "converted"` here — see
+ *  `convertLead`. */
+export async function updateLead(id: string, patch: LeadPatch): Promise<Lead> {
+  if (USE_FIXTURES) {
+    const index = LEADS.findIndex((l) => l.id === id);
+    if (index === -1) throw new Error("That lead could not be found.");
+    const current = LEADS[index];
+    if (!current) throw new Error("That lead could not be found.");
+    const lead: Lead = {
+      ...current,
+      ...(patch.full_name !== undefined ? { full_name: patch.full_name } : {}),
+      ...(patch.company !== undefined ? { company: patch.company } : {}),
+      ...(patch.status !== undefined ? { status: patch.status } : {}),
+      ...(patch.owner_id !== undefined ? { owner_id: patch.owner_id } : {}),
+      ...(patch.notes !== undefined ? { notes: patch.notes } : {}),
+    };
+    LEADS[index] = lead;
+    return settle(lead);
+  }
+  const row = await apiRequest<LeadOut>(`/leads/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: patch,
+  });
+  return leadFromWire(row);
+}
+
+/** `POST /leads/{id}:convert` — `crm.lead.lead.convert`. Idempotent: converting an
+ *  already-converted lead returns the same ids rather than erroring. Fixtures mode fabricates
+ *  ids on first conversion and returns the same ones on a repeat call, the same guarantee the
+ *  live service makes. */
+export async function convertLead(id: string): Promise<LeadConvertResult> {
+  if (USE_FIXTURES) {
+    const index = LEADS.findIndex((l) => l.id === id);
+    if (index === -1) throw new Error("That lead could not be found.");
+    const current = LEADS[index];
+    if (!current) throw new Error("That lead could not be found.");
+    if (current.status === "converted" && current.converted_company_id && current.converted_deal_id) {
+      return settle({
+        lead_id: current.id,
+        company_id: current.converted_company_id,
+        contact_id: current.converted_contact_id,
+        deal_id: current.converted_deal_id,
+      });
+    }
+    if (current.status !== "qualified") {
+      throw new Error(`A lead in "${current.status}" cannot be converted — qualify it first.`);
+    }
+    const companyId = fixtureId("comp");
+    const contactId = current.email ? fixtureId("con") : null;
+    const dealId = fixtureId("deal");
+    const converted: Lead = {
+      ...current,
+      status: "converted",
+      converted_company_id: companyId,
+      converted_contact_id: contactId,
+      converted_deal_id: dealId,
+      converted_at: new Date().toISOString(),
+    };
+    LEADS[index] = converted;
+    return settle({ lead_id: current.id, company_id: companyId, contact_id: contactId, deal_id: dealId });
+  }
+  const row = await apiRequest<LeadConvertOut>(`/leads/${encodeURIComponent(id)}:convert`, {
+    method: "POST",
+  });
+  return {
+    lead_id: row.lead_id,
+    company_id: row.company_id,
+    contact_id: row.contact_id,
+    deal_id: row.deal_id,
+  };
 }

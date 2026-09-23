@@ -730,3 +730,126 @@ The incident response is: `PATCH` the wrong membership with `employee_id: null` 
 - **`pv` becomes per-membership rather than per-organization.** §7's asymmetry exists entirely because
   a bump is tenant-wide; a per-membership version would let the first link bump too, and the
   fifteen-minute wait would disappear.
+
+---
+
+## Decisions on open questions (2026-09-24)
+
+Five things this ADR left open are decided here. Its other "Revisit when" items are genuine demand
+triggers and stay as they are. The register of every ADR question is
+[open-questions-register.md](open-questions-register.md).
+
+### Q1. Which screen writes the link (§2) — **DECIDED: the HRMS employee page, with the signed-in user's own token**
+
+**Decision.** The employee detail page in `frontend/product-hrms` gets a **"Linked member"** field:
+- the picker is `GET /api/v1/members?linked=false` (§9 item 1, already delivered);
+- linking calls `PATCH /api/v1/members/{membership_id}` with `{employee_id}`;
+- unlinking is an explicit action whose confirmation says it refreshes everyone's sign-in in the
+  organization (§7's bump).
+
+The control renders only when `GET /api/v1/members/me/grants` resolves
+`core.identity.membership.write:ORG`. That is a UI hint; the server's ORG floor is the control.
+The dashboard's Members screen stays the one that never sends `employee_id`
+(`frontend/opsgrids-dashboard/src/api/types.ts`), so there is one writing screen, not two.
+
+**Why.** Today nothing in `frontend/` sends `employee_id`, so the link §1 made writable can only be
+set with curl, and every OWN rung this ADR exists to switch on stays empty in practice. HR is the
+person who knows which employee record a new joiner is, at onboarding. §2 already showed the HRMS
+SPA can call this platform route with the user's own token.
+
+**Rejected.** A screen in the dashboard's Members admin. Members is where an org admin manages
+access, but choosing an employee record there needs a read of employee data, which belongs to
+HRMS. An automatic link by matching emails: ADR-0000 §1 forbids identity by email, and §4 explains
+why a wrong link is an authorization defect.
+
+**Consequences.** It is one field, one picker and two calls. **Not covered by any ledger item. New
+backlog item needed.** It is the delivery that makes this ADR usable without an API client.
+
+### Q2. An immediate, user-level kill (§7: "`auth.revoke_all_for_user` has no API surface") — **DECIDED: an operator route**
+
+**Decision.** Within a tenant, the lever already exists and is immediate. `DELETE
+/api/v1/members/{id}` bumps `pv` (`revoke_member`) and the next refresh fails. Across tenants —
+a compromised credential — the kill is an **operator** route on admin-gateway:
+`POST /api/v1/auth/operator/users/{user_id}/sessions:revoke`. Details:
+- it is guarded by `require_operator({"owner", "support"})` (ADR-0003's operator matrix) and needs
+  a written reason;
+- it calls `auth.services.revoke_all_for_user`;
+- it bumps `pv` in every organization where the user holds an active membership, so outstanding
+  access tokens die at the gateway rather than living out their 900 seconds;
+- it writes an audit row naming the operator, the user and the reason.
+
+**Why.** An incident needs this, and the function already exists. A customer admin must not be
+able to end a user's sessions in *other* customers' tenants, so the cross-tenant form belongs only
+on the operator surface.
+
+**Rejected.** A tenant-admin route that revokes all of a user's sessions: that reaches across
+tenants. Letting tokens expire: fifteen minutes of a compromised account is the window ADR-0000
+§4 exists to close.
+
+**Consequences.** Every organization the user belongs to pays one token-refresh burst, which is
+acceptable for an incident. **Not covered by any ledger item. New backlog item needed.** It belongs
+beside Q1's staff console backend and after it merges.
+
+### Q3. Scheduling the verify pass (§8: "No scheduled job is created") — **DECIDED: nightly, report-only, alerting through ops-monitor**
+
+**Decision.** The verify half of `tools/reconcile_membership_links.py` runs **nightly in
+`--dry-run` mode** as one check in the nightly orphan-check job that ADR-0000 §10 always called
+for. A non-zero `unrecognised_employee_ids`, `unrecognised_membership_ids` or any conflict counter
+raises an alert through ops-monitor (C10) to `OPS_ALERT_EMAIL`. The destination and owner are the
+platform on-call, which is the owner this section said was missing. The fill half is never
+scheduled. Filling stays a reviewed, human-run command.
+
+**Why.** §4 names this pass as "the only thing that finds" a mistyped link, and a check that
+somebody has to remember to run does not get run.
+
+**Consequences.** **Implemented by R21** (schedule the link-verify pass), together with **R13**
+(the nightly orphan check it joins) and **R7/C10** (the alert route).
+
+### Q4. When `employee.employees.membership_id` is dropped (§3) — **DECIDED: after one production dry-run reports zero**
+
+**Decision.** The column and `uq_employees_org_membership` are dropped by R21's migration once
+**the owner has run `reconcile_membership_links.py --all --dry-run` on production** and it reports
+`links_written: 0` with no conflicts. That report is evidence that nothing outside this repository
+used the field. The same change removes `EmployeeOut.membership_id` and its HRMS client type.
+`EmployeeIn.membership_id` **keeps refusing** permanently, with its pointer to
+`PATCH /api/v1/members/{id}`. A removed field would be silently ignored under Pydantic's
+`extra="ignore"`, which is the silence §3 rejected. After the drop, the links endpoint returns
+employee ids only, so the verify half keeps working.
+
+**Consequences.** **Implemented by R21. Owner input needed:** the production dry-run output.
+
+### Q5. `sref` as one slot for ten products, and OWN scope in a tenant without HRMS — **DECIDED (direction): HR-shaped products keep the employee link; every other product keys OWN on the membership**
+
+**Decision.** Which subject the OWN rung compares against is a **per-product resolver choice**, the
+indirection ADR-0000 §6 kept for exactly this:
+- **HR-shaped products** — `hrms` (employee, attendance, leave, payroll, recruit) and approval's
+  routing — keep OWN on the employee link (`sref`), as built.
+- **Every other product** — CRM (customer, deal, lead), ITSM, projects/timesheet/standup — keys OWN
+  on the **membership** (`mem` claim → `ctx.principal.membership_id`). Every signed-in principal
+  has one in every tenant, whether or not the tenant owns HRMS.
+
+The platform-core change is small: a `ScopeResolver` may declare that its subject is the
+membership, and `ScopeContext.apply` / `assert_can_touch` compare that product's owner column
+against it. **No token change**: `mem` is already a claim (ADR-0000 §3 untouched). Each product
+switches in its own rebuild slice, and existing owner values are migrated from employee ids to
+membership ids through account's link, reported rather than guessed for rows that cannot be
+mapped (§8's discipline). Metering records the membership id beside `subject_ref` from the same
+change.
+
+**Why.** It has already happened. CRM is sold standalone (ADR-0013), and CRM's resolvers
+(`services/deal/app/scope.py`, `services/customer/app/scope.py`, and `lead` in ADR-0017) compare
+`owner_id` with `subject_ref`. So in a CRM-only tenant every OWN-scoped rep sees nothing, the
+"Consequences" bullet above. The documented workaround — writing a CRM roster id into
+`employee_id` — is an abuse of an authorization link. The membership is per-organization (ADR-0000
+§1), survives a rehire (`add_member` reuses the row, §5), and needs no HRMS.
+
+**Rejected.** A per-product subject reference minted into the token: a token-shape change for a
+value the gateway already forwards (`mem`). Falling back to the membership only when no employee
+link exists: a person's OWN rows would change the moment HR links them. Keeping the status quo:
+OWN would stay permanently empty for most tenants of four products.
+
+**Consequences.** CRM's OWN semantics change in C15, for all three `crm` processes at once,
+including the `lead` scope that ADR-0017 ships on `subject_ref`. It changes for projects,
+timesheet and standup in the PulseBoard rebuild (C14/Q11), and for ITSM in its own slice. The
+platform-core resolver change and the ITSM change are **not covered by any ledger item. New
+backlog items needed.** C15 and C14 must name this in their scope.

@@ -1,7 +1,7 @@
 """initial lead schema
 
 Revision ID: efa0fc150506
-Revises: 
+Revises:
 Create Date: 2026-08-24 15:22:51.261687
 """
 
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql  # noqa: F401 - autogenerate emits JSONB/UUID
 
-revision: str = 'efa0fc150506'
-down_revision: str | None = None
+revision: str = 'efa0fc150506'  # pragma: allowlist secret
+down_revision: str | None = None  # pragma: allowlist secret
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

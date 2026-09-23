@@ -38,6 +38,8 @@ source lib/role-reconcile.sh
 source lib/active-profiles.sh
 # shellcheck source=lib/memory-budget.sh
 source lib/memory-budget.sh
+# shellcheck source=lib/numeric-id.sh
+source lib/numeric-id.sh
 
 COMPOSE=(docker compose -f compose.prod.yml --env-file .env)
 
@@ -73,7 +75,7 @@ STATE_DIR="${EDGE_STATE_DIR:-/srv/opsgrids/state}"
 # Every service that owns a schema. Migrated in this order, but only the ones compose will
 # actually run — a product behind a disabled profile (ADR-0013 §5) is skipped, and picked up
 # on the deploy that enables it.
-SERVICES_WITH_SCHEMA=(auth account product catalog subscription billing metering payment notification storefront document operations approval employee attendance leave customer deal project timesheet standup projects support marketing finance scheduler itsm)
+SERVICES_WITH_SCHEMA=(auth account product catalog subscription billing metering payment notification storefront document operations approval employee attendance leave customer deal lead project timesheet standup projects support marketing finance scheduler itsm)
 
 # The services compose will run for this box: honours COMPOSE_PROFILES from .env.
 configured_services() {
@@ -217,8 +219,48 @@ migrate() {
 	done
 }
 
+# C10, M2: ops-monitor runs as the `product` image's own baked-in non-root user, deliberately
+# with no `user:` override in compose.prod.yml (the box's `deploy` user's uid varies — Azure's
+# own `azureuser` provisioning already takes 1000, so `deploy` is created after it and is not
+# guaranteed to be 1000 the way a fresh Ubuntu box's first human user would be), so it cannot
+# write into a directory `deploy` owns. This gives it exactly one directory it can, discovering
+# the image's real uid the same way the JWT signing key's setup already does (RUNBOOK.md,
+# "standing up a new box" step 5: `--entrypoint id`) rather than assuming a number, then using
+# `--user 0` (root, inside a throwaway container only, never the running service) once to
+# create and chown it. Nothing else under `/srv/opsgrids/state` changes owner — `last-good-ref`,
+# `deploy-log` and `backup.last-ok` stay `deploy`'s, exactly as `record_ref`/`backup.sh` expect.
+ensure_ops_monitor_state_dir() {
+	local state_dir="${EDGE_STATE_DIR:-/srv/opsgrids/state}/ops-monitor"
+	local raw_uid raw_gid uid gid
+	# Defence in depth, before anything runs as root: a symlink at this path would have the
+	# `chown -R` below (and the bind mount) act on wherever it points. `-h` below also stops
+	# chown following links *inside* the tree, but the top-level path is the one that decides
+	# what gets mounted, so it is refused outright.
+	if [ -L "$state_dir" ]; then
+		echo "ensure_ops_monitor_state_dir: $state_dir is a symlink; refusing to chown through it" >&2
+		return 1
+	fi
+	raw_uid=$("${COMPOSE[@]}" run --rm --no-deps -T --entrypoint id product -u)
+	raw_gid=$("${COMPOSE[@]}" run --rm --no-deps -T --entrypoint id product -g)
+	# Both are validated as plain digits (lib/numeric-id.sh) before either reaches a root-owned
+	# `chown`: this is output that crossed a `docker compose run` boundary, and the group is
+	# asked for rather than assumed equal to the user (an image is free to differ). Passed as
+	# argv, never through `sh -c`, so there is no shell left to interpret anything anyway.
+	uid=$(require_numeric_id uid "$raw_uid") || return 1
+	gid=$(require_numeric_id gid "$raw_gid") || return 1
+	mkdir -p "$state_dir"
+	# `-R`: an earlier deploy, or an operator reproducing a problem by hand, may have left
+	# files under this directory owned by someone else; the container must be able to
+	# overwrite its own state file, not just create new ones. `-h`: change a symlink's own
+	# ownership, never its target's — nothing under here is meant to be a link, and a stray one
+	# must not turn this root-run chown into a way to change ownership elsewhere.
+	docker run --rm --user 0 --entrypoint chown -v "$state_dir:/s" opsgrids-edge/product -R -h "$uid:$gid" /s
+	echo "ops-monitor state dir: $state_dir owned by $uid:$gid"
+}
+
 up() {
 	log "recreating containers (brief downtime for anything that changed)"
+	ensure_ops_monitor_state_dir
 	# Four at a time. Unbounded, a deploy that touches the shared environment starts every
 	# container at once, and ~59 Python interpreters importing SQLAlchemy on two cores is a
 	# load average of 7 and health checks timing out for no reason but the stampede.
@@ -410,6 +452,20 @@ status)
 	echo "checked out:   $(git -C ../.. rev-parse HEAD)"
 	echo
 	df -h .
+	echo
+	echo "ops-monitor /status:"
+	# `ops-monitor` runs the `product` image (debian-slim), which has python3 and no wget/curl
+	# — the same interpreter its own healthcheck story leans on elsewhere in this file. `-T`:
+	# no terminal over ssh. `.env` is read directly (remote.sh does not `source` it wholesale,
+	# the same reason `reconcile_roles` above reads OPSGRIDS_DB_PASSWORD this way) rather than
+	# assumed to be exported. A non-zero exit (container not up, or this box predates C10)
+	# prints nothing worse than "unreachable" and does not fail the rest of `status`.
+	ops_monitor_port=$(sed -n 's/^OPS_MONITOR_PORT=//p' .env | head -1 | tr -d '"'"'"' \r')
+	"${COMPOSE[@]}" exec -T ops-monitor python3 -c "
+import json, urllib.request
+with urllib.request.urlopen('http://127.0.0.1:${ops_monitor_port:-9110}/status', timeout=5) as r:
+    print(json.dumps(json.load(r), indent=2, sort_keys=True))
+" 2>/dev/null || echo "  (unreachable — is ops-monitor running? make edge-logs SERVICE=ops-monitor)"
 	;;
 logs)
 	# `logs [lines] [service...]`. Taken as arguments rather than read from the environment:

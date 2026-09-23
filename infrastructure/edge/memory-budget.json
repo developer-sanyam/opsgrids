@@ -87,7 +87,7 @@
     "ops_monitor": {
       "expected_rss_mb": 48,
       "mem_limit_mb": 128,
-      "source": "Not measured by this slice — figure supplied by slice/ops-monitor (coordinator message, 2026-09-23) for its always-on health/alerting container, landing separately. Priced here only so `planned` (below) can account for it in the projected headroom total; this slice does not add an `ops-monitor` entry to `containers` because that container does not exist in this branch's compose.prod.yml yet (see the ADR addendum's coordination note)."
+      "source": "C10 (ops-monitor): a 60s poll loop over a 2-connection outbox pool, a short-lived httpx client and one embedded uvicorn worker serving /metrics and /status — a shade heavier than a plain background consumer (background's 42 MB) for the extra HTTP server, still well under an API's 85 MB. mem_limit is 128m, not background's 192m: the full-profile budget (test_env_example_profile_list_fits_the_documented_box) was already at ~94% before this container existed, and this is the one always-on container added since — 128m keeps the total at ~98%, still under the 100% hard line, where 192m would not. ~2.7x expected idle rather than background's ~4.5x: less headroom, on purpose, because there was no headroom to spend. If this ever needs to grow, something else on the box has to shrink first."
     }
   },
 
@@ -161,6 +161,7 @@
     "notification": { "kind": "api", "profile": null },
 
     "edge-relay": { "kind": "background", "profile": null },
+    "ops-monitor": { "kind": "ops_monitor", "profile": null },
     "account-worker": {
       "kind": "background",
       "profile": null,
@@ -211,7 +212,9 @@
     "attendance-worker": { "kind": "background", "profile": "hrms" },
 
     "customer": { "kind": "api", "profile": "crm" },
+    "customer-worker": { "kind": "background", "profile": "crm" },
     "deal": { "kind": "api", "profile": "crm" },
+    "lead": { "kind": "api", "profile": "crm" },
 
     "project": { "kind": "api", "profile": "pulseboard" },
     "timesheet": { "kind": "api", "profile": "pulseboard" },
