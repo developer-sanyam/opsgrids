@@ -3,7 +3,7 @@
  * that caused it, the picker's short-query and no-match states, and keyboard-only selection.
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -97,8 +97,18 @@ async function fillEnds(value: string) {
   fireEvent.change(screen.getByLabelText("Ends"), { target: { value } });
 }
 
+/** The form refuses an end that is not in the future, and the fixtures below use fixed dates, so
+ *  the clock is pinned before them. Only `Date` is faked: user-event still needs real timers. */
+const NOW = new Date("2026-09-14T09:00:00+05:30");
+
 describe("DelegationForm", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
     createDelegation.mockReset();
     listDelegateCandidates.mockReset();
     getEmployee.mockReset();
