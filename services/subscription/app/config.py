@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Any
+
+from pydantic import field_validator
+
 from platform_core.config import ServiceSettings, settings_for
 
 
@@ -42,6 +47,31 @@ class Settings(ServiceSettings):
     #: (the runbook's procedure). Off, the worker logs `billing_run.disabled` at warning and
     #: `/health/billing-run`'s `overdue` climbs.
     billing_run_enabled: bool = False
+    #: The cutover: the instant billing goes live, set by the operator to the moment they turn the
+    #: run on, with an explicit offset (`2026-10-01T09:00:00+05:30`). **Required when the run is
+    #: enabled** — the worker refuses to start the run's loop without it (final review, fix 3).
+    #: No recurring charge for a period that began before it is ever invoiced: such periods roll
+    #: or convert `skipped` (`pre_cutover`), so an existing subscription starts paying at its first
+    #: period after the cutover and a trial that ended before it converts with no back charge; and
+    #: no usage from before it is billed. Set it once and never move it later — rows already billed
+    #: are not revisited.
+    billing_run_not_before: datetime | None = None
+
+    @field_validator("billing_run_not_before", mode="before")
+    @classmethod
+    def _empty_is_unset(cls, value: Any) -> Any:
+        # Compose interpolates an unset variable to "", which is "not set", not a parse error.
+        return None if value == "" else value
+
+    @field_validator("billing_run_not_before")
+    @classmethod
+    def _cutover_is_an_instant(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError(
+                "BILLING_RUN_NOT_BEFORE must carry a UTC offset (e.g. 2026-10-01T09:00:00+05:30);"
+                " a naive time is read in whatever zone the process happens to run in"
+            )
+        return value
 
 
 def settings() -> Settings:

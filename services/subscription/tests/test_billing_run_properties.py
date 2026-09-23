@@ -6,7 +6,15 @@ upgrade, downgrade, equal-price switch, suspension, resumption, a failed and a r
 crashes between every step of the run, billing outages and passes of the run, on a controlled
 clock — then is cancelled, the run catches up, and the whole history is checked against the
 invariants below. Seeds are deterministic (`random.Random(seed)`), so a failure names a seed
-that reproduces it exactly; `BILLING_PROPERTY_SEEDS` raises or lowers the count (default 200).
+that reproduces it exactly. `BILLING_PROPERTY_SEEDS` sets the count: 25 by default, so the
+ordinary suite stays fast; `make test-billing-properties` runs `BILLING_PROPERTY_SEEDS=500` —
+nightly, and by hand before touching the run.
+
+Suspension comes both ways: an operator's, and dunning's at the end of a grace window. A payment
+never lifts an operator's suspension, and only paying the invoice the window was about lifts a
+dunning one — checked on every resumption the sequence attempts (final review, blocker). Only the
+refusals a customer can meet are tolerated from an operation (`BillingCatchingUp` and the other
+409/422/403 problems); anything else fails the seed.
 
 The invariants, all over what billing actually **finalized** (announced, and so chargeable):
 
@@ -16,7 +24,8 @@ The invariants, all over what billing actually **finalized** (announced, and so 
 2. **Usage windows** never overlap, stay inside `[paid start, cancellation]`, and cover every
    served instant: usage is billed once, and none is dropped.
 3. **At the pin in force.** A base charge and a usage window are priced at the pin in force at
-   their start, and no pin change falls strictly inside a usage window.
+   their start, no pin change falls strictly inside a usage window, and every charged proration
+   prices *from* the pin in force just before its start.
 4. **Nothing charged on a voided or skipped parent**, no finalized invoice ever voided, no charge
    on a row that is not `finalized`, no two charges for one upgrade, and every claim settled.
 5. **Totals are integers.**
@@ -51,6 +60,7 @@ from app.models import (
     DunningCycle,
 )
 from app.schemas import PaymentOutcome
+from platform_core.errors import BusinessRuleProblem, ConflictProblem, ForbiddenProblem
 from tests.billing_fakes import Crash, FakeBilling, FakePayment
 from tests.helpers import FakeCatalog
 from tests.test_billing_run import _periods, _subscription
@@ -58,7 +68,11 @@ from tests.test_billing_run_round2 import _ctx, _subscribe, _version
 
 pytestmark = pytest.mark.integration
 
-SEEDS = int(os.environ.get("BILLING_PROPERTY_SEEDS", "200"))
+SEEDS = int(os.environ.get("BILLING_PROPERTY_SEEDS", "25"))
+
+#: What an operation in a sequence may legitimately be refused with — a customer's or an
+#: operator's ordinary 409/422/403. Anything else is a defect and fails the seed.
+REFUSALS = (services.BillingCatchingUp, BusinessRuleProblem, ConflictProblem, ForbiddenProblem)
 
 CLOCK = [datetime(2026, 1, 1, tzinfo=UTC)]
 
@@ -77,6 +91,8 @@ OPS = (
     "equal",
     "downgrade",
     "suspend",
+    "dunning",
+    "dunning",
     "resume",
     "pay_fail",
     "pay_ok",
@@ -97,6 +113,8 @@ class History:
         self.states: list[tuple[datetime, str]] = [(start, "")]
         self.pins: list[tuple[datetime, uuid.UUID]] = []
         self.log: list[Any] = []
+        #: Behaviour checked as it happens rather than from the rows afterwards.
+        self.violations: list[Any] = []
 
     def pin_at(self, at: datetime) -> uuid.UUID:
         times = [t for t, _ in self.pins]
@@ -128,28 +146,34 @@ async def _run(
     history = History(started)
     history.pins.append((started, version.id))
 
-    async def observe(after_tick: bool = False) -> Any:
+    waiting: list[uuid.UUID | None] = [None]
+
+    async def observe() -> Any:
         sub = await _subscription(session, subscription_id)
         if sub.state != history.states[-1][1]:
             history.states.append((CLOCK[0], sub.state))
         if sub.plan_version_id != history.pins[-1][1]:
             at = CLOCK[0]
-            if after_tick:
-                # A deferred downgrade takes effect at the start of the period it was applied to.
+            if sub.plan_version_id == waiting[0]:
+                # A deferred downgrade takes effect at the boundary it was applied at — by the
+                # run's roll, or by a stop made while the run lagged — whichever observed it: the
+                # first renewal priced at it, or the first usage closed at it.
                 rows = await _periods(session, subscription_id)
                 starts = [
-                    r.period_start
+                    r.period_start if r.kind == domain.KIND_RENEWAL else r.usage_start
                     for r in rows
-                    if r.kind == domain.KIND_RENEWAL and r.plan_version_id == sub.plan_version_id
+                    if r.plan_version_id == sub.plan_version_id
+                    and r.kind in (domain.KIND_RENEWAL, domain.KIND_CLOSE)
                 ]
-                at = min(starts) if starts else at
+                at = min((s for s in starts if s is not None), default=at)
             history.pins.append((at, sub.plan_version_id))
+        waiting[0] = sub.pending_plan_version_id
         return sub
 
     async def tick() -> None:
         with contextlib.suppress(Crash):
             await run.tick(now=CLOCK[0])
-        await observe(after_tick=True)
+        await observe()
 
     async def latest_charged_invoice() -> uuid.UUID | None:
         rows = await _periods(session, subscription_id)
@@ -168,6 +192,28 @@ async def _run(
                 )
             ).scalar_one_or_none()
 
+    async def last_cycle() -> DunningCycle | None:
+        session.expunge_all()
+        async with session.begin():
+            return (
+                await session.execute(
+                    select(DunningCycle)
+                    .where(DunningCycle.subscription_id == subscription_id)
+                    .order_by(DunningCycle.opened_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+    async def caught_up() -> bool:
+        session.expunge_all()
+        try:
+            async with session.begin():
+                s = await services.require_subscription(session, subscription_id)
+                await services.assert_billing_caught_up(session, s)
+        except services.BillingCatchingUp:
+            return False
+        return True
+
     async def captured(invoice_id: uuid.UUID | None) -> None:
         session.expunge_all()
         async with session.begin():
@@ -182,6 +228,12 @@ async def _run(
         )
         op = rng.choice(OPS)
         sub = await _subscription(session, subscription_id)
+        # Lean into the paths a uniform draw rarely reaches: a window that runs out, and a
+        # suspension someone tries to pay their way out of.
+        if sub.state == STATE_PAST_DUE and rng.random() < 0.4:
+            op = "dunning"
+        elif sub.state == STATE_SUSPENDED and rng.random() < 0.5:
+            op = "resume"
         history.log.append((CLOCK[0].isoformat(), op, sub.state))
         try:
             if op in ("upgrade", "equal", "downgrade"):
@@ -206,8 +258,34 @@ async def _run(
                 async with session.begin():
                     s = await services.require_subscription(session, subscription_id)
                     await services.suspend(session, s, operator_id="ops")
+            elif op == "dunning" and sub.state == STATE_PAST_DUE:
+                # The window runs out: the clock reaches its end and the sweep suspends. Service
+                # stopped at the window's stored end, which is when the history records it.
+                cycle = await open_cycle()
+                if cycle is not None:
+                    CLOCK[0] = max(CLOCK[0], cycle.grace_ends_at)
+                    session.expunge_all()
+                    async with session.begin():
+                        s = await services.require_subscription(session, subscription_id)
+                        locked = await _lock_cycle(session, cycle.id)
+                        await services.suspend_for_dunning(session, s, locked, now=CLOCK[0])
+                    stopped = max(cycle.grace_ends_at, history.states[-1][0])
+                    history.states.append((stopped, STATE_SUSPENDED))
             elif op == "resume" and sub.state == STATE_SUSPENDED:
-                await captured(None)
+                cycle = await last_cycle()
+                dunned = cycle is not None and cycle.closed_reason == "grace_expired"
+                other = await latest_charged_invoice()
+                if other is not None and (cycle is None or other != cycle.invoice_id):
+                    # Any other invoice paid — the run's closing-usage invoice, typically — must
+                    # not lift a suspension of either kind.
+                    await captured(other)
+                    if (await _subscription(session, subscription_id)).state != STATE_SUSPENDED:
+                        history.violations.append(("resumed_by_another_invoice", dunned))
+                        await observe()
+                if dunned and cycle is not None:
+                    await captured(cycle.invoice_id)
+                    if (await _subscription(session, subscription_id)).state != STATE_ACTIVE:
+                        history.violations.append(("dunning_invoice_paid_still_suspended",))
             elif op == "pay_fail" and sub.state == STATE_ACTIVE:
                 invoice_id = await latest_charged_invoice()
                 if invoice_id is not None:
@@ -238,28 +316,27 @@ async def _run(
                 billing.fail = None
             elif op == "tick":
                 await tick()
-        except Exception as exc:
+        except REFUSALS as exc:
             history.log.append(("refused", type(exc).__name__, str(exc)[:90]))
         await observe()
         # Leases and backoff read the same clock; a crash's lease lapses by the next step.
 
-    # Cancel — once billing has caught up enough to allow it — then let the run finish.
+    # Let the run catch up, then cancel, then let it finish. (A cancel is never refused — final
+    # review — but one made while periods are still unopened leaves the time since the last one
+    # uncharged, the documented deferral; the named tests cover that case, this one the rest.)
     cancelled_at: datetime | None = None
     for _ in range(12):
         CLOCK[0] += timedelta(minutes=30)
         await tick()
-        sub = await _subscription(session, subscription_id)
-        if sub.state == STATE_CANCELLED:
+        if await caught_up():
             break
-        try:
-            session.expunge_all()
-            async with session.begin():
-                s = await services.require_subscription(session, subscription_id)
-                await services.cancel(session, _ctx(org_id), s)
-                cancelled_at = s.cancel_at
-            break
-        except Exception as exc:
-            history.log.append(("cancel_refused", type(exc).__name__, str(exc)[:90]))
+    sub = await _subscription(session, subscription_id)
+    if sub.state != STATE_CANCELLED:
+        session.expunge_all()
+        async with session.begin():
+            s = await services.require_subscription(session, subscription_id)
+            await services.cancel(session, _ctx(org_id), s)
+            cancelled_at = s.cancel_at
     await observe()
     for _ in range(10):
         CLOCK[0] += timedelta(hours=7)
@@ -269,6 +346,14 @@ async def _run(
     cancelled_at = sub.cancel_at or cancelled_at
     rows = await _periods(session, subscription_id)
     return _check(history, rows, billing, paid_start, cancelled_at, trial)
+
+
+async def _lock_cycle(session: AsyncSession, cycle_id: uuid.UUID) -> DunningCycle:
+    from app import selectors
+
+    cycle = await selectors.lock_open_cycle(session, cycle_id)
+    assert cycle is not None
+    return cycle
 
 
 def _served(
@@ -318,7 +403,7 @@ def _check(
     cancelled_at: datetime | None,
     trial: bool,
 ) -> list[Any]:
-    problems: list[Any] = []
+    problems: list[Any] = list(history.violations)
     finalized = set(billing.finalized)
     charged = [r for r in rows if r.invoice_id is not None and r.invoice_id in finalized]
     by_id = {r.id: r for r in rows}
@@ -384,6 +469,11 @@ def _check(
             at = r.usage_start if r.kind == domain.KIND_CLOSE and r.usage_start else r.period_start
             if r.plan_version_id != history.pin_at(at):
                 problems.append(("priced_at_wrong_pin", r.kind, at.isoformat()))
+        if r.kind == domain.KIND_PRORATION:
+            # 6 (final review): priced from the pin in force just before the change.
+            before = history.pin_at(r.period_start - timedelta(microseconds=1))
+            if r.from_plan_version_id != before:
+                problems.append(("prorated_from_wrong_pin", r.period_start.isoformat()))
         if r.usage_start is not None and r.usage_end is not None:
             inside = history.changes_inside(r.usage_start, r.usage_end)
             if inside:

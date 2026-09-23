@@ -42,6 +42,7 @@ from app.models import (
     BillingPeriod,
     DunningCycle,
     Subscription,
+    SubscriptionTransition,
 )
 from platform_core.auth import ScopeContext
 
@@ -105,6 +106,47 @@ async def get_open_cycle(session: AsyncSession, subscription_id: uuid.UUID) -> D
     stmt = select(DunningCycle).where(
         DunningCycle.subscription_id == subscription_id,
         DunningCycle.state == DUNNING_OPEN,
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def latest_cycle(
+    session: AsyncSession, organization_id: uuid.UUID, subscription_id: uuid.UUID
+) -> DunningCycle | None:
+    """The subscription's most recent dunning cycle, open or closed — what a capture on a
+    suspended subscription is checked against: only paying the invoice whose grace window ran
+    out lifts the suspension that window's end imposed."""
+    stmt = (
+        select(DunningCycle)
+        .where(
+            DunningCycle.organization_id == organization_id,
+            DunningCycle.subscription_id == subscription_id,
+        )
+        .order_by(DunningCycle.opened_at.desc(), DunningCycle.created_at.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def latest_suspension_reason(
+    session: AsyncSession, organization_id: uuid.UUID, subscription_id: uuid.UUID
+) -> str | None:
+    """Why the subscription was last moved into `suspended` — dunning's window running out, or
+    an operator — read off the append-only transition log, so a subscription suspended before
+    `suspended_at` existed answers too."""
+    stmt = (
+        select(SubscriptionTransition.reason)
+        .where(
+            SubscriptionTransition.organization_id == organization_id,
+            SubscriptionTransition.subscription_id == subscription_id,
+            SubscriptionTransition.to_state == STATE_SUSPENDED,
+            or_(
+                SubscriptionTransition.from_state.is_(None),
+                SubscriptionTransition.from_state != STATE_SUSPENDED,
+            ),
+        )
+        .order_by(SubscriptionTransition.occurred_at.desc())
+        .limit(1)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 
@@ -296,6 +338,39 @@ async def actionable_periods(
         .limit(limit)
     )
     return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+
+async def billing_backlog(
+    session: AsyncSession, *, limit: int = 10_000
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """Every row that is its own unsettled work, leased or not, as `(organization_id, id)` — for
+    the dry run's backlog report (final review, fix 3). Cross-tenant on the outbox role."""
+    stmt = (
+        select(BillingPeriod.organization_id, BillingPeriod.id)
+        .where(
+            or_(
+                and_(
+                    BillingPeriod.state == PERIOD_PENDING,
+                    BillingPeriod.kind.in_(
+                        (PERIOD_KIND_PRORATION, PERIOD_KIND_CLOSE, PERIOD_KIND_OPENING)
+                    ),
+                ),
+                BillingPeriod.state.in_((PERIOD_VOID_PENDING, PERIOD_FINALIZE_PENDING)),
+            )
+        )
+        .order_by(BillingPeriod.created_at, BillingPeriod.id)
+        .limit(limit)
+    )
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+
+async def get_billing_period(
+    session: AsyncSession, organization_id: uuid.UUID, period_id: uuid.UUID
+) -> BillingPeriod | None:
+    stmt = select(BillingPeriod).where(
+        BillingPeriod.organization_id == organization_id, BillingPeriod.id == period_id
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
 
 
 async def stale_pending_periods(

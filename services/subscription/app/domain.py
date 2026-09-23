@@ -564,6 +564,52 @@ def due_period(
     return None
 
 
+#: What the cutover does to a row the run is about to bill (final review, fix 3).
+CUTOVER_SKIP = "skip"
+CUTOVER_CLAMP = "clamp"
+OUTCOME_PRE_CUTOVER = "pre_cutover"
+
+
+def cutover_action(
+    *,
+    kind: str,
+    period_start: datetime,
+    usage_start: datetime | None,
+    usage_end: datetime | None,
+    not_before: datetime | None,
+) -> str | None:
+    """`skip`, `clamp` or None: how the billing cutover treats one row before it is billed.
+
+    * Recurring money — a renewal, a trial conversion, a proration, an opening — is **skipped**
+      when its period began before the cutover: an existing subscription starts paying at its
+      first period after it, and nothing billed in advance is back-charged.
+    * Usage — a closing window — is skipped when it ended by the cutover, and **clamped** to
+      start at the cutover when it straddles it: usage from before billing went live is never
+      billed, usage after it is. (A renewal's usage window is clamped where it is computed.)
+    """
+    if not_before is None:
+        return None
+    if kind == KIND_CLOSE:
+        if usage_end is not None and usage_end <= not_before:
+            return CUTOVER_SKIP
+        if usage_start is not None and usage_start < not_before:
+            return CUTOVER_CLAMP
+        return None
+    return CUTOVER_SKIP if period_start < not_before else None
+
+
+def usage_floor(
+    usage_billed_through: datetime | None, not_before: datetime | None
+) -> datetime | None:
+    """The earliest instant a renewal's usage window may start: what is already billed, and never
+    before the cutover."""
+    if not_before is None:
+        return usage_billed_through
+    if usage_billed_through is None:
+        return not_before
+    return max(usage_billed_through, not_before)
+
+
 def closing_usage_window(
     *,
     state: str,

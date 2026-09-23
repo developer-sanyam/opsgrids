@@ -263,7 +263,7 @@ async def main() -> None:
     )
     # The billing run shares this process for the same reason it shares `app/worker.py`'s: both
     # are idle between passes, and both are due-work sweeps on the same two engines.
-    from app.billing_run import BillingRunSweep, HttpBilling, HttpPayment
+    from app.billing_run import BillingRunSweep, HttpBilling, HttpPayment, billing_run_loop
 
     billing_run = BillingRunSweep(
         discovery_factory=get_outbox_sessionmaker(),
@@ -271,12 +271,12 @@ async def main() -> None:
         billing=HttpBilling(cfg.billing_service_url, cfg),
         payment=HttpPayment(cfg.payment_service_url, cfg),
         poll_interval=cfg.billing_run_poll_interval,
+        not_before=cfg.billing_run_not_before,
     )
     loops = {"dunning_sweep": sweep.run()}
-    if cfg.billing_run_enabled:
-        loops["billing_run"] = billing_run.run()
-    else:
-        log.warning("billing_run.disabled", hint="BILLING_RUN_ENABLED=false; nothing is invoiced")
+    run_loop = billing_run_loop(cfg, billing_run)
+    if run_loop is not None:
+        loops["billing_run"] = run_loop
     await supervise(loops)
 
 

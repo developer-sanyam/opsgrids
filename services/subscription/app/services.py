@@ -721,8 +721,10 @@ async def cancel(
     decision = domain.decide(
         from_state=subscription.state, to_state=STATE_CANCELLED, reason=reason or "customer_cancel"
     )
-    await assert_billing_caught_up(session, subscription)
+    # Never refused for a lagging run (final review): a customer can always leave. A period due
+    # and unclaimed at the cancel is simply never opened — the run bills the closing usage only.
     subscription.cancel_at = datetime.now(UTC)
+    await apply_lapsed_change(session, subscription, at=subscription.cancel_at)
     # Usage bills in arrears at the next roll, which a cancelled subscription never reaches: the
     # cancellation claims its own closing period (addendum, review fix 5).
     await schedule_closing_usage(session, subscription, at=subscription.cancel_at)
@@ -771,6 +773,7 @@ async def suspend(
     # subscription on an edge the state machine forbids.
     await _close_open_cycle(session, subscription, reason="operator_suspend")
     subscription.suspended_at = datetime.now(UTC)
+    await apply_lapsed_change(session, subscription, at=subscription.suspended_at)
     await schedule_closing_usage(session, subscription, at=subscription.suspended_at)
     _transition(
         session,
@@ -961,6 +964,12 @@ async def record_payment_captured(
     pays in week six comes back to the same subscription, the same pin and the same history rather
     than a new row that has forgotten what they used to have.
 
+    From `suspended`, only a capture of the invoice whose grace window expired resumes — the
+    suspension in force is dunning's (the last move into `suspended` was `dunning_exhausted`) and
+    the latest cycle closed `grace_expired` for exactly that invoice. Any other capture (the run's
+    closing-usage invoice, an older invoice) is recorded by payment and moves nothing here, and an
+    operator's suspension is never lifted by a payment at all.
+
     A capture for a subscription that is already `active` is the ordinary case — a renewal that
     worked — and is deliberately not a transition: nothing changed, so nothing is emitted, and the
     projection is not woken to write the row it already holds.
@@ -990,6 +999,42 @@ async def record_payment_captured(
         return subscription
 
     resuming = subscription.state == STATE_SUSPENDED
+    if resuming and cycle is None:
+        # Both suspension paths close the cycle first, so a capture on a suspended subscription
+        # never finds one open. Money is not a key to every suspension (final review, blocker):
+        # the run's closing-usage invoice is captured routinely after a suspension, and neither
+        # it nor any other invoice may lift an operator's suspension — a fraud or abuse hold is
+        # lifted by a person, never by a payment — nor a dunning suspension, whose customer owes
+        # the invoice that window was about. Only paying **that** invoice resumes.
+        exhausted = await selectors.latest_cycle(
+            session, subscription.organization_id, subscription.id
+        )
+        # The suspension in force must be dunning's own: a customer resumed from an earlier
+        # dunning suspension and since held by an operator has an exhausted cycle too.
+        suspended_by = await selectors.latest_suspension_reason(
+            session, subscription.organization_id, subscription.id
+        )
+        if (
+            suspended_by != domain.REASON_DUNNING_EXHAUSTED
+            or exhausted is None
+            or exhausted.closed_reason != "grace_expired"
+            or exhausted.invoice_id is None
+            or exhausted.invoice_id != captured_invoice
+        ):
+            log.info(
+                "dunning.capture.no_resume",
+                subscription_id=str(subscription.id),
+                captured_invoice_id=str(captured_invoice) if captured_invoice else None,
+                cycle_invoice_id=(
+                    str(exhausted.invoice_id)
+                    if exhausted is not None and exhausted.invoice_id
+                    else None
+                ),
+                cycle_closed_reason=exhausted.closed_reason if exhausted is not None else None,
+                suspended_by=suspended_by,
+            )
+            return subscription
+        cycle = exhausted
     subscription.suspended_at = None
     decision = domain.decide(
         from_state=subscription.state,
@@ -1125,6 +1170,7 @@ async def suspend_for_dunning(
         return subscription
 
     # The window closed at its stored instant: that is where served usage stops.
+    await apply_lapsed_change(session, subscription, at=cycle.grace_ends_at)
     await schedule_closing_usage(session, subscription, at=cycle.grace_ends_at)
     subscription.suspended_at = cycle.grace_ends_at
     decision = domain.decide(
@@ -1321,11 +1367,12 @@ async def _insert_period(session: AsyncSession, values: dict[str, Any]) -> None:
 
 
 class BillingCatchingUp(ConflictProblem):
-    """A change or a cancellation while a period or trial end is due and not yet claimed.
+    """A plan change while a period or trial end is due and not yet claimed.
 
     Deciding money against a period the run has not claimed yet — pricing a proration against a
-    period that has not been opened, closing usage across a boundary nobody has rolled — is how
-    the earlier rounds' defects were made. So these wait for the run (review round 3, fix M3).
+    period that has not been opened — is how the earlier rounds' defects were made. So a change
+    waits for the run (review round 3, fix M3). A cancellation never does (final review): leaving
+    must always work, and a cancel against an unopened period bills only its closing usage.
     """
 
     title = "Billing is catching up"
@@ -1336,7 +1383,9 @@ async def assert_billing_caught_up(session: AsyncSession, subscription: Subscrip
 
     Due is decided on the stored boundaries against the wall clock; claimed means a claim row of
     that kind exists for that period. While the billing run is held (`BILLING_RUN_ENABLED=false`)
-    this refuses changes and cancellations on every overdue subscription — the runbook says so.
+    this refuses plan changes on every overdue subscription — the runbook says so. A claim that
+    fails permanently stays pending; once its own period has ended too, the subscription is more
+    than one period behind and its plan changes are refused until a person fixes the claim.
     """
     from app import selectors
 
@@ -1604,6 +1653,40 @@ async def apply_pending_change(
     return True
 
 
+async def apply_lapsed_change(
+    session: AsyncSession, subscription: Subscription, *, at: datetime
+) -> None:
+    """A stop at `at` while the run lags: apply a downgrade whose boundary has already passed.
+
+    A deferred downgrade takes effect at the first period boundary nobody has claimed — the run
+    applies it when it claims that roll. If the run is behind and the subscription stops (a
+    cancellation, an operator's or dunning's suspension) after that boundary, the stop's closing
+    usage would otherwise run across it at the old, dearer pin (found by the property test,
+    final review). So the stop applies it first, at the boundary: usage up to it closes at the
+    old pin, and the stop closes the rest at the new one. The rolls the run makes later find no
+    change waiting and price at the new pin, as they would have.
+    """
+    if (
+        not subscription.pending_change
+        or subscription.current_period_end is None
+        or subscription.state not in (STATE_ACTIVE, STATE_PAST_DUE, STATE_SUSPENDED)
+    ):
+        return
+    from app import selectors
+
+    claim = await selectors.pending_lifecycle_claim(
+        session, subscription.organization_id, subscription.id
+    )
+    boundary = (
+        claim.period_end
+        if claim is not None and claim.period_end is not None
+        else subscription.current_period_end
+    )
+    if boundary > at:
+        return
+    await apply_pending_change(session, subscription, boundary=boundary)
+
+
 async def claim_billing_period(
     session: AsyncSession,
     subscription: Subscription,
@@ -1744,6 +1827,93 @@ async def skip_suspended_period(
     )
     await session.flush()
     return period
+
+
+async def skip_pre_cutover_period(
+    session: AsyncSession,
+    subscription: Subscription,
+    due: domain.DuePeriod,
+) -> BillingPeriod:
+    """A lifecycle period that began before the billing cutover: rolled — or, for a trial that
+    ended before it, converted — with no invoice (final review, fix 3).
+
+    The row is written `skipped` with outcome `pre_cutover`, so the period is claimed (the change
+    guard and discovery both see it done) and says why it was not billed. A trial converts to
+    `active` exactly as a zero-price conversion would: no mandate question, no dunning, the first
+    paid period opening at the trial's end — the customer starts paying at the first period that
+    begins after the cutover.
+    """
+    assert due.end is not None
+    period = BillingPeriod(
+        organization_id=subscription.organization_id,
+        subscription_id=subscription.id,
+        kind=due.kind,
+        period_start=due.start,
+        period_end=due.end,
+        usage_start=due.usage_start,
+        usage_end=due.usage_end,
+        plan_version_id=subscription.plan_version_id,
+        currency=subscription.currency,
+        items=_items_snapshot(subscription),
+        state=PERIOD_SKIPPED,
+        attempts=0,
+        outcome=domain.OUTCOME_PRE_CUTOVER,
+        recorded_at=_wall(),
+    )
+    session.add(period)
+    subscription.current_period_start = due.start
+    subscription.current_period_end = due.end
+    facts = {
+        "billing": {
+            "period_start": due.start.isoformat(),
+            "period_end": due.end.isoformat(),
+            "invoiced": False,
+            "outcome": domain.OUTCOME_PRE_CUTOVER,
+        }
+    }
+    if due.kind == domain.KIND_TRIAL_CONVERSION and subscription.state == STATE_TRIAL:
+        _transition(
+            session,
+            subscription,
+            domain.decide(
+                from_state=STATE_TRIAL, to_state=STATE_ACTIVE, reason=domain.REASON_TRIAL_CONVERT
+            ),
+            actor=_BILLING_ACTOR,
+            request=None,
+            from_plan_version_id=subscription.plan_version_id,
+            to_plan_version_id=subscription.plan_version_id,
+            extra=facts,
+        )
+    else:
+        _billing_audit(
+            session,
+            subscription,
+            "commerce.billing_run.period_skipped",
+            {**facts["billing"], "state": subscription.state},
+            reason=domain.OUTCOME_PRE_CUTOVER,
+        )
+    await session.flush()
+    return period
+
+
+async def settle_pre_cutover_row(session: AsyncSession, period: BillingPeriod) -> None:
+    """A proration, opening or closing row the cutover says is not billed: settled `skipped`
+    (`pre_cutover`) without a call to billing (final review, fix 3)."""
+    period.state = PERIOD_SKIPPED
+    period.outcome = domain.OUTCOME_PRE_CUTOVER
+    period.recorded_at = _wall()
+    period.lease_until = None
+    period.next_attempt_at = None
+    period.last_error = None
+    period.permanent_failure = False
+    _billing_audit(
+        session,
+        period,
+        "commerce.billing_run.pre_cutover",
+        {"kind": period.kind, "period_start": period.period_start.isoformat()},
+        reason=domain.OUTCOME_PRE_CUTOVER,
+    )
+    await session.flush()
 
 
 def still_due_for(subscription: Subscription, period: BillingPeriod) -> bool:

@@ -9,7 +9,8 @@ scenarios the review found, pinned one by one:
   its conversion claimed.
 * **B2** a second change against the same claim prices from the last pin already prorated: an
   equal-price switch after an upgrade charges exactly one proration, by either door.
-* **M3** a change or a customer cancel while a period is due and unclaimed is a 409.
+* **M3** a plan change while a period is due and unclaimed is a 409; a cancel never is (final
+  review) and bills only its closing usage.
 * **m7** a failed proration charge on a cancelled subscription is counted.
 * **Openings** a subscription that starts paid is charged its first period; a resumption after a
   suspension that crossed a roll is charged the rest of the period.
@@ -41,7 +42,7 @@ from app.schemas import ChangePlanIn, OperatorChangePlanIn, PaymentOutcome
 from tests.billing_fakes import Crash, FakeBilling, expire_leases
 from tests.helpers import FakeCatalog, FakeRegistry, customer_principal
 from tests.test_billing_run import _periods, _subscription
-from tests.test_billing_run_review import _cycle
+from tests.test_billing_run_review import _cycle, _dunning_suspend
 from tests.test_billing_run_round2 import (
     _admin,
     _change,
@@ -401,7 +402,7 @@ class TestRefusedWhileBillingCatchesUp:
                     ),
                 )
 
-    async def test_a_customer_cancel_is_refused_and_allowed_once_the_run_claims(
+    async def test_a_customer_cancel_is_never_refused_and_bills_only_closing_usage(
         self,
         run: BillingRunSweep,
         billing: FakeBilling,
@@ -409,14 +410,24 @@ class TestRefusedWhileBillingCatchesUp:
         catalog: FakeCatalog,
         org_id: uuid.UUID,
     ) -> None:
+        """Final review, major 2: with the run off by default, refusing a cancel while a period
+        is due would refuse every cancel in production. Leaving always works; the period that
+        was due and never opened is never billed — the run bills the closing usage, nothing
+        recurring."""
         subscription_id, _ = await _subscribe(session, catalog, org_id, 100000)
-        await _period_ended(subscription_id)
-        with pytest.raises(services.BillingCatchingUp):
-            await _cancel(session, org_id, subscription_id)
+        start, _end = await _period_ended(subscription_id)
+        await _cancel(session, org_id, subscription_id)
+        sub = await _subscription(session, subscription_id)
+        assert sub.cancel_at is not None
 
         await run.tick(now=_wall())
-        await _cancel(session, org_id, subscription_id)
-        assert (await _subscription(session, subscription_id)).cancel_at is not None
+        await run.tick(now=_wall())
+        kinds = sorted(r.kind for r in billing.requests)
+        # The opening (moved with the period by `_period_ended`) and the close. No renewal.
+        assert kinds == [domain.KIND_CLOSE, domain.KIND_OPENING]
+        (close,) = [r for r in billing.requests if r.kind == domain.KIND_CLOSE]
+        assert (close.usage_start, close.usage_end) == (start, sub.cancel_at)
+        assert not _of(await _periods(session, subscription_id), domain.KIND_RENEWAL)
 
     async def test_a_trial_end_that_is_due_refuses_a_change(
         self, session: AsyncSession, catalog: FakeCatalog, org_id: uuid.UUID
@@ -431,7 +442,7 @@ class TestRefusedWhileBillingCatchesUp:
         with pytest.raises(services.BillingCatchingUp):
             await _change(session, catalog, org_id, subscription_id, high.id)
 
-    async def test_the_routes_answer_409(
+    async def test_the_change_route_answers_409_and_the_cancel_route_does_not(
         self,
         client: AsyncClient,
         session: AsyncSession,
@@ -448,12 +459,12 @@ class TestRefusedWhileBillingCatchesUp:
             f"/api/v1/subscriptions/{subscription_id}/change-plan",
             json=ChangePlanIn(plan_version_id=high.id).model_dump(mode="json"),
         )
+        assert change.status_code == 409, change.text
+        assert change.json()["title"] == "Billing is catching up"
+        assert "try again shortly" in change.json()["detail"]
         cancel = await client.post(f"/api/v1/subscriptions/{subscription_id}/cancel", json={})
-        for r in (change, cancel):
-            assert r.status_code == 409, r.text
-            assert r.json()["title"] == "Billing is catching up"
-            assert "try again shortly" in r.json()["detail"]
-        assert (await _subscription(session, subscription_id)).cancel_at is None
+        assert cancel.status_code == 200, cancel.text
+        assert (await _subscription(session, subscription_id)).cancel_at is not None
 
 
 # --------------------------------------------------------------------- m7
@@ -614,20 +625,19 @@ class TestOpeningCharges:
         catalog: FakeCatalog,
         org_id: uuid.UUID,
     ) -> None:
-        """Suspended before the period ended, the roll voids the next period's advance charge
-        (nobody was served into it). Paying mid-way through that period restores service — and
-        the rest of it is charged, once."""
+        """Suspended by dunning before the period ended, the roll skips the next period's advance
+        charge (nobody was served into it). Paying the dunning invoice mid-way through that period
+        restores service — and the rest of it is charged, once."""
         subscription_id, _ = await _subscribe(session, catalog, org_id, 100000)
         await run.tick(now=_wall())
-        session.expunge_all()
-        async with session.begin():
-            sub = await services.require_subscription(session, subscription_id)
-            await services.suspend(session, sub, operator_id="ops")
         _, end = await _period_ended(subscription_id)
-        await _admin(
-            "UPDATE subscription.subscriptions SET suspended_at = :s WHERE id = :i",
-            s=end - DAY,
-            i=subscription_id,
+        owed = uuid.uuid4()
+        await _dunning_suspend(
+            session,
+            subscription_id,
+            invoice_id=owed,
+            failed_at=end - timedelta(days=5),
+            grace_ends_at=end - DAY,
         )
         await run.tick(now=_wall())
         sub = await _subscription(session, subscription_id)
@@ -637,7 +647,8 @@ class TestOpeningCharges:
         session.expunge_all()
         async with session.begin():
             sub = await services.require_subscription(session, subscription_id)
-            await services.record_payment_captured(session, sub)
+            await services.record_payment_captured(session, sub, PaymentOutcome(invoice_id=owed))
+        assert (await _subscription(session, subscription_id)).state == STATE_ACTIVE
         await run.tick(now=_wall())
         await run.tick(now=_wall())
         sub = await _subscription(session, subscription_id)

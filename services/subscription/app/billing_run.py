@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -42,6 +42,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import domain
+from app.config import Settings
 from app.models import (
     LIFECYCLE_KINDS,
     PERIOD_FINALIZE_PENDING,
@@ -305,6 +306,7 @@ class RunReport:
     finalized: int = 0
     voided: int = 0
     skipped_suspended: int = 0
+    skipped_pre_cutover: int = 0
     superseded: int = 0
     skipped: int = 0
     failed: int = 0
@@ -327,6 +329,7 @@ class RunReport:
             + self.finalized
             + self.voided
             + self.skipped_suspended
+            + self.skipped_pre_cutover
             + self.superseded
             + self.failed
             + self.stale_closed
@@ -346,6 +349,7 @@ class BillingRunSweep:
         payment: Payment,
         batch_size: int = 50,
         poll_interval: float = 300.0,
+        not_before: datetime | None = None,
     ) -> None:
         self._discovery_factory = discovery_factory
         self._work_scope = work_scope
@@ -353,6 +357,9 @@ class BillingRunSweep:
         self._payment = payment
         self._batch_size = batch_size
         self._poll_interval = poll_interval
+        #: The billing cutover (`BILLING_RUN_NOT_BEFORE`, final review fix 3). None only in tests
+        #: and in a dry run with no cutover chosen yet: the loop refuses to start without one.
+        self._not_before = not_before
         self._stop = False
 
     def stop(self) -> None:
@@ -387,6 +394,7 @@ class BillingRunSweep:
                 finalized=report.finalized,
                 voided=report.voided,
                 skipped_suspended=report.skipped_suspended,
+                skipped_pre_cutover=report.skipped_pre_cutover,
                 superseded=report.superseded,
                 failed=report.failed,
                 stale_closed=report.stale_closed,
@@ -533,7 +541,10 @@ class BillingRunSweep:
                     current_period_end=subscription.current_period_end,
                     billing_interval=subscription.billing_interval,
                     now=now,
-                    usage_billed_through=subscription.usage_billed_through,
+                    # No usage from before the cutover is ever billed (final review, fix 3).
+                    usage_billed_through=domain.usage_floor(
+                        subscription.usage_billed_through, self._not_before
+                    ),
                 )
 
             due = decide()
@@ -567,6 +578,22 @@ class BillingRunSweep:
                     subscription_id=str(subscription_id),
                     error=due.error,
                 )
+                return
+            if (
+                existing is None
+                and domain.cutover_action(
+                    kind=due.kind,
+                    period_start=due.start,
+                    usage_start=due.usage_start,
+                    usage_end=due.usage_end,
+                    not_before=self._not_before,
+                )
+                == domain.CUTOVER_SKIP
+            ):
+                # Began before billing went live: rolled (or converted) with no invoice, so the
+                # subscription starts paying at its first period after the cutover (fix 3).
+                await services.skip_pre_cutover_period(session, subscription, due)
+                report.skipped_pre_cutover += 1
                 return
             if (
                 existing is None
@@ -681,6 +708,24 @@ class BillingRunSweep:
                 action = "bill"
             subscription = await selectors.get_subscription(session, period.subscription_id)
             product_key = subscription.product_key if subscription is not None else ""
+            if action == "bill":
+                cutover = domain.cutover_action(
+                    kind=period.kind,
+                    period_start=period.period_start,
+                    usage_start=period.usage_start,
+                    usage_end=period.usage_end,
+                    not_before=self._not_before,
+                )
+                if cutover == domain.CUTOVER_SKIP:
+                    await services.settle_pre_cutover_row(session, period)
+                    report.skipped_pre_cutover += 1
+                    return
+                if cutover == domain.CUTOVER_CLAMP:
+                    # Only the usage window moves; `period_start` is the billing key and stays.
+                    # The clamp happens before the row's first call to billing (the run only
+                    # ever runs after the cutover, and a clamped row no longer straddles it), so
+                    # billing never holds an invoice priced on the unclamped window.
+                    period.usage_start = self._not_before
             if await services.claim_actionable(session, period) is None:
                 report.skipped += 1
                 return
@@ -770,10 +815,11 @@ class BillingRunSweep:
         """What the run *would* do, and how far behind each subscription is. Writes nothing.
 
         The runbook's first-deploy check. Per subscription: the first kind and period, how many
-        periods are owed, how many of those would be **invoiced** and how many would only
-        **roll** (suspended), and for a trial whether its grace window — anchored at the trial's
-        end — would already have expired, which means the dunning sweep suspends it on its next
-        pass if no mandate can collect.
+        periods are owed, how many of those would be **invoiced**, how many would be **skipped
+        before the cutover** (`pre_cutover`), how many would only **roll** (suspended), and for a
+        trial whether its grace window — anchored at the trial's end — would already have
+        expired, which means the dunning sweep suspends it on its next pass if no mandate can
+        collect (a trial that ended before the cutover converts with no invoice instead).
         """
         at = now or datetime.now(UTC)
         from app import selectors
@@ -817,20 +863,104 @@ class BillingRunSweep:
                     state = STATE_ACTIVE if state == STATE_TRIAL else state
                     start, end = step.start, step.end
                 invoiced = domain.bills_period(subscription.state)
+                pre_cutover = [
+                    p
+                    for p in periods
+                    if self._not_before is not None and p.start < self._not_before
+                ]
+                billable = len(periods) - len(pre_cutover)
                 row["kind"] = periods[0].kind if periods else None
                 row["first_period_start"] = periods[0].start.isoformat() if periods else None
                 row["periods_owed"] = len(periods)
-                row["periods_invoiced"] = len(periods) if invoiced else 0
-                row["periods_suspended_roll"] = 0 if invoiced else len(periods)
+                row["periods_pre_cutover"] = len(pre_cutover)
+                row["periods_invoiced"] = billable if invoiced else 0
+                row["periods_suspended_roll"] = 0 if invoiced else billable
                 row["grace_already_expired"] = bool(
                     subscription.state == STATE_TRIAL
                     and subscription.trial_ends_at is not None
                     and domain.grace_ends_at(subscription.trial_ends_at) <= at
+                    and not (
+                        self._not_before is not None
+                        and subscription.trial_ends_at < self._not_before
+                    )
                 )
                 if error:
                     row["error"] = error
                 out.append(row)
         return out
+
+    async def preview_backlog(self, *, limit: int = 10_000) -> dict[str, Any]:
+        """The rows that are their own work, by what the run would do with each: bill an opening,
+        a close or a proration (split into invoiced and skipped `pre_cutover`), finalize a
+        recorded draft, or void a superseded one. Writes nothing (final review, fix 3)."""
+        from app import selectors
+
+        async with self._discovery_factory() as session, session.begin():
+            rows = await selectors.billing_backlog(session, limit=limit)
+
+        by_kind = {
+            domain.KIND_OPENING: 0,
+            domain.KIND_CLOSE: 0,
+            domain.KIND_PRORATION: 0,
+            PERIOD_FINALIZE_PENDING: 0,
+            PERIOD_VOID_PENDING: 0,
+        }
+        to_invoice = pre_cutover = clamped = 0
+        for organization_id, period_id in rows:
+            async with self._work_scope(organization_id) as session:
+                period = await selectors.get_billing_period(session, organization_id, period_id)
+            if period is None:
+                continue
+            if period.state in (PERIOD_FINALIZE_PENDING, PERIOD_VOID_PENDING):
+                by_kind[period.state] += 1
+                continue
+            by_kind[period.kind] = by_kind.get(period.kind, 0) + 1
+            cutover = domain.cutover_action(
+                kind=period.kind,
+                period_start=period.period_start,
+                usage_start=period.usage_start,
+                usage_end=period.usage_end,
+                not_before=self._not_before,
+            )
+            if cutover == domain.CUTOVER_SKIP:
+                pre_cutover += 1
+            else:
+                to_invoice += 1
+                clamped += int(cutover == domain.CUTOVER_CLAMP)
+        return {
+            "backlog": by_kind,
+            "backlog_invoiced": to_invoice,
+            "backlog_pre_cutover": pre_cutover,
+            "backlog_usage_clamped": clamped,
+        }
+
+
+def billing_run_loop(cfg: Settings, sweep: BillingRunSweep) -> Coroutine[Any, Any, None] | None:
+    """The run's loop coroutine, or None when it must not run — the one place `app.worker` and
+    `app.cron` decide it (final review, fix 3).
+
+    Off unless `BILLING_RUN_ENABLED=true` (review fix 6). On, it **refuses to start without
+    `BILLING_RUN_NOT_BEFORE`**: with no cutover, the first passes would invoice every period and
+    conversion a box has owed since before billing existed. Refused rather than crashed — the
+    payment consumer and the dunning sweep in the same process keep running — and logged at
+    error, so the alarm on `/health/billing-run`'s `overdue` has a named cause.
+    """
+    if not cfg.billing_run_enabled:
+        # Staged rollout (the runbook's billing-run section): the process runs, the run does not.
+        # Loud, because a box left like this converts no trial and invoices nothing.
+        log.warning("billing_run.disabled", hint="BILLING_RUN_ENABLED=false; nothing is invoiced")
+        return None
+    if cfg.billing_run_not_before is None:
+        log.error(
+            "billing_run.refused",
+            hint=(
+                "BILLING_RUN_ENABLED=true but BILLING_RUN_NOT_BEFORE is unset; set it to the "
+                "moment billing goes live (with a UTC offset) — see the runbook"
+            ),
+        )
+        return None
+    log.info("billing_run.cutover", not_before=cfg.billing_run_not_before.isoformat())
+    return sweep.run()
 
 
 async def main(argv: list[str] | None = None) -> None:
@@ -852,9 +982,19 @@ async def main(argv: list[str] | None = None) -> None:
 
     parser = argparse.ArgumentParser(prog="python -m app.billing_run")
     parser.add_argument("--dry-run", action="store_true", required=True)
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--not-before",
+        default=None,
+        help="preview against this cutover instead of BILLING_RUN_NOT_BEFORE (ISO, with offset)",
+    )
+    args = parser.parse_args(argv)
 
     cfg = settings()
+    not_before = cfg.billing_run_not_before
+    if args.not_before:
+        not_before = datetime.fromisoformat(args.not_before)
+        if not_before.tzinfo is None:
+            parser.error("--not-before must carry a UTC offset")
     engine = init_engine(cfg)
     await assert_app_role(engine, environment=cfg.environment)
     init_outbox_engine(cfg)
@@ -864,24 +1004,29 @@ async def main(argv: list[str] | None = None) -> None:
         work_scope=lambda organization_id: session_scope(organization_id=organization_id),
         billing=HttpBilling(cfg.billing_service_url, cfg),
         payment=HttpPayment(cfg.payment_service_url, cfg),
+        not_before=not_before,
     )
     rows = await sweep.preview()
     for row in rows:
         print(json.dumps(row))  # noqa: T201 - an operator's report on stdout
-    print(  # noqa: T201
-        json.dumps(
-            {
-                "subscriptions": len(rows),
-                "trial_conversions": sum(1 for r in rows if r.get("kind") == "trial_conversion"),
-                "periods_invoiced": sum(int(r.get("periods_invoiced") or 0) for r in rows),
-                "periods_suspended_roll": sum(
-                    int(r.get("periods_suspended_roll") or 0) for r in rows
-                ),
-                "grace_already_expired": sum(1 for r in rows if r.get("grace_already_expired")),
-                "not_billable": sum(1 for r in rows if "error" in r),
-            }
-        )
-    )
+    print(json.dumps(summarise_preview(rows, await sweep.preview_backlog(), not_before)))  # noqa: T201
+
+
+def summarise_preview(
+    rows: list[dict[str, Any]], backlog: dict[str, Any], not_before: datetime | None
+) -> dict[str, Any]:
+    """The dry run's last line: what the first passes would invoice, skip and roll."""
+    return {
+        "not_before": not_before.isoformat() if not_before else None,
+        "subscriptions": len(rows),
+        "trial_conversions": sum(1 for r in rows if r.get("kind") == "trial_conversion"),
+        "periods_invoiced": sum(int(r.get("periods_invoiced") or 0) for r in rows),
+        "periods_pre_cutover": sum(int(r.get("periods_pre_cutover") or 0) for r in rows),
+        "periods_suspended_roll": sum(int(r.get("periods_suspended_roll") or 0) for r in rows),
+        "grace_already_expired": sum(1 for r in rows if r.get("grace_already_expired")),
+        "not_billable": sum(1 for r in rows if "error" in r),
+        **backlog,
+    }
 
 
 if __name__ == "__main__":

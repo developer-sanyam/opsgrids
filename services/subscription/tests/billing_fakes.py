@@ -176,7 +176,12 @@ class FakePayment:
 
 
 def _make_sweep(
-    discovery_engine: Any, work_engine: Any, billing: FakeBilling, payment: FakePayment
+    discovery_engine: Any,
+    work_engine: Any,
+    billing: FakeBilling,
+    payment: FakePayment,
+    *,
+    not_before: datetime | None = None,
 ) -> BillingRunSweep:
     discovery = async_sessionmaker(discovery_engine, expire_on_commit=False)
     work_maker = async_sessionmaker(work_engine, expire_on_commit=False)
@@ -191,5 +196,9 @@ def _make_sweep(
             yield s
 
     return BillingRunSweep(
-        discovery_factory=discovery, work_scope=work_scope, billing=billing, payment=payment
+        discovery_factory=discovery,
+        work_scope=work_scope,
+        billing=billing,
+        payment=payment,
+        not_before=not_before,
     )

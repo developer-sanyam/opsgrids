@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 
 from app import consumers
-from app.billing_run import BillingRunSweep, HttpBilling, HttpPayment
+from app.billing_run import BillingRunSweep, HttpBilling, HttpPayment, billing_run_loop
 from app.config import settings
 from app.cron import DunningSweep
 from app.supervise import supervise
@@ -71,6 +71,7 @@ async def main() -> None:
         billing=HttpBilling(cfg.billing_service_url, cfg),
         payment=HttpPayment(cfg.payment_service_url, cfg),
         poll_interval=cfg.billing_run_poll_interval,
+        not_before=cfg.billing_run_not_before,
     )
 
     log.info(
@@ -84,12 +85,10 @@ async def main() -> None:
     # Each sweep also retries its own failing passes with backoff (app/supervise.py), so a
     # poisoned row is not a crash loop that starves the consumer.
     loops = {"payment_consumer": consumers.consumer.run(), "dunning_sweep": sweep.run()}
-    if cfg.billing_run_enabled:
-        loops["billing_run"] = billing_run.run()
-    else:
-        # Staged rollout (the runbook's billing-run section): the process runs, the run does not.
-        # Loud, because a box left like this converts no trial and invoices nothing.
-        log.warning("billing_run.disabled", hint="BILLING_RUN_ENABLED=false; nothing is invoiced")
+    # Off unless enabled, and refused without a cutover (`billing_run_loop`, final review fix 3).
+    run_loop = billing_run_loop(cfg, billing_run)
+    if run_loop is not None:
+        loops["billing_run"] = run_loop
     await supervise(loops)
 
 

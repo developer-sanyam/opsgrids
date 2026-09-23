@@ -108,6 +108,50 @@ async def _fail_charge(
         )
 
 
+async def _dunning_suspend(
+    session: AsyncSession,
+    subscription_id: uuid.UUID,
+    *,
+    invoice_id: uuid.UUID,
+    failed_at: datetime,
+    grace_ends_at: datetime,
+) -> None:
+    """Suspend the way the dunning ladder does: a charge for `invoice_id` fails at `failed_at`,
+    its window is made to end at `grace_ends_at`, and the sweep's suspension runs — so the
+    exhausted cycle names `invoice_id`, the one invoice whose payment resumes the subscription."""
+    session.expunge_all()
+    async with session.begin():
+        sub = await services.require_subscription(session, subscription_id)
+        await services.record_payment_failure(
+            session,
+            sub,
+            PaymentOutcome(
+                invoice_id=invoice_id,
+                amount_minor=100000,
+                currency="INR",
+                failure_reason="insufficient_funds",
+            ),
+            now=failed_at,
+        )
+    engine = create_async_engine(settings().admin_dsn)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE subscription.dunning_cycles SET grace_ends_at = :g "
+                "WHERE subscription_id = :s AND state = 'open'"
+            ),
+            {"g": grace_ends_at, "s": subscription_id},
+        )
+    await engine.dispose()
+    session.expunge_all()
+    async with session.begin():
+        sub = await services.require_subscription(session, subscription_id)
+        cycle = await selectors.get_open_cycle(session, subscription_id)
+        assert cycle is not None
+        await services.suspend_for_dunning(session, sub, cycle, now=_wall())
+    assert (await _subscription(session, subscription_id)).state == STATE_SUSPENDED
+
+
 async def _subscribe(
     session: AsyncSession, catalog: FakeCatalog, org_id: uuid.UUID, amount_minor: int
 ) -> tuple[uuid.UUID, Any]:
@@ -471,23 +515,30 @@ class TestClosingUsage:
         org_id: uuid.UUID,
     ) -> None:
         subscription_id = await self._active(session, org_id)
-        session.expunge_all()
-        async with session.begin():
-            sub = await services.require_subscription(session, subscription_id)
-            start, end = sub.current_period_start, sub.current_period_end
-            await services.suspend(session, sub, operator_id="ops")
-            suspended_at = sub.usage_billed_through
-        assert suspended_at is not None
+        sub = await _subscription(session, subscription_id)
+        start, end = sub.current_period_start, sub.current_period_end
+        owed = uuid.uuid4()
+        suspended_at = _wall() - timedelta(hours=1)
+        await _dunning_suspend(
+            session,
+            subscription_id,
+            invoice_id=owed,
+            failed_at=_wall() - timedelta(days=5),
+            grace_ends_at=suspended_at,
+        )
+        assert (await _subscription(session, subscription_id)).usage_billed_through == suspended_at
 
         await run.tick(now=_wall())
         (close,) = [r for r in billing.requests if r.kind == domain.KIND_CLOSE]
         assert (close.usage_start, close.usage_end) == (start, suspended_at)
 
-        # Paid in the same period: recovered, then the period closes and rolls.
+        # The dunning invoice paid in the same period: recovered, then the period closes and
+        # rolls. (Only that invoice resumes a dunning suspension — final review, blocker.)
         session.expunge_all()
         async with session.begin():
             sub = await services.require_subscription(session, subscription_id)
-            await services.record_payment_captured(session, sub)
+            await services.record_payment_captured(session, sub, PaymentOutcome(invoice_id=owed))
+        assert (await _subscription(session, subscription_id)).state == STATE_ACTIVE
         assert end is not None
         await run.tick(now=end)
         (renewal,) = [r for r in billing.requests if r.kind == domain.KIND_RENEWAL]
