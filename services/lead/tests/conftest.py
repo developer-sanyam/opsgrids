@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # may be on the path in a given process.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import services
+from app import clients, services
 from app.config import settings
 from app.main import app
 from app.models import SCHEMA
@@ -55,6 +55,19 @@ def _connect_args() -> dict:
 @pytest.fixture
 def org_id() -> uuid.UUID:
     return uuid.uuid4()
+
+
+@pytest.fixture(autouse=True)
+def _stub_owners_active(monkeypatch: pytest.MonkeyPatch):
+    """Every owner this suite's fixtures name is presumed an active rep in customer's
+    directory — a real `owners:validate` call would need customer-service actually running.
+    `tests/test_assignment.py` and `tests/test_authz.py` override this per-test with their own
+    `monkeypatch.setattr` where the inactive/unknown case is the thing under test."""
+
+    async def _none_invalid(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
+        return []
+
+    monkeypatch.setattr(clients, "invalid_owner_ids", _none_invalid)
 
 
 @pytest_asyncio.fixture

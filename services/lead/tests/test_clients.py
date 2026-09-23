@@ -13,6 +13,13 @@ import pytest
 
 from app import clients
 from app.config import Settings
+from platform_core.internal_auth import verify_service_token
+
+#: `tests/conftest.py`'s autouse `_stub_owners_active` fixture replaces `clients.invalid_owner_
+#: ids` for every test in the suite (every other module's fixtures create leads through
+#: `services.create_lead`, which calls it) — captured here, at import time, before that fixture
+#: ever runs, so `TestInvalidOwnerIds` below can still exercise the real implementation.
+_real_invalid_owner_ids = clients.invalid_owner_ids
 
 
 def _settings() -> Settings:
@@ -161,6 +168,100 @@ class TestEnsureCompanyAndContact:
         assert seen["token"]
         assert str(seen["path"]).endswith("/leads:convert")
 
+    async def test_a_generic_4xx_raises_conversion_rejected_not_owner_unknown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 404 specifically means "unknown owner" — every other 4xx is a plain, permanent
+        refusal, and must not be confused with that one specific, recoverable-by-fixing-the-
+        owner case."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(422, json={"detail": "some validation problem"})
+
+        with pytest.raises(clients.ConversionRejected) as excinfo:
+            await _with_transport(
+                handler,
+                monkeypatch,
+                lambda: clients.ensure_company_and_contact(
+                    _settings(),
+                    uuid.uuid4(),
+                    company_id=uuid.uuid4(),
+                    contact_id=uuid.uuid4(),
+                    company_name="Stellar Robotics",
+                    owner_id=uuid.uuid4(),
+                    contact_full_name="Priya Sharma",
+                    contact_email=None,
+                    contact_raw_phone=None,
+                ),
+            )
+        assert not isinstance(excinfo.value, clients.OwnerUnknown)
+        # And never the upstream body, whatever it said.
+        assert "some validation problem" not in str(excinfo.value)
+
+    async def test_the_upstream_response_body_never_reaches_the_exception_message(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        secret_looking_body = "phone +919876543210 is already used by another contact"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(409, text=secret_looking_body)
+
+        with pytest.raises(clients.ConversionRejected) as excinfo:
+            await _with_transport(
+                handler,
+                monkeypatch,
+                lambda: clients.ensure_company_and_contact(
+                    _settings(),
+                    uuid.uuid4(),
+                    company_id=uuid.uuid4(),
+                    contact_id=uuid.uuid4(),
+                    company_name="Stellar Robotics",
+                    owner_id=uuid.uuid4(),
+                    contact_full_name="Priya Sharma",
+                    contact_email="priya@stellar.example",
+                    contact_raw_phone="+919876543210",
+                ),
+            )
+        assert secret_looking_body not in str(excinfo.value)
+        assert "+919876543210" not in str(excinfo.value)
+
+    async def test_the_token_binds_the_calling_organization_and_the_acting_user(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        org_id = uuid.uuid4()
+        actor_id = uuid.uuid4()
+        seen: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["token"] = request.headers.get("X-Internal-Token")
+            return httpx.Response(200, json={"company_id": str(uuid.uuid4()), "contact_id": None})
+
+        await _with_transport(
+            handler,
+            monkeypatch,
+            lambda: clients.ensure_company_and_contact(
+                _settings(),
+                org_id,
+                company_id=uuid.uuid4(),
+                contact_id=uuid.uuid4(),
+                company_name="Stellar Robotics",
+                owner_id=uuid.uuid4(),
+                contact_full_name="Priya Sharma",
+                contact_email=None,
+                contact_raw_phone=None,
+                actor_id=actor_id,
+            ),
+        )
+
+        customer_settings = Settings(
+            service_name="customer",
+            internal_service_token=_settings().internal_service_token,
+        )
+        claims = verify_service_token(customer_settings, str(seen["token"]))
+        assert claims["org"] == str(org_id)
+        assert claims["sub"] == str(actor_id)
+        assert claims["iss"] == "lead"
+
 
 class TestEnsureDeal:
     async def test_the_happy_path_returns_the_deal_id(
@@ -210,3 +311,58 @@ class TestEnsureDeal:
                     source="form",
                 ),
             )
+
+
+class TestInvalidOwnerIds:
+    async def test_an_empty_list_is_never_even_asked_about(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no owners to validate should mean no HTTP call at all")
+
+        result = await _with_transport(
+            handler, monkeypatch, lambda: _real_invalid_owner_ids(_settings(), uuid.uuid4(), [])
+        )
+        assert result == []
+
+    async def test_the_reported_invalid_ids_are_returned(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bad = uuid.uuid4()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"invalid_owner_ids": [str(bad)]})
+
+        result = await _with_transport(
+            handler,
+            monkeypatch,
+            lambda: _real_invalid_owner_ids(_settings(), uuid.uuid4(), [bad, uuid.uuid4()]),
+        )
+        assert result == [bad]
+
+    async def test_an_unreachable_directory_raises_owners_validate_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("no route to host")
+
+        with pytest.raises(clients.OwnersValidateUnavailable):
+            await _with_transport(
+                handler,
+                monkeypatch,
+                lambda: _real_invalid_owner_ids(_settings(), uuid.uuid4(), [uuid.uuid4()]),
+            )
+
+    async def test_a_non_200_raises_owners_validate_unavailable_not_the_body(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, text="internal stack trace, do not repeat this")
+
+        with pytest.raises(clients.OwnersValidateUnavailable) as excinfo:
+            await _with_transport(
+                handler,
+                monkeypatch,
+                lambda: _real_invalid_owner_ids(_settings(), uuid.uuid4(), [uuid.uuid4()]),
+            )
+        assert "internal stack trace" not in str(excinfo.value)

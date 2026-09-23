@@ -6,13 +6,19 @@ separate transactions the way separate HTTP requests would see it.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
+from sqlalchemy import event as sa_event
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app import selectors, services
+from app import clients, selectors, services
+from app.config import settings
+from app.models import SCHEMA
 from platform_core.auth import Scope
-from platform_core.errors import ForbiddenProblem
+from platform_core.db import TENANT_GUC
+from platform_core.errors import ForbiddenProblem, UpstreamUnavailableProblem, ValidationProblem
 from tests.helpers import ctx_for
 
 pytestmark = pytest.mark.integration
@@ -100,3 +106,94 @@ class TestAssignmentRule:
                 session, write, mode="round_robin", owner_ids=[uuid.uuid4(), uuid.uuid4()]
             )
         assert rule.cursor == 0
+
+    async def test_an_inactive_or_unknown_owner_refuses_the_rule(
+        self, session, org_id, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bad_owner = uuid.uuid4()
+
+        async def _one_invalid(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
+            return [bad_owner]
+
+        monkeypatch.setattr(clients, "invalid_owner_ids", _one_invalid)
+
+        write = ctx_for(org_id, "crm.lead.lead.write", Scope.ORG)
+        with pytest.raises(ValidationProblem):
+            async with session.begin():
+                await services.set_assignment_rule(
+                    session, write, mode="round_robin", owner_ids=[bad_owner]
+                )
+
+    async def test_the_owner_directory_being_unreachable_is_upstream_unavailable(
+        self, session, org_id, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _unreachable(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
+            raise clients.OwnersValidateUnavailable("down")
+
+        monkeypatch.setattr(clients, "invalid_owner_ids", _unreachable)
+
+        write = ctx_for(org_id, "crm.lead.lead.write", Scope.ORG)
+        with pytest.raises(UpstreamUnavailableProblem):
+            async with session.begin():
+                await services.set_assignment_rule(
+                    session, write, mode="round_robin", owner_ids=[uuid.uuid4()]
+                )
+
+
+class TestRoundRobinConcurrency:
+    """Two real sessions creating a lead against the same rotation at once — the row lock
+    `_get_or_create_rule`/`get_assignment_rule_for_update` takes must serialize them, or two
+    concurrent creates both read cursor `0`, both pick `owner_ids[0]`, and both advance the
+    cursor to `1` — the same rep assigned twice with the rotation never having moved."""
+
+    def _connect_args(self) -> dict:
+        return {"server_settings": {"search_path": f"{SCHEMA},public"}}
+
+    async def test_two_concurrent_creates_each_get_a_different_owner(
+        self, org_id, session, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _none_invalid(cfg, organization_id, owner_ids):  # type: ignore[no-untyped-def]
+            return []
+
+        monkeypatch.setattr(clients, "invalid_owner_ids", _none_invalid)
+
+        owners = [uuid.uuid4(), uuid.uuid4()]
+        write = ctx_for(org_id, "crm.lead.lead.write", Scope.ORG)
+        async with session.begin():
+            await services.set_assignment_rule(session, write, mode="round_robin", owner_ids=owners)
+
+        cfg = settings()
+        engine_a = create_async_engine(cfg.app_dsn, connect_args=self._connect_args())
+        engine_b = create_async_engine(cfg.app_dsn, connect_args=self._connect_args())
+        maker_a = async_sessionmaker(engine_a, expire_on_commit=False)
+        maker_b = async_sessionmaker(engine_b, expire_on_commit=False)
+
+        def _bind(org: uuid.UUID):
+            def _listener(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+                connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org}', true)")
+
+            return _listener
+
+        try:
+            async with maker_a() as session_a, maker_b() as session_b:
+                sa_event.listen(session_a.sync_session, "after_begin", _bind(org_id))
+                sa_event.listen(session_b.sync_session, "after_begin", _bind(org_id))
+
+                async def _create_in(sess, name: str):
+                    async with sess.begin():
+                        return await _create(sess, write, name)
+
+                lead_a, lead_b = await asyncio.gather(
+                    _create_in(session_a, "Concurrent A"),
+                    _create_in(session_b, "Concurrent B"),
+                )
+        finally:
+            await engine_a.dispose()
+            await engine_b.dispose()
+
+        assert {lead_a.owner_id, lead_b.owner_id} == set(owners)
+
+        async with session.begin():
+            rule = await selectors.get_assignment_rule(session, org_id)
+        assert rule is not None
+        assert rule.cursor == 2
