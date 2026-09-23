@@ -13,6 +13,8 @@ class Settings(ServiceSettings):
     db_app_role: str | None = "opsgrids_operations"
     db_admin_role: str | None = "opsgrids_admin"
     db_outbox_role: str | None = "opsgrids_outbox"
+    #: How often `bin/cron` reconciles every organization's ledger against its balances.
+    reconcile_interval_seconds: float = 86_400
 
 
 def settings() -> Settings:

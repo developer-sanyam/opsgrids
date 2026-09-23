@@ -154,7 +154,13 @@ export interface CancelIn {
 
 /* ------------------------------- inventory ------------------------------- */
 
-/** Mirrors `InventoryItemOut`. Stock value = `on_hand * unit_value_minor`. */
+/** An exact stock quantity: a decimal string with at most three decimals (`"82.5"`). Never
+ *  parsed into a float for arithmetic — see `lib/quantity.ts` (ADR-0014 §2). */
+export type Qty = string;
+
+/** Mirrors `InventoryItemOut`. Stock is read from the ledger's balances: `on_hand` is the
+ *  whole-unit figure the API has always returned; `on_hand_qty` / `reserved_qty` /
+ *  `available_qty` are exact and are what the screens show. */
 export interface InventoryItemOut {
   id: string;
   sku: string;
@@ -162,6 +168,9 @@ export interface InventoryItemOut {
   category: Category;
   warehouse: string;
   on_hand: number;
+  on_hand_qty: Qty;
+  reserved_qty: Qty;
+  available_qty: Qty;
   reorder_point: number;
   uom: string;
   unit_value_minor: number;
@@ -194,7 +203,23 @@ export interface InventoryItemPatch {
   unit_value_minor?: number;
 }
 
-export type StockMovementKind = "opening" | "receipt" | "adjustment" | "count";
+export type StockMovementKind =
+  | "opening"
+  | "receipt"
+  | "adjustment"
+  | "count"
+  | "relocation"
+  | "issue";
+export type StockStatus =
+  | "AVAILABLE"
+  | "QUALITY_HOLD"
+  | "QUARANTINE"
+  | "DAMAGED"
+  | "REJECTED"
+  | "WIP"
+  | "IN_TRANSIT"
+  | "AT_JOB_WORKER"
+  | "BLOCKED";
 export type StockMovementReason = "damaged" | "lost" | "found" | "consumed" | "returned" | "other";
 
 /** `POST /inventory/{id}/adjustments`. Exactly one of `quantity_delta` or `counted_on_hand`. */
@@ -206,13 +231,18 @@ export interface StockAdjustmentIn {
   occurred_on?: string;
 }
 
-/** One row of an item's movement history. Append-only, newest first. */
+/** One row of an item's ledger. Append-only, newest first. `quantity` / `balance_after` are
+ *  exact; `quantity_delta` / `on_hand_after` are the whole-unit compatibility figures. */
 export interface StockMovementOut {
   id: string;
   kind: StockMovementKind;
   reason: StockMovementReason | null;
   quantity_delta: number;
   on_hand_after: number;
+  quantity: Qty;
+  balance_after: Qty;
+  location_id: string;
+  status: StockStatus;
   reference_type: "purchase_order" | null;
   reference_id: string | null;
   note: string;

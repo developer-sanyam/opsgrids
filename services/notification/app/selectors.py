@@ -11,14 +11,19 @@ organization leaks, so routers never write SQL.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Select, exists, or_, select
+from sqlalchemy import Select, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import (
+    Campaign,
+    CampaignRecipient,
     Contact,
+    ContactList,
+    ContactListMember,
     Delivery,
     EmailConnection,
     EmailDomain,
@@ -291,16 +296,25 @@ def connection_stmt(ctx: ScopeContext) -> Select[Any]:
     return ctx.apply(stmt, owner_col=EmailConnection.created_by)
 
 
-async def get_connection(session: AsyncSession, org_id: uuid.UUID) -> EmailConnection | None:
+async def get_connection(
+    session: AsyncSession, org_id: uuid.UUID, *, lock: bool = False
+) -> EmailConnection | None:
     """The one connection an organization sends through, or None.
 
     Org-scoped like every read here. The writer uses it to refuse a second connection, and the
-    test send uses it to find the credential — neither may see another tenant's.
+    test send uses it to find the credential — neither may see another tenant's. `lock=True` is
+    the campaign driver's: it holds this row `FOR UPDATE` for the length of its claim
+    transaction, which is what serialises two concurrent batches (same campaign racing itself,
+    or two campaigns on one connection) on `daily_cap` — the cap check and the recipient claim
+    that spends it happen inside the same lock rather than as two independent reads that could
+    each see room for a batch the other has already spent.
     """
     stmt = select(EmailConnection).where(
         EmailConnection.organization_id == org_id,
         EmailConnection.deleted_at.is_(None),
     )
+    if lock:
+        stmt = stmt.with_for_update()
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -508,6 +522,7 @@ async def sendable_contacts(
     *,
     limit: int = 1000,
     after_id: uuid.UUID | None = None,
+    list_id: uuid.UUID | None = None,
 ) -> list[Contact]:
     """Contacts a campaign may send to: the organization's contacts minus every suppressed
     address, whatever the reason.
@@ -528,7 +543,267 @@ async def sendable_contacts(
         ~suppressed,
     )
     stmt = ctx.apply(stmt, owner_col=Contact.created_by)
+    if list_id is not None:
+        # Narrowed to one list's members: the audience a list campaign sends to.
+        stmt = stmt.where(
+            exists().where(
+                ContactListMember.organization_id == Contact.organization_id,
+                ContactListMember.list_id == list_id,
+                ContactListMember.contact_id == Contact.id,
+            )
+        )
     if after_id is not None:
         stmt = stmt.where(Contact.id > after_id)
     stmt = stmt.order_by(Contact.id.asc()).limit(limit)
     return list((await session.execute(stmt)).scalars())
+
+
+# --------------------------------------------------------------------- engage lists
+
+
+def lists_stmt(ctx: ScopeContext) -> Select[Any]:
+    """Scope-filtered contact lists, by name."""
+    stmt = select(ContactList).where(
+        ContactList.organization_id == ctx.organization_id,
+        ContactList.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=ContactList.created_by)
+    return stmt.order_by(ContactList.name.asc(), ContactList.id.asc())
+
+
+async def get_list(
+    session: AsyncSession, org_id: uuid.UUID, list_id: uuid.UUID
+) -> ContactList | None:
+    stmt = select(ContactList).where(
+        ContactList.id == list_id,
+        ContactList.organization_id == org_id,
+        ContactList.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_list_by_name(
+    session: AsyncSession, org_id: uuid.UUID, name: str
+) -> ContactList | None:
+    stmt = select(ContactList).where(
+        ContactList.name == name,
+        ContactList.organization_id == org_id,
+        ContactList.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def list_member_counts(
+    session: AsyncSession, org_id: uuid.UUID, list_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, int]:
+    """Member count per list, one grouped query for a page of lists."""
+    if not list_ids:
+        return {}
+    stmt = (
+        select(ContactListMember.list_id, func.count())
+        .where(
+            ContactListMember.organization_id == org_id,
+            ContactListMember.list_id.in_(list_ids),
+        )
+        .group_by(ContactListMember.list_id)
+    )
+    return {row[0]: int(row[1]) for row in (await session.execute(stmt)).all()}
+
+
+def list_members_stmt(ctx: ScopeContext, list_id: uuid.UUID) -> Select[Any]:
+    """The contacts on one list, newest first — the same rows `contacts_stmt` would return."""
+    member = exists().where(
+        ContactListMember.organization_id == Contact.organization_id,
+        ContactListMember.list_id == list_id,
+        ContactListMember.contact_id == Contact.id,
+    )
+    stmt = select(Contact).where(
+        Contact.organization_id == ctx.organization_id,
+        Contact.deleted_at.is_(None),
+        member,
+    )
+    stmt = ctx.apply(stmt, owner_col=Contact.created_by)
+    return stmt.order_by(Contact.created_at.desc(), Contact.id.desc())
+
+
+async def existing_contact_ids(
+    session: AsyncSession, org_id: uuid.UUID, contact_ids: list[uuid.UUID]
+) -> set[uuid.UUID]:
+    """Which of these ids are this organization's contacts."""
+    if not contact_ids:
+        return set()
+    stmt = select(Contact.id).where(
+        Contact.organization_id == org_id,
+        Contact.id.in_(contact_ids),
+        Contact.deleted_at.is_(None),
+    )
+    return set((await session.execute(stmt)).scalars())
+
+
+async def campaigns_using_list(session: AsyncSession, org_id: uuid.UUID, list_id: uuid.UUID) -> int:
+    stmt = select(func.count()).where(
+        Campaign.organization_id == org_id,
+        Campaign.list_id == list_id,
+        Campaign.deleted_at.is_(None),
+    )
+    return int((await session.execute(stmt)).scalar_one())
+
+
+# --------------------------------------------------------------------- engage campaigns
+
+
+def campaigns_stmt(ctx: ScopeContext, *, status: str | None = None) -> Select[Any]:
+    """Scope-filtered campaigns, newest first."""
+    stmt = select(Campaign).where(
+        Campaign.organization_id == ctx.organization_id,
+        Campaign.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=Campaign.created_by)
+    if status:
+        stmt = stmt.where(Campaign.status == status)
+    return stmt.order_by(Campaign.created_at.desc(), Campaign.id.desc())
+
+
+async def get_campaign(
+    session: AsyncSession, org_id: uuid.UUID, campaign_id: uuid.UUID, *, lock: bool = False
+) -> Campaign | None:
+    stmt = select(Campaign).where(
+        Campaign.id == campaign_id,
+        Campaign.organization_id == org_id,
+        Campaign.deleted_at.is_(None),
+    )
+    if lock:
+        stmt = stmt.with_for_update()
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def recipients_stmt(
+    ctx: ScopeContext, campaign_id: uuid.UUID, *, status: str | None = None
+) -> Select[Any]:
+    """One campaign's recipients, in expansion order."""
+    stmt = select(CampaignRecipient).where(
+        CampaignRecipient.organization_id == ctx.organization_id,
+        CampaignRecipient.campaign_id == campaign_id,
+        CampaignRecipient.deleted_at.is_(None),
+    )
+    stmt = ctx.apply(stmt, owner_col=CampaignRecipient.created_by)
+    if status == "queued":
+        # `sending` is the driver's in-flight claim lease, not a status the API exposes — a
+        # caller asking for "queued" means "not yet resolved", which includes a row currently
+        # claimed by a batch.
+        stmt = stmt.where(CampaignRecipient.status.in_(("queued", "sending")))
+    elif status:
+        stmt = stmt.where(CampaignRecipient.status == status)
+    return stmt.order_by(CampaignRecipient.contact_id.asc())
+
+
+async def recipient_status_counts(
+    session: AsyncSession, org_id: uuid.UUID, campaign_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, dict[str, int]]:
+    """`{campaign_id: {status: n}}` for a page of campaigns, in one grouped query."""
+    if not campaign_ids:
+        return {}
+    stmt = (
+        select(CampaignRecipient.campaign_id, CampaignRecipient.status, func.count())
+        .where(
+            CampaignRecipient.organization_id == org_id,
+            CampaignRecipient.campaign_id.in_(campaign_ids),
+        )
+        .group_by(CampaignRecipient.campaign_id, CampaignRecipient.status)
+    )
+    out: dict[uuid.UUID, dict[str, int]] = {}
+    for campaign_id, status, n in (await session.execute(stmt)).all():
+        out.setdefault(campaign_id, {})[status] = int(n)
+    return out
+
+
+async def campaign_mail_sent_since(
+    session: AsyncSession, org_id: uuid.UUID, since: datetime
+) -> int:
+    """Email this organization has sent on its one connection since `since` — what counts
+    against the connection's `daily_cap`.
+
+    Both campaign mail *and* rule-driven mail (`messages`, the ordinary transactional path)
+    share the same SMTP connection and the same provider-side limit, so both count: a rule that
+    fires a thousand times today leaves that much less room for a campaign, and the reverse. Two
+    grouped counts rather than a union query, because the tables have no join key worth writing
+    (a `Message` is not a `CampaignRecipient`) — one round trip either way.
+    """
+    campaign_sent = select(func.count()).where(
+        CampaignRecipient.organization_id == org_id,
+        CampaignRecipient.status == "sent",
+        CampaignRecipient.sent_at >= since,
+    )
+    rule_sent = select(func.count()).where(
+        Message.organization_id == org_id,
+        Message.channel == "email",
+        Message.state.in_(("sent", "delivered", "read")),
+        Message.sent_at >= since,
+    )
+    campaign_count = int((await session.execute(campaign_sent)).scalar_one())
+    rule_count = int((await session.execute(rule_sent)).scalar_one())
+    return campaign_count + rule_count
+
+
+async def suppressed_indexes(
+    session: AsyncSession, org_id: uuid.UUID, indexes: list[str]
+) -> set[str]:
+    """Which of these blind indexes are currently suppressed — one `IN (...)` query for a whole
+    batch, rather than one query per recipient (the campaign driver's re-check at send time)."""
+    if not indexes:
+        return set()
+    stmt = select(Suppression.email_index).where(
+        Suppression.organization_id == org_id,
+        Suppression.email_index.in_(indexes),
+        Suppression.deleted_at.is_(None),
+    )
+    return set((await session.execute(stmt)).scalars())
+
+
+async def recipients_by_id(
+    session: AsyncSession, org_id: uuid.UUID, campaign_id: uuid.UUID, recipient_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, CampaignRecipient]:
+    """A claimed batch's own rows, by id — the campaign driver's record step re-selecting
+    exactly what it just claimed, to write the outcome of each."""
+    if not recipient_ids:
+        return {}
+    stmt = select(CampaignRecipient).where(
+        CampaignRecipient.organization_id == org_id,
+        CampaignRecipient.campaign_id == campaign_id,
+        CampaignRecipient.id.in_(recipient_ids),
+    )
+    rows = (await session.execute(stmt)).scalars()
+    return {r.id: r for r in rows}
+
+
+async def due_campaigns(
+    session: AsyncSession, *, paused_retry_before: datetime, limit: int
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """`(organization_id, campaign_id)` for every campaign the send driver should look at this
+    tick: everything `sending`, plus a `paused` campaign whose last pause is old enough to be
+    worth retrying (`paused_at <= paused_retry_before`) — the driver's own backoff against a
+    route that keeps failing.
+
+    Cross-tenant and BYPASSRLS by design (the same shape as `approval`'s escalation sweep and
+    `subscription`'s dunning sweep): discovery exists to find out *which organizations* have a
+    campaign to work, and there is no tenant to bind while asking. Every write the driver makes
+    off the back of this still runs tenant-bound (`app/cron.py`).
+    """
+    stmt = (
+        select(Campaign.organization_id, Campaign.id)
+        .where(
+            Campaign.deleted_at.is_(None),
+            or_(
+                Campaign.status == "sending",
+                (Campaign.status == "paused")
+                & (Campaign.paused_at.is_(None) | (Campaign.paused_at <= paused_retry_before)),
+            ),
+        )
+        .order_by(Campaign.started_at.asc().nulls_first(), Campaign.id.asc())
+        .limit(limit)
+    )
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+
+async def is_suppressed(session: AsyncSession, org_id: uuid.UUID, index: str) -> bool:
+    return await get_suppression_by_index(session, org_id, index) is not None

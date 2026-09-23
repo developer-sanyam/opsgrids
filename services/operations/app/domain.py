@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import date
+from fractions import Fraction
 
+from app.inventory import quantity
 from app.models import InventoryItem, PurchaseOrder, PurchaseOrderLine, Supplier
 
 # ------------------------------------------------------------------ vocabulary (labels match SPA)
@@ -209,23 +211,30 @@ def weighted_on_time_pct(suppliers: Sequence[Supplier]) -> float:
 
 
 def inventory_value_minor(items: Sequence[InventoryItem]) -> int:
-    """Total value of stock on hand, in minor units."""
-    return sum(it.on_hand * it.unit_value_minor for it in items)
+    """Total value of stock on hand, in minor units — each item's exact milli-unit quantity times
+    its unit value, rounded once per item (ADR-0014 §2)."""
+    return sum(quantity.value_minor(it.on_hand_milli, it.unit_value_minor) for it in items)
 
 
 def is_low_stock(item: InventoryItem) -> bool:
-    """An item is low when at or below its reorder point."""
-    return item.on_hand <= item.reorder_point
+    """An item is low when at or below its reorder point (whole units, compared exactly)."""
+    return item.on_hand_milli <= item.reorder_point * quantity.QTY_SCALE
 
 
 def is_out_of_stock(item: InventoryItem) -> bool:
-    return item.on_hand == 0
+    return item.on_hand_milli == 0
 
 
 def low_stock_items(items: Sequence[InventoryItem]) -> list[InventoryItem]:
     """The items at or below their reorder point, most-depleted first."""
     low = [it for it in items if is_low_stock(it)]
-    low.sort(key=lambda it: it.on_hand / it.reorder_point if it.reorder_point else 0.0)
+    low.sort(
+        key=lambda it: (
+            Fraction(it.on_hand_milli, it.reorder_point * quantity.QTY_SCALE)
+            if it.reorder_point
+            else Fraction(0)
+        )
+    )
     return low
 
 
@@ -255,7 +264,8 @@ def attention_items(
                 "detail": (
                     f"Out of stock at {item.warehouse}"
                     if out
-                    else f"{item.on_hand} {item.uom} on hand · reorder at {item.reorder_point}"
+                    else f"{quantity.describe(item.on_hand_milli, item.uom)} on hand · "
+                    f"reorder at {item.reorder_point}"
                 ),
                 "href": "/inventory",
                 "tone": "danger" if out else "late",

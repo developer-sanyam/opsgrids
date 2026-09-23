@@ -14,7 +14,7 @@ the read models (`supplier_name`, `warehouse`) so a list renders without a cross
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
 from pydantic import (
@@ -27,9 +27,17 @@ from pydantic import (
     model_validator,
 )
 
+from app.inventory.quantity import MAX_ABS_MILLI, QTY_SCALE
+
 #: Validates a non-empty string as an email address — used where the field is "email format or
 #: empty" rather than always-required, so `EmailStr` itself (which rejects empty) does not fit.
 _EMAIL = TypeAdapter(EmailStr)
+
+#: The largest whole-unit quantity the pre-Phase-1 item-level API can accept without its
+#: milli-unit equivalent (`* QTY_SCALE`) overflowing what `quantity.MAX_ABS_MILLI` allows through
+#: the ledger — bounding it here turns an overflow into a 422 instead of a 500 from the kernel or
+#: the database.
+_MAX_WHOLE_QTY = MAX_ABS_MILLI // QTY_SCALE
 
 
 def _validate_email_or_empty(value: str) -> str:
@@ -49,7 +57,21 @@ SupplierStatus = Literal["active", "on_hold", "pending"]
 PoStatus = Literal["draft", "approved", "received", "closed", "cancelled"]
 AttentionKind = Literal["low_stock", "out_of_stock", "late_delivery"]
 AttentionTone = Literal["danger", "late"]
-StockMovementKind = Literal["opening", "receipt", "adjustment", "count"]
+StockMovementKind = Literal["opening", "receipt", "adjustment", "count", "relocation", "issue"]
+StockStatus = Literal[
+    "AVAILABLE",
+    "QUALITY_HOLD",
+    "QUARANTINE",
+    "DAMAGED",
+    "REJECTED",
+    "WIP",
+    "IN_TRANSIT",
+    "AT_JOB_WORKER",
+    "BLOCKED",
+]
+#: An exact quantity on the wire: a decimal string with at most three decimals (ADR-0014 §2).
+#: Never a JSON number — a float cannot carry 0.1 exactly, and stock must be exact.
+Qty = Annotated[str, Field(pattern=r"^-?\d+(\.\d{1,3})?$", examples=["82.5"])]
 StockMovementReason = Literal["damaged", "lost", "found", "consumed", "returned", "other"]
 
 
@@ -256,7 +278,13 @@ class CancelIn(BaseModel):
 
 class InventoryItemOut(BaseModel):
     """Mirrors the SPA's `InventoryItemOut`. Stock value = `on_hand * unit_value_minor`;
-    low-stock is derived by the client (and the overview) as `on_hand <= reorder_point`."""
+    low-stock is derived by the client (and the overview) as `on_hand <= reorder_point`.
+
+    Stock is read from the ledger's balances (ADR-0014 §10). `on_hand` is the whole-unit figure
+    the API has always returned — exact while stock is a whole number of units, which is all
+    the item-level API can create — and `on_hand_qty` / `reserved_qty` / `available_qty` are the
+    exact decimal strings every new client should read.
+    """
 
     id: str
     sku: str
@@ -264,6 +292,9 @@ class InventoryItemOut(BaseModel):
     category: Category
     warehouse: str
     on_hand: int
+    on_hand_qty: Qty
+    reserved_qty: Qty
+    available_qty: Qty
     reorder_point: int
     uom: str
     unit_value_minor: int
@@ -288,7 +319,7 @@ class InventoryItemIn(BaseModel):
     reorder_point: int = Field(default=0, ge=0)
     unit_value_minor: int = Field(default=0, ge=0)
     currency: str = Field(default="INR", min_length=3, max_length=3)
-    opening_on_hand: int = Field(default=0, ge=0)
+    opening_on_hand: int = Field(default=0, ge=0, le=_MAX_WHOLE_QTY)
 
 
 class InventoryItemPatch(BaseModel):
@@ -315,8 +346,8 @@ class StockAdjustmentIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    quantity_delta: int | None = None
-    counted_on_hand: int | None = Field(default=None, ge=0)
+    quantity_delta: int | None = Field(default=None, ge=-_MAX_WHOLE_QTY, le=_MAX_WHOLE_QTY)
+    counted_on_hand: int | None = Field(default=None, ge=0, le=_MAX_WHOLE_QTY)
     reason: StockMovementReason | None = None
     note: str = Field(default="", max_length=500)
     occurred_on: date = Field(default_factory=date.today)
@@ -349,20 +380,81 @@ class StockAdjustmentIn(BaseModel):
 
 
 class StockMovementOut(BaseModel):
-    """One row of an item's movement history. Append-only, newest first — the ledger
-    `on_hand` is the running sum of."""
+    """One row of an item's ledger, with its move's kind/reason/reference. Append-only, newest
+    first. `quantity_delta` / `on_hand_after` are the whole-unit figures the API always returned;
+    `quantity` / `balance_after` are exact. `balance_after` is the balance of the row's own
+    bucket (`location_id` + `status`), which for a single-location item is its on-hand."""
 
     id: str
     kind: StockMovementKind
     reason: StockMovementReason | None
     quantity_delta: int
     on_hand_after: int
+    quantity: Qty
+    balance_after: Qty
+    location_id: str
+    status: StockStatus
     reference_type: Literal["purchase_order"] | None
     reference_id: str | None
     note: str
     occurred_on: date
     created_at: datetime
     created_by: str | None
+
+
+class StockBalanceOut(BaseModel):
+    """One bucket of an item's stock: where it is, in what state, and how much of it is
+    promised. Exact decimal strings in the item's UOM."""
+
+    location_id: str
+    warehouse_code: str
+    warehouse: str
+    location_code: str
+    status: StockStatus
+    lot_id: str | None
+    roll_id: str | None
+    on_hand_qty: Qty
+    reserved_qty: Qty
+    available_qty: Qty
+
+
+class InventoryDiscrepancyOut(BaseModel):
+    """A stored stock figure the reconciler found disagreeing with its source of truth.
+    `kind=balance`: the bucket's balance vs the sum of its ledger. `kind=reserved`: its reserved
+    figure vs its open reservations. Nothing repairs these automatically."""
+
+    id: str
+    kind: Literal["balance", "reserved"]
+    inventory_item_id: str
+    location_id: str
+    status: str
+    lot_id: str | None
+    roll_id: str | None
+    stored_qty: Qty
+    expected_qty: Qty
+    detected_at: datetime
+    last_seen_at: datetime
+    resolved_at: datetime | None
+    resolved_by: str | None
+    resolution_note: str
+
+
+class ReconcileOut(BaseModel):
+    """What an on-demand reconciliation of the caller's organization found."""
+
+    run_id: str
+    buckets_checked: int
+    findings: int
+    new_findings: int
+    discrepancies: list[InventoryDiscrepancyOut]
+
+
+class DiscrepancyResolveIn(BaseModel):
+    """`POST /inventory/discrepancies/{id}/resolve` — what was done about it, in words."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    note: str = Field(min_length=1, max_length=500)
 
 
 # ------------------------------------------------------------------ warehouses (reference)

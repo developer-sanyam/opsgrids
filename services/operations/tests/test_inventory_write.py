@@ -72,6 +72,27 @@ class TestCreateInventoryItem:
             )
         assert response.status_code == 422
 
+    async def test_an_opening_on_hand_beyond_the_ledger_ceiling_is_422(
+        self, client, org_id, data
+    ) -> None:
+        """`opening_on_hand` is whole units that get multiplied by `QTY_SCALE` before they ever
+        reach the ledger; bounding it here turns an overflow into a 422 rather than a 500 out of
+        the kernel or a BIGINT overflow at the database."""
+        principal = principal_for(org_id, [WRITE_PERM], subject_ref=data["subject_a"])
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/operations/inventory",
+                json={
+                    "sku": "RM-NEW-004",
+                    "name": "New raw material",
+                    "category": "raw_materials",
+                    "warehouse": "Pune Plant",
+                    "uom": "MT",
+                    "opening_on_hand": 10**13,
+                },
+            )
+        assert response.status_code == 422
+
     async def test_on_hand_in_the_body_is_422(self, client, org_id, data) -> None:
         principal = principal_for(org_id, [WRITE_PERM], subject_ref=data["subject_a"])
         with as_principal(principal):

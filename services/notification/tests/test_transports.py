@@ -11,6 +11,8 @@ transport, so the status-code mapping is tested without a network.
 from __future__ import annotations
 
 import json
+import smtplib
+from typing import ClassVar
 
 import httpx
 import pytest
@@ -228,3 +230,223 @@ async def test_email_transport_ignores_a_template(monkeypatch: pytest.MonkeyPatc
         transports.Outgoing(to_address="a@b.com", subject="S", body="B", template={"name": "x"})
     )
     assert receipt.provider == "log"
+
+
+# --------------------------------------------------------------------- masked logging
+
+
+class _CapturingLog:
+    """A drop-in for `transports.log` that just remembers what it was called with, so a test
+    can assert on the field values a structlog call would otherwise only print."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def info(self, event: str, **kwargs: object) -> None:
+        self.calls.append((event, kwargs))
+
+    def warning(self, event: str, **kwargs: object) -> None:
+        self.calls.append((event, kwargs))
+
+
+async def test_log_transport_masks_an_email_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLAUDE.md: never log secrets or personal data. `LogTransport` is what a misconfigured
+    deploy and local development without MailHog run as, so its log line is exactly the place a
+    real customer's address must never appear in the clear."""
+    captured = _CapturingLog()
+    monkeypatch.setattr(transports, "log", captured)
+    await transports.LogTransport("email").send(
+        transports.Outgoing(to_address="jane@example.com", subject="Hi", body="Body")
+    )
+    (event, fields) = captured.calls[0]
+    assert event == "notification.log_transport.send"
+    assert fields["to"] != "jane@example.com"
+    assert "jane@example.com" not in str(fields["to"])
+    assert fields["to"] == "j•••@e•••"
+
+
+async def test_log_transport_masks_a_phone_number_on_the_whatsapp_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _CapturingLog()
+    monkeypatch.setattr(transports, "log", captured)
+    await transports.LogTransport("whatsapp").send(
+        transports.Outgoing(to_address="+919876543210", subject=None, body="Hi")
+    )
+    (_, fields) = captured.calls[0]
+    assert "9876543210" not in str(fields["to"])
+    assert str(fields["to"]).endswith("3210")
+
+
+def test_scrub_addresses_redacts_email_like_substrings() -> None:
+    text = "550 5.1.1 <jane@doe.com>: Recipient address rejected"
+    scrubbed = transports.scrub_addresses(text)
+    assert "jane@doe.com" not in scrubbed
+    assert "<redacted>" in scrubbed
+    assert "Recipient address rejected" in scrubbed
+
+
+# --------------------------------------------------------------------- SMTP batching
+
+
+class _FakeSmtp:
+    """Stands in for `smtplib.SMTP`: no socket, and it remembers what it was asked to send."""
+
+    instances: ClassVar[list[_FakeSmtp]] = []
+
+    def __init__(self, host: str, port: int, timeout: float | None = None) -> None:
+        self.host = host
+        self.port = port
+        self.sent: list[str] = []
+        self.quit_called = False
+        self.connect_error: Exception | None = None
+        self.refuse_recipients: set[str] = set()
+        self.die_after: int | None = None
+        _FakeSmtp.instances.append(self)
+
+    def starttls(self) -> None:
+        pass
+
+    def login(self, username: str, password: str) -> None:
+        pass
+
+    def send_message(self, mail) -> None:
+        to = mail["To"]
+        if to in self.refuse_recipients:
+            raise smtplib.SMTPRecipientsRefused({to: (550, b"no such user")})
+        if self.die_after is not None and len(self.sent) >= self.die_after:
+            raise smtplib.SMTPServerDisconnected("connection lost")
+        self.sent.append(to)
+
+    def quit(self) -> None:
+        self.quit_called = True
+
+    def __enter__(self) -> _FakeSmtp:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.quit()
+
+
+def _smtp_transport() -> transports.SmtpTransport:
+    return transports.SmtpTransport(
+        host="smtp.example.com",
+        port=587,
+        username="u",
+        password="p",
+        use_tls=True,
+        timeout=1.0,
+        from_address="from@example.com",
+    )
+
+
+def _message(to: str) -> transports.Outgoing:
+    return transports.Outgoing(to_address=to, subject="Hi", body="Body")
+
+
+async def test_send_many_reuses_one_connection_for_the_whole_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeSmtp.instances.clear()
+    monkeypatch.setattr(smtplib, "SMTP", _FakeSmtp)
+    transport = _smtp_transport()
+    results = await transport.send_many([_message("a@b.com"), _message("c@d.com")])
+    assert all(isinstance(r, transports.Receipt) for r in results)
+    assert len(_FakeSmtp.instances) == 1, "one connection for the whole batch, not one per message"
+    assert _FakeSmtp.instances[0].sent == ["a@b.com", "c@d.com"]
+    assert _FakeSmtp.instances[0].quit_called
+
+
+async def test_send_many_refuses_one_recipient_without_aborting_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single recipient's own refusal (a bad address) leaves the connection good — the rest of
+    the batch is still attempted on it."""
+    _FakeSmtp.instances.clear()
+
+    def factory(host: str, port: int, timeout: float | None = None) -> _FakeSmtp:
+        fake = _FakeSmtp(host, port, timeout)
+        fake.refuse_recipients = {"bad@b.com"}
+        return fake
+
+    monkeypatch.setattr(smtplib, "SMTP", factory)
+    transport = _smtp_transport()
+    results = await transport.send_many(
+        [_message("a@b.com"), _message("bad@b.com"), _message("c@d.com")]
+    )
+    assert isinstance(results[0], transports.Receipt)
+    assert isinstance(results[1], transports.TransportRefused)
+    assert isinstance(results[2], transports.Receipt)
+    assert "bad@b.com" not in str(results[1])
+
+
+async def test_send_many_treats_a_connect_failure_as_unavailable_for_the_whole_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def factory(host: str, port: int, timeout: float | None = None) -> _FakeSmtp:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(smtplib, "SMTP", factory)
+    transport = _smtp_transport()
+    results = await transport.send_many([_message("a@b.com"), _message("c@d.com")])
+    assert all(isinstance(r, transports.TransportUnavailable) for r in results)
+
+
+async def test_send_many_marks_the_rest_unavailable_once_the_connection_drops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A socket error mid-batch (not a per-recipient refusal) means the connection itself is
+    gone — the rest of the batch is not worth attempting on it."""
+    _FakeSmtp.instances.clear()
+
+    def factory(host: str, port: int, timeout: float | None = None) -> _FakeSmtp:
+        fake = _FakeSmtp(host, port, timeout)
+        fake.die_after = 1
+        return fake
+
+    monkeypatch.setattr(smtplib, "SMTP", factory)
+    transport = _smtp_transport()
+    results = await transport.send_many(
+        [_message("a@b.com"), _message("b@b.com"), _message("c@b.com")]
+    )
+    assert isinstance(results[0], transports.Receipt)
+    assert isinstance(results[1], transports.TransportUnavailable)
+    assert isinstance(results[2], transports.TransportUnavailable)
+
+
+async def test_send_delegates_to_send_many_for_a_single_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(smtplib, "SMTP", _FakeSmtp)
+    receipt = await _smtp_transport().send(_message("a@b.com"))
+    assert receipt.provider == "smtp"
+
+
+# --------------------------------------------------------------------- send_batch()
+
+
+async def test_send_batch_uses_send_many_when_the_transport_has_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(smtplib, "SMTP", _FakeSmtp)
+    transport = _smtp_transport()
+    results = await transports.send_batch(transport, [_message("a@b.com"), _message("b@b.com")])
+    assert len(results) == 2
+    assert len(_FakeSmtp.instances[-1].sent) == 2
+
+
+async def test_send_batch_falls_back_to_one_send_per_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`RecordingTransport` (and `LogTransport`) have no `send_many` — `send_batch` still
+    returns one result per message, never raising out of the batch."""
+    recording = transports.RecordingTransport()
+    results = await transports.send_batch(recording, [_message("a@b.com"), _message("b@b.com")])
+    assert all(isinstance(r, transports.Receipt) for r in results)
+    assert [m.to_address for m in recording.sent] == ["a@b.com", "b@b.com"]
+
+
+async def test_send_batch_records_a_refusal_without_raising() -> None:
+    failing = transports.RecordingTransport(fail_with=transports.TransportRefused("550 no"))
+    results = await transports.send_batch(failing, [_message("a@b.com")])
+    assert isinstance(results[0], transports.TransportRefused)
