@@ -182,7 +182,11 @@ class TestTheJourney:
         deadline = time.monotonic() + 45.0
         state: dict[str, Any] = {}
         while time.monotonic() < deadline:
-            state = probe("product", org_id)
+            # Scoped to CRM specifically: alpha bought engage first (test_engage_journey.py,
+            # collected before this file), so an unscoped probe would already see *that*
+            # activation published and stop waiting here before CRM's own event ever left the
+            # outbox — see `_probe.py`.
+            state = probe("product", org_id, PRODUCT)
             if state.get("published", 0) >= 1:
                 break
             time.sleep(0.5)
@@ -491,9 +495,11 @@ class TestAnInvitationIsAcceptedOverHttp:
         assert member["email"] == invitee_email
         assert "ORG_ADMIN" in member["roles"]
 
-        # Credentials live in auth, not account, and accepting does not set a password.
+        # Credentials live in auth, not account, and accepting does not set a password —
+        # proved the same way `tenants` proves it for the owner: over HTTP, the address
+        # receiving the real reset-link email (C8).
         invitee_password = "invitee-Sufficiently-Long-Passw0rd!"
-        seed_password(member["user_id"], invitee_password)
+        seed_password(invitee_email, invitee_password)
 
         token = login(client, invitee_email, invitee_password, alpha["org_id"])
         response = client.get("/api/v1/organization", headers=auth_header(token))

@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config import settings
 from app.main import app
-from app.models import SCHEMA
+from app.models import PLATFORM_ORG, SCHEMA
 from platform_core.db import TENANT_GUC, get_directory_session, get_session
 
 #: Tenant-scoped tables only — the catalogue survives.
@@ -68,6 +68,34 @@ async def session(org_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
         @event.listens_for(s.sync_session, "after_begin")
         def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
             connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
+
+        yield s
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def platform_session() -> AsyncIterator[AsyncSession]:
+    """The app role, bound to `PLATFORM_ORG` — what `app.launch` runs its write under.
+
+    `products` needs no GUC at all (it carries no policy), but its `audit_logs` does, and a
+    launch-status flip has no real tenant to bind — this is that transaction, for tests that
+    exercise `services.set_launch_status` directly rather than through the CLI's own
+    `session_scope`.
+    """
+    cfg = settings()
+    tables = ", ".join(f'"{SCHEMA}"."{t}"' for t in TENANT_TABLES)
+    admin = create_async_engine(cfg.admin_dsn, connect_args=_connect_args())
+    async with admin.begin() as conn:
+        await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
+    await admin.dispose()
+
+    engine = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as s:
+
+        @event.listens_for(s.sync_session, "after_begin")
+        def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+            connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{PLATFORM_ORG}', true)")
 
         yield s
     await engine.dispose()
