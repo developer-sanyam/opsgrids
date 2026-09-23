@@ -155,9 +155,20 @@ UPSTREAM_PORTS = {
 #: regularization round trip crosses between them twice: attendance stages
 #: `hrms.time.regularization.requested` and approval consumes it; approval stages
 #: `core.approval.request.decided` and attendance consumes it; attendance then stages
-#: `hrms.time.regularization.applied` and approval consumes that. Drop any one of these six
+#: `hrms.time.regularization.applied` and approval consumes that. Drop any one of these
 #: processes and the journey stalls at a different step, which is exactly what makes them worth
 #: running for real.
+#:
+#: `auth-relay`, `notification-relay` and `notification-worker` joined for C8: every tenant
+#: this suite seeds now signs up over HTTP and proves its address the way a real signup does.
+#: The round trip is three hops, each needing its own drain — auth-service stages
+#: `core.user.password_reset_requested` on its own outbox (`auth-relay` publishes it);
+#: notification's fold consumer (half of `notification-worker`) turns that into a `pending`
+#: `messages` row and stages `notification.delivery.message.queued` on notification's **own**
+#: outbox (`notification-relay` publishes that in turn); only then does the dispatcher (the
+#: other half of `notification-worker`) pick it up and mark the message `sent`, which is what
+#: `_read_reset_email.py` polls for. Missing any one of the three leaves the message sitting
+#: `pending` forever, exactly as a missing relay leaves any other outbox filling silently.
 #:
 #: The bundle journey adds the commerce loop: subscription's relay publishes the
 #: `commerce.subscription.*` event, product's consumer projects each member's activation, and
@@ -167,6 +178,9 @@ BACKGROUND = (
     ("product-consumer", "product", "app.consumers"),
     ("product-relay", "product", "app.relay"),
     ("account-consumer", "account", "app.consumers"),
+    ("auth-relay", "auth", "app.relay"),
+    ("notification-relay", "notification", "app.relay"),
+    ("notification-worker", "notification", "app.worker"),
     ("employee-relay", "employee", "app.relay"),
     ("attendance-relay", "attendance", "app.relay"),
     ("attendance-consumer", "attendance", "app.consumers"),
@@ -395,9 +409,10 @@ def _seed(script: str, service: str, *args: str) -> str:
 
 @pytest.fixture(scope="session")
 def platform(tmp_path_factory: pytest.TempPathFactory) -> Any:
-    """The whole stack: six services, an outbox relay and an event consumer.
+    """The whole stack: every service named in `SERVICES`, and every relay and consumer named
+    in `BACKGROUND`.
 
-    The relay and the consumer are as much a part of the platform as the APIs — the journey's
+    The relays and consumers are as much a part of the platform as the APIs — every journey's
     central step is an event crossing between two services — so they boot with everything
     else rather than being started halfway through a test.
     """
@@ -457,38 +472,183 @@ def platform(tmp_path_factory: pytest.TempPathFactory) -> Any:
                 print(f"{name} did not stop on SIGINT and was killed", file=sys.stderr)
 
 
+def _auth_header(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _signup(http: httpx.Client, *, org_name: str, slug: str, full_name: str, email: str) -> str:
+    """`POST /api/v1/account/signup`. Returns the new organization's id.
+
+    The real route (ADR-0013 §3): a stranger with no account and no token creates an
+    organization and becomes its owner. Setting `is_owner` — the column `add_member` alone
+    cannot touch — is `services.signup`'s job, so an owner created this way is a real owner for
+    every purpose the CRM journey's activation step depends on, with no separate repair step.
+    """
+    response = http.post(
+        "/api/v1/account/signup",
+        json={"organization_name": org_name, "slug": slug, "full_name": full_name, "email": email},
+    )
+    if response.status_code != 201:
+        raise RuntimeError(
+            f"signup for {slug!r} failed: {response.status_code} {response.text[:400]}"
+        )
+    return str(response.json()["organization_id"])
+
+
+def _request_reset(http: httpx.Client, email: str) -> None:
+    forgot = http.post("/api/v1/auth/password/forgot", json={"email": email})
+    if forgot.status_code != 202:
+        raise RuntimeError(
+            f"password/forgot for {email!r} failed: {forgot.status_code} {forgot.text[:400]}"
+        )
+
+
+def _confirm_reset(http: httpx.Client, email: str, password: str) -> None:
+    token = json.loads(_seed("_read_reset_email.py", "notification", email))["token"]
+    if not token:
+        raise RuntimeError(
+            f"no set-password email ever arrived for {email!r} — check auth-relay and "
+            "notification-worker are up in the platform's own logs"
+        )
+
+    reset = http.post(
+        "/api/v1/auth/password/reset", json={"token": token, "new_password": password}
+    )
+    if reset.status_code != 204:
+        raise RuntimeError(
+            f"password/reset for {email!r} failed: {reset.status_code} {reset.text[:400]}"
+        )
+
+
+def _set_password_via_reset(http: httpx.Client, email: str, password: str) -> None:
+    """Prove the address and set its first password — the only way a signed-up owner (or an
+    accepted invitee) ever gets one: `services.signup`/`accept_invitation` deliberately create
+    no credential (C8). Reads the link off the real delivery path (`_read_reset_email.py`),
+    exactly as a person reading their own inbox would, rather than reaching into `auth`'s
+    `credentials` table directly.
+    """
+    _request_reset(http, email)
+    _confirm_reset(http, email, password)
+
+
+def _login(http: httpx.Client, email: str, password: str, org_id: str) -> str:
+    """Sign in through the gateway, following the pre-auth → select-org hop a person belonging
+    to more than one organization takes. Every tenant this fixture creates has exactly one
+    membership at this point, so the direct-token branch is the one that actually runs; the
+    picker branch exists because `test_journey.py::login` is not importable here (it, in turn,
+    depends on fixtures this module defines) and the two must not silently drift apart.
+    """
+    response = http.post("/api/v1/auth/login", json={"email": email, "password": password})
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"sign-in as {email!r} failed: {response.status_code} {response.text[:400]}"
+        )
+    body = response.json()
+    if body.get("access_token"):
+        return str(body["access_token"])
+    if body.get("status") != "org_selection_required":
+        raise RuntimeError(f"sign-in as {email!r} returned neither a token nor a picker: {body}")
+    chosen = http.post(
+        "/api/v1/auth/select-org",
+        json={"pre_auth_token": body["pre_auth_token"], "organization_id": org_id},
+    )
+    if chosen.status_code != 200:
+        raise RuntimeError(
+            f"selecting org for {email!r} failed: {chosen.status_code} {chosen.text[:400]}"
+        )
+    return str(chosen.json()["access_token"])
+
+
+def _find_member(http: httpx.Client, token: str, email: str) -> dict[str, Any]:
+    """The membership id and user id HTTP never hands back from signup itself (`SignupOut`
+    carries neither) — read back the same way any other client would have to: list the
+    organization's own members and match on the address this fixture just created.
+    """
+    response = http.get("/api/v1/members", headers=_auth_header(token), params={"size": 200})
+    if response.status_code != 200:
+        raise RuntimeError(f"listing members failed: {response.status_code} {response.text[:400]}")
+    for item in response.json()["items"]:
+        if item["email"] == email:
+            return {"user_id": item["user_id"], "membership_id": item["id"], "email": email}
+    raise RuntimeError(f"{email!r} did not appear in its own organization's member list")
+
+
 @pytest.fixture(scope="session")
 def tenants(platform: Platform) -> dict[str, Any]:
-    """Two organizations, each with an owner, and CRM data in both.
+    """Two organizations, each with an owner, and CRM data in both — created entirely over
+    HTTP (C8), the way a real customer creates one.
 
     Two rather than one because "another tenant's data" is not assertable against a single
     tenant, and a cross-tenant test whose victim row does not exist passes for the wrong
-    reason. Organizations are created through account-service's own `services.create_*`
-    against the real database under row-level security — there is no HTTP route that creates
-    one, by design: the tenant policy compares `id` to the bound organization and there is no
-    id to bind before the row exists.
+    reason. `POST /api/v1/account/signup` is the real route (ADR-0013 §3): there is now an
+    HTTP path that creates an organization, and this suite uses it instead of writing
+    `account`'s schema directly. Every slug and every address carries this run's own suffix, so
+    two runs against the same database never collide and nothing here needs to `TRUNCATE`
+    anything to start clean.
+
+    Alpha carries both an owner and an administrator, because the split between them is
+    load-bearing and tested in both directions: the owner activates a product, the
+    administrator is refused. The administrator is invited and accepts entirely over HTTP —
+    the same path `TestAnInvitationIsAcceptedOverHttp` proves works for a person the journey
+    invites later at runtime — rather than being seeded as a second owner-shaped row. Beta
+    needs only an owner; it exists to be read *at*.
     """
-    seeded = json.loads(_seed("_seed_account.py", "account").splitlines()[-1])
+    run = uuid.uuid4().hex[:8]
+    seeded: dict[str, Any] = {}
 
-    # Credentials live in auth-service, in a different schema — which is the whole point of
-    # the split, and the reason this suite exists. The first call clears the auth tables; the
-    # rest must not, or each new password would wipe the one before it.
-    first = True
-    for org in ("alpha", "beta"):
-        for role in ("owner", "admin"):
-            person = seeded[org].get(role)
-            if person is None:
-                continue
-            _seed(
-                "_seed_auth.py",
-                "auth",
-                person["user_id"],
-                PASSWORD,
-                *([] if first else ["keep"]),
+    with httpx.Client(base_url=platform.gateway, timeout=30.0) as http:
+        for org_key, name in (("alpha", "Alpha Anvils"), ("beta", "Beta Bearings")):
+            slug = f"e2e-{org_key}-{run}"
+            owner_email = f"e2e-{org_key}-owner-{run}@example.com"
+            org_id = _signup(
+                http, org_name=name, slug=slug, full_name=f"{name} Owner", email=owner_email
             )
-            first = False
+            _set_password_via_reset(http, owner_email, PASSWORD)
+            owner_token = _login(http, owner_email, PASSWORD, org_id)
+            owner = {**_find_member(http, owner_token, owner_email), "role_code": "ORG_OWNER"}
 
-    # product-service's registry, and the CRM rows the entitled steps read back.
+            entry: dict[str, Any] = {
+                "org_id": org_id,
+                "org_slug": slug,
+                "name": name,
+                "owner": owner,
+            }
+
+            if org_key == "alpha":
+                admin_email = f"e2e-{org_key}-admin-{run}@example.com"
+                invited = http.post(
+                    "/api/v1/invitations",
+                    headers=_auth_header(owner_token),
+                    json={"email": admin_email, "role_codes": ["ORG_ADMIN"], "product_codes": []},
+                )
+                if invited.status_code != 201:
+                    raise RuntimeError(
+                        f"inviting the alpha admin failed: {invited.status_code} "
+                        f"{invited.text[:400]}"
+                    )
+                accepted = http.post(
+                    "/api/v1/invitations/accept",
+                    json={"token": invited.json()["token"], "full_name": f"{name} Admin"},
+                )
+                if accepted.status_code not in (200, 201):
+                    raise RuntimeError(
+                        f"accepting the alpha admin invite failed: {accepted.status_code} "
+                        f"{accepted.text[:400]}"
+                    )
+                member = accepted.json()
+                _set_password_via_reset(http, admin_email, PASSWORD)
+                entry["admin"] = {
+                    "user_id": member["user_id"],
+                    "membership_id": member["id"],
+                    "email": admin_email,
+                    "role_code": "ORG_ADMIN",
+                }
+
+            seeded[org_key] = entry
+
+    # product-service's registry, and the CRM rows the entitled steps read back. Neither has an
+    # HTTP creation path that fits this suite's needs (see `_seed_product.py`/`_seed_crm.py`),
+    # so these two stay direct-DB seeders.
     _seed("_seed_product.py", "product")
     for index, org in enumerate(("alpha", "beta")):
         owner = seeded[org]["owner"]
@@ -513,11 +673,29 @@ def journey() -> dict[str, Any]:
 
 @pytest.fixture(scope="session")
 def probe(platform: Platform) -> Any:
-    """Read the outbox and the consumer's ledger directly, to say *which* hop broke."""
+    """Read the outbox and the consumer's ledger directly, to say *which* hop broke.
 
-    def _read(service: str, org_id: str) -> dict[str, Any]:
+    `product_key` is required on the `"product"` side: `tenants` is a session fixture, and a
+    full run activates more than one product for the same organization (engage, then crm, both
+    on alpha). The outbox holds one `core.product.activated` row per activation, all sharing
+    that one event type — a probe that only matched on `organization_id` used to report
+    "published" the instant *any* of them had gone out, so a caller waiting on its own,
+    not-yet-published activation would see an earlier file's already-published one and stop
+    waiting before its own event had even reached the relay. See `_probe.py` for the rest of
+    the story, including why the `"account"` side cannot be scoped the same way.
+    """
+
+    def _read(service: str, org_id: str, product_key: str | None = None) -> dict[str, Any]:
         target = "product" if service == "product" else "account"
-        raw = _seed("_probe.py", target, target, org_id)
+        # `_probe.py`'s fourth positional argument is an event-type pattern, not a product
+        # key — `event_probe` below uses that slot to watch a different event type entirely.
+        # Every caller of `probe` is watching `core.product.activated`, so that is passed
+        # explicitly rather than left to the script's own default, and `product_key` — when
+        # given — rides as the fifth argument.
+        args = [org_id, "core.product.activated"]
+        if product_key is not None:
+            args.append(product_key)
+        raw = _seed("_probe.py", target, target, *args)
         return dict(json.loads(raw.splitlines()[-1]))
 
     return _read
@@ -566,29 +744,74 @@ def operator_call(platform: Platform) -> Any:
 
 @pytest.fixture(scope="session")
 def bundle_tenant(platform: Platform, tenants: dict[str, Any]) -> dict[str, Any]:
-    """A fresh organization for the bundle journey, with a signed-in owner and nothing bought.
+    """A fresh organization for the bundle journey, with a signed-in owner and nothing bought —
+    over HTTP (C8), exactly like `tenants` and `approval_tenant`.
 
     Its own tenant, like `approval_tenant`, because the journey's first assertion is a 402 on
     every trio member — which alpha (CRM) and the approval tenant (HRMS) would each fail for a
     reason unrelated to bundles. Depends on `tenants` for ordering only.
     """
     run = f"bundle-{uuid.uuid4().hex[:8]}"
-    seeded = json.loads(_seed("_seed_approval_org.py", "account", run).splitlines()[-1])
-    _seed("_seed_auth.py", "auth", seeded["owner"]["user_id"], PASSWORD, "keep")
-    return {**seeded, "run": run, "password": PASSWORD}
+    slug = f"e2e-{run}"
+    email = f"e2e-{run}-owner@example.com"
+    with httpx.Client(base_url=platform.gateway, timeout=30.0) as http:
+        org_id = _signup(
+            http, org_name="Delta Drives", slug=slug, full_name="Delta Drives Owner", email=email
+        )
+        _set_password_via_reset(http, email, PASSWORD)
+        token = _login(http, email, PASSWORD, org_id)
+        owner = _find_member(http, token, email)
+
+    return {
+        "org_id": org_id,
+        "org_slug": slug,
+        "owner": owner,
+        "run": run,
+        "password": PASSWORD,
+    }
 
 
 @pytest.fixture(scope="session")
 def seed_password(platform: Platform) -> Any:
     """Set a password for a user the journey created *at runtime* — the accepted invitee.
 
-    The account seeder cannot know that user id: it exists only after an invitation is
-    accepted over HTTP. `keep` leaves the existing rows alone, so the owner whose token
-    created the invitation can still sign in.
+    Over HTTP (C8): the same forgot/reset round trip `tenants` uses for the owner and the
+    administrator, because an accepted invitee has no credential either — `accept_invitation`
+    deliberately creates none, exactly like `signup`. Takes an email rather than a user id: a
+    reset is requested by address, and every caller already has the one it just invited.
     """
 
-    def _set(user_id: str, password: str) -> None:
-        _seed("_seed_auth.py", "auth", user_id, password, "keep")
+    def _set(email: str, password: str) -> None:
+        with httpx.Client(base_url=platform.gateway, timeout=30.0) as http:
+            _set_password_via_reset(http, email, password)
+
+    return _set
+
+
+@pytest.fixture(scope="session")
+def seed_passwords(platform: Platform) -> Any:
+    """`seed_password`, for several people at once — every `forgot` first, then every `reset`.
+
+    A journey that onboards a cast of five (`test_approval_journey.py`'s Wave 0) used to call
+    `seed_password` once per person, inside the loop that invites them: five independent
+    forgot-wait-reset round trips, back to back. Each wait is bounded by how long the real
+    chain behind it takes — auth's relay, notification's fold, notification's own relay, then
+    its dispatcher — and under load the five waits simply add together, stretching a step that
+    should be quick into the better part of a minute for no reason: nothing about one person's
+    reset depends on another's.
+
+    Requesting every `forgot` first lets the relay and the notification pipeline drain the
+    whole batch in the passes they already run — the same reason `OutboxRelay._drain` claims up
+    to `batch_size` rows per pass rather than one — so the five waits overlap instead of
+    stacking, and this fixture waits once, not five times.
+    """
+
+    def _set(pairs: list[tuple[str, str]]) -> None:
+        with httpx.Client(base_url=platform.gateway, timeout=30.0) as http:
+            for email, _ in pairs:
+                _request_reset(http, email)
+            for email, password in pairs:
+                _confirm_reset(http, email, password)
 
     return _set
 
@@ -608,9 +831,11 @@ def mint_unsubscribe_token(platform: Platform) -> Any:
 # ------------------------------------------------- the Wave 0 exit journey's own machinery
 #
 # Everything below serves `test_approval_journey.py`. Each piece exists because the operation it
-# performs genuinely has no HTTP surface — provisioning a tenant, running a deploy-time reconcile,
-# or advancing a background sweep's discovery clock. Nothing here substitutes for a request the
-# journey could have made.
+# performs genuinely has no HTTP surface — running a deploy-time reconcile, or advancing a
+# background sweep's discovery clock. Nothing here substitutes for a request the journey could
+# have made. Provisioning the tenant itself is no longer one of these (C8): `POST
+# /api/v1/account/signup` is a real route now, so `approval_tenant` below uses it exactly as
+# `tenants` does, rather than writing `account`'s schema directly.
 #
 # One fixture that used to live here is gone, and the reason is worth keeping. `link_employee` ran
 # a raw `UPDATE` against `account.memberships.employee_id` over the admin DSN, because when the
@@ -624,7 +849,8 @@ def mint_unsubscribe_token(platform: Platform) -> Any:
 
 @pytest.fixture(scope="session")
 def approval_tenant(platform: Platform, tenants: dict[str, Any]) -> dict[str, Any]:
-    """A third organization, created fresh for the approval journey, with a signed-in owner.
+    """A third organization, created fresh for the approval journey, with a signed-in owner —
+    over HTTP (C8), exactly like `tenants`.
 
     Its own tenant rather than alpha's, for two independent reasons. The CRM journey asserts
     that alpha gets **402** on `/api/v1/employees` because it never bought HRMS — activating
@@ -632,13 +858,32 @@ def approval_tenant(platform: Platform, tenants: dict[str, Any]) -> dict[str, An
     of the Wave 0 exit criterion: proving it against an organization another test already
     activated products in would prove nothing.
 
-    Depends on `tenants` for ordering, not for data: `_seed_account.py` truncates the account
-    schema on its way in, so this must run after it or lose the organization it just made.
+    Depends on `tenants` for ordering, not for data: `_seed_product.py`, called from inside
+    `tenants`, is what promotes `hrms` out of `soon`, and this journey's own activation step
+    needs that to have already happened.
     """
     run = uuid.uuid4().hex[:8]
-    seeded = json.loads(_seed("_seed_approval_org.py", "account", run).splitlines()[-1])
-    _seed("_seed_auth.py", "auth", seeded["owner"]["user_id"], PASSWORD, "keep")
-    return {**seeded, "run": run, "password": PASSWORD}
+    slug = f"e2e-gamma-{run}"
+    email = f"e2e-gamma-owner-{run}@example.com"
+    with httpx.Client(base_url=platform.gateway, timeout=30.0) as http:
+        org_id = _signup(
+            http,
+            org_name="Gamma Gearworks",
+            slug=slug,
+            full_name="Gamma Gearworks Owner",
+            email=email,
+        )
+        _set_password_via_reset(http, email, PASSWORD)
+        token = _login(http, email, PASSWORD, org_id)
+        owner = _find_member(http, token, email)
+
+    return {
+        "org_id": org_id,
+        "org_slug": slug,
+        "owner": owner,
+        "run": run,
+        "password": PASSWORD,
+    }
 
 
 @pytest.fixture(scope="session")

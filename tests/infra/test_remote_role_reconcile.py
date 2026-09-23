@@ -61,7 +61,11 @@ def test_role_reconcile_sql_uses_psql_variable_interpolation_not_a_literal_passw
 
 def test_role_reconcile_sql_covers_every_service_in_order() -> None:
     sql = role_reconcile_sql("employee", "attendance", "leave")
-    assert sql.index("opsgrids_employee") < sql.index("opsgrids_attendance") < sql.index("opsgrids_leave")
+    assert (
+        sql.index("opsgrids_employee")
+        < sql.index("opsgrids_attendance")
+        < sql.index("opsgrids_leave")
+    )
 
 
 def test_role_reconcile_sql_is_idempotent_ddl() -> None:
@@ -88,7 +92,7 @@ def test_the_full_service_list_in_remote_sh_produces_valid_sql_for_every_entry()
     the same reason `tools/reconcile-roles.sh` reads that array out of remote.sh rather than
     keeping its own copy."""
     remote_sh = (REPO_ROOT / "infrastructure/edge/remote.sh").read_text()
-    line = next(l for l in remote_sh.splitlines() if l.startswith("SERVICES_WITH_SCHEMA="))
+    line = next(ln for ln in remote_sh.splitlines() if ln.startswith("SERVICES_WITH_SCHEMA="))
     services = line[len("SERVICES_WITH_SCHEMA=(") : -1].split()
     assert "leave" in services
     sql = role_reconcile_sql(*services)
