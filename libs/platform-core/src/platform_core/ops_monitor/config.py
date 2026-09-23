@@ -80,7 +80,7 @@ PROFILE_API_CONTAINERS: Final[dict[str, tuple[str, ...]]] = {
     "storefront": ("storefront", "document"),
     "inventory": ("operations",),
     "hrms": ("approval", "employee", "attendance", "leave"),
-    "crm": ("customer", "deal"),
+    "crm": ("customer", "deal", "lead"),
     "pulseboard": ("project", "timesheet", "standup"),
     "projects": ("projects",),
     "support": ("support",),
@@ -95,6 +95,7 @@ PROFILE_API_CONTAINERS: Final[dict[str, tuple[str, ...]]] = {
 #: (`compose.prod.yml` has no `*-worker`/`scheduler`-shaped container for them), so they are
 #: absent here on purpose, not by omission.
 PROFILE_DLQ_QUEUES: Final[dict[str, tuple[str, ...]]] = {
+    "crm": ("customer.events",),
     "hrms": ("approval.events", "attendance.events", "leave.events"),
     "finance": ("finance.events", "scheduler.events"),
 }
