@@ -138,7 +138,7 @@
         "type": "object"
       },
       "SubscribeIn": {
-        "description": "Start a subscription for a product, pinned to a catalog plan version.\n\n`trial_days` set starts the subscription in `trial` with an end date; left null it starts\n`active`. A trial is a *state of the subscription*, never a separate object (ADR-0004 \u00a74).",
+        "description": "Start a subscription for a product, pinned to a catalog plan version.\n\n`trial_days` set asks for a trial; left null it starts `active`. **The length is the pinned\nversion's, not the caller's**: the request is capped at the version's `trial_days` feature\n(14 days when the version names none), and refused if the version sells no trial. A trial is\na *state of the subscription*, never a separate object (ADR-0004 \u00a74).\n\nA bundle cannot be bought here \u2014 it is sold by the platform team through the operator path\n(docs/commerce-packaging.md).",
         "properties": {
           "plan_version_id": {
             "format": "uuid",
@@ -162,6 +162,7 @@
                 "type": "null"
               }
             ],
+            "description": "Ask for a trial. Capped at the plan version's own trial length.",
             "title": "Trial Days"
           }
         },
