@@ -1,6 +1,6 @@
 """Tables owned by the product service — what exists to sell, and who has it.
 
-Two tables, and the distinction between them is the whole design.
+Three tables, and the distinction between the first two is the whole design.
 
 **`products` is global.** It is the platform's catalogue, not a customer's: HRMS is HRMS for
 everybody. It carries no `organization_id`, takes no tenancy policy, and is readable by every

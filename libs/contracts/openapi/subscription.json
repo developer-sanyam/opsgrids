@@ -249,6 +249,13 @@
               }
             ]
           },
+          "entitled_products": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Entitled Products",
+            "type": "array"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",

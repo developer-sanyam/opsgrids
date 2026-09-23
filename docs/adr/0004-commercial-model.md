@@ -159,6 +159,35 @@ not re-implement *how* access is enforced.** The clean split is: `subscription` 
 failure becomes a suspension event becomes a de-entitled activation becomes a 402 — each step in the
 service that owns it.
 
+> **Addendum, 2026-09-23 — an activation is the OR of its sources.** This section assumed one
+> subscription per activation. Bundles broke that: a `suite/trio` subscription entitles `hrms`,
+> `crm` and `finance`, and the same customer may also hold a standalone `hrms` subscription. With
+> one status column written by whichever event arrived last, cancelling the suite would switch
+> off the HRMS they still pay for — and suspending a standalone HRMS would switch off the one
+> their suite includes.
+>
+> So `product.activation_sources` records *why* an activation is on: one row per
+> `(organization, product, source)`, where the source is the key the providing subscription was
+> bought under (`hrms` for the standalone, `suite` for the bundle; subscription-service keeps one
+> subscription per organization per key for ever, so the key names the subscription). The
+> activation's status is **recomputed** from its sources on every change — `active` if any source
+> is active, else `trial` if any is a trial (ending at the latest end), else `suspended` — and is
+> never written directly. The enforcement chain is unchanged: the activation row is still what
+> `/entitlements` reads, the `ent` claim is still built from it, and the gateway still 402s on
+> it. No new gate, no new claim.
+>
+> Three rules came with it. **Members come only from the pinned catalog version**:
+> subscription snapshots `bundled_products` as `entitled_products` at subscribe and change-plan,
+> and every lifecycle event carries it; nobody downstream reads catalog, and nothing reads a
+> member list from a client. **The ordering guard is per source**, not per activation: each
+> source row carries the `occurred_at` of the last event applied to it, and an older event for
+> that source is dropped whole; two sources are independent histories. **A dropped member is
+> tombstoned, not deleted**: a trio→duo downgrade marks `finance`'s suite source `removed` at the
+> event's time, so a stale trio event cannot re-add it. A hand activation is the product's own
+> source, shared with its standalone subscription exactly as the two always shared the row; a
+> hand deactivation of a product a bundle still feeds is refused rather than answered with a 200
+> that changes nothing. Details: [commerce-packaging.md](../commerce-packaging.md).
+
 ### 6. Razorpay first, Stripe later — build against the more constrained provider
 
 `payment` ships a **Razorpay** adapter before a Stripe one, per [plan.md](../plan.md). This is

@@ -2,9 +2,11 @@
 
 This is where commerce meets entitlement (ADR-0004 §5). The subscription service owns the
 lifecycle and emits a `commerce.subscription.*` event on every transition; here those events are
-projected onto the `Activation` row the gateway's 402 gate reads. There is **no nightly job**:
-`Activation.entitles` already evaluates trial expiry at read time, so keeping the row's status in
-step with the lifecycle is all that entitlement needs.
+projected onto the `Activation` row the gateway's 402 gate reads — one source per product the
+event's `entitled_products` names (a bundle's members, or just the product), with each
+activation recomputed as the OR over its sources (`services.project_subscription`). There is
+**no nightly job**: `Activation.entitles` already evaluates trial expiry at read time, so keeping
+the row's status in step with the lifecycle is all that entitlement needs.
 
 Three properties are load-bearing, and each has a test:
 

@@ -47,6 +47,13 @@
             ],
             "title": "Deactivated At"
           },
+          "entitled_by": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Entitled By",
+            "type": "array"
+          },
           "entitles": {
             "title": "Entitles",
             "type": "boolean"
@@ -132,6 +139,11 @@
             },
             "title": "Features",
             "type": "array"
+          },
+          "is_bundle": {
+            "default": false,
+            "title": "Is Bundle",
+            "type": "boolean"
           },
           "is_platform": {
             "default": false,

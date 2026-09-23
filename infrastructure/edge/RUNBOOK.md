@@ -391,6 +391,45 @@ What happens, in order, and what each step protects:
 8. **health** — every container running and healthy within 120 s, or the deploy reports a
    failure and leaves the decision to you.
 
+### Bundle entitlement: order, and the one-off backfill
+
+The change that made a `suite` subscription entitle its members (ADR-0004 §5 addendum,
+docs/commerce-packaging.md) touches four services, and two of them migrate. Everything is
+additive — a nullable column and a new table — so the old code runs safely against the new
+schema, but the **order the services come up in** decides whether a bundle sold during the
+rollout gets its members or silently does not:
+
+1. **catalog** — validates a bundle's members against product-service when one is authored.
+   No migration. Until product is up, authoring a *bundle* answers 503; every other plan authors
+   as before.
+2. **product** — migration `b3d5f7a9c1e2`: `products.is_bundle`, the `suite` registry row
+   (`status = soon`), `activation_sources` under a forced tenant policy, and one source row per
+   existing activation (so nothing changes state on deploy). Must be migrated and its consumer
+   running **before** subscription emits `entitled_products`.
+3. **subscription** — migration `a9c4e2b7d1f0`: the nullable `entitled_products` snapshot. Every
+   `commerce.subscription.*` event from here carries the member list.
+4. **account** — no migration; its consumer installs each member's manifest. An event the *old*
+   account consumer handles installs nothing for a bundle (there is no `suite` manifest) and is
+   marked processed — so on a split rollout, bring account's consumer up before the first bundle
+   is sold. A single `make deploy` recreates all four together, which is fine.
+
+Then, once all four are up, snapshot the rows that predate the column — once, reviewed, like any
+other backfill:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm -T subscription \
+  python -m app.backfill --dry-run     # prints {"considered": …, "bundles": …}; writes nothing
+docker compose -f compose.prod.yml --env-file .env run --rm -T subscription \
+  python -m app.backfill
+```
+
+For a non-bundle it only writes `[product_key]`. For each bundle it emits
+`commerce.subscription.entitlements_resynced`, which product projects (and retires the dead
+`suite` activation the old fold left behind) and account installs from. Re-running is a no-op.
+`unresolved > 0` means a pinned version no longer resolves in catalog — that row stays NULL and
+reads as its own product; look at it by hand. If an account consumer on old code ate a bundle
+event, `tools/wire_product.py <org> <member>` installs the missing member's roles.
+
 ### Deploying from the pipeline
 
 `.github/workflows/deploy.yml` runs the same two scripts a laptop does — `ssh-deploy.sh` for the
