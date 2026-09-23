@@ -14,11 +14,18 @@ export function bundleMembers(version: PlanVersion): string[] {
   return declared.value.filter((key): key is string => typeof key === "string");
 }
 
-/** Live subscriptions *other than the product's own* that entitle it — the bundles it is in. */
+/**
+ * Bundle states that entitle their members right now. `past_due` still entitles on the server
+ * (the grace window, ADR-0005), but a screen that says "included" during dunning invites the
+ * customer to rely on something that ends on a date — so only a clean `active` or `trial` counts.
+ */
+const INCLUDING_STATES = new Set(["active", "trial"]);
+
+/** Subscriptions *other than the product's own* that currently include it — its bundles. */
 export function bundlesIncluding(productKey: string, subscriptions: Subscription[]): Subscription[] {
   return subscriptions.filter(
     (s) =>
-      s.state !== "cancelled" &&
+      INCLUDING_STATES.has(s.state) &&
       s.product_key !== productKey &&
       (s.entitled_products ?? []).includes(productKey),
   );

@@ -56,6 +56,13 @@ describe("bundlesIncluding", () => {
   it("ignores a cancelled bundle", () => {
     expect(bundlesIncluding("hrms", [subscription({ state: "cancelled" })])).toEqual([]);
   });
+
+  it("only an active or trialling bundle marks its members included", () => {
+    for (const state of ["suspended", "past_due"]) {
+      expect(bundlesIncluding("hrms", [subscription({ state })])).toEqual([]);
+    }
+    expect(bundlesIncluding("hrms", [subscription({ state: "trial" })])).toHaveLength(1);
+  });
 });
 
 describe("names", () => {
