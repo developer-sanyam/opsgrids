@@ -2,6 +2,7 @@ import { useAuth } from "@opsgrids/client";
 import {
   ClipboardListIcon,
   FactoryIcon,
+  FolderIcon,
   HomeIcon,
   LayersIcon,
   Sidebar as SidebarShell,
@@ -22,6 +23,7 @@ const GROUPS: NavGroup[] = [
       { to: "/", label: "Overview", icon: HomeIcon, end: true },
       { to: "/purchase-orders", label: "Purchase Orders", icon: ClipboardListIcon },
       { to: "/inventory", label: "Inventory", icon: LayersIcon },
+      { to: "/inventory/categories", label: "Item Categories", icon: FolderIcon },
       { to: "/suppliers", label: "Suppliers", icon: FactoryIcon },
       { to: "/warehouses", label: "Warehouses", icon: WarehouseIcon },
     ],
