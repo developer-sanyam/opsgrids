@@ -1,7 +1,7 @@
 import { Tag } from "@opsgrids/ui";
 import type { TagTone } from "@opsgrids/ui";
 
-import type { ConnectionStatus, DomainStatus, TemplateStatus } from "@/api/types";
+import type { ConnectionStatus, DomainStatus, SuppressionReason, TemplateStatus } from "@/api/types";
 
 /**
  * The three status vocabularies this product renders, each translated in exactly one place.
@@ -65,5 +65,22 @@ const TEMPLATE_LABELS: Record<TemplateStatus, { label: string; tone: TagTone }> 
 
 export function TemplateStatusTag({ status }: { status: TemplateStatus }) {
   const { label, tone } = TEMPLATE_LABELS[status];
+  return <Tag tone={tone}>{label}</Tag>;
+}
+
+/**
+ * Why an address may not be mailed. `manual` is the one a person wrote through this screen; the
+ * other three are reports from the recipient or their mailbox provider, named as facts rather
+ * than as a status this app decided.
+ */
+const SUPPRESSION_LABELS: Record<SuppressionReason, { label: string; tone: TagTone }> = {
+  unsubscribed: { label: "Unsubscribed", tone: "neutral" },
+  bounced: { label: "Bounced", tone: "negative" },
+  complained: { label: "Complained", tone: "negative" },
+  manual: { label: "Added by hand", tone: "warning" },
+};
+
+export function SuppressionReasonTag({ reason }: { reason: SuppressionReason }) {
+  const { label, tone } = SUPPRESSION_LABELS[reason];
   return <Tag tone={tone}>{label}</Tag>;
 }
