@@ -133,16 +133,20 @@ describe("Combobox", () => {
 
   it("offers a retry when the lookup fails, and keeps the typed text", async () => {
     const user = userEvent.setup();
-    const loadOptions = vi
-      .fn<(query: string, signal: AbortSignal) => Promise<ComboboxOption[]>>()
-      .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValue(CANDIDATES);
+    // Offline until the test says otherwise, not for exactly one call: on a loaded runner the
+    // debounce can fire mid-typing, and a one-shot rejection spent on "R" let the "Roh" lookup
+    // succeed before the failure was ever on screen.
+    let offline = true;
+    const loadOptions = vi.fn<(query: string, signal: AbortSignal) => Promise<ComboboxOption[]>>(
+      () => (offline ? Promise.reject(new Error("offline")) : Promise.resolve(CANDIDATES)),
+    );
     render(<Harness loadOptions={loadOptions} />);
     const input = screen.getByRole("combobox", { name: "Delegate" });
     await user.type(input, "Roh");
     await waitFor(() => expect(screen.getByText("Couldn't load results.")).toBeDefined());
     expect((input as HTMLInputElement).value).toBe("Roh");
 
+    offline = false;
     await user.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
   });
