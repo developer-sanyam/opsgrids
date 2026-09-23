@@ -729,6 +729,12 @@ Named here so nobody discovers them during an incident:
   the box (it calls the same installer the consumer would). Do this for every org, every
   product, every time — and treat `product.outbox` depth as the signal that you forgot.
 
+  Before any of that, the product has to be sellable at all: `docker compose exec product
+  python -m app.launch <product_key> available` (P6) flips `products.status`, refuses a key the
+  catalogue does not know, and writes an audit row. That replaced a hand-run `UPDATE
+  product.products SET status = 'available' WHERE key = ...` — the command an operator used to
+  be told to type directly against the database, with no refusal and no audit trail.
+
   Every other outbox also fills silently. `approval`, `subscription` and `storefront` have no
   entrypoint that starts their relay at all (their `bin/cron` correctly runs a sweep, and
   there is no `bin/relay`), so even with a broker those three would not publish.

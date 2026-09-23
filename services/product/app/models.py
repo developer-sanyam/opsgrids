@@ -38,6 +38,13 @@ from platform_core.models import TenantBase
 
 SCHEMA = "product"
 
+#: The organization id stamped on this service's own `audit_logs`/`outbox` rows when an act has
+#: no tenant — flipping what a deployment sells is a platform decision, not a customer's.
+#: `products` itself carries no policy and needs no GUC at all (see above); `audit_logs` does,
+#: and there is no real organization to bind it to. The same nil-UUID-as-platform convention
+#: auth-service and catalog-service use for their own pre-tenant and platform-wide rows.
+PLATFORM_ORG: uuid.UUID = uuid.UUID(int=0)
+
 
 class Base(_Base):
     """Schema-scoped declarative base for this service."""

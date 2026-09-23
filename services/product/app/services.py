@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import selectors
-from app.models import Activation, AuditLog, OutboxEvent
+from app.models import PLATFORM_ORG, Activation, AuditLog, OutboxEvent, Product
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import BusinessRuleProblem, NotFoundProblem
@@ -23,6 +23,12 @@ from platform_core.events import publish_event
 from platform_core.logging import get_logger
 
 log = get_logger("product.services")
+
+#: The only launch states an operator may set by hand. `beta` exists in the schema
+#: (`Product.status`'s own comment names it) but is not one of these: nothing in this codebase
+#: today drives a product into or out of `beta` outside a migration, and naming it here would
+#: let the CLI put a product into a state nothing else expects to reconcile out of.
+LAUNCH_STATUSES = ("available", "soon")
 
 EVT_ACTIVATED = "core.product.activated"
 EVT_DEACTIVATED = "core.product.deactivated"
@@ -249,3 +255,53 @@ async def deactivate(
         actor=_actor(ctx),
     )
     return activation
+
+
+async def set_launch_status(
+    session: AsyncSession,
+    *,
+    product_key: str,
+    status: str,
+    acting_as: str,
+) -> Product:
+    """Flip what the marketplace sells — the only write `products` ever needs outside a
+    migration, and the one this service's CLI (`app/launch.py`) exists to make an operator go
+    through rather than a hand-run `UPDATE`.
+
+    `products` carries no tenant policy (`app/models.py`), so the row itself needs no GUC. Its
+    `audit_logs` does, and there is no organization this act belongs to, so the caller is
+    expected to have opened `session_scope(organization_id=PLATFORM_ORG)` — this function does
+    not open its own transaction, matching every other write in this module.
+
+    Refuses a key the catalogue does not already know (a launch flip is not the place to invent
+    a product — that is a migration's job) and a status outside `LAUNCH_STATUSES` (`beta` is a
+    real value in the column but not one anything here knows how to reconcile out of).
+    """
+    if status not in LAUNCH_STATUSES:
+        raise BusinessRuleProblem(
+            f"{status!r} is not a launch status this command may set — choose one of "
+            f"{LAUNCH_STATUSES}"
+        )
+    product = await selectors.get_product(session, product_key)
+    if product is None:
+        raise NotFoundProblem(f"no product registered with key {product_key!r}")
+
+    before = {"status": product.status}
+    if product.status == status:
+        return product
+    product.status = status
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=PLATFORM_ORG,
+        actor_id=None,
+        acting_as=acting_as,
+        action="product.launch_status_set",
+        entity="product",
+        entity_id=product.id,
+        before=before,
+        after={"status": status, "product_key": product_key},
+    )
+    return product
