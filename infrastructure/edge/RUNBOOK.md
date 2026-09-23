@@ -589,6 +589,14 @@ Named here so nobody discovers them during an incident:
   whose profile is off and is harmless. Outbox depth per schema is still the truth:
   `select count(*) from <schema>.outbox where published_at is null`. Every service keeps its
   own `bin/relay`; going back to one container per service is a compose edit, not a rewrite.
+- **The scheduler (ADR-0015).** Behind the `finance` profile: finance's e-Invoice retry backoff
+  is its only producer today. One container, `scheduler`, runs `./bin/worker` — the event
+  consumer and the due-job sweep together in one process, for the same RAM reason as the shared
+  relay above. A retry that never seems to happen: check
+  `select count(*) from scheduler.scheduled_jobs where status = 'pending' and due_at <= now()` —
+  a non-zero count with the `scheduler` container up means the sweep itself is stuck (`make
+  edge-logs SERVICE=scheduler`); a non-zero count with it down or restarting is the container.
+  `scheduler.outbox` fills exactly like any other service's if `edge-relay` is not draining it.
 - *(historical)* **No RabbitMQ, no relay and no consumers — and this breaks product activation.** An earlier
   version of this paragraph said slice 1 publishes no event that anything consumes. That was
   wrong. `product.activate()` publishes `core.product.activated`, and the **only** thing that

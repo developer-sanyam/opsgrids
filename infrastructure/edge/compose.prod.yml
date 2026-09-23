@@ -422,7 +422,7 @@ services:
     command: ['python', '-m', 'platform_core.edge_relay']
     environment:
       <<: *service-env
-      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,operations,approval,employee,attendance,customer,deal,project,timesheet,standup,projects,support,marketing,finance,itsm}
+      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,operations,approval,employee,attendance,customer,deal,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm}
     depends_on:
       product:
         condition: service_started
@@ -785,6 +785,25 @@ services:
     <<: *background
     profiles: ['finance']
     image: opsgrids-edge/finance
+    command: ['./bin/worker']
+    environment: *service-env
+
+  # ADR-0015: the delayed-delivery primitive, and finance's e-Invoice retry backoff is its first
+  # (and today, only) producer of `platform.schedule.requested` — so it ships behind the same
+  # `finance` profile finance does, not as platform core. It has no HTTP surface of its own
+  # (nothing outside the platform calls it), so unlike every other product on this box there is
+  # no plain `scheduler:` API container — one process, `./bin/worker`, runs both the event
+  # consumer and the due-job sweep (`app/worker.py`), because the edge box has no RAM to spare
+  # for a second idle container doing work this light. Named literally `scheduler` — matching the
+  # schema name — so `remote.sh`'s per-service migration gating (`configured_services`) finds it
+  # the same way it finds every other service that owns a schema.
+  scheduler:
+    <<: *background
+    profiles: ['finance']
+    image: opsgrids-edge/scheduler
+    build:
+      context: ../..
+      dockerfile: services/scheduler/Dockerfile
     command: ['./bin/worker']
     environment: *service-env
 
