@@ -1,23 +1,45 @@
-"""Pins `profile_for` and `activated_profiles` (infrastructure/edge/lib/active-profiles.sh) —
-the zero-activation profile auto-off ADR-0013's memory-budget erratum (2026-09-23) named as the
-one lever that costs nothing to ship. Runs the real functions as a subprocess, the same pattern
+"""Pins `profile_for`, `key_for_profile` and `activated_profiles`
+(infrastructure/edge/lib/active-profiles.sh) — the catalogue product key <-> compose profile
+mapping `preflight.sh`'s advisory checks are built on (memory-headroom slice, 2026-09-23 fix
+round; H2/L9/L10 review findings). Runs the real functions as a subprocess, the same pattern
 test_memory_budget.py uses for `memory_budget_verdict` — never a reimplementation, which would
 only prove the copy agrees with itself.
 """
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-ACTIVE_PROFILES_LIB = REPO_ROOT / "infrastructure/edge/lib/active-profiles.sh"
+EDGE_DIR = REPO_ROOT / "infrastructure/edge"
+ACTIVE_PROFILES_LIB = EDGE_DIR / "lib/active-profiles.sh"
+BUDGET_FILE = EDGE_DIR / "memory-budget.json"
 
 
 def profile_for(product_key: str) -> str:
     script = f'source "{ACTIVE_PROFILES_LIB}"; profile_for "$1"'
     result = subprocess.run(
         ["bash", "-c", script, "_", product_key], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def key_for_profile(profile: str) -> str:
+    script = f'source "{ACTIVE_PROFILES_LIB}"; key_for_profile "$1"'
+    result = subprocess.run(["bash", "-c", script, "_", profile], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def resolve_declared_profiles(edge_profiles: str, compose_profiles: str) -> str:
+    script = f'source "{ACTIVE_PROFILES_LIB}"; resolve_declared_profiles "$1" "$2"'
+    result = subprocess.run(
+        ["bash", "-c", script, "_", edge_profiles, compose_profiles],
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, result.stderr
     return result.stdout.strip()
@@ -32,22 +54,13 @@ def activated_profiles(*product_keys: str) -> list[str]:
     return [line for line in result.stdout.splitlines() if line]
 
 
+def _every_sellable_profile() -> list[str]:
+    return list(json.loads(BUDGET_FILE.read_text())["profiles"])
+
+
 class TestProfileFor:
     def test_operations_maps_to_inventory(self) -> None:
         assert profile_for("operations") == "inventory"
-
-    def test_a_profile_named_after_its_own_key(self) -> None:
-        for key in (
-            "hrms",
-            "crm",
-            "pulseboard",
-            "projects",
-            "support",
-            "marketing",
-            "finance",
-            "itsm",
-        ):
-            assert profile_for(key) == key
 
     def test_storefront_maps_to_itself(self) -> None:
         assert profile_for("storefront") == "storefront"
@@ -61,6 +74,57 @@ class TestProfileFor:
         assert profile_for("not-a-real-product") == ""
 
 
+class TestKeyForProfile:
+    def test_inventory_maps_to_operations(self) -> None:
+        assert key_for_profile("inventory") == "operations"
+
+    def test_storefront_maps_to_itself(self) -> None:
+        assert key_for_profile("storefront") == "storefront"
+
+    def test_an_unknown_profile_has_no_key(self) -> None:
+        assert key_for_profile("not-a-real-profile") == ""
+
+
+class TestProfileForAndKeyForProfileCoverExactlyTheSameProfiles:
+    """L9: a loop asserting `profile_for(key) == key` for a hardcoded list of names one already
+    wrote by hand proves nothing but that the test's own list agrees with itself. This instead
+    walks `memory-budget.json`'s own `profiles` list — the actual, current set of compose
+    profiles this platform can enable — and proves the two mappings round-trip for every one of
+    them, so the pair can never quietly drift apart the way two independently hand-maintained
+    `case` statements eventually would."""
+
+    def test_every_sellable_profile_round_trips_through_key_for_profile_and_back(self) -> None:
+        for profile in _every_sellable_profile():
+            key = key_for_profile(profile)
+            assert key, f"key_for_profile has no entry for {profile!r}"
+            assert profile_for(key) == profile, (
+                f"profile_for(key_for_profile({profile!r})) == {profile_for(key)!r}, expected "
+                f"{profile!r} back — the two mappings have drifted apart"
+            )
+
+    def test_no_sellable_profile_is_missing_from_the_reverse_mapping(self) -> None:
+        covered = {key_for_profile(p) for p in _every_sellable_profile()}
+        assert "" not in covered, "at least one profile in memory-budget.json has no catalogue key"
+
+
+class TestResolveDeclaredProfiles:
+    """The one precedence rule preflight.sh and remote.sh both defer to (H2, the memory-headroom
+    slice's 2026-09-23 fix round) — never a computed value, only ever a choice between the two
+    explicit inputs an operator can set."""
+
+    def test_edge_profiles_wins_when_both_are_set(self) -> None:
+        assert resolve_declared_profiles("hrms", "inventory,storefront") == "hrms"
+
+    def test_compose_profiles_is_used_when_edge_profiles_is_empty(self) -> None:
+        assert resolve_declared_profiles("", "inventory,storefront") == "inventory,storefront"
+
+    def test_both_empty_is_empty_not_an_error(self) -> None:
+        assert resolve_declared_profiles("", "") == ""
+
+    def test_edge_profiles_alone_is_used(self) -> None:
+        assert resolve_declared_profiles("crm", "") == "crm"
+
+
 class TestActivatedProfiles:
     def test_empty_input_is_empty_output(self) -> None:
         assert activated_profiles() == []
@@ -70,7 +134,7 @@ class TestActivatedProfiles:
 
     def test_deduplicates_repeated_activations_of_the_same_profile(self) -> None:
         # 500 organizations activating operations must yield one profile, not five hundred
-        # lines remote.sh would then have to deduplicate itself.
+        # lines a caller would then have to deduplicate itself.
         keys = ["operations"] * 5
         assert activated_profiles(*keys) == ["inventory"]
 

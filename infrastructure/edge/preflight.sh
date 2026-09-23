@@ -54,8 +54,8 @@ optional_empty="$optional_empty EDGE_RESERVED_IP"
 # generating a MinIO user for a pass that is not yet turned on is a step an operator should
 # take deliberately, not one preflight forces on every box the day this shipped.
 optional_empty="$optional_empty DOCUMENT_S3_ORPHAN_ACCESS_KEY DOCUMENT_S3_ORPHAN_SECRET_KEY"
-# EDGE_PROFILES is the explicit override for the zero-activation profile auto-off, below — most
-# boxes never set it (COMPOSE_PROFILES, or nothing yet, is the common case).
+# EDGE_PROFILES is an explicit, optional override for COMPOSE_PROFILES (see the note below) —
+# most boxes never set it; COMPOSE_PROFILES alone is the common case.
 optional_empty="$optional_empty EDGE_PROFILES"
 
 set -a
@@ -63,52 +63,31 @@ set -a
 . ./.env
 set +a
 
-# ---------------------------------------------------------------- which profiles actually run
-# ADR-0013's memory-budget erratum, "zero-activation profile auto-off": a profile is a container
-# group, and a container group with no organization ever activating that product is pure cost.
-# EDGE_PROFILES (if set) is an explicit, authoritative declaration and always wins over
-# COMPOSE_PROFILES — remote.sh applies the identical precedence before invoking docker compose,
-# so this is what will actually run, not a guess. Neither set: fall back to the catalogue's own
-# activations rather than treating "unset" as "run nothing", which is what a genuinely fresh box
-# — or one where COMPOSE_PROFILES was simply never written — would otherwise silently do.
+# ---------------------------------------------------------------- which profiles this box declares
+# EDGE_PROFILES, if set, is an explicit, authoritative override; COMPOSE_PROFILES otherwise —
+# `remote.sh` applies the identical precedence before invoking docker compose, so `declared_
+# profiles` below is what will actually be asked to run, not a guess.
+#
+# **Nothing here computes this value automatically any more (H2, the memory-headroom slice's
+# 2026-09-23 fix round).** The previous "zero-activation profile auto-off" fell back to
+# computing COMPOSE_PROFILES from the catalogue's own activations when both were unset — but
+# `docker compose up` does not stop a container whose profile was silently removed (an "orphan"
+# in compose's own vocabulary is a service no longer in the file at all, not one merely filtered
+# out by profile), so that computed value never actually changed what was running — only what
+# this script *believed* was running, which is a worse failure mode than doing nothing. A human
+# decides what runs and writes it down in `EDGE_PROFILES`/`COMPOSE_PROFILES`; the checks below
+# only ever advise about that decision, never make it.
 # shellcheck source=lib/active-profiles.sh
 . ./lib/active-profiles.sh
+declared_profiles=$(resolve_declared_profiles "${EDGE_PROFILES:-}" "${COMPOSE_PROFILES:-}")
 if [ -n "${EDGE_PROFILES:-}" ]; then
-	COMPOSE_PROFILES="$EDGE_PROFILES"
-	ok "COMPOSE_PROFILES overridden by EDGE_PROFILES: $COMPOSE_PROFILES"
+	ok "COMPOSE_PROFILES overridden by EDGE_PROFILES: $declared_profiles"
 fi
-if docker compose -f compose.prod.yml --env-file .env ps --status running postgres 2>/dev/null | grep -q postgres; then
-	activated_keys=$(docker compose -f compose.prod.yml --env-file .env exec -T postgres \
-		psql -U opsgrids -d opsgrids -Atc "select distinct product_key from product.activations" 2>/dev/null) || activated_keys=""
-	# shellcheck disable=SC2086 # word-splitting activated_keys (one product key per line) on purpose
-	activated_list=$(activated_profiles $activated_keys)
-	if [ -z "${COMPOSE_PROFILES:-}" ]; then
-		computed=$(echo "$activated_list" | tr '\n' ',' | sed 's/,$//;s/^,//')
-		if [ -n "$computed" ]; then
-			COMPOSE_PROFILES="$computed"
-			echo "  info  no EDGE_PROFILES/COMPOSE_PROFILES set — computed from activations: $COMPOSE_PROFILES"
-		else
-			echo "  info  no EDGE_PROFILES/COMPOSE_PROFILES set and no product has an activation yet — core only"
-		fi
-	else
-		unused=""
-		activated_set=" $(echo "$activated_list" | tr '\n' ' ') "
-		for profile in $(echo "$COMPOSE_PROFILES" | tr ',' ' '); do
-			case "$activated_set" in
-			*" $profile "*) ;;
-			*) unused="$unused $profile" ;;
-			esac
-		done
-		if [ -z "$unused" ]; then
-			ok "every enabled profile has at least one activation"
-		else
-			echo "  warn  profile(s) enabled with zero activations, costing a container group for nothing:$unused" >&2
-			echo "        drop from COMPOSE_PROFILES/EDGE_PROFILES to reclaim the memory (RUNBOOK.md, 'the memory budget')." >&2
-		fi
-	fi
-else
-	echo "  info  Postgres not running yet: the zero-activation profile check is skipped on this deploy" >&2
-fi
+# Exported so every `docker compose` call below (and remote.sh's own, later) resolves the same
+# profile list this script just did — an exported shell variable takes precedence over the value
+# `--env-file .env` would otherwise read, which is what makes EDGE_PROFILES actually override
+# COMPOSE_PROFILES for compose itself, not just for this script's own arithmetic.
+export COMPOSE_PROFILES="$declared_profiles"
 
 missing=""
 placeholder=""
@@ -232,10 +211,33 @@ if [ ! -f "$budget_file" ]; then
 elif ! command -v python3 >/dev/null 2>&1; then
 	echo "  warn  no python3 on this box — memory budget check skipped" >&2
 else
-	expected_mb=$(python3 lib/memory_budget_totals.py "$budget_file" "${COMPOSE_PROFILES:-}") || {
-		bad "could not compute the expected memory budget from $budget_file for COMPOSE_PROFILES=${COMPOSE_PROFILES:-}"
-		expected_mb=""
-	}
+	# Price by what is ACTUALLY running, not by `declared_profiles` (H2, the memory-headroom
+	# slice's 2026-09-23 fix round): `docker compose up` does not stop a container whose profile
+	# was removed from COMPOSE_PROFILES — it only starts what a newly-enabled profile brings,
+	# never tears down what a shrunk one no longer lists. Pricing by the *declared* profile list
+	# would then silently understate a box carrying orphaned containers from a profile someone
+	# believes they turned off. The Docker daemon's own compose-project label is ground truth,
+	# independent of this box's env file — `compose.prod.yml`'s own `name:` is the fixed project
+	# name to filter on, so this does not depend on the directory this repository is checked out
+	# into.
+	running_container_names=$(docker ps --filter "label=com.docker.compose.project=opsgrids-edge" \
+		--filter "status=running" --format '{{.Label "com.docker.compose.service"}}' 2>/dev/null || echo "")
+	if [ -n "$running_container_names" ]; then
+		containers_csv=$(echo "$running_container_names" | tr '\n' ',' | sed 's/,$//')
+		expected_mb=$(python3 lib/memory_budget_totals.py "$budget_file" --containers "$containers_csv") || {
+			bad "could not compute the expected memory budget from $budget_file for the running containers"
+			expected_mb=""
+		}
+		priced_as="containers actually running"
+	else
+		# Nothing is up yet (the first deploy on a fresh box): the closest available estimate is
+		# what this deploy is configured to bring up.
+		expected_mb=$(python3 lib/memory_budget_totals.py "$budget_file" --profiles "$declared_profiles") || {
+			bad "could not compute the expected memory budget from $budget_file for COMPOSE_PROFILES=$declared_profiles"
+			expected_mb=""
+		}
+		priced_as="declared COMPOSE_PROFILES — nothing is running yet"
+	fi
 	# Read from the budget file itself rather than hardcoded here — this file's own
 	# `host.soft_budget_percent`/`hard_budget_percent` is what `tests/infra/
 	# test_compose_memory_budget.py` pins, and a hardcoded copy here would silently drift from
@@ -253,21 +255,51 @@ else
 			verdict=${verdict_line%% *}
 			percent=${verdict_line#* }
 			mem_total_mb=$((mem_total_kb / 1024))
-			case "$verdict" in
-			ok) ok "memory budget: ${expected_mb}M expected of ${mem_total_mb}M MemTotal (${percent}%)" ;;
+
+			# B1(a), the same fix round: production sells every product it catalogues (ten
+			# profiles), and the re-measured `kinds.background` price alone puts that over the
+			# hard line before a single planned service is added — refusing every future deploy
+			# over a fact that was already true yesterday helps nobody. `grandfathered_verdict`
+			# (lib/memory-budget.sh) downgrades an over-hard-line verdict to a loud warning when
+			# this deploy is not worse than the last one that actually went healthy; a fresh box
+			# (no recorded last-ok) keeps today's behaviour and still refuses. `remote.sh`'s
+			# `record_ref` writes the state file this reads, after health passes, using the same
+			# running-containers pricing as above.
+			last_ok_file="${EDGE_STATE_DIR:-/srv/opsgrids/state}/edge-budget.last-ok"
+			last_ok_mb=""
+			if [ -f "$last_ok_file" ]; then
+				last_ok_mb=$(tr -d '[:space:]' <"$last_ok_file" 2>/dev/null || echo "")
+				case "$last_ok_mb" in '' | *[!0-9]*) last_ok_mb="" ;; esac
+			fi
+			final_line=$(grandfathered_verdict "$verdict" "$percent" "$expected_mb" "$last_ok_mb")
+			final_verdict=${final_line%% *}
+
+			case "$final_verdict" in
+			ok) ok "memory budget ($priced_as): ${expected_mb}M of ${mem_total_mb}M MemTotal (${percent}%)" ;;
 			warn)
-				echo "  warn  memory budget: ${expected_mb}M expected of ${mem_total_mb}M MemTotal (${percent}%)" >&2
-				echo "        — over the ${soft_percent}% soft line. Still deploying; see RUNBOOK.md, 'the memory budget'." >&2
+				echo "  warn  memory budget ($priced_as): ${expected_mb}M of ${mem_total_mb}M MemTotal (${percent}%)" >&2
+				if [ "$verdict" = "refuse" ]; then
+					echo "        — OVER THE HARD BUDGET (${hard_percent}%), grandfathered: not worse than the last" >&2
+					echo "        successful deploy (${last_ok_mb}M). This box is overcommitted and needs either" >&2
+					echo "        more RAM (owner decision — a VM resize) or de-listing a product. Still deploying" >&2
+					echo "        — see RUNBOOK.md, 'the memory budget'." >&2
+				else
+					echo "        — over the ${soft_percent}% soft line. Still deploying; see RUNBOOK.md, 'the memory budget'." >&2
+				fi
 				;;
 			refuse)
-				bad "memory budget: ${expected_mb}M expected of ${mem_total_mb}M MemTotal (${percent}%) — over the hard budget. Trim COMPOSE_PROFILES or consolidate a service before deploying (ADR-0013's memory-budget erratum)."
+				if [ -n "$last_ok_mb" ]; then
+					bad "memory budget ($priced_as): ${expected_mb}M of ${mem_total_mb}M MemTotal (${percent}%) — over the hard budget AND worse than the last successful deploy (${last_ok_mb}M). This deploy makes the overcommit worse; refusing. Trim COMPOSE_PROFILES/EDGE_PROFILES or consolidate a service."
+				else
+					bad "memory budget ($priced_as): ${expected_mb}M of ${mem_total_mb}M MemTotal (${percent}%) — over the hard budget, and no prior successful deploy is recorded to grandfather against (a fresh box). Trim COMPOSE_PROFILES/EDGE_PROFILES or consolidate a service before deploying."
+				fi
 				;;
 			esac
 			# Informational only — never gates a deploy, and never mixed into $expected_mb above:
 			# a backlog placeholder in memory-budget.json's `planned` key must not be able to fail
 			# a real deploy. This is what tells whoever is watching a deploy whether the box is
 			# still projected to have room for what is coming, not just for what is running now.
-			planned_mb=$(python3 lib/memory_budget_totals.py "$budget_file" "${COMPOSE_PROFILES:-}" --with-planned) || planned_mb=""
+			planned_mb=$(python3 lib/memory_budget_totals.py "$budget_file" --profiles "$declared_profiles" --with-planned) || planned_mb=""
 			if [ -n "$planned_mb" ] && [ "$planned_mb" -gt "$expected_mb" ]; then
 				projected_percent=$((planned_mb * 100 / mem_total_mb))
 				echo "  info  projected with the planned backlog too: ${planned_mb}M of ${mem_total_mb}M (${projected_percent}%) — see memory-budget.json's 'planned' key"
@@ -334,11 +366,23 @@ while read -r upstream; do
 	esac
 done < <(grep -oE 'reverse_proxy [a-z-]+:[0-9]+' caddy/Caddyfile | awk '{print $2}' | cut -d: -f1 | sort -u)
 
-# The catalogue says which products are sold; COMPOSE_PROFILES says which product services
-# run. They must agree (ADR-0013 §5): an `available` product with no service behind it is a
-# 504 the customer finds. Only checkable once Postgres exists — on the first deploy it does
-# not, and the row comes from a migration that has not run yet. `profile_for` came from
-# lib/active-profiles.sh, sourced above for the zero-activation check.
+# The catalogue says which products are sold; COMPOSE_PROFILES/EDGE_PROFILES says which
+# product services run. Two independent questions get asked here, both only checkable once
+# Postgres exists (on the first deploy it does not, and the rows come from migrations that have
+# not run yet):
+#
+#   1. Commercial listing agreement (ADR-0013 §5, unchanged by this fix round): an `available`
+#      product with no service behind it is a 504 the customer finds.
+#   2. Real-customer-impact advisory (H2, the memory-headroom slice's 2026-09-23 fix round,
+#      replacing the previous "zero-activation profile auto-off" — see the note above
+#      `declared_profiles` for why that auto-off was removed rather than fixed in place): a
+#      product with at least one real activation whose profile this box does not run is refused
+#      outright — turning that profile off would take a paying customer's product away, silently,
+#      the moment this deploy lands. A profile that is on, has zero activations, AND is not even
+#      sold in the catalogue is reported as information only: safe to consider trimming, never
+#      forced.
+#
+# `profile_for`/`key_for_profile` came from lib/active-profiles.sh, sourced above.
 if docker compose -f compose.prod.yml --env-file .env ps --status running postgres 2>/dev/null | grep -q postgres; then
 	catalogue_rc=0
 	available=$(docker compose -f compose.prod.yml --env-file .env exec -T postgres \
@@ -346,7 +390,8 @@ if docker compose -f compose.prod.yml --env-file .env ps --status running postgr
 	# An empty answer and a failed question look the same to the loop below, and a green line
 	# for a check that never ran is worse than no check.
 	[ "$catalogue_rc" -eq 0 ] || bad "could not read the product catalogue (psql exit $catalogue_rc): the catalogue/profile agreement is unverified"
-	enabled=",${COMPOSE_PROFILES:-},"
+
+	enabled=",${declared_profiles},"
 	sold_unserved=""
 	for key in $available; do
 		profile=$(profile_for "$key")
@@ -357,18 +402,61 @@ if docker compose -f compose.prod.yml --env-file .env ps --status running postgr
 		esac
 	done
 	if [ -z "$sold_unserved" ]; then ok "every product the catalogue sells has its service profile enabled"; else
-		bad "sold in the catalogue but no service will run for it:$sold_unserved — add the profile to COMPOSE_PROFILES or set the product to 'soon'"; fi
-	for profile in $(echo "${COMPOSE_PROFILES:-}" | tr ',' ' '); do
-		key=""
-		case "$profile" in inventory) key=operations ;; storefront) key=storefront ;; hrms|crm|pulseboard|projects|support|marketing|finance|itsm) key=$profile ;; esac
+		bad "sold in the catalogue but no service will run for it:$sold_unserved — add the profile to COMPOSE_PROFILES/EDGE_PROFILES or set the product to 'soon'"; fi
+	for profile in $(echo "$declared_profiles" | tr ',' ' '); do
+		key=$(key_for_profile "$profile")
 		[ -n "$key" ] || continue
 		case " $available " in
 		*" $key "*) ;;
 		*) echo "  warn  profile '$profile' runs but the catalogue does not sell '$key' yet (status is not 'available')" >&2 ;;
 		esac
 	done
+
+	# ---- the real-customer-impact advisory (H2/H3) ----
+	activations_rc=0
+	activated_keys=$(docker compose -f compose.prod.yml --env-file .env exec -T postgres \
+		psql -U opsgrids -d opsgrids -Atc "select distinct product_key from product.activations" 2>/dev/null) || activations_rc=$?
+	if [ "$activations_rc" -ne 0 ]; then
+		# H3: a query failure is not evidence of zero activations — it is evidence of nothing at
+		# all, and must never be read as "safe to turn this profile off". Skipped with a warning,
+		# not silently treated as an empty result.
+		echo "  warn  could not read product.activations (psql exit $activations_rc): the activation advisory is skipped this deploy — this is NOT the same as zero activations" >&2
+	else
+		# shellcheck disable=SC2086 # word-splitting activated_keys (one product key per line) on purpose
+		activated_list=$(activated_profiles $activated_keys)
+		activated_set=" $(echo "$activated_list" | tr '\n' ' ') "
+
+		unserved_customers=""
+		for profile in $activated_list; do
+			case "$enabled" in
+			*",$profile,"*) ;;
+			*) unserved_customers="$unserved_customers $profile" ;;
+			esac
+		done
+		if [ -z "$unserved_customers" ]; then
+			ok "every profile with a real activation is enabled"
+		else
+			bad "product(s) with active organizations have no service running — customers would lose access: profile(s)$unserved_customers. Add to COMPOSE_PROFILES/EDGE_PROFILES; do not remove a profile with a real activation."
+		fi
+
+		unused_and_unsold=""
+		for profile in $(echo "$declared_profiles" | tr ',' ' '); do
+			case "$activated_set" in
+			*" $profile "*) continue ;; # has at least one activation — not the same signal
+			esac
+			key=$(key_for_profile "$profile")
+			[ -n "$key" ] || continue
+			case " $available " in
+			*" $key "*) continue ;; # still commercially listed, just no takers yet
+			esac
+			unused_and_unsold="$unused_and_unsold $profile"
+		done
+		if [ -n "$unused_and_unsold" ]; then
+			echo "  info  profile(s) enabled with zero activations and not sold in the catalogue:$unused_and_unsold — costing a container group for nothing; safe to consider trimming (never forced)." >&2
+		fi
+	fi
 else
-	echo "  warn  Postgres not running yet: the catalogue/profile agreement check is skipped on this deploy" >&2
+	echo "  warn  Postgres not running yet: the catalogue/profile agreement and activation checks are skipped on this deploy" >&2
 fi
 
 # ---------------------------------------------------------------- the web root

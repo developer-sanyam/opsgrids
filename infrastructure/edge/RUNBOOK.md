@@ -797,58 +797,78 @@ settles; never the shared dev database). `preflight.sh` sums it against whicheve
 - **refuse** — over the 100% hard line. The deploy stops. A box this far over budget will not
   come up cleanly under load even if the deploy itself succeeds.
 
-If you see **refuse**: trim `COMPOSE_PROFILES`/`EDGE_PROFILES` to the products this box actually
-sells (drop one with zero activations first — preflight now warns about this on its own, the
-zero-activation profile auto-off below), or consolidate a service's processes the way
-`subscription`, `approval` and `notification` already were (ADR-0013's erratum, and its
-2026-09-23 memory-headroom addendum, have the list of what is left to do this way). **Do not**
-raise `hard_budget_percent` in `memory-budget.json` to make a refuse go away — that number is the
-line past which the kernel starts reclaiming from Postgres, RabbitMQ or Redis instead of an idle
-API container, and moving it does not move that fact.
+**Every product this box sells must have its profile listed explicitly in `EDGE_PROFILES` or
+`COMPOSE_PROFILES` — neither is ever computed for you (M4, the review's fix round, 2026-09-24).**
+An earlier version of this slice computed `COMPOSE_PROFILES` from the catalogue's own activations
+when neither was set. That was removed: `docker compose up` does not stop a container whose
+profile is no longer listed, so a computed value never actually changed what ran — it only
+changed what preflight *believed* was running, on a box where nobody had written down what it was
+supposed to be. Write the full list by hand and keep it current.
+
+`preflight.sh` still asks the catalogue two related, but separate, questions, both only once
+Postgres exists:
+- **Commercial listing agreement** (unchanged): an `available` product with no profile enabled is
+  a 504 the customer finds — **refused**.
+- **Real-customer-impact advisory** (new): a product with at least one real activation whose
+  profile is not enabled — **refused**, because turning it off would take a paying customer's
+  product away. A profile that is enabled, has zero activations, and is not even sold in the
+  catalogue — reported as **information** only, safe to consider trimming, never forced. If the
+  activations query itself fails, that is reported as a **warning**, never silently treated as
+  "zero activations" (a query failure is not evidence of anything).
+
+If you see the hard-budget **refuse**: this box's real production profile set is over the hard
+line on its own (see ADR-0013's memory-headroom addendum and its fix-round review) —
+`grandfathered_verdict` (below) lets an already-overcommitted box keep deploying as long as a new
+deploy does not make it worse; a *fresh* box with no recorded last-good deploy still refuses
+outright. Either way, the real fix is more RAM (a VM resize, an owner decision) or de-listing a
+product — not raising `hard_budget_percent` in `memory-budget.json`, which is the line past which
+the kernel starts reclaiming from Postgres, RabbitMQ or Redis instead of an idle API container,
+and moving it does not move that fact — or consolidating a service's processes the way
+`subscription`, `approval` and `notification` already were (ADR-0013's erratum and its two
+addenda have the running list of what is left to do this way).
+
+**The grandfather clause (B1a).** `preflight.sh` prices the memory budget by the containers
+**actually running** (`docker ps`, not `COMPOSE_PROFILES` — a box can carry orphaned containers
+from a profile someone believes they turned off, and those still cost real memory). If that total
+is over the hard line, `grandfathered_verdict` compares it against
+`${EDGE_STATE_DIR:-/srv/opsgrids/state}/edge-budget.last-ok` — the same total, recorded by
+`remote.sh record_ref` only after `health` passes on the deploy that wrote it. Not more than 1%
+worse than last time: downgraded to a loud `warn`, and the deploy proceeds. No `last-ok` file yet
+(a fresh box), or genuinely worse than last time: still **refuse**.
 
 `tests/infra/test_compose_memory_budget.py` (`make test-infra`) is the same check run in CI. Its
-worst-case test (`test_every_sellable_profile_at_once_is_refused_not_silently_allowed`) now
-*expects* a refuse for every profile at once — the re-measured numbers no longer let that
-combination fit at all, which is why `.env.example`'s `COMPOSE_PROFILES` ships empty rather than
-"everything on" — and a separate test
-(`test_realistic_default_profile_list_fits_comfortably`) pins the box's actual slice-plan
-default (`inventory` alone) comfortably under the soft line.
-`tests/infra/test_planned_headroom.py` proves that default, plus every backlog placeholder in
-`memory-budget.json`'s `planned` key, still lands under the soft line — the headroom check for
-what is coming, not just what is running.
-
-### Zero-activation profile auto-off
-
-A compose profile is a container group; a product nobody has activated yet is a container group
-running for nobody. `EDGE_PROFILES` in `.env` is an explicit, authoritative list of profiles this
-box runs — set it when a profile needs to be up ahead of its first sale (onboarding, a demo).
-Leave both `EDGE_PROFILES` and `COMPOSE_PROFILES` empty and `preflight.sh`/`remote.sh` compute the
-enabled profiles from the catalogue's own `product.activations` table instead — a profile with at
-least one activation runs, one with zero does not. Either way, `preflight.sh` also *warns* (does
-not refuse) when a profile is explicitly enabled with zero activations, naming it, so trimming it
-back is a deliberate choice rather than something that has to be rediscovered by reading the
-catalogue by hand.
+worst-case test (`test_every_sellable_profile_at_once_is_refused_not_silently_allowed`) *expects*
+a refuse for every profile at once — the re-measured numbers no longer let that combination fit at
+all, which is why `.env.example`'s `COMPOSE_PROFILES` ships empty rather than "everything on."
+`tests/infra/test_planned_headroom.py` prices the *real* production profile set (all ten — see the
+fix-round review, not "Inventory alone") plus every backlog placeholder in `memory-budget.json`'s
+`planned` key, and documents, by number, that it is over the hard line — the honest headroom
+picture, not a fit that does not exist.
 
 ### Rolling out the memory-headroom slice on this box
 
-This slice changes three things a running box needs to pick up in order: the corrected budget
+This slice's fix round changed four things a running box needs to pick up: the corrected budget
 numbers (informational — nothing to do), the `notification-cron` → `notification-worker` merge
-(one fewer container), and profile auto-off (`EDGE_PROFILES`, optional).
+(one fewer container), the removal of profile auto-computation (**write `EDGE_PROFILES`/
+`COMPOSE_PROFILES` explicitly if this box was relying on the computed default**), and the
+grandfather clause (informational until this box is actually over the hard line).
 
 ```bash
-# 1. Before deploying: decide whether this box needs EDGE_PROFILES set explicitly. If
-#    COMPOSE_PROFILES in .env already lists exactly the profiles this box sells and that is not
-#    changing, leave it — nothing else to do here. Only set EDGE_PROFILES if you want a profile
-#    to keep running ahead of its first activation.
+# 1. Before deploying: EDGE_PROFILES/COMPOSE_PROFILES must already list every profile this box
+#    sells, explicitly. If this box was standing on the removed auto-computed default (no
+#    EDGE_PROFILES, no COMPOSE_PROFILES), write the full list now — preflight.sh will otherwise
+#    price this deploy as "core only" and the real-customer-impact advisory will refuse it the
+#    moment it can see product.activations (every activated product's profile now looks missing).
 
 # 2. Deploy as usual — preflight, build, migrate, up, health, in that order (`make deploy`).
-#    Watch for two new preflight lines:
-#      info  no EDGE_PROFILES/COMPOSE_PROFILES set — computed from activations: ...
-#      warn  profile(s) enabled with zero activations, costing a container group for nothing: ...
-#    Neither blocks a deploy; both are new information, not new failure modes.
+#    Watch for the new preflight lines:
+#      FAIL  product(s) with active organizations have no service running ...   (refuses — fix #1)
+#      info  profile(s) enabled with zero activations and not sold in the catalogue: ...
+#      warn  memory budget (...): ... — OVER THE HARD BUDGET, grandfathered: not worse than ...
+#    The first blocks a deploy (by design); the other two are informational.
 
-# 3. Verify the merge: notification-cron must be gone, notification-worker must still be healthy
-#    and its log must show all three loops starting.
+# 3. Verify the notification merge: notification-cron must be gone, notification-worker must
+#    still be healthy and its log must show all three loops starting.
 docker compose -f compose.prod.yml --env-file .env ps notification-worker notification-cron
 #    -> notification-worker: running (healthy N/A — background, healthcheck disabled)
 #    -> notification-cron: "no such service" (expected — it no longer exists)
@@ -858,16 +878,27 @@ docker compose -f compose.prod.yml --env-file .env logs --tail 50 notification-w
 # 4. Verify campaigns still send: trigger or wait for a due campaign and confirm
 #    notification.cron.pass / notification.cron.tick_failed lines still appear in
 #    notification-worker's own log (they moved containers, not away).
+
+# 5. Verify approval's own merge picked up the same guard: approval-worker's log on startup
+#    should show approval.sweep.started the same way it always did — the guard is a behavioural
+#    change only visible if a tick actually fails (approval.sweep.tick_failed, then backed-off
+#    retries instead of the container restarting).
+
+# 6. Confirm the grandfather state file gets written on a healthy deploy:
+cat "${EDGE_STATE_DIR:-/srv/opsgrids/state}/edge-budget.last-ok"
+#    -> a single number (MB) — this is what the *next* deploy's own preflight will be compared
+#       against if it is ever over the hard budget line.
 ```
 
 **Rollback.** `docker compose up -d --remove-orphans` on the previous ref recreates
-`notification-cron` and reverts `notification-worker` to its two-consumer shape — the same
-`make edge-rollback` (`remote.sh previous-ref`) path every other deploy uses. Nothing in this
-slice is a one-way migration: no schema changed, no data moved. If a box's `.env` had
-`EDGE_PROFILES` or an emptied `COMPOSE_PROFILES` from this slice's `.env.example` and the rollback
-target predates profile auto-off, set `COMPOSE_PROFILES` back to an explicit list before rolling
-back — the previous ref's `remote.sh` does not know about `EDGE_PROFILES` or the activations
-fallback.
+`notification-cron` and reverts `notification-worker`/`approval-worker` to their pre-merge shapes
+— the same `make edge-rollback` (`remote.sh previous-ref`) path every other deploy uses. Nothing
+in this slice is a one-way migration: no schema changed, no data moved. If a box's `.env` had an
+emptied `COMPOSE_PROFILES` from this slice's `.env.example` and the rollback target predates this
+fix round, set `COMPOSE_PROFILES` back to an explicit list before rolling back — the previous
+ref's `remote.sh` may still expect a computed default that no longer exists. The grandfather
+state file (`edge-budget.last-ok`) is harmless to leave in place across a rollback; it is only
+ever compared against, never trusted as "what is currently running."
 
 ---
 

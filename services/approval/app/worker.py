@@ -6,8 +6,14 @@ Two containers used to run this service's background work — `approval-worker` 
 erratum, 2026-09-23) for two processes that are each idle almost all the time. They are
 combined here the same way `notification/app/worker.py` already combines its two consumers,
 and the same way `subscription/app/worker.py` combines its own consumer and sweep: one asyncio
-process, two independent loops, `gather`ed so either one raising brings the whole process down
-for the orchestrator to restart, rather than leaving the other running alone.
+process, two independent loops, run through `platform_core.supervise.run_supervised` so either
+one returning or raising cancels the other and ends the process for the orchestrator to
+restart, rather than leaving one running alone against a half-torn-down deploy (plain
+`asyncio.gather`, used here until the memory-headroom slice's 2026-09-23 fix round, propagates
+the first exception but does not itself cancel the other loop). `EscalationSweep` also gained
+`platform_core.supervise.GuardedSweep`'s poisoned-step guard in the same round: a discovery
+failure inside the sweep's own `tick()` no longer takes this whole process, consumer included,
+down with it.
 
 The consumer and the sweep have never shared a database role or a schedule assumption, and
 combining them changes neither: the consumer runs NOBYPASSRLS per event (`app.consumers.main`'s
@@ -41,6 +47,7 @@ from platform_core.db import (
     session_scope,
 )
 from platform_core.logging import get_logger
+from platform_core.supervise import run_supervised
 
 log = get_logger("approval.worker")
 
@@ -68,11 +75,10 @@ async def main() -> None:
         routing_keys=list(consumers.HIERARCHY_EVENTS) + list(consumers.REGULARIZATION_EVENTS),
         sweep="sla_escalation",
     )
-    # `gather` rather than sequential awaits: either loop returning is a failure, and the first
-    # exception should bring the process down so the orchestrator restarts it, rather than
-    # leaving one half running against a half-dead deploy (same reasoning as
-    # notification/app/worker.py).
-    await asyncio.gather(consumers.consumer.run(), sweep.run())
+    # Either loop returning or raising ends the group; `run_supervised` cancels the other one
+    # before this raises, so the orchestrator restarts a process with no orphaned loop still
+    # running against it (same reasoning as notification/app/worker.py).
+    await run_supervised(consumer=consumers.consumer.run(), sla_escalation=sweep.run())
 
 
 if __name__ == "__main__":

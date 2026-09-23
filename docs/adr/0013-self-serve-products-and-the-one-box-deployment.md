@@ -338,14 +338,16 @@ better than the previous number did, why this box has needed a swapfile since be
    optional the way it might look in isolation, because sharing a `gather` means an uncaught
    exception in the driver's discovery query would otherwise take the event consumer and the
    dispatcher down with it too. One fewer container; ~85 MB back at the corrected price.
-3. **Zero-activation profile auto-off**, implemented rather than left as a lever on paper:
-   `infrastructure/edge/lib/active-profiles.sh` maps a catalogue product key to its compose
-   profile and reduces a list of activated product keys to a deduplicated profile list.
-   `preflight.sh` and `remote.sh` both apply the same precedence — `EDGE_PROFILES` (explicit,
-   always wins) → `COMPOSE_PROFILES` (an operator's existing explicit choice, left alone) →
-   computed from `product.activations` (the new default when neither is set) — so what preflight
-   checks is what remote.sh actually runs. `preflight.sh` also warns, without refusing, when a
-   profile is enabled with zero activations.
+3. ~~**Zero-activation profile auto-off**, implemented rather than left as a lever on paper.~~
+   **Corrected by the review's fix round (2026-09-24, H2) — this was never actually a lever.**
+   The version described here computed `COMPOSE_PROFILES` from `product.activations` when neither
+   it nor `EDGE_PROFILES` was set. The review caught the flaw this text missed: `docker compose
+   up` does not stop a container whose profile is no longer in `COMPOSE_PROFILES` — it only
+   starts what a *newly enabled* profile adds. A computed value here never turned anything off; it
+   only changed what this script *believed* was running, which is a worse failure mode than
+   leaving the box alone. See "Fix round 1 review" below for what replaced it: `EDGE_PROFILES`/
+   `COMPOSE_PROFILES` stay fully explicit, and the activations query became a pure advisory that
+   never mutates either.
 4. **`.env.example`'s `COMPOSE_PROFILES` ships empty**, not "every product at once." The old
    default was already wrong before this slice (§5's own sizing was wrong, per the previous
    erratum); it is now actively unsafe to hand a fresh box, because the corrected numbers put
@@ -366,54 +368,236 @@ better than the previous number did, why this box has needed a swapfile since be
 
 ### The projected budget
 
-Against the box's realistic deployment today (ADR-0013 §5's own slice plan: core plus `inventory`
-alone, the only product ever actually sold) rather than the "every product at once" worst case:
+**Corrected by the review's fix round (2026-09-24, B1(c)) — the premise below was wrong.** This
+section originally priced against "core plus `inventory` alone," on the premise that Inventory
+was the only product this platform had ever sold. The coordinator's own review corrected that:
+**production runs all ten profiles** — every product this platform catalogues `available` — on
+the box's own explicit `COMPOSE_PROFILES`. The corrected numbers, against what the box actually
+runs:
 
 | scenario | expected MB | % of 3800 MB reference | verdict |
 |---|---|---|---|
 | core only | 1964 | 52% | ok |
-| core + `inventory` (today's real deployment) | 2134 | 56% | ok |
-| + every `planned` backlog item (ops-monitor, CRM lead api + customer-worker, payroll, recruit, config-service, operator/staff console, analytics, marketplace, workflow — one api or background container each at the corrected 85 MB, ops-monitor at its own 48 MB) | 3202 | **84%** | ok, under the 85% soft line — barely |
-| every sellable profile at once (the old `.env.example` default) | 4149 | 109% | **refuse** |
+| **real production (all ten profiles) — what the box actually runs today** | 4149 | **109%** | over the hard line **before a single planned service is added** |
+| + every `planned` backlog item (ops-monitor, CRM lead api + customer-worker, payroll, recruit, config-service, operator/staff console, analytics, marketplace, workflow) | 5217 | **137%** | over the hard line |
 
-**84% is the honest number, not a comfortable one.** It clears the 85%-soft / 15%-margin bar the
-backlog set, by about three quarters of one percentage point. It assumes every planned item is
-priced at exactly one container of its kind — if any of `payroll`, `recruit`, `analytics`,
-`marketplace` or `workflow` turns out to need a worker AND a cron the way `subscription` did
-before its own merge, this projection is wrong in the expensive direction the moment that
-service's own slice adds the second container. Treat 84% as "there is room for the backlog as
-currently scoped," not as "there is room to spare."
+**There is no honest number under the soft line here.** The box is overcommitted *today*, on what
+it already runs, independent of anything still on the backlog — see "Fix round 1 review" below for
+the decision this forced (grandfather the existing overcommit rather than refuse every future
+deploy over a fact that predates it) and what is still unresolved (more RAM or de-listing a
+product, an owner decision this repository cannot make on its own).
 
 ### What this does not fix — left for the owner, or a future slice
 
 - **`caddy`, `postgres`, `rabbitmq` and `redis` were not re-measured this slice.** They are
   estimated (caddy) or measured against their own compose comment (postgres, rabbitmq, redis)
   from before this slice existed. If a future slice re-measures them with the same isolated-image
-  method used here and finds a similar gap, the projected 84% above moves with it.
+  method used here and finds a similar gap, the projected numbers above move with it.
 - **`operations-cron`, `storefront-cron` and `document-cron` have no worker to merge into** (none
   of those three services has a consumer at all today) — ADR-0015's scheduler is the named
   candidate for absorbing a pure time-triggered sweep like these, but ADR-0015 §"Deliberately out
   of scope" explicitly deferred "making scheduler platform core" until a second producer needs it
   outside the `finance` profile. Moving these three sweeps onto `scheduler` is a real design
   change (scheduler would need to run under `inventory`/`storefront`'s own profiles or move to
-  core), not a wiring change, and was left undone rather than done in a hurry.
+  core, and each sweep's actual business logic — reconciliation, TLS probing, S3 purging — would
+  need to reach `scheduler`'s image somehow, unlike `edge-relay`'s generic, schema-blind outbox
+  drain), not a wiring change, and was left undone rather than done in a hurry — see "Fix round 1
+  review" below for why this stayed undone through a second round too.
 - **CI-built, registry-pulled images** (the previous erratum's own suggestion) would remove the
   build-time CPU/memory spike a deploy causes on this box, which is orthogonal to the steady-state
   numbers above but is the spike that turns "tight" into "briefly out of memory" during a deploy.
   Still not done; still real.
 - **`services/lead`, `services/customer` (its worker), `services/deal`, `services/subscription`,
-  `services/billing` and `services/account`** were out of scope for this slice by instruction.
-  Two concrete, in-scope-shaped follow-ups for whoever owns those services next: (1) `customer`
-  and `deal` have no worker at all today — when Q3's `customer-worker` (already priced in
-  `planned`) lands, give it the campaign-driver treatment from day one (one background container,
-  not a worker-plus-cron pair) rather than adding a `customer-cron` to merge away later; (2) if
-  `subscription`'s own `DunningSweep.run()` and `approval`'s `EscalationSweep.run()` (merged into
-  their workers by the *previous* erratum, before this one identified the poisoned-step guard
-  pattern) do not already catch an exception out of `tick()` the way
-  `scheduler.app.cron.Sweep.run()` and (now) `notification.app.cron.CampaignDriver.run()` do, they
-  are missing the same guard `notification`'s merge added here, for the same reason: a discovery
-  failure in either would currently take that service's whole worker process — its consumer
-  included — down with it.
+  `services/billing` and `services/account`** are out of scope for this slice by instruction —
+  `subscription` explicitly (the billing slice owns it and routes changes through its own
+  process); the others simply had no reason to be touched this round. One concrete, in-scope-
+  shaped follow-up for whoever owns `customer`/`deal` next: neither has a worker at all today —
+  when Q3's `customer-worker` (already priced in `planned`) lands, give it the campaign-driver
+  treatment from day one (one background container using `platform_core.supervise.GuardedSweep`
+  from the start, not a worker-plus-cron pair to merge away later). `approval`'s own
+  `EscalationSweep.run()` (merged into its worker by the *previous* erratum, before either round
+  identified the poisoned-step guard pattern) was fixed in the review's fix round — see below.
+  `subscription`'s `DunningSweep.run()` still has the identical gap and was deliberately not
+  touched: if it does not already catch an exception out of `tick()` the way
+  `scheduler.app.cron.Sweep.run()`, `notification.app.cron.CampaignDriver` and (now)
+  `approval.app.cron.EscalationSweep` do, a discovery failure in it would currently take
+  `subscription-worker`'s payment-event consumer down with it — the billing slice's own call to
+  make, using `platform_core.supervise.GuardedSweep`.
 - **`ops-monitor`** (slice/ops-monitor, e812d44, in review) is priced in `planned` at the
   coordinator-supplied 48 MB and is not otherwise touched by this slice — its own code and compose
   block belong to that slice, not this one.
+
+---
+
+## Fix round 1 review (2026-09-24)
+
+The coordinator's review of the addendum above found the "84% projected" conclusion rested on a
+wrong premise, one real correctness gap the addendum's own merges introduced, and a lever
+("zero-activation profile auto-off") that never actually worked. Findings, by label:
+
+**B1 — production runs all ten profiles; corrected numbers refuse every deploy.** The addendum's
+own "84% is the honest number" assumed Inventory was the only product sold. It is not: production
+sells everything this platform catalogues `available`, on the box's own explicit
+`COMPOSE_PROFILES`, and the corrected `kinds.background` price alone puts that at 109% — over the
+hard line before a single planned service is added (see "The projected budget" above, corrected).
+Decision: **grandfather, do not de-list.**
+- **(a) Grandfather clause.** `grandfathered_verdict` (`infrastructure/edge/lib/memory-budget.sh`)
+  downgrades an over-hard-line verdict to a loud `warn` when this deploy is not more than 1% worse
+  than the last one that actually went healthy; a fresh box with no recorded last-ok keeps
+  today's behaviour and still refuses. `remote.sh`'s `record_ref` writes
+  `${EDGE_STATE_DIR}/edge-budget.last-ok` (via the new `record_budget`) only after `health` passes,
+  using the same running-containers pricing `preflight.sh` itself now uses (below) — so a failed
+  deploy never lowers the bar the next one is measured against. Tests, one per branch:
+  `tests/infra/test_memory_budget.py`'s `test_ok_verdict_passes_through_unchanged`,
+  `test_warn_verdict_passes_through_unchanged`, `test_a_fresh_box_with_no_last_ok_keeps_refusing`,
+  `test_a_deploy_no_worse_than_last_ok_is_downgraded_to_warn`,
+  `test_a_deploy_within_one_percent_worse_is_still_downgraded`,
+  `test_exactly_at_the_one_percent_ceiling_is_downgraded`,
+  `test_a_deploy_that_makes_it_worse_still_refuses`,
+  `test_a_smaller_deploy_than_last_ok_is_downgraded`.
+- **(b) Consolidate `operations-cron`/`storefront-cron`/`document-cron` onto `scheduler`, or fold
+  each into an existing always-on container: not done this round.** Evaluated both options named
+  in the review. Moving each sweep's actual business logic (stock-ledger reconciliation, TLS
+  certificate probing, S3 orphan scanning) into `scheduler`'s own image is not the same shape
+  `edge-relay`'s consolidation was: `edge-relay` works because every service's outbox has the
+  *same* shape (`platform_core.edge_relay` never imports a service's own models, only a generic
+  `id`/`organization_id`/`event_type`/`payload` table), so one process can drain 27 of them with
+  no service-specific code at all. These three sweeps have no such common shape — folding them
+  into one process means importing (or reimplementing) three services' own business logic inside
+  a fourth service's image, which is a real architecture change with real correctness risk
+  (cross-schema database access, new role grants, new migrations), not a wiring change achievable
+  safely in this fix round. Folding into an "existing always-on container" is blocked by the same
+  rule that rejected a multi-app API host in the original addendum: CLAUDE.md's `import app`
+  ambiguity applies exactly as much to `app.cron` as to `app.main`. Left for a dedicated slice;
+  the potential saving (three containers, ~255 MB at the corrected price) is recorded above under
+  "The projected budget" and in `memory-budget.json`'s own `planned` comment.
+- **(c) False premises fixed.** This document's own "only inventory sold" claim is corrected
+  above (the projected-budget table and the decision-list strikethrough on auto-off).
+  `tests/infra/test_planned_headroom.py`'s `REALISTIC_PROFILES` is gone — replaced by
+  `_real_production_profiles`, which reads `memory-budget.json`'s own `profiles` list (all ten)
+  instead of hardcoding `{"inventory"}`; its two headline tests
+  (`test_current_production_over_hard_budget_is_grandfathered_not_a_fresh_regression`,
+  `test_realistic_today_plus_every_planned_service_projection`) now assert the honest,
+  over-100% numbers rather than a fit that never existed. RUNBOOK.md's rollout section is updated
+  to say every sold product's profile must be listed explicitly (see M4 below).
+
+**H2 — the zero-activation "auto-off" never actually stopped a container.** `docker compose up`
+starts what an enabled profile adds; it does not stop what a disabled one used to run (an
+"orphan," in compose's own vocabulary, is a service removed from the *file*, not one merely
+filtered out by profile). The addendum's `resolve_profiles` (`remote.sh`) and its computed-
+COMPOSE_PROFILES fallback in `preflight.sh` therefore never changed what was running — only what
+these scripts *believed* was running. Decision: **removed entirely.** `EDGE_PROFILES`/
+`COMPOSE_PROFILES` are now always explicit, resolved by one shared, pure function,
+`resolve_declared_profiles` (`infrastructure/edge/lib/active-profiles.sh`) — EDGE_PROFILES wins
+when set, COMPOSE_PROFILES otherwise, never a computed third value — used identically by
+`preflight.sh` and `remote.sh`'s own `resolve_profiles`, so the two can never quietly disagree
+about what "declared" means (tested by `tests/infra/test_active_profiles.py`'s
+`TestResolveDeclaredProfiles`). The activations query survives as a **pure advisory** with two
+distinct signals: a product with a real activation whose profile is not enabled now **refuses**
+the deploy outright (a paying customer would lose their product); a profile enabled with zero
+activations for a product the catalogue does not even sell is **reported as information**, never
+forced. `preflight.sh` also now prices the memory budget by the containers **actually running**
+(`docker ps --filter label=com.docker.compose.project=opsgrids-edge`), not by the declared profile
+list, for the same reason the auto-off never worked: a box carrying orphaned containers from a
+profile someone believes they turned off must still be priced for what it costs, not for what
+`.env` says it should cost. `tests/infra/test_memory_budget_totals_containers.py` pins the new
+`expected_total_for_names` function this uses, including
+`test_orphaned_container_from_a_disabled_profile_still_counts` — the exact scenario this finding
+is about.
+
+**H3 — an activations query failure must not read as zero activations.** Fixed alongside H2:
+`preflight.sh` now checks the query's own exit code before doing anything with its result: a
+non-zero exit prints a `warn` naming the psql exit code and skips the advisory entirely, rather
+than treating an empty (because the query never ran) result as "nothing is activated" — which,
+under H2's new refuse-on-unserved-customer rule, could otherwise turn a transient database hiccup
+into a false refusal, or worse, a false "safe to trim this profile" info line. No dedicated unit
+test (the branch is a single `if [ "$activations_rc" -ne 0 ]` in `preflight.sh` itself, not a
+library function extracted for it — see "left undone" below).
+
+**M4 — every sold product's profile must be listed explicitly.** A direct consequence of H2:
+RUNBOOK.md's memory-budget section documents `EDGE_PROFILES`/`COMPOSE_PROFILES` as always
+explicit, and its rollout steps no longer describe an auto-computed value.
+
+**H5 + M6 — `platform_core.supervise`: a real supervision primitive, not two more `asyncio.gather`
+calls.** New module, `libs/platform-core/src/platform_core/supervise.py`:
+`run_supervised(**named_coroutines)` runs every coroutine as a task and, the instant any one of
+them finishes — by returning *or* raising — cancels every other task and awaits its cancellation
+before raising (the first task's own exception, or `LoopExited` naming which loop merely
+returned). Plain `asyncio.gather` propagates the first exception but does not cancel the others,
+which keep running as orphaned tasks against a process already tearing down.
+`GuardedSweep`, the same module, generalises `scheduler.app.cron.Sweep.run()`'s poisoned-step
+guard: a `tick()` that raises is logged and backed off exponentially (capped, reset on the next
+clean tick) rather than propagating; `asyncio.CancelledError` is never caught. Adopted in
+`notification` (`app/worker.py`'s three loops now run through `run_supervised`; `CampaignDriver`
+now extends `GuardedSweep` instead of carrying its own copy of the guard) and `approval`
+(`app/worker.py` likewise; `EscalationSweep` now extends `GuardedSweep`, fixing the exact
+unguarded-discovery gap the review named at `app/cron.py:118-119` and `:147-157` — a
+DB-restart-shaped exception from `due_escalation_steps` used to propagate straight out of the old
+inline loop and, since the previous erratum's own merge, would have taken the hierarchy/
+regularization consumer down with it too). **`subscription` was deliberately not touched** — the
+billing slice owns it. Tests: `libs/platform-core/tests/test_supervise.py` (9 tests: a returning
+coroutine ends the group and cancels the rest; a raising one propagates its own exception and
+cancels the rest, without a sibling's own teardown exception masking it; `GuardedSweep`'s
+tick-failure backoff, its cap, and that `CancelledError` is never swallowed; the heartbeat file is
+written on both success and failure and a missing heartbeat directory does not kill the loop);
+`services/approval/tests/test_sweep_run.py` (3, the same guard shape
+`services/scheduler/tests/test_sweep_run.py` already pinned, now proven for `EscalationSweep`
+too); `services/notification/tests/test_cron_run.py` (3, updated for the shared `GuardedSweep`);
+`services/notification/tests/test_worker_wiring.py` and
+`services/approval/tests/test_worker_wiring.py` (1 each) — the "worker.main runs all loops" wiring
+tests the review asked for, proving `main()` passes every loop into `run_supervised` without
+needing a real database or broker (every DB-role assertion is faked to a no-op).
+
+**M7 — a dedicated thread pool for campaign SMTP so password resets are never starved.**
+`transports.CAMPAIGN_SMTP_EXECUTOR` (`services/notification/app/transports.py`), a two-thread
+`ThreadPoolExecutor`. `SmtpTransport` takes an optional `executor` — `None` (the process's default
+pool, what `asyncio.to_thread` itself uses) unless a caller passes one.
+`services/notification/app/services.py:campaign_transport` is the **only** caller that passes
+`CAMPAIGN_SMTP_EXECUTOR`; `send_test`'s own interactive, one-off send stays on the default pool on
+purpose, so a large campaign already in flight can never make an operator's "send a test" button
+hang behind it, and the platform's own shared transport (built once in `app/worker.py`, used by
+the dispatcher for password resets and trial-ending mail) is unaffected because it is never given
+an executor at all. Docstrings on `CAMPAIGN_SMTP_EXECUTOR`, `SmtpTransport.__init__`,
+`_transport_for_connection` and `campaign_transport` explain why, for the next person who wonders
+whether two threads is a typo. Tests (`services/notification/tests/test_transports.py`):
+`test_send_many_uses_the_process_default_executor_when_none_is_given`,
+`test_send_many_uses_the_executor_it_was_given`,
+`test_campaign_smtp_executor_is_a_small_dedicated_pool`,
+`test_campaign_transport_uses_the_dedicated_executor`.
+
+**M8 — `planned_total_mb` and the real production set; account-worker's merged sweep needs no new
+container.** Covered under B1(c) above for the profile-set correction. Separately,
+`memory-budget.json`'s own `planned.$comment` now notes that account-worker's incoming merged
+sweep and subscription-worker's incoming "billing-run" step are **not** priced in `planned` — both
+land inside an already-priced, already-running container, so pricing them again would double-
+count. If either of those merges later needs a bigger `mem_limit` for the container it lands in,
+that is a `containers`/`mem_limit_mb` edit when it happens, not a `planned` placeholder now.
+
+**L9 — replaced a tautological test; added real coverage.**
+`tests/infra/test_active_profiles.py`'s old `test_a_profile_named_after_its_own_key` asserted
+`profile_for(key) == key` against a list of names typed into the test itself — proving the test's
+own list agreed with itself, nothing about `profile_for` or `active-profiles.sh`. Replaced by
+`TestProfileForAndKeyForProfileCoverExactlyTheSameProfiles`, which walks `memory-budget.json`'s
+own `profiles` list (the actual, current set) and proves `profile_for`/`key_for_profile` round-
+trip for every one of them — the two mappings can now never quietly drift apart the way two
+independently hand-maintained `case` statements eventually would.
+
+**L10 — preflight's reverse mapping now comes from the shared library.** `preflight.sh` used to
+keep its own inline `case "$profile" in inventory) key=operations ;; ...` — the literal inverse of
+`lib/active-profiles.sh`'s `profile_for`, hand-copied. That case statement is gone; `preflight.sh`
+now calls the new `key_for_profile` (same file), and L9's round-trip test is what keeps the two
+directions honest going forward.
+
+**L11 — the stale comment at `compose.prod.yml`'s background fuse.** Fixed alongside the
+`kinds.background` correction itself (the same edit that changed 42 MB to 85 MB in
+`memory-budget.json` also updated the comment on `x-background`'s `mem_limit: 192m` that still
+said "35-50 MB" and "4-5x that").
+
+**Left genuinely undone, and why:**
+- B1(b)'s scheduler consolidation (above) — a real architecture change, not attempted this round.
+- H3's branch has no dedicated unit test — it is a single `if` in `preflight.sh` itself rather
+  than logic extracted to a tested library function; extracting it would mean shelling out to
+  `docker compose exec ... psql` from a test, which is exactly the "never the shared database"
+  risk this whole exercise exists to avoid, or mocking `docker` itself, which would test the mock.
+- `subscription`'s own missing poisoned-step guard (same shape as the one `approval` had) — not
+  touched, per instruction; the billing slice's call.

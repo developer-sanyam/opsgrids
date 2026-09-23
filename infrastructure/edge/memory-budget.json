@@ -202,7 +202,17 @@
       "slice that actually builds each of these replaces its placeholder with real `containers`",
       "entries, which is when `test_every_compose_service_is_in_the_budget` starts pricing it for",
       "real. Never summed into the enforced budget `expected_mb` preflight.sh refuses a deploy",
-      "over — only into the separate projected total this file's own header describes."
+      "over — only into the separate projected total this file's own header describes.",
+      "",
+      "M8 (review fix round 1, 2026-09-24): two items the coordinator named as 'incoming' are",
+      "deliberately NOT priced here — account-worker gaining a merged sweep (the same",
+      "subscription/approval/notification pattern) and subscription-worker gaining a 'billing-run'",
+      "step both land inside an EXISTING container, adding zero new ones. Pricing either here",
+      "would double-count: the container they land in is already priced in `containers`, at the",
+      "same `background` kind, regardless of how many loops run inside it (see kinds.background's",
+      "own note: a background process's cost is dominated by its imported module graph, not by",
+      "how many loops share the process). If a future merge ever needs a bigger `mem_limit` for",
+      "the container it lands in, that is a `containers`/`mem_limit_mb` edit, not a `planned` one."
     ],
     "ops-monitor": {
       "kind": "ops_monitor",

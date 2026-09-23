@@ -74,3 +74,57 @@ def test_custom_thresholds_are_respected() -> None:
     assert memory_budget_verdict(1_024_000, 400, 50, 70) == "ok 40"
     assert memory_budget_verdict(1_024_000, 600, 50, 70) == "warn 60"
     assert memory_budget_verdict(1_024_000, 800, 50, 70) == "refuse 80"
+
+
+# -------------------------------------------------------- grandfathered_verdict (B1a)
+
+
+def grandfathered_verdict(
+    verdict: str, percent: int, expected_mb: int, last_ok_mb: str = ""
+) -> str:
+    script = f'source "{MEMORY_BUDGET_LIB}"; grandfathered_verdict "$1" "$2" "$3" "${{4:-}}"'
+    args = ["bash", "-c", script, "_", verdict, str(percent), str(expected_mb), str(last_ok_mb)]
+    result = subprocess.run(args, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def test_ok_verdict_passes_through_unchanged() -> None:
+    assert grandfathered_verdict("ok", 43, 1000, "2000") == "ok 43"
+
+
+def test_warn_verdict_passes_through_unchanged() -> None:
+    assert grandfathered_verdict("warn", 90, 1000, "2000") == "warn 90"
+
+
+def test_a_fresh_box_with_no_last_ok_keeps_refusing() -> None:
+    """No prior successful deploy recorded: today's behaviour, unchanged. A box's very first
+    over-budget deploy must not be laundered into a warning just because nothing came before it."""
+    assert grandfathered_verdict("refuse", 109, 4149) == "refuse 109"
+    assert grandfathered_verdict("refuse", 109, 4149, "") == "refuse 109"
+
+
+def test_a_deploy_no_worse_than_last_ok_is_downgraded_to_warn() -> None:
+    # Exactly the same total as last time: 0% worse, well within the 1% ceiling.
+    assert grandfathered_verdict("refuse", 109, 4149, "4149") == "warn 109"
+
+
+def test_a_deploy_within_one_percent_worse_is_still_downgraded() -> None:
+    # 4149 is within 1% of 4110 (ceiling: 4110 + 41 = 4151).
+    assert grandfathered_verdict("refuse", 109, 4149, "4110") == "warn 109"
+
+
+def test_exactly_at_the_one_percent_ceiling_is_downgraded() -> None:
+    # last_ok=1000 -> ceiling 1010. expected_mb=1010 is "no worse", inclusive.
+    assert grandfathered_verdict("refuse", 101, 1010, "1000") == "warn 101"
+
+
+def test_a_deploy_that_makes_it_worse_still_refuses() -> None:
+    # last_ok=1000 -> ceiling 1010. expected_mb=1011 is over it.
+    assert grandfathered_verdict("refuse", 101, 1011, "1000") == "refuse 101"
+
+
+def test_a_smaller_deploy_than_last_ok_is_downgraded() -> None:
+    """This deploy actually improved things (still over the hard line, but less than before) —
+    definitely not "worse than last time"."""
+    assert grandfathered_verdict("refuse", 105, 4000, "4149") == "warn 105"

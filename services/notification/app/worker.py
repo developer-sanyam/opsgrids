@@ -10,14 +10,22 @@ They are still two queues with two bindings and two prefetch windows, so a backl
 not stall the other. Both are I/O-bound and cooperative: a slow provider is awaited, not spun on,
 so a dispatcher waiting on SMTP does not stop a ticket event being folded.
 
-**The campaign driver joined this `gather` in ADR-0013's memory-budget erratum (2026-09-23).**
+**The campaign driver joined this group in ADR-0013's memory-budget erratum (2026-09-23).**
 Two containers used to run this service's background work — `notification-worker` on the two
 consumers above and `notification-cron` on `app.cron`'s `CampaignDriver` — at 192 MB apiece for
 processes that are each idle almost all the time, the same shape `subscription-worker` and
-`approval-worker` already collapsed. `CampaignDriver.run()` gained its own poisoned-step guard
-(the same shape `scheduler.app.cron.Sweep.run()` uses, ADR-0015) as part of this move: sharing a
-`gather` means an uncaught exception in the driver's discovery query would otherwise take the
-event consumer and the dispatcher down with it, not just the campaign sweep.
+`approval-worker` already collapsed. `CampaignDriver` gained its own poisoned-step guard
+(`platform_core.supervise.GuardedSweep`, the same shape `scheduler.app.cron.Sweep` uses,
+ADR-0015) as part of this move: sharing a process means an uncaught exception in the driver's
+discovery query would otherwise take the event consumer and the dispatcher down with it, not
+just the campaign sweep.
+
+**`run_supervised`, not a plain `asyncio.gather` (memory-headroom slice, 2026-09-23 fix round).**
+Plain `gather` propagates the first exception but does not cancel the other two loops — they
+keep running, orphaned, against a process that is already on its way down. `run_supervised`
+(`platform_core.supervise`) cancels every other loop the instant any one of them returns or
+raises, so there is never a moment with one loop dead and another still touching a connection
+pool this process is about to tear down.
 
 `app/cron.py` keeps its own `main()` and remains directly runnable (`python -m app.cron`) for
 debugging the campaign driver in isolation on a laptop; `bin/cron` still points at it. Only
@@ -44,6 +52,7 @@ from platform_core.db import (
     session_scope,
 )
 from platform_core.logging import get_logger
+from platform_core.supervise import run_supervised
 
 log = get_logger("notification.worker")
 
@@ -80,10 +89,14 @@ async def main() -> None:
         queues=["notification.events", "notification.dispatch"],
         sweep="campaign_driver",
     )
-    # `gather` rather than sequential awaits: any one of these returning is a failure, and the
-    # first exception should bring the process down so the orchestrator restarts it, rather
-    # than leaving the others running alone against a half-dead deploy.
-    await asyncio.gather(consumers.consumer.run(), dispatcher.consumer.run(), driver.run())
+    # Any one of these returning or raising ends the group; `run_supervised` cancels the other
+    # two before this raises, so the orchestrator restarts a process with no orphaned loop still
+    # running against it (platform_core.supervise's own docstring has the full argument).
+    await run_supervised(
+        events=consumers.consumer.run(),
+        dispatch=dispatcher.consumer.run(),
+        campaign_driver=driver.run(),
+    )
 
 
 if __name__ == "__main__":

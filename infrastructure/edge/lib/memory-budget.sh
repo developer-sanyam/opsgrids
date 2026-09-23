@@ -33,3 +33,42 @@ memory_budget_verdict() {
 		echo "ok $percent"
 	fi
 }
+
+# grandfathered_verdict <verdict> <percent> <expected_mb> [<last_ok_mb>]
+#   B1(a), the memory-headroom slice's 2026-09-23 fix round: production runs every product it
+#   sells (ten profiles), and the re-measured `kinds.background` price (memory-budget.json's own
+#   header) puts that combination over the hard budget line on its own, with no planned service
+#   added yet. Refusing every future deploy over a fact that was already true yesterday helps
+#   nobody and blocks real fixes from shipping. This function is the one place that decides
+#   whether an already-`refuse` verdict from `memory_budget_verdict` should actually refuse.
+#
+#   Only ever touches a `refuse` verdict — `ok` and `warn` pass through completely unchanged, so
+#   a box that is not overcommitted is never affected by any of this.
+#
+#   No `last_ok_mb` (a fresh box, or one preflight has never recorded a successful deploy for):
+#   today's behaviour, unchanged — refuse. This is deliberately NOT a way to launder a box's very
+#   first over-budget deploy into a warning by never letting it succeed once.
+#
+#   `last_ok_mb` present: compares `expected_mb` (this deploy) against `last_ok_mb` (the most
+#   recent deploy that actually went healthy) plus 1%. Within that: downgrade to a loud `warn` —
+#   the box was already overcommitted and this deploy does not make it worse, so it is allowed
+#   through with the overcommit stated plainly rather than blocked on a fact this deploy did not
+#   create. Over that ceiling: still `refuse` — THIS deploy is what pushed it further, which is
+#   exactly the case the hard budget line exists to catch.
+#
+#   Integer-only 1% ceiling (`last_ok_mb + last_ok_mb / 100`), rounded down the same way
+#   `memory_budget_verdict`'s own percent is: a deploy landing exactly on the ceiling is treated
+#   as "no worse", not as borderline-refuse.
+grandfathered_verdict() {
+	local verdict="$1" percent="$2" expected_mb="$3" last_ok_mb="${4:-}"
+	if [ "$verdict" != "refuse" ] || [ -z "$last_ok_mb" ]; then
+		echo "$verdict $percent"
+		return 0
+	fi
+	local ceiling=$((last_ok_mb + last_ok_mb / 100))
+	if [ "$expected_mb" -le "$ceiling" ]; then
+		echo "warn $percent"
+	else
+		echo "refuse $percent"
+	fi
+}

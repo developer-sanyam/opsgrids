@@ -140,9 +140,12 @@ x-background: &background
       condition: service_healthy
     rabbitmq:
       condition: service_healthy
-  # Same reasoning as the API fuse above, for the smaller number: a consumer or a sweep idles
-  # at 35–50 MB (`memory-budget.json`'s `kinds.background`, 42 MB expected — the edge-relay
-  # comment below measured its idle consumers at ~35 MB each). 192m is still 4–5x that.
+  # A consumer or a sweep idles at 85-93 MB measured (`memory-budget.json`'s `kinds.background`,
+  # 85 MB expected — corrected by the memory-headroom slice, 2026-09-23: the previous 35-50 MB
+  # here was never actually measured, and building the real image against an isolated Postgres/
+  # Redis/RabbitMQ showed a background process costs about the same as an API one, not a
+  # fraction of it — see memory-budget.json's own header for the method). 192m is still ~2.3x
+  # that, a smaller multiple than before this correction but still a real fuse.
   mem_limit: 192m
   networks:
     - back

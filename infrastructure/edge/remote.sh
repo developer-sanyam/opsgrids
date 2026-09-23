@@ -39,42 +39,26 @@ source lib/active-profiles.sh
 
 COMPOSE=(docker compose -f compose.prod.yml --env-file .env)
 
-# Zero-activation profile auto-off (ADR-0013's memory-budget erratum, 2026-09-23), the same
-# precedence preflight.sh applies so what preflight checked is what this actually runs.
-# EDGE_PROFILES in .env, if set, is an explicit, authoritative override — it always wins.
-# Neither EDGE_PROFILES nor COMPOSE_PROFILES set: compute from the catalogue's own activations
-# rather than defaulting to "run nothing", which is what an unset COMPOSE_PROFILES would
-# otherwise silently mean on a fresh box or one where it was never written. Exported, so it
-# takes precedence over the (possibly stale, possibly absent) COMPOSE_PROFILES line in .env for
-# every "${COMPOSE[@]}" call below — docker compose resolves an exported shell variable ahead of
-# one read from --env-file.
+# EDGE_PROFILES/COMPOSE_PROFILES precedence (`resolve_declared_profiles`, lib/active-profiles.sh)
+# — the same shared rule preflight.sh applies, so what preflight checked is what this actually
+# runs. **This used to also compute COMPOSE_PROFILES from the catalogue's own activations when
+# both were unset (H2, the memory-headroom slice's 2026-09-23 fix round removed it):** `docker
+# compose up` does not stop a container whose profile was silently removed, so a computed value
+# here never actually changed what was running — only what this script *believed* was running,
+# which is worse than leaving it alone. Neither set now means exactly what it says: core only. A
+# human decides what runs and writes it down.
 resolve_profiles() {
 	[ -f .env ] || return 0
-	local edge_profiles compose_profiles activated_keys computed
+	local edge_profiles compose_profiles resolved
 	edge_profiles=$(sed -n 's/^EDGE_PROFILES=//p' .env | head -1 | tr -d '"'"'"' \r')
-	if [ -n "$edge_profiles" ]; then
-		export COMPOSE_PROFILES="$edge_profiles"
-		echo "profiles: EDGE_PROFILES set — running $COMPOSE_PROFILES"
-		return 0
-	fi
 	compose_profiles=$(sed -n 's/^COMPOSE_PROFILES=//p' .env | head -1 | tr -d '"'"'"' \r')
-	if [ -n "$compose_profiles" ]; then
-		# An operator already made an explicit choice; leave it exactly as .env has it.
-		return 0
-	fi
-	if ! "${COMPOSE[@]}" ps --status running postgres 2>/dev/null | grep -q postgres; then
-		echo "profiles: no EDGE_PROFILES/COMPOSE_PROFILES set and Postgres is not up yet — core only"
-		return 0
-	fi
-	activated_keys=$("${COMPOSE[@]}" exec -T postgres psql -U opsgrids -d opsgrids -Atc \
-		"select distinct product_key from product.activations" 2>/dev/null) || activated_keys=""
-	# shellcheck disable=SC2086 # word-splitting activated_keys (one product key per line) on purpose
-	computed=$(activated_profiles $activated_keys | tr '\n' ',' | sed 's/,$//')
-	if [ -n "$computed" ]; then
-		export COMPOSE_PROFILES="$computed"
-		echo "profiles: no EDGE_PROFILES/COMPOSE_PROFILES set — computed from activations: $COMPOSE_PROFILES"
-	else
-		echo "profiles: no EDGE_PROFILES/COMPOSE_PROFILES set and no product has an activation yet — core only"
+	resolved=$(resolve_declared_profiles "$edge_profiles" "$compose_profiles")
+	if [ -n "$edge_profiles" ]; then
+		# Exported, so it takes precedence over the COMPOSE_PROFILES line in .env for every
+		# "${COMPOSE[@]}" call below — docker compose resolves an exported shell variable ahead
+		# of one read from --env-file.
+		export COMPOSE_PROFILES="$resolved"
+		echo "profiles: EDGE_PROFILES set — running $COMPOSE_PROFILES"
 	fi
 }
 resolve_profiles
@@ -336,6 +320,27 @@ record_ref() {
 	echo "$sha" >"$STATE_DIR/last-good-ref"
 	printf '%s %s\n' "$(date -u +%FT%TZ)" "$sha" >>"$STATE_DIR/deploy-log"
 	echo "recorded good ref: $sha"
+	record_budget
+}
+
+# B1(a), the memory-headroom slice's 2026-09-23 fix round: the number `preflight.sh`'s own
+# grandfather clause (`grandfathered_verdict`, lib/memory-budget.sh) compares a *future* deploy
+# against — this box's own steady-state total, priced the same way preflight prices it (by the
+# containers actually running, not by COMPOSE_PROFILES: see preflight.sh's own comment on why).
+# Written here, after `health` has already proved this deploy is the one actually serving, so a
+# deploy that failed health never gets to lower the bar the next one is measured against.
+record_budget() {
+	local budget_file="memory-budget.json" running_container_names containers_csv mb
+	[ -f "$budget_file" ] || return 0
+	command -v python3 >/dev/null 2>&1 || return 0
+	running_container_names=$(docker ps --filter "label=com.docker.compose.project=opsgrids-edge" \
+		--filter "status=running" --format '{{.Label "com.docker.compose.service"}}' 2>/dev/null || echo "")
+	[ -n "$running_container_names" ] || return 0
+	containers_csv=$(echo "$running_container_names" | tr '\n' ',' | sed 's/,$//')
+	mb=$(python3 lib/memory_budget_totals.py "$budget_file" --containers "$containers_csv") || return 0
+	mkdir -p "$STATE_DIR"
+	echo "$mb" >"$STATE_DIR/edge-budget.last-ok"
+	echo "recorded memory budget: ${mb}M (this box's own grandfather line for the next deploy)"
 }
 
 # The ref to roll back TO: the most recent one that served before the one serving now.
@@ -373,6 +378,7 @@ deploy)
 	record_ref
 	;;
 previous-ref) previous_ref ;;
+record-budget) record_budget ;;
 last-good-ref) good_ref ;;
 reconcile-permissions) reconcile_permissions "${2:-}" "${3:-}" ;;
 backup) ./backup.sh ;;
@@ -399,7 +405,7 @@ compose)
 	"${COMPOSE[@]}" "$@"
 	;;
 *)
-	echo "usage: remote.sh {assert-host <host>|preflight|build|validate|migrate|reconcile-roles|up|health|deploy|previous-ref|backup|status|logs [lines] [svc]|compose ...}" >&2
+	echo "usage: remote.sh {assert-host <host>|preflight|build|validate|migrate|reconcile-roles|up|health|deploy|previous-ref|record-budget|backup|status|logs [lines] [svc]|compose ...}" >&2
 	exit 64
 	;;
 esac
