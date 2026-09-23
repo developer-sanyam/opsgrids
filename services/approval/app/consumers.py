@@ -41,7 +41,9 @@ from typing import Any
 from app.config import settings
 from app.models import ProcessedEvent
 from app.services import (
+    apply_leave_outcome,
     apply_regularization_outcome,
+    open_leave_request,
     open_regularization_request,
     upsert_hierarchy_node,
 )
@@ -284,6 +286,95 @@ async def on_regularization_applied(envelope: dict[str, Any]) -> None:
     )
 
 
+# --------------------------------------------------------------------- routing (HRMS leave slice 1)
+
+#: Contract strings from leave-service (`services/leave/app/services.py`), named here rather than
+#: imported (CLAUDE.md). Same shape as regularisation's pair above: `.requested` opens a
+#: `hrms.time.leave` request, `.applied` is leave's return leg once a decision lands.
+EVT_LEAVE_REQUESTED = "hrms.time.leave.requested"
+EVT_LEAVE_APPLIED = "hrms.time.leave.applied"
+
+LEAVE_EVENTS = (EVT_LEAVE_REQUESTED, EVT_LEAVE_APPLIED)
+
+
+@consumer.on(EVT_LEAVE_REQUESTED)
+async def on_leave_requested(envelope: dict[str, Any]) -> None:
+    """Opens a `hrms.time.leave` request (ADR-0006 §4). Payload: `organization_id,
+    leave_request_id (-> source_ref), employee_id (-> requester), leave_type_id, start_date,
+    end_date, half_day_start, half_day_end, total_half_days, reason (-> request_note)`.
+
+    `summary` carries only structured, enumerable facts — dates, ids and half-day counts — never
+    `reason`, the same "no free text in the JSONB" rule ADR-0006 §3 states for regularisation's
+    identical split.
+    """
+    event_id = uuid.UUID(envelope["event_id"])
+    payload = envelope["payload"]
+    organization_id = uuid.UUID(payload["organization_id"])
+
+    opened = False
+    async with session_scope(organization_id=organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("leave.requested.duplicate", event_id=str(event_id))
+            return
+
+        request = await open_leave_request(
+            session,
+            organization_id=organization_id,
+            source_ref=uuid.UUID(str(payload["leave_request_id"])),
+            requester_employee_id=uuid.UUID(str(payload["employee_id"])),
+            summary={
+                "leave_type_id": payload["leave_type_id"],
+                "start_date": payload["start_date"],
+                "end_date": payload["end_date"],
+                "half_day_start": payload["half_day_start"],
+                "half_day_end": payload["half_day_end"],
+                "total_half_days": payload["total_half_days"],
+            },
+            request_note=payload.get("reason"),
+        )
+        opened = request is not None
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+
+    log.info(
+        "leave.requested.processed",
+        event_id=str(event_id),
+        organization_id=str(organization_id),
+        opened=opened,
+    )
+
+
+@consumer.on(EVT_LEAVE_APPLIED)
+async def on_leave_applied(envelope: dict[str, Any]) -> None:
+    """Records leave's return leg (ADR-0006 §12). Payload: `organization_id, leave_request_id
+    (-> source_ref), approval_request_id, request_type, outcome, failure_reason?`."""
+    event_id = uuid.UUID(envelope["event_id"])
+    payload = envelope["payload"]
+    organization_id = uuid.UUID(payload["organization_id"])
+
+    applied = False
+    async with session_scope(organization_id=organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("leave.applied.duplicate", event_id=str(event_id))
+            return
+
+        request = await apply_leave_outcome(
+            session,
+            organization_id=organization_id,
+            source_ref=uuid.UUID(str(payload["leave_request_id"])),
+            outcome=str(payload["outcome"]),
+            failure_reason=payload.get("failure_reason"),
+        )
+        applied = request is not None
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+
+    log.info(
+        "leave.applied.processed",
+        event_id=str(event_id),
+        organization_id=str(organization_id),
+        applied=applied,
+    )
+
+
 async def main() -> None:
     cfg = settings()
     engine = init_engine(cfg)
@@ -293,7 +384,7 @@ async def main() -> None:
     await assert_app_role(engine, environment=cfg.environment)
     log.info(
         "approval.consumer.bindings",
-        routing_keys=list(HIERARCHY_EVENTS) + list(REGULARIZATION_EVENTS),
+        routing_keys=list(HIERARCHY_EVENTS) + list(REGULARIZATION_EVENTS) + list(LEAVE_EVENTS),
     )
     await consumer.run()
 

@@ -57,6 +57,69 @@
     },
     {
       "action": "read",
+      "default_scope": "OWN",
+      "description": "See leave balances",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "time",
+      "resource": "leave_balance"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Grant or adjust a leave balance",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "time",
+      "resource": "leave_balance"
+    },
+    {
+      "action": "manage",
+      "default_scope": "ORG",
+      "description": "Cancel or adjust any employee's leave request directly",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "time",
+      "resource": "leave_request"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See leave requests",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "time",
+      "resource": "leave_request"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Apply for leave and cancel your own request",
+      "is_dangerous": false,
+      "max_scope": "OWN",
+      "module": "time",
+      "resource": "leave_request"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See leave types and their policy",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "time",
+      "resource": "leave_type"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Define leave types and their policy",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "time",
+      "resource": "leave_type"
+    },
+    {
+      "action": "read",
       "default_scope": "ORG",
       "description": "See shift definitions",
       "is_dangerous": false,
@@ -79,7 +142,7 @@
     {
       "code": "HR_ADMIN",
       "cross_product": false,
-      "description": "Administers time and attendance across the organization: reads and corrects every employee's attendance, and defines the organization's shifts and field geo-fences. Deliberately built from the HRMS catalogue alone. Administers people data across the organization: reads every employee and creates, edits and transitions their records. Deliberately built from the HRMS catalogue alone \u2014 administering HR is not the same job as owning the account.",
+      "description": "Administers time and attendance across the organization: reads and corrects every employee's attendance, and defines the organization's shifts and field geo-fences. Deliberately built from the HRMS catalogue alone. Administers people data across the organization: reads every employee and creates, edits and transitions their records. Deliberately built from the HRMS catalogue alone \u2014 administering HR is not the same job as owning the account. Administers leave across the organization: defines leave types, grants and adjusts balances, and reads or force-cancels any employee's request. Deliberately built from the HRMS catalogue alone.",
       "grants": [
         {
           "code": "hrms.people.employee.read",
@@ -106,6 +169,34 @@
           "scope": "ORG"
         },
         {
+          "code": "hrms.time.leave_balance.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "hrms.time.leave_balance.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "hrms.time.leave_request.manage",
+          "scope": "ORG"
+        },
+        {
+          "code": "hrms.time.leave_request.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "hrms.time.leave_request.write",
+          "scope": "OWN"
+        },
+        {
+          "code": "hrms.time.leave_type.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "hrms.time.leave_type.write",
+          "scope": "ORG"
+        },
+        {
           "code": "hrms.time.shift.read",
           "scope": "ORG"
         },
@@ -121,7 +212,7 @@
     {
       "code": "EMPLOYEE",
       "cross_product": false,
-      "description": "Every person with an HRMS seat. Punches and reads their own attendance, asks for corrections to it, and sees the organization's shifts. Every person with an HRMS seat. Sees their own employment record.",
+      "description": "Every person with an HRMS seat. Punches and reads their own attendance, asks for corrections to it, and sees the organization's shifts. Every person with an HRMS seat. Sees their own employment record. Every person with an HRMS seat. Sees the organization's leave types, applies for and withdraws their own leave, and reads their own balance and request history.",
       "grants": [
         {
           "code": "hrms.people.employee.read",
@@ -144,6 +235,22 @@
           "scope": "OWN"
         },
         {
+          "code": "hrms.time.leave_balance.read",
+          "scope": "OWN"
+        },
+        {
+          "code": "hrms.time.leave_request.read",
+          "scope": "OWN"
+        },
+        {
+          "code": "hrms.time.leave_request.write",
+          "scope": "OWN"
+        },
+        {
+          "code": "hrms.time.leave_type.read",
+          "scope": "ORG"
+        },
+        {
           "code": "hrms.time.shift.read",
           "scope": "ORG"
         }
@@ -155,6 +262,7 @@
   ],
   "sources": [
     "attendance",
-    "employee"
+    "employee",
+    "leave"
   ]
 }
