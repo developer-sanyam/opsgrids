@@ -201,7 +201,9 @@ class TestEnsureCompanyAndContact:
     async def test_the_upstream_response_body_never_reaches_the_exception_message(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        secret_looking_body = "phone +919876543210 is already used by another contact"
+        secret_looking_body = (
+            "phone +919876543210 is already used by another contact"  # pragma: allowlist secret
+        )
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(409, text=secret_looking_body)

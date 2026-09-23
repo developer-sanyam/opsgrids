@@ -19,6 +19,7 @@
               "format": "uuid",
               "type": "string"
             },
+            "maxItems": 200,
             "title": "Owner Ids",
             "type": "array"
           }
@@ -124,7 +125,8 @@
           "email": {
             "anyOf": [
               {
-                "maxLength": 320,
+                "format": "email",
+                "maxLength": 254,
                 "type": "string"
               },
               {
@@ -134,7 +136,7 @@
             "title": "Email"
           },
           "full_name": {
-            "maxLength": 200,
+            "maxLength": 160,
             "minLength": 1,
             "title": "Full Name",
             "type": "string"
@@ -353,7 +355,7 @@
           "full_name": {
             "anyOf": [
               {
-                "maxLength": 200,
+                "maxLength": 160,
                 "minLength": 1,
                 "type": "string"
               },
@@ -817,7 +819,7 @@
     },
     "/api/v1/leads/{lead_id}:convert": {
       "post": {
-        "description": "Idempotent: converting an already-converted lead returns the same ids rather than\nerroring or duplicating anything (`services.convert_lead`, `domain.conversion_ids`).",
+        "description": "Idempotent: converting an already-converted lead returns the same ids rather than\nerroring or duplicating anything (`services.convert_lead`, `domain.conversion_ids`).\n\nUses the raw session rather than the tenant chokepoint's one-transaction-per-request \u2014\n`services.convert_lead` opens and binds its own three transactions (claim, then the two\ncalls to customer's and deal's `/internal/v1` with no transaction open, then record), so\nno transaction should already be open when it is called. `NotFoundProblem` for an unknown\nlead and the OWN-scope object-level check both happen inside `services.claim_conversion`\nnow, the same checks the old single-transaction version made here before calling in.",
         "operationId": "convert_lead_api_v1_leads__lead_id__convert_post",
         "parameters": [
           {

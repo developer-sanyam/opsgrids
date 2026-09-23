@@ -49,7 +49,7 @@ router = APIRouter(tags=["lead"])
 
 #: **The tenancy chokepoint.** Opens the transaction and binds it to the caller's
 #: organization before the route body runs, so no route can read or write without one.
-SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 
 #: `:convert` alone uses the raw, unwrapped session — `services.convert_lead`'s claim / call /
 #: record shape needs three separate transactions on one session, with the calls to customer's
