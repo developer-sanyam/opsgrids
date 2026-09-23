@@ -85,6 +85,42 @@
     {
       "action": "read",
       "default_scope": "ORG",
+      "description": "See WhatsApp conversations and their message threads, bodies masked",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inbox",
+      "resource": "conversation"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Assign and close WhatsApp conversations",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inbox",
+      "resource": "conversation"
+    },
+    {
+      "action": "reply",
+      "default_scope": "ORG",
+      "description": "Send a free-text WhatsApp reply inside the 24-hour service window",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inbox",
+      "resource": "message"
+    },
+    {
+      "action": "unmask",
+      "default_scope": "ORG",
+      "description": "Reveal the real text of a customer's WhatsApp message (audited every time)",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "inbox",
+      "resource": "message"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
       "description": "See how the organization sends email",
       "is_dangerous": false,
       "max_scope": "ORG",
@@ -199,6 +235,22 @@
           "scope": "ORG"
         },
         {
+          "code": "engage.inbox.conversation.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.inbox.conversation.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.inbox.message.reply",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.inbox.message.unmask",
+          "scope": "ORG"
+        },
+        {
           "code": "engage.setup.connection.read",
           "scope": "ORG"
         },
@@ -257,6 +309,10 @@
           "scope": "ORG"
         },
         {
+          "code": "engage.inbox.conversation.read",
+          "scope": "ORG"
+        },
+        {
           "code": "engage.setup.connection.read",
           "scope": "ORG"
         },
@@ -276,6 +332,28 @@
       "is_admin": false,
       "is_default": true,
       "name": "Engage viewer"
+    },
+    {
+      "code": "ENGAGE_INBOX_AGENT",
+      "cross_product": false,
+      "description": "Works the WhatsApp inbox: reads conversations, replies inside the service window, assigns and closes threads. No unmasking of a customer's message history, and no sending setup or campaigns.",
+      "grants": [
+        {
+          "code": "engage.inbox.conversation.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.inbox.conversation.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.inbox.message.reply",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "Engage inbox agent"
     }
   ],
   "sources": [

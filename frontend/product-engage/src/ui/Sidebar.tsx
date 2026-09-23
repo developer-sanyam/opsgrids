@@ -3,6 +3,7 @@ import {
   FileTextIcon,
   GlobeIcon,
   HomeIcon,
+  InboxIcon,
   MessageSquareIcon,
   PlugIcon,
   ShieldIcon,
@@ -17,11 +18,16 @@ import { LogoMark } from "./LogoMark";
 /**
  * Phase 1 of Engage is the sending identity and its audience: the provider connections, the
  * domains an organization has proven, the named senders mail may go out as, the Cloud API
- * account and its templates for WhatsApp, and now who Engage may reach — contacts and the
- * addresses it may never mail. Campaigns and reporting are later phases and **are deliberately
- * absent from this navigation** — an entry that routes to a "coming soon" panel teaches people
- * the rail lies, and this codebase already had that bug elsewhere. They arrive here when their
- * screens do.
+ * account and its templates for WhatsApp, and who Engage may reach — contacts and the addresses
+ * it may never mail. Inbox is the two-way half that follows once WhatsApp is connected: the
+ * customer's own replies, which nothing before it persisted. Campaigns and reporting are later
+ * phases and **are deliberately absent from this navigation** — an entry that routes to a
+ * "coming soon" panel teaches people the rail lies, and this codebase already had that bug
+ * elsewhere. They arrive here when their screens do.
+ *
+ * Inbox sits in the top-level Engage group rather than under WhatsApp: it is a place someone
+ * works from all day, not a setup step done once, and the top group is where Overview — the
+ * other place worked from daily — already lives.
  *
  * The three Email entries are the three setup steps in the order they have to happen: there is
  * nothing to prove without a connection, and no sender to name without a proven domain. WhatsApp
@@ -32,7 +38,10 @@ import { LogoMark } from "./LogoMark";
 const GROUPS: NavGroup[] = [
   {
     title: "Engage",
-    items: [{ to: "/", label: "Overview", icon: HomeIcon, end: true }],
+    items: [
+      { to: "/", label: "Overview", icon: HomeIcon, end: true },
+      { to: "/inbox", label: "Inbox", icon: InboxIcon },
+    ],
   },
   {
     title: "Email",
