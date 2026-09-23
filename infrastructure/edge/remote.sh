@@ -30,6 +30,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 
 # shellcheck source=lib/rebuild-decision.sh
 source lib/rebuild-decision.sh
+# shellcheck source=lib/health-check.sh
+source lib/health-check.sh
 
 COMPOSE=(docker compose -f compose.prod.yml --env-file .env)
 
@@ -198,14 +200,16 @@ health() {
 	# skipped record_ref — so the *next* rollback went one ref too far back.
 	local deadline=$((SECONDS + ${HEALTH_TIMEOUT:-600}))
 	local unhealthy expected missing
-	# `ps` lists only what exists, so a service that exited and stayed exited — or never
-	# started — has no row to fail on. Compare against what this box is configured to run.
+	# Compare against what this box is configured to run. `ps --all` (not the default `ps`,
+	# which hides exited containers entirely) is what "has a container at all" means here —
+	# the default form used to also count a legitimately-exited one-shot as "missing" on top
+	# of the (correct) unhealthy report below, which happened to cancel out only because every
+	# non-running container used to be treated as a failure regardless.
 	expected=$("${COMPOSE[@]}" config --services | sort)
 	while [ $SECONDS -lt $deadline ]; do
-		unhealthy=$("${COMPOSE[@]}" ps --all --format '{{.Service}} {{.State}} {{.Health}}' |
-			awk '$2 != "running" || ($3 != "" && $3 != "healthy" && $3 != "<nil>") {print $1"("$2"/"$3")"}' |
-			tr '\n' ' ')
-		missing=$(comm -23 <(echo "$expected") <("${COMPOSE[@]}" ps --format '{{.Service}}' | sort -u) | tr '\n' ' ')
+		unhealthy=$("${COMPOSE[@]}" ps --all --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}|{{.Labels}}' |
+			unhealthy_from_ps | tr '\n' ' ')
+		missing=$(comm -23 <(echo "$expected") <("${COMPOSE[@]}" ps --all --format '{{.Service}}' | sort -u) | tr '\n' ' ')
 		[ -z "$missing" ] || unhealthy="$unhealthy missing:$missing"
 		if [ -z "${unhealthy// /}" ]; then
 			"${COMPOSE[@]}" ps
