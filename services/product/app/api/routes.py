@@ -10,7 +10,7 @@ from starlette.requests import Request
 
 from app import selectors, services
 from app.config import settings
-from app.models import SCHEMA
+from app.models import SCHEMA, Activation
 from app.schemas import ActivateIn, ActivationOut, ProductOut, ServiceInfo
 from platform_core.auth import Scope, ScopeContext, require
 from platform_core.db import get_tenant_session
@@ -67,6 +67,16 @@ async def list_activations(session: SessionDep, ctx: ActivationRead) -> list[Act
     return out
 
 
+async def _with_sources(
+    session: AsyncSession, ctx: ScopeContext, activation: Activation
+) -> ActivationOut:
+    """One activation with what currently entitles it, as the list route reports it."""
+    live = await selectors.live_sources_by_product(session, ctx.organization_id)
+    out = ActivationOut.model_validate(activation)
+    out.entitled_by = live.get(activation.product_key, [])
+    return out
+
+
 @router.post(
     "/products/activations",
     response_model=ActivationOut,
@@ -83,7 +93,7 @@ async def activate(
         trial_days=payload.trial_days,
         request=request,
     )
-    return ActivationOut.model_validate(activation)
+    return await _with_sources(session, ctx, activation)
 
 
 @router.delete(
@@ -95,4 +105,4 @@ async def deactivate(
     product_key: str, session: SessionDep, ctx: ActivationWrite, request: Request
 ) -> ActivationOut:
     activation = await services.deactivate(session, ctx, product_key=product_key, request=request)
-    return ActivationOut.model_validate(activation)
+    return await _with_sources(session, ctx, activation)
