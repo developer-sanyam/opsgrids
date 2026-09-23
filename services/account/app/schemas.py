@@ -278,6 +278,51 @@ class InvitationAccept(BaseModel):
     full_name: str = Field(min_length=1, max_length=200)
 
 
+# --------------------------------------------------------------------- domains
+
+
+class DomainIn(BaseModel):
+    """A domain to claim. `extra="forbid"` — the write CLAUDE.md asks for at every boundary,
+    and the first of these this service declares."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    domain: str = Field(min_length=1, max_length=253)
+
+
+class DomainOut(BaseModel):
+    """A claimed domain, verified or not, plus what to publish while it is not.
+
+    `verification_host`/`verification_value` are computed, not stored columns — they are a
+    pure function of the row's own `domain` and `verification_token`
+    (`app.domain.verification_txt_host`/`verification_txt_value`), always in sync by
+    construction rather than by remembering to update a second copy.
+    """
+
+    id: uuid.UUID
+    domain: str
+    is_primary: bool
+    auto_join: bool
+    verified_at: datetime | None
+    created_at: datetime
+    #: When an unverified claim is treated as abandoned. `None` once verified — the clock
+    #: stops being read at all past that point (`app.domain.is_claim_expired`'s docstring).
+    expires_at: datetime | None
+    #: `_opsgrids-verify.<domain>` — publish a TXT record here.
+    verification_host: str
+    #: `opsgrids-verify=<token>` — the value to publish at `verification_host`.
+    verification_value: str
+    #: The periodic re-check's own findings, for a verified domain. All three `None` means
+    #: "never re-checked yet" — a fresh verification, or a deployment older than the sweep —
+    #: never an enforcement signal: SSO is still gated on `verified_at` alone.
+    last_checked_at: datetime | None
+    last_check_ok: bool | None
+    #: Set the moment a re-check first found the record missing after previously finding it;
+    #: cleared the moment it is found again. Never causes a silent revocation on its own — see
+    #: `services.recheck_domain`'s docstring.
+    failing_since: datetime | None
+
+
 # --------------------------------------------------------------------- roles
 
 

@@ -32,17 +32,21 @@ from tests.helpers import FakeRedis, ctx_for
 pytestmark = pytest.mark.integration
 
 
-def internal() -> dict[str, str]:
-    """A freshly minted service token, as a real caller sends.
+def internal_as(caller: str) -> dict[str, str]:
+    """A freshly minted service token, as a real caller sends, addressed as `caller` names.
 
     Not the signing key itself: that is exactly what this replaced. A static secret on the
     wire meant anything capturing request headers captured the credential rather than one
     expiring use of it.
     """
     return {
-        "X-Internal-Token": mint_service_token(settings(), audience="account", caller="tests"),
-        "X-Calling-Service": "tests",
+        "X-Internal-Token": mint_service_token(settings(), audience="account", caller=caller),
+        "X-Calling-Service": caller,
     }
+
+
+def internal() -> dict[str, str]:
+    return internal_as("tests")
 
 
 def admin_ctx(org: Organization, membership: Membership) -> ScopeContext:
@@ -172,6 +176,33 @@ class TestDirectoryContract:
             headers=internal(),
         )
         assert response.json()["memberships"][0]["locations"] == ["MUM"]
+
+    async def test_citext_folds_a_dotted_capital_i_to_plain_i(
+        self, client: AsyncClient, session: AsyncSession, org: Organization
+    ) -> None:
+        """Round 3's finding, reproduced against the real route: Postgres `CITEXT` (this
+        column's actual type) folds `İ` (U+0130, LATIN CAPITAL LETTER I WITH DOT ABOVE) to
+        plain `i` under its default collation — a different fold than Python's own casefold or
+        `idna`'s UTS-46 mapping use. This is a fact about the column, not a bug in this route;
+        it is *why* `auth-service`'s `sso_callback` may no longer trust a non-ASCII identity at
+        all (see `services/auth/app/services.py::sso_callback`, round 3, BLOCKER)."""
+        async with session.begin():
+            await services.add_member(
+                session,
+                org_id=org.id,
+                email="victim@victim.com",
+                full_name="Victim",
+                actor_user_id=None,
+                role_codes=["MEMBER"],
+            )
+
+        response = await client.get(
+            "/internal/v1/users/by-email",
+            params={"email": "victim@vİctim.com"},
+            headers=internal(),
+        )
+        assert response.status_code == 200
+        assert response.json()["email"] == "victim@victim.com"
 
     async def test_an_unknown_email_is_404_not_an_empty_body(self, client: AsyncClient) -> None:
         """`HttpDirectory` maps 404 to None, which sign-in turns into the same
@@ -439,10 +470,12 @@ class TestDomainLookup:
         assert body["organization_slug"] == "acme"
         assert body["verified"] is True
 
-    async def test_an_unverified_domain_reports_itself_as_unverified(
+    async def test_an_unverified_domain_is_a_404_like_one_nobody_claimed(
         self, client: AsyncClient, session: AsyncSession, org: Organization
     ) -> None:
-        """Reported, not hidden: the caller refuses it, and the distinction stays in the log."""
+        """A pending claim is not proof of anything, so it is not reported — the same 404 an
+        unclaimed domain gets, which is exactly what stops a pending row from ever routing SSO
+        through this lookup."""
         async with session.begin():
             session.add(
                 OrgDomain(
@@ -453,17 +486,206 @@ class TestDomainLookup:
             )
 
         response = await client.get("/internal/v1/domains/unproven.example", headers=internal())
-        assert response.status_code == 200, response.text
-        assert response.json()["verified"] is False
+        assert response.status_code == 404
 
     async def test_a_domain_nobody_claimed_is_a_404(self, client: AsyncClient) -> None:
         response = await client.get("/internal/v1/domains/nobody.example", headers=internal())
         assert response.status_code == 404
 
+    async def test_several_pending_claims_on_the_same_domain_are_still_a_404(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        org: Organization,
+    ) -> None:
+        """More than one organization may hold the same domain pending at once
+        (`uq_org_domains_org_domain` is per-organization, not global). None of them is the
+        answer — there is no honest way to pick one, so the lookup stays a 404 rather than
+        arbitrarily disclosing whichever row a query plan happened to find first."""
+        from app.schemas import OrganizationIn
+
+        async with admin_session.begin():
+            other = await services.create_organization(
+                admin_session,
+                OrganizationIn(name="Contender", slug="contender"),
+                actor_user_id=None,
+            )
+        async with session.begin():
+            session.add(
+                OrgDomain(
+                    organization_id=org.id,
+                    domain="contested.example",
+                    verification_token="token-a",  # pragma: allowlist secret
+                )
+            )
+        async with admin_session.begin():
+            admin_session.add(
+                OrgDomain(
+                    organization_id=other.id,
+                    domain="contested.example",
+                    verification_token="token-b",  # pragma: allowlist secret
+                )
+            )
+
+        response = await client.get("/internal/v1/domains/contested.example", headers=internal())
+        assert response.status_code == 404
+
+    async def test_the_verified_holder_is_returned_even_with_other_orgs_pending(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        org: Organization,
+    ) -> None:
+        from app.schemas import OrganizationIn
+
+        async with admin_session.begin():
+            other = await services.create_organization(
+                admin_session,
+                OrganizationIn(name="Contender", slug="contender"),
+                actor_user_id=None,
+            )
+            admin_session.add(
+                OrgDomain(
+                    organization_id=other.id,
+                    domain="mostly-contested.example",
+                    verification_token="token-b",  # pragma: allowlist secret
+                )
+            )
+        async with session.begin():
+            session.add(
+                OrgDomain(
+                    organization_id=org.id,
+                    domain="mostly-contested.example",
+                    verification_token="token-a",  # pragma: allowlist secret
+                    verified_at=datetime.now(UTC),
+                )
+            )
+
+        response = await client.get(
+            "/internal/v1/domains/mostly-contested.example", headers=internal()
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["organization_id"] == str(org.id)
+        assert body["verified"] is True
+
     async def test_it_needs_a_service_token_like_every_other_internal_route(
         self, client: AsyncClient
     ) -> None:
         assert (await client.get("/internal/v1/domains/acme.example")).status_code == 401
+
+
+class TestMembershipLookup:
+    """`notification`'s conversation-assignment endpoint calls this before trusting a membership
+    id a caller supplied — see that service's `app/memberships.py`."""
+
+    async def test_an_active_membership_in_the_right_organization_is_confirmed(
+        self, client: AsyncClient, people: dict[str, Membership], org: Organization
+    ) -> None:
+        response = await client.get(
+            f"/internal/v1/organizations/{org.id}/memberships/{people['manager'].id}",
+            headers=internal_as("notification"),
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["exists"] is True
+        assert body["active"] is True
+
+    async def test_an_unknown_membership_id_does_not_exist(
+        self, client: AsyncClient, org: Organization
+    ) -> None:
+        response = await client.get(
+            f"/internal/v1/organizations/{org.id}/memberships/{uuid.uuid4()}",
+            headers=internal_as("notification"),
+        )
+        assert response.status_code == 200
+        assert response.json() == {
+            "membership_id": response.json()["membership_id"],
+            "exists": False,
+            "active": False,
+        }
+
+    async def test_a_real_membership_asked_under_the_wrong_organization_does_not_exist(
+        self, client: AsyncClient, people: dict[str, Membership]
+    ) -> None:
+        """The whole point of this endpoint: a membership id real somewhere else must read
+        exactly like one that is real nowhere, so a caller cannot use it to confirm an id
+        belongs to an organization it has no business asking about."""
+        response = await client.get(
+            f"/internal/v1/organizations/{uuid.uuid4()}/memberships/{people['manager'].id}",
+            headers=internal_as("notification"),
+        )
+        assert response.status_code == 200
+        assert response.json()["exists"] is False
+
+    async def test_a_removed_membership_does_not_exist(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        people: dict[str, Membership],
+        org: Organization,
+    ) -> None:
+        """`revoke_member` sets `status="removed"`, and `selectors.get_member` excludes that
+        status entirely — a removed membership answers exactly like one that was never real,
+        which is the right answer for an assignment target: nobody should be routed work through
+        a membership that no longer belongs to the organization."""
+        member = people["report"]
+        async with session.begin():
+            await session.refresh(member, ["roles"])
+            await services.revoke_member(session, admin_ctx(org, people["manager"]), member)
+
+        response = await client.get(
+            f"/internal/v1/organizations/{org.id}/memberships/{member.id}",
+            headers=internal_as("notification"),
+        )
+        body = response.json()
+        assert body["exists"] is False
+        assert body["active"] is False
+
+    async def test_a_membership_in_a_non_active_status_is_not_active(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        people: dict[str, Membership],
+        org: Organization,
+    ) -> None:
+        """`status` carries values besides `active` and `removed` in principle (a suspension, an
+        unaccepted invitation); `get_member` only excludes `removed`, so this is the case that
+        proves `active` and `exists` are genuinely two different questions."""
+        member = people["report"]
+        async with session.begin():
+            member.status = "suspended"
+            session.add(member)
+
+        response = await client.get(
+            f"/internal/v1/organizations/{org.id}/memberships/{member.id}",
+            headers=internal_as("notification"),
+        )
+        body = response.json()
+        assert body["exists"] is True
+        assert body["active"] is False
+
+    async def test_it_needs_a_service_token(self, client: AsyncClient, org: Organization) -> None:
+        response = await client.get(
+            f"/internal/v1/organizations/{org.id}/memberships/{uuid.uuid4()}"
+        )
+        assert response.status_code == 401
+
+    async def test_a_caller_other_than_notification_is_refused(
+        self, client: AsyncClient, people: dict[str, Membership], org: Organization
+    ) -> None:
+        """Every other internal route on this router answers any caller holding a token
+        addressed to account; this one does not. It exists for `notification`'s own
+        assignment check, and a token minted for a different service — real, correctly
+        audienced, just not the one this route is for — must not widen into a place it was
+        never meant to be reached from."""
+        response = await client.get(
+            f"/internal/v1/organizations/{org.id}/memberships/{people['manager'].id}",
+            headers=internal_as("billing"),
+        )
+        assert response.status_code == 403
 
 
 def _role(code: str, permission: str, scope: str):

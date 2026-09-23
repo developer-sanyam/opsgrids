@@ -1052,6 +1052,17 @@ Named here so nobody discovers them during an incident:
   a non-zero count with the `scheduler` container up means the sweep itself is stuck (`make
   edge-logs SERVICE=scheduler`); a non-zero count with it down or restarting is the container.
   `scheduler.outbox` fills exactly like any other service's if `edge-relay` is not draining it.
+- **A verified SSO domain can be automatically demoted (2026-09-23, ADR-0018).** `account`'s
+  worker re-checks every verified email domain's DNS on a schedule; if a domain has been
+  failing for at least 14 days *and* failed at least 3 checks in a row, the sweep clears its
+  `verified_at` itself, stamps `demoted_at`, writes an audit row, and publishes
+  `core.identity.domain.demoted`. There is no pager for this in slice 1 — the only ways an
+  operator finds out are the audit row (`account.audit_log`, action `domain.demoted`), the
+  structured log line `account.domain.demoted` (`make edge-logs SERVICE=account-worker | grep
+  domain.demoted`), or the organization noticing sign-in for that domain has stopped. Once
+  demoted, the domain stops routing SSO immediately — the internal lookup only ever returns a
+  domain with `verified_at IS NOT NULL` — and nothing re-verifies it automatically: the
+  organization has to re-claim and re-verify it, the same as a brand-new domain.
 - *(historical)* **No RabbitMQ, no relay and no consumers — and this breaks product activation.** An earlier
   version of this paragraph said slice 1 publishes no event that anything consumes. That was
   wrong. `product.activate()` publishes `core.product.activated`, and the **only** thing that

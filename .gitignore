@@ -39,3 +39,7 @@ tools/dev-bootstrap/keys/
 # Local agent tooling — kept on disk, not shared
 .claude/
 edge_selfserve_tenant.json
+
+# Private keys and certificates — never committed (server ssh keys, TLS keys)
+*.pem
+*.key

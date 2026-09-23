@@ -1,3 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec python -m app.consumers
+# app.worker runs the event consumer and the domain re-verification sweep together
+# (ADR-0013's memory-budget erratum, 2026-09-23 — see app/worker.py's own docstring for why).
+# `python -m app.consumers` and `python -m app.cron` are both still independently runnable.
+exec python -m app.worker
