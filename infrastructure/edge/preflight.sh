@@ -54,6 +54,9 @@ optional_empty="$optional_empty EDGE_RESERVED_IP"
 # generating a MinIO user for a pass that is not yet turned on is a step an operator should
 # take deliberately, not one preflight forces on every box the day this shipped.
 optional_empty="$optional_empty DOCUMENT_S3_ORPHAN_ACCESS_KEY DOCUMENT_S3_ORPHAN_SECRET_KEY"
+# Empty is the honest state for a deployment not yet registered for tax: the billing run then
+# writes no tax line (ADR-0005 addendum, 2026-09-23).
+optional_empty="$optional_empty BILLING_TAX_CODE BILLING_TAX_JURISDICTION"
 
 set -a
 # shellcheck disable=SC1091 # .env is data, generated on the box from .env.example

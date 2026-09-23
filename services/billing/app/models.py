@@ -266,10 +266,10 @@ class TaxRate(Base):
     which is why the table is versioned rather than mutated (ADR-0000 §9): a new rate is a new
     row with a later `effective_from`, never an edit.
 
-    Only the *table* is modelled now. **Which** rate applies to a given customer — jurisdiction
-    resolution, place-of-supply, exemptions — is explicitly deferred (ADR-0004 "Open: Tax
-    computation and jurisdiction"), so this service reads no tax rate yet. Modelling the shape now
-    keeps that later work an additive migration rather than a schema change.
+    **Which** rate applies to a given customer — jurisdiction resolution, place-of-supply,
+    exemptions — is still deferred (ADR-0004 "Open: Tax computation and jurisdiction"). Until it
+    is settled the billing run applies one deployment-wide code (`BILLING_TAX_CODE`), the row in
+    force on the period's start date (ADR-0005 addendum §5, `selectors.effective_tax_rate`).
     """
 
     __tablename__ = "tax_rates"

@@ -536,6 +536,79 @@ Bundles are sold only through subscription's operator routes (`POST /internal/v1
 `…/{id}/change-plan`, service token); the customer route answers 403. A trial's length is the
 plan version's `trial_days` feature (14 when absent), never the customer's.
 
+### The billing run: first deploy, watching it, and what to do when it complains
+
+The billing run (ADR-0005's 2026-09-23 addendum) is the loop that converts ended trials and
+invoices every period. It lives in `subscription-worker` beside the payment consumer and the
+dunning sweep — no container of its own. It calls billing (`POST /internal/v1/subscription-invoices`)
+and payment (the mandate question) over the back network; billing in turn reads catalog and
+metering. None of those calls holds a database transaction open.
+
+**Order.** Two migrations, both additive: billing `b5e2c8d4f1a9` (the invoice idempotency key)
+and subscription `d8b3f5a7c9e1` (`billing_periods`, `subscriptions.billing_interval`, discovery
+indexes; `migrations/env.py` grants the outbox role `SELECT` on the two tables it discovers
+from). Billing, metering and payment must be serving the new routes before the worker's first
+pass; a single `make deploy` does that, and a pass that runs early only backs off and retries.
+
+**First deploy onto a box with history — stage it.** Until now nothing ever converted a trial or
+rolled a period, so the first passes will: every trial past its end is invoiced for its first
+period and moves to `active` (a usable mandate) or `past_due` (none — which is every trial while
+Razorpay keys are empty, and a trial that ended more than fourteen days ago is then suspended by
+the dunning sweep's next pass), and every active subscription whose period has closed is invoiced
+**one period per pass** for every period it is behind. Look before that happens:
+
+```bash
+# 1. Deploy with the run held.
+echo 'BILLING_RUN_ENABLED=false' >> .env && make deploy HOST=… CONFIRM=…
+# 2. What it would do: one JSON line per subscription, then a summary. Writes nothing.
+docker compose -f compose.prod.yml --env-file .env run --rm -T subscription-worker \
+  python -m app.billing_run --dry-run
+# 3. Decide. Then remove the line from .env and redeploy (or `up -d subscription-worker`).
+```
+
+`periods_owed` above 1 means back-invoicing. If that is not what the business wants for a
+subscription, move its period forward by hand (a reviewed `UPDATE` of `current_period_start` /
+`current_period_end` on that one row) before turning the run on — the run bills from the stored
+boundary, which is what makes it safe, and also what makes it literal.
+
+**Watching it.**
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec subscription \
+  python -c "import urllib.request as u; print(u.urlopen('http://127.0.0.1:8000/health/billing-run').read().decode())"
+make edge-logs SERVICE=subscription-worker | grep billing_run
+```
+
+| Field | Means | Alert |
+|---|---|---|
+| `overdue` | subscriptions due for over an hour and not yet handled | **> 0** — the run is stopped, held (`billing_run.disabled` in the log), or cannot keep up |
+| `pending` / `oldest_pending_seconds` | claims taken and not yet recorded | oldest > 1 h |
+| `failing` | claims whose last attempt failed; retried with backoff (5 min doubling to 6 h) | > 0 for a day |
+| `invoiced_24h` / `skipped_24h` / `last_recorded_at` | throughput; `skipped` is suspended periods rolled without an invoice | — |
+
+Log lines: `billing_run.pass` (counts, only when a pass did something), `billing_run.recorded`
+and `billing_run.failed` (per subscription, with its ids), `billing_run.not_billable` (a
+`one_time` plan's trial — nothing sells one today), `billing_run.period.superseded` /
+`billing_run.period.stale_closed` (the subscription changed between claim and record — **a person
+must look**: billing may hold an invoice nothing recorded, key
+`subscription:{id}:{period_start}`; void it through billing's internal route if it should not
+stand).
+
+**`failing` is not dropping.** Read the reason on the row:
+
+```sql
+SELECT organization_id, subscription_id, period_start, attempts, last_error
+FROM subscription.billing_periods WHERE state = 'pending' ORDER BY created_at;
+```
+
+`billing answered 503` — catalog or metering was down; it clears on its own. `billing answered
+422: … not on plan version …` — the subscription's items do not match its pin (data; fix the
+items). `no gst rate is in force …` — `BILLING_TAX_CODE` is set and `billing.tax_rates` has no row
+in force for that date; insert the rate (a new row, never an edit) or unset the code.
+
+**Tax.** `BILLING_TAX_CODE` / `BILLING_TAX_JURISDICTION` in `.env` choose the `tax_rates` row;
+empty (the default) writes no tax line. Insert the rate row **before** setting the code.
+
 ### Deploying from the pipeline
 
 `.github/workflows/deploy.yml` runs the same two scripts a laptop does — `ssh-deploy.sh` for the

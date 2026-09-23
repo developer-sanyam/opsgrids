@@ -298,3 +298,161 @@ One key per attempt is what makes the ladder actually debit.
 - **Retrying against a different instrument.** The ladder retries the same mandate. Asking the
   customer for a new one mid-cycle, and retrying against that instead, is a payment-service and
   customer-experience question this ADR does not open.
+
+---
+
+## Addendum, 2026-09-23 — the billing run: trial end, recurring invoices, and plan changes
+
+**Status: Accepted 2026-09-23.** Implemented in `subscription-service` (`app/billing_run.py`, the
+`billing_periods` table, the new edges in `app/domain.py`), `billing-service`
+(`POST /internal/v1/subscription-invoices`, `app/billing_run.py`), `metering-service` (the
+internal per-period usage read) and `payment-service` (the mandate question, and no zero debits).
+
+### The defect this closes
+
+Nothing ever looked at `trial_ends_at` or `current_period_end`. Trials never converted: the
+activation's read-time expiry switched the product off and no invoice was ever raised. Nothing
+recurred: `current_period_end` passed and nothing happened. Billing's
+`POST /internal/v1/invoices:finalize` had no caller anywhere in the repository, and billing's
+README said so ("a billing run is a deliberately deferred concern"). This ADR's ladder was
+therefore reachable only by an invoice somebody finalized by hand.
+
+### What the earlier decisions already specified, and what this addendum had to choose
+
+ADR-0013 §6 had specified trial end and nothing else: *trials that have ended with no mandate move
+to `past_due` and ADR-0005's grace window starts; a trial that ends with a mandate is charged and
+becomes `active`.* ADR-0004 and this ADR specified neither the invoicing cadence nor what a plan
+change does to money. The rules below implement §6 as written and choose the rest; each choice is
+the conservative one and each is reversible without a data migration.
+
+### 1. Trial end (ADR-0013 §6, implemented as specified)
+
+- A trial whose `trial_ends_at` has passed is invoiced for its **first paid period, in advance**,
+  and the period opens **at `trial_ends_at`**, never at the moment the sweep noticed — the same
+  stored-timestamp rule §3 applies to the ladder.
+- If the invoice total is zero, or payment answers that a mandate can collect it — `active`,
+  bank-confirmed (`activated_at` set), same currency, cap covers the amount; exactly the four
+  conditions payment's charge guard already enforces — the subscription moves
+  **`trial → active`**, reason `trial_convert`, `commerce.subscription.activated`.
+- Otherwise it moves **`trial → past_due`**, reason `trial_ended_unpaid`, and a dunning cycle opens
+  **anchored at `trial_ends_at`** carrying the invoice id and amount: the product keeps working for
+  §1's fourteen days, the ladder asks payment to retry *that invoice*, and a captured payment
+  recovers it exactly as §4 says. A mandate over its cap counts as no mandate — on UPI Autopay
+  that debit needs the customer to act (Context above).
+- Nothing is ever cancelled by this (§4). Two edges are added to the state machine:
+  `trial → past_due`, and `past_due → past_due` (a renewal while a window is open). Because an
+  unpaid trial takes a different edge with a different reason, ADR-0004 §4's trial-conversion
+  metric (`trial → active` over trial starts) does not count it as converted.
+
+### 2. The billing run: when a period is invoiced, and for what (chosen)
+
+- **Recurring prices (`flat`, `per_seat`) bill in advance** for the period that opens; **usage
+  prices bill in arrears** for the period that has just closed. A period is invoiced when it
+  opens, which is also what keeps §1's "fourteen days is half a period, so cycles never overlap"
+  true: the failure that opens a window lands at the start of a period.
+- **Trial usage is free**: the first invoice after a trial carries no usage window.
+- **Period length is what `subscribe` always used** — 30 days for `month`, 365 for `year` — now
+  recorded as `subscriptions.billing_interval` at subscribe and change-plan (and read off the
+  period's length for rows older than the column). Calendar-month anchoring is a separate
+  decision, not taken here. `one_time` plans have no period and are **not billed by the run**;
+  one due is reported as a failure, never invoiced by guess (none is sold today).
+- **Every boundary comes from the stored one**: a period opens at the previous period's end, one
+  period per pass. A run that was down for two months issues two invoices with two keys, oldest
+  first — it does not collapse them or re-anchor to `now`.
+- **Which subscriptions**: `active` and `past_due` are invoiced (both are served — §2).
+  `suspended` **rolls its period without an invoice**, so a customer who pays in week six resumes
+  on a current period rather than being billed for the months they were switched off.
+  `cancelled` is never touched. A **bundle is one subscription and one invoice**, whatever it
+  entitles.
+- **Line items** come from the **pinned** plan version's own prices, read by billing from
+  catalog — the caller never sends an amount: `flat` is `amount × quantity`, `per_seat` is
+  `amount × seats` from `subscription_items`, `usage` is `Money.rate(unit_price_micros, billable
+  quantity)` rounded half-up once per line. Integer minor units throughout, in the subscription's
+  currency; a price in another currency, or an item that names a price not on the pin, is refused
+  rather than skipped.
+- **Usage** is metering's **billable** quantity (`is_billable = true`) per `meter_key` for the
+  organization over `[usage_start, usage_end)`. Per organization is per subscription, because a
+  meter belongs to one product and an organization holds one subscription per product. Usage that
+  arrives after its period was invoiced is not billed (see Deferred).
+
+### 3. Exactly once: claim → call → record (chosen)
+
+No network call runs inside a database transaction, so the run cannot "lock, call, write" in one
+transaction. Instead:
+
+1. **Discover** on the outbox role (BYPASSRLS; it now also has `SELECT` on `subscriptions` and
+   `billing_periods`, granted in `migrations/env.py` beside `dunning_cycles`), ids only.
+2. **Claim** on the app role under the tenant: `FOR UPDATE SKIP LOCKED` on the subscription,
+   re-decide from its stored timestamps, and write or re-find a `billing_periods` row —
+   `UNIQUE (organization_id, subscription_id, period_start)` — snapshotting the pin and the items,
+   with a 10-minute lease.
+3. **Call**, no transaction open: billing prices and finalizes the invoice under the key
+   `subscription:{id}:{period_start}` (a partial-unique index, `ON CONFLICT DO NOTHING`, so a
+   repeated or racing ask returns the one invoice and stages one `commerce.invoice.finalized`);
+   for a trial conversion that owes money, payment answers the mandate question.
+4. **Record** on the app role under the tenant: write the answer, advance the period, make the
+   transition with its outbox event — one transaction.
+
+A kill between 2 and 4 leaves a `pending` row; after the lease the next pass sends the identical
+request and gets the same invoice back. A failed call keeps the claim, records `last_error`, and
+backs off (5 minutes doubling to 6 hours). A claim whose subscription moved on before the record
+(cancelled mid-flight) is closed `superseded` and logged for a person, because billing may already
+hold an invoice for it. Only `subscription` may ask billing for a billing-run invoice, only
+`billing` may read metering's usage, only `subscription` may ask payment the mandate question —
+each route checks the verified caller as well as the service token.
+
+### 4. Plan changes mid-period: priced from the next period (chosen; ADR-0004 is silent)
+
+ADR-0004 gives billing "proration" as a responsibility and billing's `app/domain.py` has an exact
+`prorate`, but no ADR says when money moves on a change. Rule: **a change-plan re-pins and
+re-entitles immediately (as it always has) and raises no invoice, credit or proration; the next
+period is priced off whatever is pinned when that period is claimed, on the new version's
+cadence.** An upgrade is therefore unbilled until the period ends and a downgrade pays the old
+price until it ends — a bounded, one-period exposure either way, and no surprise charge to
+explain. Charging a prorated upgrade immediately is a later decision that needs only a claim of a
+third kind; it is not taken here.
+
+### 5. Tax (chosen; ADR-0004 "Open: Tax" is still open)
+
+Jurisdiction resolution is still unsettled, so the interim rule is one deployment-wide choice:
+billing's `BILLING_TAX_CODE` (and optional `BILLING_TAX_JURISDICTION`) names the `tax_rates` row;
+the rate **in force on the period's start date** applies (versioned by `effective_from`, so a
+re-run uses the period's own rate); tax is **exclusive**, computed **once on the subtotal** with
+`Money.percent_bps` (half-up) and written as its own line, so the lines still foot. Unset means no
+tax line. Set with no rate in force, the run **refuses** to invoice and reports it failing,
+because an untaxed invoice under-collects a statutory amount.
+
+### 6. Observability
+
+`billing_run.pass` (issued / activated / past_due / renewed / skipped / failed counts, logged when
+a pass did anything), `billing_run.recorded` and `billing_run.failed` per subscription, and
+`GET /health/billing-run` on subscription-service: `overdue`, `pending`, `failing`,
+`oldest_pending_seconds`, `invoiced_24h`, `skipped_24h`, `last_recorded_at` — counts only, counted
+on the outbox role so a stall cannot hide its own backlog. **Alert on `overdue > 0`**: a stopped
+run does not error. The edge runbook has the procedure.
+
+Because nothing ever billed before, the first passes on a box with history convert every expired
+trial and invoice every overdue period, one period per pass. The run therefore has a kill switch
+(`BILLING_RUN_ENABLED`, on by default) and a preview (`python -m app.billing_run --dry-run`,
+writes nothing), and the runbook stages a first deploy through both.
+
+### Deferred, deliberately
+
+- **Credit and prepaid packs are not drawn** by the run; an invoice is raised at full price and a
+  pack (commerce-packaging.md) must still be applied by hand.
+- **payment does not attach the mandate** to the charge it raises on `commerce.invoice.finalized`;
+  the stub accepts that, a live Razorpay recurring debit will need the token. A payment-slice
+  change.
+- **The three-day `commerce.subscription.trial_ending` notice** ADR-0013 §6 also names is not
+  emitted yet.
+- **Cancel at period end** has no API (cancellation is immediate), so there is nothing for the
+  run to honour; when it exists, the run's claim is where it is checked.
+- **Late usage** (recorded after its period was invoiced) is never billed; a watermark or a grace
+  before closing the usage window would fix it.
+- **Dunning a second invoice**: a renewal invoiced while a window is open keeps that window's
+  schedule, and the ladder retries the first invoice only.
+- **A superseded invoice** (the subscription moved between claim and record) is logged, not voided
+  automatically.
+- **A meter priced by both a bundle and a standalone subscription** for the same organization
+  would be billed by both; no seeded catalog version does this today.
+- **Refunds and credit notes** are unchanged by this addendum.

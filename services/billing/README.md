@@ -35,13 +35,23 @@ column** (ADR-0000 §8). Isolation is row-level security on every tenant table, 
 append-only / freeze guarantees are enforced below the app role (privilege revokes + trigger),
 not by trusting the application.
 
-### Scope boundary (this PR)
+### The billing run (ADR-0005 addendum, 2026-09-23)
 
-Billing owns the invoice + credit record and all its money mechanics. It does **not** read
-catalog or metering here: `finalize` takes **explicit line items**. Assembling priced lines from
-catalog prices and metering usage — a "billing run" — is a deliberately deferred concern, left as
-a typed seam (`app/domain.py::PricingSource`, with the `ExplicitPricingSource` implementation
-that exists today). Nothing here imports catalog or metering.
+subscription-service decides *when* a period is billed; billing decides *what is owed*.
+`POST /internal/v1/subscription-invoices` takes the pin, the items and the period — never a price
+— and `app/billing_run.py` reads the pinned version's prices from catalog and the closed period's
+billable usage from metering over their internal APIs, **outside any transaction**, prices them
+with `domain.price_subscription_period` (integer minor units; tax from `tax_rates`, see below)
+and records the invoice in one short transaction. The invoice carries the key
+`subscription:{id}:{period_start}` under a partial-unique index and is inserted
+`ON CONFLICT DO NOTHING`, so a redelivered or racing request returns the one invoice and stages
+one `commerce.invoice.finalized`. Only subscription may call it (the verified caller is checked,
+not just the token). `finalize` with explicit lines is unchanged and still what an operator uses
+for a hand-built invoice. Nothing here imports catalog or metering — they are HTTP.
+
+**Tax**: `BILLING_TAX_CODE` / `BILLING_TAX_JURISDICTION` name the `tax_rates` row the run applies —
+the rate in force on the period's start date, exclusive, once on the subtotal, as its own line.
+Unset means no tax line; set with no rate in force, the run refuses to invoice.
 
 ## Publishes
 
@@ -53,13 +63,16 @@ that exists today). Nothing here imports catalog or metering.
 
 ## Consumes
 
-_Nothing yet. The billing-run orchestration that consumes catalog + metering is deferred._
+_No events._ The billing run reaches billing over HTTP (above), and billing reads catalog's
+`GET /internal/v1/plan-versions/{id}` and metering's
+`GET /internal/v1/organizations/{org}/usage` for it.
 
 ## HTTP surface
 
 - Customer (`/api/v1/billing`, product gateway): `GET /invoices`, `GET /invoices/{id}`,
   `GET /credit-balance?currency=` (the windowed SUM). Reads only.
 - Internal (`/internal/v1`, service token, excluded from OpenAPI):
+  `POST /subscription-invoices` (the billing run, subscription only),
   `POST /invoices:finalize`, `POST /invoices/{id}:void`, `POST /credit`,
   `POST /credit:consume`, `POST /credit:reverse`, and
   `GET /organizations/{org}/credit/packs/{pack}` (what is left on one prepaid pack, so a billing

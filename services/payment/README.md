@@ -62,3 +62,10 @@ ids, state driven by injected webhook fixtures). A test asserts no keys or netwo
   verifies the HMAC signature before recording or acting on anything.
 - `POST /internal/v1/charges` — service-to-service, guarded by a short-lived service token. Not in
   the public OpenAPI document.
+- `GET /internal/v1/organizations/{org}/mandates:usable?currency=&amount_minor=` — could this
+  organization be debited this amount now? The same four conditions the charge guard enforces
+  (active, bank-confirmed, currency, cap). Asked by subscription's billing run when a trial ends
+  (ADR-0013 §6, ADR-0005 addendum); **only subscription** may ask. Identifiers only.
+
+A `commerce.invoice.finalized` whose total is zero (a free plan's period) raises no charge: a zero
+debit is a provider call and a bank fee that moves no money.
