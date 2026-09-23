@@ -46,8 +46,11 @@ PRODUCT = "engage"
 #: MailHog, already running for the whole suite (`make infra`). Pointed at directly rather than
 #: through a DNS name, so the connection step proves a real SMTP host round-trips through the
 #: schema without needing a mail server that resolves anywhere.
-MAILHOG_HOST = "127.0.0.1"
-MAILHOG_PORT = 1026
+#: The connection API only accepts a public submission host (its dial guard resolves it and
+#: refuses private addresses, so MailHog on localhost can never be stored) on a standard port.
+#: Creating a connection resolves the host and stores it; it never opens an SMTP session.
+SMTP_SUBMISSION_HOST = "smtp.gmail.com"
+SMTP_SUBMISSION_PORT = 587
 
 #: The five DNS record kinds `services.create_domain` must generate for a fresh sending domain
 #: (`app/domain.py::dns_records_for`). Asserted as a set so a record silently dropped — or one
@@ -210,8 +213,8 @@ class TestEngageJourney:
                 "kind": "smtp",
                 "username": username,
                 "secret": secret,
-                "host": MAILHOG_HOST,
-                "port": MAILHOG_PORT,
+                "host": SMTP_SUBMISSION_HOST,
+                "port": SMTP_SUBMISSION_PORT,
             },
         )
         assert response.status_code == 201, (
@@ -225,8 +228,8 @@ class TestEngageJourney:
         body = response.json()
         assert body["kind"] == "smtp"
         assert body["username"] == username
-        assert body["host"] == MAILHOG_HOST
-        assert body["port"] == MAILHOG_PORT
+        assert body["host"] == SMTP_SUBMISSION_HOST
+        assert body["port"] == SMTP_SUBMISSION_PORT
         assert body["status"] == "connected"
         assert "secret" not in body and "secret_enc" not in body
 
