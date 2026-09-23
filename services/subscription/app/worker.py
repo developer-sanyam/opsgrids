@@ -32,6 +32,7 @@ from app import consumers
 from app.billing_run import BillingRunSweep, HttpBilling, HttpPayment
 from app.config import settings
 from app.cron import DunningSweep
+from app.supervise import supervise
 from platform_core.db import (
     assert_app_role,
     assert_outbox_role,
@@ -77,18 +78,19 @@ async def main() -> None:
         queue="subscription.events",
         sweeps=["dunning", "billing_run"],
     )
-    # `gather` rather than sequential awaits: either loop returning is a failure, and the first
-    # exception should bring the process down so the orchestrator restarts it, rather than
-    # leaving one half running against a half-dead deploy (same reasoning as
-    # notification/app/worker.py).
-    loops = [consumers.consumer.run(), sweep.run()]
+    # Supervised, not `gather`ed: any loop that raises **or returns** — a consumer whose iterator
+    # ended is as dead as one that crashed — cancels the others and exits non-zero, so the
+    # orchestrator restarts the process instead of leaving a zombie worker with a loop missing.
+    # Each sweep also retries its own failing passes with backoff (app/supervise.py), so a
+    # poisoned row is not a crash loop that starves the consumer.
+    loops = {"payment_consumer": consumers.consumer.run(), "dunning_sweep": sweep.run()}
     if cfg.billing_run_enabled:
-        loops.append(billing_run.run())
+        loops["billing_run"] = billing_run.run()
     else:
         # Staged rollout (the runbook's billing-run section): the process runs, the run does not.
         # Loud, because a box left like this converts no trial and invoices nothing.
         log.warning("billing_run.disabled", hint="BILLING_RUN_ENABLED=false; nothing is invoiced")
-    await asyncio.gather(*loops)
+    await supervise(loops)
 
 
 if __name__ == "__main__":

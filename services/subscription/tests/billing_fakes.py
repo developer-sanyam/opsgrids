@@ -49,6 +49,12 @@ class FakeBilling:
         self.check_transactions = True
         self.invoices: dict[tuple[Any, ...], BilledInvoice] = {}
         self.voided: set[uuid.UUID] = set()
+        #: Invoices finalized — announced, and so chargeable (round 2, M5). Everything else in
+        #: `invoices` is still a draft nothing downstream has seen.
+        self.finalized: list[uuid.UUID] = []
+        #: Prorations to answer "nothing to bill" for (a change that nets to no more money).
+        self.nothing_for: set[uuid.UUID] = set()
+        self.crash_before_finalize = False
         self.fail_for: set[uuid.UUID] = set()
         self.requests: list[PeriodRequest] = []
         self.totals: dict[uuid.UUID, int] = {}
@@ -76,7 +82,7 @@ class FakeBilling:
             ).scalar_one()
         assert open_txns == 0, "billing was called while a subscription transaction was open"
 
-    async def bill_period(self, request: PeriodRequest) -> BilledInvoice:
+    async def bill_period(self, request: PeriodRequest) -> BilledInvoice | None:
         await self._assert_no_open_transaction()
         self.requests.append(request)
         if self.gate is not None:
@@ -88,6 +94,8 @@ class FakeBilling:
             raise RuntimeError(self.fail)
         if request.subscription_id in self.fail_for:
             raise RuntimeError("billing answered 503: catalog is unavailable")
+        if request.billing_kind == "proration" and request.subscription_id in self.nothing_for:
+            return None
         key = self.key(request)
         existing = self.invoices.get(key)
         if existing is not None:
@@ -115,6 +123,19 @@ class FakeBilling:
             request.billing_kind,
             request.period_start if request.billing_kind != "proration" else request.change_id,
         )
+
+    async def finalize_period(self, request: PeriodRequest) -> bool:
+        await self._assert_no_open_transaction()
+        if self.crash_before_finalize:
+            self.crash_before_finalize = False
+            raise Crash
+        existing = self.invoices.get(self.key(request))
+        assert existing is not None, "finalize for a draft billing never raised"
+        assert existing.invoice_id not in self.voided, "a voided draft must never be finalized"
+        if existing.invoice_id in self.finalized:
+            return False
+        self.finalized.append(existing.invoice_id)
+        return True
 
     async def void_period(self, request: PeriodRequest, *, reason: str) -> VoidResult:
         await self._assert_no_open_transaction()

@@ -393,7 +393,11 @@ class DunningCycle(Base, TenantBase):
 #: claim that never reached billing). `void_pending` is an invoice raised for a period the
 #: subscription had already moved past — the run asks billing to void it — and `voided` is done.
 PERIOD_PENDING = "pending"
-PERIOD_INVOICED = "invoiced"
+#: Recorded here, the invoice still a **draft** in billing (review round 2, fix M5): nothing has
+#: been announced, so nothing can be charged. The run finalizes it next, keyed and idempotent.
+PERIOD_FINALIZE_PENDING = "finalize_pending"
+#: Billing finalized it and staged `commerce.invoice.finalized` — payment charges from here.
+PERIOD_FINALIZED = "finalized"
 PERIOD_SKIPPED = "skipped"
 PERIOD_VOID_PENDING = "void_pending"
 PERIOD_VOIDED = "voided"
@@ -504,7 +508,9 @@ class BillingPeriod(Base, TenantBase):
             name="uq_billing_periods_org_subscription_kind_start",
         ),
         CheckConstraint(
-            "state in ('pending', 'invoiced', 'skipped', 'void_pending', 'voided')", name="state"
+            "state in ('pending', 'finalize_pending', 'finalized', 'skipped', 'void_pending', "
+            "'voided')",
+            name="state",
         ),
         CheckConstraint(
             "kind in ('trial_conversion', 'renewal', 'proration', 'close')", name="kind"
@@ -527,6 +533,23 @@ class BillingPeriod(Base, TenantBase):
             "ix_billing_periods_actionable",
             "created_at",
             postgresql_where=text("state in ('pending', 'void_pending')"),
+        ),
+        # Discovery of recorded drafts waiting to be finalized.
+        Index(
+            "ix_billing_periods_finalize_pending",
+            "created_at",
+            postgresql_where=text("state = 'finalize_pending'"),
+        ),
+        # One proration per change. The change id is deterministic when a lifecycle claim is
+        # pending (review round 2, fix B2), so the change-plan path and the record step's
+        # belt-and-braces check land on the same row instead of charging the upgrade twice.
+        Index(
+            "uq_billing_periods_org_subscription_change",
+            "organization_id",
+            "subscription_id",
+            "change_id",
+            unique=True,
+            postgresql_where=text("change_id IS NOT NULL"),
         ),
         Index("ix_billing_periods_recorded", "recorded_at"),
     )

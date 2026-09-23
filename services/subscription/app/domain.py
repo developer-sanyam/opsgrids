@@ -568,27 +568,69 @@ def closing_usage_window(
     current_period_start: datetime | None,
     usage_billed_through: datetime | None,
     at: datetime,
+    claimed_usage_end: datetime | None = None,
 ) -> tuple[datetime, datetime] | None:
-    """The usage-only window a cancellation or suspension at `at` leaves unbilled, if any.
+    """The usage-only window a stop (a cancellation, a suspension) or a pin change at `at` leaves
+    unbilled, if any.
 
-    Usage bills in arrears at the next roll — which never comes for a cancelled subscription,
-    and comes after the fact for a suspended one. So the stop itself claims
-    `[period start (or where the last close stopped), at)`. Only a served state has usage to bill:
-    a trial's is free, a suspended one's was closed when it was suspended.
+    Usage bills in arrears at the next roll — which never comes for a cancelled subscription, and
+    is priced at the *new* pin after a plan change. So the event claims its own window. It starts
+    at the **latest** of what is already covered (review round 2, fix M4): the period start, where
+    the last close stopped (`usage_billed_through`), and the end of the usage window of any
+    lifecycle claim already made (`claimed_usage_end`) — a renewal claimed but not yet recorded
+    covers the previous period's usage, and billing it again here would bill it twice. Only a
+    served state has usage to bill: a trial's is free; a suspended one's was closed when it was
+    suspended.
     """
     if state not in (STATE_ACTIVE, STATE_PAST_DUE) or current_period_start is None:
         return None
     start = current_period_start
-    if usage_billed_through is not None and usage_billed_through > start:
-        start = usage_billed_through
+    for floor in (usage_billed_through, claimed_usage_end):
+        if floor is not None and floor > start:
+            start = floor
     if at <= start:
         return None
     return start, at
 
 
-def is_upgrade(new_list_minor: int, old_list_minor: int) -> bool:
-    """An upgrade costs at least as much at list; anything cheaper is a downgrade (addendum §4)."""
-    return new_list_minor >= old_list_minor
+#: A period's length in days, for comparing prices across cadences without a float.
+_INTERVAL_DAYS: dict[str, int] = {INTERVAL_MONTH: 30, INTERVAL_YEAR: 365}
+
+
+class CadenceChangeRefused(BusinessRuleProblem):
+    """A plan change to a different billing cadence, or to `one_time` (review round 2, B1).
+
+    A monthly period and a yearly one are not two prices for one thing a proration can net: the
+    periods do not line up, and pricing one against the other mis-bills one side. The path is
+    cancel and subscribe again.
+    """
+
+
+def assert_same_cadence(current: str | None, target: str | None) -> None:
+    if target == INTERVAL_ONE_TIME or target not in _INTERVAL_DAYS:
+        raise CadenceChangeRefused(
+            f"cannot change to a {target or 'unknown'} plan: cancel and subscribe to it instead"
+        )
+    if current != target:
+        raise CadenceChangeRefused(
+            f"cannot change from a {current or 'unknown'} plan to a {target} one mid-subscription:"
+            " cancel and subscribe to the new plan instead"
+        )
+
+
+def plan_change_direction(
+    new_minor: int, new_interval: str, old_minor: int, old_interval: str
+) -> int:
+    """+1 an upgrade, -1 a downgrade, 0 a change that moves no money (addendum §4, round 2 B1).
+
+    Prices are compared **per day** by cross-multiplying with each cadence's length in days —
+    `new * old_days` against `old * new_days`, integers only — so the comparison is right even
+    where the cadences differ (which the change-plan path now refuses anyway). Equal is its own
+    answer: an equal-price switch re-pins and closes usage at the old pin but raises no proration.
+    """
+    left = new_minor * _INTERVAL_DAYS[old_interval]
+    right = old_minor * _INTERVAL_DAYS[new_interval]
+    return (left > right) - (left < right)
 
 
 def bills_period(state: str) -> bool:

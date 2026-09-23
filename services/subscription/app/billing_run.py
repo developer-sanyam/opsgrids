@@ -44,12 +44,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app import domain
 from app.models import (
     LIFECYCLE_KINDS,
+    PERIOD_FINALIZE_PENDING,
     PERIOD_PENDING,
     PERIOD_VOID_PENDING,
     STATE_ACTIVE,
     STATE_TRIAL,
     BillingPeriod,
 )
+from app.supervise import backoff_loop
 from platform_core.config import ServiceSettings
 from platform_core.internal_auth import mint_service_token
 from platform_core.logging import correlation_id_ctx, get_logger
@@ -139,7 +141,9 @@ class PeriodRequest:
 
 
 class Billing(Protocol):
-    async def bill_period(self, request: PeriodRequest) -> BilledInvoice: ...
+    async def bill_period(self, request: PeriodRequest) -> BilledInvoice | None: ...
+
+    async def finalize_period(self, request: PeriodRequest) -> bool: ...
 
     async def void_period(self, request: PeriodRequest, *, reason: str) -> VoidResult: ...
 
@@ -211,7 +215,7 @@ class HttpBilling:
         data: dict[str, Any] = response.json()
         return data
 
-    async def bill_period(self, request: PeriodRequest) -> BilledInvoice:
+    async def bill_period(self, request: PeriodRequest) -> BilledInvoice | None:
         assert request.period_end is not None
         body: dict[str, Any] = {
             **_key_fields(request),
@@ -232,12 +236,22 @@ class HttpBilling:
             )
         data = await self._post("/internal/v1/subscription-invoices", body)
         invoice = data["invoice"]
+        if invoice is None:
+            return None  # a proration that netted to nothing: no invoice at all
         return BilledInvoice(
             invoice_id=uuid.UUID(invoice["id"]),
             total_minor=int(invoice["total_minor"]),
             currency=str(invoice["currency"]),
             created=bool(data["created"]),
         )
+
+    async def finalize_period(self, request: PeriodRequest) -> bool:
+        """Finalize the recorded draft under the claim's key — idempotent; True if this call did."""
+        data = await self._post(
+            "/internal/v1/subscription-invoices:finalize",
+            {**_key_fields(request), "product_key": request.product_key},
+        )
+        return bool(data["finalized"])
 
     async def void_period(self, request: PeriodRequest, *, reason: str) -> VoidResult:
         data = await self._post(
@@ -284,6 +298,7 @@ class RunReport:
     renewed: int = 0
     prorated: int = 0
     closed: int = 0
+    finalized: int = 0
     voided: int = 0
     skipped_suspended: int = 0
     superseded: int = 0
@@ -304,6 +319,7 @@ class RunReport:
             + self.renewed
             + self.prorated
             + self.closed
+            + self.finalized
             + self.voided
             + self.skipped_suspended
             + self.superseded
@@ -339,32 +355,36 @@ class BillingRunSweep:
 
     async def run(self) -> None:
         log.info("billing_run.started", poll_interval=self._poll_interval)
-        while not self._stop:
-            try:
-                report = await self.tick()
-            except Exception as exc:
-                # Discovery itself failed (a database restart, a deadlock). Logged and retried
-                # next pass rather than raised: raising would take the dunning sweep and the
-                # payment consumer in this process down with it.
-                log.error("billing_run.tick_failed", error=str(exc)[:300])
-            else:
-                if report.acted:
-                    log.info(
-                        "billing_run.pass",
-                        considered=report.considered,
-                        issued=report.issued,
-                        activated=report.activated,
-                        past_due=report.past_due,
-                        renewed=report.renewed,
-                        prorated=report.prorated,
-                        closed=report.closed,
-                        voided=report.voided,
-                        skipped_suspended=report.skipped_suspended,
-                        superseded=report.superseded,
-                        failed=report.failed,
-                        stale_closed=report.stale_closed,
-                    )
-            await asyncio.sleep(self._poll_interval)
+        # Discovery failing (a database restart, a deadlock) is logged and retried with capped
+        # backoff rather than raised: raising would take the dunning sweep and the payment
+        # consumer in this process down with it. `CancelledError` still propagates.
+        await backoff_loop(
+            "billing_run",
+            self.tick,
+            poll_interval=self._poll_interval,
+            stopped=lambda: self._stop,
+            on_pass=self._log_pass,
+        )
+
+    @staticmethod
+    def _log_pass(report: RunReport) -> None:
+        if report.acted:
+            log.info(
+                "billing_run.pass",
+                considered=report.considered,
+                issued=report.issued,
+                activated=report.activated,
+                past_due=report.past_due,
+                renewed=report.renewed,
+                prorated=report.prorated,
+                closed=report.closed,
+                finalized=report.finalized,
+                voided=report.voided,
+                skipped_suspended=report.skipped_suspended,
+                superseded=report.superseded,
+                failed=report.failed,
+                stale_closed=report.stale_closed,
+            )
 
     async def tick(self, now: datetime | None = None) -> RunReport:
         """One pass. `now` decides what is due; leases and backoff read the wall clock."""
@@ -447,6 +467,46 @@ class BillingRunSweep:
         now: datetime,
         report: RunReport,
     ) -> None:
+        """One due subscription. Any failure — in the claim, the call or the record — backs off
+        the subscription's pending claim (review round 2, fix M4), so a row that fails the same
+        way every pass cannot be rediscovered at the head of every batch."""
+        try:
+            await self._bill_one_unguarded(organization_id, subscription_id, now, report)
+        except Exception as exc:
+            await self._fail_subscription(organization_id, subscription_id, exc)
+            raise
+
+    async def _fail_subscription(
+        self, organization_id: uuid.UUID, subscription_id: uuid.UUID, exc: BaseException
+    ) -> None:
+        from app import selectors, services
+
+        try:
+            async with self._work_scope(organization_id) as session:
+                claim = await selectors.pending_lifecycle_claim(
+                    session, organization_id, subscription_id
+                )
+                if claim is not None:
+                    locked = await selectors.lock_billing_period_by_id(
+                        session, organization_id, claim.id
+                    )
+                    if locked is not None:
+                        await services.fail_billing_period(
+                            session,
+                            locked,
+                            error=str(exc),
+                            permanent=bool(getattr(exc, "permanent", False)),
+                        )
+        except Exception as inner:  # pragma: no cover - the database itself is down
+            log.error("billing_run.backoff_failed", error=str(inner)[:300])
+
+    async def _bill_one_unguarded(
+        self,
+        organization_id: uuid.UUID,
+        subscription_id: uuid.UUID,
+        now: datetime,
+        report: RunReport,
+    ) -> None:
         from app import selectors, services
 
         # --- claim ------------------------------------------------------------------------
@@ -474,11 +534,22 @@ class BillingRunSweep:
             if due is None:
                 report.skipped += 1  # dealt with between discovery and this lock
                 return
-            if due.kind == domain.KIND_RENEWAL and await services.apply_pending_change(
-                session, subscription
+            existing = await selectors.lock_billing_period(
+                session, organization_id, subscription_id, due.kind, due.start
+            )
+            if existing is not None and existing.state != PERIOD_PENDING:
+                report.skipped += 1  # recorded already; nothing for this period
+                return
+            # A downgrade waiting for a roll is applied only to a period **not yet claimed**
+            # (review round 2, fix B2): a claimed period keeps the snapshot it was claimed with,
+            # and changing the pin under it would entitle one plan and bill another. Applied, the
+            # new period is priced at the lower plan and rolls on its cadence; the ending period's
+            # usage was closed at the old pin, so this one carries none.
+            if (
+                existing is None
+                and due.kind == domain.KIND_RENEWAL
+                and await services.apply_pending_change(session, subscription, boundary=due.start)
             ):
-                # A downgrade waiting for this roll took effect: the new period is priced at the
-                # lower plan and rolls on its cadence.
                 due = decide()
                 assert due is not None
             if not due.billable:
@@ -491,7 +562,14 @@ class BillingRunSweep:
                     error=due.error,
                 )
                 return
-            if due.kind == domain.KIND_RENEWAL and not domain.bills_period(subscription.state):
+            if (
+                existing is None
+                and due.kind == domain.KIND_RENEWAL
+                and not domain.bills_period(subscription.state)
+            ):
+                # A suspended roll — only when nothing is claimed for the period. A claim made
+                # before the suspension is finished by the record step, which voids its advance
+                # charge and keeps its usage (round 2, M4).
                 await services.skip_suspended_period(session, subscription, due)
                 report.skipped_suspended += 1
                 return
@@ -504,6 +582,8 @@ class BillingRunSweep:
         # --- call (no transaction is open) ---------------------------------------------------
         try:
             billed = await self._billing.bill_period(request)
+            if billed is None:  # pragma: no cover - only a proration can net to nothing
+                raise BillingRunCallError("billing raised no invoice for a period", permanent=True)
             collectable: bool | None = None
             if request.kind == domain.KIND_TRIAL_CONVERSION and billed.total_minor > 0:
                 collectable = await self._payment.can_collect(
@@ -549,10 +629,10 @@ class BillingRunSweep:
         report.invoices.append(billed.invoice_id)
         if outcome == "superseded":
             report.superseded += 1
-            # Void it now rather than next pass: the sooner billing marks it void, the less
-            # chance anything downstream acts on it.
+            # A draft nobody was told about (round 2, M5): void it now, before anything could.
             await self._work_row(organization_id, request.period_id, report)
-        elif outcome == "activated":
+            return
+        if outcome == "activated":
             report.activated += 1
         elif outcome == "past_due":
             report.past_due += 1
@@ -568,11 +648,14 @@ class BillingRunSweep:
             outcome=outcome,
             invoice_created=billed.created,
         )
+        # --- finalize: only now is the invoice announced, and so chargeable ----------------
+        await self._work_row(organization_id, request.period_id, report)
 
     async def _work_row(
         self, organization_id: uuid.UUID, period_id: uuid.UUID, report: RunReport
     ) -> None:
-        """A row that is its own work: bill a proration or a closing period, or void an invoice."""
+        """A row that is its own work: bill a proration or a closing period, finalize a recorded
+        draft, or void a superseded one. Claim → call → record, like a lifecycle period."""
         from app import selectors, services
 
         async with self._work_scope(organization_id) as session:
@@ -581,9 +664,14 @@ class BillingRunSweep:
             )
             if period is None:
                 return
-            voiding = period.state == PERIOD_VOID_PENDING
-            if not voiding and (period.state != PERIOD_PENDING or period.kind in LIFECYCLE_KINDS):
-                return
+            action = {
+                PERIOD_VOID_PENDING: "void",
+                PERIOD_FINALIZE_PENDING: "finalize",
+            }.get(period.state)
+            if action is None:
+                if period.state != PERIOD_PENDING or period.kind in LIFECYCLE_KINDS:
+                    return
+                action = "bill"
             subscription = await selectors.get_subscription(session, period.subscription_id)
             product_key = subscription.product_key if subscription is not None else ""
             if await services.claim_actionable(session, period) is None:
@@ -591,9 +679,13 @@ class BillingRunSweep:
                 return
             request = PeriodRequest.of(period, product_key)
 
+        voided: VoidResult | None = None
+        billed: BilledInvoice | None = None
         try:
-            if voiding:
+            if action == "void":
                 voided = await self._billing.void_period(request, reason="superseded period")
+            elif action == "finalize":
+                await self._billing.finalize_period(request)
             else:
                 billed = await self._billing.bill_period(request)
         except Exception as exc:
@@ -604,6 +696,7 @@ class BillingRunSweep:
                 organization_id=str(organization_id),
                 period_id=str(period_id),
                 kind=request.kind,
+                action=action,
                 error=str(exc)[:300],
             )
             return
@@ -612,23 +705,31 @@ class BillingRunSweep:
             claimed = await selectors.lock_billing_period_by_id(session, organization_id, period_id)
             if claimed is None:  # pragma: no cover - cascade-deleted
                 return
-            if voiding:
+            if voided is not None:
                 outcome = await services.record_void(
                     session, claimed, voided=voided.voided, invoice_id=voided.invoice_id
                 )
                 if outcome == "voided":
                     report.voided += 1
                 return
+            if action == "finalize":
+                if await services.record_finalized(session, claimed) == "finalized":
+                    report.finalized += 1
+                return
             outcome = await services.record_actionable_invoice(
-                session, claimed, invoice_id=billed.invoice_id, total_minor=billed.total_minor
+                session,
+                claimed,
+                invoice_id=billed.invoice_id if billed is not None else None,
+                total_minor=billed.total_minor if billed is not None else 0,
             )
-        if outcome == "already_recorded":
+        if outcome in ("already_recorded", "nothing_to_prorate") or billed is None:
             return
         report.invoices.append(billed.invoice_id)
         if outcome == "prorated":
             report.prorated += 1
         else:
             report.closed += 1
+        await self._work_row(organization_id, period_id, report)
 
     async def _close_if_stale(
         self, organization_id: uuid.UUID, period_id: uuid.UUID, report: RunReport

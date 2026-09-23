@@ -31,7 +31,7 @@ from app import domain, selectors, services
 from app.billing_run import BilledInvoice, BillingRunSweep, PeriodRequest
 from app.config import Settings, settings
 from app.models import (
-    PERIOD_INVOICED,
+    PERIOD_FINALIZED,
     PERIOD_PENDING,
     PERIOD_VOIDED,
     STATE_ACTIVE,
@@ -143,7 +143,40 @@ async def _change(
 
 
 class TestConversionChargeFailure:
-    async def test_a_failure_before_the_record_opens_the_window_not_activation(
+    async def test_nothing_is_chargeable_before_the_record_step(
+        self,
+        run: BillingRunSweep,
+        billing: FakeBilling,
+        session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        """Round 2 (M5) closes round 1's race at its root: billing's invoice is a draft until the
+        run has recorded the conversion, so no charge — and no charge failure — can come first."""
+        subscription_id = await _seed(session, org_id)
+        billing.crash_after = True
+        with pytest.raises(Crash):
+            await run.tick(now=T0)
+        assert billing.invoices and billing.finalized == [], "a draft was announced"
+        (period,) = await _periods(session, subscription_id)
+        assert period.state == PERIOD_PENDING
+
+    async def test_a_failure_for_another_invoice_is_not_stamped_on_the_conversion(
+        self,
+        run: BillingRunSweep,
+        billing: FakeBilling,
+        session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        """Round 2, m7: only a failure of the conversion's own invoice is written onto it."""
+        subscription_id = await _seed(session, org_id)
+        billing.crash_after = True
+        with pytest.raises(Crash):
+            await run.tick(now=T0)
+        await _fail_charge(session, subscription_id, uuid.uuid4())
+        (period,) = await _periods(session, subscription_id)
+        assert period.payment_failed_at is None
+
+    async def test_a_recorded_charge_failure_takes_past_due_whatever_the_mandate(
         self,
         run: BillingRunSweep,
         billing: FakeBilling,
@@ -151,24 +184,26 @@ class TestConversionChargeFailure:
         session: AsyncSession,
         org_id: uuid.UUID,
     ) -> None:
-        """Billing committed the invoice, payment charged it and it failed — all before this
-        replica recorded the conversion. A usable mandate must not turn that into `active`."""
+        """The record step still honours a failure written onto the claim (round 1, fix 1)."""
         subscription_id = await _seed(session, org_id)
         billing.crash_after = True
         with pytest.raises(Crash):
             await run.tick(now=T0)
-        ((_, invoice),) = billing.invoices.items()
-
-        await _fail_charge(session, subscription_id, invoice.invoice_id)
-        (period,) = await _periods(session, subscription_id)
-        assert period.payment_failed_at is not None
-        assert period.payment_failure_reason == "insufficient_funds"
-
+        engine = create_async_engine(settings().admin_dsn)
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE subscription.billing_periods SET payment_failed_at = now(), "
+                    "payment_failure_reason = 'insufficient_funds' WHERE subscription_id = :s"
+                ),
+                {"s": subscription_id},
+            )
+        await engine.dispose()
         payment.usable = True
         await expire_leases(subscription_id)
         report = await run.tick(now=T0)
         assert report.past_due == 1 and report.activated == 0
-        assert (await _subscription(session, subscription_id)).state == STATE_PAST_DUE
+        ((_, invoice),) = billing.invoices.items()
         cycle = await _cycle(session, subscription_id)
         assert cycle is not None and cycle.invoice_id == invoice.invoice_id
         assert cycle.opened_at == T0
@@ -321,7 +356,7 @@ class TestPlanChangeMoney:
         report = await run.tick(now=_wall())
         again = await run.tick(now=_wall())
         assert report.prorated == 1 and again.prorated == 0
-        (request,) = billing.requests
+        (request,) = [r for r in billing.requests if r.billing_kind == "proration"]
         assert request.billing_kind == "proration"
         assert request.plan_version_id == high.id
         assert request.from_plan_version_id == low.id
@@ -329,8 +364,9 @@ class TestPlanChangeMoney:
         sub = await _subscription(session, subscription_id)
         assert request.period_end == sub.current_period_end
         assert request.full_period_start == sub.current_period_start
-        (period,) = await _periods(session, subscription_id)
-        assert period.state == PERIOD_INVOICED and period.outcome == "prorated"
+        (period,) = [p for p in await _periods(session, subscription_id) if p.kind == "proration"]
+        assert period.state == PERIOD_FINALIZED and period.outcome == "prorated"
+        assert period.invoice_id in billing.finalized
 
     async def test_a_downgrade_bills_nothing_now_and_prices_the_next_period_lower(
         self,
@@ -376,8 +412,7 @@ class TestPlanChangeMoney:
 
         report = await run.tick(now=_wall())
         assert report.prorated == 1
-        (request,) = billing.requests
-        assert request.billing_kind == "proration"
+        assert len([r for r in billing.requests if r.billing_kind == "proration"]) == 1
         sub = await _subscription(session, subscription_id)
         assert sub.plan_version_id == high.id
         assert sub.pending_plan_version_id == low.id
@@ -489,7 +524,7 @@ class TestMinors:
             written = await services.fail_billing_period(session, period, error="late 503")
         assert written is False
         (period,) = await _periods(session, subscription_id)
-        assert period.state == PERIOD_INVOICED and period.last_error is None
+        assert period.state == PERIOD_FINALIZED and period.last_error is None
 
     async def test_locks_filter_the_organization_even_without_rls(
         self,

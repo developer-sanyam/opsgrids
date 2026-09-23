@@ -26,6 +26,8 @@ from app.domain import PERMANENT_AFTER_ATTEMPTS
 from app.models import (
     DUNNING_OPEN,
     LIFECYCLE_KINDS,
+    PERIOD_FINALIZE_PENDING,
+    PERIOD_FINALIZED,
     PERIOD_KIND_CLOSE,
     PERIOD_KIND_PRORATION,
     PERIOD_KIND_TRIAL_CONVERSION,
@@ -254,8 +256,8 @@ async def actionable_periods(
     session: AsyncSession, *, wall: datetime, limit: int = 100
 ) -> list[tuple[uuid.UUID, uuid.UUID]]:
     """Rows that are their own work, as `(organization_id, period_id)`: a pending proration or
-    closing period, or an invoice to void — none leased or backing off. Cross-tenant on the
-    outbox role like the discovery above; ordered oldest first."""
+    closing period, a recorded draft to finalize (review round 2, M5), or an invoice to void —
+    none leased or backing off. Cross-tenant on the outbox role; ordered oldest first."""
     stmt = (
         select(BillingPeriod.organization_id, BillingPeriod.id)
         .where(
@@ -264,7 +266,7 @@ async def actionable_periods(
                     BillingPeriod.state == PERIOD_PENDING,
                     BillingPeriod.kind.in_((PERIOD_KIND_PRORATION, PERIOD_KIND_CLOSE)),
                 ),
-                BillingPeriod.state == PERIOD_VOID_PENDING,
+                BillingPeriod.state.in_((PERIOD_VOID_PENDING, PERIOD_FINALIZE_PENDING)),
             ),
             or_(BillingPeriod.lease_until.is_(None), BillingPeriod.lease_until <= wall),
             or_(BillingPeriod.next_attempt_at.is_(None), BillingPeriod.next_attempt_at <= wall),
@@ -317,6 +319,9 @@ async def lock_subscription(
             Subscription.id == subscription_id,
         )
     ).with_for_update(skip_locked=skip_locked, of=Subscription)
+    # Refresh an instance already in the session: a caller that loaded the row unlocked (a route's
+    # `require_subscription`) must decide from what the lock now guarantees, not what it read.
+    stmt = stmt.execution_options(populate_existing=True)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -356,6 +361,60 @@ async def lock_billing_period_by_id(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def pending_lifecycle_claim(
+    session: AsyncSession, organization_id: uuid.UUID, subscription_id: uuid.UUID
+) -> BillingPeriod | None:
+    """A renewal or trial conversion claimed and not yet recorded for a subscription — the period
+    a plan change made now falls inside and is priced against (review round 2, fix B2)."""
+    stmt = (
+        select(BillingPeriod)
+        .where(
+            BillingPeriod.organization_id == organization_id,
+            BillingPeriod.subscription_id == subscription_id,
+            BillingPeriod.kind.in_(LIFECYCLE_KINDS),
+            BillingPeriod.state == PERIOD_PENDING,
+            BillingPeriod.period_end.is_not(None),
+        )
+        .order_by(BillingPeriod.period_start.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def max_claimed_usage_end(
+    session: AsyncSession, organization_id: uuid.UUID, subscription_id: uuid.UUID
+) -> datetime | None:
+    """The end of the latest usage window a lifecycle claim already covers — pending, recorded or
+    finalized. A closing window starts no earlier (review round 2, fix M4)."""
+    stmt = select(func.max(BillingPeriod.usage_end)).where(
+        BillingPeriod.organization_id == organization_id,
+        BillingPeriod.subscription_id == subscription_id,
+        BillingPeriod.kind.in_(LIFECYCLE_KINDS),
+        BillingPeriod.state.in_((PERIOD_PENDING, PERIOD_FINALIZE_PENDING, PERIOD_FINALIZED)),
+    )
+    value: datetime | None = (await session.execute(stmt)).scalar_one_or_none()
+    return value
+
+
+async def close_period_for_invoice(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    subscription_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+) -> BillingPeriod | None:
+    stmt = (
+        select(BillingPeriod)
+        .where(
+            BillingPeriod.organization_id == organization_id,
+            BillingPeriod.subscription_id == subscription_id,
+            BillingPeriod.kind == PERIOD_KIND_CLOSE,
+            BillingPeriod.invoice_id == invoice_id,
+        )
+        .with_for_update()
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def pending_conversion(
     session: AsyncSession, organization_id: uuid.UUID, subscription_id: uuid.UUID
 ) -> BillingPeriod | None:
@@ -391,6 +450,9 @@ async def billing_run_health(
     * `failing_permanent` — claims failing on a data defect, or failing for the fifth time or
       more: a person has to fix something. **Alert.**
     * `void_pending` — invoices for superseded periods still waiting to be voided.
+    * `finalize_pending` — recorded drafts waiting for billing to finalize them (round 2, M5).
+    * `close_charges_failed` — closing-period charges that failed after the customer left: owed,
+      not collected, not dunned (round 2, m9). A person decides.
     * `invoiced_24h` / `skipped_24h` / `last_recorded_at` — what it has actually done.
     """
     cutoff = now - overdue_after
@@ -425,11 +487,18 @@ async def billing_run_health(
             ).where(BillingPeriod.state == PERIOD_PENDING)
         )
     ).one()
-    void_pending = (
+    void_pending, finalize_pending, close_failed = (
         await session.execute(
-            select(func.count(BillingPeriod.id)).where(BillingPeriod.state == PERIOD_VOID_PENDING)
+            select(
+                func.count(BillingPeriod.id).filter(BillingPeriod.state == PERIOD_VOID_PENDING),
+                func.count(BillingPeriod.id).filter(BillingPeriod.state == PERIOD_FINALIZE_PENDING),
+                func.count(BillingPeriod.id).filter(
+                    BillingPeriod.kind == PERIOD_KIND_CLOSE,
+                    BillingPeriod.payment_failed_at.is_not(None),
+                ),
+            )
         )
-    ).scalar_one()
+    ).one()
     since = now - timedelta(hours=24)
     invoiced, skipped, last = (
         await session.execute(
@@ -446,6 +515,8 @@ async def billing_run_health(
         "failing": int(failing or 0),
         "failing_permanent": int(permanent or 0),
         "void_pending": int(void_pending or 0),
+        "finalize_pending": int(finalize_pending or 0),
+        "close_charges_failed": int(close_failed or 0),
         "oldest_pending_seconds": (now - oldest).total_seconds() if oldest else 0.0,
         "invoiced_24h": int(invoiced or 0),
         "skipped_24h": int(skipped or 0),

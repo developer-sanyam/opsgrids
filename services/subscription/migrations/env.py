@@ -49,6 +49,7 @@ SWEEP_READABLE: dict[str, tuple[str, ...] | None] = {
         "attempts",
         "last_error",
         "permanent_failure",
+        "payment_failed_at",
         "invoice_id",
         "created_at",
         "recorded_at",
@@ -90,7 +91,21 @@ def grant_sweep_reader(connection: Connection) -> None:
             continue
         # Identifiers from the constant table above and the configured role — never input.
         connection.execute(text(f'REVOKE SELECT ON "{SCHEMA}"."{table}" FROM "{reader}"'))  # noqa: S608
-        listed = ", ".join(f'"{c}"' for c in columns)
+        # Only the columns this revision actually has: the hook runs after a downgrade too, and a
+        # column a later revision adds is not there to grant (review round 2, fix m6).
+        present = set(
+            connection.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = :schema AND table_name = :table"
+                ),
+                {"schema": SCHEMA, "table": table},
+            ).scalars()
+        )
+        granted = [c for c in columns if c in present]
+        if not granted:
+            continue
+        listed = ", ".join(f'"{c}"' for c in granted)
         connection.execute(text(f'GRANT SELECT ({listed}) ON "{SCHEMA}"."{table}" TO "{reader}"'))
     connection.commit()
 

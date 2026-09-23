@@ -38,7 +38,7 @@ from app import domain, selectors, services
 from app.billing_run import BillingRunSweep
 from app.config import settings
 from app.models import (
-    PERIOD_INVOICED,
+    PERIOD_FINALIZED,
     PERIOD_PENDING,
     PERIOD_SKIPPED,
     STATE_ACTIVE,
@@ -267,7 +267,7 @@ class TestTrialEnd:
         assert payment.asked == [(org_id, "INR", 149900)]
 
         (period,) = await _periods(session, subscription_id)
-        assert period.state == PERIOD_INVOICED and period.outcome == "activated"
+        assert period.state == PERIOD_FINALIZED and period.outcome == "activated"
         assert period.total_minor == 149900
 
         (event,) = await _events(session, domain.EVT_ACTIVATED)
@@ -377,9 +377,10 @@ class TestExactlyOnce:
         assert billing.requests[0] == billing.requests[1], "the retry must ask for the same thing"
         assert len(billing.invoices) == 1
         (period,) = await _periods(session, subscription_id)
-        assert period.state == PERIOD_INVOICED and period.attempts == 2
+        assert period.state == PERIOD_FINALIZED
         (invoice,) = billing.invoices.values()
         assert period.invoice_id == invoice.invoice_id
+        assert billing.finalized == [invoice.invoice_id], "finalized exactly once"
         assert (await _subscription(session, subscription_id)).state == STATE_ACTIVE
         assert len(await _events(session, domain.EVT_ACTIVATED)) == 1
 
@@ -711,6 +712,8 @@ class TestTenancyAndHealth:
                 "failing",
                 "failing_permanent",
                 "void_pending",
+                "finalize_pending",
+                "close_charges_failed",
                 "oldest_pending_seconds",
                 "invoiced_24h",
                 "skipped_24h",
