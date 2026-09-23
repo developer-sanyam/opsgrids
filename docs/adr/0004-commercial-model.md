@@ -285,8 +285,8 @@ Recorded so they are not mistaken for settled:
   customer, and where GST/VAT logic lives (a `billing` concern or its own service), is unsettled.
   *Interim rule since 2026-09-23:* one deployment-wide rate code, exclusive, on the subtotal, in
   force on the period's start — [ADR-0005's billing-run addendum](0005-dunning-and-grace.md) §5,
-  which also records trial conversion, the invoicing cadence and the "priced from the next
-  period" plan-change rule this ADR left open.
+  which also records trial conversion, the invoicing cadence and the plan-change rule this ADR
+  left open (upgrades prorate now, downgrades wait for the next period).
 - **Multi-currency on one account** — the schema carries an ISO currency per amount, so it is
   *possible*; whether one organization can hold subscriptions or ledgers in more than one currency,
   and how that reports, is deferred until a customer needs it.

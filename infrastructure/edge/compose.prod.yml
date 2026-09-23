@@ -774,8 +774,10 @@ services:
       CATALOG_SERVICE_URL: http://catalog:8000
       BILLING_SERVICE_URL: http://billing:8000
       PAYMENT_SERVICE_URL: http://payment:8000
-      # The billing run's kill switch — see the runbook's "The billing run" before a first deploy.
-      BILLING_RUN_ENABLED: ${BILLING_RUN_ENABLED:-true}
+      # The billing run's kill switch, OFF unless .env turns it on — see the runbook's "The
+      # billing run" before turning it on: the first passes convert every expired trial and bill
+      # every overdue period.
+      BILLING_RUN_ENABLED: ${BILLING_RUN_ENABLED:-false}
 
   # Prices the billing run's invoices off the pinned catalog version and metering's usage for the
   # closed period. BILLING_TAX_CODE unset means no tax line (ADR-0004 "Open: Tax"); set it (and

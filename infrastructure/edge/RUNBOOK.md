@@ -538,16 +538,20 @@ plan version's `trial_days` feature (14 when absent), never the customer's.
 
 ### The billing run: first deploy, watching it, and what to do when it complains
 
-The billing run (ADR-0005's 2026-09-23 addendum) is the loop that converts ended trials and
-invoices every period. It lives in `subscription-worker` beside the payment consumer and the
+The billing run (ADR-0005's 2026-09-23 addendum and its review fixes) is the loop that converts
+ended trials, invoices every period, bills an upgrade's prorated difference, bills the closing
+usage a cancellation or suspension leaves, and voids an invoice for a period the subscription
+moved past. **It is off unless `.env` sets `BILLING_RUN_ENABLED=true`** — preflight warns while it
+is off, and `/health/billing-run`'s `overdue` climbs. It lives in `subscription-worker` beside the payment consumer and the
 dunning sweep — no container of its own. It calls billing (`POST /internal/v1/subscription-invoices`)
 and payment (the mandate question) over the back network; billing in turn reads catalog and
 metering. None of those calls holds a database transaction open.
 
-**Order.** Two migrations, both additive: billing `b5e2c8d4f1a9` (the invoice idempotency key)
-and subscription `d8b3f5a7c9e1` (`billing_periods`, `subscriptions.billing_interval`, discovery
-indexes; `migrations/env.py` grants the outbox role `SELECT` on the two tables it discovers
-from). Billing, metering and payment must be serving the new routes before the worker's first
+**Order.** Three migrations, all additive: billing `b5e2c8d4f1a9` (the invoice idempotency key)
+and subscription `d8b3f5a7c9e1` + `e4f6a8c0b2d4` (`billing_periods` with its proration/close kinds
+and void states, `subscriptions.billing_interval` / `pending_change` / `usage_billed_through`,
+discovery indexes). `migrations/env.py` grants the outbox role `SELECT` on **named columns only**
+of the two tables it discovers from. Billing, metering and payment must be serving the new routes before the worker's first
 pass; a single `make deploy` does that, and a pass that runs early only backs off and retries.
 
 **First deploy onto a box with history — stage it.** Until now nothing ever converted a trial or
@@ -558,15 +562,20 @@ the dunning sweep's next pass), and every active subscription whose period has c
 **one period per pass** for every period it is behind. Look before that happens:
 
 ```bash
-# 1. Deploy with the run held.
-echo 'BILLING_RUN_ENABLED=false' >> .env && make deploy HOST=… CONFIRM=…
+# 1. Deploy. The run is off by default; preflight says so.
+make deploy HOST=… CONFIRM=…
 # 2. What it would do: one JSON line per subscription, then a summary. Writes nothing.
 docker compose -f compose.prod.yml --env-file .env run --rm -T subscription-worker \
   python -m app.billing_run --dry-run
-# 3. Decide. Then remove the line from .env and redeploy (or `up -d subscription-worker`).
+# 3. Decide. Then turn it on and recreate the worker.
+echo 'BILLING_RUN_ENABLED=true' >> .env && docker compose -f compose.prod.yml --env-file .env up -d subscription-worker
 ```
 
-`periods_owed` above 1 means back-invoicing. If that is not what the business wants for a
+The summary splits `periods_invoiced` (invoices that will be raised) from
+`periods_suspended_roll` (suspended periods that only roll), and counts `grace_already_expired`:
+trials whose fourteen-day window, anchored at the trial's end, has already passed — without a
+usable mandate those are suspended by the dunning sweep's next pass. `periods_invoiced` above 1
+for a subscription means back-invoicing. If that is not what the business wants for a
 subscription, move its period forward by hand (a reviewed `UPDATE` of `current_period_start` /
 `current_period_end` on that one row) before turning the run on — the run bills from the stored
 boundary, which is what makes it safe, and also what makes it literal.
@@ -584,15 +593,17 @@ make edge-logs SERVICE=subscription-worker | grep billing_run
 | `overdue` | subscriptions due for over an hour and not yet handled | **> 0** — the run is stopped, held (`billing_run.disabled` in the log), or cannot keep up |
 | `pending` / `oldest_pending_seconds` | claims taken and not yet recorded | oldest > 1 h |
 | `failing` | claims whose last attempt failed; retried with backoff (5 min doubling to 6 h) | > 0 for a day |
+| `failing_permanent` | a data defect (a 4xx from billing, a `one_time` cadence) or five failures; still retried at the cap | **> 0** — a person must fix the data |
+| `void_pending` | invoices for superseded periods waiting to be voided in billing | > 0 for an hour |
 | `invoiced_24h` / `skipped_24h` / `last_recorded_at` | throughput; `skipped` is suspended periods rolled without an invoice | — |
 
 Log lines: `billing_run.pass` (counts, only when a pass did something), `billing_run.recorded`
 and `billing_run.failed` (per subscription, with its ids), `billing_run.not_billable` (a
 `one_time` plan's trial — nothing sells one today), `billing_run.period.superseded` /
-`billing_run.period.stale_closed` (the subscription changed between claim and record — **a person
-must look**: billing may hold an invoice nothing recorded, key
-`subscription:{id}:{period_start}`; void it through billing's internal route if it should not
-stand).
+`billing_run.period.stale_closed` (the subscription changed between claim and record — the run
+voids whatever billing holds under the claim's key through `POST /internal/v1/subscription-invoices:void`
+and the row ends `voided`, or `skipped` with outcome `nothing_to_void`; payment may already have
+raised a charge from the finalized event, so check payment's charges for that invoice).
 
 **`failing` is not dropping.** Read the reason on the row:
 
@@ -601,7 +612,8 @@ SELECT organization_id, subscription_id, period_start, attempts, last_error
 FROM subscription.billing_periods WHERE state = 'pending' ORDER BY created_at;
 ```
 
-`billing answered 503` — catalog or metering was down; it clears on its own. `billing answered
+A stuck row never holds up the others: discovery skips a subscription while its claim is leased
+or backing off. `billing answered 503` — catalog or metering was down; it clears on its own. `billing answered
 422: … not on plan version …` — the subscription's items do not match its pin (data; fix the
 items). `no gst rate is in force …` — `BILLING_TAX_CODE` is set and `billing.tax_rates` has no row
 in force for that date; insert the rate (a new row, never an edit) or unset the code.

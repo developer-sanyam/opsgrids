@@ -221,6 +221,15 @@ if [ "${EMAIL_TRANSPORT:-log}" = "log" ]; then
 else
 	ok "email transport: $EMAIL_TRANSPORT"
 fi
+# The billing run is off unless .env says so (ADR-0005 addendum, review fix 6): on a box with
+# history its first passes convert every expired trial and bill every overdue period. Unset is
+# legal — and loud, because a box left like this converts no trial and invoices nothing.
+if [ "${BILLING_RUN_ENABLED:-}" != "true" ]; then
+	echo "  warn  BILLING_RUN_ENABLED is ${BILLING_RUN_ENABLED:-unset}: the billing run is OFF. No trial converts and nothing is invoiced. Read the runbook's \"The billing run\" first." >&2
+else
+	ok "billing run enabled"
+fi
+
 if [ -z "${RAZORPAY_KEY_ID:-}" ]; then
 	echo "  warn  RAZORPAY_KEY_ID empty: payments are inert. Trials end in past_due, never active." >&2
 else
