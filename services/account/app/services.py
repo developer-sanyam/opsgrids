@@ -2469,3 +2469,30 @@ async def reconcile_employee_links(
         memberships_unlinked=memberships_unlinked,
         changed=changed,
     )
+
+
+async def record_operator_directory_read(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    request: Request | None = None,
+) -> None:
+    """The audit row for an operator's staff-only read of one organization's directory record
+    (`app/api/admin.py`). `session` is a tenant-bound transaction the caller opened with
+    `session_scope(organization_id)` — the "then narrow" half of a bypass-then-narrow read
+    (ADR-0002, path 4): the lookup itself already ran cross-tenant, on the BYPASSRLS directory
+    session, and this is a real tenant write under the application role. `acting_as` names the
+    operator, because an impersonated read with no named human is not an audit trail.
+    """
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=actor_id,
+        acting_as=f"operator:{actor_id}",
+        action="organization.viewed",
+        entity="organization",
+        entity_id=organization_id,
+        request=request,
+    )

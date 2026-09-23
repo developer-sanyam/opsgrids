@@ -2,9 +2,11 @@ import { Tag } from "@opsgrids/ui";
 import type { TagTone } from "@opsgrids/ui";
 
 import type {
+  CampaignStatus,
   ConnectionStatus,
   ConversationStatus,
   DomainStatus,
+  RecipientStatus,
   SuppressionReason,
   TemplateStatus,
 } from "@/api/types";
@@ -101,6 +103,41 @@ const CONVERSATION_LABELS: Record<ConversationStatus, { label: string; tone: Tag
 
 export function ConversationStatusTag({ status }: { status: ConversationStatus }) {
   const { label, tone } = CONVERSATION_LABELS[status];
+  return <Tag tone={tone}>{label}</Tag>;
+}
+
+/**
+ * A campaign's own lifecycle, exactly as `campaigns.status` arrives — draft through sent, and
+ * cancelled from any state before that. `paused` is named as the send driver's own state rather
+ * than folded into any other tone, because it is the one status that means "action wanted": the
+ * campaign is not finished, not cancelled, and not making progress on its own.
+ */
+const CAMPAIGN_LABELS: Record<CampaignStatus, { label: string; tone: TagTone }> = {
+  draft: { label: "Draft", tone: "neutral" },
+  scheduled: { label: "Scheduled", tone: "info" },
+  sending: { label: "Sending", tone: "warning" },
+  paused: { label: "Paused — needs attention", tone: "negative" },
+  sent: { label: "Sent", tone: "positive" },
+  cancelled: { label: "Cancelled", tone: "neutral" },
+};
+
+export function CampaignStatusTag({ status }: { status: CampaignStatus }) {
+  const { label, tone } = CAMPAIGN_LABELS[status];
+  return <Tag tone={tone}>{label}</Tag>;
+}
+
+/** One recipient's outcome. `queued` already carries the driver's in-flight claim lease — see
+ *  `RecipientStatus`'s own comment in `api/types.ts` — so there is nothing this app renders that
+ *  the wire vocabulary does not also carry. */
+const RECIPIENT_LABELS: Record<RecipientStatus, { label: string; tone: TagTone }> = {
+  queued: { label: "Queued", tone: "neutral" },
+  sent: { label: "Sent", tone: "positive" },
+  failed: { label: "Failed", tone: "negative" },
+  suppressed: { label: "Suppressed", tone: "warning" },
+};
+
+export function RecipientStatusTag({ status }: { status: RecipientStatus }) {
+  const { label, tone } = RECIPIENT_LABELS[status];
   return <Tag tone={tone}>{label}</Tag>;
 }
 

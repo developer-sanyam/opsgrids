@@ -54,6 +54,42 @@ class OrganizationsOut(BaseModel):
     metrics: MetricsOut
 
 
+class LifecycleCountsOut(BaseModel):
+    """Organization counts by lifecycle bucket (`selectors.lifecycle_counts`)."""
+
+    suspended: int
+    active: int
+    trial: int
+    churned: int
+    none: int
+
+
+class MetricsOverviewOut(MetricsOut):
+    """`GET /admin/metrics/overview` — the platform metrics plus org counts by lifecycle."""
+
+    organization_count: int
+    organizations_by_lifecycle: LifecycleCountsOut
+
+
+class OrgDetailOut(BaseModel):
+    """One organization's detail: console's own commercial projection composed with the
+    directory identity from account-service's staff-only route — never account's internal
+    router, which authorizes no individual caller (see `app/directory_client.py`).
+
+    The directory fields are `None` only when account-service could not be reached in time
+    for a field that is not itself the presence check; a genuinely unknown organization is a
+    404, not a row of nulls.
+    """
+
+    organization_id: uuid.UUID
+    slug: str
+    name: str
+    status: str
+    country: str | None
+    created_at: datetime
+    commercial: OrgStateOut | None
+
+
 class SubscriptionOut(BaseModel):
     """One organization's subscription to one product, flattened from its snapshot."""
 

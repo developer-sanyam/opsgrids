@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Deploy step (R1 of the final security review): reseal every MFA factor — tenant AND staff —
+# that a box deployed from main still holds as raw plaintext (or sealed before the per-row AAD).
+# Prints `resealed=N` and `remaining=N`; exits 1 when remaining is above zero. Run with
+# MFA_ACCEPT_LEGACY_PLAINTEXT=true, one-off, from the NEW image, after migrate and before `up` —
+# infrastructure/edge/lib/mfa-reseal.sh does exactly that on every deploy where the count is
+# not zero. Idempotent.
+exec python -m app.mfa_maintenance reseal

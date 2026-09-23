@@ -1,11 +1,16 @@
 /**
  * Typed operator-console client.
  *
- * **Fixtures-first** (ADR-0004 P6c): `VITE_USE_FIXTURES` defaults on, so the whole console renders
- * from `fixtures/` with no admin-gateway — the console backend is not yet wired. Set
- * `VITE_USE_FIXTURES=false` to talk to the live gateway; every function then calls the documented
- * `/api/v1/admin/*` staff routes (ADR-0003 §2) with the operator token from the session. The two
- * code paths return the same shapes, so switching to live is a flag, not a rewrite.
+ * **Fixtures-first**: `VITE_USE_FIXTURES` defaults on, so the whole console renders from
+ * `fixtures/` with no admin-gateway — this app is not yet wired onto `opsgrids-client` (that is
+ * a separate slice; see `docs/backlog.md`). Set `VITE_USE_FIXTURES=false` to talk to the live
+ * gateway; every function below then calls a real, shipped `/api/v1/admin/*` staff route
+ * (ADR-0003 §2 and its addendum) with the operator token from the session — `/admin/organizations`,
+ * `/admin/organizations/{id}`, `/admin/metrics/overview`, `/admin/subscriptions`, `/admin/usage`,
+ * `/admin/audit`, `/admin/overrides` (console-service), `/admin/credit-ledger` (billing-service)
+ * and `/admin/catalog` (catalog-service). The two code paths return the same shapes, so switching
+ * to live is a flag, not a rewrite — though the *response* shapes below have not yet been checked
+ * field-for-field against the live schemas, which is part of that same later slice.
  */
 
 import { apiRequest } from "./http";
@@ -201,9 +206,10 @@ export async function listAudit(params: ListAuditParams = {}): Promise<Page<Audi
 /* ----------------------------- overrides ---------------------------- */
 
 /**
- * Drive a lifecycle override. Live, this POSTs to `/api/v1/admin/overrides`, which delegates to the
- * owning service's `/internal` API (ADR-0004 P6b). In fixtures mode it synthesizes the accepted
- * result and the audit row the endpoint would write, so the action forms demonstrate the full flow.
+ * Drive a lifecycle override. Live, this POSTs to `/api/v1/admin/overrides` (console-service),
+ * which delegates to the owning service's `/internal/v1` API under a service token (ADR-0003
+ * §2). In fixtures mode it synthesizes the accepted result and the audit row the endpoint would
+ * write, so the action forms demonstrate the full flow.
  */
 export async function postOverride(request: OverrideRequest): Promise<OverrideResult> {
   if (USE_FIXTURES) {

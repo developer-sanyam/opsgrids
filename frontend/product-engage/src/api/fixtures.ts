@@ -12,7 +12,10 @@
  */
 
 import type {
+  CampaignOut,
+  CampaignRecipientOut,
   ConnectionOut,
+  ContactListOut,
   ContactOut,
   ConversationMessageOut,
   ConversationOut,
@@ -213,24 +216,25 @@ export const WHATSAPP_CONNECTION: WhatsAppConnectionOut = {
  * mask is invented independently of any string a browser would otherwise need to hold, which is
  * the same reason `CONNECTION` carries no `secret_hint` above.
  */
-export const CONTACTS: ContactOut[] = [
-  {
-    id: "c1a0f2e4-9b3d-4a7c-8e1f-2d6b9c4a5e10",
-    email: "p•••@vaayu-logistics.example.com",
-    name: "Priya Raghavan",
-    attributes: { plan: "enterprise", region: "west" },
-    created_at: "2026-08-29T09:18:02Z",
-    updated_at: "2026-08-29T09:18:02Z",
-  },
-  {
-    id: "d2b1e3f5-8c4e-4b8d-9f2a-3e7c0d5b6f21",
-    email: "a•••@vaayu-freight.example.com",
-    name: "Arjun Mehta",
-    attributes: { plan: "growth" },
-    created_at: "2026-09-10T14:02:11Z",
-    updated_at: "2026-09-18T08:44:59Z",
-  },
-];
+const CONTACT_PRIYA: ContactOut = {
+  id: "c1a0f2e4-9b3d-4a7c-8e1f-2d6b9c4a5e10",
+  email: "p•••@vaayu-logistics.example.com",
+  name: "Priya Raghavan",
+  attributes: { plan: "enterprise", region: "west" },
+  created_at: "2026-08-29T09:18:02Z",
+  updated_at: "2026-08-29T09:18:02Z",
+};
+
+const CONTACT_ARJUN: ContactOut = {
+  id: "d2b1e3f5-8c4e-4b8d-9f2a-3e7c0d5b6f21",
+  email: "a•••@vaayu-freight.example.com",
+  name: "Arjun Mehta",
+  attributes: { plan: "growth" },
+  created_at: "2026-09-10T14:02:11Z",
+  updated_at: "2026-09-18T08:44:59Z",
+};
+
+export const CONTACTS: ContactOut[] = [CONTACT_PRIYA, CONTACT_ARJUN];
 
 /**
  * Suppressions in three of the four reasons the vocabulary carries — `manual` twice, since it is
@@ -257,6 +261,156 @@ export const SUPPRESSIONS: SuppressionOut[] = [
     created_at: "2026-09-19T10:05:19Z",
   },
 ];
+
+/**
+ * Two lists, one that already fed a campaign and one still being built — `member_count` is
+ * folded server-side from `contact_list_members` and has no counterpart on the row itself, the
+ * same shape `selectors.list_member_counts` returns for real.
+ */
+const LIST_ENTERPRISE: ContactListOut = {
+  id: "9a1b2c3d-4e5f-4061-8a7b-1c2d3e4f5061",
+  name: "Enterprise accounts",
+  description: "Every enterprise-tier contact, for release and pricing announcements.",
+  member_count: 2,
+  created_at: "2026-08-20T09:00:00Z",
+  updated_at: "2026-09-18T10:12:00Z",
+};
+
+const LIST_TRIAL: ContactListOut = {
+  id: "8b2c3d4e-5f60-4172-9b8c-2d3e4f506172",
+  name: "Growth trial — week 2",
+  description: "",
+  member_count: 0,
+  created_at: "2026-09-21T13:30:00Z",
+  updated_at: "2026-09-21T13:30:00Z",
+};
+
+export const CONTACT_LISTS: ContactListOut[] = [LIST_ENTERPRISE, LIST_TRIAL];
+
+/**
+ * Campaigns across the vocabulary this screen has to render: a draft still being written, one
+ * sending right now, one the driver has paused for a broken route, and one that finished. Stats
+ * are folded exactly as `_campaign_out` folds them — `recipients` is the sum of the other four,
+ * never a fifth number invented on this side.
+ */
+export const CAMPAIGN_DRAFT: CampaignOut = {
+  id: "c1d2e3f4-5061-4728-9a1b-2c3d4e5f6172",
+  name: "October delivery network update",
+  sender_id: "5c8e2a19-4b6f-4d02-a37e-9f15c0b8d744",
+  subject: "What's changing on your route this month",
+  html_body: "<p>Hello,</p><p>Here is what's new this month.</p>",
+  text_body: "Hello,\n\nHere is what's new this month.",
+  audience: "list",
+  list_id: LIST_ENTERPRISE.id,
+  status: "draft",
+  scheduled_at: null,
+  started_at: null,
+  completed_at: null,
+  cancelled_at: null,
+  pause_reason: "",
+  stats: { recipients: 0, queued: 0, sent: 0, failed: 0, suppressed: 0 },
+  created_at: "2026-09-20T08:00:00Z",
+  updated_at: "2026-09-22T11:00:00Z",
+};
+
+export const CAMPAIGN_SENDING: CampaignOut = {
+  id: "d2e3f4a5-6172-4839-8a1b-3d4e5f617283",
+  name: "September invoice reminder",
+  sender_id: "5c8e2a19-4b6f-4d02-a37e-9f15c0b8d744",
+  subject: "Your September invoice is ready",
+  html_body: "<p>Hello, your invoice is attached.</p>",
+  text_body: "Hello, your invoice is attached.",
+  audience: "all_sendable",
+  list_id: null,
+  status: "sending",
+  scheduled_at: null,
+  started_at: "2026-09-23T06:00:00Z",
+  completed_at: null,
+  cancelled_at: null,
+  pause_reason: "",
+  stats: { recipients: 240, queued: 180, sent: 55, failed: 3, suppressed: 2 },
+  created_at: "2026-09-22T14:00:00Z",
+  updated_at: "2026-09-23T06:10:00Z",
+};
+
+export const CAMPAIGN_PAUSED: CampaignOut = {
+  id: "e3f4a5b6-7283-4940-8a1b-4e5f61728394",
+  name: "Freight lane price update",
+  sender_id: "1a47f0d6-88b3-4c95-b214-6e7d3f92ac58",
+  subject: "New rates for the Chennai–Bengaluru lane",
+  html_body: "<p>Rates change from next week.</p>",
+  text_body: "Rates change from next week.",
+  audience: "all_sendable",
+  list_id: null,
+  status: "paused",
+  scheduled_at: null,
+  started_at: "2026-09-19T05:00:00Z",
+  completed_at: null,
+  cancelled_at: null,
+  pause_reason: "No connected email provider was found. Reconnect a provider and resume.",
+  stats: { recipients: 96, queued: 40, sent: 50, failed: 6, suppressed: 0 },
+  created_at: "2026-09-18T09:00:00Z",
+  updated_at: "2026-09-19T05:01:00Z",
+};
+
+export const CAMPAIGN_SENT: CampaignOut = {
+  id: "f4a5b6c7-8394-4a51-8a1b-5f6172839405",
+  name: "August product update",
+  sender_id: "5c8e2a19-4b6f-4d02-a37e-9f15c0b8d744",
+  subject: "What shipped in August",
+  html_body: "<p>A recap of last month.</p>",
+  text_body: "A recap of last month.",
+  audience: "all_sendable",
+  list_id: null,
+  status: "sent",
+  scheduled_at: null,
+  started_at: "2026-08-30T06:00:00Z",
+  completed_at: "2026-08-30T06:42:00Z",
+  cancelled_at: null,
+  pause_reason: "",
+  stats: { recipients: 512, queued: 0, sent: 498, failed: 9, suppressed: 5 },
+  created_at: "2026-08-29T10:00:00Z",
+  updated_at: "2026-08-30T06:42:00Z",
+};
+
+export const CAMPAIGNS: CampaignOut[] = [
+  CAMPAIGN_DRAFT,
+  CAMPAIGN_SENDING,
+  CAMPAIGN_PAUSED,
+  CAMPAIGN_SENT,
+];
+
+export const CAMPAIGN_RECIPIENTS: Record<string, CampaignRecipientOut[]> = {
+  [CAMPAIGN_SENDING.id]: [
+    {
+      id: "10000000-0000-4000-8000-000000000001",
+      contact_id: CONTACT_PRIYA.id,
+      email: CONTACT_PRIYA.email,
+      status: "sent",
+      provider_message_id: "smtp-fixture-1",
+      error: "",
+      sent_at: "2026-09-23T06:05:00Z",
+    },
+    {
+      id: "10000000-0000-4000-8000-000000000002",
+      contact_id: CONTACT_ARJUN.id,
+      email: CONTACT_ARJUN.email,
+      status: "queued",
+      provider_message_id: null,
+      error: "",
+      sent_at: null,
+    },
+    {
+      id: "10000000-0000-4000-8000-000000000003",
+      contact_id: "b6c7d8e9-9405-4b62-8a1b-6172839405a1",
+      email: "d•••@vaayu-freight.example.com",
+      status: "failed",
+      provider_message_id: null,
+      error: "535 5.7.8 Username and Password not accepted",
+      sent_at: null,
+    },
+  ],
+};
 
 export const WHATSAPP_TEMPLATES: ProviderTemplateOut[] = [
   {

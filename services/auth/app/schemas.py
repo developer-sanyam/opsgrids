@@ -252,3 +252,78 @@ class OperatorTokenOut(BaseModel):
     token_type: Literal["Bearer"] = "Bearer"  # noqa: S105
     expires_in: int
     operator_roles: list[str]
+
+
+class OperatorMfaRequired(BaseModel):
+    """A staff account with an already-confirmed factor must present it."""
+
+    status: Literal["mfa_required"] = "mfa_required"
+    pre_auth_token: str
+
+
+class OperatorMfaEnrollmentRequired(BaseModel):
+    """A staff account with no confirmed factor. There is no further path but enrolling one —
+    unlike the tenant flow, an operator cannot land here and simply keep going."""
+
+    status: Literal["mfa_enrollment_required"] = "mfa_enrollment_required"
+    pre_auth_token: str
+
+
+OperatorLoginResult = OperatorMfaRequired | OperatorMfaEnrollmentRequired
+
+
+class OperatorMfaEnrolIn(BaseModel):
+    pre_auth_token: str
+    #: The out-of-band code issued for this staff account — a password alone is not enough to
+    #: reach enrolment (ADR-0003 addendum). Shaped like a recovery code, because it is issued
+    #: through the same generator.
+    enrollment_code: str = Field(min_length=8, max_length=40)
+
+
+class OperatorMfaEnrolConfirmIn(BaseModel):
+    pre_auth_token: str
+    factor_id: uuid.UUID
+    code: str = Field(min_length=6, max_length=8)
+
+
+class OperatorMfaEnrolled(BaseModel):
+    """Enrolling completes the sign-in that started it — see
+    `services.confirm_operator_mfa_enrolment` for why re-presenting the same code through
+    `/mfa/verify` would be redundant. Recovery codes are shown once, exactly as the tenant
+    flow's are."""
+
+    status: Literal["complete"] = "complete"
+    access_token: str
+    token_type: Literal["Bearer"] = "Bearer"  # noqa: S105
+    expires_in: int
+    operator_roles: list[str]
+    recovery_codes: list[str]
+
+
+class OperatorMfaVerifyIn(BaseModel):
+    pre_auth_token: str
+    code: str = Field(min_length=6, max_length=32)
+
+
+class OperatorEnrollmentCodeIn(BaseModel):
+    """An `owner` issuing another staff account's out-of-band MFA enrolment code."""
+
+    staff_id: uuid.UUID
+
+
+class OperatorEnrollmentCodeOut(BaseModel):
+    """Shown once — stored only as a hash, and never retrievable again."""
+
+    staff_id: uuid.UUID
+    enrollment_code: str
+    expires_in_minutes: int
+
+
+class OperatorMeOut(BaseModel):
+    """Staff identity and operator roles — the operator console's equivalent of `/auth/me`."""
+
+    staff_id: uuid.UUID
+    email: str
+    display_name: str
+    operator_roles: list[str]
+    amr: list[str]

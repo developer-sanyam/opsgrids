@@ -164,6 +164,7 @@ chmod 600 .env
 openssl rand -hex 32     # POSTGRES_PASSWORD
 openssl rand -hex 32     # OPSGRIDS_DB_PASSWORD   (alphanumeric only — it goes into a URL)
 openssl rand -hex 32     # INTERNAL_SERVICE_TOKEN
+openssl rand -hex 32     # ADMIN_GATEWAY_HOP_KEY  (a different value from INTERNAL_SERVICE_TOKEN)
 openssl rand -hex 32     # PII_ENCRYPTION_KEY
 openssl rand -hex 32     # BACKUP_S3_SECRET_ACCESS_KEY, if your provider does not issue one
 openssl rand -hex 16     # MINIO_ROOT_USER
@@ -193,6 +194,7 @@ real store is published.
 |---|---|
 | `POSTGRES_PASSWORD`, `OPSGRIDS_DB_PASSWORD` | Generated on this box. Never the development `opsgrids`, which is what `tools/dev-bootstrap/init-db.sql` creates every role with before `postgres-init/30-role-passwords.sh` replaces it |
 | `INTERNAL_SERVICE_TOKEN` | Generated fresh, ≥32 bytes. It signs the tokens one service presents to another; the development value is public in `.env.example` and `platform_core` refuses to start production with any `dev-only-` value |
+| `ADMIN_GATEWAY_HOP_KEY` | Generated fresh, ≥32 bytes, **different from `INTERNAL_SERVICE_TOKEN`**. Signs admin-gateway's operator hop header (BLOCKER 2 of the 2026-09-24 security review); only admin-gateway and auth read it |
 | `PII_ENCRYPTION_KEY` | Generated fresh, ≥32 bytes, **and backed up off this box before any data exists**. Lose it and encrypted PII is unreadable; there is no recovery |
 | `jwt-ed25519.pem` | Generated on this box. Never `make devkeys`' key — that one is on every developer's laptop, and anyone holding it can mint a token for any tenant |
 | `BACKUP_S3_*` | Scoped to write into the backup bucket and nothing else |
@@ -496,7 +498,10 @@ What happens, in order, and what each step protects:
    containers serve. For the length of the deploy the old code runs against the new schema, so
    **every migration must be backward compatible with the version currently running**: add a
    nullable column, backfill, and only drop the old one in a later deploy. `make
-   migration-roundtrip` locally is what proves the `downgrade()` actually reverts.
+   migration-roundtrip` locally is what proves the `downgrade()` actually reverts. `migrate`
+   ends with the **MFA reseal** — a no-op unless some `auth.mfa_factors` row still holds a
+   plaintext secret, in which case it runs once from the new image and aborts the deploy unless
+   it leaves none (see "Operator MFA" below).
 7. **up** — containers are recreated. Brief downtime. Not zero.
 8. **health** — every container running and healthy within 120 s, or the deploy reports a
    failure and leaves the decision to you.
@@ -768,6 +773,135 @@ in force for that date; insert the rate (a new row, never an edit) or unset the 
 **Tax.** `BILLING_TAX_CODE` / `BILLING_TAX_JURISDICTION` in `.env` choose the `tax_rates` row;
 empty (the default) writes no tax line. Insert the rate row **before** setting the code.
 
+### Operator MFA: mandatory rollout, the MFA reseal, and the one-off codes
+
+The security review of the operator-MFA slice made a second factor mandatory for every staff
+account (ADR-0003 addendum) and closed several holes in how it is enforced. It ships `auth`
+migrations through the merge revision `f8e432a62a84` (the join of the operator-MFA chain ending
+`5ba575e36b1a` and the domain-verification chain ending `0c1a721d4214`; it changes no table).
+
+#### The reseal — every MFA factor, tenant and staff, and the deploy does it for you
+
+A box deployed from `main` stores **every** TOTP secret — every tenant member's and every staff
+account's — as raw base32 plaintext in `auth.mfa_factors.secret_enc`. The new auth code seals new
+secrets under the PII key with a per-row AAD and **refuses** a plaintext row unless
+`MFA_ACCEPT_LEGACY_PLAINTEXT=true` is set, because nothing authenticates such a row: anyone able to
+write that column could choose a factor's secret. Left alone, that refusal would lock out every
+member who has MFA, so the deploy reseals first. The order is:
+
+```
+build → migrate → RESEAL → up → health
+```
+
+`remote.sh migrate` ends by calling `reseal_mfa_factors_if_pending` (`lib/mfa-reseal.sh`). It counts
+the rows still holding a raw secret with the statement below and **does nothing — not even start a
+container — when that is 0**, which is every deploy after the first. When it is not 0, it runs a
+one-off container **from the new image**, before any new container serves:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T \
+  -e MFA_ACCEPT_LEGACY_PLAINTEXT=true auth python -m app.mfa_maintenance reseal
+```
+
+then counts again and **aborts the deploy unless the count is 0**. `reseal` prints `resealed=N`
+and `remaining=N` (counts only) and exits 1 if `remaining` is above zero, so a run without the
+flag can no longer read as success. Each row it touches is sealed under the current key with the
+per-row AAD and audited (`auth.mfa_factor_resealed`). Envelopes sealed before the AAD existed are
+resealed too; those need no flag, because GCM already authenticated them.
+
+The pre- and post-check, which you can run by hand on the box at any time and which must end at
+`0`:
+
+```sql
+select count(*) from auth.mfa_factors where secret_enc is not null and encode(secret_enc,'escape') ~ '^[A-Z2-7]{16,32}$'
+```
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec -T postgres \
+  psql -U opsgrids -d opsgrids -Atc "select count(*) from auth.mfa_factors where secret_enc is not null and encode(secret_enc,'escape') ~ '^[A-Z2-7]{16,32}\$'"
+```
+
+**The live auth container never gets `MFA_ACCEPT_LEGACY_PLAINTEXT`.** It is not in
+`compose.prod.yml`, not in the shared service environment and not in `.env`; it exists only as a
+`-e` on the one-off run above, and there is no tooling here that could put it on a running
+container. If a count is ever above 0 on a live box (a row written by an old container during a
+rollback, say), the next deploy reseals it; to do it now, run the one-off command above by hand.
+
+*The window, stated plainly.* Between the reseal finishing and `up` recreating auth, the **old**
+auth container is still serving and cannot read a sealed envelope: `main`'s
+`_accept_second_factor` decodes `factor.secret_enc` as UTF-8 *before* it looks at recovery codes,
+and a sealed envelope is never valid UTF-8. So for those seconds **every** MFA sign-in — an
+authenticator code **and** a recovery code — for a member whose factor was just sealed ends in a
+**500** (the old code has no MFA lockout, so nothing is counted against them). That is accepted:
+it is seconds long, and the alternative order — `up`, then reseal — is a lockout. The deploy runs
+the reseal a **second time after `health`**: a plaintext factor enrolled through the old container
+inside that window would otherwise stay refused until the next deploy (it is idempotent, and only
+warns if it fails, since the site is already up).
+
+*If a plaintext row is ever met while the flag is off* — a restore from an old backup, a manual
+insert — auth answers a distinct **503 "Multi-factor re-seal pending — use a recovery code"** and
+logs `auth.mfa_factor_plaintext_refused`. That refusal is **not** counted against the person's MFA
+failure counter and never locks the account: the code may well have been right, and it is our state
+that is wrong. A recovery code still signs them in; a wrong code, or anything that is not six
+digits, still counts as usual. Run the reseal to clear it.
+
+#### The staff enrolment codes
+
+**`bin/issue-enrollment-codes`** — every staff account that predates mandatory MFA has no
+confirmed factor and needs an out-of-band enrolment code before it can enrol one (a password alone
+is not enough to reach enrolment, by design). Run once, after the migration that revokes every live
+operator session (`c731a475333d`) lands:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm -T auth \
+  python -c "from app.bootstrap import issue_codes_main; issue_codes_main()"
+```
+
+Prints `email code` pairs to stdout, once — hand each one to its owner out of band (chat, a phone
+call — anything that is not this box's own logs). Skips any account that already has a confirmed
+factor, so re-running after some staff have enrolled issues codes only for the rest.
+
+#### Not a deploy step: `bin/reset-staff-mfa --all`
+
+This exists only for a development, test or CI environment that ran the pre-fix version of this
+slice (before `5ba575e36b1a` separated the MFA lockout counter from the password one) and should
+not trust the factors and recovery codes it enrolled under that bug. It wipes every staff
+account's MFA and clears their MFA locks. It accepts exactly the environment names `local`, `test`
+and `ci` and **refuses in every other one — `staging`, `uat` and `production` included** — so there
+is nothing to run on this box. A production account recovered from that bug, or one whose owner
+lost their device, goes through the audited `POST /auth/operator/staff/{id}/mfa:reset` owner
+route instead, one account at a time; that route also clears the account's MFA lock.
+
+#### `ADMIN_GATEWAY_HOP_KEY` — auth refuses to start without it
+
+In `production`, `staging` and `uat` auth's settings refuse to load — the service does not start —
+if it is unset or empty, and also if it equals `INTERNAL_SERVICE_TOKEN` (in any environment): the
+hop signature auth's operator routes verify is the second lock behind the route table's own block
+of `/api/v1/auth/operator`, and an unset key would silently switch it off. `compose.prod.yml`
+passes it to the `auth` service only, as `${ADMIN_GATEWAY_HOP_KEY:-}` — **an empty default, on
+purpose**: a `:?` there would abort *every* compose command on a box without the key, `backup.sh`'s
+`pg_dump` and a rollback included. The key is **not** in the shared service environment, so no
+other container — app-gateway included — receives it.
+
+**Where a missing key is caught is `preflight.sh`**, before a build or a migration: it fails on an
+empty `ADMIN_GATEWAY_HOP_KEY` (every key in `.env.example` must be set), on any of
+`INTERNAL_SERVICE_TOKEN`, `PII_ENCRYPTION_KEY` and `ADMIN_GATEWAY_HOP_KEY` shorter than 32 bytes,
+and on a hop key equal to the internal token — the same rules the services enforce at startup, so
+the deploy stops instead of shipping an auth container that will not start. Generate it as
+`INTERNAL_SERVICE_TOKEN` is in "Secrets — generate them here, now, and never anywhere else"
+above: a fresh, separate 32+ byte value, never reused. (admin-gateway, the only signer, is not in
+this compose file, so operator sign-in is unreachable on this box — which is the intent; the key
+is here so that stays true if a signer is ever added.)
+
+#### A locked-out MFA is unlocked by waiting, or by an owner
+
+After `LOCKOUT_MINUTES` (default 15) of a lock the failure count starts from zero, so one typo
+afterwards is one strike, not an immediate re-lock. A staff account can be unlocked sooner by an
+owner through `POST /auth/operator/staff/{id}/mfa:reset` (which also wipes the factors). A tenant
+member's MFA lock has no admin endpoint by design — it would need a new permission and a
+cross-service membership check to guard a fifteen-minute wait — so expiry *is* the unlock. The lock
+refuses recovery codes as well as authenticator codes, so there is nothing to do but wait.
+
 ### Deploying from the pipeline
 
 `.github/workflows/deploy.yml` runs the same two scripts a laptop does — `ssh-deploy.sh` for the
@@ -838,6 +972,14 @@ This is a full deploy of the previous ref that actually served — same prefligh
 same validate, same recreate. It takes as long as a deploy did, because it is one. There is no
 faster path in slice 1: images are built on the box, so there is no previous image tag to point
 at. If that is too slow to live with, that is slice 2's registry, and this is its trigger.
+
+**Do not roll back past the release that introduced the MFA reseal** (Operator MFA, above). Every
+MFA factor on the box is sealed after that deploy, and a ref from before it cannot read a sealed
+envelope: its `_accept_second_factor` decodes `secret_enc` as UTF-8 before it looks at recovery
+codes, so **every MFA sign-in — authenticator code and recovery code alike — is a 500 until you
+roll forward again.** There is no unseal tool. If the release itself is what broke, roll
+*forward* with a fix; if you must go back, expect MFA sign-in to be down for the duration and say
+so.
 
 **The bundle** (a broken storefront page, but the API is fine) is much faster — one symlink:
 

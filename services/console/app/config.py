@@ -42,6 +42,11 @@ class Settings(ServiceSettings):
     #: internal read `GET /internal/v1/plan-versions/{id}`. MRR is active subs times this price
     #: (ADR-0004 §4). Coupled by the documented endpoint shape and a service token, never an import.
     catalog_internal_url: str = "http://localhost:8164"
+    #: account-service's own address, for the org-detail composite's directory half
+    #: (`app/directory_client.py`). Deliberately the **public** `/api/v1` surface — a staff_only
+    #: route the caller's own forwarded token authorizes — never `/internal/v1`, which no
+    #: individual caller's permissions gate at all.
+    account_public_url: str = "http://localhost:8111"
 
 
 def settings() -> Settings:
