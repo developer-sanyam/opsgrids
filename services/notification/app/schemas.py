@@ -309,8 +309,11 @@ class WhatsAppConnectionIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    waba_id: str = Field(min_length=1, max_length=80)
-    phone_number_id: str = Field(min_length=1, max_length=80)
+    # Meta's own ids are bare digit strings. The pattern rejects anything else at the boundary —
+    # a stray path segment, a URL, a Graph API query fragment — before it ever reaches a Graph API
+    # call or a database row, rather than trusting length alone.
+    waba_id: str = Field(min_length=1, max_length=30, pattern=r"^\d{1,30}$")
+    phone_number_id: str = Field(min_length=1, max_length=30, pattern=r"^\d{1,30}$")
     display_number: str = Field(default="", max_length=40)
     access_token: str = Field(min_length=1, max_length=4000)
 
@@ -628,3 +631,89 @@ class CampaignRecipientOut(BaseModel):
     provider_message_id: str | None
     error: str
     sent_at: datetime | None
+
+
+# --------------------------------------------------------------------- engage inbox (WhatsApp)
+
+ConversationStatus = Literal["open", "closed"]
+MessageDirection = Literal["inbound", "outbound"]
+
+
+class ConversationOut(BaseModel):
+    id: str
+    channel: Channel
+    #: Masked. The number is sealed at rest; this route never opens it — see `CLAUDE.md`'s PII
+    #: rule and the module docstring on `models.Conversation`.
+    wa_address: str
+    #: A `customer.contacts` id, when one has been resolved (`app/consumers.py`'s
+    #: `fold_inbound_contact`). None for a stranger, or before resolution has run.
+    contact_id: str | None
+    last_customer_message_at: datetime | None
+    #: Whether a free-text reply is possible right now — `webhooks.within_service_window`,
+    #: evaluated at read time so the inbox never has to reimplement the 24-hour rule client-side.
+    within_service_window: bool
+    status: ConversationStatus
+    assignee_membership_id: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConversationMessageOut(BaseModel):
+    """One entry in a conversation's thread, either direction.
+
+    `body` is masked for an inbound message (the customer's own words) and shown in full for an
+    outbound one (the organization's own reply) — see `selectors.thread_stmt`'s docstring for
+    why only one side is PII-gated here. `engage.inbox.message.unmask` is the audited path to an
+    inbound message's real text.
+    """
+
+    id: str
+    direction: MessageDirection
+    message_type: str
+    body: str
+    occurred_at: datetime
+    provider_message_id: str | None
+    #: The sender's WhatsApp profile name. Always None for an outbound entry.
+    profile_name: str | None
+
+
+class ConversationReplyIn(BaseModel):
+    """Free text, sent inside the conversation's 24-hour service window.
+
+    `idempotency_key` is the caller's own — a retried click or a flaky connection must not send
+    the same words twice, and the key is what makes the retry a no-op instead of a second
+    message (`services.reply_to_conversation`'s `dedupe_key`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    body: str = Field(min_length=1, max_length=4096)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+
+
+class ConversationReplyOut(BaseModel):
+    message_id: str
+    #: pending | sending | sent | delivered | read | failed | suppressed. `suppressed` is how a
+    #: customer's earlier STOP reaches a reply already in flight — see `services.
+    #: reply_to_conversation`'s docstring.
+    state: MessageState
+    conversation_id: str
+
+
+class ConversationAssignIn(BaseModel):
+    """Hand a conversation to a membership, or clear its assignment with `null`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    assignee_membership_id: uuid.UUID | None = None
+
+
+class UnmaskedMessageOut(BaseModel):
+    """The audited, stepped-up reveal of one inbound message's real text.
+
+    Returned by `engage.inbox.message.unmask` alone — never embedded in the ordinary thread
+    read, so a masked body and its plaintext never travel in the same response.
+    """
+
+    message_id: str
+    body: str | None
