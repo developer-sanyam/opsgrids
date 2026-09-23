@@ -45,6 +45,7 @@ All of these run from a clone on your laptop, and **all of them require you to n
 | `make edge-web-rollback HOST=… CONFIRM=…` | Point the edge back at the previous bundle |
 | `make edge-releases HOST=… CONFIRM=…` | Which bundles are on the box, which one is live |
 | `make edge-backup HOST=… CONFIRM=…` | Run the nightly backup now |
+| `make edge-reconcile HOST=… CONFIRM=… PRODUCTS=core [APPLY=1]` | Widen existing orgs' roles with new permission codes from a product's manifest — dry run without `APPLY=1` |
 
 On the box itself everything is `infrastructure/edge/remote.sh <command>` in
 `/srv/opsgrids/repo`, and raw compose is
@@ -258,25 +259,62 @@ than always on. **Skip this section if this box does not sell Storefront.**
 **Add to the box `.env` (names only — see `.env.example` for what each one is and why):**
 
 - `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` — generate fresh, same rule as every other secret
-  in this file.
+  in this file. `MINIO_ROOT_PASSWORD` must be at least 8 characters — MinIO's own minimum —
+  and preflight now enforces it.
+- `DOCUMENT_S3_ACCESS_KEY`, `DOCUMENT_S3_SECRET_KEY` — generate fresh. The scoped credential
+  `document` actually connects with; `minio-init` creates this user and a policy granting it
+  only `s3:PutObject`/`s3:DeleteObject` on this bucket, never the root account. Same 8-character
+  minimum, same preflight check.
 - `S3_PUBLIC_BUCKET` — the committed default (`opsgrids-public`) is fine unless you have a
   reason to rename it.
-- `PUBLIC_ASSET_BASE_URL` — must be `https://<a TLS_PLATFORM_HOSTS name>/opsgrids-public`. The
-  committed default already matches `EDGE_HOST`; change both together if you rename the box.
+- `PUBLIC_ASSET_BASE_URL` — must be **exactly** `https://<this box's own EDGE_HOST>/<S3_PUBLIC_BUCKET>`
+  — not merely a name in `TLS_PLATFORM_HOSTS`. Caddy proxies `/opsgrids-public/*` to MinIO only on
+  EDGE_HOST's own site block, deliberately, so that a stray `response-content-type` on an
+  uploaded object can never be served back as HTML on a platform hostname carrying the
+  `.opsgrids.com`-scoped refresh cookie (ADR-0009 addendum, 2026-09-23). The committed default
+  already matches `EDGE_HOST`; change both together if you rename the box. Preflight refuses to
+  deploy if these two values disagree.
 - `COMPOSE_PROFILES` must list `storefront` (it already does if this box sells the product).
 
-**Order.** No separate step: the Deploy workflow (green `main`, or *Run workflow*) already does
-the right thing once the four values above are in `.env` — it runs the same `remote.sh` steps
-`make deploy` does.
+**Merging this without the values above set on the box is safe and boring, not a surprise
+outage**: preflight refuses to deploy the moment any of them is missing, empty or still a
+placeholder, and a preflight failure changes nothing — the box keeps serving whatever ref it was
+already on. Nobody's shop goes down; the *next* deploy simply does not proceed until these are
+set. `make edge-preflight HOST=… CONFIRM=…` shows exactly which key.
 
-1. `preflight` fails loudly if any of the four are missing, empty or still a placeholder — the
-   same blanket rule as every other key in `.env.example`.
+**Order.** No separate step for these two containers: the Deploy workflow (green `main`, or
+*Run workflow*) already does the right thing once the values above are in `.env` — it runs the
+same `remote.sh` steps `make deploy` does. The permission reconcile (below) is a genuinely
+separate, deliberate step and is never run automatically.
+
+1. `preflight` fails loudly if any of the required keys are missing, empty or still a
+   placeholder — the same blanket rule as every other key in `.env.example`.
 2. `build` builds the `document` image alongside everything else.
 3. `migrate` runs `document`'s Alembic migrations — it is in `remote.sh`'s
    `SERVICES_WITH_SCHEMA` list, so this needs no manual step.
-4. `up` starts `minio`, then `minio-init` (a one-shot: creates the `opsgrids-public` bucket
-   and its anonymous-GetObject policy, idempotent on every later deploy), then `document`.
-5. **Publish (or republish) the `buyer` and `storefront` bundles after this deploy, not
+4. `up` starts `minio`, then `minio-init` (a one-shot: creates the `opsgrids-public` bucket and
+   its anonymous-GetObject policy, then the scoped `document` user and its
+   put/delete-only policy — all idempotent on every later deploy), then `document`.
+5. **Reconcile the `core` permissions before anyone can upload in an organization that already
+   existed before this deploy** (ADR-0009 §4, ADR-0007). `core.content.asset.read` and
+   `core.content.asset.write` are two permissions added to the `core` manifest;
+   `install_registration` skips role codes that already exist, so `ORG_OWNER`/`ORG_ADMIN` in
+   every organization created *before* this deploy keep exactly the grants they had — every
+   upload 403s for them — while a brand-new organization works perfectly. **Dry run first,
+   always**:
+
+   ```bash
+   make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=core
+   # read the diff, then:
+   make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=core APPLY=1
+   ```
+
+   or, from the Deploy workflow's *Run workflow* form, set `reconcile: core` — that path applies
+   directly (no separate dry run in the pipeline), so run the dry run above by hand first if you
+   want to see the diff before it is written. This is a fleet write (every organization's
+   permission version bumps, which signs every member out of their cached token) and is
+   deliberately never part of an ordinary `make deploy`.
+6. **Publish (or republish) the `buyer` and `storefront` bundles after this deploy, not
    before**: run the Deploy workflow with `apps: buyer,storefront` (it calls the same
    `publish-web.sh publish` that `make edge-web APP=…` does). `publish-web.sh` reads `PUBLIC_ASSET_BASE_URL` off the box's `.env` at
    build time and bakes it in as `VITE_ASSET_BASE_URL` — Vite bakes `import.meta.env.VITE_*`
@@ -284,6 +322,13 @@ the right thing once the four values above are in `.env` — it runs the same `r
    published **before** this box had `PUBLIC_ASSET_BASE_URL` set, every uploaded image 404s on
    the live store until it is republished, even though the upload itself succeeds — republish
    now if in doubt.
+7. **Verify the backup, not just the deploy.** The next nightly `backup.sh` run now also tars
+   MinIO's data volume and uploads it alongside the Postgres dump and Caddy's certificates
+   (skipped automatically on a box that does not run `minio`). Don't wait for cron: run
+   `make edge-backup HOST=… CONFIRM=…` once by hand right after this deploy and read its output
+   for `object storage: …, uploaded` — and do the [restore drill](#restore-from-backup) at least
+   once so "we have a backup" is a tested fact about this box, not an assumption about the
+   script.
 
 **Verify an upload end to end**, from a merchant's own signed-in session or with a token by hand:
 
@@ -300,12 +345,21 @@ curl -sSI "https://edge.opsgrids.com/opsgrids-public/$org_and_asset"   # expect:
 
 # 3. Confirm the bucket really cannot be listed (the isolation argument ADR-0009 §3 depends on):
 curl -sSI "https://edge.opsgrids.com/opsgrids-public/"                # expect: 403, never a listing
+
+# 4. Confirm a response-content-type override cannot turn an object into HTML on this host
+#    (ADR-0009 addendum, 2026-09-23) — expect the object's own true content type, never text/html:
+curl -sSI "https://edge.opsgrids.com/opsgrids-public/$org_and_asset?response-content-type=text/html"
+
+# 5. Confirm the SAME path 404s on a platform hostname other than EDGE_HOST — it must NOT proxy
+#    there at all:
+curl -sSI "https://app.opsgrids.com/opsgrids-public/$org_and_asset"   # expect: 404
 ```
 
 If step 2 returns 502, `minio` did not start — check `COMPOSE_PROFILES` and
 `make edge-logs SERVICE=minio`. If step 1 returns 404, the gateway has no route for
 `/api/v1/documents` — check `routes.prod.json` was actually deployed (`ROUTES_SHA` in
-`make edge-status`).
+`make edge-status`). If step 1 returns 403 for an organization that existed before this deploy,
+the permission reconcile (step 5 above) has not run yet.
 
 ---
 
