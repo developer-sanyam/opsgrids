@@ -142,6 +142,31 @@ def _iter_changes(payload: dict[str, Any]) -> Iterator[tuple[str | None, dict[st
             yield (str(found) if found else None, value)
 
 
+def entry_ids_by_phone(payload: dict[str, Any]) -> dict[str, set[str]]:
+    """Every `phone_number_id` named anywhere in this body, paired with the WABA id(s) — `entry.
+    id` — of the entry that named it.
+
+    Meta nests the WABA id one level above the change that carries a number, so this is the one
+    place the route can ask "does the account we resolved this number to actually belong to the
+    WABA this batch claims sent it" — a check `_iter_changes` itself has no reason to make, since
+    the grouping functions below never look above `change.value`. A phone number renumbered to a
+    different WABA without this service's own record being updated (or a forged `entry.id`, though
+    the signature already rules that out) is exactly the shape a stale `ProviderAccount.waba_id`
+    would miss silently; the route drops the change instead of trusting it.
+    """
+    result: dict[str, set[str]] = {}
+    for entry in payload.get("entry") or []:
+        entry_id = entry.get("id")
+        if not entry_id:
+            continue
+        for change in entry.get("changes") or []:
+            metadata = (change.get("value") or {}).get("metadata") or {}
+            found = metadata.get("phone_number_id")
+            if found:
+                result.setdefault(str(found), set()).add(str(entry_id))
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class StatusUpdate:
     """One provider message-status event."""
@@ -153,6 +178,10 @@ class StatusUpdate:
     #: Meta's own error code and title when `status` is `failed`, for an operator to act on.
     error_code: str | None = None
     error_detail: str | None = None
+    #: The provider's own status object, whole. Never persisted in the clear — its only use is
+    #: `services.record_dead_letter` sealing it into `InboundDeadLetter.raw_enc` so a parked
+    #: status can be replayed after a fix, the same reasoning `InboundMessage.raw` documents.
+    raw: dict[str, Any] | None = None
 
     @property
     def dedupe_id(self) -> uuid.UUID:
@@ -220,7 +249,16 @@ def _status_from(raw: dict[str, Any]) -> StatusUpdate | None:
         occurred_at=_timestamp(raw.get("timestamp")),
         error_code=str(first.get("code")) if first.get("code") is not None else None,
         error_detail=(first.get("title") or first.get("message")) or None,
+        raw=raw,
     )
+
+
+def status_from_raw(raw: dict[str, Any]) -> StatusUpdate | None:
+    """Rebuild one `StatusUpdate` from the raw object a dead letter sealed. Thin, public alias
+    for `_status_from` — `app/replay_dead_letters.py`'s only route back to a typed value from a
+    parked row's `raw_enc`, kept separate from the private name so the ordinary parsing path
+    (`group_statuses_by_phone`) is not the thing a replay tool reaches into."""
+    return _status_from(raw)
 
 
 def _timestamp(value: Any) -> datetime:
@@ -324,13 +362,21 @@ def group_inbound_by_phone(payload: dict[str, Any]) -> dict[str, list[InboundMes
     return grouped
 
 
+#: `InboundMessageRow.type`'s column width. Every type Meta documents ("text", "image", ...) fits
+#: with room to spare; this is a defensive ceiling against a value that does not, so a message
+#: with an unrecognised, oversized `type` is stored with a truncated one rather than raising a
+#: `DataError` at the insert and being lost — the fact that a customer wrote in matters more than
+#: the exact spelling of a `type` this service does not interpret regardless.
+_TYPE_MAX_LENGTH: Final = 20
+
+
 def _inbound_from(raw: dict[str, Any], names: dict[str, str | None]) -> InboundMessage | None:
     provider_message_id = raw.get("id")
     sender = raw.get("from")
     if not provider_message_id or not sender:
         return None
 
-    message_type = str(raw.get("type") or "unknown")
+    message_type = str(raw.get("type") or "unknown")[:_TYPE_MAX_LENGTH]
     body: str | None = None
     if message_type == TYPE_TEXT:
         body = ((raw.get("text") or {}).get("body")) or None
@@ -344,6 +390,16 @@ def _inbound_from(raw: dict[str, Any], names: dict[str, str | None]) -> InboundM
         raw=raw,
         profile_name=names.get(str(sender)),
     )
+
+
+def inbound_from_raw(raw: dict[str, Any], names: dict[str, str | None] | None = None) -> InboundMessage | None:
+    """Rebuild one `InboundMessage` from the raw object a dead letter sealed. Thin, public alias
+    for `_inbound_from` — see `status_from_raw` for why this is not just made public outright.
+    `names` is normally the batch's `contacts` block, which a dead letter does not keep (only the
+    single message object is sealed); replaying without it just means the profile name is not
+    re-attached, which is display-only and never blocks the fold itself.
+    """
+    return _inbound_from(raw, names or {})
 
 
 def within_service_window(

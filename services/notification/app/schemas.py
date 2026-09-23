@@ -309,8 +309,11 @@ class WhatsAppConnectionIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    waba_id: str = Field(min_length=1, max_length=80)
-    phone_number_id: str = Field(min_length=1, max_length=80)
+    # Meta's own ids are bare digit strings. The pattern rejects anything else at the boundary —
+    # a stray path segment, a URL, a Graph API query fragment — before it ever reaches a Graph API
+    # call or a database row, rather than trusting length alone.
+    waba_id: str = Field(min_length=1, max_length=30, pattern=r"^\d{1,30}$")
+    phone_number_id: str = Field(min_length=1, max_length=30, pattern=r"^\d{1,30}$")
     display_number: str = Field(default="", max_length=40)
     access_token: str = Field(min_length=1, max_length=4000)
 

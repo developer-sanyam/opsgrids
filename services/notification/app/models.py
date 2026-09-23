@@ -566,13 +566,18 @@ class InboundDeadLetter(Base, TenantBase):
     A single malformed or oversized item must not cost every other item in the same batch, or —
     worse — Meta's own retry of the *whole* body, which repeats the same failure forever and
     never lets the items beside it through either. `app/api/webhooks.py` wraps each item's fold in
-    its own `try`/`except`; this table is where the exception lands.
+    its own `try`/`except`, and only a **permanent** failure — one no amount of redelivery will
+    ever fix — lands here; a transient one (a connection blip, a deadlock) is left to raise into a
+    5xx instead, so Meta's own retry does the job this table does not need to.
 
-    Deliberately holds **no PII and no re-playable payload** — `error` is truncated and is never
-    the exception's raw text (which could quote the offending body back), and there is no column
-    that could hold a phone number, a message body or a sender name. This is an operator's worklist
-    ("what needs attention"), not a queue this service replays automatically; a human decides
-    whether a repeated failure is worth chasing with Meta or the platform's own bug tracker.
+    `error` is reduced to the exception's type name, its SQLSTATE and its constraint name — never
+    `str(exc)`, which for a database error can echo a parameter value straight out of the query
+    that failed (`services.record_dead_letter`'s docstring says why). `raw_enc` is sealed, the same
+    way `InboundMessage.raw_enc` is: unlike an ordinary operator worklist, a permanent error is
+    genuinely recoverable once whatever made it permanent is fixed (a schema widened, a bug
+    patched), so the item's own payload is kept, sealed, rather than discarded — `app/
+    replay_dead_letters.py` is the one place that reopens it, and every replay writes its own
+    audit row.
     """
 
     __tablename__ = "inbound_dead_letters"
@@ -580,9 +585,14 @@ class InboundDeadLetter(Base, TenantBase):
     #: status | inbound. Which fold this item was headed for.
     kind: Mapped[str] = mapped_column(String(20), nullable=False)
     provider_message_id: Mapped[str] = mapped_column(String(200), nullable=False)
-    #: The exception's type and a truncated message. Never the payload.
+    #: The exception's type, SQLSTATE and constraint name only. Never `str(exc)`, never the
+    #: payload.
     error: Mapped[str] = mapped_column(String(500), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: The item's own raw provider object (a status or a message), sealed — what `app/
+    #: replay_dead_letters.py` opens to retry the fold once the permanent error behind this row
+    #: has been fixed.
+    raw_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
 
     __table_args__ = (
         Index("ix_inbound_dead_letters_org_created", "organization_id", "created_at"),

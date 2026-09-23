@@ -32,17 +32,21 @@ from tests.helpers import FakeRedis, ctx_for
 pytestmark = pytest.mark.integration
 
 
-def internal() -> dict[str, str]:
-    """A freshly minted service token, as a real caller sends.
+def internal_as(caller: str) -> dict[str, str]:
+    """A freshly minted service token, as a real caller sends, addressed as `caller` names.
 
     Not the signing key itself: that is exactly what this replaced. A static secret on the
     wire meant anything capturing request headers captured the credential rather than one
     expiring use of it.
     """
     return {
-        "X-Internal-Token": mint_service_token(settings(), audience="account", caller="tests"),
-        "X-Calling-Service": "tests",
+        "X-Internal-Token": mint_service_token(settings(), audience="account", caller=caller),
+        "X-Calling-Service": caller,
     }
+
+
+def internal() -> dict[str, str]:
+    return internal_as("tests")
 
 
 def admin_ctx(org: Organization, membership: Membership) -> ScopeContext:
@@ -475,7 +479,7 @@ class TestMembershipLookup:
     ) -> None:
         response = await client.get(
             f"/internal/v1/organizations/{org.id}/memberships/{people['manager'].id}",
-            headers=internal(),
+            headers=internal_as("notification"),
         )
         assert response.status_code == 200
         body = response.json()
@@ -487,7 +491,7 @@ class TestMembershipLookup:
     ) -> None:
         response = await client.get(
             f"/internal/v1/organizations/{org.id}/memberships/{uuid.uuid4()}",
-            headers=internal(),
+            headers=internal_as("notification"),
         )
         assert response.status_code == 200
         assert response.json() == {
@@ -504,7 +508,7 @@ class TestMembershipLookup:
         belongs to an organization it has no business asking about."""
         response = await client.get(
             f"/internal/v1/organizations/{uuid.uuid4()}/memberships/{people['manager'].id}",
-            headers=internal(),
+            headers=internal_as("notification"),
         )
         assert response.status_code == 200
         assert response.json()["exists"] is False
@@ -526,7 +530,8 @@ class TestMembershipLookup:
             await services.revoke_member(session, admin_ctx(org, people["manager"]), member)
 
         response = await client.get(
-            f"/internal/v1/organizations/{org.id}/memberships/{member.id}", headers=internal()
+            f"/internal/v1/organizations/{org.id}/memberships/{member.id}",
+            headers=internal_as("notification"),
         )
         body = response.json()
         assert body["exists"] is False
@@ -548,7 +553,8 @@ class TestMembershipLookup:
             session.add(member)
 
         response = await client.get(
-            f"/internal/v1/organizations/{org.id}/memberships/{member.id}", headers=internal()
+            f"/internal/v1/organizations/{org.id}/memberships/{member.id}",
+            headers=internal_as("notification"),
         )
         body = response.json()
         assert body["exists"] is True
@@ -559,6 +565,20 @@ class TestMembershipLookup:
             f"/internal/v1/organizations/{org.id}/memberships/{uuid.uuid4()}"
         )
         assert response.status_code == 401
+
+    async def test_a_caller_other_than_notification_is_refused(
+        self, client: AsyncClient, people: dict[str, Membership], org: Organization
+    ) -> None:
+        """Every other internal route on this router answers any caller holding a token
+        addressed to account; this one does not. It exists for `notification`'s own
+        assignment check, and a token minted for a different service — real, correctly
+        audienced, just not the one this route is for — must not widen into a place it was
+        never meant to be reached from."""
+        response = await client.get(
+            f"/internal/v1/organizations/{org.id}/memberships/{people['manager'].id}",
+            headers=internal_as("billing"),
+        )
+        assert response.status_code == 403
 
 
 def _role(code: str, permission: str, scope: str):

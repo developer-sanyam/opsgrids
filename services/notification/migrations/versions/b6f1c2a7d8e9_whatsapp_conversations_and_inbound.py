@@ -13,8 +13,10 @@ two columns on an existing one:
   shapes are not parsed), `raw_enc` (the provider's whole message object, including `from`), and
   `profile_name_enc` are all sealed; `body_masked` and `profile_name_masked` are fixed-shape
   placeholders that reveal neither the real value nor its length.
-- `inbound_dead_letters` — one row per webhook item that failed to fold, so one bad item cannot
-  fail the whole `POST` or repeat-fail on Meta's retry of the entire body. No PII, no payload.
+- `inbound_dead_letters` — one row per webhook item that failed with a **permanent** error, so
+  one bad item cannot fail the whole `POST`. `error` is the exception's type, SQLSTATE and
+  constraint name only, never a raw message; `raw_enc` seals the item's own payload so a parked
+  row can be replayed once the permanent error behind it is fixed.
 - `messages.direction` and `messages.conversation_id` — so an outbound reply inside a
   conversation can be told apart from a rule-driven notification or a campaign email, and can be
   joined into the thread it belongs to.
@@ -167,6 +169,9 @@ def upgrade() -> None:
         sa.Column("provider_message_id", sa.String(length=200), nullable=False),
         sa.Column("error", sa.String(length=500), nullable=False),
         sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
+        # The item's own raw provider object, sealed — what `app/replay_dead_letters.py` opens to
+        # retry a parked, permanent failure once it has been fixed.
+        sa.Column("raw_enc", sa.LargeBinary(), nullable=False),
         *_tenant_columns(),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_inbound_dead_letters")),
         schema=SCHEMA,

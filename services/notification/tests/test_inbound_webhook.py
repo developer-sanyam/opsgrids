@@ -96,6 +96,7 @@ def _payload(
     statuses: list[dict] | None = None,
     messages: list[dict] | None = None,
     phone_number_id: str = PHONE_NUMBER_ID,
+    waba_id: str = "waba-1",
 ) -> dict:
     value: dict = {
         "messaging_product": "whatsapp",
@@ -107,7 +108,7 @@ def _payload(
         value["messages"] = messages
     return {
         "object": "whatsapp_business_account",
-        "entry": [{"id": "waba-1", "changes": [{"value": value, "field": "messages"}]}],
+        "entry": [{"id": waba_id, "changes": [{"value": value, "field": "messages"}]}],
     }
 
 
@@ -314,6 +315,7 @@ async def test_a_batch_naming_two_organizations_numbers_is_never_misrouted(
         statuses=[_status(wamid="wamid.THEIRS", status="delivered")],
         messages=[_text_message(wamid="wamid.IN.THEIRS", sender="19995551111", body="theirs")],
         phone_number_id=other_phone,
+        waba_id="waba-other",
     )
     body = json.dumps(_batched_payload(ours, theirs)).encode()
     response = await client.post("/webhooks/whatsapp", content=body, headers=_headers(body))

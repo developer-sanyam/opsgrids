@@ -37,6 +37,15 @@ class WhatsAppOwnershipError(Exception):
     """The supplied access token could not prove it controls this WABA/phone-number pair."""
 
 
+#: A single, fixed message for every "could not even ask Meta" branch below. Never `f"...{exc}"`:
+#: an `httpx` exception's own text can echo the URL it tried to reach, and this exception's
+#: message is exactly what `services.create_whatsapp_connection` turns into a client-facing
+#: `ValidationProblem` — an internal detail (a DNS failure, a proxy's own error page) has no
+#: business reaching whoever is connecting a WhatsApp number. The exception type alone, logged
+#: separately, is enough for an operator to tell a timeout from a malformed URL.
+_UNREACHABLE: Final = "could not reach Meta to verify ownership"
+
+
 async def verify_ownership(
     settings: Settings,
     *,
@@ -59,8 +68,12 @@ async def verify_ownership(
             number_response = await client.get(
                 f"{base}/{phone_number_id}", headers=headers, params={"fields": "id"}
             )
+        except httpx.InvalidURL as exc:
+            log.warning("whatsapp_provider.invalid_url", error_type=type(exc).__name__)
+            raise WhatsAppOwnershipError(_UNREACHABLE) from exc
         except httpx.HTTPError as exc:
-            raise WhatsAppOwnershipError(f"could not reach the Graph API: {exc}") from exc
+            log.warning("whatsapp_provider.number_unreachable", error_type=type(exc).__name__)
+            raise WhatsAppOwnershipError(_UNREACHABLE) from exc
 
         if number_response.status_code != 200:
             log.warning("whatsapp_provider.number_unverified", status=number_response.status_code)
@@ -75,8 +88,12 @@ async def verify_ownership(
             waba_response = await client.get(
                 f"{base}/{waba_id}/phone_numbers", headers=headers, params={"fields": "id"}
             )
+        except httpx.InvalidURL as exc:
+            log.warning("whatsapp_provider.invalid_url", error_type=type(exc).__name__)
+            raise WhatsAppOwnershipError(_UNREACHABLE) from exc
         except httpx.HTTPError as exc:
-            raise WhatsAppOwnershipError(f"could not reach the Graph API: {exc}") from exc
+            log.warning("whatsapp_provider.waba_unreachable", error_type=type(exc).__name__)
+            raise WhatsAppOwnershipError(_UNREACHABLE) from exc
 
         if waba_response.status_code != 200:
             log.warning("whatsapp_provider.waba_unverified", status=waba_response.status_code)

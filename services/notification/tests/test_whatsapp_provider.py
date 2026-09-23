@@ -138,3 +138,34 @@ async def test_an_unreachable_graph_api_is_refused(monkeypatch: pytest.MonkeyPat
 
     with pytest.raises(WhatsAppOwnershipError):
         await _verify(handler, monkeypatch)
+
+
+async def test_an_unreachable_graph_api_never_echoes_the_underlying_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The old message interpolated the `httpx` exception's own text — which for a connection
+    failure can carry a hostname, a proxy's own error page, or other internal detail that has no
+    business reaching whoever is connecting a WhatsApp number. The message is now fixed."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("secret-internal-proxy.example.corp refused the connection")
+
+    with pytest.raises(WhatsAppOwnershipError) as excinfo:
+        await _verify(handler, monkeypatch)
+    assert str(excinfo.value) == "could not reach Meta to verify ownership"
+    assert "secret-internal-proxy" not in str(excinfo.value)
+
+
+async def test_an_invalid_url_is_refused_with_the_same_generic_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`httpx.InvalidURL` is raised while *constructing* the request, before any socket opens,
+    and is not a subclass of `httpx.HTTPError` — an unguarded call would let it escape this
+    function entirely rather than being reported as the ownership failure it is."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.InvalidURL("malformed URL")
+
+    with pytest.raises(WhatsAppOwnershipError) as excinfo:
+        await _verify(handler, monkeypatch)
+    assert str(excinfo.value) == "could not reach Meta to verify ownership"

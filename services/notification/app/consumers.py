@@ -51,6 +51,15 @@ log = get_logger("notification.consumers")
 consumer = EventConsumer(amqp_url=settings().rabbitmq_url, queue_name="notification.events")
 
 
+class ContactResolutionUnavailable(RuntimeError):
+    """The CRM could not be asked at all — raised so `EventConsumer`'s own redeliver-once-then-
+    dead-letter handling (`platform_core.events.EventConsumer._handle`) gives this a genuine
+    second attempt, rather than `fold_inbound_contact` silently acknowledging a message nothing
+    was actually resolved for. Never raised for "the CRM answered and it was nobody" — that is a
+    definite answer (`app.contacts.ContactResolution.answered=True, contact_id=None`) and is
+    written and marked processed like any other, not retried."""
+
+
 async def fold(envelope: dict[str, Any], resolve_target: TargetResolver | None = None) -> None:
     """Run one event through this organization's rules, idempotently.
 
@@ -171,11 +180,17 @@ async def fold_inbound_contact(
 
         if not resolution.answered:
             # No definite answer — leave the conversation exactly as it is (including a contact
-            # id an earlier, successful run already wrote) and mark nothing processed, so a later
-            # redelivery or a manual replay gets a real second attempt rather than a permanent
-            # "already handled" that was never actually answered.
+            # id an earlier, successful run already wrote) and mark nothing processed. Raising
+            # rather than returning is what actually gets this a real second attempt: a bare
+            # `return` acked the message and the CRM being briefly unreachable turned into a
+            # contact this conversation would never resolve unless someone noticed and replayed
+            # it by hand. `EventConsumer` redelivers once and only dead-letters on a *second*
+            # failure, so this cannot hot-loop — the same mechanism a transient database error
+            # already relies on elsewhere in this service.
             log.warning("inbound.contact.unanswered", conversation_id=str(conversation_id))
-            return
+            raise ContactResolutionUnavailable(
+                f"could not resolve a contact for conversation {conversation_id}"
+            )
 
         await services.resolve_conversation_contact(
             session,

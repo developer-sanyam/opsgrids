@@ -27,7 +27,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy import CursorResult, case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DataError, DBAPIError, IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -1176,6 +1176,88 @@ async def fold_inbound_message(
     return row
 
 
+#: The one `IntegrityError` a redelivery can legitimately hit: two transactions racing the same
+#: provider message id, the loser finding the winner already committed. Nothing to retry into
+#: existing — the message is already durably stored — so this is the one constraint violation
+#: `is_permanent_fold_error` treats as permanent rather than asking Meta to redeliver forever.
+_INBOUND_DEDUPE_CONSTRAINT: Final = "uq_inbound_messages_org_provider_id"
+
+
+def _dbapi_constraint(exc: DBAPIError) -> str | None:
+    """The name of the constraint that actually fired, when the driver surfaces one.
+
+    asyncpg's own exception carries `constraint_name` directly, but SQLAlchemy's asyncpg dialect
+    re-raises it as a driver-shaped exception first, so the structured attribute can survive on
+    `exc.orig.__cause__` rather than on `exc.orig` itself. Both are checked, in that order — the
+    same helper `account/app/services.py` uses for its own unique-constraint check, for the same
+    reason.
+    """
+    orig = exc.orig
+    name = getattr(orig, "constraint_name", None)
+    if name is not None:
+        return str(name)
+    cause = getattr(orig, "__cause__", None)
+    name = getattr(cause, "constraint_name", None)
+    return str(name) if name is not None else None
+
+
+def _dbapi_sqlstate(exc: DBAPIError) -> str | None:
+    """The Postgres SQLSTATE the driver attached, by the same two-hop lookup `_dbapi_constraint`
+    uses — enough for an operator to tell a serialization failure from a data exception without
+    opening a sealed column or ever seeing a parameter value."""
+    orig = exc.orig
+    state = getattr(orig, "sqlstate", None)
+    if state is not None:
+        return str(state)
+    cause = getattr(orig, "__cause__", None)
+    state = getattr(cause, "sqlstate", None)
+    return str(state) if state is not None else None
+
+
+def is_permanent_fold_error(exc: BaseException) -> bool:
+    """Will retrying this exact item ever reach a different outcome?
+
+    This is the line `app/api/webhooks.py` uses to decide between parking an item (acknowledge
+    the request, 200) and letting the failure raise into a 5xx so Meta redelivers the whole body.
+    Getting it backwards in either direction loses a message: parking a transient failure
+    (a connection blip, a deadlock, the database restarting) throws away something a redelivery
+    a moment later would have folded cleanly; asking Meta to redeliver a permanent one forever
+    (a value that will never fit, a shape that will never parse) is a retry loop that never ends
+    and never helps.
+
+      * `IntegrityError` on `_INBOUND_DEDUPE_CONSTRAINT` — a genuine duplicate. Another
+        transaction already won the race and durably stored this exact message; there is nothing
+        left for this attempt to do, and redelivering it would reach the identical conflict every
+        time. Permanent.
+      * Any other `IntegrityError` (a foreign key that does not resolve, an unexpected
+        constraint) — not confidently a duplicate, so treated the same as a connection problem:
+        safer to ask for a retry than to silently drop something that might succeed once whatever
+        it raced against settles. Transient.
+      * `DataError` — a value that does not fit the column or the type (an oversized field, a
+        malformed value Postgres itself rejects). Retrying sends the identical bytes again.
+        Permanent.
+      * `OperationalError` and any other `DBAPIError` (a dropped connection, a pool exhausted, a
+        deadlock, the database restarting) — exactly what a redelivery a few seconds later is
+        for. Transient.
+      * A parse/validation error raised by this service's own code before a query ever ran
+        (`ValueError`, `TypeError`, `LookupError`) — the shape will not change on redelivery.
+        Permanent.
+      * Anything else unrecognised — treated as transient. An exception this function has never
+        seen is exactly the case where guessing "safe to drop" is the more expensive mistake.
+    """
+    if isinstance(exc, IntegrityError):
+        return _dbapi_constraint(exc) == _INBOUND_DEDUPE_CONSTRAINT
+    if isinstance(exc, DataError):
+        return True
+    if isinstance(exc, OperationalError):
+        return False
+    if isinstance(exc, DBAPIError):
+        return False
+    if isinstance(exc, (ValueError, TypeError, LookupError)):
+        return True
+    return False
+
+
 async def record_dead_letter(
     session: AsyncSession,
     *,
@@ -1184,17 +1266,27 @@ async def record_dead_letter(
     provider_message_id: str,
     occurred_at: datetime,
     error: BaseException,
+    raw: dict[str, Any],
 ) -> None:
-    """Park one webhook item (a status or an inbound message) that raised while folding, in its
-    own transaction -- the caller's own fold transaction has already rolled back by the time this
-    runs, so this is deliberately a fresh write rather than a continuation of it.
+    """Park one webhook item that failed with a **permanent** error, in its own transaction --
+    the caller's own fold transaction has already rolled back by the time this runs, so this is
+    deliberately a fresh write rather than a continuation of it. A transient failure never
+    reaches this function at all — `is_permanent_fold_error` is what the caller checks first, and
+    a transient one is left to raise into a 5xx instead.
 
-    `error` is reduced to its type name and a truncated `str()` -- enough for an operator to tell
-    a duplicate-key bug from a decode failure without opening a sealed column. The **log line**
-    the caller writes alongside this call carries only `provider_message_id` and `kind`, never the
-    exception text: an exception raised while handling a customer's message can in principle quote
-    that message back in its own text (a database error echoing a value), and a log is a much
-    easier place for that to leak from than one bounded, access-controlled row.
+    `error` is reduced to the exception's type name, its SQLSTATE and (when the driver surfaces
+    one) its constraint name -- never `str(exc)`. A database error's own message can echo a
+    parameter value straight out of the statement that failed (a duplicate key error quotes the
+    key; a check-constraint violation can quote the value that violated it), and this row is not
+    sealed the way `raw_enc` is -- an operator worklist that could itself hold a customer's phone
+    number or message text would be exactly the leak masking the rest of this table exists to
+    prevent. The **log line** the caller writes alongside this call carries only
+    `provider_message_id` and `kind` for the same reason.
+
+    `raw_enc` seals the item's own provider object -- the one thing this row *does* keep a full
+    copy of, because unlike the error text it is not free-form (it is exactly the shape
+    `webhooks.status_from_raw`/`inbound_from_raw` already parse) and a permanent error is, by
+    definition, recoverable: `app/replay_dead_letters.py` is the only place that opens it.
     """
     session.add(
         InboundDeadLetter(
@@ -1202,11 +1294,28 @@ async def record_dead_letter(
             created_by=SYSTEM_ACTOR,
             kind=kind,
             provider_message_id=provider_message_id,
-            error=f"{type(error).__name__}: {error}"[:500],
+            error=_dead_letter_error_text(error),
             occurred_at=occurred_at,
+            raw_enc=pii.seal(
+                json.dumps(raw, separators=(",", ":")), kind="generic", settings=settings()
+            )[0],
         )
     )
     await session.flush()
+
+
+def _dead_letter_error_text(error: BaseException) -> str:
+    """`type(error).__name__`, its SQLSTATE and its constraint name, joined -- never `error`'s
+    own message. See `record_dead_letter`'s docstring for why."""
+    parts = [type(error).__name__]
+    if isinstance(error, DBAPIError):
+        sqlstate = _dbapi_sqlstate(error)
+        if sqlstate:
+            parts.append(f"sqlstate={sqlstate}")
+        constraint = _dbapi_constraint(error)
+        if constraint:
+            parts.append(f"constraint={constraint}")
+    return " ".join(parts)[:500]
 
 
 async def _upsert_conversation(
@@ -1273,25 +1382,50 @@ async def _set_whatsapp_preference(
     later send checks one table regardless of who recorded the refusal or its reversal.
     `stage_message` re-checks it at render **and** dispatch, so a reply already queued when a
     customer says STOP still does not go out.
+
+    A single `INSERT ... ON CONFLICT DO UPDATE`, not a read then a conditional insert-or-update:
+    two STOPs for the same number racing (a customer sending the word twice before the first
+    fold commits, each its own message and its own transaction) used to both read "no row yet"
+    and both attempt an insert, and the loser raised `IntegrityError` on `uq_preferences_org_
+    recipient` — an ordinary customer action crashing the fold it triggered. The upsert makes
+    the write itself race-free at the database; the `SELECT ... FOR UPDATE` immediately before it
+    exists only to capture a `before` value for the audit row, on a best-effort basis — in the
+    same true-concurrent race it can occasionally report "no previous preference" for the
+    request that lost the race to create one, but the write it precedes is correct regardless.
     """
-    pref = await selectors.get_preference(
-        session, organization_id, phone, "whatsapp", domain.CATEGORY_ALL
-    )
-    before = pref.suppressed if pref is not None else None
-    if pref is None:
-        pref = Preference(
+    before = (
+        await session.execute(
+            select(Preference.suppressed)
+            .where(
+                Preference.organization_id == organization_id,
+                Preference.recipient == phone,
+                Preference.channel == "whatsapp",
+                Preference.category == domain.CATEGORY_ALL,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+
+    stmt = (
+        pg_insert(Preference)
+        .values(
+            id=uuid.uuid4(),
             organization_id=organization_id,
             created_by=SYSTEM_ACTOR,
+            updated_by=SYSTEM_ACTOR,
             recipient=phone,
             channel="whatsapp",
             category=domain.CATEGORY_ALL,
+            suppressed=suppressed,
+            reason=reason,
         )
-        session.add(pref)
-    else:
-        pref.updated_by = SYSTEM_ACTOR
-    pref.suppressed = suppressed
-    pref.reason = reason
-    await session.flush()
+        .on_conflict_do_update(
+            constraint="uq_preferences_org_recipient",
+            set_={"suppressed": suppressed, "reason": reason, "updated_by": SYSTEM_ACTOR},
+        )
+        .returning(Preference.id)
+    )
+    pref_id = (await session.execute(stmt)).scalar_one()
 
     record_audit(
         session,
@@ -1301,7 +1435,7 @@ async def _set_whatsapp_preference(
         acting_as=SYSTEM_ACTOR,
         action="preference.set",
         entity="preference",
-        entity_id=pref.id,
+        entity_id=pref_id,
         before={"suppressed": before},
         after={"channel": "whatsapp", "suppressed": suppressed, "reason": reason},
     )
@@ -1321,11 +1455,30 @@ async def _record_stop_request(
     log.info("notification.whatsapp.stop_received")
 
 
+#: The one `reason` START is entitled to reverse. An operator suppression (a complaint handled
+#: by hand, a legal hold, anything `services.set_preference` writes for a human) was never put
+#: there by this convention, and a customer's stray "START" must not be the thing that lifts it.
+_CUSTOMER_STOP_REASON: Final = "customer_stop"
+
+
 async def _record_start_request(
     session: AsyncSession, *, organization_id: uuid.UUID, phone: str
 ) -> None:
     """START, UNSTOP, SUBSCRIBE (`webhooks.START_KEYWORDS`) — the re-subscribe half of the same
-    convention. A customer who typed STOP by habit should not have to contact support to undo it."""
+    convention. A customer who typed STOP by habit should not have to contact support to undo it.
+
+    Only un-suppresses a row this same convention suppressed. No preference row at all, or one
+    suppressed for any other reason, is left exactly as it is — see `_CUSTOMER_STOP_REASON`.
+    """
+    pref = await selectors.get_preference(
+        session, organization_id, phone, "whatsapp", domain.CATEGORY_ALL
+    )
+    if pref is None or pref.reason != _CUSTOMER_STOP_REASON:
+        log.info(
+            "notification.whatsapp.start_ignored",
+            had_preference=pref is not None,
+        )
+        return
     await _set_whatsapp_preference(
         session,
         organization_id=organization_id,
@@ -1334,7 +1487,6 @@ async def _record_start_request(
         reason="customer_start",
     )
     log.info("notification.whatsapp.start_received")
-    log.info("notification.whatsapp.stop_received")
 
 
 async def resolve_conversation_contact(
