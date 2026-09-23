@@ -14,6 +14,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 
+import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
@@ -110,14 +111,16 @@ async def test_no_resolver_leaves_the_conversation_unknown(session, org_id, work
 async def test_a_crm_that_cannot_answer_leaves_the_conversation_untouched(
     session, org_id, worker_engine
 ) -> None:
-    """The behaviour `app/contacts.py` exists for: no exception, no redelivery loop, just an
-    unresolved conversation a later run can still enrich."""
+    """The behaviour `app/contacts.py` exists for: the conversation is left exactly as it was —
+    `fold_inbound_contact` raises so `EventConsumer` gives this a real second attempt (see
+    `test_an_unanswered_lookup_raises_so_the_consumer_retries_it`), but nothing here writes."""
     conversation = await _conversation(session, org_id)
 
     async def resolver(organization_id: str, phone: str) -> ContactResolution:
         return ContactResolution(answered=False)
 
-    await consumers.fold_inbound_contact(_envelope(org_id, conversation.id), resolver)
+    with pytest.raises(consumers.ContactResolutionUnavailable):
+        await consumers.fold_inbound_contact(_envelope(org_id, conversation.id), resolver)
 
     assert await _contact_id(session, conversation.id) is None
 
@@ -153,7 +156,8 @@ async def test_a_crm_that_cannot_answer_does_not_erase_an_earlier_match(
     async def resolver(organization_id: str, phone: str) -> ContactResolution:
         return ContactResolution(answered=False)
 
-    await consumers.fold_inbound_contact(_envelope(org_id, conversation.id), resolver)
+    with pytest.raises(consumers.ContactResolutionUnavailable):
+        await consumers.fold_inbound_contact(_envelope(org_id, conversation.id), resolver)
 
     assert str(await _contact_id(session, conversation.id)) == CONTACT_ID
 
@@ -168,12 +172,31 @@ async def test_an_unanswered_lookup_is_not_marked_processed(session, org_id, wor
 
     event_id = uuid.uuid4()
     fold_id = uuid.uuid5(event_id, "contact_resolve")
-    await consumers.fold_inbound_contact(
-        _envelope(org_id, conversation.id, event_id=event_id), resolver
-    )
+    with pytest.raises(consumers.ContactResolutionUnavailable):
+        await consumers.fold_inbound_contact(
+            _envelope(org_id, conversation.id, event_id=event_id), resolver
+        )
 
     async with session.begin():
         assert (await session.get(ProcessedEvent, fold_id)) is None
+
+
+async def test_an_unanswered_lookup_raises_so_the_consumer_retries_it(
+    session, org_id, worker_engine
+) -> None:
+    """The fix this file's docstring was updated for: a bare `return` used to acknowledge the
+    message and a CRM outage silently became a contact this conversation would never resolve
+    unless someone noticed and replayed it by hand. Raising is what actually gets this a second
+    attempt through `EventConsumer`'s own redeliver-once-then-dead-letter handling
+    (`platform_core.events.EventConsumer._handle`), which is the same mechanism a transient
+    database error already relies on elsewhere in this service — nothing new to hot-loop."""
+    conversation = await _conversation(session, org_id)
+
+    async def resolver(organization_id: str, phone: str) -> ContactResolution:
+        return ContactResolution(answered=False)
+
+    with pytest.raises(consumers.ContactResolutionUnavailable):
+        await consumers.fold_inbound_contact(_envelope(org_id, conversation.id), resolver)
 
 
 async def test_a_conversation_that_no_longer_exists_is_skipped_not_an_error(

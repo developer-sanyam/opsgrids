@@ -392,7 +392,9 @@ def _inbound_from(raw: dict[str, Any], names: dict[str, str | None]) -> InboundM
     )
 
 
-def inbound_from_raw(raw: dict[str, Any], names: dict[str, str | None] | None = None) -> InboundMessage | None:
+def inbound_from_raw(
+    raw: dict[str, Any], names: dict[str, str | None] | None = None
+) -> InboundMessage | None:
     """Rebuild one `InboundMessage` from the raw object a dead letter sealed. Thin, public alias
     for `_inbound_from` — see `status_from_raw` for why this is not just made public outright.
     `names` is normally the batch's `contacts` block, which a dead letter does not keep (only the

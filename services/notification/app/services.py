@@ -1253,9 +1253,7 @@ def is_permanent_fold_error(exc: BaseException) -> bool:
         return False
     if isinstance(exc, DBAPIError):
         return False
-    if isinstance(exc, (ValueError, TypeError, LookupError)):
-        return True
-    return False
+    return isinstance(exc, (ValueError, TypeError, LookupError))
 
 
 async def record_dead_letter(

@@ -3122,14 +3122,16 @@
             "type": "string"
           },
           "phone_number_id": {
-            "maxLength": 80,
+            "maxLength": 30,
             "minLength": 1,
+            "pattern": "^\\d{1,30}$",
             "title": "Phone Number Id",
             "type": "string"
           },
           "waba_id": {
-            "maxLength": 80,
+            "maxLength": 30,
             "minLength": 1,
+            "pattern": "^\\d{1,30}$",
             "title": "Waba Id",
             "type": "string"
           }

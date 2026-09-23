@@ -93,9 +93,7 @@ async def replay(*, organization_id: uuid.UUID, dead_letter_id: uuid.UUID | None
     the number replayed successfully."""
     replayed = 0
     async with session_scope(organization_id=organization_id) as session:
-        stmt = select(InboundDeadLetter).where(
-            InboundDeadLetter.organization_id == organization_id
-        )
+        stmt = select(InboundDeadLetter).where(InboundDeadLetter.organization_id == organization_id)
         if dead_letter_id is not None:
             stmt = stmt.where(InboundDeadLetter.id == dead_letter_id)
         rows = (await session.execute(stmt)).scalars().all()
@@ -144,7 +142,6 @@ async def main() -> None:
     organization_id = uuid.UUID(args.org)
     dead_letter_id = uuid.UUID(args.id) if args.id else None
     replayed = await replay(organization_id=organization_id, dead_letter_id=dead_letter_id)
-    # noqa: T201 -- the operator's own terminal, the whole point of a CLI tool
     print(f"replayed {replayed} dead letter(s) for organization {organization_id}")  # noqa: T201
 
 

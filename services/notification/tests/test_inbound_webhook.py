@@ -8,6 +8,7 @@ possible a moment later.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -16,11 +17,13 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
-from app import services
+from app import replay_dead_letters, services
 from app.models import Conversation, InboundDeadLetter, InboundMessage, Preference, ProviderAccount
 from platform_core.auth import Scope
 from platform_core.config import get_settings
+from platform_core.pii import open_sealed
 from tests.helpers import ctx_for
 
 pytestmark = pytest.mark.integration
@@ -454,3 +457,223 @@ async def test_the_sender_and_body_never_land_in_a_clear_column(client, session,
     assert row.raw_enc is not None
     assert "4111111111111111" not in row.body_masked
     assert row.profile_name_masked is None or "4111111111111111" not in row.profile_name_masked
+
+
+# --------------------------------------------------------------------- transient vs permanent
+
+
+async def test_a_transient_fold_error_answers_5xx_and_redelivery_folds_exactly_once(
+    client, session, org_id, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dropped connection or a deadlock is not the same failure a duplicate key or a bad value
+    is: parking it the way a permanent error is parked would lose the message. The whole request
+    answers with a 5xx instead so Meta redelivers the body — safe because `processed_events`
+    dedupes whatever already folded, so the good message in the same batch is not re-folded and
+    only the one that actually failed does any work on the second attempt."""
+    await _connect_account(session, org_id)
+    real_fold = services.fold_inbound_message
+
+    async def _flaky_fold(session, *, organization_id, inbound):
+        if inbound.provider_message_id == "wamid.TRANSIENT":
+            raise OperationalError("SELECT 1", {}, Exception("connection reset by peer"))
+        return await real_fold(session, organization_id=organization_id, inbound=inbound)
+
+    monkeypatch.setattr(services, "fold_inbound_message", _flaky_fold)
+
+    payload = _payload(
+        messages=[
+            _text_message(wamid="wamid.TRANSIENT", body="please retry me"),
+            _text_message(wamid="wamid.GOOD", body="this one is fine"),
+        ]
+    )
+    body = json.dumps(payload).encode()
+    response = await client.post("/webhooks/whatsapp", content=body, headers=_headers(body))
+    assert response.status_code >= 500
+
+    async with session.begin():
+        rows = (await session.execute(select(InboundMessage))).scalars().all()
+        dead_letters = (
+            await session.execute(select(func.count()).select_from(InboundDeadLetter))
+        ).scalar_one()
+    # The good item in the same batch was not held hostage by the bad one.
+    assert {r.provider_message_id for r in rows} == {"wamid.GOOD"}
+    # The transient item was not parked — parking it would have lost it for good.
+    assert dead_letters == 0
+
+    monkeypatch.setattr(services, "fold_inbound_message", real_fold)
+    redelivered = await client.post("/webhooks/whatsapp", content=body, headers=_headers(body))
+    assert redelivered.status_code == 200
+
+    async with session.begin():
+        rows = (await session.execute(select(InboundMessage))).scalars().all()
+    # The good message did not fold a second time; the transient one folds for the first time.
+    assert sorted(r.provider_message_id for r in rows) == ["wamid.GOOD", "wamid.TRANSIENT"]
+
+
+async def test_a_permanent_fold_error_is_parked_sealed_and_replayable(
+    client, session, org_id, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A permanent error is parked, not discarded: `raw_enc` seals the item's own payload so
+    `app/replay_dead_letters.py` can retry the fold once whatever made it permanent is fixed —
+    every dead letter is recoverable, not just visible."""
+    await _connect_account(session, org_id)
+    real_fold = services.fold_inbound_message
+
+    async def _flaky_fold(session, *, organization_id, inbound):
+        if inbound.provider_message_id == "wamid.PERMANENT":
+            raise ValueError("this shape will never parse, no matter how many times it is tried")
+        return await real_fold(session, organization_id=organization_id, inbound=inbound)
+
+    monkeypatch.setattr(services, "fold_inbound_message", _flaky_fold)
+
+    body = json.dumps(
+        _payload(messages=[_text_message(wamid="wamid.PERMANENT", body="parked, not lost")])
+    ).encode()
+    response = await client.post("/webhooks/whatsapp", content=body, headers=_headers(body))
+    assert response.status_code == 200
+
+    async with session.begin():
+        dead_letter = (await session.execute(select(InboundDeadLetter))).scalars().one()
+    assert dead_letter.provider_message_id == "wamid.PERMANENT"
+    sealed = json.loads(open_sealed(dead_letter.raw_enc, settings=services.settings()))
+    assert sealed["id"] == "wamid.PERMANENT"
+    assert sealed["text"]["body"] == "parked, not lost"
+    # The error column never carries the exception's own message.
+    assert "will never parse" not in dead_letter.error
+
+    monkeypatch.setattr(services, "fold_inbound_message", real_fold)
+    replayed = await replay_dead_letters.replay(organization_id=org_id)
+    assert replayed == 1
+
+    async with session.begin():
+        rows = (await session.execute(select(InboundMessage))).scalars().all()
+        remaining = (
+            await session.execute(select(func.count()).select_from(InboundDeadLetter))
+        ).scalar_one()
+    assert {r.provider_message_id for r in rows} == {"wamid.PERMANENT"}
+    assert remaining == 0
+
+
+# --------------------------------------------------------------------- preferences
+
+
+async def test_concurrent_stop_requests_do_not_crash_and_leave_one_suppressed_row(
+    client, session, org_id
+) -> None:
+    """The bug the read-then-write shape had: two STOPs from the same number racing (two
+    messages, two transactions, both reading "no preference yet" before either commits) used to
+    both attempt an insert and the loser raised `IntegrityError` on `uq_preferences_org_
+    recipient` — an ordinary customer action crashing the fold it triggered. The upsert makes
+    the write itself race-free at the database, real concurrency and all."""
+    await _connect_account(session, org_id)
+    first = json.dumps(
+        _payload(messages=[_text_message(wamid="wamid.STOP1", body="STOP")])
+    ).encode()
+    second = json.dumps(
+        _payload(messages=[_text_message(wamid="wamid.STOP2", body="Stop")])
+    ).encode()
+
+    responses = await asyncio.gather(
+        client.post("/webhooks/whatsapp", content=first, headers=_headers(first)),
+        client.post("/webhooks/whatsapp", content=second, headers=_headers(second)),
+    )
+    assert all(r.status_code == 200 for r in responses)
+
+    async with session.begin():
+        prefs = (
+            (await session.execute(select(Preference).where(Preference.channel == "whatsapp")))
+            .scalars()
+            .all()
+        )
+    assert len(prefs) == 1
+    assert prefs[0].suppressed is True
+    assert prefs[0].reason == "customer_stop"
+
+
+async def test_start_only_lifts_a_customer_stop_never_an_operator_suppression(
+    client, session, org_id
+) -> None:
+    """An operator who suppressed a number for their own reason (a complaint, a legal hold) did
+    not ask a customer's stray "START" to undo it — only a row this same convention put there,
+    `reason == "customer_stop"`, is one START is entitled to reverse."""
+    await _connect_account(session, org_id)
+    ctx = ctx_for(org_id, "engage.setup.rules.write", Scope.ORG)
+    async with session.begin():
+        await services.set_preference(
+            session,
+            ctx,
+            recipient="+16505551234",
+            channel="whatsapp",
+            category="*",
+            suppressed=True,
+            reason="legal_hold",
+        )
+
+    body = json.dumps(_payload(messages=[_text_message(body="START")])).encode()
+    response = await client.post("/webhooks/whatsapp", content=body, headers=_headers(body))
+    assert response.status_code == 200
+
+    async with session.begin():
+        pref = (
+            (await session.execute(select(Preference).where(Preference.channel == "whatsapp")))
+            .scalars()
+            .one()
+        )
+    assert pref.suppressed is True
+    assert pref.reason == "legal_hold"
+
+
+async def test_dead_letter_error_never_carries_a_parameter_value(
+    client, session, org_id, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`error` is the exception's type, SQLSTATE and constraint name only — a database error's
+    own text can echo a parameter straight out of the statement that failed, and this row is not
+    sealed the way `raw_enc` is."""
+    await _connect_account(session, org_id)
+    real_fold = services.fold_inbound_message
+    needle = "a-very-distinctive-parameter-value-12345"
+
+    async def _flaky_fold(session, *, organization_id, inbound):
+        if inbound.provider_message_id == "wamid.DATAERROR":
+            from sqlalchemy.exc import DataError
+
+            # A stand-in for a real driver error's own text quoting a parameter back — never an
+            # actual query this test runs.
+            statement = "INSERT INTO x (y) VALUES (%(y)s)"
+            raise DataError(statement, {"y": needle}, Exception(needle))
+        return await real_fold(session, organization_id=organization_id, inbound=inbound)
+
+    monkeypatch.setattr(services, "fold_inbound_message", _flaky_fold)
+
+    body = json.dumps(_payload(messages=[_text_message(wamid="wamid.DATAERROR")])).encode()
+    response = await client.post("/webhooks/whatsapp", content=body, headers=_headers(body))
+    assert response.status_code == 200
+
+    async with session.begin():
+        dead_letter = (await session.execute(select(InboundDeadLetter))).scalars().one()
+    assert needle not in dead_letter.error
+    assert "DataError" in dead_letter.error
+
+
+# --------------------------------------------------------------------- WABA / entry mismatch
+
+
+async def test_a_change_whose_entry_id_does_not_match_the_accounts_waba_is_dropped(
+    client, session, org_id
+) -> None:
+    """The signature proves the platform's own App Secret signed the body, not which WABA a
+    number belongs to. A change claiming a WABA that does not match this number's registered
+    `ProviderAccount.waba_id` is dropped rather than trusted — the same reasoning a stale routing
+    table anywhere else on the platform would get."""
+    await _connect_account(session, org_id, waba_id="waba-registered")
+    body = json.dumps(
+        _payload(messages=[_text_message(wamid="wamid.MISMATCH")], waba_id="waba-different")
+    ).encode()
+    response = await client.post("/webhooks/whatsapp", content=body, headers=_headers(body))
+    assert response.status_code == 200
+
+    async with session.begin():
+        count = (
+            await session.execute(select(func.count()).select_from(InboundMessage))
+        ).scalar_one()
+    assert count == 0

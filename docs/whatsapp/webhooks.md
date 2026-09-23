@@ -104,12 +104,27 @@ redelivery repeat the work.
 
 One transaction per status rather than per body, so one unknown message id cannot roll back the
 receipts beside it — Meta batches them and will not send the others again. Each item's fold also
-runs inside its own `try`/`except`: a status or message that raises while folding is parked in
-`inbound_dead_letters` (organization-scoped, RLS'd, no PII and no re-playable payload — just
-`kind`, `provider_message_id`, a truncated exception message, and when it happened) rather than
-failing the whole request. Without that, one malformed or unusually large item would 500 the
-entire `POST`, and Meta's retry of the *whole* body would repeat the same failure forever while
-never delivering the items that would otherwise have folded cleanly.
+runs inside its own `try`/`except`, and `services.is_permanent_fold_error` decides what happens to
+the failure:
+
+- **Permanent** — a duplicate this exact item already won elsewhere (`IntegrityError` on
+  `uq_inbound_messages_org_provider_id`), a value that will never fit (`DataError`), or a
+  parse/validation error raised by this service's own code (`ValueError`/`TypeError`/
+  `LookupError`). Redelivering would reach the identical outcome every time, so the item is parked
+  in `inbound_dead_letters` (organization-scoped, RLS'd — `kind`, `provider_message_id`, the
+  exception's type/SQLSTATE/constraint name **never its own message**, and the item's own raw
+  payload **sealed** as `raw_enc`) and the request still answers 200 for it.
+- **Transient** — a dropped connection, a deadlock, the database restarting (`OperationalError`,
+  any other `DBAPIError`, any other `IntegrityError`), or a failed dead-letter write itself. Left
+  to raise: the whole request answers with a 5xx instead of 200, so Meta redelivers the body. Every
+  other item in the batch is still folded first — `processed_events` is what makes that safe:
+  whatever already folded dedupes on the way back, and only the item that actually failed does any
+  work the second time.
+
+Parking a permanent error is not discarding it: `app/replay_dead_letters.py` (`uv run python -m
+app.replay_dead_letters --org <id> [--id <dead-letter-id>]`) opens `raw_enc` and retries the fold
+once whatever made the error permanent is fixed — an operator judgement call, never automatic —
+and every replay attempt, successful or not, writes its own `AuditLog` row.
 
 ## Configuration
 
@@ -128,19 +143,29 @@ bodies. A deployment that trusted everything would be worse than one that trusts
 each in its own transaction — the same shape as a status receipt, and for the same reasons
 (§Redelivery above). For each one:
 
-1. `webhooks.parse_inbound` reads the envelope. Only `type: "text"` is interpreted — the inner
+1. The change's own WABA (`entry.id`) is checked against the number's registered
+   `ProviderAccount.waba_id` (`webhooks.entry_ids_by_phone`), before any item in it is folded; a
+   mismatch drops the whole change with a log line rather than trusting it — the platform's App
+   Secret signs every WABA's traffic alike, so the signature alone does not prove which WABA a
+   *number* belongs to.
+2. `webhooks.parse_inbound` reads the envelope. Only `type: "text"` is interpreted — the inner
    shapes of media and an interactive reply (`button_reply`, `list_reply`) are not published on
    any Meta page consulted, so they are kept whole and uninterpreted rather than parsed on a
    guess. The sender (`from`, bare digits) is canonicalised to E.164 by `webhooks.sender_e164`,
    which refuses rather than guesses a country code — the same rule `domain.normalize_recipient`
    applies to every outbound address.
-2. `services.fold_inbound_message` upserts the conversation for that number (`ON CONFLICT DO
+3. `services.fold_inbound_message` upserts the conversation for that number (`ON CONFLICT DO
    UPDATE`, sealed address, blind-indexed for the lookup), inserts the message, and — if the text
    is a STOP keyword (`webhooks.STOP_KEYWORDS`) — writes a `Preference` refusal for every WhatsApp
-   category, the same row a human operator's suppression write would produce; a START keyword
-   (`webhooks.START_KEYWORDS` — `START`, `UNSTOP`, `SUBSCRIBE`) lifts it the same way. Both match
-   is exact, trailing punctuation stripped (`"STOP."`, `"Stop!"`), never a substring.
-3. An outbox event, `notification.whatsapp.inbound_received`, is staged in the same transaction.
+   category, the same row a human operator's suppression write would produce, via a single
+   `INSERT ... ON CONFLICT DO UPDATE` (`services._set_whatsapp_preference`) rather than a read then
+   a conditional write — two STOPs for the same number racing used to both read "no row yet" and
+   the loser crashed on `uq_preferences_org_recipient`. A START keyword (`webhooks.START_KEYWORDS`
+   — `START`, `UNSTOP`, `SUBSCRIBE`) only lifts a suppression this same convention put there
+   (`reason == "customer_stop"`) — an operator's own suppression (a complaint, a legal hold) is
+   left untouched. Both match is exact, trailing punctuation stripped (`"STOP."`, `"Stop!"`), never
+   a substring.
+4. An outbox event, `notification.whatsapp.inbound_received`, is staged in the same transaction.
 
 **Nothing here is plaintext PII at rest.** `inbound_messages.raw_enc` seals the provider's whole
 message object — including `from` and the text body — and there is no plaintext `raw` column at
@@ -179,7 +204,12 @@ entitlement, unreachable, a timeout, an unexpected status — rather than raisin
 opposite of `app/targets.py`'s outbound resolver, which raises so the broker retries: there, a
 customer is owed a notification and silence would mean they never hear it. Here, the conversation
 and its message are already durably committed by the time this runs; a CRM that cannot answer
-leaves `contact_id` unset, and a later redelivery or manual retry resolves it once it can.
+leaves `contact_id` unset. But "cannot answer" (`ContactResolution.answered=False`) and "answered:
+nobody" are not the same fact, and `consumers.fold_inbound_contact` treats them differently:
+`answered=False` **raises** `ContactResolutionUnavailable` rather than returning, so
+`EventConsumer`'s own redeliver-once-then-dead-letter handling gives the lookup a real second
+attempt instead of a bare `return` silently acknowledging a message nothing was actually resolved
+for.
 
 ## The 24-hour service window and STOP
 
@@ -211,8 +241,9 @@ tell this customer" is a fact kept on the row, the same as any other suppressed 
   column's shape to do it.
 - **A retention policy for inbound bodies.** `inbound_messages.body_enc`/`raw_enc` have no purge
   job yet.
-- **`inbound_dead_letters` has no operator surface.** The rows exist and RLS protects them; nothing
-  reads them yet but a direct query.
+- **`inbound_dead_letters` has no read/list API.** The rows exist, are RLS'd, and are recoverable
+  (`app/replay_dead_letters.py`, see §Redelivery above); there is still no endpoint for an operator
+  to browse them without a direct query.
 
 ## Proving a connection before trusting it
 
@@ -225,7 +256,13 @@ answer yes; a token that can read the number but the number is not listed under 
 exactly as unproven as one that cannot read it at all. Neither call goes through
 `platform_core.egress`'s SSRF guard — the Graph API base is platform configuration
 (`Settings.whatsapp_api_base`), never a URL a caller supplies, so there is no admin-chosen target
-to vet.
+to vet. Every "could not even ask" branch (a connection failure, `httpx.InvalidURL`) raises a
+single, fixed `WhatsAppOwnershipError("could not reach Meta to verify ownership")` — never the
+underlying exception's own text, which can echo a hostname or a proxy's own error page — with the
+exception's type logged separately for an operator. `WhatsAppConnectionIn.waba_id`/
+`phone_number_id` are validated as `^\d{1,30}$` at the boundary: Meta's own ids are bare digit
+strings, so anything else (a path segment, a URL) is rejected before it can reach a Graph API call
+or a database row.
 
 The global-uniqueness check (§Which tenant a webhook belongs to) also moved: it used to run on the
 tenant-scoped session, which row-level security filters to the caller's own organization — so it
@@ -246,6 +283,13 @@ fact, an assignment target this service cannot confirm must never be treated as 
 wrong assignment is not a cosmetic gap the inbox shows plainly; it is a conversation nobody who was
 supposed to answer it will ever see. Clearing an assignment (`null`) needs no such check — there is
 no id to misroute to.
+
+The account-service route this asks, `GET /internal/v1/organizations/{org}/memberships/{id}`, is
+itself restricted to notification: `require_service_token` only proves a token was addressed to
+*account* by name, not which service holds it, and this particular read (does an id name a real,
+active membership) is not one every other internal caller needs. The route checks `iss` — the
+caller's name, stashed after the token's signature and audience were verified, never anything a
+caller merely asserts in a header — and refuses any caller other than `"notification"`.
 
 ## Verified against
 
