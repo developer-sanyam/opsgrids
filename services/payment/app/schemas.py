@@ -62,6 +62,18 @@ class ChargeOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class UsableMandateOut(BaseModel):
+    """Whether an organization could be debited `amount_minor` in `currency` now, and under
+    which mandate. Carries identifiers only — never card or bank details, which this platform
+    does not hold (the provider does)."""
+
+    organization_id: uuid.UUID
+    currency: str
+    amount_minor: int
+    usable: bool
+    mandate_id: uuid.UUID | None = None
+
+
 # --------------------------------------------------------------------- webhook (provider)
 
 

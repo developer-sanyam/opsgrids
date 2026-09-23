@@ -866,9 +866,12 @@ services:
     networks:
       - back
 
-  # Runs both the payment-event consumer (app/consumers.py) and the dunning + trial-end sweep
-  # (app/cron.py's DunningSweep, ADR-0005 and ADR-0013 §6) in one process — app/worker.py,
-  # `gather`ed the way notification/app/worker.py already combines its two consumers.
+  # Runs the payment-event consumer (app/consumers.py), the dunning sweep (app/cron.py's
+  # DunningSweep, ADR-0005) and the billing run — trial end, period roll, one invoice per period
+  # (app/billing_run.py, ADR-0005's 2026-09-23 addendum and ADR-0013 §6) — in one process,
+  # app/worker.py, `gather`ed the way notification/app/worker.py combines its two consumers.
+  # The billing run calls billing and payment over their internal APIs, never holding a
+  # database transaction open across a call.
   # ADR-0013's memory-budget erratum (2026-09-23): these were two containers
   # (`subscription-worker` on `./bin/worker`, `subscription-cron` on `./bin/cron`) at 192m
   # apiece for two processes that are each idle almost all the time. `bin/cron` still points at
@@ -880,14 +883,31 @@ services:
     environment:
       <<: *service-env
       CATALOG_SERVICE_URL: http://catalog:8000
+      BILLING_SERVICE_URL: http://billing:8000
+      PAYMENT_SERVICE_URL: http://payment:8000
+      # The billing run's kill switch, OFF unless .env turns it on — see the runbook's "The
+      # billing run" before turning it on: the first passes convert every expired trial and bill
+      # every overdue period.
+      BILLING_RUN_ENABLED: ${BILLING_RUN_ENABLED:-false}
+      # The billing cutover, required once the run is on (the worker refuses to start the run
+      # without it): nothing that began before it is invoiced. See the runbook.
+      BILLING_RUN_NOT_BEFORE: ${BILLING_RUN_NOT_BEFORE:-}
 
+  # Prices the billing run's invoices off the pinned catalog version and metering's usage for the
+  # closed period. BILLING_TAX_CODE unset means no tax line (ADR-0004 "Open: Tax"); set it (and
+  # BILLING_TAX_JURISDICTION) only once a rate row for it exists in billing.tax_rates.
   billing:
     <<: *service-common
     image: opsgrids-edge/billing
     build:
       context: ../..
       dockerfile: services/billing/Dockerfile
-    environment: *service-env
+    environment:
+      <<: *service-env
+      CATALOG_SERVICE_URL: http://catalog:8000
+      METERING_SERVICE_URL: http://metering:8000
+      BILLING_TAX_CODE: ${BILLING_TAX_CODE:-}
+      BILLING_TAX_JURISDICTION: ${BILLING_TAX_JURISDICTION:-}
     networks:
       - back
 

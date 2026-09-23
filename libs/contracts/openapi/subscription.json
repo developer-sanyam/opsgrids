@@ -269,6 +269,18 @@
             "title": "Items",
             "type": "array"
           },
+          "pending_plan_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Plan Version Id"
+          },
           "plan_version_id": {
             "format": "uuid",
             "title": "Plan Version Id",

@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors
 from app.config import settings
-from app.models import SCHEMA
+from app.models import INVOICE_DRAFT, SCHEMA
 from app.schemas import CreditBalanceOut, InvoiceOut, ServiceInfo
 from platform_core.auth import Scope, ScopeContext, require
 from platform_core.db import get_tenant_session
@@ -55,7 +55,8 @@ async def list_invoices(session: SessionDep, ctx: InvoiceRead) -> list[InvoiceOu
 @router.get("/invoices/{invoice_id}", response_model=InvoiceOut, summary="One invoice")
 async def get_invoice(invoice_id: uuid.UUID, session: SessionDep, ctx: InvoiceRead) -> InvoiceOut:
     invoice = await selectors.get_invoice(session, invoice_id)
-    if invoice is None:
+    if invoice is None or invoice.state == INVOICE_DRAFT:
+        # A billing-run draft is invisible to the customer until it is finalized.
         raise NotFoundProblem("No such invoice")
     return InvoiceOut.model_validate(invoice)
 

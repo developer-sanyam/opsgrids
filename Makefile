@@ -181,6 +181,13 @@ test-infra: ## Repository-tooling tests: deploy scripts' path logic, the gate's 
 	# to run in the static job alongside lint and typecheck.
 	uv run pytest tests/infra -q
 
+.PHONY: test-billing-properties
+test-billing-properties: ## The billing run's randomised money invariants at 500 seeds (nightly/manual)
+	# The ordinary suite runs 25 seeds so CI stays fast; this is the deep run (ADR-0005 addendum,
+	# final review). Needs the database like any service test; a failure names its seed.
+	cd services/subscription && BILLING_PROPERTY_SEEDS=500 uv run pytest -q -p no:cacheprovider \
+	  tests/test_billing_run_properties.py
+
 .PHONY: shard-verify
 shard-verify: ## Assert SHARDS=3 partitions the service list exactly (no service dropped)
 	@test -n "$(SHARDS)" || (echo "SHARDS= is required" && exit 1)

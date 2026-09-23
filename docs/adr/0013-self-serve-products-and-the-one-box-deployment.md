@@ -1208,7 +1208,7 @@ ssh carries no environment, so an exported variable would never arrive; `remote.
 default 4, anything that is not a positive whole number falls back to 4; tested), a quiet window,
 `vmstat 5` in a second session. **There is no automatic rollback**: `health` gives up after 600 s
 with the containers as they are and no `record_ref`; the rollback is `make edge-rollback`. The
-key table lists all 20 keys `.env.example` gained since the production ref (the last, `ADMIN_GATEWAY_HOP_KEY`, arrived with the second merge of this round). **The rollback is not clean for this release**: it crosses the operator-MFA reseal that `migrate` runs before `up`, after which a pre-reseal ref cannot read any MFA factor and every MFA sign-in is a 500 until rolling forward — the RUNBOOK's own "do not roll back past" warning, restated in the rollout section, and one more reason the owner decision and the `.env` keys are to be settled *before* the deploy.
+key table lists all 22 keys `.env.example` gained since the production ref (`ADMIN_GATEWAY_HOP_KEY` arrived with the second merge of this round, and the two `BILLING_TAX_*` keys with the third). **The rollback is not clean for this release**: it crosses the operator-MFA reseal that `migrate` runs before `up`, after which a pre-reseal ref cannot read any MFA factor and every MFA sign-in is a 500 until rolling forward — the RUNBOOK's own "do not roll back past" warning, restated in the rollout section, and one more reason the owner decision and the `.env` keys are to be settled *before* the deploy.
 
 ### Still not done, and why
 

@@ -39,13 +39,15 @@ import uuid
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import domain
 from app.config import settings
-from app.models import DUNNING_ABANDONED
+from app.models import DUNNING_ABANDONED, DunningCycle
+from app.supervise import backoff_loop, supervise
 from platform_core.db import (
     assert_app_role,
     assert_outbox_role,
@@ -58,6 +60,9 @@ from platform_core.db import (
 from platform_core.logging import get_logger
 
 log = get_logger("subscription.cron")
+
+#: How far a cycle whose action raised is pushed back before the sweep looks at it again.
+CYCLE_FAILURE_BACKOFF = timedelta(minutes=15)
 
 #: A tenant-bound transaction for one organization. `session_scope` in production; a test
 #: substitutes its own so the sweep can be driven without a process-wide engine.
@@ -72,10 +77,11 @@ class SweepReport:
     retried: int = 0
     suspended: int = 0
     skipped: int = 0
+    failed: int = 0
 
     @property
     def acted(self) -> int:
-        return self.retried + self.suspended
+        return self.retried + self.suspended + self.failed
 
 
 class DunningSweep:
@@ -112,17 +118,28 @@ class DunningSweep:
             retries=self._policy.max_attempts,
             grace_days=self._policy.grace.days,
         )
-        while not self._stop:
-            report = await self.tick()
-            if report.acted:
-                log.info(
-                    "dunning.sweep.pass",
-                    considered=report.considered,
-                    retried=report.retried,
-                    suspended=report.suspended,
-                    skipped=report.skipped,
-                )
-            await asyncio.sleep(self._poll_interval)
+        # A pass that raises — discovery on a database blip, anything unforeseen — is logged and
+        # retried with capped backoff, never allowed to take the worker (and the payment consumer
+        # beside it) down. `CancelledError` still propagates (app/supervise.py).
+        await backoff_loop(
+            "dunning.sweep",
+            self.tick,
+            poll_interval=self._poll_interval,
+            stopped=lambda: self._stop,
+            on_pass=self._log_pass,
+        )
+
+    @staticmethod
+    def _log_pass(report: SweepReport) -> None:
+        if report.acted:
+            log.info(
+                "dunning.sweep.pass",
+                considered=report.considered,
+                retried=report.retried,
+                suspended=report.suspended,
+                skipped=report.skipped,
+                failed=report.failed,
+            )
 
     async def tick(self, now: datetime | None = None) -> SweepReport:
         """One pass: discover due cycles, then act on each under its own tenant binding.
@@ -142,8 +159,36 @@ class DunningSweep:
 
         report.considered = len(due)
         for organization_id, cycle_id in due:
-            await self._advance(organization_id, cycle_id, at, report)
+            try:
+                await self._advance(organization_id, cycle_id, at, report)
+            except Exception as exc:
+                # One poisoned cycle is one cycle: logged, pushed back so it is not first in line
+                # again next pass, and the rest of the pass carries on.
+                report.failed += 1
+                log.error(
+                    "dunning.sweep.cycle_failed",
+                    organization_id=str(organization_id),
+                    cycle_id=str(cycle_id),
+                    error=str(exc)[:300],
+                )
+                await self._back_off(organization_id, cycle_id)
         return report
+
+    async def _back_off(self, organization_id: uuid.UUID, cycle_id: uuid.UUID) -> None:
+        """Push a failing cycle's next action out by `CYCLE_FAILURE_BACKOFF` on the wall clock.
+        Best effort: if even this fails the database is down, and the next pass finds out."""
+        try:
+            async with self._work_scope(organization_id) as session:
+                await session.execute(
+                    update(DunningCycle)
+                    .where(
+                        DunningCycle.organization_id == organization_id,
+                        DunningCycle.id == cycle_id,
+                    )
+                    .values(next_action_at=datetime.now(UTC) + CYCLE_FAILURE_BACKOFF)
+                )
+        except Exception as exc:  # pragma: no cover - the database itself is unavailable
+            log.error("dunning.sweep.backoff_failed", cycle_id=str(cycle_id), error=str(exc)[:300])
 
     async def _advance(
         self,
@@ -156,6 +201,24 @@ class DunningSweep:
         from app import selectors, services
 
         async with self._work_scope(organization_id) as session:
+            # Lock order is subscription, then cycle — the order every other writer takes
+            # (cancel, suspend, a payment, the billing run). Taking the cycle first and the
+            # subscription inside `suspend_for_dunning` deadlocked against a cancel that held the
+            # subscription and was closing the cycle (final money review).
+            unlocked = await selectors.get_cycle(session, organization_id, cycle_id)
+            if unlocked is None:
+                report.skipped += 1
+                return
+            subscription = None
+            if await selectors.get_subscription(session, unlocked.subscription_id) is not None:
+                subscription = await selectors.lock_subscription(
+                    session, organization_id, unlocked.subscription_id, skip_locked=True
+                )
+                if subscription is None:
+                    # A cancel, a payment or the billing run holds it: this cycle waits for the
+                    # next pass, and whatever that writer did is what the pass then decides from.
+                    report.skipped += 1
+                    return
             cycle = await selectors.lock_open_cycle(session, cycle_id)
             if cycle is None:
                 # Held by another replica, or closed between discovery and here — a payment
@@ -168,7 +231,6 @@ class DunningSweep:
                 report.skipped += 1
                 return
 
-            subscription = await selectors.get_subscription(session, cycle.subscription_id)
             if subscription is None:
                 # The subscription is gone but its cycle is not. Close it rather than leave a row
                 # the sweep will pick up on every pass forever.
@@ -216,7 +278,23 @@ async def main() -> None:
         discovery_factory=get_outbox_sessionmaker(),
         work_scope=lambda organization_id: session_scope(organization_id=organization_id),
     )
-    await sweep.run()
+    # The billing run shares this process for the same reason it shares `app/worker.py`'s: both
+    # are idle between passes, and both are due-work sweeps on the same two engines.
+    from app.billing_run import BillingRunSweep, HttpBilling, HttpPayment, billing_run_loop
+
+    billing_run = BillingRunSweep(
+        discovery_factory=get_outbox_sessionmaker(),
+        work_scope=lambda organization_id: session_scope(organization_id=organization_id),
+        billing=HttpBilling(cfg.billing_service_url, cfg),
+        payment=HttpPayment(cfg.payment_service_url, cfg),
+        poll_interval=cfg.billing_run_poll_interval,
+        not_before=cfg.billing_run_not_before,
+    )
+    loops = {"dunning_sweep": sweep.run()}
+    run_loop = billing_run_loop(cfg, billing_run)
+    if run_loop is not None:
+        loops["billing_run"] = run_loop
+    await supervise(loops)
 
 
 if __name__ == "__main__":

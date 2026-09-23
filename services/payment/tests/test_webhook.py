@@ -126,6 +126,9 @@ class TestReconciliation:
         assert payload["organization_id"] == str(org_id)
         assert payload["subscription_id"] == str(subscription_id)
         assert payload["product_key"] == "hrms"
+        # Subscription records it on a trial conversion that the failure beat to the billing
+        # run's record step (ADR-0005 addendum, review fix 1).
+        assert payload["failure_reason"] == "card_declined"
 
 
 class TestSignature:

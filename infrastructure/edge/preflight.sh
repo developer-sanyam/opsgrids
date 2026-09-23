@@ -62,6 +62,9 @@ optional_empty="$optional_empty EDGE_RESERVED_IP"
 # generating a MinIO user for a pass that is not yet turned on is a step an operator should
 # take deliberately, not one preflight forces on every box the day this shipped.
 optional_empty="$optional_empty DOCUMENT_S3_ORPHAN_ACCESS_KEY DOCUMENT_S3_ORPHAN_SECRET_KEY"
+# Empty is the honest state for a deployment not yet registered for tax: the billing run then
+# writes no tax line (ADR-0005 addendum, 2026-09-23).
+optional_empty="$optional_empty BILLING_TAX_CODE BILLING_TAX_JURISDICTION"
 # EDGE_PROFILES is an explicit, optional override for COMPOSE_PROFILES (see the note below) —
 # most boxes never set it; COMPOSE_PROFILES alone is the common case.
 optional_empty="$optional_empty EDGE_PROFILES"
@@ -449,6 +452,30 @@ if [ "${EMAIL_TRANSPORT:-log}" = "log" ]; then
 else
 	ok "email transport: $EMAIL_TRANSPORT"
 fi
+# The billing run is off unless .env says so (ADR-0005 addendum, review fix 6): on a box with
+# history its first passes convert every expired trial and bill every overdue period. Unset is
+# legal — and loud, because a box left like this converts no trial and invoices nothing.
+if [ "${BILLING_RUN_ENABLED:-}" != "true" ]; then
+	echo "  warn  BILLING_RUN_ENABLED is ${BILLING_RUN_ENABLED:-unset}: the billing run is OFF. No trial converts and nothing is invoiced. Read the runbook's \"The billing run\" first." >&2
+else
+	# On, it needs its cutover (final review, fix 3). Without one — or with one the worker refuses
+	# (the same shape app/config.py accepts: YYYY-MM-DDTHH:MM[:SS[.f]] then Z or ±HH:MM) — the run
+	# does not start. Checked here too so a bad value never reaches a deploy: a regex alone passes
+	# 2026-09-31, so GNU date must also read it as a real instant.
+	if [ -z "${BILLING_RUN_NOT_BEFORE:-}" ]; then
+		bad "BILLING_RUN_ENABLED=true but BILLING_RUN_NOT_BEFORE is empty — set it to the moment billing goes live, e.g. 2026-10-01T09:00:00+05:30 (the runbook's \"The billing run\")"
+	elif ! printf '%s' "$BILLING_RUN_NOT_BEFORE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:[0-9]{2})$'; then
+		bad "BILLING_RUN_NOT_BEFORE must be YYYY-MM-DDTHH:MM:SS±HH:MM, e.g. 2026-10-01T09:00:00+05:30 or 2026-10-01T03:30:00Z"
+	elif ! cutover_epoch=$(date -u -d "$BILLING_RUN_NOT_BEFORE" +%s 2>/dev/null); then
+		bad "BILLING_RUN_NOT_BEFORE ($BILLING_RUN_NOT_BEFORE) is not a real instant"
+	else
+		if [ "$cutover_epoch" -gt "$(date -u +%s)" ]; then
+			echo "  warn  BILLING_RUN_NOT_BEFORE ($BILLING_RUN_NOT_BEFORE) is in the future: the run rolls periods but nothing is invoiced until then." >&2
+		fi
+		ok "billing run enabled, cutover $BILLING_RUN_NOT_BEFORE"
+	fi
+fi
+
 if [ -z "${RAZORPAY_KEY_ID:-}" ]; then
 	echo "  warn  RAZORPAY_KEY_ID empty: payments are inert. Trials end in past_due, never active." >&2
 else

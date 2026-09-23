@@ -569,6 +569,217 @@ Bundles are sold only through subscription's operator routes (`POST /internal/v1
 `…/{id}/change-plan`, service token); the customer route answers 403. A trial's length is the
 plan version's `trial_days` feature (14 when absent), never the customer's.
 
+### The billing run: first deploy, watching it, and what to do when it complains
+
+The billing run (ADR-0005's 2026-09-23 addendum and its review fixes) is the loop that converts
+ended trials, invoices every period, bills an upgrade's prorated difference, bills the closing
+usage a cancellation or suspension leaves, and voids an invoice for a period the subscription
+moved past. **It is off unless `.env` sets `BILLING_RUN_ENABLED=true`** — preflight warns while it
+is off, and `/health/billing-run`'s `overdue` climbs — **and on, it needs `BILLING_RUN_NOT_BEFORE`**,
+the cutover (below): without it preflight fails and the worker refuses to start the run
+(`billing_run.refused` in the log; the payment consumer and dunning keep running). It lives in `subscription-worker` beside the payment consumer and the
+dunning sweep — no container of its own. It calls billing (`POST /internal/v1/subscription-invoices`)
+and payment (the mandate question) over the back network; billing in turn reads catalog and
+metering. None of those calls holds a database transaction open.
+
+**Order.** All additive: billing `b5e2c8d4f1a9` (the invoice idempotency key) and subscription
+`d8b3f5a7c9e1` + `e4f6a8c0b2d4` (`billing_periods` with its proration/close kinds and void states,
+`subscriptions.billing_interval` / `pending_change` / `usage_billed_through`, discovery indexes),
+`f5a7b9c1d3e6` (the finalize step's states and `payment_failed_at`) and `a1c3e5f7b9d2` (a
+proration's `against_period_id`, the `opening` kind, `subscriptions.suspended_at`).
+`migrations/env.py` grants the outbox role `SELECT` on **named columns only** of the tables it
+discovers from — in subscription, and in billing on `invoices(state, created_at)` for
+`/health/billing-drafts` (an earlier grant of `id, organization_id` is revoked on every migrate). Billing, metering and payment must be serving the new routes before the worker's first
+pass; a single `make deploy` does that, and a pass that runs early only backs off and retries.
+
+**The cutover — `BILLING_RUN_NOT_BEFORE`.** Until now nothing ever converted a trial or rolled
+a period, so without a cutover the first passes would invoice every period and conversion a box
+has owed since before billing existed. The cutover is the moment billing goes live, set once, to
+the moment you turn the run on, and **never moved later** (see *Moving the cutover* below). From it:
+
+* **Recurring money for a period that began before it is never invoiced.** Such a period rolls
+  `skipped` with outcome `pre_cutover` (a renewal, a proration, an opening). An existing
+  subscription therefore starts paying at its **first period that begins after the cutover**; the
+  period that straddles it is free.
+* **A trial that ended before it converts to `active` with no invoice**, no mandate question and no
+  dunning — its first paid period opens at the trial's end and is the free straddling period
+  above. A trial that ends after it is invoiced and dunned exactly as before.
+* **No usage from before it is billed.** A renewal's usage window starts no earlier than the
+  cutover; a closing window that straddles it is billed from the cutover on; one that ended before
+  it is skipped `pre_cutover`.
+
+**The accepted syntax, exactly:** `YYYY-MM-DDTHH:MM:SS±HH:MM` or `YYYY-MM-DDTHH:MM:SSZ` — e.g.
+`2026-10-01T09:00:00+05:30` or `2026-10-01T03:30:00Z` (seconds and a fraction of them are
+optional). **Nothing else**: no space for the `T`, no bare date, no naive time, no epoch number
+(pydantic would read `2026` as a second past 1970 and back-bill everything). A value the worker
+refuses does **not** crash it — the payment consumer and dunning keep running — but the run does
+not start (`billing_run.refused` in the log names the value and why), so check it before
+recreating the worker, as below.
+
+Stage it:
+
+```bash
+# 1. Deploy. The run is off by default; preflight says so.
+make deploy HOST=… CONFIRM=…
+# 2. Pick the cutover — the moment you will turn the run on — and preview against it. One JSON
+#    line per due subscription, then a summary. Writes nothing.
+docker compose -f compose.prod.yml --env-file .env run --rm -T subscription-worker \
+  python -m app.billing_run --dry-run --not-before 2026-10-01T09:00:00+05:30
+# 3. Decide. Set both.
+printf 'BILLING_RUN_ENABLED=true\nBILLING_RUN_NOT_BEFORE=2026-10-01T09:00:00+05:30\n' >> .env
+# 4. Check them BEFORE recreating the worker — both must pass:
+./preflight.sh        # FAIL on a missing, malformed or impossible cutover; warn if it is future
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T subscription-worker \
+  python -c 'from app.config import settings; s = settings(); print(s.billing_run_not_before, s.billing_run_not_before_invalid)'
+#    Expect the instant, then None. `None <reason>` means the worker would refuse the run.
+# 5. Only then recreate the worker.
+docker compose -f compose.prod.yml --env-file .env up -d subscription-worker
+```
+
+A cutover in the future is legal (preflight warns): the run rolls periods that began before it
+without invoicing them and invoices nothing until periods begin after it.
+
+**Moving the cutover** — don't move it later. Known limitation, not detected by any probe: the run
+decides each row by the cutover in force when it first handles that row, and never revisits one
+it has settled or already sent to billing (a retry sends exactly what billing priced). Moved
+**later**, rows not yet handled that begin between the old and the new cutover become free, while
+the same kind of row handled earlier was invoiced — inconsistent, and nothing alarms. Moved
+**earlier**, nothing already skipped `pre_cutover` is re-billed.
+
+Per subscription the dry run prints `periods_owed`, split into `periods_pre_cutover` (rolled with
+no invoice), `periods_invoiced` and `periods_suspended_roll` (suspended, rolled with no invoice),
+and `grace_already_expired` for a trial that ended after the cutover more than fourteen days ago
+(without a usable mandate the dunning sweep suspends it on its next pass). The summary adds the
+backlog of rows that are their own work — `backlog` by kind (`opening`, `close`, `proration`,
+`finalize_pending`, `void_pending`), and how many of the billable ones would be invoiced
+(`backlog_invoiced`, of which `backlog_usage_clamped` start at the cutover) or skipped
+(`backlog_pre_cutover`). `periods_invoiced` above 1 for a subscription means it is more than one
+period behind **after** the cutover — expected only if the run was held after its cutover; the run
+bills from the stored boundary, one period per pass.
+
+**While the run is off, plan changes on overdue subscriptions are refused** — cancellations never
+are. A customer or operator plan change answers **409 "billing is catching up on this subscription
+— try again shortly"** whenever a period end or a trial end is due and the run has not claimed it
+(ADR-0005 addendum, round 3, M3). With `BILLING_RUN_ENABLED=false` nothing claims, so every
+subscription past its boundary cannot change plan until the run is on and has caught up (one
+period per pass). A customer cancel always succeeds: the period that was due and never opened is
+never billed (the run bills the cancellation's closing usage only — ADR-0005, final review).
+
+**A permanently failing claim freezes that subscription's plan changes.** A claim that fails
+permanently (`failing_permanent` below) stays pending; once its own period has ended too, the
+subscription is more than one period behind and its plan changes answer 409 until a person fixes
+the claim. `failing_permanent > 0` is the alert; cancels still work.
+
+**New on the first pass after `a1c3e5f7b9d2`:** a subscription that started `active` without a
+trial was never charged its first period. From this revision every new such subscription is
+charged an **opening** charge (the first period, at the pin in force) on the run's next pass —
+unless it began before the cutover, when it is skipped `pre_cutover` like any other early period.
+
+**A payment is not a key to every suspension.** A suspension by dunning (the window ran out —
+written by the sweep's service actor) is lifted only by a capture of **the invoice that window was
+about**; the run's closing-usage invoice and any other capture are recorded by payment and move
+nothing (`dunning.capture.no_resume` in the log). An **operator's** suspension is never lifted by a
+payment at all — a person lifts it. Which one is in force is read from the transition's actor,
+never its reason, and an operator may not use a reason the machinery writes (`dunning_exhausted`,
+`grace_expired`, `payment_failed`, … — refused with 422).
+
+`suspended -> suspended` is not a legal move, so an operator cannot put a fraud hold **on top of**
+a dunning suspension: if the customer then pays the owed invoice, the dunning suspension lifts and
+the subscription is active. To hold such a customer, suspend again as soon as it resumes (watch
+`dunning.capture` in the log), or cancel.
+
+**Lifting an operator's suspension by hand.** There is no internal resume route yet (a follow-up is
+recorded). Until one exists, lifting it is a reviewed one-off that must write **all** of the
+following in **one tenant-bound transaction** — partial is worse than none:
+
+1. `subscription.subscriptions`: `state = 'active'`, `suspended_at = NULL`.
+2. `subscription.subscription_transitions`: one row `from_state = 'suspended'`,
+   `to_state = 'active'`, the plan version as both pins, a reason in words (not a reserved one),
+   and `actor = {"type": "operator", "id": "<the person>"}`. The table is append-only.
+3. `subscription.audit_logs`: the matching `commerce.subscription.activated` row.
+4. `subscription.outbox`: a `commerce.subscription.activated` event carrying the subscription's
+   lifecycle payload (`services._lifecycle_payload`). **Without it product-service never
+   re-entitles the customer and every request stays a 402.**
+5. `subscription.billing_periods`: an `opening` row for `[now, current_period_end)` at the pin in
+   force — unless a live recurring charge already covers now, or the current period began before
+   the billing cutover (it is free). Without it the rest of the period is never billed.
+
+Do it with the service's own code, not hand-written SQL — `services._transition(...)` (which writes
+1–4 and the state) followed by `services.charge_uncovered_remainder(...)` (5), exactly as
+`record_payment_captured` does when a dunning suspension lifts, run inside
+`session_scope(organization_id=…)` in a `docker compose run --rm subscription-worker python`
+session, with the subscription locked first (`selectors.lock_subscription(..., skip_locked=False)`).
+
+**Watching it.**
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec subscription \
+  python -c "import urllib.request as u; print(u.urlopen('http://127.0.0.1:8000/health/billing-run').read().decode())"
+make edge-logs SERVICE=subscription-worker | grep billing_run
+```
+
+| Field | Means | Alert |
+|---|---|---|
+| `overdue` | subscriptions due for over an hour and not yet handled | **> 0** — the run is stopped, held (`billing_run.disabled` in the log), or cannot keep up |
+| `pending` / `oldest_pending_seconds` | claims taken and not yet recorded | oldest > 1 h |
+| `failing` | claims whose last attempt failed; retried with backoff (5 min doubling to 6 h) | > 0 for a day |
+| `failing_permanent` | a data defect (a 4xx from billing, a `one_time` cadence) or five failures; still retried at the cap | **> 0** — a person must fix the data |
+| `void_pending` | invoices for superseded periods waiting to be voided in billing | > 0 for an hour |
+| `finalize_pending` | recorded claims whose draft invoice billing has not finalized yet — nothing is chargeable until it is | > 0 for an hour |
+| `close_charges_failed` | closing-period charges that failed after the customer cancelled — owed, not dunned | **> 0** — a person decides |
+| `proration_charges_failed` | upgrade or opening charges that failed after the subscription was cancelled or suspended — owed, not dunned | **> 0** — a person decides |
+| `prorations_on_voided_parent` | a proration charged although the period it was priced against was voided or skipped — must be zero by construction | **> 0** — refund it; report a bug |
+| `invoiced_24h` / `skipped_24h` / `last_recorded_at` | throughput; `skipped` is suspended periods rolled without an invoice, and anything skipped `pre_cutover` | — |
+
+Billing has its own probe, `/health/billing-drafts` (`docker compose … exec billing python -c
+"…u.urlopen('http://127.0.0.1:8000/health/billing-drafts')…"`): `drafts`, `drafts_stale` (older
+than an hour) and `oldest_draft_seconds`. **Alert on `drafts_stale > 0`** — a draft the run never
+finalized is a period nobody is being charged for.
+
+**Rolling back past `f5a7b9c1d3e6` leaves drafts behind.** That downgrade removes the finalize
+step's states from subscription: a claim that was `finalize_pending` at that moment becomes
+`invoiced`, the older code has no finalize step, and billing keeps its **draft** invoice,
+un-finalized and uncharged, forever. Before downgrading,
+let `finalize_pending` reach 0 (or stop the worker and accept it), and afterwards read
+`/health/billing-drafts`: each stale draft needs a person — finalize it through the internal
+route once the forward revision is back, or void it.
+
+Run invoices are **drafts** until the run has recorded them; only then are they finalized (and
+charged). A customer never sees a draft. A plan change to another billing cadence is refused —
+cancel and subscribe again.
+
+The worker exits non-zero if any of its loops (the payment consumer, the dunning sweep, the billing
+run) stops; `restart: unless-stopped` brings it back. `worker.loop_failed` / `worker.loop_returned`
+name the loop. A pass that fails is retried with backoff (`dunning.sweep.tick_failed`,
+`billing_run.tick_failed`); one poisoned dunning cycle is `dunning.sweep.cycle_failed` and is
+pushed back fifteen minutes.
+
+Log lines: `billing_run.cutover` (the cutover the loop started with), `billing_run.refused` (enabled
+without a cutover — the run is not running), `billing_run.pass` (counts, only when a pass did
+something; `skipped_pre_cutover` among them), `billing_run.recorded`
+and `billing_run.failed` (per subscription, with its ids), `billing_run.not_billable` (a
+`one_time` plan's trial — nothing sells one today), `billing_run.period.superseded` /
+`billing_run.period.stale_closed` (the subscription changed between claim and record — the run
+voids whatever billing holds under the claim's key through `POST /internal/v1/subscription-invoices:void`
+and the row ends `voided`, or `skipped` with outcome `nothing_to_void`; payment may already have
+raised a charge from the finalized event, so check payment's charges for that invoice).
+
+**`failing` is not dropping.** Read the reason on the row:
+
+```sql
+SELECT organization_id, subscription_id, period_start, attempts, last_error
+FROM subscription.billing_periods WHERE state = 'pending' ORDER BY created_at;
+```
+
+A stuck row never holds up the others: discovery skips a subscription while its claim is leased
+or backing off. `billing answered 503` — catalog or metering was down; it clears on its own. `billing answered
+422: … not on plan version …` — the subscription's items do not match its pin (data; fix the
+items). `no gst rate is in force …` — `BILLING_TAX_CODE` is set and `billing.tax_rates` has no row
+in force for that date; insert the rate (a new row, never an edit) or unset the code.
+
+**Tax.** `BILLING_TAX_CODE` / `BILLING_TAX_JURISDICTION` in `.env` choose the `tax_rates` row;
+empty (the default) writes no tax line. Insert the rate row **before** setting the code.
+
 ### Operator MFA: mandatory rollout, the MFA reseal, and the one-off codes
 
 The security review of the operator-MFA slice made a second factor mandatory for every staff
@@ -1161,8 +1372,8 @@ make edge-preflight HOST=… CONFIRM=…     # read-only; prints the projection 
 
 Owner pre-deploy key list — every one of these is either set deliberately or knowingly absent.
 **A missing key fails preflight before anything changes** (`missing or empty in .env: …`), so the
-worst case of forgetting one is a re-run, but `.env.example` has 20 keys the production ref's did
-not (18 of them must be present on the box), and knowing them beforehand is cheaper. **Quote any
+worst case of forgetting one is a re-run, but `.env.example` has 22 keys the production ref's did
+not (20 of them must be present on the box), and knowing them beforehand is cheaper. **Quote any
 value that contains a space** (`OPS_ALERT_EMAIL="ops team <ops@…>"`): `.env` is sourced as shell, and
 preflight fails an unquoted one by name, before reading the file, instead of letting bash run the
 words after the space as a command (exit 127, no footer):
@@ -1182,6 +1393,7 @@ words after the space as a command (exit 127, no footer):
 | `DOCUMENT_S3_ORPHAN_ACCESS_KEY`, `DOCUMENT_S3_ORPHAN_SECRET_KEY` | keys present, may be empty | the by-hand orphan pass only; held by no always-on container |
 | `S3_PUBLIC_BUCKET`, `PUBLIC_ASSET_BASE_URL` | defaults are right | `PUBLIC_ASSET_BASE_URL` must be exactly `https://<EDGE_HOST>/<bucket>` |
 | `ASSET_PURGE_RETENTION_DAYS`, `DOCUMENT_ORPHAN_SWEEP_ENABLED`, `DOCUMENT_ORPHAN_SWEEP_DRY_RUN` | defaults are right | `30`, `false`, `true` |
+| `BILLING_TAX_CODE`, `BILLING_TAX_JURISDICTION` | keys present, empty is the honest default | empty = the billing run writes no tax line; set both only once a `billing.tax_rates` row exists for them ("The billing run", below) |
 | `ADMIN_GATEWAY_HOP_KEY` | **needs a real value, and `auth` will not start without it** | `openssl rand -hex 32`, at least 32 bytes and **different from `INTERNAL_SERVICE_TOKEN`** (preflight's secret-strength check refuses a weak or reused one). See "ADMIN_GATEWAY_HOP_KEY — auth refuses to start without it" under Operator MFA |
 
 `last-ok` — `${EDGE_STATE_DIR:-/srv/opsgrids/state}/edge-budget.last-ok`, written by `remote.sh
