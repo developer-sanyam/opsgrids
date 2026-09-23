@@ -1,4 +1,4 @@
-"""Pure money mechanics, and the typed seam a future billing run will implement.
+"""Pure money mechanics, and the pricing the billing run is built on.
 
 No I/O lives here (ADR service anatomy): proration and discount allocation are integer
 arithmetic on `platform_core.money.Money`, and the currency guard is `Money`'s own `_same`,
@@ -6,21 +6,22 @@ reached simply by adding two amounts. There are **no floats and no `Numeric`** i
 (ADR-0000 §8) — the whole reason money is integer minor units is that these operations are
 exact, and that an invoice's lines foot to its total to the last minor unit.
 
-The seam
---------
-`finalize` in this service takes **explicit** line items. Assembling those lines from catalog
-prices and metering usage — a "billing run" — is a deliberately deferred concern (the brief's
-scope boundary; ADR-0004 §7). Rather than leave a bare comment, this module ships the interface
-that work will implement, `PricingSource`, together with the one minimal implementation that
-exists today, `ExplicitPricingSource`, which returns the lines it was handed. `finalize` depends
-on the interface, so the day a catalog+metering-backed source is written it drops in with no
-change to the service — and **nothing here imports catalog or metering**.
+Two ways lines are produced
+---------------------------
+`finalize` takes **explicit** line items (`ExplicitPricingSource`, an operator's hand-built
+invoice). The **billing run** (ADR-0005 addendum, 2026-09-23) prices one subscription period
+from the pinned catalog version's prices, the subscription's item quantities and — for a usage
+price — metering's count for the closed period, then adds tax from `tax_rates`. That is
+`price_subscription_period` below: pure, integer, and handed everything it needs, because the
+catalog and metering reads that feed it happen in `app/billing_run.py` **outside** any database
+transaction. Nothing here imports catalog or metering; they arrive as the plain values below.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Protocol
 from uuid import UUID
@@ -107,29 +108,31 @@ def allocate_discount(discount: Money, weights: list[int]) -> list[Money]:
     return discount.allocate(weights)
 
 
-# --------------------------------------------------------------------- the deferred seam
+# --------------------------------------------------------------------- the pricing seams
 
 
 class UsageSource(Protocol):
-    """How a future billing run reads metered quantities for a period.
+    """How metered quantities for a period are read.
 
-    Ships as a type only: no implementation lives in this service, because billing does not read
-    metering in this PR (ADR-0004 §7). A `PricingSource` that prices usage lines will depend on
-    one of these; it is named here so that dependency has a contract to be written against.
+    The billing run's implementation is `app.billing_run.HttpMetering`, which asks metering's
+    internal usage read for the closed period — outside any transaction — and hands the counts
+    to `price_subscription_period` as a plain mapping.
     """
 
-    async def quantity_for(
-        self, *, meter_key: str, subscription_id: UUID, period: Period
-    ) -> Decimal: ...
+    async def billable_usage(self, *, organization_id: UUID, period: Period) -> dict[str, int]:
+        """Billable quantity per `meter_key` over `[period.start, period.end)`.
+
+        Per organization, not per subscription: a meter belongs to one product and an
+        organization holds at most one subscription per product, so the organization's count for
+        the meter *is* the subscription's."""
+        ...
 
 
 class PricingSource(Protocol):
-    """How invoice lines are produced for a subscription and period — the billing-run seam.
+    """How invoice lines are produced for a subscription and period.
 
-    Today the only implementation is `ExplicitPricingSource`, which returns lines given to it.
-    The future billing run implements this by reading catalog prices and, via a `UsageSource`,
-    metering usage; when it does, `finalize` uses it unchanged. The interface is what makes that
-    a drop-in rather than a rewrite (ADR-0004 §7).
+    `ExplicitPricingSource` returns lines an operator already priced; the billing run prices
+    from catalog and metering through `price_subscription_period` (ADR-0004 §7).
     """
 
     async def assemble(
@@ -149,3 +152,185 @@ class ExplicitPricingSource:
 
     async def assemble(self, *, subscription_id: UUID | None, period: Period) -> list[LineDraft]:
         return list(self.lines)
+
+
+# --------------------------------------------------------------------- the billing run's pricing
+
+#: Catalog's price kinds. Contract strings, named here rather than imported — nothing in this
+#: service imports catalog (one process may only ever hold one service's `app`).
+PRICE_FLAT = "flat"
+PRICE_PER_SEAT = "per_seat"
+PRICE_USAGE = "usage"
+
+
+class PricingError(ValueError):
+    """The pinned version, the subscription's items and the invoice cannot be priced together.
+
+    Every case is a data defect a person has to look at — an item naming a price that is not on
+    the pin, a price in another currency, a usage price with no rate — and never something to
+    paper over with a zero line: an invoice that silently omits a component is under-billing
+    nobody will notice, and one that guesses is over-billing somebody will.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class PriceSpec:
+    """One catalog price on the pinned version, as billing needs it. Money is integer minor
+    units (`amount_minor`) or micros of a major unit for a usage rate (`unit_price_micros`)."""
+
+    id: UUID
+    kind: str
+    currency: str
+    amount_minor: int | None = None
+    unit: str | None = None
+    unit_price_micros: int | None = None
+    meter_key: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ItemSpec:
+    """One subscription item: which price, and how many (seats for `per_seat`; 1 for flat)."""
+
+    price_id: UUID
+    quantity: int
+
+
+@dataclass(frozen=True, slots=True)
+class TaxSpec:
+    """The statutory rate in force for the period: basis points, never a float."""
+
+    code: str
+    name: str
+    rate_bps: int
+
+
+def _fmt_day(at: datetime) -> str:
+    return at.strftime("%Y-%m-%d")
+
+
+def price_subscription_period(
+    *,
+    currency: str,
+    plan_version_id: UUID,
+    prices: Sequence[PriceSpec],
+    items: Sequence[ItemSpec],
+    period: Period,
+    usage_period: Period | None,
+    usage: Mapping[str, int] | None,
+    tax: TaxSpec | None,
+) -> list[LineDraft]:
+    """The lines of one subscription period's invoice, exactly, in integer minor units.
+
+    The rules (ADR-0005 addendum, 2026-09-23, "the billing run"):
+
+    * **Recurring prices bill in advance** for `period`: a `flat` price is `amount x quantity`
+      (quantity is 1 unless the item says otherwise), a `per_seat` price is `amount x seats`.
+      A zero-quantity item bills nothing and writes no line.
+    * **Usage prices bill in arrears** for `usage_period`, the period that has just closed, at the
+      pinned rate: `Money.rate(unit_price_micros, quantity)`, rounded half-up once per line. With
+      no `usage_period` (the first invoice after a trial — trial usage is free) usage prices
+      write nothing. A meter with no recorded billable usage writes nothing.
+    * **Every item must name a price on the pinned version**, and every price must be in the
+      invoice currency. Either failing is a `PricingError`, never a skipped line.
+    * **Tax is exclusive and computed once on the subtotal** (`Money.percent_bps`, half-up), as
+      its own line, so the lines still foot exactly to the total. A zero tax writes no line.
+
+    Nothing here reads a clock, a database or the network.
+    """
+    currency = currency.upper()
+    by_id = {p.id: p for p in prices}
+    lines: list[LineDraft] = []
+    span = f"{_fmt_day(period.start)} to {_fmt_day(period.end)}"
+
+    for item in items:
+        price = by_id.get(item.price_id)
+        if price is None:
+            raise PricingError(
+                f"subscription item names price {item.price_id}, which is not on plan version "
+                f"{plan_version_id}"
+            )
+        if price.currency.upper() != currency:
+            raise PricingError(
+                f"price {price.id} is in {price.currency.upper()}, the invoice is in {currency}"
+            )
+        if item.quantity < 0:
+            raise PricingError(f"item for price {price.id} has a negative quantity")
+
+        if price.kind in (PRICE_FLAT, PRICE_PER_SEAT):
+            if price.amount_minor is None or price.amount_minor < 0:
+                raise PricingError(f"{price.kind} price {price.id} has no amount")
+            if item.quantity == 0:
+                continue
+            amount = Money(price.amount_minor, currency) * item.quantity
+            label = "Subscription" if price.kind == PRICE_FLAT else f"{price.unit or 'seat'}s"
+            lines.append(
+                LineDraft(
+                    description=f"{label}, {span}",
+                    quantity=Decimal(item.quantity),
+                    amount_minor=amount.minor,
+                    currency=currency,
+                    unit_price_micros=None,
+                    plan_version_id=plan_version_id,
+                )
+            )
+        elif price.kind == PRICE_USAGE:
+            if price.unit_price_micros is None or price.unit_price_micros < 0:
+                raise PricingError(f"usage price {price.id} has no rate")
+            if not price.meter_key:
+                raise PricingError(f"usage price {price.id} names no meter")
+            if usage_period is None or usage is None:
+                continue
+            quantity = int(usage.get(price.meter_key, 0))
+            if quantity < 0:
+                raise PricingError(f"meter {price.meter_key} reported negative usage")
+            if quantity == 0:
+                continue
+            amount = Money.rate(price.unit_price_micros, quantity, currency)
+            lines.append(
+                LineDraft(
+                    description=(
+                        f"{price.meter_key} usage, {_fmt_day(usage_period.start)} to "
+                        f"{_fmt_day(usage_period.end)}"
+                    ),
+                    quantity=Decimal(quantity),
+                    amount_minor=amount.minor,
+                    currency=currency,
+                    unit_price_micros=price.unit_price_micros,
+                    plan_version_id=plan_version_id,
+                )
+            )
+        else:
+            raise PricingError(f"price {price.id} has unknown kind {price.kind!r}")
+
+    if tax is not None and tax.rate_bps > 0 and lines:
+        subtotal = sum_lines(lines, currency)
+        tax_amount = subtotal.percent_bps(tax.rate_bps)
+        if not tax_amount.is_zero:
+            whole, frac = divmod(tax.rate_bps, 100)
+            lines.append(
+                LineDraft(
+                    description=f"{tax.name} {whole}.{frac:02d}%",
+                    quantity=Decimal(1),
+                    amount_minor=tax_amount.minor,
+                    currency=currency,
+                )
+            )
+    return lines
+
+
+def subscription_invoice_key(subscription_id: UUID, period_start: datetime) -> str:
+    """The platform idempotency key for one subscription period's invoice.
+
+    Built by billing from the two facts that identify the period, never accepted from a caller
+    as free text, and normalised to UTC with microseconds so the same instant always yields the
+    same string however the caller's client serialised it.
+    """
+    at = period_start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    return f"subscription:{subscription_id}:{at}"
+
+
+def subscription_invoice_number(subscription_id: UUID, period_start: datetime) -> str:
+    """A human-facing number, deterministic in the same two facts, so a retried run that races
+    another never mints two numbers for one period."""
+    day = period_start.astimezone(UTC).strftime("%Y%m%d")
+    return f"INV-{day}-{subscription_id.hex[:12].upper()}"

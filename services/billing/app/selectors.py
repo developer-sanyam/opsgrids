@@ -13,13 +13,13 @@ with nothing having run to update a status column.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import CreditLedgerEntry, Invoice
+from app.models import CreditLedgerEntry, Invoice, TaxRate
 from platform_core.auth import ScopeContext
 
 
@@ -115,10 +115,49 @@ async def get_reversal_of(session: AsyncSession, entry_id: uuid.UUID) -> CreditL
     ).scalar_one_or_none()
 
 
+async def get_invoice_by_key(session: AsyncSession, idempotency_key: str) -> Invoice | None:
+    """The billing run's invoice for one subscription period, if it has been raised.
+
+    Scoped by row-level security to the bound tenant — the key is only unique per organization,
+    and another organization's invoice under the same key must be, and is, invisible.
+    """
+    return (
+        await session.execute(
+            select(Invoice)
+            .options(selectinload(Invoice.lines))
+            .where(Invoice.idempotency_key == idempotency_key)
+        )
+    ).scalar_one_or_none()
+
+
+async def effective_tax_rate(
+    session: AsyncSession, *, code: str, jurisdiction: str | None, on: date
+) -> TaxRate | None:
+    """The statutory rate for `code` in force on `on`: the latest row whose `effective_from` is
+    not after it. Versioned, never mutated (ADR-0000 §9), so re-running March uses March's rate.
+
+    `tax_rates` is global platform reference data with no tenant policy (models.TaxRate), so this
+    reads the same answer under any binding.
+    """
+    stmt = (
+        select(TaxRate)
+        .where(TaxRate.code == code, TaxRate.effective_from <= on)
+        .order_by(TaxRate.effective_from.desc())
+        .limit(1)
+    )
+    if jurisdiction is None:
+        stmt = stmt.where(TaxRate.jurisdiction.is_(None))
+    else:
+        stmt = stmt.where(TaxRate.jurisdiction == jurisdiction)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 __all__ = [
     "credit_balance",
+    "effective_tax_rate",
     "get_credit_entry",
     "get_invoice",
+    "get_invoice_by_key",
     "get_reversal_of",
     "list_invoices",
     "pack_remaining",

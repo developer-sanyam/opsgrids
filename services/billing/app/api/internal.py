@@ -19,12 +19,16 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import selectors, services
+from app import billing_run, selectors, services
+from app.config import Settings
 from app.models import CREDIT_GRANT
 from app.schemas import (
+    BilledPeriodOut,
+    BillSubscriptionPeriodIn,
     CreditConsumeIn,
     CreditEntryOut,
     CreditGrantIn,
@@ -37,7 +41,7 @@ from app.schemas import (
 from platform_core.auth import require_service_token
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
-from platform_core.errors import BusinessRuleProblem, NotFoundProblem
+from platform_core.errors import BusinessRuleProblem, ForbiddenProblem, NotFoundProblem
 
 router = APIRouter(
     prefix="/internal/v1",
@@ -72,6 +76,65 @@ async def finalize_invoice(
         invoice = await services.finalize_invoice(session, payload, request=request)
         fresh = await services.require_invoice(session, invoice.id)
         return InvoiceOut.model_validate(fresh)
+
+
+#: The services allowed to ask for a billing-run invoice. The service token proves *a* platform
+#: service is calling; this names which one may. Only subscription owns the period boundaries,
+#: so only subscription may ask for a period to be invoiced — a compromised or buggy sibling
+#: holding a valid token for billing still cannot mint invoices for arbitrary periods.
+BILLING_RUN_CALLERS = frozenset({"subscription"})
+
+
+def get_billing_catalog(request: Request) -> billing_run.Catalog:
+    """The catalog read the billing run prices from. A dependency so a test substitutes a fake
+    without any network, exactly as subscription's pin lookup does."""
+    settings: Settings = request.app.state.settings
+    return billing_run.HttpCatalog(settings.catalog_service_url, settings)
+
+
+def get_billing_metering(request: Request) -> billing_run.Metering:
+    settings: Settings = request.app.state.settings
+    return billing_run.HttpMetering(settings.metering_service_url, settings)
+
+
+@router.post(
+    "/subscription-invoices",
+    response_model=BilledPeriodOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Invoice one subscription period, once — the billing run",
+    responses={200: {"model": BilledPeriodOut, "description": "Already invoiced"}},
+)
+async def bill_subscription_period(
+    payload: BillSubscriptionPeriodIn,
+    session: SessionDep,
+    request: Request,
+    catalog: Annotated[billing_run.Catalog, Depends(get_billing_catalog)],
+    metering: Annotated[billing_run.Metering, Depends(get_billing_metering)],
+) -> BilledPeriodOut | JSONResponse:
+    """Price and finalize one subscription period's invoice, idempotently on the period.
+
+    **No transaction is opened here.** `billing_run.bill_subscription_period` opens two short
+    ones itself and makes the catalog and metering calls between them — the claim → call →
+    record shape that keeps a slow sibling from holding a row lock open (ADR-0005 addendum).
+    201 when this call created the invoice, 200 with the same body when the period was already
+    invoiced — a redelivery, or the loser of a race.
+    """
+    caller = getattr(request.state, "service_caller", None)
+    if caller not in BILLING_RUN_CALLERS:
+        raise ForbiddenProblem("this service may not raise billing-run invoices")
+    settings: Settings = request.app.state.settings
+    invoice, created = await billing_run.bill_subscription_period(
+        session,
+        payload,
+        catalog=catalog,
+        metering=metering,
+        settings=settings,
+        request=request,
+    )
+    body = BilledPeriodOut(created=created, invoice=InvoiceOut.model_validate(invoice))
+    if created:
+        return body
+    return JSONResponse(status_code=status.HTTP_200_OK, content=body.model_dump(mode="json"))
 
 
 @router.post(

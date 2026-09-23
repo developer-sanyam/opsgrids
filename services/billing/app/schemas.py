@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ServiceInfo(BaseModel):
@@ -150,6 +150,59 @@ class CreditReverseIn(BaseModel):
     organization_id: uuid.UUID
     reversal_of: uuid.UUID
     reason: str = Field(min_length=1, max_length=200)
+
+
+class SubscriptionItemIn(BaseModel):
+    """One item of the subscription being billed: the catalog price it names and its quantity."""
+
+    price_id: uuid.UUID
+    quantity: int = Field(ge=0)
+
+
+class BillSubscriptionPeriodIn(BaseModel):
+    """Invoice one subscription for one period — the billing run's request (ADR-0005 addendum).
+
+    The caller names *what* is owed for — the pin, the items, the period — and never a price or
+    an amount: billing reads the prices off the pinned catalog version itself and the usage off
+    metering, and computes every minor unit. Idempotent on `(subscription_id, period_start)`:
+    asking twice, or from two replicas at once, returns the one invoice.
+
+    `usage_period_*` is the period that has just closed, billed in arrears for usage prices; it is
+    absent on the first invoice after a trial, because trial usage is not billed.
+    """
+
+    organization_id: uuid.UUID
+    subscription_id: uuid.UUID
+    product_key: str = Field(min_length=1, max_length=40)
+    plan_version_id: uuid.UUID
+    currency: str = Field(min_length=3, max_length=3)
+    period_start: datetime
+    period_end: datetime
+    usage_period_start: datetime | None = None
+    usage_period_end: datetime | None = None
+    items: list[SubscriptionItemIn] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _periods_are_ordered(self) -> BillSubscriptionPeriodIn:
+        if self.period_end <= self.period_start:
+            raise ValueError("period_end must be after period_start")
+        if (self.usage_period_start is None) != (self.usage_period_end is None):
+            raise ValueError("usage_period_start and usage_period_end come together or not at all")
+        if self.usage_period_start is not None and self.usage_period_end is not None:
+            if self.usage_period_end <= self.usage_period_start:
+                raise ValueError("usage_period_end must be after usage_period_start")
+            if self.usage_period_end > self.period_start:
+                # Usage is billed in arrears for a period that has *closed*; a window reaching
+                # into the period being billed in advance would bill usage not yet complete.
+                raise ValueError("the usage period must close by the billed period's start")
+        return self
+
+
+class BilledPeriodOut(BaseModel):
+    """The invoice for one subscription period, and whether this call created it."""
+
+    created: bool
+    invoice: InvoiceOut
 
 
 class VoidInvoiceIn(BaseModel):

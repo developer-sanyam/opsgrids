@@ -16,15 +16,20 @@ not public API and must not appear as though it were.
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
 
-from app import services
-from app.schemas import UsageBatchIn, UsageIngestOut
+from app import selectors, services
+from app.schemas import OrganizationUsageOut, UsageBatchIn, UsageIngestOut, UsageLineOut
 from platform_core.auth import require_service_token
-from platform_core.db import get_session
+from platform_core.config import ServiceSettings
+from platform_core.db import assert_tenant, get_session, set_tenant
+from platform_core.errors import BusinessRuleProblem, ForbiddenProblem
 from platform_core.logging import get_logger
 
 log = get_logger("metering.internal")
@@ -56,3 +61,57 @@ async def ingest_usage(payload: UsageBatchIn, session: SessionDep) -> UsageInges
         batch=len(payload.events),
     )
     return result
+
+
+#: Who may read an organization's usage over the internal API. The billing run is the one
+#: reader: usage is a commercial fact, and a sibling service holding a valid metering token has
+#: no business enumerating another product's consumption through it.
+USAGE_READERS = frozenset({"billing"})
+
+
+@router.get(
+    "/organizations/{organization_id}/usage",
+    response_model=OrganizationUsageOut,
+    summary="An organization's usage over a closed period, per meter — billing's read",
+)
+async def organization_usage(
+    organization_id: uuid.UUID,
+    request: Request,
+    session: SessionDep,
+    period_start: Annotated[datetime, Query()],
+    period_end: Annotated[datetime, Query()],
+) -> OrganizationUsageOut:
+    """Billable and total quantity per meter over `[period_start, period_end)`.
+
+    Bound to the organization in the path as the transaction's first statement, exactly as a
+    customer request is bound to its principal's, so the read runs under row-level security on
+    the NOBYPASSRLS app role — and the selector filters `organization_id` explicitly as well.
+    """
+    caller = getattr(request.state, "service_caller", None)
+    if caller not in USAGE_READERS:
+        raise ForbiddenProblem("this service may not read usage")
+    if period_end <= period_start:
+        raise BusinessRuleProblem("period_end must be after period_start")
+    settings: ServiceSettings = request.app.state.settings
+    async with session.begin():
+        await set_tenant(session, organization_id)
+        if not settings.is_production:
+            await assert_tenant(session, organization_id)
+        rows = await selectors.period_usage(
+            session, organization_id, period_start=period_start, period_end=period_end
+        )
+    return OrganizationUsageOut(
+        organization_id=organization_id,
+        period_start=period_start,
+        period_end=period_end,
+        meters=[
+            UsageLineOut(
+                meter_key=meter_key,
+                unit=unit,
+                total_quantity=total,
+                billable_quantity=billable,
+                event_count=count,
+            )
+            for meter_key, unit, total, billable, count in rows
+        ],
+    )

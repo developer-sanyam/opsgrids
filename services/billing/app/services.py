@@ -19,9 +19,12 @@ never a mutation, and the balance is a query, not a column (ADR-0004 §3).
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -140,10 +143,25 @@ async def finalize_invoice(
         )
     await session.flush()
 
+    _stage_finalized(session, invoice, line_count=len(assembled), request=request)
+    return invoice
+
+
+def _stage_finalized(
+    session: AsyncSession,
+    invoice: Invoice,
+    *,
+    line_count: int,
+    request: Request | None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """The audit row and the `commerce.invoice.finalized` event, staged in the invoice's own
+    transaction — one path for a hand-finalized invoice and a billing-run one, so payment sees
+    the same event whichever produced it."""
     record_audit(
         session,
         AuditLog,
-        organization_id=payload.organization_id,
+        organization_id=invoice.organization_id,
         actor_id=None,
         action="billing.invoice.finalized",
         entity="invoice",
@@ -152,30 +170,116 @@ async def finalize_invoice(
             "number": invoice.number,
             "currency": invoice.currency,
             "total_minor": invoice.total_minor,
-            "lines": len(assembled),
+            "lines": line_count,
+            **({"idempotency_key": invoice.idempotency_key} if invoice.idempotency_key else {}),
         },
         request=request,
     )
+    payload: dict[str, Any] = {
+        "invoice_id": str(invoice.id),
+        "organization_id": str(invoice.organization_id),
+        "subscription_id": str(invoice.subscription_id) if invoice.subscription_id else None,
+        "number": invoice.number,
+        "currency": invoice.currency,
+        "total_minor": invoice.total_minor,
+        "period_start": invoice.period_start.astimezone(UTC).isoformat(),
+        "period_end": invoice.period_end.astimezone(UTC).isoformat(),
+    }
+    if extra:
+        payload.update(extra)
     publish_event(
         session,
         OutboxEvent,
-        organization_id=payload.organization_id,
+        organization_id=invoice.organization_id,
         event_type=EVT_INVOICE_FINALIZED,
         aggregate_type="invoice",
         aggregate_id=invoice.id,
-        payload={
-            "invoice_id": str(invoice.id),
-            "organization_id": str(invoice.organization_id),
-            "subscription_id": str(invoice.subscription_id) if invoice.subscription_id else None,
-            "number": invoice.number,
-            "currency": invoice.currency,
-            "total_minor": invoice.total_minor,
-            "period_start": invoice.period_start.astimezone(UTC).isoformat(),
-            "period_end": invoice.period_end.astimezone(UTC).isoformat(),
-        },
+        payload=payload,
         actor=_ACTOR,
     )
-    return invoice
+
+
+async def record_subscription_invoice(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    subscription_id: uuid.UUID,
+    product_key: str,
+    currency: str,
+    period: domain.Period,
+    lines: list[domain.LineDraft],
+    request: Request | None = None,
+) -> tuple[Invoice, bool]:
+    """Write the billing run's invoice for one subscription period — once. `(invoice, created)`.
+
+    The **record** step of claim → call → record: every price, usage count and tax rate has
+    already been read, outside any transaction, and this function only writes. The insert is
+    `ON CONFLICT DO NOTHING` against `uq_invoices_org_idempotency_key`, so the loser of two racing
+    requests for the same period — two sweep replicas, or a retry after a crash that happened
+    after this commit — reads the winner's invoice back and stages **no** second event. A second
+    `commerce.invoice.finalized` would be a second charge.
+    """
+    key = domain.subscription_invoice_key(subscription_id, period.start)
+    currency = currency.upper()
+    try:
+        total = domain.sum_lines(lines, currency)
+    except CurrencyMismatch as exc:  # pragma: no cover - the pricer already refused it
+        raise BusinessRuleProblem(f"every line must be in {currency}: {exc}") from exc
+
+    invoice_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    stmt = (
+        pg_insert(Invoice)
+        .values(
+            id=invoice_id,
+            organization_id=organization_id,
+            subscription_id=subscription_id,
+            number=domain.subscription_invoice_number(subscription_id, period.start),
+            state=INVOICE_FINALIZED,
+            currency=currency,
+            total_minor=total.minor,
+            period_start=period.start,
+            period_end=period.end,
+            finalized_at=now,
+            idempotency_key=key,
+        )
+        .on_conflict_do_nothing(
+            index_elements=["organization_id", "idempotency_key"],
+            index_where=text("idempotency_key IS NOT NULL"),
+        )
+        .returning(Invoice.id)
+    )
+    inserted = (await session.execute(stmt)).scalar_one_or_none()
+    if inserted is None:
+        existing = await selectors.get_invoice_by_key(session, key)
+        if existing is None:  # pragma: no cover - the conflict proves the row exists
+            raise ConflictProblem("invoice idempotency conflict with no visible row")
+        return existing, False
+
+    for draft in lines:
+        session.add(
+            InvoiceLine(
+                organization_id=organization_id,
+                invoice_id=invoice_id,
+                description=draft.description,
+                quantity=draft.quantity,
+                unit_price_micros=draft.unit_price_micros,
+                amount_minor=draft.amount_minor,
+                plan_version_id=draft.plan_version_id,
+            )
+        )
+    await session.flush()
+
+    invoice = await require_invoice(session, invoice_id)
+    _stage_finalized(
+        session,
+        invoice,
+        line_count=len(lines),
+        request=request,
+        extra={"product_key": product_key, "source": "billing_run"},
+    )
+    await session.flush()
+    return invoice, True
 
 
 async def require_invoice(session: AsyncSession, invoice_id: Any) -> Invoice:

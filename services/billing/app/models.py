@@ -116,6 +116,12 @@ class Invoice(Base, TenantBase):
     voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     void_reason: Mapped[str | None] = mapped_column(String(200))
 
+    #: The billing run's platform key, `subscription:{id}:{period_start}` — set on an invoice the
+    #: run raised for one subscription period, NULL on a hand-finalized one. Partial-unique per
+    #: organization, so a redelivered or concurrent request for the same period lands on this row
+    #: rather than a second invoice (the insert is `ON CONFLICT DO NOTHING` against the index).
+    idempotency_key: Mapped[str | None] = mapped_column(String(200))
+
     lines: Mapped[list[InvoiceLine]] = relationship(
         back_populates="invoice",
         order_by="InvoiceLine.created_at",
@@ -128,6 +134,14 @@ class Invoice(Base, TenantBase):
         Index("ix_invoices_org_state", "organization_id", "state"),
         Index("ix_invoices_org_subscription", "organization_id", "subscription_id"),
         Index("ix_invoices_org_period", "organization_id", "period_start"),
+        # One invoice per subscription period, enforced where a racing replica cannot reach.
+        Index(
+            "uq_invoices_org_idempotency_key",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
         CheckConstraint("length(currency) = 3", name="currency_iso"),
         CheckConstraint("state in ('draft', 'finalized', 'void')", name="state"),
     )
