@@ -126,6 +126,18 @@ class OrgDomain(Base):
     `verified_at` is load-bearing: an **unverified** domain must never select an identity
     provider or auto-join anyone. Domain routing without proof of ownership is an
     account-takeover primitive.
+
+    **Exclusivity is verified-only, not global.** `uq_org_domains_org_domain` lets more than
+    one organization hold the *same* domain **pending** at once — an unproven claim is not
+    evidence of anything, so there is nothing for a second organization's claim to collide
+    with. `uq_org_domains_domain_verified` is the real lock: a partial unique index on
+    `domain` where `verified_at IS NOT NULL`, so at most one organization in the platform can
+    ever hold one *verified*. That single index is also the takeover guard: the `UPDATE` that
+    sets `verified_at` is an ordinary write to the caller's own row — no cross-tenant read or
+    write needed to decide a race — and the database itself refuses the loser with a unique
+    violation the instant a second organization's verify tries to land after the first's
+    already has. See `services.py`'s "domains" section for the full account of why an earlier
+    slice of this feature used a single global-unique column instead, and why that was wrong.
     """
 
     __tablename__ = "org_domains"
@@ -139,14 +151,38 @@ class OrgDomain(Base):
         nullable=False,
         index=True,
     )
-    #: Globally unique: a domain belongs to one organization.
-    domain: Mapped[str] = mapped_column(CITEXT, nullable=False, unique=True)
+    domain: Mapped[str] = mapped_column(CITEXT, nullable=False)
     is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     verification_token: Mapped[str] = mapped_column(String(64), nullable=False)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     auto_join: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    #: The last time a periodic re-check asked DNS about a domain that was already verified.
+    #: `None` for a domain never re-checked yet — a fresh verification, or a deployment that
+    #: predates the sweep — which is a different fact from a check that ran and failed.
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: What the most recent re-check found. `None` alongside `last_checked_at is None` means
+    #: "never checked"; `True`/`False` alongside a timestamp is a real answer. Never used to
+    #: gate SSO on its own — `verified_at` still is, per the docstring above — this is a
+    #: signal for an administrator, not an enforcement column (see `services.recheck_domain`).
+    last_check_ok: Mapped[bool | None] = mapped_column(Boolean)
+    #: When the record was first found missing on a re-check that had previously succeeded (or
+    #: on the first re-check ever, for a domain verified before the sweep existed). Cleared the
+    #: moment a re-check finds the record again. A domain failing for a week reads as `now() -
+    #: failing_since`, which is the number an administrator acts on — this policy deliberately
+    #: never revokes `verified_at` on its own; see `services.py`'s re-verification section.
+    failing_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "domain", name="uq_org_domains_org_domain"),
+        Index(
+            "uq_org_domains_domain_verified",
+            "domain",
+            unique=True,
+            postgresql_where=text("verified_at IS NOT NULL"),
+        ),
     )
 
 

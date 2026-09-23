@@ -154,19 +154,23 @@ async def user_by_id(session: SessionDep, request: Request, user_id: uuid.UUID) 
 async def organization_by_domain(session: SessionDep, domain: str) -> dict[str, Any]:
     """The verified-domain lookup single sign-on starts from (ADR-0000 §1).
 
-    Returns the owning organization **and whether the domain has been verified**, rather than
-    hiding an unverified row behind a 404. The caller needs the difference: "nobody has claimed
-    this domain" and "somebody claimed it and never proved it" are the same answer to the person
-    signing in and two very different lines in an operator's log. auth-service refuses both with
-    one message and logs which it was.
+    Returns **only a verified row**, and a plain 404 for everything else — "nobody has claimed
+    this domain" and "one or more organizations have a pending, unproven claim on it" are now
+    the same answer, deliberately. Since a claim's own uniqueness is per-organization
+    (`uq_org_domains_org_domain`; see `OrgDomain`'s docstring in `models.py`), more than one
+    organization can hold the same domain **pending** at once — reporting any single one of
+    those rows here would be arbitrary, and reporting one as `verified: false` would be actively
+    misleading once it is no longer even true that at most one such row can exist. `verified_at`
+    is still what makes a domain safe to route sign-in through at all, and
+    `uq_org_domains_domain_verified` guarantees at most one organization can ever hold that —
+    so filtering to it here is what turns "at most one" into "returns the one, or nothing,
+    never an ambiguous choice among several."
 
-    `verified` is what makes this safe to consult at all. A domain routes a sign-in to an
-    identity provider, so honouring an unverified one would let anybody who can add a domain
-    row intercept sign-ins for it — the account-takeover primitive `OrgDomain.verified_at`
-    exists to prevent. This endpoint reports; auth-service decides, and refuses when it is
-    false.
+    `verified` still travels on the body rather than being implied by the 200 alone, for
+    auth-service's own defence in depth against ever trusting an unverified row that reaches it
+    some other way — but the value the caller will now ever see from a 200 is `true`.
 
-    Note what it does **not** decide: which organization the person is signed into. A verified
+    Note what this does **not** decide: which organization the person is signed into. A verified
     domain selects an identity *provider*; the organization comes from the provider config that
     provider belongs to, and the sign-in still fails unless the person holds an active
     membership there.
@@ -175,7 +179,11 @@ async def organization_by_domain(session: SessionDep, domain: str) -> dict[str, 
         await session.execute(
             select(OrgDomain, Organization)
             .join(Organization, Organization.id == OrgDomain.organization_id)
-            .where(OrgDomain.domain == domain, Organization.deleted_at.is_(None))
+            .where(
+                OrgDomain.domain == domain,
+                OrgDomain.verified_at.is_not(None),
+                Organization.deleted_at.is_(None),
+            )
         )
     ).first()
     if row is None:

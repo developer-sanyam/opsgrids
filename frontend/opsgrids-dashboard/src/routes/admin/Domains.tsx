@@ -37,6 +37,15 @@ function statusOf(domain: Domain): { label: string; tone: TagTone } {
   return { label: "Pending", tone: "warning" };
 }
 
+/** The periodic re-check found the record missing at least once since it last passed.
+ * Deliberately not a status on its own — the domain is still verified, still usable for
+ * sign-in, and this is a signal for an administrator to look at, not a state to gate
+ * anything on. See `services.recheck_domain`'s own docstring for why nothing here revokes
+ * automatically. */
+function isCheckFailing(domain: Domain): boolean {
+  return domain.verified_at !== null && domain.failing_since !== null;
+}
+
 export function DomainsPage() {
   const toast = useToast();
   const domains = useAsync(listDomains, []);
@@ -99,7 +108,12 @@ export function DomainsPage() {
       header: "Status",
       render: (d) => {
         const status = statusOf(d);
-        return <Tag tone={status.tone}>{status.label}</Tag>;
+        return (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Tag tone={status.tone}>{status.label}</Tag>
+            {isCheckFailing(d) ? <Tag tone="negative">Check failing</Tag> : null}
+          </div>
+        );
       },
     },
     {
@@ -281,7 +295,10 @@ function DomainRecordDialog({
       description="Publish this TXT record at your DNS provider, then verify. DNS changes can take a while to propagate."
       footer={
         <div className="flex w-full items-center justify-between gap-2">
-          <Tag tone={status.tone}>{status.label}</Tag>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Tag tone={status.tone}>{status.label}</Tag>
+            {isCheckFailing(domain) ? <Tag tone="negative">Check failing</Tag> : null}
+          </div>
           <div className="flex gap-2">
             <Button variant="outline" onClick={onClose}>
               Close
@@ -300,7 +317,13 @@ function DomainRecordDialog({
       }
     >
       <div className="flex flex-col gap-4">
-        {domain.verified_at ? (
+        {isCheckFailing(domain) ? (
+          <InlineAlert tone="warning" title="The DNS record could not be found on a recent check.">
+            {domain.domain} is still verified and still usable for sign-in — this is not
+            revoked automatically. If the record was removed deliberately, remove the domain
+            below; otherwise republish it and it will clear on the next check.
+          </InlineAlert>
+        ) : domain.verified_at ? (
           <InlineAlert tone="success" title="This domain is verified.">
             It can be used to route single sign-in to an identity provider.
           </InlineAlert>

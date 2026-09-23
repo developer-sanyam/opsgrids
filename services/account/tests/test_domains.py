@@ -1,27 +1,28 @@
 """Email-domain claim and verification (ADR-0000 §1).
 
 Three layers, mirroring the module split: `app/domain.py`'s pure shape and clock rules need
-no fixture at all; `services.claim_domain`/`verify_domain`/`release_domain` are proved against
-real PostgreSQL with a stub DNS resolver — no test here ever opens a socket; and the HTTP
-surface is proved for authorization and for the one thing that only exists at that layer, the
-per-organization rate limit on `POST /domains/{id}/verify`.
+no fixture at all; `services.claim_domain`/`verify_domain`/`release_domain`/`recheck_domain`
+are proved against real PostgreSQL with a stub DNS resolver — no test here ever opens a socket;
+and the HTTP surface is proved for authorization and for the one thing that only exists at that
+layer, the per-organization rate limit on `POST /domains/{id}/verify`.
 
-**Read `app/services.py`'s "domains" section docstring before extending the takeover tests
-below.** `org_domains.domain` is unique platform-wide, row-level security hides another
-tenant's row entirely, and this service's only cross-tenant reader is SELECT-only by explicit
-platform design — so a domain already held by another organization, verified or not, is
-refused with the *same* anonymous 409 either way. That is a stronger non-disclosure guarantee
-than "pending never blocks", not a weaker one, and it is the one acceptance criterion this
-slice documents as a follow-up rather than fakes.
+**Read `models.py`'s `OrgDomain` docstring and `services.py`'s "domains" section before
+extending `TestTakeoverSafety` below.** Exclusivity is verified-only
+(`uq_org_domains_domain_verified`, a partial unique index), not global — more than one
+organization may hold the same domain pending at once, and the only real collision left is at
+`verify_domain`, enforced by the database with no cross-tenant read or write anywhere in this
+module.
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import dns_check, selectors, services
@@ -92,9 +93,12 @@ class TestNormaliseDomain:
         assert excinfo.value.code == "domain_invalid"
 
     def test_rejects_a_single_label(self) -> None:
+        """The Public Suffix List's own prevailing rule treats any unlisted single label as a
+        suffix in its own right (`*`) — so this is `domain_public_suffix`, not the generic
+        shape complaint, and it is the real library saying so, not a special case here."""
         with pytest.raises(domain_module.DomainRejected) as excinfo:
             domain_module.normalise_domain("localhost")
-        assert excinfo.value.code == "domain_invalid"
+        assert excinfo.value.code == "domain_public_suffix"
 
     def test_rejects_an_ip_address(self) -> None:
         with pytest.raises(domain_module.DomainRejected) as excinfo:
@@ -118,6 +122,16 @@ class TestNormaliseDomain:
 
     def test_a_real_domain_under_a_public_suffix_is_fine(self) -> None:
         assert domain_module.normalise_domain("acme.co.uk") == "acme.co.uk"
+
+    def test_uses_the_real_public_suffix_list_not_a_curated_subset(self) -> None:
+        """`github.io` is a real, commonly-hit PSL entry an earlier, hand-curated version of
+        this list did not carry — proof this is backed by the actual list
+        (`publicsuffixlist`), not a handful of the most common TLDs."""
+        with pytest.raises(domain_module.DomainRejected) as excinfo:
+            domain_module.normalise_domain("github.io")
+        assert excinfo.value.code == "domain_public_suffix"
+        # A real domain registered under that same suffix is unaffected.
+        assert domain_module.normalise_domain("acme.github.io") == "acme.github.io"
 
 
 class TestVerificationRecord:
@@ -245,27 +259,35 @@ class TestClaimDomain:
 
 
 class TestTakeoverSafety:
-    """`account.org_domains.domain` is a platform-wide unique constraint — see the module and
-    `services.py`'s own docstring for why this is the enforcement mechanism rather than an
-    application-level pre-check, and for the one requirement this leaves undone."""
+    """`uq_org_domains_org_domain` (per-organization) and `uq_org_domains_domain_verified`
+    (platform-wide, verified rows only) together are the whole enforcement mechanism — see
+    `OrgDomain`'s own docstring in `models.py` and `services.py`'s "domains" section. No
+    cross-tenant read or write anywhere in this class's own call paths; the database decides."""
 
-    async def _claim_as_other_org(
-        self, admin_session: AsyncSession, domain: str, *, verified: bool
-    ) -> Organization:
+    async def _other_org(
+        self, admin_session: AsyncSession, *, name: str = "Holder Inc", slug: str = "holder"
+    ) -> tuple[Organization, Membership]:
         from app.schemas import OrganizationIn
 
         async with admin_session.begin():
             other = await services.create_organization(
-                admin_session, OrganizationIn(name="Holder Inc", slug="holder"), actor_user_id=None
+                admin_session, OrganizationIn(name=name, slug=slug), actor_user_id=None
             )
             owner = await services.add_member(
                 admin_session,
                 org_id=other.id,
-                email="owner@holder.example",
+                email=f"owner@{slug}.example",
                 full_name="Holder Owner",
                 actor_user_id=None,
                 role_codes=["ORG_OWNER"],
             )
+        return other, owner
+
+    async def _claim_as_other_org(
+        self, admin_session: AsyncSession, domain: str, *, verified: bool
+    ) -> Organization:
+        other, owner = await self._other_org(admin_session)
+        async with admin_session.begin():
             row = await services.claim_domain(
                 admin_session,
                 ctx_for(other, owner, "core.identity.domain.write"),
@@ -275,66 +297,166 @@ class TestTakeoverSafety:
                 row.verified_at = datetime.now(UTC)
         return other
 
-    async def test_a_domain_verified_by_another_org_is_a_generic_409(
+    async def test_claiming_a_domain_already_verified_elsewhere_still_succeeds(
         self,
         session: AsyncSession,
         admin_session: AsyncSession,
         org: Organization,
         people: dict[str, Membership],
     ) -> None:
+        """A pending claim proves nothing, so it is never blocked by another organization's
+        claim — verified or not. It just cannot ever be verified while that holds (the next
+        test)."""
         await self._claim_as_other_org(admin_session, "contested.example", verified=True)
 
-        with pytest.raises(ConflictProblem) as excinfo:
-            async with session.begin():
-                await services.claim_domain(
-                    session,
-                    ctx_for(org, people["manager"], "core.identity.domain.write"),
-                    DomainIn(domain="contested.example"),
-                )
-        assert "Holder" not in str(excinfo.value)
-        assert "holder" not in str(excinfo.value)
+        async with session.begin():
+            row = await services.claim_domain(
+                session,
+                ctx_for(org, people["manager"], "core.identity.domain.write"),
+                DomainIn(domain="contested.example"),
+            )
+        assert row.domain == "contested.example"
+        assert row.verified_at is None
 
-    async def test_a_domain_pending_elsewhere_is_the_same_generic_409(
+    async def test_a_pending_claim_by_one_org_never_blocks_another(
         self,
         session: AsyncSession,
         admin_session: AsyncSession,
         org: Organization,
         people: dict[str, Membership],
     ) -> None:
-        """Documents the current, deliberate limitation: because row-level security hides an
-        unverified row exactly as it hides a verified one, and the bypass reader is SELECT-only
-        by platform design, this slice cannot tell the two apart to let a second organization
-        win a still-pending claim. See `services.py`'s "domains" section docstring for the
-        follow-up this leaves on the table."""
         await self._claim_as_other_org(admin_session, "pending-elsewhere.example", verified=False)
 
-        with pytest.raises(ConflictProblem):
-            async with session.begin():
-                await services.claim_domain(
-                    session,
-                    ctx_for(org, people["manager"], "core.identity.domain.write"),
-                    DomainIn(domain="pending-elsewhere.example"),
-                )
+        async with session.begin():
+            row = await services.claim_domain(
+                session,
+                ctx_for(org, people["manager"], "core.identity.domain.write"),
+                DomainIn(domain="pending-elsewhere.example"),
+            )
+        assert row.verified_at is None
 
-    async def test_the_conflict_never_names_who_holds_it(
+    async def test_verifying_after_another_org_already_verified_is_a_generic_409(
         self,
         session: AsyncSession,
         admin_session: AsyncSession,
         org: Organization,
         people: dict[str, Membership],
     ) -> None:
+        """B verifies first; A's own, still-pending claim on the same domain can never be
+        verified afterwards — refused by `uq_org_domains_domain_verified`, not by a read that
+        would have to name B to explain why."""
+        # Captured before the transaction that raises below: it rolls back the shared
+        # `session` fixture's outer transaction, which expires every attribute on every ORM
+        # object bound to it — including `org` itself — and refreshing an expired attribute
+        # needs an `await` this event listener cannot make (`tests/conftest.py::_bind_tenant`
+        # runs in a sync callback). Plain values sidestep it entirely.
+        org_id = org.id
         holder = await self._claim_as_other_org(
             admin_session, "quiet-conflict.example", verified=True
         )
+
+        write_ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
+        async with session.begin():
+            mine = await services.claim_domain(
+                session, write_ctx, DomainIn(domain="quiet-conflict.example")
+            )
+        mine_id = mine.id
+        resolver = StubResolver(
+            {
+                (domain_module.verification_txt_host(mine.domain), "TXT"): [
+                    domain_module.verification_txt_value(mine.verification_token)
+                ]
+            }
+        )
         with pytest.raises(ConflictProblem) as excinfo:
             async with session.begin():
-                await services.claim_domain(
-                    session,
-                    ctx_for(org, people["manager"], "core.identity.domain.write"),
-                    DomainIn(domain="quiet-conflict.example"),
-                )
+                mine = await selectors.get_domain(session, org_id, mine_id)
+                assert mine is not None
+                await services.verify_domain(session, write_ctx, mine, resolver=resolver)
+        assert "Holder" not in str(excinfo.value)
         assert str(holder.id) not in str(excinfo.value)
-        assert str(holder.slug) not in str(excinfo.value)
+
+        async with session.begin():
+            still_pending = await selectors.get_domain(session, org_id, mine_id)
+            assert still_pending is not None
+            assert still_pending.verified_at is None
+
+    async def test_two_organizations_racing_to_verify_the_same_domain_exactly_one_wins(
+        self,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+    ) -> None:
+        """The partial unique index is the arbiter, not application ordering — proved here by
+        actually racing two independent sessions, bound to two different organizations, both
+        committing an `UPDATE ... SET verified_at` for the same domain concurrently."""
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.config import settings
+        from platform_core.db import TENANT_GUC
+
+        other, owner = await self._other_org(admin_session, name="Racer Inc", slug="racer")
+        domain = "race.example"
+
+        a_ctx = ctx_for(org, people["manager"], "core.identity.domain.write")
+        b_ctx = ctx_for(other, owner, "core.identity.domain.write")
+        async with session.begin():
+            a_row = await services.claim_domain(session, a_ctx, DomainIn(domain=domain))
+        async with admin_session.begin():
+            b_row = await services.claim_domain(admin_session, b_ctx, DomainIn(domain=domain))
+
+        resolver = StubResolver(
+            {
+                (domain_module.verification_txt_host(domain), "TXT"): [
+                    domain_module.verification_txt_value(a_row.verification_token),
+                    domain_module.verification_txt_value(b_row.verification_token),
+                ]
+            }
+        )
+
+        engine = create_async_engine(settings().app_dsn)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+
+        async def _verify_as(organization_id, domain_id, ctx) -> Exception | None:
+            try:
+                async with maker() as s, s.begin():
+                    await s.execute(
+                        sa_text(f"SELECT set_config('{TENANT_GUC}', '{organization_id}', true)")
+                    )
+                    row = await selectors.get_domain(s, organization_id, domain_id)
+                    assert row is not None
+                    await services.verify_domain(s, ctx, row, resolver=resolver)
+            except Exception as exc:
+                return exc
+            return None
+
+        try:
+            results = await asyncio.gather(
+                _verify_as(org.id, a_row.id, a_ctx),
+                _verify_as(other.id, b_row.id, b_ctx),
+            )
+        finally:
+            await engine.dispose()
+
+        outcomes = list(results)
+        winners = [r for r in outcomes if r is None]
+        losers = [r for r in outcomes if r is not None]
+        assert len(winners) == 1, f"expected exactly one winner, got {outcomes}"
+        assert len(losers) == 1
+        assert isinstance(losers[0], ConflictProblem)
+
+        async with admin_session.begin():
+            verified_rows = (
+                await admin_session.execute(
+                    sa_text(
+                        "SELECT organization_id FROM account.org_domains "
+                        "WHERE domain = :d AND verified_at IS NOT NULL"
+                    ),
+                    {"d": domain},
+                )
+            ).all()
+        assert len(verified_rows) == 1
 
 
 class TestVerifyDomain:

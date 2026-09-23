@@ -435,9 +435,11 @@ async def get_domain_by_name(
 ) -> OrgDomain | None:
     """This organization's own row for `domain`, if it has already claimed it.
 
-    Tenant-scoped like every other selector here. `domain` is unique platform-wide
-    (`uq_org_domains_domain`), so this can only ever find a row this organization itself
-    holds — it answers "have I already claimed this", never "who else has".
+    Tenant-scoped like every other selector here, and filtered by `organization_id` in the
+    `WHERE` clause besides — `(organization_id, domain)` is unique
+    (`uq_org_domains_org_domain`), not `domain` alone, so this answers "have I already claimed
+    this", never "who else has": another organization's row for the same domain is a real,
+    separate row this query does not reach.
     """
     stmt = select(OrgDomain).where(OrgDomain.organization_id == org_id, OrgDomain.domain == domain)
     return (await session.execute(stmt)).scalar_one_or_none()
@@ -455,7 +457,32 @@ def to_domain_out(row: OrgDomain) -> DomainOut:
         expires_at=domain_rules.claim_expires_at(row.created_at) if still_pending else None,
         verification_host=domain_rules.verification_txt_host(row.domain),
         verification_value=domain_rules.verification_txt_value(row.verification_token),
+        last_checked_at=row.last_checked_at,
+        last_check_ok=row.last_check_ok,
+        failing_since=row.failing_since,
     )
+
+
+async def due_for_recheck(session: AsyncSession, *, before: Any, limit: int) -> list[OrgDomain]:
+    """Verified domains a periodic sweep should re-check: `last_checked_at` older than
+    `before` (or never checked at all), oldest first.
+
+    Runs on the BYPASSRLS directory reader — cross-tenant discovery of *which* domains are
+    due, the same shape `app/cron.py`'s module docstring explains for the sweep as a whole —
+    and costs no new grant: `opsgrids_directory` already reads `org_domains` for the internal
+    SSO lookup (`api/internal.py`). Every write that follows runs per-domain on the ordinary,
+    tenant-bound application role.
+    """
+    stmt = (
+        select(OrgDomain)
+        .where(
+            OrgDomain.verified_at.is_not(None),
+            or_(OrgDomain.last_checked_at.is_(None), OrgDomain.last_checked_at < before),
+        )
+        .order_by(OrgDomain.last_checked_at.asc().nulls_first())
+        .limit(limit)
+    )
+    return list((await session.execute(stmt)).scalars().all())
 
 
 # --------------------------------------------------------------------- roles

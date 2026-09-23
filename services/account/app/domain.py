@@ -8,12 +8,14 @@ must have before it is stored, the token and TXT record that stand in for proof 
 and the clock a claim runs against while nobody has proved anything yet.
 
 **What is deliberately absent.** Nothing here decides *whether* a domain is currently free to
-claim — `uq_org_domains_domain` (a plain, platform-wide unique constraint on
-`account.org_domains.domain`) is the arbiter of that, the same way `services.py`'s docstring
-for storefront's own domain claim explains it should be: a pre-check `SELECT` against another
-tenant's row would itself be a cross-tenant read that row-level security correctly refuses to
-answer, and it would still race a concurrent claim. See `services.claim_domain` for the
-consequence this has for cross-organization takeover semantics.
+claim or verify — `account.org_domains`'s two constraints are the arbiter of that
+(`uq_org_domains_org_domain` per organization, `uq_org_domains_domain_verified` platform-wide
+but verified-only; see `OrgDomain`'s own docstring in `models.py`), the same way
+`services/storefront/app/services.py`'s own docstring explains a domain claim should be
+arbitrated: a pre-check `SELECT` against another tenant's row would itself be a cross-tenant
+read that row-level security correctly refuses to answer, and it would still race a concurrent
+claim. See `services.claim_domain` and `services.verify_domain` for what this means for
+cross-organization takeover safety.
 """
 
 from __future__ import annotations
@@ -23,8 +25,16 @@ from datetime import UTC, datetime, timedelta
 from typing import Final
 
 import idna
+from publicsuffixlist import PublicSuffixList
 
 from platform_core.errors import ValidationProblem
+
+#: The real Public Suffix List, offline — the wheel ships a snapshot
+#: (`publicsuffixlist/public_suffix_list.dat`) and this constructor never touches the network;
+#: verified by hand against a patched `socket.connect` before this was trusted (see the
+#: dependency's own comment in `pyproject.toml`). Built once, at import, the same way `idna`'s
+#: own Unicode tables are a one-time cost rather than per-call I/O.
+_PSL = PublicSuffixList()
 
 #: Characters that mean whatever was typed is a pasted URL, an email address, or a Host header
 #: nobody's browser ever sent — not a bare domain.
@@ -57,55 +67,22 @@ PLATFORM_DOMAIN_SUFFIXES: Final = (
     "stores.opsgrids.com",
 )
 
-#: A curated set of public suffixes — registrable-domain roots nobody may claim outright,
-#: because "owning" `com` or `co.uk` is not a fact DNS or this platform can express, and a role
-#: whose SSO domain was accidentally set to one would silently match every address on the
-#: internet that happens to end in it once anything trusts `allowed_domains` for more than exact
-#: string equality.
-#:
-#: **Deliberately not the Mozilla Public Suffix List.** The real list is several thousand
-#: entries, changes on its own release schedule, and nothing in this platform depends on the
-#: long tail of it — a customer typing `example.k12.ca.us` as their whole SSO domain is not a
-#: case worth vendoring and refreshing a dependency for today. This is the list a support ticket
-#: would actually hit: the common generic and country-code TLDs and their most common
-#: second-level delegations. Follow-up, if this ever needs to be exact: vendor `publicsuffix2`
-#: (or an equivalent) and replace this tuple with its registrable-domain check.
-PUBLIC_SUFFIXES: Final = frozenset(
-    {
-        "com",
-        "org",
-        "net",
-        "edu",
-        "gov",
-        "mil",
-        "int",
-        "io",
-        "co",
-        "ai",
-        "dev",
-        "app",
-        "in",
-        "us",
-        "uk",
-        "co.in",
-        "org.in",
-        "net.in",
-        "gov.in",
-        "co.uk",
-        "org.uk",
-        "gov.uk",
-        "ac.uk",
-        "me.uk",
-        "com.au",
-        "net.au",
-        "org.au",
-        "co.nz",
-        "co.jp",
-        "com.br",
-        "com.cn",
-        "co.za",
-    }
-)
+
+def is_public_suffix(host: str) -> bool:
+    """Whether `host` (already an ASCII A-label) is itself a full entry on the Public Suffix
+    List — `com`, `co.uk`, `github.io` — rather than a domain registered under one.
+
+    Backed by `publicsuffixlist`'s bundled, offline snapshot (`pyproject.toml`'s own comment
+    explains the pin), not a hand-curated list: "owning" a public suffix is not a fact DNS or
+    this platform can express, and a role whose SSO domain was accidentally set to one would
+    silently match every address on the internet that happens to end in it, the day anything
+    trusts a domain claim for more than exact string equality. A curated subset used to stand
+    in here; it covered the common TLDs a support ticket would actually hit and said so, but
+    "the common ones" is exactly the kind of list that is right until the day a customer's
+    domain sits on the entry it missed.
+    """
+    return bool(_PSL.is_public(host))
+
 
 MAX_DOMAIN_LENGTH: Final = 253
 
@@ -133,7 +110,8 @@ def normalise_domain(raw: str) -> str:
     * anything `idna` itself refuses: an over-long label, an empty label, a leading or trailing
       hyphen, a codepoint with no A-label;
     * a platform domain (`PLATFORM_DOMAIN_SUFFIXES`) or a bare public suffix
-      (`PUBLIC_SUFFIXES`) — nothing proves ownership of either, ever.
+      (`is_public_suffix`, the real Public Suffix List) — nothing proves ownership of either,
+      ever.
     """
     value = raw.strip()
     if not value:
@@ -168,7 +146,7 @@ def normalise_domain(raw: str) -> str:
     # single label, and the more useful refusal names the actual mistake — a public suffix —
     # rather than the generic shape complaint a two-label domain would also get for the
     # unrelated reason of being too short.
-    if host in PUBLIC_SUFFIXES:
+    if is_public_suffix(host):
         raise DomainRejected(
             "domain_public_suffix",
             "That is a public suffix, not a domain anyone can own. Enter your own domain, "

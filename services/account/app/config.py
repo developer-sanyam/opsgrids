@@ -30,6 +30,18 @@ class Settings(ServiceSettings):
     #: not become this process's DNS traffic pattern.
     domain_verify_rate_limit_window_seconds: int = 30
 
+    #: How long a verified domain may go unchecked before the periodic re-verification sweep
+    #: (`app/cron.py`) considers it due again. Daily by default: DNS is not expected to change
+    #: often, and this is a signal for a human, not an enforcement gate — see
+    #: `services.recheck_domain`'s docstring for why it never auto-revokes.
+    domain_recheck_interval_seconds: int = 86_400
+    #: How many due domains one sweep tick advances. A "light" sweep on purpose (the brief's
+    #: own word): no batching-with-carry-over ordering beyond "oldest `last_checked_at` first"
+    #: in the discovery query itself.
+    domain_recheck_batch_size: int = 50
+    #: How often the sweep loop wakes up to ask whether anything is due.
+    domain_recheck_poll_interval_seconds: float = 900.0
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

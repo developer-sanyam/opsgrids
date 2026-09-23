@@ -42,6 +42,15 @@ dependencies = [
     # way to read a TXT or CNAME record without a resolver library, and the answer to "has the
     # customer pasted our DKIM record into their registrar yet?" is a TXT lookup or a guess.
     "dnspython>=2.7",
+    # account-service refuses a public suffix ("com", "co.uk") as an email-domain claim
+    # (`app/domain.py`). Pinned exactly, not `>=`, because this package's version number *is*
+    # its Public Suffix List snapshot date (`1.0.2.20260922`) — a floating pin would silently
+    # change which domains are refused on every `uv sync`, and that is a decision to make on
+    # purpose, in review, not one `uv.lock` should make for us. Zero required dependencies
+    # (its own `requests` need is behind an `update` extra this platform never installs), so it
+    # never fetches the list over the network — the snapshot ships in the wheel. Bump the pin
+    # deliberately, on its own line in a diff, when the list is worth refreshing.
+    "publicsuffixlist==1.0.2.20260922",
 ]
 
 [dependency-groups]
@@ -145,7 +154,8 @@ plugins = ["pydantic.mypy"]
 # large install for the three calls `services/document/app/storage.py` makes, and that module
 # is the only place in the platform that imports them. jsonschema ships no `py.typed` marker
 # either; `platform_core.events.validate_event_schema` is its only caller, and that call is
-# dev/test-time only (see its docstring).
+# dev/test-time only (see its docstring). publicsuffixlist ships no `py.typed` marker either;
+# `services/account/app/domain.py` is its only caller.
 module = [
     "geoalchemy2.*",
     "razorpay.*",
@@ -154,6 +164,7 @@ module = [
     "boto3.*",
     "botocore.*",
     "jsonschema.*",
+    "publicsuffixlist.*",
 ]
 ignore_missing_imports = true
 

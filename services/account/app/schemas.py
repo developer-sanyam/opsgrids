@@ -312,6 +312,15 @@ class DomainOut(BaseModel):
     verification_host: str
     #: `opsgrids-verify=<token>` — the value to publish at `verification_host`.
     verification_value: str
+    #: The periodic re-check's own findings, for a verified domain. All three `None` means
+    #: "never re-checked yet" — a fresh verification, or a deployment older than the sweep —
+    #: never an enforcement signal: SSO is still gated on `verified_at` alone.
+    last_checked_at: datetime | None
+    last_check_ok: bool | None
+    #: Set the moment a re-check first found the record missing after previously finding it;
+    #: cleared the moment it is found again. Never causes a silent revocation on its own — see
+    #: `services.recheck_domain`'s docstring.
+    failing_since: datetime | None
 
 
 # --------------------------------------------------------------------- roles

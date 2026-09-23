@@ -46,6 +46,18 @@
             ],
             "title": "Expires At"
           },
+          "failing_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failing Since"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -54,6 +66,29 @@
           "is_primary": {
             "title": "Is Primary",
             "type": "boolean"
+          },
+          "last_check_ok": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Check Ok"
+          },
+          "last_checked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Checked At"
           },
           "verification_host": {
             "title": "Verification Host",
@@ -85,7 +120,10 @@
           "created_at",
           "expires_at",
           "verification_host",
-          "verification_value"
+          "verification_value",
+          "last_checked_at",
+          "last_check_ok",
+          "failing_since"
         ],
         "title": "DomainOut",
         "type": "object"

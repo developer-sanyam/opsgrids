@@ -30,11 +30,30 @@ const pending = {
   expires_at: "2099-01-01T00:00:00Z",
   verification_host: "_opsgrids-verify.acme.example",
   verification_value: "opsgrids-verify=deadbeef",
+  last_checked_at: null,
+  last_check_ok: null,
+  failing_since: null,
 };
 
-const verified = { ...pending, id: "dom-2", domain: "verified.example", verified_at: "2026-09-05T00:00:00Z", expires_at: null };
+const verified = {
+  ...pending,
+  id: "dom-2",
+  domain: "verified.example",
+  verified_at: "2026-09-05T00:00:00Z",
+  expires_at: null,
+  last_checked_at: "2026-09-20T00:00:00Z",
+  last_check_ok: true,
+};
 
 const expired = { ...pending, id: "dom-3", domain: "expired.example", expires_at: "2020-01-01T00:00:00Z" };
+
+const failingVerified = {
+  ...verified,
+  id: "dom-4",
+  domain: "failing.example",
+  last_check_ok: false,
+  failing_since: "2026-09-18T00:00:00Z",
+};
 
 function renderPage(grants: string[] = ["core.identity.domain.write:ORG"]) {
   return render(
@@ -72,6 +91,24 @@ describe("DomainsPage — list", () => {
     expect(screen.getByText("Pending")).toBeTruthy();
     expect(screen.getByText("Verified")).toBeTruthy();
     expect(screen.getByText("Expired")).toBeTruthy();
+  });
+
+  it("badges a verified domain whose periodic re-check is failing, without changing its status", async () => {
+    listDomains.mockResolvedValue([failingVerified]);
+    renderPage();
+
+    await screen.findByText("failing.example");
+    // Still verified — a failing re-check is a flag, never a silent revocation.
+    expect(screen.getByText("Verified")).toBeTruthy();
+    expect(screen.getByText("Check failing")).toBeTruthy();
+  });
+
+  it("does not badge a verified domain that has never failed a check", async () => {
+    listDomains.mockResolvedValue([verified]);
+    renderPage();
+
+    await screen.findByText("verified.example");
+    expect(screen.queryByText("Check failing")).toBeNull();
   });
 
   it("marks the organisation's primary domain", async () => {
@@ -148,6 +185,23 @@ describe("DomainsPage — claiming", () => {
 });
 
 describe("DomainsPage — the record dialog", () => {
+  it("shows the failing check as a flag rather than a revocation", async () => {
+    listDomains.mockResolvedValue([failingVerified]);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "View record failing.example" }));
+    await screen.findByRole("dialog", { name: "failing.example" });
+
+    expect(screen.getByText(/could not be found on a recent check/)).toBeTruthy();
+    expect(screen.queryByText("This domain is verified.")).toBeNull();
+    // Still verified: the row's own status tag stays, no "claim again" is offered — there is
+    // nothing to re-claim, the domain still is what it says it is.
+    expect(screen.getAllByText("Verified").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Claim again" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Verify now" })).toBeNull();
+  });
+
   it("verifies now and reflects the new state", async () => {
     listDomains.mockResolvedValue([pending]);
     verifyDomain.mockResolvedValue(verified);

@@ -1265,39 +1265,52 @@ async def _replace_grants(
 # --------------------------------------------------------------------- domains
 #
 # ADR-0000 §1: a verified domain selects an identity *provider*, never an organization, and
-# only once DNS has proved it. `account.org_domains.domain` is unique **platform-wide**
-# (`uq_org_domains_domain`) — a plain constraint, not scoped by tenant — which is what makes
-# takeover safety a database guarantee rather than an application one: whichever organization's
-# `INSERT` lands first is the only one that can hold a row for that string at all.
+# only once DNS has proved it.
 #
-# **This is also this feature's one real limitation, stated here rather than left for someone
-# to discover in an incident.** Because `org_domains` carries row-level security
-# (`account.org_domains` policy: `organization_id = account.current_org()`) and this service's
-# only cross-tenant reader (`opsgrids_directory`, wired in `tools/dev-bootstrap/init-db.sql`)
-# is deliberately SELECT-only on this exact table — "the verification write stays on the
-# tenant-bound application role" is that file's own comment — a tenant-bound write can never
-# see, update or delete a row another organization holds, proved or not. So when the row this
-# domain already belongs to is *unverified*, this slice cannot tell that apart from *verified*
-# without a read this platform does not grant a live request, and cannot reassign it without a
-# write this platform does not grant one either. Both collisions therefore surface as the same
-# anonymous 409 (`claim_domain` below) — which satisfies "discloses nothing about the holder"
-# for both, at the cost of not implementing "a pending claim never blocks another organization"
-# or "verifying releases a competitor's pending claim" for the cross-organization case. Freeing
-# a domain abandoned by a *different* organization past `domain.CLAIM_TTL` needs a cross-tenant
-# write and belongs in a one-shot, admin-role tool shaped like `tools/reconcile_permissions.py`
-# (dry-run, one transaction per row, an audit row, platform staff only) — not in this endpoint,
-# and not implemented in this slice.
+# **Exclusivity is verified-only** (`OrgDomain`'s own docstring in `models.py` has the full
+# argument). `uq_org_domains_org_domain` — `UNIQUE (organization_id, domain)` — is the only
+# thing stopping one organization from claiming the same domain twice; it says nothing about
+# any other organization. `uq_org_domains_domain_verified` — a partial `UNIQUE (domain) WHERE
+# verified_at IS NOT NULL` — is the actual lock, and it is what makes takeover safety a
+# database guarantee that needs **no cross-tenant read or write anywhere in this module**:
 #
-# What *is* fully implemented: an organization's own claim never blocks itself (re-claiming
-# rotates the token, per `domain.generate_verification_token`), an organization's own claim
-# expires lazily 14 days after it was last (re)claimed and `verify_domain` refuses a stale one
-# with a message that says so, and the internal directory read
-# (`api/internal.py:organization_by_domain`) already refuses to treat an unverified row as
-# proof for anything — unchanged by this slice, and covered by `tests/test_internal.py`.
+# * **Claiming** never has anything to collide with across organizations any more. Every
+#   organization's own row is unique to itself (the per-org constraint), and a pending claim
+#   proves nothing, so there is nothing for a second organization's pending claim to threaten.
+#   `claim_domain` therefore only ever reads and writes *this* organization's own row.
+# * **Verifying** is the one moment ownership is actually asserted, and it is asserted by
+#   setting `verified_at` on a row this organization already owns — an ordinary, tenant-scoped
+#   `UPDATE`. If another organization's row already holds `verified_at` for the same domain,
+#   the partial unique index refuses the second `UPDATE` with a constraint violation, atomically,
+#   however many organizations race to verify the same domain at once. `verify_domain` below
+#   just needs to catch that violation and answer with the same anonymous 409 a claim conflict
+#   would — it never has to ask, or decide, who else holds the domain.
+# * A domain another organization has already verified stays claimable as **pending** by anyone
+#   else (harmless: `api.internal.organization_by_domain` only ever answers with a verified row,
+#   so a pending one never routes SSO for anybody), and that pending claim's own verify attempt
+#   is what surfaces the 409 — not the claim itself. Whether to also refuse a claim pre-emptively
+#   when the domain is already verified elsewhere was deliberately left out: it would need a
+#   cross-tenant read to word nicely and buys nothing verify's own guard does not already cover.
+# * An abandoned pending claim needs no sweep or admin tool to stop mattering: it was never
+#   dangerous to begin with (unverified never routes anything), and it lazily expires on its own
+#   14-day clock (`domain.CLAIM_TTL`) the same as any single-organization claim always has.
+#
+# **Periodic re-verification** (`recheck_domain` below, driven by `app/cron.py`) is the other
+# half of ADR-0000 §1 this module owns: proving ownership once, at claim time, says nothing
+# about whether the record is still published a year later. It never revokes `verified_at` by
+# itself — see `recheck_domain`'s own docstring for why — only records what it found and flags
+# a domain that stopped answering, for a human to act on.
 
 EVT_DOMAIN_CLAIMED = "core.identity.domain.claimed"
 EVT_DOMAIN_VERIFIED = "core.identity.domain.verified"
 EVT_DOMAIN_RELEASED = "core.identity.domain.released"
+EVT_DOMAIN_CHECK_FAILED = "core.identity.domain.check_failed"
+EVT_DOMAIN_CHECK_RECOVERED = "core.identity.domain.check_recovered"
+
+#: The system actor every re-check-driven audit row and event carries — nobody is signed in
+#: while a sweep runs, and `AuditLog.actor_id` stays `NULL` for exactly that reason, the same
+#: shape `tools/reconcile_permissions.py`'s own audit rows use (`acting_as`, no `actor_id`).
+DOMAIN_RECHECK_ACTOR = "domain-recheck-sweep"
 
 
 async def claim_domain(
@@ -1309,15 +1322,17 @@ async def claim_domain(
 ) -> OrgDomain:
     """Claim a domain, or re-claim one this organization already holds.
 
-    A fresh, unverified row for a domain nobody here has claimed before; a rotated token and a
-    reset clock for one this organization already claimed and has not yet verified; an
-    unchanged, idempotent no-op for one this organization has already verified — there is
-    nothing to prove twice, and rotating a verified domain's token would silently point a
-    published TXT record at a value nobody asked to be re-verified against.
+    A fresh, unverified row for a domain this organization has not claimed before; a rotated
+    token and a reset clock for one it already claimed and has not yet verified; an unchanged,
+    idempotent no-op for one it has already verified — there is nothing to prove twice, and
+    rotating a verified domain's token would silently point a published TXT record at a value
+    nobody asked to be re-verified against.
 
-    A domain already claimed or verified by **another** organization is refused with the same
-    anonymous 409 either way — see the module docstring above for why this cannot distinguish
-    the two without a cross-tenant read this platform does not grant a live request.
+    Never blocked by, and never disclosing anything about, another organization's claim on the
+    same domain — see the module docstring above. The only collision this can still hit is this
+    organization double-submitting the same brand-new domain in a race with itself, which
+    `uq_org_domains_org_domain` catches and this function answers with the same anonymous 409
+    `verify_domain`'s cross-organization race does.
     """
     normalised = domain_module.normalise_domain(payload.domain)
 
@@ -1362,13 +1377,9 @@ async def claim_domain(
         verification_token=domain_module.generate_verification_token(),
     )
     session.add(row)
-    # `uq_org_domains_domain` is the arbiter, not a pre-check `SELECT` — see the module
-    # docstring. A `SELECT` for another organization's row is invisible under row-level
-    # security anyway, and would still race a concurrent claim. Flushed inside a savepoint
-    # so the collision becomes a named, anonymous `ConflictProblem` regardless of whether
-    # the caller reached here over HTTP (where the platform's own `IntegrityError` handler
-    # would otherwise catch it) or by calling this function directly, the same way
-    # `storefront`'s own `claim_custom_domain` names its own collision.
+    # Flushed inside a savepoint so a double-submitted create of the very same domain by this
+    # same organization becomes a named, anonymous 409 rather than a raw `IntegrityError` —
+    # the only collision `uq_org_domains_org_domain` can still raise here.
     try:
         async with session.begin_nested():
             await session.flush()
@@ -1421,6 +1432,13 @@ async def verify_domain(
     A claim past `domain.CLAIM_TTL` is refused with a message naming re-claiming rather than a
     bare failed check — the token published for it is treated as abandoned evidence, the same
     rule `domain.is_claim_expired` states.
+
+    **The race.** Setting `verified_at` is flushed inside a savepoint. If another organization
+    verified the same domain first, `uq_org_domains_domain_verified` refuses this `UPDATE` with
+    a unique violation — this organization's own row, still pending, is left exactly as it was
+    — and that becomes the same anonymous 409 a claim conflict raises: no organization identity,
+    no hint of which of "somebody else already holds it" or "you lost a race happening right
+    now" is true. Both are the same fact to the loser and neither is anyone else's to learn.
     """
     if row.verified_at is not None:
         return row
@@ -1439,6 +1457,14 @@ async def verify_domain(
         )
 
     row.verified_at = utcnow()
+    try:
+        async with session.begin_nested():
+            await session.flush()
+    except IntegrityError as exc:
+        raise ConflictProblem(
+            "That domain could not be verified. It may already be verified elsewhere."
+        ) from exc
+
     record_audit(
         session,
         AuditLog,
@@ -1504,6 +1530,102 @@ async def release_domain(
         },
         actor=_actor(ctx),
     )
+
+
+async def recheck_domain(
+    session: AsyncSession,
+    row: OrgDomain,
+    *,
+    resolver: dns_check.Resolver | None = None,
+    now: datetime | None = None,
+) -> OrgDomain:
+    """Ask DNS again for a domain that is already verified, and record what it found.
+
+    Called only by `app/cron.py`'s sweep — there is no route for this, deliberately, the same
+    reasoning `tools/reconcile_permissions.py` states for why a cross-tenant maintenance
+    operation is a driven process rather than an endpoint. A row that is not (or no longer)
+    verified is the caller's job to skip; this function does not check, so an accidental call
+    against a pending row would happily record a "check" against a record nobody has proven
+    means anything yet.
+
+    **Deliberately does not touch `verified_at`.** A TXT record missing for one sweep tick is
+    routine — a registrar hiccup, a zone edit mid-flight, a resolver that timed out — and
+    revoking single sign-on for an entire organization on the first miss would fail far more
+    often than it protects anything. So a miss is *recorded*, not acted on: `last_check_ok`
+    becomes `False`, `failing_since` is set the moment it was **last known good** (only on the
+    transition into failing, never bumped forward on every subsequent miss, so "failing for
+    eight days" stays an honest number an administrator can act on), and
+    `EVT_DOMAIN_CHECK_FAILED` is published once, on that same transition — not once per tick,
+    which would make the event useless as a signal to alert on. A recovery clears
+    `failing_since` and publishes `EVT_DOMAIN_CHECK_RECOVERED`, once, the same way. Revoking a
+    domain that genuinely stopped being owned is a deliberate `release_domain` call an
+    administrator makes after seeing this — this function never makes it for them.
+    """
+    at = now or utcnow()
+    host = domain_module.verification_txt_host(row.domain)
+    expected = domain_module.verification_txt_value(row.verification_token)
+    found = await dns_check.txt_contains(host, expected, resolver=resolver)
+
+    was_failing = row.failing_since is not None
+    row.last_checked_at = at
+    row.last_check_ok = found
+
+    if found:
+        if was_failing:
+            row.failing_since = None
+            record_audit(
+                session,
+                AuditLog,
+                organization_id=row.organization_id,
+                actor_id=None,
+                acting_as=DOMAIN_RECHECK_ACTOR,
+                action="domain.check_recovered",
+                entity="org_domain",
+                entity_id=row.id,
+                after={"domain": row.domain, "last_check_ok": True},
+            )
+            publish_event(
+                session,
+                OutboxEvent,
+                organization_id=row.organization_id,
+                event_type=EVT_DOMAIN_CHECK_RECOVERED,
+                aggregate_type="org_domain",
+                aggregate_id=row.id,
+                payload={
+                    "organization_id": str(row.organization_id),
+                    "domain_id": str(row.id),
+                    "domain": row.domain,
+                },
+            )
+    elif not was_failing:
+        row.failing_since = at
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=row.organization_id,
+            actor_id=None,
+            acting_as=DOMAIN_RECHECK_ACTOR,
+            action="domain.check_failed",
+            entity="org_domain",
+            entity_id=row.id,
+            after={"domain": row.domain, "last_check_ok": False},
+        )
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=row.organization_id,
+            event_type=EVT_DOMAIN_CHECK_FAILED,
+            aggregate_type="org_domain",
+            aggregate_id=row.id,
+            payload={
+                "organization_id": str(row.organization_id),
+                "domain_id": str(row.id),
+                "domain": row.domain,
+            },
+        )
+
+    await session.flush()
+    return row
 
 
 # --------------------------------------------------------------------- invitations

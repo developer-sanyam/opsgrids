@@ -388,6 +388,13 @@ export interface Domain {
   expires_at: string | null;
   verification_host: string;
   verification_value: string;
+  /** The periodic re-check's own findings. All three `null` means "never re-checked yet" —
+   * never an enforcement signal, since sign-in still gates on `verified_at` alone. */
+  last_checked_at: string | null;
+  last_check_ok: boolean | null;
+  /** Set once a re-check first finds the record missing after previously finding it; cleared
+   * the moment it is found again. Never means the domain was silently unverified. */
+  failing_since: string | null;
 }
 
 /** `DomainIn`. */
