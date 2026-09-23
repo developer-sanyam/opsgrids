@@ -1,8 +1,11 @@
-"""Engage lists and campaigns — CRUD, the send gate, and the fan-out consumer.
+"""Engage lists and campaigns — CRUD, the send gate, expansion, and the send driver.
 
-Real PostgreSQL as the app role. The fan-out runs through `consumers.fan_out` itself, on the
-process-wide engine the worker uses, with a `RecordingTransport` injected: nothing here opens a
-socket, and every assertion about "sent" is an assertion about what the transport was handed.
+Real PostgreSQL as the app role. Expansion runs through `consumers.expand_campaign_send` itself,
+on the process-wide engine the worker uses. Sending runs through `_drain`, a small test harness
+that drives `services.claim_campaign_batch`/`record_campaign_batch` exactly the way `app.cron.
+CampaignDriver._drain` does in production, against this test's own session rather than a second
+engine — with a `RecordingTransport` injected, so nothing here opens a socket and every assertion
+about "sent" is an assertion about what the transport was handed.
 """
 
 from __future__ import annotations
@@ -14,12 +17,13 @@ from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app import consumers, models, services
 from app.config import settings
 from app.main import app
-from app.transports import Outgoing, Receipt, RecordingTransport, TransportRefused
+from app.transports import Outgoing, Receipt, RecordingTransport, Transport, TransportRefused
+from app.transports import send_batch as transport_send_batch
 from platform_core.auth import Principal, Scope, get_principal
 from platform_core.db import dispose_engine, init_engine
 from tests.helpers import ctx_for, envelope_for, principal_for
@@ -126,6 +130,46 @@ async def _send(session, org_id, campaign_id) -> None:
         await services.request_send(
             session, ctx_for(org_id, K_SEND, Scope.ORG), campaign_id=campaign_id
         )
+
+
+async def _drain(
+    session,
+    org_id,
+    campaign_id,
+    *,
+    transport: Transport,
+    batch_size: int = 200,
+    lease_seconds: int = 300,
+) -> str:
+    """Sends batches for one campaign until it stops — the same claim/send/record loop
+    `app.cron.CampaignDriver._drain` runs in production, against this test's own session
+    instead of a second engine. Returns the final outcome (`done`, `stopped`, `capped`,
+    `paused`, `idle`, or `unavailable`)."""
+    while True:
+        async with session.begin():
+            outcome, batch = await services.claim_campaign_batch(
+                session,
+                organization_id=org_id,
+                campaign_id=campaign_id,
+                batch_size=batch_size,
+                lease_seconds=lease_seconds,
+                transport=transport,
+            )
+        if outcome != "claimed":
+            return outcome
+        assert batch is not None
+        results = await transport_send_batch(transport, [m.outgoing for m in batch.messages])
+        paired = list(zip((m.recipient_id for m in batch.messages), results, strict=True))
+        async with session.begin():
+            unavailable = await services.record_campaign_batch(
+                session,
+                organization_id=org_id,
+                campaign_id=campaign_id,
+                resolved=batch.resolved,
+                sent=paired,
+            )
+        if unavailable:
+            return "unavailable"
 
 
 def _envelope(org_id, campaign_id, event_id=None):
@@ -296,10 +340,57 @@ async def test_send_stages_one_event_and_sends_nothing_inline(client, session, o
     assert await _recipients(session, campaign_id) == {}
 
 
-# --------------------------------------------------------------------- the fan-out
+# --------------------------------------------------------------------- expansion (shared consumer)
 
 
-async def test_fan_out_sends_once_with_unsubscribe_header_and_footer(
+async def test_expand_campaign_send_only_expands_and_never_touches_a_transport(
+    session, org_id, worker_engine
+):
+    """The point of splitting expansion from sending (review finding 1): the handler bound to
+    `notification.events` — the queue every other product's events, password resets included,
+    also ride — must be able to finish fast whatever the size of the audience, because it never
+    calls a provider at all. `expand_campaign_send` does not even accept a transport, so there
+    is nothing for a large campaign to block another event behind here."""
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "a@example.com", "b@example.com", "gone@example.com")
+    async with session.begin():
+        await services.add_suppression(
+            session, ctx_for(org_id, S_WRITE, Scope.ORG), email="gone@example.com"
+        )
+    campaign_id = await _campaign(session, org_id, sender_id)
+    await _send(session, org_id, campaign_id)
+
+    envelope = _envelope(org_id, campaign_id)
+    assert await consumers.expand_campaign_send(envelope) == "expanded"
+    # The same event redelivered: expansion is idempotent, not run twice.
+    assert await consumers.expand_campaign_send(envelope) == "redelivered"
+
+    statuses = await _recipients(session, campaign_id)
+    assert sorted(statuses.values()) == ["queued", "queued"]  # suppressed contact never expanded
+    reloaded = await _reload(session, campaign_id)
+    assert reloaded.status == "sending" and reloaded.sent_count == 0
+
+
+async def test_expand_campaign_send_on_a_cancelled_campaign_is_a_no_op(
+    session, org_id, worker_engine
+):
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "a@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    await _send(session, org_id, campaign_id)
+    async with session.begin():
+        await services.cancel_campaign(
+            session, ctx_for(org_id, K_WRITE, Scope.ORG), campaign_id=campaign_id
+        )
+
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "not_sending"
+    assert await _recipients(session, campaign_id) == {}
+
+
+# --------------------------------------------------------------------- the send driver
+
+
+async def test_the_driver_sends_the_whole_audience_with_unsubscribe_header_and_footer(
     session, org_id, worker_engine
 ):
     sender_id = await _seed_identity(session, org_id)
@@ -310,13 +401,12 @@ async def test_fan_out_sends_once_with_unsubscribe_header_and_footer(
         )
     campaign_id = await _campaign(session, org_id, sender_id)
     await _send(session, org_id, campaign_id)
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
 
     wire = RecordingTransport()
-    envelope = _envelope(org_id, campaign_id)
-    assert await consumers.fan_out(envelope, transport=wire, batch_size=1) == "done"
-    # The same event redelivered, and a second event for the same campaign: nothing more goes.
-    assert await consumers.fan_out(envelope, transport=wire) == "redelivered"
-    assert await consumers.fan_out(_envelope(org_id, campaign_id), transport=wire) == "stopped"
+    assert await _drain(session, org_id, campaign_id, transport=wire, batch_size=1) == "done"
+    # Draining an already-`sent` campaign again does nothing more.
+    assert await _drain(session, org_id, campaign_id, transport=wire) == "stopped"
 
     assert sorted(m.to_address for m in wire.sent) == ["a@example.com", "b@example.com"]
     for message in wire.sent:
@@ -346,7 +436,7 @@ async def test_an_address_suppressed_after_expansion_is_skipped(session, org_id,
     await services_unsubscribe(session, org_id, "late@example.com")
 
     wire = RecordingTransport()
-    assert await consumers.fan_out(_envelope(org_id, campaign_id), transport=wire) == "done"
+    assert await _drain(session, org_id, campaign_id, transport=wire) == "done"
     assert [m.to_address for m in wire.sent] == ["a@example.com"]
     statuses = await _recipients(session, campaign_id)
     assert sorted(statuses.values()) == ["sent", "suppressed"]
@@ -363,10 +453,12 @@ async def test_cancel_stops_the_remaining_recipients(client, session, org_id, wo
     await _contacts(session, org_id, "a@example.com", "b@example.com", "c@example.com")
     campaign_id = await _campaign(session, org_id, sender_id)
     await _send(session, org_id, campaign_id)
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
 
     class CancelAfterFirst:
         """Sends, then cancels the campaign through the API — the operator pressing cancel
-        while the first batch is going out."""
+        while the first batch is going out, committed between this driver's claim/send and its
+        next claim call."""
 
         name = "recording"
 
@@ -382,10 +474,13 @@ async def test_cancel_stops_the_remaining_recipients(client, session, org_id, wo
             return Receipt(provider=self.name)
 
     wire = CancelAfterFirst()
-    outcome = await consumers.fan_out(_envelope(org_id, campaign_id), transport=wire, batch_size=1)
+    outcome = await _drain(session, org_id, campaign_id, transport=wire, batch_size=1)
     assert outcome == "stopped"
     assert len(wire.sent) == 1
     reloaded = await _reload(session, campaign_id)
+    # The batch already sent when cancel committed is recorded truthfully — cancel stops the
+    # *next* batch, never un-sends mail that already left. And the campaign itself must never be
+    # overwritten back to `sent` by a batch that started before the cancel (review finding 8).
     assert reloaded.status == "cancelled"
     assert sorted((await _recipients(session, campaign_id)).values()) == [
         "queued",
@@ -401,11 +496,39 @@ async def test_the_daily_cap_holds_the_rest_queued(session, org_id, worker_engin
     await _contacts(session, org_id, "a@example.com", "b@example.com")
     campaign_id = await _campaign(session, org_id, sender_id)
     await _send(session, org_id, campaign_id)
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
 
     wire = RecordingTransport()
-    assert await consumers.fan_out(_envelope(org_id, campaign_id), transport=wire) == "capped"
+    assert await _drain(session, org_id, campaign_id, transport=wire) == "capped"
     assert len(wire.sent) == 1
     assert (await _reload(session, campaign_id)).status == "sending"
+
+
+async def test_the_daily_cap_counts_rule_driven_mail_on_the_same_connection(
+    session, org_id, worker_engine
+):
+    """Review finding 8: a rule that already sent transactional mail today leaves that much less
+    room for a campaign, since both share one connection's `daily_cap`."""
+    sender_id = await _seed_identity(session, org_id, cap=1)
+    async with session.begin():
+        session.add(
+            models.Message(
+                organization_id=org_id,
+                channel="email",
+                to_address="someone@example.com",
+                body="Your invoice is ready",
+                state="sent",
+                sent_at=datetime.now(UTC),
+            )
+        )
+    await _contacts(session, org_id, "a@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    await _send(session, org_id, campaign_id)
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
+
+    wire = RecordingTransport()
+    assert await _drain(session, org_id, campaign_id, transport=wire) == "capped"
+    assert len(wire.sent) == 0  # the cap was already spent by the rule-driven send
 
 
 async def test_a_list_campaign_reaches_only_the_list(session, org_id, worker_engine):
@@ -422,9 +545,10 @@ async def test_a_list_campaign_reaches_only_the_list(session, org_id, worker_eng
         )
     campaign_id = await _campaign(session, org_id, sender_id, list_id=lst.id)
     await _send(session, org_id, campaign_id)
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
 
     wire = RecordingTransport()
-    assert await consumers.fan_out(_envelope(org_id, campaign_id), transport=wire) == "done"
+    assert await _drain(session, org_id, campaign_id, transport=wire) == "done"
     assert [m.to_address for m in wire.sent] == ["a@example.com"]
 
 
@@ -435,9 +559,10 @@ async def test_a_refused_recipient_is_failed_without_the_providers_words(
     await _contacts(session, org_id, "a@example.com")
     campaign_id = await _campaign(session, org_id, sender_id)
     await _send(session, org_id, campaign_id)
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
 
     wire = RecordingTransport(fail_with=TransportRefused("550 5.1.1 secret-host said no"))
-    assert await consumers.fan_out(_envelope(org_id, campaign_id), transport=wire) == "done"
+    assert await _drain(session, org_id, campaign_id, transport=wire) == "done"
     with as_principal(caller(org_id, ALL)):
         page = await client.get(f"{CAMPAIGNS}/{campaign_id}/recipients")
         stats = await client.get(f"{CAMPAIGNS}/{campaign_id}/stats")
@@ -445,6 +570,224 @@ async def test_a_refused_recipient_is_failed_without_the_providers_words(
     assert "secret-host" not in page.text
     assert "a@example.com" not in page.text
     assert stats.json()["failed"] == 1
+
+
+async def test_a_bad_row_does_not_block_the_rest_of_the_batch(session, org_id, worker_engine):
+    """Review finding 4: one recipient whose sealed address will not open must not sink a batch
+    that otherwise sent fine."""
+    sender_id = await _seed_identity(session, org_id)
+    a, _b = await _contacts(session, org_id, "a@example.com", "b@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    await _send(session, org_id, campaign_id)
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
+    async with session.begin():
+        await session.execute(
+            update(models.CampaignRecipient)
+            .where(models.CampaignRecipient.contact_id == a.id)
+            .values(email_enc=b"not-actually-sealed")
+        )
+
+    wire = RecordingTransport()
+    assert await _drain(session, org_id, campaign_id, transport=wire) == "done"
+    assert [m.to_address for m in wire.sent] == ["b@example.com"]
+    statuses = await _recipients(session, campaign_id)
+    assert sorted(statuses.values()) == ["failed", "sent"]
+
+
+async def test_a_crashed_batch_is_reclaimed_and_not_double_sent(session, org_id, worker_engine):
+    """Review: crash mid-batch resumes without double-sending already-sent recipients. Claiming
+    (setting `status='sending'`) and never recording is exactly what a process dying between
+    those two steps leaves behind; a fresh claim with an already-expired lease must pick the row
+    back up, and a recipient already resolved `sent` must never be claimed again."""
+    sender_id = await _seed_identity(session, org_id)
+    await _contacts(session, org_id, "a@example.com", "b@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    await _send(session, org_id, campaign_id)
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
+
+    # Simulate the crash: claim both recipients and never call record — both rows are left
+    # `sending`, exactly what a process dying between claim and record leaves behind.
+    async with session.begin():
+        outcome, batch = await services.claim_campaign_batch(
+            session,
+            organization_id=org_id,
+            campaign_id=campaign_id,
+            batch_size=10,
+            lease_seconds=300,
+            transport=RecordingTransport(),
+        )
+    assert outcome == "claimed" and batch is not None
+    assert len(batch.messages) == 2
+    rows = await _recipients_by_id(session, campaign_id)
+    assert all(r.status == "sending" and r.claimed_at is not None for r in rows)
+
+    # A lease that has not gone stale yet: nothing claimable at all.
+    async with session.begin():
+        outcome, _ = await services.claim_campaign_batch(
+            session,
+            organization_id=org_id,
+            campaign_id=campaign_id,
+            batch_size=1,
+            lease_seconds=300,
+            transport=RecordingTransport(),
+        )
+    assert outcome == "idle"
+
+    # Once the lease is stale (`lease_seconds=0`, so any claimed-at is already past it), the
+    # crashed row is reclaimed and this pass drains the whole campaign, sending it exactly once.
+    wire = RecordingTransport()
+    outcome = await _drain(
+        session, org_id, campaign_id, transport=wire, batch_size=1, lease_seconds=0
+    )
+    assert outcome == "done"
+    assert sorted(m.to_address for m in wire.sent) == ["a@example.com", "b@example.com"]
+    assert len(wire.sent) == 2  # never sent twice, despite the abandoned claim
+    statuses = await _recipients(session, campaign_id)
+    assert sorted(statuses.values()) == ["sent", "sent"]
+
+
+async def _recipients_by_id(session, campaign_id):
+    async with session.begin():
+        rows = (
+            await session.execute(
+                select(models.CampaignRecipient).where(
+                    models.CampaignRecipient.campaign_id == campaign_id
+                )
+            )
+        ).scalars()
+        return list(rows)
+
+
+# --------------------------------------------------------------------- pause and resume
+
+
+async def test_no_connected_provider_pauses_the_campaign(session, org_id, worker_engine):
+    sender_id = await _seed_identity(session, org_id, connected=False)
+    await _contacts(session, org_id, "a@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    async with session.begin():
+        # `request_send` itself refuses without a connection (test_send_refuses_without_an_
+        # active_connection), so seed `sending` directly to exercise the driver's own guard —
+        # the connection dropping *after* a send was accepted, mid-campaign.
+        row = await session.get(models.Campaign, campaign_id)
+        row.status = "sending"
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
+
+    async with session.begin():
+        outcome, batch = await services.claim_campaign_batch(
+            session,
+            organization_id=org_id,
+            campaign_id=campaign_id,
+            batch_size=10,
+            lease_seconds=300,
+        )
+    assert outcome == "paused" and batch is None
+    reloaded = await _reload(session, campaign_id)
+    assert reloaded.status == "paused"
+    assert "provider" in reloaded.pause_reason.lower()
+    assert reloaded.paused_at is not None
+
+
+async def test_a_route_that_comes_back_resumes_on_its_own(session, org_id, worker_engine):
+    sender_id = await _seed_identity(session, org_id, connected=False)
+    await _contacts(session, org_id, "a@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    async with session.begin():
+        row = await session.get(models.Campaign, campaign_id)
+        row.status = "sending"
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
+    async with session.begin():
+        await services.claim_campaign_batch(
+            session,
+            organization_id=org_id,
+            campaign_id=campaign_id,
+            batch_size=10,
+            lease_seconds=300,
+        )
+    assert (await _reload(session, campaign_id)).status == "paused"
+
+    async with session.begin():
+        session.add(
+            models.EmailConnection(
+                organization_id=org_id,
+                kind="google",
+                host="smtp.gmail.com",
+                username="news@company.com",
+                daily_cap=2000,
+            )
+        )
+
+    wire = RecordingTransport()
+    assert await _drain(session, org_id, campaign_id, transport=wire) == "done"
+    assert [m.to_address for m in wire.sent] == ["a@example.com"]
+    reloaded = await _reload(session, campaign_id)
+    assert reloaded.status == "sent" and reloaded.pause_reason == ""
+
+
+async def test_resume_endpoint_retries_now_and_refuses_a_non_paused_campaign(
+    client, session, org_id, worker_engine
+):
+    sender_id = await _seed_identity(session, org_id, connected=False)
+    await _contacts(session, org_id, "a@example.com")
+    campaign_id = await _campaign(session, org_id, sender_id)
+    async with session.begin():
+        row = await session.get(models.Campaign, campaign_id)
+        row.status = "sending"
+    assert await consumers.expand_campaign_send(_envelope(org_id, campaign_id)) == "expanded"
+    async with session.begin():
+        await services.claim_campaign_batch(
+            session,
+            organization_id=org_id,
+            campaign_id=campaign_id,
+            batch_size=10,
+            lease_seconds=300,
+        )
+    assert (await _reload(session, campaign_id)).status == "paused"
+
+    with as_principal(caller(org_id, ALL)):
+        # Still no connection: resuming flips the status but the very next claim pauses again.
+        resumed = await client.post(f"{CAMPAIGNS}/{campaign_id}/resume")
+        assert resumed.status_code == 200, resumed.text
+        assert resumed.json()["status"] == "sending"
+        assert (await client.post(f"{CAMPAIGNS}/{campaign_id}/resume")).status_code == 409
+
+    async with session.begin():
+        session.add(
+            models.EmailConnection(
+                organization_id=org_id,
+                kind="google",
+                host="smtp.gmail.com",
+                username="news@company.com",
+                daily_cap=2000,
+            )
+        )
+    wire = RecordingTransport()
+    assert await _drain(session, org_id, campaign_id, transport=wire) == "done"
+    assert [m.to_address for m in wire.sent] == ["a@example.com"]
+
+
+# --------------------------------------------------------------------- header injection
+
+
+async def test_crlf_in_a_campaign_subject_is_rejected(client, session, org_id):
+    sender_id = await _seed_identity(session, org_id)
+    with as_principal(caller(org_id, ALL)):
+        bad = await client.post(
+            CAMPAIGNS,
+            json={
+                "name": "x",
+                "sender_id": str(sender_id),
+                "subject": "Hi\r\nBcc: attacker@evil.example",
+            },
+        )
+        assert bad.status_code == 422
+
+        created = await client.post(
+            CAMPAIGNS, json={"name": "y", "sender_id": str(sender_id), "subject": "Fine"}
+        )
+        cid = created.json()["id"]
+        patched = await client.patch(f"{CAMPAIGNS}/{cid}", json={"subject": "Hi\nSubject: second"})
+        assert patched.status_code == 422
 
 
 # --------------------------------------------------------------------- negative authz
@@ -466,6 +809,7 @@ ROUTES = [
     # Drafting a campaign is not permission to send it.
     ("post", f"{CAMPAIGNS}/{ABSENT}/send", None, K_WRITE),
     ("post", f"{CAMPAIGNS}/{ABSENT}/cancel", None, K_READ),
+    ("post", f"{CAMPAIGNS}/{ABSENT}/resume", None, K_WRITE),
     ("get", f"{CAMPAIGNS}/{ABSENT}/stats", None, K_WRITE),
     ("get", f"{CAMPAIGNS}/{ABSENT}/recipients", None, K_WRITE),
 ]
@@ -524,6 +868,7 @@ async def test_another_tenants_lists_and_campaigns_are_invisible(
                 assert (await client.get(path)).status_code == 404, path
             assert (await client.post(f"{CAMPAIGNS}/{their_campaign_id}/send")).status_code == 404
             assert (await client.post(f"{CAMPAIGNS}/{their_campaign_id}/cancel")).status_code == 404
+            assert (await client.post(f"{CAMPAIGNS}/{their_campaign_id}/resume")).status_code == 404
             assert (await client.delete(f"{LISTS}/{their_list_id}")).status_code == 404
             assert (
                 await client.post(
