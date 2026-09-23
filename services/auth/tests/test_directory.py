@@ -33,8 +33,8 @@ def _seen_transport(handler):  # type: ignore[no-untyped-def]
 class TestPathTraversalIsRefused:
     async def test_a_traversal_payload_never_reaches_a_different_route(self) -> None:
         """The literal reviewer repro: a `domain` shaped like `../users/by-email?email=...`
-        must address account-service's *domain* endpoint, percent-encoded whole, never the
-        user-lookup endpoint it was trying to reach instead."""
+        must never address the user-lookup endpoint it was trying to reach — and, gated on
+        shape, is not sent anywhere at all."""
         seen: list[str] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -51,28 +51,69 @@ class TestPathTraversalIsRefused:
 
         await directory.aclose()
         assert result is None
-        assert len(seen) == 1
-        # Never `/internal/v1/users/by-email` — the percent-encoded payload is address*ed*
-        # to `/internal/v1/domains/...`, whatever account-service does with it next.
-        assert seen[0].startswith("/internal/v1/domains/")
-        assert "/internal/v1/users/" not in seen[0]
+        assert seen == []
 
-    async def test_the_same_payload_percent_encoded_addresses_the_domains_route_literally(
-        self,
-    ) -> None:
-        """What account-service actually receives: the traversal payload as one opaque,
-        percent-encoded path segment — a domain lookup for a very strange "domain", not a
-        request for anything else."""
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "",
+            ".",
+            "..",
+            "...",
+            "../",
+            "%2e%2e",
+            "a/b.com",
+            "acme.com?x=1",
+            "acme.com#frag",
+            "acme.com/../../users/by-email",
+        ],
+    )
+    async def test_a_value_that_is_not_a_domain_sends_no_request(self, value: str) -> None:
+        """`quote()` does not encode `.`, so `..` sails through percent-encoding as a real
+        dot-segment that httpx collapses to a *different route* — exactly the traversal the
+        f-string fix was meant to close. The shape gate answers `None` before any request."""
+        seen: list[str] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.url.path)
             return httpx.Response(200, json={})
 
         directory = HttpDirectory("http://account", settings())
         directory._client = httpx.AsyncClient(
             base_url="http://account", transport=_seen_transport(handler)
         )
-        await directory.resolve_domain("../users/by-email?email=x")
+        result = await directory.resolve_domain(value)
         await directory.aclose()
+
+        assert result is None
+        assert seen == []
+
+    async def test_a_real_domain_still_makes_the_request(self) -> None:
+        """The control: the gate must not refuse an ordinary A-label."""
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.url.path)
+            return httpx.Response(
+                200,
+                json={
+                    "domain": "xn--kln-sna.de",
+                    "organization_id": "00000000-0000-0000-0000-000000000009",
+                    "organization_slug": "koeln",
+                    "organization_status": "active",
+                    "verified": True,
+                },
+            )
+
+        directory = HttpDirectory("http://account", settings())
+        directory._client = httpx.AsyncClient(
+            base_url="http://account", transport=_seen_transport(handler)
+        )
+        result = await directory.resolve_domain("xn--kln-sna.de")
+        await directory.aclose()
+
+        assert seen == ["/internal/v1/domains/xn--kln-sna.de"]
+        assert result is not None and result.verified is True
 
     async def test_a_get_by_id_path_segment_is_also_encoded(self) -> None:
         import uuid

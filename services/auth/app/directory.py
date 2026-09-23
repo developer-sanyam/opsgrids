@@ -11,6 +11,7 @@ client is a thin HTTP wrapper over the same shape.
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -24,6 +25,13 @@ from platform_core.internal_auth import mint_service_token
 from platform_core.logging import correlation_id_ctx, get_logger
 
 log = get_logger("auth.directory")
+
+#: What a domain looks like on the wire: an IDNA A-label, lower-cased. The same shape
+#: `services.normalise_sso_domain` guarantees its output has — enforced again here, at the one
+#: place that builds a URL from it, because `urllib.parse.quote` does not encode `.`, so a value
+#: made of dots (`..`) survives percent-encoding untouched and is a real dot-segment that httpx
+#: collapses before the request leaves the process.
+_DOMAIN_SHAPE = re.compile(r"^[a-z0-9.-]+$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,7 +196,18 @@ class HttpDirectory:
         that input itself (nothing not shaped like a domain survives it), but this is fixed
         here too, independently: whatever reaches this method, `quote` guarantees it can only
         ever address *this* path segment, never another route.
+
+        **`quote` alone is not enough, and the shape gate below is why.** `quote` does not
+        encode `.`, so `..` — or any all-dots value — passes through it unchanged and is a real
+        dot-segment; `""` would address the collection root. Anything that is empty, made only
+        of dots, or contains a character outside `[a-z0-9.-]` is therefore answered `None`
+        without a request being made at all.
         """
+        if not _DOMAIN_SHAPE.match(domain) or not domain.strip("."):
+            # Not a domain, so not a request: nothing is sent, and "not configured" is the
+            # answer — the same one a domain nobody claimed gets. `""`, `.`, `..` and anything
+            # with a character an A-label cannot hold all land here.
+            return None
         body = await self._fetch(f"/internal/v1/domains/{quote(domain, safe='')}")
         if not body:
             return None

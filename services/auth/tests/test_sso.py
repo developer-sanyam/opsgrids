@@ -33,7 +33,7 @@ import jwt
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import oidc, services
@@ -42,7 +42,14 @@ from app.deps import get_idp
 from app.directory import DirectoryDomain, DirectoryUser, HttpDirectory
 from app.keys import KeyPair
 from app.main import app
-from app.models import AuditLog, ExternalIdentity, OrgIdpConfig, OutboxEvent, Session
+from app.models import (
+    AuditLog,
+    ExternalIdentity,
+    OrgIdpConfig,
+    OutboxEvent,
+    RefreshToken,
+    Session,
+)
 from platform_core import pii
 from platform_core.auth import Principal, get_principal
 from platform_core.db import set_tenant
@@ -222,6 +229,30 @@ async def _sign_in(
         nonce=_query(redirect.authorization_url)["nonce"], **token_kwargs
     )
     return await _callback(session, cfg, pair, directory, idp, store, state=redirect.state)
+
+
+async def _sign_in_as(
+    session: AsyncSession,
+    cfg: Settings,
+    pair: KeyPair,
+    directory: FakeDirectory,
+    idp: FakeIdp,
+    store: oidc.StateStore,
+    *,
+    email: str,
+    subject: str,
+) -> services.Issued:
+    """A sign-in as a specific person through their own domain — for tests that need several
+    federated sessions at once (a distinct `subject` each, so the identity links do not clash)."""
+    redirect = await _start(session, cfg, directory, store, email=email)
+    idp.next_id_token = idp.issue_id_token(
+        nonce=_query(redirect.authorization_url)["nonce"], email=email, subject=subject
+    )
+    return await _callback(session, cfg, pair, directory, idp, store, state=redirect.state)
+
+
+async def _refresh_token_count(session: AsyncSession) -> int:
+    return int((await session.execute(select(func.count()).select_from(RefreshToken))).scalar_one())
 
 
 # --------------------------------------------------------------------- domain → provider
@@ -974,6 +1005,349 @@ class TestPinnedRefreshRevalidation:
             raw_token=first.refresh_token,
         )
         assert second.refresh_token != first.refresh_token
+
+    # ------------------------------------------------------------- the session row is ended
+
+    async def test_the_refusal_ends_the_session_row_not_just_the_refresh_family(
+        self, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        """Final-review MAJOR: `_revoke_family` alone ends one refresh chain and leaves
+        `sessions.revoked_at` NULL — the column `_live_session`, and so every route that takes
+        a session id, actually checks. The session survived its own refusal and could go on to
+        mint through `switch_organization`."""
+        issued = await _sign_in(session, cfg, pair, directory, idp, store)
+        directory.domains = [d for d in directory.domains if d.domain != VERIFIED_DOMAIN]
+
+        with pytest.raises(UnauthorizedProblem):
+            await services.rotate_refresh(
+                session,
+                entitlements=FakeEntitlements(),
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                raw_token=issued.refresh_token,
+            )
+
+        revoked_at, reason = (
+            await session.execute(
+                select(Session.revoked_at, Session.revoked_reason).where(
+                    Session.id == issued.session_id
+                )
+            )
+        ).one()
+        assert revoked_at is not None
+        assert reason == "sso_no_longer_valid"
+
+        tokens_before = await _refresh_token_count(session)
+        with pytest.raises(UnauthorizedProblem):
+            await services.switch_organization(
+                session,
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                entitlements=FakeEntitlements(),
+                session_id=issued.session_id,
+                user_id=USER,
+                organization_id=ORG_A,
+            )
+        assert await _refresh_token_count(session) == tokens_before, "nothing may be minted"
+
+    async def test_switching_ends_a_session_whose_domain_is_gone_without_a_refresh_first(
+        self, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        """Final-review MAJOR: the same re-validation `rotate_refresh` runs, on the other path
+        that mints. Switching into the session's *own* pinned organization mints a fresh
+        access and refresh pair — a session that never happened to call refresh after its
+        domain was released must not get one here."""
+        issued = await _sign_in(session, cfg, pair, directory, idp, store)
+        directory.domains = [d for d in directory.domains if d.domain != VERIFIED_DOMAIN]
+        tokens_before = await _refresh_token_count(session)
+
+        with pytest.raises(UnauthorizedProblem):
+            await services.switch_organization(
+                session,
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                entitlements=FakeEntitlements(),
+                session_id=issued.session_id,
+                user_id=USER,
+                organization_id=ORG_A,
+            )
+
+        assert await _refresh_token_count(session) == tokens_before, "nothing may be minted"
+        revoked_at, reason = (
+            await session.execute(
+                select(Session.revoked_at, Session.revoked_reason).where(
+                    Session.id == issued.session_id
+                )
+            )
+        ).one()
+        assert revoked_at is not None
+        assert reason == "sso_no_longer_valid"
+        live_tokens = (
+            (
+                await session.execute(
+                    select(RefreshToken).where(
+                        RefreshToken.session_id == issued.session_id,
+                        RefreshToken.revoked_at.is_(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert live_tokens == [], "the session's refresh tokens are ended with it"
+
+    async def test_the_switch_route_ends_the_session_and_the_end_is_committed(
+        self, client: AsyncClient, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        """Over HTTP, where the route's tenant session rolls back on the exception: the
+        revocation has to be committed *before* raising, or the refusal would undo itself."""
+        issued = await _sign_in(session, cfg, pair, directory, idp, store)
+        directory.domains = [d for d in directory.domains if d.domain != VERIFIED_DOMAIN]
+        principal = Principal(
+            sub=USER,
+            organization_id=ORG_A,
+            membership_id=MEMBERSHIP_A,
+            session_id=str(issued.session_id),
+            roles=["MEMBER"],
+            amr=["sso"],
+        )
+        app.dependency_overrides[get_principal] = lambda: principal
+
+        response = await client.post(
+            "/api/v1/auth/switch-org", json={"organization_id": str(ORG_A)}
+        )
+
+        assert response.status_code == 401, response.text
+        revoked_at = (
+            await session.execute(select(Session.revoked_at).where(Session.id == issued.session_id))
+        ).scalar_one()
+        assert revoked_at is not None
+
+    # ------------------------------------------------------------- the cache is per domain
+
+    @pytest.mark.parametrize("order", ["healthy_first", "demoted_first"])
+    async def test_one_domains_cached_answer_never_answers_for_its_sibling(
+        self, session, cfg, pair, directory, idp, store, configured, order
+    ) -> None:
+        """Final-review MAJOR: the cache was keyed by organization alone, but one organization
+        can hold several verified domains. Refreshing a healthy domain's session cached "valid"
+        for the whole organization — so a demoted sibling's session refreshed on the strength
+        of it — and refreshing the demoted one first cached "invalid", ending the healthy
+        domain's session. Both orders, because each is a different wrong answer."""
+        pat = DirectoryUser(
+            user_id=uuid.uuid4(),
+            email="pat@second.test",
+            full_name="Pat Second",
+            is_active=True,
+            memberships=[membership(ORG_A, uuid.uuid4(), "acme", "Acme Technologies")],
+        )
+        directory.users = [user_in_one_org(), pat]
+        directory.domains.append(_domain("second.test", ORG_A, "acme"))
+
+        healthy = await _sign_in_as(
+            session, cfg, pair, directory, idp, store, email=EMAIL, subject="sub-healthy"
+        )
+        doomed = await _sign_in_as(
+            session, cfg, pair, directory, idp, store, email="pat@second.test", subject="sub-doomed"
+        )
+
+        directory.domains = [
+            _domain("second.test", ORG_A, "acme", verified=False)
+            if d.domain == "second.test"
+            else d
+            for d in directory.domains
+        ]
+
+        async def refresh_healthy() -> services.Issued:
+            return await services.rotate_refresh(
+                session,
+                entitlements=FakeEntitlements(),
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                raw_token=healthy.refresh_token,
+            )
+
+        async def refresh_doomed() -> None:
+            with pytest.raises(UnauthorizedProblem):
+                await services.rotate_refresh(
+                    session,
+                    entitlements=FakeEntitlements(),
+                    cfg=cfg,
+                    pair=pair,
+                    directory=directory,
+                    raw_token=doomed.refresh_token,
+                )
+
+        if order == "healthy_first":
+            rotated = await refresh_healthy()
+            await refresh_doomed()
+        else:
+            await refresh_doomed()
+            rotated = await refresh_healthy()
+        assert rotated.refresh_token != healthy.refresh_token
+
+    # ------------------------------------------------------------- fail closed on NULL
+
+    async def test_a_federated_session_with_no_recorded_domain_fails_closed(
+        self, session, cfg, pair, directory, redis, configured
+    ) -> None:
+        """Final-review MINOR: `sso_domain IS NULL` used to pass as valid. A fact that cannot be
+        re-checked must not be assumed to hold. Not cached either — there is no domain to key
+        it by."""
+        auth_session = await services.start_session(
+            session, user_id=USER, cfg=cfg, amr=["sso"], idp=f"oidc:{ORG_A}"
+        )
+        user = await directory.get(USER)
+        assert user is not None
+        member = user.membership_for(ORG_A)
+        assert member is not None
+        issued = await services.issue_for(
+            session,
+            pair=pair,
+            cfg=cfg,
+            auth_session=auth_session,
+            membership=member,
+            entitlements=FakeEntitlements(),
+            audience="app",
+        )
+        await session.commit()
+
+        with pytest.raises(UnauthorizedProblem):
+            await services.rotate_refresh(
+                session,
+                entitlements=FakeEntitlements(),
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                raw_token=issued.refresh_token,
+            )
+        assert [k for k in redis.store if k.startswith("auth:sso_pin_ok:")] == []
+
+    # ------------------------------------------------------------- respects allowed_domains
+
+    async def test_narrowing_allowed_domains_ends_existing_sessions_for_the_removed_domain(
+        self, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        """Final-review MINOR: the provider check used `get_sso_config` (any row, enabled) rather
+        than the lookup `sso_start` routes with, so a provider narrowed to exclude a domain
+        still kept that domain's existing sessions alive."""
+        issued = await _sign_in(session, cfg, pair, directory, idp, store)
+
+        await set_tenant(session, ORG_A)
+        row = (
+            await session.execute(select(OrgIdpConfig).where(OrgIdpConfig.organization_id == ORG_A))
+        ).scalar_one()
+        row.allowed_domains = ["somewhere.else"]
+        await session.commit()
+
+        with pytest.raises(UnauthorizedProblem):
+            await services.rotate_refresh(
+                session,
+                entitlements=FakeEntitlements(),
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                raw_token=issued.refresh_token,
+            )
+
+    async def test_a_second_oidc_provider_does_not_break_refresh(
+        self, session, cfg, pair, directory, idp, store, configured
+    ) -> None:
+        """`get_sso_config` is `scalar_one_or_none()` — with two OIDC rows for an organization
+        (a staff provider and a subsidiary's, `_config_for_domain`'s own documented case) it
+        raised instead of answering. The lookup that already handles that is the one used."""
+        issued = await _sign_in(session, cfg, pair, directory, idp, store)
+        await _install_config(
+            session,
+            cfg,
+            allowed_domains=["subsidiary.test"],
+            issuer="https://idp2.example.test",
+        )
+
+        rotated = await services.rotate_refresh(
+            session,
+            entitlements=FakeEntitlements(),
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            raw_token=issued.refresh_token,
+        )
+        assert rotated.refresh_token != issued.refresh_token
+
+
+class _RecordingDirectory(FakeDirectory):
+    """Remembers every `find_by_email` — the assertion that matters for a gate is not the
+    exception type but that the lookup it guards was never made."""
+
+    def __init__(self, users: list[DirectoryUser], domains: list[DirectoryDomain]) -> None:
+        super().__init__(users, domains)
+        self.lookups: list[str] = []
+
+    async def find_by_email(self, email: str) -> DirectoryUser | None:
+        self.lookups.append(email)
+        return await super().find_by_email(email)
+
+
+class TestNonAsciiIdentityIsRefusedOnTheRawString:
+    """Final-review MINOR: the ASCII gate tested `NFKC(identity.email)` while `find_by_email`
+    and the comparison after it received the *raw* string. `K` (U+212A, KELVIN SIGN)
+    NFKC-normalises to plain `K`, passed the gate, then folded to `k` under `lower()` and
+    matched a real user's all-ASCII address."""
+
+    KELVIN = chr(0x212A)  # U+212A, built from the code point so no editor can flatten it to ASCII K
+
+    async def test_a_kelvin_sign_assertion_is_refused_before_any_lookup(
+        self, session, cfg, pair, idp, store, configured
+    ) -> None:
+        kate = DirectoryUser(
+            user_id=uuid.uuid4(),
+            email="kate@example.com",
+            full_name="Kate",
+            is_active=True,
+            memberships=[membership(ORG_A, uuid.uuid4(), "acme", "Acme Technologies")],
+        )
+        directory = _RecordingDirectory([kate], [_domain(VERIFIED_DOMAIN, ORG_A, "acme")])
+        redirect = await _start(session, cfg, directory, store)
+        idp.next_id_token = idp.issue_id_token(
+            nonce=_query(redirect.authorization_url)["nonce"],
+            email=f"{self.KELVIN}ate@example.com",
+        )
+
+        with pytest.raises(oidc.SsoNoAccessProblem):
+            await _callback(session, cfg, pair, directory, idp, store, state=redirect.state)
+
+        assert directory.lookups == [], "refused before the directory was ever asked"
+        assert (await session.execute(select(Session))).scalars().all() == []
+        await session.rollback()
+
+    async def test_a_stored_non_ascii_address_never_matches_an_ascii_assertion(
+        self, session, cfg, pair, idp, store, configured
+    ) -> None:
+        """The mirror image: the assertion is all-ASCII, but the *stored* address holds a
+        Kelvin sign, which `lower()` folds to `k` and compares equal to it. Only a stored
+        address that is itself ASCII can be the address an ASCII assertion names."""
+        kate = DirectoryUser(
+            user_id=uuid.uuid4(),
+            email=f"{self.KELVIN}ate@example.com",
+            full_name="Kate",
+            is_active=True,
+            memberships=[membership(ORG_A, uuid.uuid4(), "acme", "Acme Technologies")],
+        )
+        directory = _RecordingDirectory([kate], [_domain(VERIFIED_DOMAIN, ORG_A, "acme")])
+        redirect = await _start(session, cfg, directory, store)
+        idp.next_id_token = idp.issue_id_token(
+            nonce=_query(redirect.authorization_url)["nonce"], email="kate@example.com"
+        )
+
+        with pytest.raises(oidc.SsoNoAccessProblem):
+            await _callback(session, cfg, pair, directory, idp, store, state=redirect.state)
+
+        assert (await session.execute(select(Session))).scalars().all() == []
+        await session.rollback()
 
 
 class _CitextDirectory(FakeDirectory):

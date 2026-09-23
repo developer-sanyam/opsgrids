@@ -153,3 +153,29 @@ internal HTTP calls now percent-encode every path segment, and `normalise_sso_do
 unencodeable `domain` (a path-traversal payload, a query string) used to reach
 `resolve_domain`'s f-string unrefused, which is a second, unrelated way the same function's
 weak contract caused a real problem downstream.
+
+### What the resolver-error bucket includes, and what it deliberately does not do
+
+`dns_check`'s resolver-error outcome (`NoNameservers`, `Timeout`, any other `DNSException`)
+is defined by *the answer we got*, not by whose fault the missing answer is. It therefore
+includes failures on the **customer's** side of the connection — a delegated zone whose
+nameservers answer SERVFAIL, or are all unreachable — exactly as it includes an outage of our
+own resolver, because from here the two are indistinguishable. Both are treated the same way:
+`last_checked_at` moves, `consecutive_failures` and `failing_since` do not, and
+`should_demote` is never asked. **A domain whose DNS is broken on the customer's side in a way
+that only ever surfaces as a resolver error therefore never demotes on its own.** That is the
+chosen trade: demoting on an ambiguous signal would let a resolver incident on our side end
+single sign-on for every customer at once, and a genuinely broken zone is the customer's own
+outage to notice (their SSO domain check will fail in the same way), whereas an *absent*
+record — the case that actually indicates the domain changed hands — is unambiguous and does
+demote.
+
+**Operator visibility.** Each such tick logs `account.domain.recheck_resolver_error`
+(warning, with `organization_id` and `domain_id`), so a domain that has been erroring for
+days is visible as a repeating line for the same ids. A dedicated
+`domain.recheck.resolver_errors_14d` line — emitted once a domain has been erroring
+continuously for fourteen days — was considered and **not built**: knowing *since when*
+requires a new column on `org_domains` (`last_checked_at` moves on every tick, so it cannot
+say when the streak began), which is a schema change and a migration for an alert nobody has
+asked for yet. If that alert is wanted, that column is the first step; nothing else in the
+demotion policy depends on it.

@@ -29,7 +29,6 @@ from __future__ import annotations
 import hashlib
 import re
 import secrets
-import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -474,9 +473,37 @@ async def switch_organization(
     """
     auth_session = await _live_session(session, session_id, user_id)
     _assert_organization_unpinned_or_matches(auth_session, organization_id)
+
+    # **The same re-validation `rotate_refresh` runs, for the same reason.** Switching into
+    # the session's *own* pinned organization mints a brand-new access and refresh pair, so a
+    # federated session whose domain has since been released or demoted, or whose provider has
+    # since been turned off, must not be able to get one here just because it never happened
+    # to call refresh first. The session is ended, not merely refused — and committed, because
+    # this runs on the route's tenant session, which rolls back on the exception below.
+    pinned = _federated_organization_pin(auth_session)
+    if pinned is not None and not await _pinned_sso_still_valid(
+        session,
+        directory=directory,
+        organization_id=pinned,
+        sso_domain=auth_session.sso_domain,
+    ):
+        await _revoke_session(session, auth_session.id, reason="sso_no_longer_valid")
+        log.warning(
+            "auth.switch_sso_no_longer_valid",
+            session_id=str(auth_session.id),
+            organization_id=str(pinned),
+        )
+        await session.commit()
+        raise UnauthorizedProblem("That session has expired. Please sign in again.")
+
     user = await directory.get(user_id)
     if user is None:
         raise UnauthorizedProblem(INVALID)
+    if not user.is_active:
+        # The check `rotate_refresh` already makes, and the same class of bug when it is
+        # missing: a deactivated person's still-live session must not be able to mint fresh
+        # tokens through a route that only ever asked whether they exist.
+        raise UnauthorizedProblem("That session is no longer valid.")
     membership = user.membership_for(organization_id)
     if membership is None:
         raise ForbiddenProblem("You are not a member of that organization")
@@ -585,7 +612,11 @@ async def rotate_refresh(
         # turned its identity provider off — either way, a session this refresh would keep
         # alive was minted by a fact that is no longer true, and continuing to trust it would
         # outlive the very thing that once justified it.
-        await _revoke_family(session, stored.family, reason="sso_no_longer_valid")
+        #
+        # The **session row** is ended too, not just this refresh family: revoking only the
+        # family left `sessions.revoked_at` NULL, so the session still passed `_live_session`
+        # and could go on to mint through `switch_organization`.
+        await _revoke_session(session, auth_session.id, reason="sso_no_longer_valid")
         log.warning(
             "auth.refresh_sso_no_longer_valid",
             session_id=str(auth_session.id),
@@ -675,6 +706,26 @@ async def _revoke_family(session: AsyncSession, family: str, *, reason: str) -> 
     )
 
 
+async def _revoke_session(session: AsyncSession, session_id: uuid.UUID, *, reason: str) -> None:
+    """End a session outright: every refresh token it holds, and the session row itself.
+
+    `_revoke_family` alone ends one refresh chain and leaves `sessions.revoked_at` NULL, which
+    is what `_live_session` — and so every route that takes a session id — actually checks.
+    Idempotent: a session already revoked keeps its original time and reason.
+    """
+    now = datetime.now(UTC)
+    await session.execute(
+        update(RefreshToken)
+        .where(RefreshToken.session_id == session_id, RefreshToken.revoked_at.is_(None))
+        .values(revoked_at=now)
+    )
+    await session.execute(
+        update(Session)
+        .where(Session.id == session_id, Session.revoked_at.is_(None))
+        .values(revoked_at=now, revoked_reason=reason)
+    )
+
+
 async def _live_session(
     session: AsyncSession, session_id: uuid.UUID, user_id: uuid.UUID
 ) -> Session:
@@ -727,8 +778,12 @@ def _assert_organization_unpinned_or_matches(
         )
 
 
-def _pinned_sso_cache_key(organization_id: uuid.UUID) -> str:
-    return f"auth:sso_pin_ok:{organization_id}"
+def _pinned_sso_cache_key(organization_id: uuid.UUID, sso_domain: str) -> str:
+    """Per organization **and per domain**: one organization can hold several verified
+    domains, and one healthy domain's cached "valid" must never answer for a sibling that has
+    since been demoted (nor a demoted sibling's "invalid" for a healthy one). `sso_domain` is
+    already `[a-z0-9.-]` — `normalise_sso_domain`'s output — so it is safe in a key as it is."""
+    return f"auth:sso_pin_ok:{organization_id}:{sso_domain}"
 
 
 async def _pinned_sso_still_valid(
@@ -750,23 +805,30 @@ async def _pinned_sso_still_valid(
     path for it would still refresh forever — the pin would keep it out of every *other*
     organization, correctly, but say nothing about whether it still belongs in *this* one.
 
-    `sso_domain is None` — a session minted before this column existed — cannot be re-checked
-    against anything and is passed as valid: the pin itself is still enforced
-    (`_assert_organization_unpinned_or_matches`), this is only the *additional*, periodic
-    re-validation on top of it, and refusing every pre-existing federated session the moment
-    this deploys would be a self-inflicted, blanket sign-out with no real finding behind it.
+    **`sso_domain is None` fails closed.** A federated session with no recorded domain cannot
+    be re-checked against anything, and a fact that cannot be re-checked must not be assumed
+    to still hold. No such session exists in practice — `sso_start` could never succeed for
+    a real customer before this slice, so no federated session was ever minted before
+    `sessions.sso_domain` existed (migration `0c1a721d4214`) — which is exactly why refusing
+    it costs nothing real and leaving it open would only ever be a hole. The answer is not
+    cached: there is nothing per-domain to key it by.
 
-    Cached for up to five minutes per organization (`platform_core.cache`, soft — a Redis
-    outage falls through to the real check below, never to "valid"): this runs on every single
-    refresh for every federated session in the platform, and "did this organization's SSO just
-    get turned off" does not need a fresher answer than that. A stale `True` for a few minutes
-    only delays a revocation that was always going to need the *next* refresh anyway; a stale
-    `False` never happens on a cache miss, only ever computed fresh.
+    The provider check is `_config_for_domain` — the very lookup `sso_start` uses to route this
+    sign-in in the first place — so it honours `allowed_domains` (narrowing a provider to
+    exclude a domain ends that domain's existing sessions, not just its new sign-ins) and
+    cannot raise when an organization has more than one OIDC row.
+
+    Cached for up to five minutes per organization **and domain** (`platform_core.cache`,
+    soft — a Redis outage falls through to the real check below, never to "valid"): this runs
+    on every single refresh for every federated session in the platform, and "did this
+    organization's SSO just get turned off" does not need a fresher answer than that. A stale
+    `True` for a few minutes only delays a revocation that was always going to need the *next*
+    refresh anyway; a stale `False` never happens on a cache miss, only ever computed fresh.
     """
     if sso_domain is None:
-        return True
+        return False
 
-    key = _pinned_sso_cache_key(organization_id)
+    key = _pinned_sso_cache_key(organization_id, sso_domain)
     cached = await cache_get(key)
     if cached is not None:
         return cached == "1"
@@ -780,8 +842,8 @@ async def _pinned_sso_still_valid(
         # Bypass-then-narrow, same as `sso_start`: `org_idp_configs` is RLS-protected and this
         # organization is already the one this session is pinned to, not the caller's claim.
         await set_tenant(session, organization_id)
-        config = await get_sso_config(session, organization_id)
-        idp_ok = config is not None and config.enabled and _usable_for_oidc(config)
+        config = await _config_for_domain(session, organization_id, sso_domain)
+        idp_ok = config is not None and _usable_for_oidc(config)
 
     ok = domain_ok and idp_ok
     await cache_set(key, "1" if ok else "0", ttl=300)
@@ -1688,7 +1750,8 @@ async def sso_callback(
         "That account cannot sign in to this organization. Ask an administrator to invite it."
     )
 
-    # **The asserted email must be ASCII, after NFKC.** Round 3's finding: Postgres's `CITEXT`
+    # **The asserted email must be ASCII — as received, not after any normalisation.** Round 3's
+    # finding: Postgres's `CITEXT`
     # (what `find_by_email`, below, ultimately compares against) folds case with the database's
     # collation, and Python's own casefold/IDNA path folds Unicode by a different table entirely
     # — `İ` (U+0130, LATIN CAPITAL LETTER I WITH DOT ABOVE) is one concrete example: Postgres's
@@ -1704,7 +1767,14 @@ async def sso_callback(
     # generic refusal is the safe default until it does. **Document for operators wiring up an
     # IdP:** the domain half of every asserted email must already be the IDNA A-label
     # (`xn--...`) form, never the Unicode one — the same form account-service stores.
-    if not unicodedata.normalize("NFKC", identity.email).isascii():
+    #
+    # **Raw, deliberately — no NFKC.** An earlier version tested `NFKC(identity.email)`, but
+    # `find_by_email` and the comparison below both receive the *raw* string, so NFKC turned
+    # the gate into a check on a different string than the one actually used: `K` (U+212A,
+    # KELVIN SIGN) NFKC-normalises to plain ASCII `K`, sailed through, and then folded to `k`
+    # under `lower()`/`casefold()` and matched a real user's plain-ASCII address. The check has
+    # to run on exactly the bytes every later step sees.
+    if not identity.email.isascii():
         log.warning(
             "sso.callback_refused",
             reason="non_ascii_identity",
@@ -1769,9 +1839,23 @@ async def sso_callback(
     # requirement above closes the concrete IDNA-vs-`CITEXT` mismatch this round found, but
     # this does not depend on that being the only such mismatch that will ever exist — a
     # directory lookup implemented on top of a case-insensitive column is a fold, and every
-    # fold has its own edges (locale, width, some future collation change). Two checks, both
+    # fold has its own edges (locale, width, some future collation change). Three checks, all
     # against the row `find_by_email` actually returned rather than the identity asserted:
     #
+    # (0) the **matched user's stored email must itself be ASCII.** The assertion is known to
+    # be (the gate above), but the *stored* address is whatever account-service holds — a local
+    # part is not restricted to ASCII there — and a stored address containing, say, a Kelvin
+    # sign would fold to a plain `k` under `lower()`/`casefold()` and compare equal to an
+    # all-ASCII assertion it was never the same string as. A stored address that is not ASCII
+    # can never be the address an ASCII-only assertion names, so it is refused, and it also
+    # keeps (1) and (2) below from ever folding a non-ASCII string at all.
+    if not user.email.isascii():
+        log.warning(
+            "sso.callback_refused",
+            reason="matched_user_not_ascii",
+            organization_id=str(organization_id),
+        )
+        raise no_access
     # (1) the **matched user's own stored email** must itself belong to `pending.domain` — the
     # domain this flow proved, independent of what the identity provider claimed. A lookup that
     # matched someone whose real, stored address is under a different domain entirely proves
@@ -1784,11 +1868,10 @@ async def sso_callback(
         )
         raise no_access
     # (2) the **matched user's stored email** must equal the asserted one under a plain ASCII
-    # casefold — not "some resolver's idea of equal enough". Both sides are already known-ASCII
-    # (the assertion, by the check above; anything account-service stores is already an ASCII
-    # local part over an ASCII A-label domain), so a straight `casefold()` comparison here needs
-    # no further normalisation and cannot itself become a second fold to attack.
-    if user.email.strip().casefold() != identity.email.strip().casefold():
+    # case-insensitive comparison — not "some resolver's idea of equal enough". Both sides are
+    # ASCII by (0) and the gate above, so `lower()` here is exactly ASCII lower-casing and
+    # cannot itself become a second fold to attack.
+    if user.email.strip().lower() != identity.email.strip().lower():
         log.warning(
             "sso.callback_refused",
             reason="matched_user_email_mismatch",

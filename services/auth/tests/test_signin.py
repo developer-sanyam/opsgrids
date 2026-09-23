@@ -261,6 +261,34 @@ class TestOrgSwitching:
         assert second.session_id == first.session_id
         assert second.organization_id == ORG_B
 
+    async def test_a_deactivated_person_cannot_switch_organizations(
+        self, session, cfg, pair, registered
+    ) -> None:
+        """Final-review MAJOR: `rotate_refresh` refuses a deactivated person's still-live
+        session; `switch_organization` only asked whether they exist, and minted a fresh pair
+        for them."""
+        from dataclasses import replace
+
+        two = FakeDirectory([user_in_two_orgs()])
+        outcome = await _login(session, cfg, pair, two, org_hint="acme")
+        assert outcome.issued is not None
+        two.users = [replace(two.users[0], is_active=False)]
+
+        tokens_before = len((await session.execute(select(RefreshToken))).scalars().all())
+        with pytest.raises(UnauthorizedProblem):
+            await services.switch_organization(
+                session,
+                cfg=cfg,
+                pair=pair,
+                directory=two,
+                entitlements=FakeEntitlements(),
+                session_id=outcome.issued.session_id,
+                user_id=USER,
+                organization_id=ORG_B,
+            )
+        tokens_after = len((await session.execute(select(RefreshToken))).scalars().all())
+        assert tokens_after == tokens_before, "nothing may be minted"
+
     async def test_the_previous_organizations_refresh_token_stops_working(
         self, session, cfg, pair, registered
     ) -> None:

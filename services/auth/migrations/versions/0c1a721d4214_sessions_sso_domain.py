@@ -7,11 +7,13 @@ fact as the organization it happened to belong to, and both a domain's verificat
 org's IdP configuration can change after the session was minted. This adds the missing column;
 `app/services.py::sso_callback` fills it in at sign-in and nothing else ever changes it.
 
-Nullable, and left `NULL` for every session that already exists: a session minted before this
-column existed proved nothing about a domain the code back then even asked, so there is no
-honest value to backfill, and `rotate_refresh`'s new re-check treats `NULL` as "cannot be
-checked, but the pin itself is still enforced" rather than failing every session in flight
-the moment this deploys.
+Nullable, and left `NULL` for every session that already exists. No pre-existing *federated*
+session exists to be left `NULL`, though: `sso_start` could never succeed for a real customer
+before this slice (nothing could verify a domain, so nothing could route a sign-in), so every
+row in `sessions` today is a password session, for which `NULL` is simply correct. A federated
+session that is somehow `NULL` anyway cannot be re-checked against anything, so
+`rotate_refresh` and `switch_organization` treat it as **no longer valid** and end it — failing
+closed, at no real cost — rather than assuming it still holds.
 
 Revision ID: 0c1a721d4214
 Revises: e91a4c2f6b3d
