@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec python -c "from app.bootstrap import issue_codes_main; issue_codes_main()"

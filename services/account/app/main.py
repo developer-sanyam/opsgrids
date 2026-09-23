@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.api.admin import router as admin_router
 from app.api.internal import router as internal_router
 from app.api.routes import router
 from app.config import settings
@@ -12,7 +13,7 @@ app = create_app(
     settings(),
     title="Account service",
     description="Account service — part of the OpsGrids platform.",
-    routers=[router],
+    routers=[router, admin_router],
     # Redis is not optional here. Every write that changes what somebody may do bumps the
     # organization's permission version, and that bump *raises* rather than degrading —
     # telling an administrator the revocation failed beats reporting success while the

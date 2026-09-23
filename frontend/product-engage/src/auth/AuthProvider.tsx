@@ -38,8 +38,13 @@ const FIXTURE_USER: MeOut = {
 const FIXTURE_GRANTS = [
   "engage.audience.contact.read:ORG",
   "engage.audience.contact.write:ORG",
+  "engage.audience.list.read:ORG",
+  "engage.audience.list.write:ORG",
   "engage.audience.suppression.read:ORG",
   "engage.audience.suppression.write:ORG",
+  "engage.campaign.campaign.read:ORG",
+  "engage.campaign.campaign.write:ORG",
+  "engage.campaign.campaign.send:ORG",
   "engage.setup.connection.read:ORG",
   "engage.setup.connection.write:ORG",
   "engage.setup.domain.read:ORG",

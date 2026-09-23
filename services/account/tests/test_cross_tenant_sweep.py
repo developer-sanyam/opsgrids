@@ -131,6 +131,11 @@ PATH_PARAMS: dict[str, Callable[[TenantA], uuid.UUID]] = {
     "location_id": lambda a: a.location_id,
     "role_id": lambda a: a.role_id,
     "invitation_id": lambda a: a.invitation_id,
+    # `GET /admin/directory/organizations/{organization_id}` — a `staff_only` route, not a
+    # tenant one (ADR-0003 §2). B's tenant principal carries no operator audience, so it is
+    # refused with the boundary's own 404 regardless of which organization id is named; the
+    # sweep exercises exactly that rather than needing an exemption.
+    "organization_id": lambda a: a.org_id,
     "domain_id": lambda a: a.domain_id,
 }
 
@@ -201,6 +206,17 @@ ALLOW_LIST: dict[Route, str] = {
         "Public sign-up names no organization: it creates one, bound to an id generated "
         "before the row exists (ADR-0013 §3). Swept by asserting that a sign-up made through "
         "a B-bound request writes nothing into A or B and lands in a third organization."
+    ),
+    ("GET", f"{PREFIX}/admin/directory/organizations/{{organization_id}}"): (
+        "Reachable only from console, not through get_principal at all (MINOR 7 and m6 of "
+        "the security review): it requires console's service token AND verifies an "
+        "operator's own access token carried in X-Operator-Token via JWKS, so overriding "
+        "get_principal to 'be tenant B' has no effect on it and it answers 401 "
+        "unconditionally without those headers — structurally "
+        "unreachable by any ordinary tenant bearer token presented the normal way (as "
+        "Authorization), which is the property this sweep exists to prove for every other "
+        "route rather than something this one leaves untested. Covered directly instead in "
+        "test_admin_directory.py."
     ),
 }
 

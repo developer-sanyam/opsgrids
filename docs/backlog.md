@@ -531,6 +531,20 @@ ten call sites.
   and its auth is the staff registry from ADR-0004 P6a, which has no organization selection. It
   joins once that endpoint lands and the operator palette is expressed as a theme over the
   Console tokens rather than a replacement for them.
+- **The Engage send gate answers in prose, and the UI matches on the prose.**
+  `POST /engage/campaigns/{id}/send` refuses with a `422` whose only content is one sentence
+  (`services.request_send`, `_check_public_base`); `frontend/product-engage/src/lib/sendGate.ts`
+  chooses the next step it offers ("Open Senders", "Add a subject") by matching a lower-cased
+  substring of it. Nine sentences, nine substrings, held together by
+  `services/notification/tests/test_engage_send_gate_sentences.py` — which drives every gate
+  through the real route and reads the substrings out of `sendGate.ts`, so a reword on either
+  side fails a test. That is a guard, not a fix. **The fix is a stable machine `code` on the
+  `422` problem document** (`unusable_sender`, `domain_unverified`, `no_connection`,
+  `no_subject`, `no_body`, `list_gone`, `sender_gone`, `unsubscribe_unconfigured`,
+  `public_base_unset`) that the UI switches on, after which the prose is free to change and both
+  the substring match and its test can be deleted. It needs an additive field on
+  `BusinessRuleProblem` in `libs/platform-core` (the `remedy` extension on the inbox reply `409` is
+  the precedent) and a contract entry in `libs/contracts`.
 
 ---
 

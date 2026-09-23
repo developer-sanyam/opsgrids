@@ -40,6 +40,8 @@ source lib/active-profiles.sh
 source lib/memory-budget.sh
 # shellcheck source=lib/numeric-id.sh
 source lib/numeric-id.sh
+# shellcheck source=lib/mfa-reseal.sh
+source lib/mfa-reseal.sh
 
 COMPOSE=(docker compose -f compose.prod.yml --env-file .env)
 
@@ -187,6 +189,19 @@ reconcile_roles() {
 	fi
 	role_reconcile_sql "${SERVICES_WITH_SCHEMA[@]}" |
 		"${COMPOSE[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -v "pw=$pw" -U opsgrids -d opsgrids
+
+	# The BYPASSRLS directory readers (MAJOR 7 of the security review): discovered from each
+	# service's own `app/config.py` rather than hand-listed, so a service that adds one — the
+	# staff credit-ledger route's `opsgrids_billing_directory` was the one this closes —
+	# reconciles here without anyone remembering to edit this file too. `../..` because this
+	# script `cd`s into `infrastructure/edge` at the top.
+	local directory_roles
+	directory_roles=$(directory_roles_from_config "../..")
+	if [ -n "$directory_roles" ]; then
+		# shellcheck disable=SC2086  # deliberately word-split, like SERVICES_WITH_SCHEMA above
+		directory_role_reconcile_sql $directory_roles |
+			"${COMPOSE[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -v "pw=$pw" -U opsgrids -d opsgrids
+	fi
 }
 
 migrate() {
@@ -228,6 +243,7 @@ migrate() {
 		# service definition as a reason to touch postgres/redis/rabbitmq mid-migration.
 		"${COMPOSE[@]}" run --rm --no-deps -T "$svc" alembic upgrade head
 	done
+	reseal_mfa_factors_if_pending
 }
 
 # C10, M2: ops-monitor runs as the `product` image's own baked-in non-root user, deliberately
@@ -466,6 +482,11 @@ deploy)
 	migrate
 	up
 	health
+	# Idempotent (see lib/mfa-reseal.sh): catches a plaintext factor enrolled through the OLD
+	# container between the pre-`up` reseal and `up`. The one before `up` is what gates the
+	# deploy; this one only tidies stragglers, so its failure warns rather than fails a deploy
+	# that is already up and healthy.
+	reseal_mfa_factors_if_pending || echo "WARNING: post-health MFA reseal failed — see RUNBOOK 'Operator MFA'" >&2
 	record_ref
 	;;
 previous-ref) previous_ref ;;

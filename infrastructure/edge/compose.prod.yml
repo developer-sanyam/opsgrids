@@ -585,6 +585,7 @@ services:
       # The only private signing key in the platform. It is a file on the box, mounted
       # read-only, and it is never in the image, the repository or an environment variable.
       JWT_PRIVATE_KEY_PATH: /run/secrets/jwt-ed25519.pem
+      ADMIN_GATEWAY_HOP_KEY: ${ADMIN_GATEWAY_HOP_KEY:-}
     volumes:
       - ${JWT_PRIVATE_KEY_HOST_PATH}:/run/secrets/jwt-ed25519.pem:ro
     networks:

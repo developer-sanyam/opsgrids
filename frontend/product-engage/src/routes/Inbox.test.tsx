@@ -214,3 +214,25 @@ describe("permission gating", () => {
     expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
   });
 });
+
+describe("when a refresh is refused mid-poll", () => {
+  it("keeps the conversations that were on screen and says they are no longer kept current", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.spyOn(client, "listConversations")
+        .mockResolvedValueOnce(page([OPEN]))
+        .mockRejectedValue(new ApiError(403, "You do not have engage.inbox.conversation.read", null));
+      renderInbox();
+
+      expect(await screen.findByRole("button", { name: /4210/ })).toBeTruthy();
+      await vi.advanceTimersByTimeAsync(16_000);
+
+      expect(await screen.findByText("Live updates stopped")).toBeTruthy();
+      // Not replaced by an error: what was true a moment ago is still there.
+      expect(screen.getByRole("button", { name: /4210/ })).toBeTruthy();
+      expect(screen.queryByText("Couldn't load your conversations")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

@@ -3,6 +3,11 @@
 The schema is created before the first migration runs, so a fresh database needs no
 manual DDL. `version_table_schema` keeps this service's alembic_version inside its own
 schema rather than a shared public one.
+
+`grant_directory_reader` gives `opsgrids_billing_directory` cross-tenant SELECT on
+`credit_ledger` — the same shape console's `grant_directory_reader` uses for its own bypass
+role — run here rather than in the bootstrap SQL because the table does not exist when that
+runs, and a step somebody must remember is a step somebody eventually forgets.
 """
 
 from __future__ import annotations
@@ -29,6 +34,11 @@ from platform_core.db import apply_schema_grants
 #:     trigger gates so the row still cannot be altered in any other way.
 _REVOKE_UPDATE_DELETE = ("credit_ledger", "invoice_lines")
 _REVOKE_DELETE_ONLY = ("invoices",)
+
+#: The staff credit-ledger reader. SELECT only — no write ever reaches this role, so a bug in
+#: the read path cannot write across tenants (mirrors console's `DIRECTORY_READER`).
+DIRECTORY_READER = "opsgrids_billing_directory"
+DIRECTORY_TABLES = ("credit_ledger",)
 
 config = context.config
 if config.config_file_name is not None:
@@ -72,6 +82,28 @@ def do_run_migrations(connection: Connection) -> None:
     # without them -- which is exactly what happened the first time this was left out.
     apply_schema_grants(connection, SCHEMA, cfg.db_app_role, outbox_role=cfg.db_outbox_role)
     _enforce_append_only(connection)
+    _grant_directory_reader(connection)
+
+
+def _grant_directory_reader(connection: Connection) -> None:
+    """Cross-tenant SELECT on `credit_ledger` for the staff credit-ledger route.
+
+    Guarded on the role existing, so a database that has not run the bootstrap SQL's role
+    creation still migrates cleanly (mirrors console's `grant_directory_reader`).
+    """
+    if not connection.execute(
+        text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": DIRECTORY_READER}
+    ).scalar():
+        return
+    connection.execute(text(f'GRANT USAGE ON SCHEMA "{SCHEMA}" TO "{DIRECTORY_READER}"'))
+    for table in DIRECTORY_TABLES:
+        if connection.execute(
+            text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.{table}"}
+        ).scalar():
+            connection.execute(
+                text(f'GRANT SELECT ON "{SCHEMA}"."{table}" TO "{DIRECTORY_READER}"')
+            )
+    connection.commit()
 
 
 def _enforce_append_only(connection: Connection) -> None:
