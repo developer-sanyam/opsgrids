@@ -317,6 +317,84 @@ class Location(Base, TenantBase):
     )
 
 
+class Uom(Base, TenantBase):
+    """A unit of measure the organization stocks in (ADR-0014 Phase 1, plan §2).
+
+    Seeded per organization from the fixed code registry (`app.inventory.quantity.UNITS`,
+    `is_system=True`), plus one row for every free-text unit an item used before this table
+    existed, or a caller creates by naming an unrecognised code — `is_system=False` marks the
+    difference, but both are equally real: an org's stock UOM directory is never missing a unit
+    a live item still names (backfill migration `37e17a153b64`; the live write path applies the
+    same rule going forward, in `app.inventory.services.resolve_or_create_uom`).
+
+    `dimension`/`is_discrete` mirror the registry's own `Unit` for a code the registry knows; a
+    unit the registry does not know gets `dimension="other"` and `is_discrete=False` —
+    continuous until an item's own `uom_conversions` row says otherwise.
+    """
+
+    __tablename__ = "uoms"
+
+    code: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(60), nullable=False)
+    #: length | mass | count | area | volume | other.
+    dimension: Mapped[str] = mapped_column(String(20), nullable=False, default="other")
+    is_discrete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: True for a unit this migration or a later reconcile seeded from the fixed registry; False
+    #: for one an org's own data (free text, or a caller) invented.
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    __table_args__ = (
+        # Partial — a soft-deleted unit's code can be reused.
+        Index(
+            "uq_uoms_org_code",
+            "organization_id",
+            "code",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_uoms_org_dimension", "organization_id", "dimension"),
+    )
+
+
+class ItemCategory(Base, TenantBase):
+    """A node in the item master's own category tree (ADR-0014 Phase 1, plan §2) — a finer,
+    org-authored classification ("Fabrics > Cotton > 180 GSM") than the fixed procurement
+    `category` enum `InventoryItem.category` already carries (`raw_materials`, `components`, …),
+    which stays exactly as it is: this tree is optional and additive, not a replacement.
+
+    `parent_id` builds the tree, the same adjacency-list shape `Location` already uses for
+    zone → rack → bin — no `ltree` extension, because a two- or three-level catalogue tree never
+    needs the recursive-descendant query that would justify one.
+    """
+
+    __tablename__ = "item_categories"
+
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.item_categories.id", ondelete="RESTRICT")
+    )
+    code: Mapped[str] = mapped_column(String(40), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+
+    __table_args__ = (
+        # Partial — a soft-deleted category's code can be reused.
+        Index(
+            "uq_item_categories_org_code",
+            "organization_id",
+            "code",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_item_categories_org_parent", "organization_id", "parent_id"),
+    )
+
+
+#: An attribute's value lives in exactly one of these columns (ADR-0014 Phase 1: "typed values
+#: only"). Numeric attributes (GSM, width in mm) are integers, never floats — the same house rule
+#: that already governs money and quantities.
+ATTRIBUTE_TYPES = ("text", "number", "boolean", "date")
+_ATTRIBUTE_TYPE_SQL = ", ".join(f"'{t}'" for t in ATTRIBUTE_TYPES)
+
+
 class InventoryItem(Base, TenantBase):
     """The item master: one stocked material, identified by `sku` within the organization.
 
@@ -328,6 +406,13 @@ class InventoryItem(Base, TenantBase):
     `warehouse` is the denormalised display name the wire has always carried; `home_location_id`
     is the default bin of that warehouse, where single-location writes (opening stock, PO receipt,
     adjustments, counts) post until Phase 1 brings per-location writes.
+
+    `uom` stays the denormalised code string every reader (the kernel included — `describe()`,
+    every shortfall message) has always read synchronously; `uom_id` is the Phase 1 foreign key
+    that gives it referential integrity, kept in sync with `uom` by the write path exactly the
+    way `warehouse` (string) and `home_location_id` (FK) already coexist for the same reason: the
+    posting kernel reads `item.uom` as a plain column on an already-loaded row, never through a
+    relationship that would need an extra join or an async lazy-load to resolve.
     """
 
     __tablename__ = "inventory_items"
@@ -343,13 +428,44 @@ class InventoryItem(Base, TenantBase):
     )
 
     reorder_point: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    #: The stock UOM every quantity of this item is counted in (milli-units of it).
+    #: The stock UOM every quantity of this item is counted in (milli-units of it) — denormalised
+    #: code string, synced with `uom_id`.
     uom: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    #: The `uoms` row `uom` names. `RESTRICT`: a unit still in use by an item cannot be deleted.
+    uom_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.uoms.id", ondelete="RESTRICT")
+    )
     #: Per-unit stock value, integer minor units of `currency`.
     unit_value_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
     #: When stock last moved. Surfaced as `updated_at` on the wire.
     stocked_at: Mapped[date | None] = mapped_column(Date)
+
+    # --- item master (ADR-0014 Phase 1, plan §2) --------------------------------------------
+    #: The org's own category tree — optional, additive to the fixed `category` enum above.
+    item_category_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.item_categories.id", ondelete="RESTRICT")
+    )
+    #: An alternate unit this item is also reported/purchased in (e.g. stocked in `kg`, bought in
+    #: `box`); the ratio between it and the stock `uom` is a `uom_conversions` row keyed on this
+    #: item and this unit. `RESTRICT`: a unit still named here cannot be deleted.
+    secondary_uom_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.uoms.id", ondelete="RESTRICT")
+    )
+    #: India's Harmonized System Nomenclature code — tax classification, optional.
+    hsn_code: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    #: Whether this item's stock is tracked by lot, by roll, by expiry date, or holds a quality
+    #: status distinct from its ledger bucket status. All optional, all default off: most items
+    #: (fasteners, MRO) track none of them.
+    track_lot: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    track_roll: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    track_expiry: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    track_quality: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: The item master's own lifecycle flag — distinct from `deleted_at`: an inactive item still
+    #: keeps its ledger and its purchase-order history and can still be filtered into a list; a
+    #: deleted item cannot. Plain reference data today — nothing yet refuses a write because an
+    #: item is inactive; that belongs to whichever later phase adds the transaction it should gate.
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     if TYPE_CHECKING:
         #: Physical stock in milli-units — every bucket except the off-site ones — and the open
@@ -374,6 +490,140 @@ class InventoryItem(Base, TenantBase):
         ),
         Index("ix_inventory_items_org_warehouse", "organization_id", "warehouse"),
         Index("ix_inventory_items_org_category", "organization_id", "category"),
+        Index("ix_inventory_items_org_uom", "organization_id", "uom_id"),
+        Index("ix_inventory_items_org_item_category", "organization_id", "item_category_id"),
+    )
+
+
+class UomConversion(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """An item-specific rational conversion between an alternate unit and the item's own stock
+    UOM — "1 box = 12 pcs" (`numerator=12, denominator=1`) — never a float (ADR-0014 §2). The
+    same unit code can carry a different ratio for a different item (one supplier's carton of
+    this fabric is 40 m; another item's carton is 25), so the conversion belongs to the item, not
+    to the unit.
+
+    `app.inventory.quantity.convert_by_ratio` does the arithmetic; this row only carries the
+    exact integer ratio it needs.
+    """
+
+    __tablename__ = "uom_conversions"
+
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: The alternate unit this ratio converts, e.g. "box".
+    uom_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.uoms.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: 1 unit of `uom_id` = numerator/denominator units of the item's own stock UOM.
+    numerator: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    denominator: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint("numerator > 0", name="numerator_positive"),
+        CheckConstraint("denominator > 0", name="denominator_positive"),
+        Index(
+            "uq_uom_conversions_org_item_uom",
+            "organization_id",
+            "inventory_item_id",
+            "uom_id",
+            unique=True,
+        ),
+    )
+
+
+class ItemAttribute(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One typed key/value fact about an item — GSM, width, shade, composition, count,
+    construction, finish, grade, season, collection, or any other org-defined key (ADR-0014
+    Phase 1, plan §2). Textile presets are just data; nothing here is hardcoded to them.
+
+    **Typed values only.** `value_type` says which of `value_text` / `value_number` /
+    `value_boolean` / `value_date` is the real one; the others are NULL, enforced by
+    `exactly_one_value`. There is no untyped `value` column to mass-assign into — a caller must
+    say what kind of fact this is, and the write path (`app.inventory.services.set_item_attribute`)
+    rejects a payload that does not name a `value_type` from `ATTRIBUTE_TYPES` before it ever
+    reaches this table. `value_number` is an integer (GSM, mm) — attributes are not stock, but
+    the no-float house rule still applies to them (ADR-0014 §2).
+    """
+
+    __tablename__ = "item_attributes"
+
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    key: Mapped[str] = mapped_column(String(60), nullable=False)
+    #: text | number | boolean | date.
+    value_type: Mapped[str] = mapped_column(String(10), nullable=False)
+    value_text: Mapped[str | None] = mapped_column(String(500))
+    value_number: Mapped[int | None] = mapped_column(BigInteger)
+    value_boolean: Mapped[bool | None] = mapped_column(Boolean)
+    value_date: Mapped[date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
+    updated_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint(f"value_type IN ({_ATTRIBUTE_TYPE_SQL})", name="value_type_known"),
+        CheckConstraint(
+            "(CASE WHEN value_text IS NOT NULL THEN 1 ELSE 0 END) + "
+            "(CASE WHEN value_number IS NOT NULL THEN 1 ELSE 0 END) + "
+            "(CASE WHEN value_boolean IS NOT NULL THEN 1 ELSE 0 END) + "
+            "(CASE WHEN value_date IS NOT NULL THEN 1 ELSE 0 END) = 1",
+            name="exactly_one_value",
+        ),
+        Index(
+            "uq_item_attributes_org_item_key",
+            "organization_id",
+            "inventory_item_id",
+            "key",
+            unique=True,
+        ),
+    )
+
+
+class ItemVariant(Base, TenantBase):
+    """One purchasable/stockable variant of an item master row — a size, a shade, a length cut —
+    with its own SKU (ADR-0014 Phase 1, plan §2). Variant-specific typed attributes are not
+    modelled yet; a variant's own facts beyond its name are a later phase's addition, tracked the
+    same way `item_attributes` tracks an item's.
+    """
+
+    __tablename__ = "item_variants"
+
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sku: Mapped[str] = mapped_column(String(60), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        # Partial — a soft-deleted variant's SKU can be reused.
+        Index(
+            "uq_item_variants_org_sku",
+            "organization_id",
+            "sku",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_item_variants_org_item", "organization_id", "inventory_item_id"),
     )
 
 
@@ -544,8 +794,13 @@ class InventoryBalance(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
 class InventoryReservation(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     """Stock promised to a demand (a sales order, a production order) without moving it.
 
-    `quantity_milli - consumed_milli` is the open remainder while `status == "active"`; the sum
-    of open remainders per balance is that balance's `reserved_milli`.
+    `quantity_milli - consumed_milli - released_milli` is the open remainder while
+    `status == "active"`; the sum of open remainders per balance is that balance's
+    `reserved_milli`. `released_milli` is what a caller has explicitly given back
+    (ADR-0014 §11) — kept separate from `consumed_milli` (what an outbound move drew against
+    this reservation) so `quantity_milli` stays the original promise forever and never has to
+    cross zero, which the `quantity_positive` CHECK would otherwise forbid on a full release of
+    an untouched reservation.
     """
 
     __tablename__ = "inventory_reservations"
@@ -562,6 +817,10 @@ class InventoryReservation(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     )
     quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
     consumed_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    #: Given back by `release()`, all at once or in parts. Never reduces `quantity_milli` — the
+    #: original promise is kept for the record; the sum with `consumed_milli` is what is no
+    #: longer open.
+    released_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     #: active | released | consumed
     status: Mapped[str] = mapped_column(String(10), nullable=False, default="active")
     reference_type: Mapped[str | None] = mapped_column(String(30))
@@ -573,11 +832,20 @@ class InventoryReservation(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     created_by: Mapped[str | None] = mapped_column(String(64))
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     closed_by: Mapped[str | None] = mapped_column(String(64))
+    #: The most recent `release()` call's idempotency key/hash (ADR-0014 §11 / Phase 1
+    #: prerequisite). Not a unique index: the row's own `FOR UPDATE` lock (`ledger.release`'s
+    #: lock order) already serialises every writer of this reservation, so a plain compare under
+    #: that lock is enough to make a retried release a replay rather than a second release —
+    #: global uniqueness across reservations is not the property being protected here.
+    release_idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    release_request_hash: Mapped[str | None] = mapped_column(String(64))
 
     __table_args__ = (
         CheckConstraint("quantity_milli > 0", name="quantity_positive"),
         CheckConstraint(
-            "consumed_milli >= 0 AND consumed_milli <= quantity_milli", name="consumed_within"
+            "consumed_milli >= 0 AND released_milli >= 0 "
+            "AND consumed_milli + released_milli <= quantity_milli",
+            name="consumed_within",
         ),
         CheckConstraint("status IN ('active', 'released', 'consumed')", name="status_known"),
         Index(

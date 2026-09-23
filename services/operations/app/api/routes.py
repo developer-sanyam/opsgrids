@@ -21,13 +21,15 @@ import uuid
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Header, Path, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
 from app.config import settings
+from app.inventory import ledger as inv_ledger
 from app.inventory import selectors as inv_selectors
 from app.inventory import services as inv_services
+from app.inventory.quantity import QuantityError, parse_qty
 from app.models import SCHEMA, PurchaseOrderLine
 from app.schemas import (
     CancelIn,
@@ -36,6 +38,15 @@ from app.schemas import (
     InventoryItemIn,
     InventoryItemOut,
     InventoryItemPatch,
+    InventoryReservationOut,
+    ItemAttributeIn,
+    ItemAttributeOut,
+    ItemCategoryIn,
+    ItemCategoryOut,
+    ItemCategoryPatch,
+    ItemVariantIn,
+    ItemVariantOut,
+    ItemVariantPatch,
     OverviewOut,
     PurchaseOrderIn,
     PurchaseOrderOut,
@@ -43,6 +54,7 @@ from app.schemas import (
     PurchaseOrderReceiptOut,
     ReceiveIn,
     ReconcileOut,
+    ReservationReleaseIn,
     ServiceInfo,
     StockAdjustmentIn,
     StockBalanceOut,
@@ -50,6 +62,7 @@ from app.schemas import (
     SupplierIn,
     SupplierOut,
     SupplierPatch,
+    UomOut,
     WarehouseIn,
     WarehouseOut,
     WarehousePatch,
@@ -106,6 +119,10 @@ IdempotencyKey = Annotated[
 ]
 WarehouseRead = Annotated[ScopeContext, Depends(require("operations.inventory.warehouse.read"))]
 WarehouseWrite = Annotated[ScopeContext, Depends(require("operations.inventory.warehouse.write"))]
+#: Reservations narrow what everyone else in the org can promise, so there is no OWN reading.
+StockReserve = Annotated[
+    ScopeContext, Depends(require("operations.inventory.stock.reserve", minimum=Scope.ORG))
+]
 
 
 @router.get("/operations/info", response_model=ServiceInfo, summary="What this service is")
@@ -426,14 +443,23 @@ async def list_inventory(
     params: PageQuery,
     q: Annotated[str | None, Query(description="SKU, name or warehouse")] = None,
     category: Annotated[str | None, Query()] = None,
+    item_category_id: Annotated[uuid.UUID | None, Query()] = None,
     warehouse: Annotated[str | None, Query()] = None,
     low_stock: Annotated[
         bool | None, Query(description="Only items at/under reorder point")
     ] = None,
+    is_active: Annotated[bool | None, Query()] = None,
     sort: Annotated[str | None, Query(description="on_hand | value | sku")] = None,
 ) -> Page[InventoryItemOut]:
     stmt = inv_selectors.inventory_stmt(
-        ctx, q=q, category=category, warehouse=warehouse, low_stock=low_stock, sort=sort
+        ctx,
+        q=q,
+        category=category,
+        item_category_id=item_category_id,
+        warehouse=warehouse,
+        low_stock=low_stock,
+        is_active=is_active,
+        sort=sort,
     )
     rows, total = await paginate(session, stmt, params)
     return Page.build([inv_selectors.inventory_out(i) for i in rows], total=total, params=params)
@@ -466,13 +492,126 @@ async def create_inventory_item(
         uom=payload.uom,
         unit_value_minor=payload.unit_value_minor,
         currency=payload.currency,
+        item_category_id=payload.item_category_id,
+        secondary_uom_id=payload.secondary_uom_id,
+        hsn_code=payload.hsn_code,
+        track_lot=payload.track_lot,
+        track_roll=payload.track_roll,
+        track_expiry=payload.track_expiry,
+        track_quality=payload.track_quality,
+        is_active=payload.is_active,
         request=request,
     )
     return inv_selectors.inventory_out(item)
 
 
 # Registered before `/operations/inventory/{item_id}`: a literal segment must win over the
-# UUID-typed parameter, or `discrepancies` is parsed as an item id and answered with a 422.
+# UUID-typed parameter, or `discrepancies`, `uoms` and `categories` are parsed as an item id and
+# answered with a 422.
+
+
+@router.get(
+    "/operations/inventory/uoms",
+    response_model=Page[UomOut],
+    summary="The org's UOM directory (registry units first, then custom ones)",
+    dependencies=[Entitled],
+)
+async def list_uoms(session: SessionDep, ctx: InventoryRead, params: PageQuery) -> Page[UomOut]:
+    await inv_services.ensure_seed_uoms(session, ctx.organization_id, str(ctx.principal.sub))
+    stmt = inv_selectors.uoms_stmt(ctx.organization_id)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([inv_selectors.uom_out(u) for u in rows], total=total, params=params)
+
+
+# ------------------------------------------------------------------ item categories
+
+
+@router.get(
+    "/operations/inventory/categories",
+    response_model=Page[ItemCategoryOut],
+    summary="The item master's own category tree",
+    dependencies=[Entitled],
+)
+async def list_item_categories(
+    session: SessionDep, ctx: InventoryRead, params: PageQuery
+) -> Page[ItemCategoryOut]:
+    stmt = inv_selectors.item_categories_stmt(ctx.organization_id)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([inv_selectors.category_out(c) for c in rows], total=total, params=params)
+
+
+@router.post(
+    "/operations/inventory/categories",
+    response_model=ItemCategoryOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a category",
+    dependencies=[Entitled],
+)
+async def create_item_category(
+    payload: ItemCategoryIn, session: SessionDep, ctx: InventoryWrite, request: Request
+) -> ItemCategoryOut:
+    category = await inv_services.create_item_category(
+        session,
+        ctx,
+        code=payload.code,
+        name=payload.name,
+        parent_id=payload.parent_id,
+        request=request,
+    )
+    return inv_selectors.category_out(category)
+
+
+@router.get(
+    "/operations/inventory/categories/{category_id}",
+    response_model=ItemCategoryOut,
+    summary="One category",
+    dependencies=[Entitled],
+)
+async def read_item_category(
+    category_id: uuid.UUID, session: SessionDep, ctx: InventoryRead
+) -> ItemCategoryOut:
+    category = await inv_selectors.get_item_category(session, ctx.organization_id, category_id)
+    if category is None:
+        raise NotFoundProblem("That category is not part of this organization")
+    return inv_selectors.category_out(category)
+
+
+@router.patch(
+    "/operations/inventory/categories/{category_id}",
+    response_model=ItemCategoryOut,
+    summary="Update a category",
+    dependencies=[Entitled],
+)
+async def update_item_category(
+    category_id: uuid.UUID,
+    payload: ItemCategoryPatch,
+    session: SessionDep,
+    ctx: InventoryWrite,
+    request: Request,
+) -> ItemCategoryOut:
+    category = await inv_selectors.get_item_category(session, ctx.organization_id, category_id)
+    if category is None:
+        raise NotFoundProblem("That category is not part of this organization")
+    updated = await inv_services.update_item_category(
+        session, ctx, category, payload, request=request
+    )
+    return inv_selectors.category_out(updated)
+
+
+@router.delete(
+    "/operations/inventory/categories/{category_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a category",
+    dependencies=[Entitled],
+)
+async def delete_item_category(
+    category_id: uuid.UUID, session: SessionDep, ctx: InventoryWrite, request: Request
+) -> Response:
+    category = await inv_selectors.get_item_category(session, ctx.organization_id, category_id)
+    if category is None:
+        raise NotFoundProblem("That category is not part of this organization")
+    await inv_services.delete_item_category(session, ctx, category, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(
@@ -664,6 +803,191 @@ async def list_movements(
     stmt = inv_selectors.movements_stmt(ctx, item_id, kind=kind)
     rows, total = await paginate(session, stmt, params)
     return Page.build([inv_selectors.movement_out(m) for m in rows], total=total, params=params)
+
+
+# ------------------------------------------------------------------ item attributes
+
+
+@router.get(
+    "/operations/inventory/{item_id}/attributes",
+    response_model=list[ItemAttributeOut],
+    summary="An item's typed attributes (GSM, width, shade, …)",
+    dependencies=[Entitled],
+)
+async def list_item_attributes(
+    item_id: uuid.UUID, session: SessionDep, ctx: InventoryRead
+) -> list[ItemAttributeOut]:
+    item = await inv_selectors.get_inventory_item(session, ctx.organization_id, item_id)
+    if item is None:
+        raise NotFoundProblem("That inventory item is not part of this organization")
+    rows = await inv_selectors.item_attributes_for(session, ctx.organization_id, item_id)
+    return [inv_selectors.attribute_out(a) for a in rows]
+
+
+@router.put(
+    "/operations/inventory/{item_id}/attributes/{key}",
+    response_model=ItemAttributeOut,
+    summary="Create or overwrite one typed attribute",
+    dependencies=[Entitled],
+)
+async def set_item_attribute(
+    item_id: uuid.UUID,
+    key: Annotated[str, Path(min_length=1, max_length=60)],
+    payload: ItemAttributeIn,
+    session: SessionDep,
+    ctx: InventoryWrite,
+    request: Request,
+) -> ItemAttributeOut:
+    item = await inv_selectors.get_inventory_item(session, ctx.organization_id, item_id)
+    if item is None:
+        raise NotFoundProblem("That inventory item is not part of this organization")
+    attribute = await inv_services.set_item_attribute(
+        session, ctx, item, key, payload, request=request
+    )
+    return inv_selectors.attribute_out(attribute)
+
+
+@router.delete(
+    "/operations/inventory/{item_id}/attributes/{key}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove a typed attribute",
+    dependencies=[Entitled],
+)
+async def delete_item_attribute(
+    item_id: uuid.UUID,
+    key: Annotated[str, Path(min_length=1, max_length=60)],
+    session: SessionDep,
+    ctx: InventoryWrite,
+    request: Request,
+) -> Response:
+    item = await inv_selectors.get_inventory_item(session, ctx.organization_id, item_id)
+    if item is None:
+        raise NotFoundProblem("That inventory item is not part of this organization")
+    await inv_services.delete_item_attribute(session, ctx, item, key, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ------------------------------------------------------------------ item variants
+
+
+@router.get(
+    "/operations/inventory/{item_id}/variants",
+    response_model=list[ItemVariantOut],
+    summary="An item's purchasable/stockable variants",
+    dependencies=[Entitled],
+)
+async def list_item_variants(
+    item_id: uuid.UUID, session: SessionDep, ctx: InventoryRead
+) -> list[ItemVariantOut]:
+    item = await inv_selectors.get_inventory_item(session, ctx.organization_id, item_id)
+    if item is None:
+        raise NotFoundProblem("That inventory item is not part of this organization")
+    rows = await inv_selectors.item_variants_for(session, ctx.organization_id, item_id)
+    return [inv_selectors.variant_out(v) for v in rows]
+
+
+@router.post(
+    "/operations/inventory/{item_id}/variants",
+    response_model=ItemVariantOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a variant",
+    dependencies=[Entitled],
+)
+async def create_item_variant(
+    item_id: uuid.UUID,
+    payload: ItemVariantIn,
+    session: SessionDep,
+    ctx: InventoryWrite,
+    request: Request,
+) -> ItemVariantOut:
+    item = await inv_selectors.get_inventory_item(session, ctx.organization_id, item_id)
+    if item is None:
+        raise NotFoundProblem("That inventory item is not part of this organization")
+    variant = await inv_services.create_item_variant(
+        session, ctx, item, sku=payload.sku, name=payload.name, request=request
+    )
+    return inv_selectors.variant_out(variant)
+
+
+@router.patch(
+    "/operations/inventory/{item_id}/variants/{variant_id}",
+    response_model=ItemVariantOut,
+    summary="Update a variant",
+    dependencies=[Entitled],
+)
+async def update_item_variant(
+    item_id: uuid.UUID,
+    variant_id: uuid.UUID,
+    payload: ItemVariantPatch,
+    session: SessionDep,
+    ctx: InventoryWrite,
+    request: Request,
+) -> ItemVariantOut:
+    variant = await inv_selectors.get_item_variant(
+        session, ctx.organization_id, item_id, variant_id
+    )
+    if variant is None:
+        raise NotFoundProblem("That variant is not part of this item")
+    updated = await inv_services.update_item_variant(
+        session, ctx, variant, payload, request=request
+    )
+    return inv_selectors.variant_out(updated)
+
+
+@router.delete(
+    "/operations/inventory/{item_id}/variants/{variant_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a variant",
+    dependencies=[Entitled],
+)
+async def delete_item_variant(
+    item_id: uuid.UUID,
+    variant_id: uuid.UUID,
+    session: SessionDep,
+    ctx: InventoryWrite,
+    request: Request,
+) -> Response:
+    variant = await inv_selectors.get_item_variant(
+        session, ctx.organization_id, item_id, variant_id
+    )
+    if variant is None:
+        raise NotFoundProblem("That variant is not part of this item")
+    await inv_services.delete_item_variant(session, ctx, variant, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ------------------------------------------------------------------ reservations
+
+
+@router.post(
+    "/operations/inventory/reservations/{reservation_id}:release",
+    response_model=InventoryReservationOut,
+    summary="Give back all or part of a reservation's open remainder (ADR-0014 §11)",
+    dependencies=[Entitled],
+)
+async def release_reservation(
+    reservation_id: uuid.UUID,
+    session: SessionDep,
+    ctx: StockReserve,
+    request: Request,
+    payload: ReservationReleaseIn | None = None,
+    idempotency_key: IdempotencyKey = None,
+) -> InventoryReservationOut:
+    quantity_milli: int | None = None
+    if payload is not None and payload.quantity is not None:
+        try:
+            quantity_milli = parse_qty(payload.quantity)
+        except QuantityError as exc:
+            raise ValidationProblem(str(exc)) from exc
+    released = await inv_ledger.release(
+        session,
+        ctx,
+        reservation_id,
+        quantity_milli=quantity_milli,
+        idempotency_key=idempotency_key,
+        request=request,
+    )
+    return inv_selectors.reservation_out(released)
 
 
 # ------------------------------------------------------------------ warehouses (reference)

@@ -304,17 +304,56 @@ async def _refresh_items(session: AsyncSession, item_ids: Iterable[uuid.UUID]) -
             await session.refresh(obj, list(STOCK_AGGREGATES))
 
 
+async def _blocking_reservations(
+    session: AsyncSession, org_id: uuid.UUID, balance_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    """The active reservations holding a bucket's `reserved_milli` — named so a shortfall that is
+    really "enough stock, but it is promised" can be answered with *which* promises stand in the
+    way (ADR-0014 §11), rather than only the number they add up to. Oldest first: the order a
+    person would naturally release them in to make room."""
+    stmt = (
+        select(InventoryReservation)
+        .where(
+            InventoryReservation.organization_id == org_id,
+            InventoryReservation.balance_id == balance_id,
+            InventoryReservation.status == "active",
+        )
+        .order_by(InventoryReservation.created_at, InventoryReservation.id)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return [
+        {
+            "reservation_id": str(r.id),
+            "reference_type": r.reference_type,
+            "reference_id": str(r.reference_id) if r.reference_id else None,
+            "quantity": format_qty(r.quantity_milli - r.consumed_milli - r.released_milli),
+            "quantity_milli": r.quantity_milli - r.consumed_milli - r.released_milli,
+        }
+        for r in rows
+    ]
+
+
 def _shortfall(
-    item: InventoryItem, where: str, status: str, *, wanted: int, on_hand: int, reserved: int
+    item: InventoryItem,
+    where: str,
+    status: str,
+    *,
+    wanted: int,
+    on_hand: int,
+    reserved: int,
+    reservations: list[dict[str, Any]] | None = None,
 ) -> InsufficientStock:
     uom = item.uom
     available = on_hand - reserved
+    blocked_by_reservations = bool(reservations)
     detail = (
         f"Cannot take {describe(wanted, uom)} of {item.sku} from {where}"
         f"{'' if status == 'AVAILABLE' else f' ({status})'}: "
         f"{describe(on_hand, uom)} on hand, {describe(reserved, uom)} reserved, "
         f"so {describe(max(available, 0), uom)} available"
     )
+    if blocked_by_reservations:
+        detail += ". Release the reservation(s) blocking it, then try again"
     return InsufficientStock(
         detail,
         errors=[
@@ -327,6 +366,7 @@ def _shortfall(
                 "on_hand": format_qty(on_hand),
                 "reserved": format_qty(reserved),
                 "available": format_qty(max(available, 0)),
+                "reservations": reservations or [],
             }
         ],
     )
@@ -450,6 +490,15 @@ async def post_move(
         new_on_hand = on_hand + delta
         new_reserved = reserved - drawn
         if new_on_hand < 0 or (delta < 0 and new_on_hand < new_reserved):
+            # Enough is physically there but reserved stock stands in the way — every outbound
+            # line (issue, relocation, a status change's paired move) and a count line are
+            # refused identically (ADR-0014 §11): name what is blocking it rather than only the
+            # number, so a caller can release the reservation and retry instead of guessing.
+            blocking = (
+                await _blocking_reservations(session, org_id, balance.id)
+                if new_on_hand >= 0
+                else []
+            )
             raise _shortfall(
                 item,
                 where[line.location_id],
@@ -457,6 +506,7 @@ async def post_move(
                 wanted=-delta - drawn,
                 on_hand=on_hand,
                 reserved=reserved,
+                reservations=blocking,
             )
 
         now = datetime.now(UTC)
@@ -712,10 +762,22 @@ async def release(
     ctx: ScopeContext,
     reservation_id: uuid.UUID,
     *,
+    quantity_milli: int | None = None,
+    idempotency_key: str | None = None,
     request: Request | None = None,
 ) -> InventoryReservation:
-    """Give back the open remainder of a reservation. Releasing an already-released reservation
-    is a no-op (a retry is safe); releasing a fully consumed one is a 409."""
+    """Give back all (`quantity_milli=None`) or part of a reservation's open remainder
+    (ADR-0014 §11) — the documented resolution when a count or an outbound move (issue,
+    relocation, a status change's paired move) is refused because it would eat into reserved
+    stock: release the reservation, or enough of it, then retry.
+
+    Releasing an already-released reservation is a no-op (a retry is safe); releasing a fully
+    consumed one, or more than is still open, is a 409. `idempotency_key` makes a retried release
+    a replay rather than a second one: the key and a hash of what was asked for are kept on the
+    reservation itself (not a global index — the row's own lock already serialises every writer
+    of it), so the same key with the same quantity replays and the same key with a different one
+    is refused.
+    """
     org_id = ctx.organization_id
     found = (
         await session.execute(
@@ -727,6 +789,8 @@ async def release(
     ).scalar_one_or_none()
     if found is None:
         raise NotFoundProblem("That reservation is not part of this organization")
+    if quantity_milli is not None and (not _is_int(quantity_milli) or quantity_milli <= 0):
+        raise ValidationProblem("A release quantity is a positive integer of milli-units")
 
     # Balance first, then the reservation: the one lock order every path in this module uses.
     balance = (
@@ -739,25 +803,52 @@ async def release(
     ).scalar_one()
     reservation = await _lock_reservation(session, org_id, reservation_id)
     assert reservation is not None
+
+    request_hash = _request_hash({"quantity_milli": quantity_milli}) if idempotency_key else None
+    if idempotency_key is not None and reservation.release_idempotency_key == idempotency_key:
+        if reservation.release_request_hash != request_hash:
+            raise ConflictProblem("That idempotency key was already used for a different release")
+        return reservation  # replay: already applied, nothing to redo
+
     if reservation.status == "released":
         return reservation
     if reservation.status == "consumed":
         raise ConflictProblem("That reservation has been fully consumed")
 
-    remaining = reservation.quantity_milli - reservation.consumed_milli
+    open_remaining = (
+        reservation.quantity_milli - reservation.consumed_milli - reservation.released_milli
+    )
+    if quantity_milli is not None and quantity_milli > open_remaining:
+        raise ConflictProblem(
+            f"Only {format_qty(open_remaining)} is still open on that reservation; "
+            f"cannot release {format_qty(quantity_milli)}"
+        )
+    released_now = open_remaining if quantity_milli is None else quantity_milli
+
     now = datetime.now(UTC)
-    balance.reserved_milli -= remaining
+    balance.reserved_milli -= released_now
     balance.updated_at = now
-    reservation.status = "released"
-    reservation.closed_at = now
-    reservation.closed_by = str(ctx.principal.sub)
+    reservation.released_milli += released_now
+    fully_released = (
+        reservation.consumed_milli + reservation.released_milli == reservation.quantity_milli
+    )
+    if fully_released:
+        reservation.status = "released"
+        reservation.closed_at = now
+        reservation.closed_by = str(ctx.principal.sub)
+    if idempotency_key is not None:
+        reservation.release_idempotency_key = idempotency_key
+        reservation.release_request_hash = request_hash
     await session.flush()
 
     detail = {
         "reservation_id": str(reservation.id),
         "inventory_item_id": str(reservation.inventory_item_id),
-        "released": format_qty(remaining),
-        "released_milli": remaining,
+        "released": format_qty(released_now),
+        "released_milli": released_now,
+        "remaining": format_qty(open_remaining - released_now),
+        "remaining_milli": open_remaining - released_now,
+        "fully_released": fully_released,
     }
     record_audit(
         session,
@@ -768,7 +859,7 @@ async def release(
         entity="inventory_reservation",
         entity_id=reservation.id,
         before={"status": "active"},
-        after={"status": "released", **detail},
+        after={"status": reservation.status, **detail},
         request=request,
     )
     publish_event(

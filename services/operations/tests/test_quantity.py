@@ -11,9 +11,12 @@ import pytest
 
 from app.inventory.quantity import (
     QTY_SCALE,
+    UNIT_NAMES,
+    UNITS,
     QuantityError,
     Rounding,
     convert,
+    convert_by_ratio,
     describe,
     format_qty,
     is_discrete,
@@ -159,6 +162,11 @@ class TestConversion:
     def test_dozen_to_pieces(self) -> None:
         assert convert(parse_qty("2"), "dozen", "pcs") == parse_qty("24")
 
+    def test_82_5_metres_round_trips_through_centimetres(self) -> None:
+        in_cm = convert(parse_qty("82.5"), "m", "cm")
+        assert format_qty(in_cm) == "8250"
+        assert convert(in_cm, "cm", "m") == parse_qty("82.5")
+
     def test_two_rolls_of_one_fabric_keep_their_own_weights(self) -> None:
         # Variable roll weights: each roll's (length, weight) pair is two measured quantities.
         # Nothing derives one from the other, so the two rolls stay independently exact.
@@ -176,3 +184,45 @@ class TestValuation:
 
     def test_whole_units_value_is_exact(self) -> None:
         assert value_minor(parse_qty("6"), 2_18_000_00) == 13_08_000_00
+
+
+class TestConvertByRatio:
+    """Item-specific rational conversions (Phase 1 `uom_conversions`): "1 box = 12 pcs" is
+    `numerator=12, denominator=1`, and — unlike the fixed registry — the same unit code can mean
+    a different ratio for a different item."""
+
+    def test_a_box_of_twelve_converts_to_pieces_and_back(self) -> None:
+        one_box = parse_qty("1")
+        as_pcs = convert_by_ratio(one_box, 12, 1, discrete=True)
+        assert format_qty(as_pcs) == "12"
+        assert convert_by_ratio(as_pcs, 12, 1, invert=True, discrete=True) == one_box
+
+    def test_two_and_a_half_boxes_of_twelve(self) -> None:
+        assert format_qty(convert_by_ratio(parse_qty("2.5"), 12, 1, discrete=True)) == "30"
+
+    def test_a_non_integer_ratio_is_exact_via_the_fraction(self) -> None:
+        # 1 roll = 82.5 m of an item stocked in metres: numerator=825, denominator=10.
+        one_roll = parse_qty("1")
+        assert format_qty(convert_by_ratio(one_roll, 825, 10)) == "82.5"
+
+    def test_an_inexact_result_is_refused_without_a_rounding_mode(self) -> None:
+        # 1 pcs is 1/12 of a box — 83.33 thousandths of a box, not a whole milli-box.
+        with pytest.raises(QuantityError, match="rounding mode"):
+            convert_by_ratio(parse_qty("1"), 12, 1, invert=True)
+        assert convert_by_ratio(parse_qty("1"), 12, 1, invert=True, rounding=Rounding.DOWN) == 83
+
+    def test_the_destination_discreteness_is_the_callers_to_name(self) -> None:
+        # 6 pcs / 12-per-box divides exactly (500 milli-box = 0.5 box) but a box is discrete —
+        # refused for not being a *whole* box, a different failure from an inexact division.
+        with pytest.raises(QuantityError, match="whole units"):
+            convert_by_ratio(parse_qty("6"), 12, 1, invert=True, discrete=True)
+
+    @pytest.mark.parametrize(("numerator", "denominator"), [(0, 1), (1, 0), (-1, 1), (1, -1)])
+    def test_a_non_positive_ratio_is_refused(self, numerator: int, denominator: int) -> None:
+        with pytest.raises(QuantityError, match="positive numerator and denominator"):
+            convert_by_ratio(parse_qty("1"), numerator, denominator)
+
+
+class TestUnitNames:
+    def test_every_fixed_unit_has_a_seed_display_name(self) -> None:
+        assert set(UNIT_NAMES) == set(UNITS)

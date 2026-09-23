@@ -19,7 +19,9 @@ from app.inventory import services as inv_services
 from app.inventory.ledger import InsufficientStock, MoveLine
 from app.inventory.quantity import MAX_ABS_MILLI, format_qty
 from app.models import AuditLog, InventoryMove, InventoryReservation, OutboxEvent
+from platform_core.auth import Scope
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
+from tests.helpers import ctx_for
 from tests.inventory_fixtures import (
     TODAY,
     Textile,
@@ -149,6 +151,7 @@ class TestRefusals:
                 "on_hand": "320",
                 "reserved": "0",
                 "available": "320",
+                "reservations": [],
             }
         ]
         # Nothing was written: the whole transaction rolled back.
@@ -235,6 +238,30 @@ class TestBuckets:
             out = inv_selectors.inventory_out(item)
         assert out.on_hand_qty == "100"
         assert out.available_qty == "70"
+
+    async def test_a_status_change_out_of_a_reserved_bucket_is_refused_and_names_it(
+        self, session, t
+    ) -> None:
+        """A status change is a paired `relocation` move (ADR-0014 §4) — the same outbound line
+        the reservation check already covers, so it refuses on the same numbers a count would
+        (ADR-0014 §11)."""
+        await post(session, t, "receipt", MoveLine(t.fabric, t.weaving, q("50")))
+        async with session.begin():
+            made = await ledger.reserve(
+                session, t.ctx, item_id=t.fabric, location_id=t.weaving, quantity_milli=q("45")
+            )
+        rid = made.reservation.id
+        with pytest.raises(InsufficientStock) as refused:
+            await post(
+                session,
+                t,
+                "relocation",
+                MoveLine(t.fabric, t.weaving, -q("10")),
+                MoveLine(t.fabric, t.weaving, q("10"), status="QUALITY_HOLD"),
+            )
+        assert [r["reservation_id"] for r in refused.value.errors[0]["reservations"]] == [str(rid)]
+        # Nothing moved: physical stock and the reservation are untouched.
+        assert await balance(session, t.org_id, t.fabric, t.weaving) == (q("50"), q("45"))
 
     async def test_off_site_stock_is_not_on_hand(self, session, t) -> None:
         await post(session, t, "receipt", MoveLine(t.fabric, t.weaving, q("100")))
@@ -337,6 +364,121 @@ class TestReservations:
                 await ledger.reserve(
                     session, t.ctx, item_id=t.dye, location_id=t.weaving, quantity_milli=q("1")
                 )
+
+    async def test_a_count_below_reserved_is_refused_and_names_the_reservation(
+        self, session, t
+    ) -> None:
+        """ADR-0014 §11: the count-below-reserved refusal Phase 0 built, now naming what blocks
+        it — the resolution a UI can act on is "release this reservation, then count"."""
+        await post(session, t, "receipt", MoveLine(t.fabric, t.weaving, q("50")))
+        async with session.begin():
+            made = await ledger.reserve(
+                session, t.ctx, item_id=t.fabric, location_id=t.weaving, quantity_milli=q("45")
+            )
+        rid = made.reservation.id
+        with pytest.raises(InsufficientStock) as refused:
+            await post(session, t, "count", MoveLine(t.fabric, t.weaving, counted_milli=q("40")))
+        assert refused.value.errors[0]["reservations"] == [
+            {
+                "reservation_id": str(rid),
+                "reference_type": None,
+                "reference_id": None,
+                "quantity": "45",
+                "quantity_milli": q("45"),
+            }
+        ]
+        # Nothing posted: the count never happened, the reservation never shrank.
+        assert await balance(session, t.org_id, t.fabric, t.weaving) == (q("50"), q("45"))
+
+    async def test_a_shortfall_with_no_stock_at_all_names_no_reservation(self, session, t) -> None:
+        """A reservation would not have helped here — there is nothing physically there to give
+        — so naming one would mislead (ADR-0014 §11)."""
+        with pytest.raises(InsufficientStock) as refused:
+            await post(session, t, "issue", MoveLine(t.fabric, t.weaving, -q("1")))
+        assert refused.value.errors[0]["reservations"] == []
+
+    async def test_releasing_part_of_a_reservation_leaves_the_rest_active(self, session, t) -> None:
+        await post(session, t, "receipt", MoveLine(t.fabric, t.weaving, q("100")))
+        async with session.begin():
+            made = await ledger.reserve(
+                session, t.ctx, item_id=t.fabric, location_id=t.weaving, quantity_milli=q("40")
+            )
+        rid = made.reservation.id
+        async with session.begin():
+            released = await ledger.release(session, t.ctx, rid, quantity_milli=q("12"))
+        assert released.status == "active"
+        assert (released.released_milli, released.consumed_milli) == (q("12"), 0)
+        assert await balance(session, t.org_id, t.fabric, t.weaving) == (q("100"), q("28"))
+
+        # The count that was refused above now fits, once enough of the reservation is released.
+        await post(session, t, "count", MoveLine(t.fabric, t.weaving, counted_milli=q("85")))
+        assert await balance(session, t.org_id, t.fabric, t.weaving) == (q("85"), q("28"))
+
+        async with session.begin():
+            fully = await ledger.release(session, t.ctx, rid)
+        assert fully.status == "released"
+        assert await balance(session, t.org_id, t.fabric, t.weaving) == (q("85"), 0)
+
+    async def test_releasing_more_than_is_open_is_refused(self, session, t) -> None:
+        await post(session, t, "receipt", MoveLine(t.fabric, t.weaving, q("100")))
+        async with session.begin():
+            made = await ledger.reserve(
+                session, t.ctx, item_id=t.fabric, location_id=t.weaving, quantity_milli=q("40")
+            )
+        with pytest.raises(ConflictProblem, match="Only 40 is still open"):
+            async with session.begin():
+                await ledger.release(session, t.ctx, made.reservation.id, quantity_milli=q("41"))
+
+    async def test_a_release_key_replays_and_a_different_quantity_conflicts(
+        self, session, t
+    ) -> None:
+        await post(session, t, "receipt", MoveLine(t.fabric, t.weaving, q("100")))
+        async with session.begin():
+            made = await ledger.reserve(
+                session, t.ctx, item_id=t.fabric, location_id=t.weaving, quantity_milli=q("40")
+            )
+        rid = made.reservation.id
+
+        async with session.begin():
+            first = await ledger.release(
+                session, t.ctx, rid, quantity_milli=q("10"), idempotency_key="rel-1"
+            )
+        async with session.begin():
+            again = await ledger.release(
+                session, t.ctx, rid, quantity_milli=q("10"), idempotency_key="rel-1"
+            )
+        assert (first.released_milli, again.released_milli) == (q("10"), q("10"))
+        assert await balance(session, t.org_id, t.fabric, t.weaving) == (q("100"), q("30"))
+
+        with pytest.raises(ConflictProblem, match="different release"):
+            async with session.begin():
+                await ledger.release(
+                    session, t.ctx, rid, quantity_milli=q("20"), idempotency_key="rel-1"
+                )
+
+    async def test_releasing_a_reservation_from_another_org_is_not_found(
+        self, session, admin_session, org_id
+    ) -> None:
+        other = await build_textile(admin_session, uuid.uuid4())
+        async with admin_session.begin():
+            await ledger.post_move(
+                admin_session,
+                other.ctx,
+                kind="receipt",
+                lines=[MoveLine(other.fabric, other.weaving, q("10"))],
+                occurred_on=TODAY,
+            )
+            made = await ledger.reserve(
+                admin_session,
+                other.ctx,
+                item_id=other.fabric,
+                location_id=other.weaving,
+                quantity_milli=q("5"),
+            )
+        ctx = ctx_for(org_id, "operations.inventory.stock.reserve", Scope.ORG)
+        with pytest.raises(NotFoundProblem):
+            async with session.begin():
+                await ledger.release(session, ctx, made.reservation.id)
 
 
 class TestIdempotency:
@@ -517,17 +659,19 @@ class TestItemLevelCompatibility:
         assert await ledger_total(session, t.org_id, t.fabric) == q("82.5")
 
     async def test_reserved_stock_blocks_a_warehouse_change(self, session, t) -> None:
-        """`_relocate_home_stock` now locks both buckets before reading either one (review
-        finding on lock order); this is the regression check that the reserved-stock refusal it
-        computes from that locked read still fires correctly."""
+        """`_relocate_home_stock` locks both buckets before reading either one (review finding
+        on lock order), then relies on `post_move`'s own outbound check to refuse a relocation
+        that would eat into reserved stock (ADR-0014 §11) — one refusal, reused rather than
+        copied, so the reservation blocking it is named exactly as a count's would be."""
         from app.schemas import InventoryItemPatch
 
         await post(session, t, "receipt", MoveLine(t.fabric, t.weaving, q("100")))
         async with session.begin():
-            await ledger.reserve(
+            made = await ledger.reserve(
                 session, t.ctx, item_id=t.fabric, location_id=t.weaving, quantity_milli=q("30")
             )
-        with pytest.raises(ConflictProblem, match="reserved stock"):
+        rid = made.reservation.id
+        with pytest.raises(InsufficientStock) as refused:
             async with session.begin():
                 item = await inv_selectors.get_inventory_item(
                     session, t.org_id, t.fabric, for_update=True
@@ -535,6 +679,16 @@ class TestItemLevelCompatibility:
                 await inv_services.update_inventory_item(
                     session, t.ctx, item, InventoryItemPatch(warehouse="Finishing")
                 )
+        assert "30 m reserved" in refused.value.detail
+        assert refused.value.errors[0]["reservations"] == [
+            {
+                "reservation_id": str(rid),
+                "reference_type": None,
+                "reference_id": None,
+                "quantity": "30",
+                "quantity_milli": q("30"),
+            }
+        ]
         # Refused before anything moved.
         assert await balance(session, t.org_id, t.fabric, t.weaving) == (q("100"), q("30"))
         assert await balance(session, t.org_id, t.fabric, t.finishing) == (0, 0)

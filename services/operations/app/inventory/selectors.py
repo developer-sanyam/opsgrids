@@ -20,16 +20,26 @@ from app.models import (
     InventoryDiscrepancy,
     InventoryItem,
     InventoryMove,
+    InventoryReservation,
+    ItemAttribute,
+    ItemCategory,
+    ItemVariant,
     LedgerEntry,
     Location,
     PurchaseOrder,
+    Uom,
     Warehouse,
 )
 from app.schemas import (
     InventoryDiscrepancyOut,
     InventoryItemOut,
+    InventoryReservationOut,
+    ItemAttributeOut,
+    ItemCategoryOut,
+    ItemVariantOut,
     StockBalanceOut,
     StockMovementOut,
+    UomOut,
     WarehouseOut,
 )
 from platform_core.auth import ScopeContext
@@ -42,12 +52,16 @@ def inventory_stmt(
     *,
     q: str | None = None,
     category: str | None = None,
+    item_category_id: uuid.UUID | None = None,
     warehouse: str | None = None,
     low_stock: bool | None = None,
+    is_active: bool | None = None,
     sort: str | None = None,
 ) -> Select[Any]:
     """Inventory on hand for the org. Not scope-narrowed: stock is shared org reference data
-    (read still requires `item.read`). `low_stock` filters to items at or below reorder point."""
+    (read still requires `item.read`). `low_stock` filters to items at or below reorder point.
+    `category` is the fixed procurement bucket; `item_category_id` is the org's own tree
+    (ADR-0014 Phase 1) — independent filters, since one item can sit in both."""
     stmt = select(InventoryItem).where(
         InventoryItem.organization_id == ctx.organization_id,
         InventoryItem.deleted_at.is_(None),
@@ -63,10 +77,14 @@ def inventory_stmt(
         )
     if category:
         stmt = stmt.where(InventoryItem.category == category)
+    if item_category_id:
+        stmt = stmt.where(InventoryItem.item_category_id == item_category_id)
     if warehouse:
         stmt = stmt.where(InventoryItem.warehouse == warehouse)
     if low_stock:
         stmt = stmt.where(InventoryItem.on_hand_milli <= InventoryItem.reorder_point * QTY_SCALE)
+    if is_active is not None:
+        stmt = stmt.where(InventoryItem.is_active == is_active)
 
     if sort == "on_hand":
         return stmt.order_by(InventoryItem.on_hand_milli.asc(), InventoryItem.sku.asc())
@@ -248,6 +266,212 @@ async def get_discrepancy(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+# ------------------------------------------------------------------ units of measure
+
+
+def uoms_stmt(org_id: uuid.UUID) -> Select[Any]:
+    """The org's UOM directory: system (registry) units first, then custom ones, each
+    alphabetically — the shape a picker wants, registry units at the top."""
+    return (
+        select(Uom)
+        .where(Uom.organization_id == org_id, Uom.deleted_at.is_(None))
+        .order_by(Uom.is_system.desc(), Uom.code.asc())
+    )
+
+
+async def get_uom_by_code(session: AsyncSession, org_id: uuid.UUID, code: str) -> Uom | None:
+    stmt = select(Uom).where(
+        Uom.organization_id == org_id, Uom.code == code, Uom.deleted_at.is_(None)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_uom(session: AsyncSession, org_id: uuid.UUID, uom_id: uuid.UUID) -> Uom | None:
+    stmt = select(Uom).where(
+        Uom.id == uom_id, Uom.organization_id == org_id, Uom.deleted_at.is_(None)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def uom_out(u: Uom) -> UomOut:
+    return UomOut(
+        id=str(u.id),
+        code=u.code,
+        name=u.name,
+        dimension=u.dimension,
+        is_discrete=u.is_discrete,
+        is_system=u.is_system,
+    )
+
+
+# ------------------------------------------------------------------ item categories
+
+
+def item_categories_stmt(org_id: uuid.UUID) -> Select[Any]:
+    """The org's category tree, flattened for a list screen to nest client-side — small and
+    bounded, like the warehouse directory."""
+    return (
+        select(ItemCategory)
+        .where(ItemCategory.organization_id == org_id, ItemCategory.deleted_at.is_(None))
+        .order_by(ItemCategory.name.asc())
+    )
+
+
+async def get_item_category(
+    session: AsyncSession, org_id: uuid.UUID, category_id: uuid.UUID
+) -> ItemCategory | None:
+    stmt = select(ItemCategory).where(
+        ItemCategory.id == category_id,
+        ItemCategory.organization_id == org_id,
+        ItemCategory.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_item_category_by_code(
+    session: AsyncSession, org_id: uuid.UUID, code: str
+) -> ItemCategory | None:
+    stmt = select(ItemCategory).where(
+        ItemCategory.code == code,
+        ItemCategory.organization_id == org_id,
+        ItemCategory.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def count_item_category_children(
+    session: AsyncSession, org_id: uuid.UUID, category_id: uuid.UUID
+) -> int:
+    stmt = (
+        select(func.count())
+        .select_from(ItemCategory)
+        .where(
+            ItemCategory.organization_id == org_id,
+            ItemCategory.parent_id == category_id,
+            ItemCategory.deleted_at.is_(None),
+        )
+    )
+    return (await session.execute(stmt)).scalar_one()
+
+
+async def count_items_in_category(
+    session: AsyncSession, org_id: uuid.UUID, category_id: uuid.UUID
+) -> int:
+    stmt = (
+        select(func.count())
+        .select_from(InventoryItem)
+        .where(
+            InventoryItem.organization_id == org_id,
+            InventoryItem.item_category_id == category_id,
+            InventoryItem.deleted_at.is_(None),
+        )
+    )
+    return (await session.execute(stmt)).scalar_one()
+
+
+def category_out(c: ItemCategory) -> ItemCategoryOut:
+    return ItemCategoryOut(
+        id=str(c.id), code=c.code, name=c.name, parent_id=str(c.parent_id) if c.parent_id else None
+    )
+
+
+# ------------------------------------------------------------------ item attributes
+
+
+def item_attributes_stmt(org_id: uuid.UUID, item_id: uuid.UUID) -> Select[Any]:
+    """One item's typed attributes — small and bounded, read whole like its balances."""
+    return (
+        select(ItemAttribute)
+        .where(ItemAttribute.organization_id == org_id, ItemAttribute.inventory_item_id == item_id)
+        .order_by(ItemAttribute.key.asc())
+    )
+
+
+async def item_attributes_for(
+    session: AsyncSession, org_id: uuid.UUID, item_id: uuid.UUID
+) -> list[ItemAttribute]:
+    stmt = item_attributes_stmt(org_id, item_id)
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def get_item_attribute(
+    session: AsyncSession, org_id: uuid.UUID, item_id: uuid.UUID, key: str
+) -> ItemAttribute | None:
+    stmt = select(ItemAttribute).where(
+        ItemAttribute.organization_id == org_id,
+        ItemAttribute.inventory_item_id == item_id,
+        ItemAttribute.key == key,
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def attribute_out(a: ItemAttribute) -> ItemAttributeOut:
+    return ItemAttributeOut(
+        id=str(a.id),
+        key=a.key,
+        value_type=a.value_type,
+        value_text=a.value_text,
+        value_number=a.value_number,
+        value_boolean=a.value_boolean,
+        value_date=a.value_date,
+    )
+
+
+# ------------------------------------------------------------------ item variants
+
+
+def item_variants_stmt(org_id: uuid.UUID, item_id: uuid.UUID) -> Select[Any]:
+    return (
+        select(ItemVariant)
+        .where(
+            ItemVariant.organization_id == org_id,
+            ItemVariant.inventory_item_id == item_id,
+            ItemVariant.deleted_at.is_(None),
+        )
+        .order_by(ItemVariant.sku.asc())
+    )
+
+
+async def item_variants_for(
+    session: AsyncSession, org_id: uuid.UUID, item_id: uuid.UUID
+) -> list[ItemVariant]:
+    stmt = item_variants_stmt(org_id, item_id)
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def get_item_variant(
+    session: AsyncSession, org_id: uuid.UUID, item_id: uuid.UUID, variant_id: uuid.UUID
+) -> ItemVariant | None:
+    stmt = select(ItemVariant).where(
+        ItemVariant.id == variant_id,
+        ItemVariant.organization_id == org_id,
+        ItemVariant.inventory_item_id == item_id,
+        ItemVariant.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_item_variant_by_sku(
+    session: AsyncSession, org_id: uuid.UUID, sku: str
+) -> ItemVariant | None:
+    stmt = select(ItemVariant).where(
+        ItemVariant.sku == sku,
+        ItemVariant.organization_id == org_id,
+        ItemVariant.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def variant_out(v: ItemVariant) -> ItemVariantOut:
+    return ItemVariantOut(
+        id=str(v.id),
+        inventory_item_id=str(v.inventory_item_id),
+        sku=v.sku,
+        name=v.name,
+        is_active=v.is_active,
+    )
+
+
 # ------------------------------------------------------------------ warehouses & locations
 
 
@@ -347,6 +571,14 @@ def inventory_out(item: InventoryItem) -> InventoryItemOut:
         unit_value_minor=item.unit_value_minor,
         currency=item.currency,
         updated_at=item.stocked_at,
+        item_category_id=str(item.item_category_id) if item.item_category_id else None,
+        secondary_uom_id=str(item.secondary_uom_id) if item.secondary_uom_id else None,
+        hsn_code=item.hsn_code,
+        track_lot=item.track_lot,
+        track_roll=item.track_roll,
+        track_expiry=item.track_expiry,
+        track_quality=item.track_quality,
+        is_active=item.is_active,
     )
 
 
@@ -404,6 +636,21 @@ def discrepancy_out(row: InventoryDiscrepancy) -> InventoryDiscrepancyOut:
         resolved_at=row.resolved_at,
         resolved_by=row.resolved_by,
         resolution_note=row.resolution_note,
+    )
+
+
+def reservation_out(reservation: InventoryReservation) -> InventoryReservationOut:
+    remaining = reservation.quantity_milli - reservation.consumed_milli - reservation.released_milli
+    return InventoryReservationOut(
+        id=str(reservation.id),
+        inventory_item_id=str(reservation.inventory_item_id),
+        quantity=format_qty(reservation.quantity_milli),
+        consumed=format_qty(reservation.consumed_milli),
+        released=format_qty(reservation.released_milli),
+        remaining=format_qty(remaining),
+        status=reservation.status,
+        reference_type=reservation.reference_type,
+        reference_id=str(reservation.reference_id) if reservation.reference_id else None,
     )
 
 
