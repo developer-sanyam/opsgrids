@@ -215,18 +215,24 @@ async def get_company_by_name(
 
     Not unique at the database level (see that index's own comment in `models.py` and the
     migration that added it) — an organization from before this lookup existed may already
-    hold two rows differing only by case. `scalars().first()` ordered by `created_at`, never
-    `scalar_one_or_none()`, so a pre-existing duplicate is a deterministic "the oldest one
-    wins" rather than an unhandled `MultipleResultsFound` on a read.
+    hold two rows differing only by case. `scalars().first()` ordered by `created_at`, then
+    `id` as the tiebreak, never `scalar_one_or_none()`, so a pre-existing duplicate is a
+    deterministic "the oldest one wins" (and two created in the same instant still resolve the
+    same way every time) rather than an unhandled `MultipleResultsFound` on a read.
+
+    Both sides of the comparison are folded by Postgres's own `lower(btrim(...))`, the same
+    expression `services._lock_company_name` hashes — a Python-side `str.lower()` on the input
+    would disagree with the column's own SQL `lower` on exactly the inputs ("İ") where it
+    matters most.
     """
     stmt = (
         select(Company)
         .where(
-            func.lower(Company.name) == name.lower(),
+            func.lower(Company.name) == func.lower(func.btrim(name)),
             Company.organization_id == org_id,
             Company.deleted_at.is_(None),
         )
-        .order_by(Company.created_at.asc())
+        .order_by(Company.created_at.asc(), Company.id.asc())
     )
     return (await session.execute(stmt)).scalars().first()
 

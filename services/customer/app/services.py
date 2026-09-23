@@ -341,8 +341,22 @@ async def _lock_company_name(session: AsyncSession, org_id: uuid.UUID, name: str
     the row this transaction is about to check-then-insert (or check-then-rename) must not
     become visible to a concurrent transaction's own check until this one has committed.
     """
-    key = f"company:{org_id}:{name.strip().lower()}"
-    await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": key})
+    # Case and whitespace are folded **in SQL**, by the same `lower`/`btrim` the lookup
+    # (`selectors.get_company_by_name`) compares with — never in Python. The two disagree on
+    # exactly the inputs that matter here ("İ" lowercases to two code points in Python and to
+    # one in Postgres, and a C-locale database folds only ASCII at all), so a Python-folded
+    # key could hash differently for two spellings the SQL lookup treats as one name, and the
+    # lock would serialize nothing. `hashtextextended` (64-bit) rather than `hashtext` (32-bit):
+    # a collision only ever costs an unnecessary wait, never a missed one, but there is no
+    # reason to make waits likelier than they need to be.
+    await session.execute(
+        text(
+            "SELECT pg_advisory_xact_lock("
+            "hashtextextended('company:' || CAST(:org AS text) || ':' "
+            "|| lower(btrim(CAST(:name AS text))), 0))"
+        ),
+        {"org": str(org_id), "name": name},
+    )
 
 
 async def create_company(
@@ -444,6 +458,14 @@ async def update_company(
     themselves), both refuse."""
     changes = payload.model_dump(exclude_unset=True)
 
+    # Lock order, on every path that takes both: the owner's row first, the name lock second
+    # (`create_company` and `ensure_company_and_contact_for_lead` already do it this way). This
+    # function used to take them the other way round, so a rename-plus-reassign racing a
+    # create naming the same owner and the same name each held the lock the other was waiting
+    # for — a deadlock Postgres resolves by killing one of them.
+    if "owner_id" in changes:
+        await _assert_owner_assignable(session, ctx, changes["owner_id"])
+
     if "name" in changes and changes["name"] != company.name:
         await _lock_company_name(session, ctx.organization_id, changes["name"])
         existing = await selectors.get_company_by_name(
@@ -451,9 +473,6 @@ async def update_company(
         )
         if existing is not None and existing.id != company.id:
             raise ConflictProblem("A company with that name already exists")
-
-    if "owner_id" in changes:
-        await _assert_owner_assignable(session, ctx, changes["owner_id"])
 
     if "currency" in changes:
         changes["currency"] = changes["currency"].upper()

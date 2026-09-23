@@ -10,14 +10,16 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app import selectors, services
 from app.config import settings
 from app.models import SCHEMA, Owner
+from app.schemas import CompanyPatch
 from platform_core.auth import Scope
 from platform_core.db import TENANT_GUC
 from platform_core.errors import ConflictProblem
@@ -111,3 +113,220 @@ async def test_two_concurrent_case_variant_creates_only_one_succeeds(
     refusals = [r for r in outcomes if isinstance(r, ConflictProblem)]
     assert len(successes) == 1
     assert len(refusals) == 1
+
+
+def _tenant_binder(org: uuid.UUID):
+    def _listener(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+        connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org}', true)")
+
+    return _listener
+
+
+async def _sql_folds_equal(session, a: str, b: str) -> bool:  # type: ignore[no-untyped-def]
+    """Whether *this database's* `lower(btrim(...))` treats the two spellings as one name —
+    the only definition of "the same name" the lookup and the lock both share now."""
+    async with session.begin():
+        return bool(
+            (
+                await session.execute(
+                    text("SELECT lower(btrim(CAST(:a AS text))) = lower(btrim(CAST(:b AS text)))"),
+                    {"a": a, "b": b},
+                )
+            ).scalar_one()
+        )
+
+
+class TestCaseFoldingHappensInSql:
+    """m5, fix round 3. Python's `str.lower()` and Postgres's `lower()` disagree on inputs like
+    "İ" (two code points in Python, one in an en_US.utf8 database, unchanged in a C-locale
+    one), so folding on either side of a comparison in different places lets two spellings the
+    database treats as one name look different to the check — and hash to different advisory
+    lock keys. Both now fold in SQL. The expected outcome below is derived from the database's
+    own folding rather than hard-coded, so this holds under any locale the suite runs against.
+    """
+
+    async def test_the_lookup_agrees_with_the_databases_own_folding(
+        self, session, org_id, data
+    ) -> None:
+        write = ctx_for(org_id, "crm.book.company.write", Scope.ORG)
+        async with session.begin():
+            await services.create_company(
+                session, write, name="istanbul ltd", owner_id=data["subject_a"]
+            )
+
+        equal = await _sql_folds_equal(session, "istanbul ltd", "İSTANBUL LTD")
+        if equal:
+            with pytest.raises(ConflictProblem):
+                async with session.begin():
+                    await services.create_company(
+                        session, write, name="İSTANBUL LTD", owner_id=data["subject_a"]
+                    )
+        else:
+            async with session.begin():
+                created = await services.create_company(
+                    session, write, name="İSTANBUL LTD", owner_id=data["subject_a"]
+                )
+            assert created.name == "İSTANBUL LTD"
+
+    async def test_surrounding_whitespace_is_not_a_different_name(
+        self, session, org_id, data
+    ) -> None:
+        write = ctx_for(org_id, "crm.book.company.write", Scope.ORG)
+        async with session.begin():
+            await services.create_company(
+                session, write, name="Padded Traders", owner_id=data["subject_a"]
+            )
+        with pytest.raises(ConflictProblem):
+            async with session.begin():
+                await services.create_company(
+                    session, write, name="  padded traders  ", owner_id=data["subject_a"]
+                )
+
+    async def test_two_concurrent_creates_of_sql_equal_spellings_serialize_on_one_lock(
+        self, session, org_id, data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        original_lookup = selectors.get_company_by_name
+
+        async def _slow_lookup(sess, organization_id, name):  # type: ignore[no-untyped-def]
+            result = await original_lookup(sess, organization_id, name)
+            await asyncio.sleep(0.1)
+            return result
+
+        monkeypatch.setattr(selectors, "get_company_by_name", _slow_lookup)
+        equal = await _sql_folds_equal(session, "istanbul traders", "İSTANBUL TRADERS")
+
+        cfg = settings()
+        engine_a = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
+        engine_b = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
+        maker_a = async_sessionmaker(engine_a, expire_on_commit=False)
+        maker_b = async_sessionmaker(engine_b, expire_on_commit=False)
+        ctx = ctx_for(org_id, "crm.book.company.write", Scope.ORG)
+
+        async def _create(sess, name: str, owner: uuid.UUID):  # type: ignore[no-untyped-def]
+            try:
+                async with sess.begin():
+                    return await services.create_company(sess, ctx, name=name, owner_id=owner)
+            except ConflictProblem as exc:
+                return exc
+
+        try:
+            async with maker_a() as session_a, maker_b() as session_b:
+                event.listen(session_a.sync_session, "after_begin", _tenant_binder(org_id))
+                event.listen(session_b.sync_session, "after_begin", _tenant_binder(org_id))
+                results = await asyncio.gather(
+                    _create(session_a, "istanbul traders", data["subject_a"]),
+                    _create(session_b, "İSTANBUL TRADERS", data["subject_b"]),
+                )
+        finally:
+            await engine_a.dispose()
+            await engine_b.dispose()
+
+        successes = [r for r in results if not isinstance(r, ConflictProblem)]
+        assert len(successes) == (1 if equal else 2)
+
+
+class TestLockOrderIsOwnerThenName:
+    """m4, fix round 3. `update_company` used to take the name lock and *then* the owner's row
+    lock; `create_company` takes them the other way round. A rename-plus-reassign racing a
+    create naming the same owner and the same name each ended up holding the lock the other
+    was waiting for — a deadlock Postgres breaks by killing one of them."""
+
+    async def test_a_rename_with_reassign_racing_a_create_never_deadlocks(
+        self, session, org_id, data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        original_assert = services._assert_owner_assignable
+        original_lock = services._lock_company_name
+
+        async def _assert_then_linger(*args, **kwargs):  # type: ignore[no-untyped-def]
+            await original_assert(*args, **kwargs)
+            await asyncio.sleep(0.4)
+
+        async def _lock_then_linger(*args, **kwargs):  # type: ignore[no-untyped-def]
+            await original_lock(*args, **kwargs)
+            await asyncio.sleep(0.4)
+
+        monkeypatch.setattr(services, "_assert_owner_assignable", _assert_then_linger)
+        monkeypatch.setattr(services, "_lock_company_name", _lock_then_linger)
+
+        cfg = settings()
+        engine_a = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
+        engine_b = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
+        maker_a = async_sessionmaker(engine_a, expire_on_commit=False)
+        maker_b = async_sessionmaker(engine_b, expire_on_commit=False)
+        ctx = ctx_for(org_id, "crm.book.company.write", Scope.ORG)
+        shared_owner = data["subject_b"]
+
+        async def _rename_and_reassign(sess):  # type: ignore[no-untyped-def]
+            try:
+                async with sess.begin():
+                    company = await selectors.get_company(sess, org_id, data["company_a_id"])
+                    assert company is not None
+                    return await services.update_company(
+                        sess,
+                        ctx,
+                        company,
+                        CompanyPatch(name="Zeta Holdings", owner_id=shared_owner),
+                    )
+            except ConflictProblem as exc:
+                return exc
+
+        async def _create_same_name(sess):  # type: ignore[no-untyped-def]
+            try:
+                async with sess.begin():
+                    return await services.create_company(
+                        sess, ctx, name="Zeta Holdings", owner_id=shared_owner
+                    )
+            except ConflictProblem as exc:
+                return exc
+
+        try:
+            async with maker_a() as session_a, maker_b() as session_b:
+                event.listen(session_a.sync_session, "after_begin", _tenant_binder(org_id))
+                event.listen(session_b.sync_session, "after_begin", _tenant_binder(org_id))
+                results = await asyncio.gather(
+                    _rename_and_reassign(session_a),
+                    _create_same_name(session_b),
+                    return_exceptions=True,
+                )
+        finally:
+            await engine_a.dispose()
+            await engine_b.dispose()
+
+        # Neither was killed as a deadlock victim: each either won or got the ordinary 409 for
+        # losing the race to the same name.
+        for result in results:
+            assert not isinstance(result, BaseException) or isinstance(result, ConflictProblem), (
+                f"unexpected failure: {result!r}"
+            )
+        wins = [r for r in results if not isinstance(r, BaseException)]
+        assert len(wins) == 1
+
+
+class TestLookupTiebreakIsDeterministic:
+    """m6, fix round 3: two live companies whose names fold together and whose `created_at`
+    is identical (a bulk import stamps one instant on every row) must still resolve to the
+    same row every time — `id` is the last tiebreak."""
+
+    async def test_identical_timestamps_resolve_to_the_smallest_id(
+        self, session, org_id, admin_session
+    ) -> None:
+        low, high = sorted([uuid.uuid4(), uuid.uuid4()])
+        owner = uuid.uuid4()
+        stamp = datetime(2026, 9, 1, tzinfo=UTC)
+        async with admin_session.begin():
+            # The larger id goes in first, so physical order alone would return it.
+            for company_id, name in ((high, "TIE BREAK LTD"), (low, "Tie Break Ltd")):
+                await admin_session.execute(
+                    text(
+                        "INSERT INTO customer.companies (id, organization_id, name, domain, "
+                        "industry, size_band, city, country, status, owner_id, "
+                        "annual_revenue_minor, currency, created_at, updated_at) VALUES "
+                        "(:id, :org, :name, '', '', '', '', '', 'prospect', :owner, 0, 'INR', "
+                        ":ts, :ts)"
+                    ),
+                    {"id": company_id, "org": org_id, "name": name, "owner": owner, "ts": stamp},
+                )
+        async with session.begin():
+            found = await selectors.get_company_by_name(session, org_id, "tie break ltd")
+        assert found is not None
+        assert found.id == low
