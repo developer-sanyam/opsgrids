@@ -43,7 +43,7 @@ STATE_DIR="${EDGE_STATE_DIR:-/srv/opsgrids/state}"
 # Every service that owns a schema. Migrated in this order, but only the ones compose will
 # actually run — a product behind a disabled profile (ADR-0013 §5) is skipped, and picked up
 # on the deploy that enables it.
-SERVICES_WITH_SCHEMA=(auth account product catalog subscription billing metering payment notification storefront document operations approval employee attendance customer deal project timesheet standup projects support marketing finance itsm)
+SERVICES_WITH_SCHEMA=(auth account product catalog subscription billing metering payment notification storefront document operations approval employee attendance customer deal project timesheet standup projects support marketing finance scheduler itsm)
 
 # The services compose will run for this box: honours COMPOSE_PROFILES from .env.
 configured_services() {

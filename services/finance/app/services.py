@@ -92,7 +92,7 @@ from platform_core.errors import (
     NotFoundProblem,
     UpstreamUnavailableProblem,
 )
-from platform_core.events import publish_event
+from platform_core.events import publish_event, schedule_event
 
 # Event names. `finance.*` because these are the product's own, not the platform's; the second
 # segment is the module, matching the permission grammar (ADR-0000 §5).
@@ -1121,6 +1121,58 @@ def live_registration(filings: list[EInvoiceFiling]) -> EInvoiceFiling | None:
     return next((f for f in filings if f.status == "filed"), None)
 
 
+def _filing_idempotency_key(
+    invoice_id: uuid.UUID, attempt: int, *, suffix: str | None = None
+) -> str:
+    base = f"einvoice-filing:{invoice_id}:{attempt}"
+    return f"{base}:{suffix}" if suffix else base
+
+
+def _dispatch_filing_request(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    invoice_id: uuid.UUID,
+    attempt: int,
+    not_before: datetime | None,
+    payload: dict[str, Any],
+    now: datetime | None = None,
+    idempotency_suffix: str | None = None,
+) -> None:
+    """Publish the filing-request payload now, or ask the scheduler to hold it (ADR-0015).
+
+    `not_before` in the past or absent publishes directly — byte-identical to what this function
+    did before the scheduler existed. `not_before` in the future stages
+    `platform.schedule.requested` instead, on this same outbox, keyed so a redelivered schedule
+    request can never produce two deliveries of the same retry.
+    """
+    now = now or _now()
+    if not_before is not None and not_before > now:
+        schedule_event(
+            session,
+            OutboxEvent,
+            organization_id=ctx.organization_id,
+            due_at=not_before,
+            idempotency_key=_filing_idempotency_key(invoice_id, attempt, suffix=idempotency_suffix),
+            target_event_type=EVT_INVOICE_FILING_REQUESTED,
+            target_aggregate_type="invoice",
+            target_aggregate_id=invoice_id,
+            target_payload=payload,
+            target_actor=_actor(ctx),
+        )
+        return
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_INVOICE_FILING_REQUESTED,
+        aggregate_type="invoice",
+        aggregate_id=invoice_id,
+        payload=payload,
+        actor=_actor(ctx),
+    )
+
+
 def request_filing(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -1129,8 +1181,9 @@ def request_filing(
     attempt: int = 1,
     not_before: datetime | None = None,
     trigger: str,
+    now: datetime | None = None,
 ) -> None:
-    """Stage a filing attempt on the outbox — inside the caller's transaction, never as a call.
+    """Stage a filing attempt — inside the caller's transaction, never as a call.
 
     Used twice: once when a document is finalized, and again by the consumer to schedule a bounded
     retry after a portal outage. `attempt` is 1-based and rides on the payload rather than being
@@ -1138,30 +1191,71 @@ def request_filing(
     the budget belongs to this *chain of attempts* — a manual re-file should not consume the
     automation's remaining tries, and reading a count back would make it do exactly that.
 
-    `not_before` is advisory: it says when the retry becomes due. Honouring it is the scheduler's
-    job, which is the piece of the autopilot still to come; carrying it now means the retry
-    already knows its own backoff and the scheduler is a delivery change rather than a redesign.
+    `not_before` says when the retry becomes due. A null or already-past `not_before` publishes
+    `EVT_INVOICE_FILING_REQUESTED` directly, exactly as before the scheduler existed — the
+    finalize trigger never sets it, and a retry whose backoff has already elapsed by the time this
+    transaction runs gains nothing from waiting further. A future `not_before` instead asks the
+    scheduler to hold it (`_dispatch_filing_request`, ADR-0015) — the delivery change the retry's
+    own backoff was always waiting for.
     """
-    publish_event(
+    payload = {
+        "organization_id": str(ctx.organization_id),
+        "invoice_id": str(invoice.id),
+        "number": invoice.number,
+        "document_type": invoice.document_type,
+        "supply_type": invoice.supply_type,
+        "attempt": attempt,
+        "max_attempts": domain.MAX_FILING_ATTEMPTS,
+        "not_before": not_before.isoformat() if not_before else None,
+        #: What caused this request — `finalized` for the first, `retry` for the rest.
+        "trigger": trigger,
+    }
+    _dispatch_filing_request(
         session,
-        OutboxEvent,
-        organization_id=ctx.organization_id,
-        event_type=EVT_INVOICE_FILING_REQUESTED,
-        aggregate_type="invoice",
-        aggregate_id=invoice.id,
-        payload={
-            "organization_id": str(ctx.organization_id),
-            "invoice_id": str(invoice.id),
-            "number": invoice.number,
-            "document_type": invoice.document_type,
-            "supply_type": invoice.supply_type,
-            "attempt": attempt,
-            "max_attempts": domain.MAX_FILING_ATTEMPTS,
-            "not_before": not_before.isoformat() if not_before else None,
-            #: What caused this request — `finalized` for the first, `retry` for the rest.
-            "trigger": trigger,
-        },
-        actor=_actor(ctx),
+        ctx,
+        invoice_id=invoice.id,
+        attempt=attempt,
+        not_before=not_before,
+        payload=payload,
+        now=now,
+    )
+
+
+def rearm_early_filing_request(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    invoice_id: uuid.UUID,
+    event_id: uuid.UUID,
+    attempt: int,
+    not_before: datetime,
+    payload: dict[str, Any],
+) -> None:
+    """Defence in depth for `app/consumers.py:file_requested_invoice` (ADR-0015 §5): a
+    `filing_requested` message that names a `not_before` still in the future, arriving anyway —
+    this should never happen in normal operation, since the scheduler is what is supposed to hold
+    it, so this only exists to guard against a hand-redelivered message, a DLQ replay, or a
+    scheduler that fired on a misconfigured clock.
+
+    Re-arms the wait for what remains rather than acting on it, silently dropping it (loses the
+    retry) or nacking it (RabbitMQ has no delay of its own, so this hot-loops the exact bug the
+    scheduler exists to fix). Keyed off **this message's own event id** rather than
+    `(invoice, attempt)` — that key was already spent by whichever schedule produced this very
+    message (this firing *is* that schedule), and reusing it would collide with a job that has
+    already fired instead of arming a fresh wait.
+
+    Takes `invoice_id` and the arriving message's own `payload` rather than the `Invoice` row and
+    rebuilding one: this message already carries everything a fresh request needs, and refetching
+    the invoice here would be a query this defensive, hopefully-never-taken path does not need.
+    """
+    _dispatch_filing_request(
+        session,
+        ctx,
+        invoice_id=invoice_id,
+        attempt=attempt,
+        not_before=not_before,
+        payload=payload,
+        idempotency_suffix=f"early-arrival:{event_id}",
     )
 
 
@@ -1571,6 +1665,7 @@ async def autofile_invoice(
             attempt=next_attempt,
             not_before=at + domain.filing_retry_delay(attempt),
             trigger="retry",
+            now=at,
         )
         return FilingOutcome(
             "retry_scheduled",

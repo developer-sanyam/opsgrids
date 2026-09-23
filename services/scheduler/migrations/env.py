@@ -30,6 +30,40 @@ config.set_main_option("sqlalchemy.url", cfg.admin_dsn)
 target_metadata = Base.metadata
 
 
+def grant_sweep_reader(connection: Connection) -> None:
+    """Column-level `SELECT` on `scheduled_jobs` for the outbox role — the sweep's own due-job
+    discovery and its retention pass (ADR-0015 §3, §7), the same shape as
+    `services/approval/migrations/env.py`'s `grant_sla_sweep_reader`.
+
+    Five columns, named exactly: `organization_id`, `id`, `due_at`, `status`, `fired_at`. Nothing
+    from `target_payload` or `target_actor` — a bypass role that can find rows to act on must
+    still not be able to read what a deferred event says, and neither discovery query needs to.
+
+    `REVOKE` before `GRANT` and run after **every** alembic run, upgrade or downgrade alike — the
+    same idempotent shape approval uses and for the same reason: a `GRANT`-only version would
+    leave the privilege in place forever once issued, including across a downgrade that drops the
+    table.
+    """
+    reader = cfg.db_outbox_role
+    if not reader:
+        return
+    if not connection.execute(
+        text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": reader}
+    ).scalar():
+        return
+    if connection.execute(
+        text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.scheduled_jobs"}
+    ).scalar():
+        connection.execute(text(f'REVOKE ALL ON "{SCHEMA}"."scheduled_jobs" FROM "{reader}"'))
+        connection.execute(
+            text(
+                "GRANT SELECT (organization_id, id, due_at, status, fired_at) "
+                f'ON "{SCHEMA}"."scheduled_jobs" TO "{reader}"'
+            )
+        )
+    connection.commit()
+
+
 def include_object(obj, name, type_, reflected, compare_to) -> bool:  # type: ignore[no-untyped-def]
     """Manage only this service's own schema.
 
@@ -60,6 +94,7 @@ def do_run_migrations(connection: Connection) -> None:
     # created. Doing it here rather than as a per-service step means a new service cannot ship
     # without them -- which is exactly what happened the first time this was left out.
     apply_schema_grants(connection, SCHEMA, cfg.db_app_role, outbox_role=cfg.db_outbox_role)
+    grant_sweep_reader(connection)
 
 
 async def run_async_migrations() -> None:
