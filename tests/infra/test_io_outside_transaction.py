@@ -70,6 +70,8 @@ CLIENT_TYPE_NAMES: frozenset[str] = frozenset(
         "Resolver",
         "ProbeSet",
         "HierarchySource",
+        # auth's OIDC discovery / token exchange seam (app/oidc.py).
+        "IdpClient",
     }
 )
 
@@ -143,6 +145,15 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "D3 sweep: the daily sweep's own per-organization step calls advance_domain_claim "
         "(the DNS/TLS probes) inside session_scope, the same instance check_domain's docstring "
         "names for the synchronous 'Check now' path. Same fix shape."
+    ),
+    # auth is owned by another slice (excluded from this sweep's fixes per the task brief) —
+    # found and reported, not touched.
+    ("services/auth/app/api/routes.py", "save_sso_config"): (
+        "D3 sweep, routed to the auth slice: services.save_sso_config takes an "
+        "oidc.IdpClient and performs OIDC discovery over HTTP inside the request's "
+        "tenant-bound transaction. Fix: run discovery (and validate the returned endpoints) "
+        "in an untransacted step first, then open the transaction only to seal the secret, "
+        "write the config row, audit and stage the event."
     ),
     # subscription is owned by another slice (excluded from this sweep's fixes per the task
     # brief) — found and reported, not touched. Both routes resolve a plan_version_id against
