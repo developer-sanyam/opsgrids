@@ -4,12 +4,13 @@
  * product's vocabulary for it — so `companyFromWire` is the explicit, typed place that mapping
  * happens, rather than an assumption every screen makes on its own.
  */
-import type { Activity, Company, Contact, Deal, Owner, Summary } from "./types";
+import type { Activity, Company, Contact, Deal, Lead, Owner, Summary } from "./types";
 import type {
   ActivityOut,
   CompanyOut,
   ContactOut,
   DealOut,
+  LeadOut,
   OwnerOut,
   SummaryOut,
   WirePage,
@@ -21,6 +22,26 @@ export function ownerFromWire(row: OwnerOut): Owner {
     full_name: row.full_name,
     email: row.email,
     role: row.role,
+    is_active: row.is_active,
+  };
+}
+
+export function leadFromWire(row: LeadOut): Lead {
+  return {
+    id: row.id,
+    full_name: row.full_name,
+    company: row.company,
+    email: row.email,
+    phone: row.phone,
+    source: row.source,
+    status: row.status,
+    owner_id: row.owner_id,
+    notes: row.notes,
+    converted_company_id: row.converted_company_id,
+    converted_contact_id: row.converted_contact_id,
+    converted_deal_id: row.converted_deal_id,
+    converted_at: row.converted_at,
+    created_at: row.created_at,
   };
 }
 

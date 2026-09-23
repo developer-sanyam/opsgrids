@@ -271,7 +271,7 @@ version prices them.
   one without a flag-day cutover. Suspension via de-entitlement is already exercised by the 402 gate;
   billing just becomes the thing that pulls the switch.
 
-## Open, for a later ADR
+## Open, for a later ADR (as written 2026-08-24; every item is decided in "Decisions on open questions" below)
 
 Recorded so they are not mistaken for settled:
 
@@ -293,3 +293,178 @@ Recorded so they are not mistaken for settled:
 - **Revenue recognition** — invoices and collection are in scope; recognizing revenue over a
   subscription term (deferred revenue schedules) is a finance concern layered on the append-only
   invoice and ledger record, not modelled here.
+
+---
+
+## Decisions on open questions (2026-09-24)
+
+The three items still open in "Open, for a later ADR" above are decided here. That list is left as
+written so the history reads; read it through this section. Dunning, the first item, was already
+settled by ADR-0005. In-flight work that this section builds on and does not contradict: the
+billing-run addendum to [ADR-0005](0005-dunning-and-grace.md) (backlog R2) with its interim tax
+rule, and [ADR-0019](0019-statutory-portal-credentials.md) for where a *tenant's* GST portal
+credentials live. The register of every ADR question is
+[open-questions-register.md](open-questions-register.md).
+
+### Q1. Tax computation and jurisdiction, including OpsGrids' own GST on what commerce bills — **DECIDED (direction; built by O6)**
+
+**Facts this rests on.** `billing.tax_rates` exists (global, un-policied, `rate_bps`,
+versioned by `effective_from`) and nothing reads it yet (`services/billing/app/models.py`). The
+billing run (R2) adds an interim rule: one deployment-wide `BILLING_TAX_CODE` (and optional
+`BILLING_TAX_JURISDICTION`), the rate in force on the period's start, exclusive, computed **once on
+the subtotal** with `Money.percent_bps` half-up, written as its own line; unset means no tax line,
+and a code with no rate in force refuses to invoice. `billing.invoices.number` is unique per
+organization and R2 derives it from a hash of the invoice key, so it is idempotent but not
+consecutive. Finance already has the Indian GST rules as pure functions for its tenants:
+`gst_amount_minor` (once, half-up), `split_gst` (odd paisa to SGST), `is_intra_state` (export and
+SEZ are inter-state by statute), `parse_gstin` (check digit), `financial_year`; a per-organization
+`InvoiceNumberSeries` allocated with an atomic upsert; the IRP seam (`services/finance/app/irp/`);
+and GSTR-1 assembly (`assemble_gstr1`).
+
+**Decision.**
+
+1. **The supplier is the legal entity that operates the deployment**: OpsGrids' own GSTIN, legal
+   name and state, held as billing's deployment settings (`BILLING_SUPPLIER_GSTIN`,
+   `BILLING_SUPPLIER_LEGAL_NAME`, `BILLING_SUPPLIER_STATE_CODE`). Billing validates the GSTIN's
+   check digit at startup and refuses to boot if a tax code is set with no valid supplier GSTIN.
+   There is one supplier per deployment. It is not a tenant row, and it is not finance's
+   `gst_registrations`, which hold a tenant's own registration as a seller of its own goods.
+2. **The recipient is the customer organization.** Its tax identity is a **billing profile owned
+   by billing**: legal name, GSTIN (optional; no GSTIN means B2C), state code and billing address.
+   It is tenant-scoped under RLS and written by the organization's admin under two new ORG-only
+   permissions, `core.billing.profile.read` and `core.billing.profile.write`, which need
+   ADR-0007's reconcile in the deploy that ships them. The profile is **snapshotted onto each
+   invoice at finalize**, the same way finance snapshots `seller_gstin` and `buyer_gstin`. Billing
+   never reads finance's `customers` or `gst_registrations`: that would be a cross-schema read,
+   and a tenant does not have to own the finance product.
+3. **Billing computes the tax.** The R2 interim rule stays as it is and becomes the IGST case of
+   the general rule. The GST total is `round_half_up(subtotal × rate)`, computed once on the
+   invoice's taxable subtotal. It is then split by place of supply:
+   - **IGST** takes the whole total when the place of supply differs from the supplier's state, or
+     when the recipient is SEZ or export.
+   - Otherwise **CGST** is `⌊total / 2⌋` and **SGST** is the remainder. That is finance's
+     `split_gst` rule, so the heads always add back to the total.
+
+   Place of supply is the recipient GSTIN's state (B2B). Without a GSTIN it is the profile's state
+   if an address is on record, and otherwise the supplier's state (IGST Act s.12(2)). Each tax head
+   is its own invoice line, so the invoice still foots. Line-level heads for an e-invoice or GSTR-1
+   are the header heads **allocated** to the taxable lines by largest remainder
+   (`Money.allocate`). They are never recomputed per line, so the header and the lines cannot
+   disagree. The SAC code belongs to the catalog **product**. It defaults to one deployment-wide
+   `BILLING_DEFAULT_SAC`, whose value is **DECIDED (default; owner/CA may revise)**. In O6,
+   finance's pure GST functions move to `libs/platform-core` as `platform_core.gst`. They now have
+   two concrete users, finance and billing, and copying them would give two places to get GST
+   wrong.
+4. **The tax-invoice series lives in billing and belongs to the supplier.** It is not per customer
+   organization. CGST Rule 46(b) requires a consecutive serial number of at most 16 characters that
+   is unique within a financial year. So there is one counter row per `(series, financial_year)`,
+   with an `invoice` series and a `credit_note` series. The number is allocated **inside the
+   finalize transaction** with the same atomic `INSERT … ON CONFLICT DO UPDATE … RETURNING` that
+   finance's `allocate_invoice_number` uses. A rolled-back finalize therefore consumes no number,
+   and a draft never holds one. R2 finalizes only after the record step, so a voided draft leaves
+   no gap. The format is `OG/2627/000001` (14 characters). The per-organization `number` that R2
+   derives stays as the idempotent internal reference, and the tax-invoice number is an additional
+   column. The counter row has no `organization_id` because it is the supplier's and not a
+   tenant's. It is an **explicit RLS exemption** beside `tax_rates` (ADR-0002 §5), documented in
+   the model and pinned by a billing test, and the app role gets INSERT/UPDATE on that table only.
+5. **Once an invoice has a tax-invoice number, it is corrected with a credit note and never
+   voided.** The credit note takes a number from the `credit_note` series and references the
+   invoice, as GST requires and ADR-0000 §9 already says. `finalized → void` stays legal only for
+   invoices finalized before O6, which have no tax-invoice number.
+6. **Finance keeps OpsGrids' own returns, and its IRNs once they are required, under OpsGrids' own
+   organization.** A finance consumer of `commerce.invoice.finalized` (and the credit-note
+   equivalent) imports billing's tax invoice **verbatim** into the operator organization's book:
+   billing's number, lines and heads. Finance checks that the document foots and never recomputes
+   it; a document that does not foot is dead-lettered with an alarm. GSTR-1/3B for OpsGrids'
+   supplies then come from machinery that already exists. The IRN is requested through finance's
+   IRP pipeline **only once the owner confirms OpsGrids' AATO has crossed the e-invoice threshold**
+   (O4's gate) — **DECIDED (default; owner may revise)**. The IRN and QR come back to billing as an
+   event and are stored in an append-only billing table beside the frozen invoice. This consumer is
+   the one finance write that binds to an organization other than the envelope's. It binds only to
+   the configured `FINANCE_OPERATOR_ORG_ID`, accepts only envelopes whose `producer` is `billing`,
+   and never writes to the customer's tenant.
+
+**Why.** The tax must be computed where the money is charged. Payment collects billing's
+`total_minor`, so if anything else computed the tax, the tax invoice and the amount collected could
+differ by a paisa, and a tax invoice that disagrees with the money cannot be defended (ADR-0000 §9).
+The customer must be able to read their own tax invoice through their own tenant
+(`core.billing.invoice.read`, RLS); a document stored in OpsGrids' finance organization would need
+a cross-tenant read to show it. GST numbering belongs to the supplier: per-customer series would
+give every customer an `INV-0001` under one GSTIN. Returns and IRN filing already exist in
+finance, and building them a second time in billing would duplicate the part of the platform that
+is hardest to get right.
+
+**Rejected.** Issuing the tax invoice from finance under OpsGrids' organization: the customer
+could not read it without crossing tenants, and commerce's core document would depend on a product
+service. A per-organization series: it does not comply. R2's hash-derived numbers as GST numbers:
+they are not consecutive. A Postgres `SEQUENCE`: it leaves gaps on rollback, and every gap becomes
+an audit explanation. Copying finance's GST functions into billing. Per-line tax computation in
+billing: it contradicts R2's once-on-subtotal rule for no statutory gain, and allocation already
+gives every line a head within one minor unit of its exact share. A separate credential path for
+OpsGrids' own filings: as a taxpayer, OpsGrids' portal login is the operator organization's
+finance credential row, stored like any tenant's. Only the platform's ASP/GSP client credential is
+a deployment secret ([ADR-0019](0019-statutory-portal-credentials.md) §4).
+
+**Consequences.** Until O6 ships, the platform's invoices are **commercial invoices, not GST tax
+invoices**: no supplier GSTIN, no heads and no Rule 46 number. The owner must not issue them as tax
+invoices. O6 is several slices: the billing profile with its two permissions and ADR-0007
+reconcile, supplier settings, the series table and its exemption test, tax-head lines, credit
+notes, the `platform_core.gst` move, finance's operator-organization import consumer, and the IRN
+back-channel. The finance profile becomes part of what OpsGrids needs for its own compliance; the
+edge box already runs it. Every finalize serialises for one statement on one counter row per
+financial year. At hundreds of invoices a day that cost is not visible, and it is the only shape
+that keeps the series gap-free.
+
+### Q2. More than one currency on one account — **DECIDED**
+
+**Decision.** An organization has **one billing currency**, fixed by its first subscription that
+is not cancelled. A subscribe whose pinned version is priced in any other currency is refused with
+422, naming the organization's currency. The credit ledger stays keyed by currency (its balance
+index is already `(organization_id, currency, valid_from)`), so an existing grant in a
+different currency is never silently converted. A customer that needs to be billed in two
+currencies becomes **two organizations**, not one organization with mixed ledgers (ADR-0000 §1:
+one person may belong to many organizations). INR is the default. A non-Indian customer is billed
+in its own currency from its first subscription, and exporting to it — zero-rated under a LUT —
+is added to O6's supply types when the first such customer exists.
+
+**Grounding.** `subscriptions.currency` is already documented as "ADR-0004 defaults: one currency
+per org for now", and `_change_plan` already refuses a cross-currency change. But `_subscribe`
+(`services/subscription/app/services.py`) never checks the organization's other subscriptions,
+so today one organization can hold an INR subscription and a USD one.
+
+**Rejected.** Per-subscription currencies inside one organization: it breaks every sum a report
+or the credit ledger takes, and prepaid packs cannot be drawn across currencies. FX conversion at
+invoice time: it adds a rate source, a rounding policy and a reconciliation problem, and no
+customer has asked for it.
+
+**Consequences.** One guard in `_subscribe`, with a negative test. **Not covered by any ledger
+item. New backlog item needed.**
+
+### Q3. Revenue recognition — **DECIDED (no ledger now; one column now)**
+
+**Decision.** Commerce does not model deferred revenue. Recognized revenue is a **derived report**
+over finalized invoices that are not void, never a stored balance:
+- recurring lines are recognized over their service window, day-weighted by overlap with each
+  month;
+- usage lines are recognized in the window they measured;
+- proration and closing lines are recognized over their own window.
+
+One thing has to be captured now because it cannot be backfilled later. `billing.invoice_lines`
+are append-only (UPDATE is revoked), and an R2 renewal invoice mixes advance recurring lines for
+the new period with arrears usage lines for the old one. So **every invoice line gets its own
+nullable `service_start` and `service_end`**, written at pricing time. Lines written before that
+column exists keep the invoice's period, and are exact for every invoice that has only recurring
+lines.
+
+**Why.** It follows the reasoning of ADR-0009 §7 and this ADR's §7: defer what can be rebuilt from
+stored rows, and capture now what cannot. The report can be written on the day an auditor or the
+owner needs Ind AS 115 figures. A line's service window cannot be written after the line exists.
+
+**Rejected.** A deferred-revenue schedule table written at finalize: it is a second financial record
+that must agree with the invoice forever, built for a report nobody runs yet. Recognizing revenue
+at invoice date: it is wrong for a yearly plan.
+
+**Consequences.** The report is built when the owner or a statutory audit asks for recognized
+revenue by month; the likely home is Q4's analytics projection. The line-window column is a small
+billing change to make after R2 merges. **It is not covered by any ledger item. New backlog item
+needed.**

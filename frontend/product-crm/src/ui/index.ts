@@ -29,7 +29,7 @@ export {
 export type { Column, KpiTone, RowAction } from "@opsgrids/ui";
 
 export { Sidebar } from "./Sidebar";
-export { CompanyStatusPill, ContactStatusPill, StagePill } from "./StatusPill";
+export { CompanyStatusPill, ContactStatusPill, LeadStatusPill, StagePill } from "./StatusPill";
 export { OwnerBadge } from "./OwnerBadge";
 export { ActivityTimeline } from "./ActivityTimeline";
 export { PipelineTrend } from "./PipelineTrend";

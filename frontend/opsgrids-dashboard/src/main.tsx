@@ -30,6 +30,7 @@ const RolesPage = lazy(() => import("./routes/admin/Roles").then((m) => ({ defau
 const OrganizationPage = lazy(() => import("./routes/admin/Organization").then((m) => ({ default: m.OrganizationPage })));
 const OrgUnitsPage = lazy(() => import("./routes/admin/OrgUnits").then((m) => ({ default: m.OrgUnitsPage })));
 const LocationsPage = lazy(() => import("./routes/admin/Locations").then((m) => ({ default: m.LocationsPage })));
+const DomainsPage = lazy(() => import("./routes/admin/Domains").then((m) => ({ default: m.DomainsPage })));
 
 function lazyFallback() {
   return <Skeleton className="h-80 w-full rounded-card" />;
@@ -90,6 +91,7 @@ const router = createBrowserRouter([
           { path: "admin/organization", element: admin("core.org.organization.read", <OrganizationPage />) },
           { path: "admin/org-units", element: admin("core.org.unit.read", <OrgUnitsPage />) },
           { path: "admin/locations", element: admin("core.org.location.read", <LocationsPage />) },
+          { path: "admin/domains", element: admin("core.identity.domain.read", <DomainsPage />) },
           { path: "*", element: <NotFoundPage /> },
         ],
       },

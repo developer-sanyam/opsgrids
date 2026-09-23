@@ -49,13 +49,10 @@
     { "prefix": "/api/v1/deals", "upstream": "http://localhost:8131", "product": "crm" },
     { "prefix": "/api/v1/campaigns", "upstream": "http://localhost:8132", "product": "crm" },
     { "prefix": "/api/v1/tickets", "upstream": "http://localhost:8133", "product": "crm" },
+    { "prefix": "/api/v1/leads", "upstream": "http://localhost:8135", "product": "crm" },
 
     { "prefix": "/api/v1/marketing", "upstream": "http://localhost:8134", "product": "marketing" },
     { "prefix": "/api/v1/support", "upstream": "http://localhost:8180", "product": "support" },
-
-    { "prefix": "/api/v1/leads", "upstream": "http://localhost:8135", "product": "salescrm" },
-    { "prefix": "/api/v1/pipelines", "upstream": "http://localhost:8136", "product": "salescrm" },
-    { "prefix": "/api/v1/activities", "upstream": "http://localhost:8137", "product": "salescrm" },
 
     { "prefix": "/api/v1/projects", "upstream": "http://localhost:8140", "product": "pulseboard" },
     { "prefix": "/api/v1/timesheets", "upstream": "http://localhost:8141", "product": "pulseboard" },

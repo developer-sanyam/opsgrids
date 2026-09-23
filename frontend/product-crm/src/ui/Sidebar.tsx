@@ -12,6 +12,7 @@ import {
   PlugIcon,
   SettingsIcon,
   Sidebar as SidebarShell,
+  TargetIcon,
   UserPlusIcon,
   UsersIcon,
 } from "@opsgrids/ui";
@@ -49,6 +50,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       title: "Pipeline",
       items: [
         { to: "/", label: "Overview", icon: HomeIcon, end: true },
+        { to: "/leads", label: "Leads", icon: TargetIcon },
         {
           to: "/deals",
           label: "Deals",

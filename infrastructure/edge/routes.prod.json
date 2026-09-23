@@ -69,6 +69,7 @@
     { "prefix": "/api/v1/customers", "upstream": "http://customer:8000", "product": "crm" },
     { "prefix": "/api/v1/contacts", "upstream": "http://customer:8000", "product": "crm" },
     { "prefix": "/api/v1/deals", "upstream": "http://deal:8000", "product": "crm" },
+    { "prefix": "/api/v1/leads", "upstream": "http://lead:8000", "product": "crm" },
 
     { "prefix": "/api/v1/projects", "upstream": "http://project:8000", "product": "pulseboard" },
     { "prefix": "/api/v1/timesheets", "upstream": "http://timesheet:8000", "product": "pulseboard" },

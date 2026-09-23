@@ -7,7 +7,7 @@ import { ApiError } from "@opsgrids/client";
 import * as client from "@/api/client";
 import { OwnerFormDialog } from "./OwnerFormDialog";
 
-const CREATED = { id: "own-new", full_name: "Grace Adeyemi", email: "grace@example.com", role: "AE" };
+const CREATED = { id: "own-new", full_name: "Grace Adeyemi", email: "grace@example.com", role: "AE", is_active: true };
 
 afterEach(() => {
   vi.restoreAllMocks();

@@ -134,6 +134,24 @@ CORE = PermissionCatalogue(
             is_dangerous=True,
         ),
         PermissionSpec("identity", "audit", "read", "Read the audit trail", "ORG", "ORG"),
+        # Email-domain verification (ADR-0000 §1). The rows this guards live here, in
+        # account-service — unlike SSO's client secret, a claimed domain and its TXT token
+        # are not credentials, so there is no reason to split them onto auth-service. What
+        # makes this `is_dangerous` is what it feeds: a verified domain is what
+        # `GET /internal/v1/domains/{domain}` hands auth-service to select an identity
+        # provider, so claiming or releasing one is adjacent to every OIDC, SAML and JIT
+        # sign-in the organization will ever run. Owner-only, matching `identity.sso.*` just
+        # below — neither is granted to `ORG_ADMIN`.
+        PermissionSpec("identity", "domain", "read", "See claimed and verified domains", "ORG"),
+        PermissionSpec(
+            "identity",
+            "domain",
+            "write",
+            "Claim, verify and release email domains",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
         # Single sign-on. The rows these guard live in auth-service (`auth.org_idp_configs`),
         # not here — auth holds every credential, and an IdP client secret is a credential.
         # The *vocabulary* still belongs to `core`, which this service declares, and a
